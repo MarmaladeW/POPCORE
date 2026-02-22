@@ -1,0 +1,2282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>POPCORE 库存</title>
+<style>
+:root {
+  --bg: #0f0f13;
+  --surface: #1a1a22;
+  --surface2: #22222e;
+  --border: #2e2e3e;
+  --accent: #7c6af7;
+  --accent2: #e84393;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --text: #e8e8f0;
+  --muted: #888899;
+  --r: 10px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+/* ── App shell ── */
+.app { display: flex; flex-direction: column; height: 100dvh; }
+
+/* ── Top header (desktop only) ── */
+.top-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 48px;
+  flex-shrink: 0;
+}
+.logo { font-size: 17px; font-weight: 800; color: var(--accent); letter-spacing: 1px; }
+.logo span { color: var(--accent2); }
+.top-nav { display: flex; gap: 2px; margin-left: auto; }
+.top-nav button {
+  background: none; border: none; color: var(--muted);
+  padding: 6px 13px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: all .15s;
+}
+.top-nav button:hover { color: var(--text); background: var(--surface2); }
+.top-nav button.active { color: var(--accent); background: rgba(124,106,247,.15); }
+
+/* ── Views ── */
+.view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+.view.active { display: flex; }
+
+/* ── Bottom tab bar (mobile) ── */
+.bottom-tabs {
+  display: none;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-bottom: var(--safe-bottom);
+  flex-shrink: 0;
+}
+.bottom-tabs-inner { display: flex; }
+.tab-btn {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 8px 4px; gap: 3px;
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 10px; font-weight: 500;
+  transition: color .15s;
+}
+.tab-btn .tab-icon { font-size: 20px; line-height: 1; }
+.tab-btn.active { color: var(--accent); }
+
+@media (max-width: 640px) {
+  .top-header { display: none; }
+  .bottom-tabs { display: block; }
+  .app { height: 100dvh; }
+}
+
+/* ─── Scrollbar ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── Shared inputs ── */
+input, textarea, select {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color .15s;
+  width: 100%;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+select option { background: var(--surface2); }
+textarea { resize: vertical; min-height: 56px; }
+
+/* ── Buttons ── */
+.btn {
+  padding: 9px 18px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all .15s;
+  font-family: inherit;
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #6b5ae0; }
+.btn-primary:active { transform: scale(.97); }
+.btn-ghost { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+.btn-ghost:hover { color: var(--text); }
+.btn-accent2 { background: rgba(232,67,147,.15); color: var(--accent2); border: 1px solid rgba(232,67,147,.3); }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; bottom: calc(60px + var(--safe-bottom)); right: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 16px; font-size: 13px;
+  z-index: 9999; transition: all .25s;
+  transform: translateY(8px); opacity: 0; pointer-events: none;
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.ok  { border-color: var(--green); color: var(--green); }
+.toast.err { border-color: var(--red);   color: var(--red); }
+@media (min-width: 641px) { .toast { bottom: 20px; } }
+
+/* ── Spinner ── */
+.spinner {
+  display: inline-block; width: 18px; height: 18px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state { text-align: center; padding: 40px 20px; color: var(--muted); }
+.empty-big { font-size: 36px; margin-bottom: 8px; }
+
+/* ════════════════════════════════════
+   SEARCH VIEW
+════════════════════════════════════ */
+#view-search { gap: 0; }
+
+.search-header {
+  padding: 10px 12px 6px;
+  display: flex; flex-direction: column; gap: 8px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+@media (min-width: 641px) { .search-header { padding: 12px 16px 8px; } }
+
+.search-row { display: flex; gap: 8px; align-items: center; }
+
+.search-wrap { position: relative; flex: 1; }
+.search-wrap input { padding-left: 34px; font-size: 15px; }
+.search-wrap .s-icon {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  font-size: 16px; pointer-events: none;
+}
+
+.new-btn-wrap { flex-shrink: 0; }
+
+.chips-row {
+  display: flex; gap: 5px; overflow-x: auto; padding-bottom: 2px;
+  -ms-overflow-style: none; scrollbar-width: none;
+}
+.chips-row::-webkit-scrollbar { display: none; }
+
+.chip {
+  flex-shrink: 0;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 20px; padding: 4px 11px;
+  font-size: 12px; cursor: pointer; color: var(--muted);
+  transition: all .12s; white-space: nowrap;
+}
+.chip:hover { color: var(--text); border-color: var(--accent); }
+.chip.active { background: rgba(124,106,247,.18); color: var(--accent); border-color: var(--accent); }
+
+/* ── Sort row ── */
+.sort-row {
+  display: flex; gap: 5px; align-items: center; overflow-x: auto;
+  padding-bottom: 2px;
+  -ms-overflow-style: none; scrollbar-width: none;
+}
+.sort-row::-webkit-scrollbar { display: none; }
+.sort-label { font-size: 11px; color: var(--muted); flex-shrink: 0; white-space: nowrap; }
+.sort-btn {
+  flex-shrink: 0;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 20px; padding: 4px 11px;
+  font-size: 12px; cursor: pointer; color: var(--muted);
+  transition: all .12s; white-space: nowrap; font-family: inherit;
+}
+.sort-btn:hover { color: var(--text); border-color: var(--accent); }
+.sort-btn.active { background: rgba(124,106,247,.18); color: var(--accent); border-color: var(--accent); }
+
+/* ── product_type dropdown+custom ── */
+.type-wrap { display: flex; flex-direction: column; gap: 5px; }
+.type-custom { margin-top: 4px; }
+
+.results-meta { padding: 5px 12px; font-size: 11px; color: var(--muted); flex-shrink: 0; }
+@media (min-width: 641px) { .results-meta { padding: 5px 16px; } }
+
+/* Product grid */
+.product-grid {
+  flex: 1; overflow-y: auto;
+  padding: 8px 12px 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  align-content: start;
+}
+@media (min-width: 480px) { .product-grid { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 900px) { .product-grid { grid-template-columns: repeat(3, 1fr); padding: 10px 16px; } }
+@media (min-width: 1200px) { .product-grid { grid-template-columns: repeat(4, 1fr); } }
+
+.product-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 12px;
+  cursor: pointer; transition: all .15s;
+  display: flex; flex-direction: column; gap: 5px;
+  -webkit-user-select: none; user-select: none;
+}
+.product-card:active { transform: scale(.98); background: var(--surface2); }
+@media (hover: hover) {
+  .product-card:hover { border-color: var(--accent); background: var(--surface2); transform: translateY(-1px); }
+}
+.card-sku { font-size: 10px; color: var(--muted); font-family: monospace; }
+.card-name { font-size: 13px; font-weight: 600; line-height: 1.35; }
+.card-jzm {
+  font-size: 12px; color: var(--accent2); font-weight: 700;
+  background: rgba(232,67,147,.1); padding: 2px 8px;
+  border-radius: 4px; align-self: flex-start;
+}
+.card-footer { display: flex; gap: 8px; align-items: center; margin-top: 2px; flex-wrap: wrap; }
+.card-price { font-size: 14px; font-weight: 700; color: var(--green); }
+.card-series { font-size: 11px; color: var(--muted); }
+.card-type {
+  font-size: 10px; background: var(--surface2);
+  padding: 2px 6px; border-radius: 4px; color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+/* ════════════════════════════════════
+   PRODUCT MODAL
+════════════════════════════════════ */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.65); z-index: 200;
+  align-items: flex-end; justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.modal-overlay.open { display: flex; }
+@media (min-width: 641px) {
+  .modal-overlay { align-items: center; }
+}
+
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  width: 100%; max-height: 92dvh;
+  overflow-y: auto; padding: 16px 16px calc(16px + var(--safe-bottom));
+  animation: slideUp .2s ease;
+}
+@media (min-width: 641px) {
+  .modal {
+    border-radius: 14px; width: min(580px, 95vw);
+    max-height: 85vh; padding: 20px;
+    animation: popIn .18s ease;
+  }
+}
+@keyframes slideUp { from { transform: translateY(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes popIn   { from { transform: scale(.96); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.modal-drag-handle {
+  width: 36px; height: 4px; background: var(--border);
+  border-radius: 2px; margin: 0 auto 14px;
+}
+@media (min-width: 641px) { .modal-drag-handle { display: none; } }
+
+.modal-top { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+.modal-titles { flex: 1; min-width: 0; }
+.modal-title { font-size: 15px; font-weight: 700; line-height: 1.35; word-break: break-word; }
+.modal-sku { font-size: 11px; color: var(--muted); font-family: monospace; margin-top: 2px; }
+.modal-close {
+  background: var(--surface2); border: none; color: var(--muted);
+  width: 30px; height: 30px; border-radius: 50%; cursor: pointer;
+  font-size: 16px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.modal-close:hover { color: var(--text); }
+
+.field-stack { display: flex; flex-direction: column; gap: 12px; }
+.field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field.full { grid-column: 1 / -1; }
+label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+
+.field-highlight input { border-color: rgba(232,67,147,.5); background: rgba(232,67,147,.05); }
+.readonly-val {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 12px; font-size: 13px;
+  color: var(--muted); min-height: 38px; word-break: break-word;
+  max-height: 70px; overflow-y: auto;
+}
+
+.modal-actions {
+  margin-top: 16px; display: flex; gap: 8px;
+  justify-content: flex-end; align-items: center;
+}
+.save-ok { font-size: 12px; color: var(--green); opacity: 0; transition: opacity .3s; margin-right: auto; }
+.save-ok.show { opacity: 1; }
+
+/* ── Hidden edition section ── */
+.hidden-section { display: flex; flex-direction: column; gap: 8px; }
+.hidden-count-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.radio-lbl { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer;
+             font-weight: 500; color: var(--text); text-transform: none; letter-spacing: 0; }
+.radio-lbl input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.hidden-detail { display: flex; flex-direction: column; gap: 9px; padding: 10px 12px;
+                 background: var(--surface2); border-radius: 8px; border: 1px solid var(--border); }
+.hidden-types-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.check-lbl { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer;
+             font-weight: 500; color: var(--text); text-transform: none; letter-spacing: 0; }
+.check-lbl input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.prob-input { width: 90px !important; font-size: 12px !important; padding: 5px 8px !important; }
+.hidden-imgs-header { display: flex; justify-content: space-between; align-items: center; margin-top: 2px; }
+.hidden-imgs-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.hidden-img-btns { display: flex; gap: 4px; }
+.hidden-imgs-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.hidden-img-thumb { position: relative; width: 76px; height: 76px; flex-shrink: 0; }
+.hidden-img-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 7px;
+                        border: 1px solid var(--border); display: block; cursor: pointer; }
+.hidden-img-thumb .img-del { position: absolute; top: -6px; right: -6px; background: #e84393;
+  color: #fff; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 10px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
+.hidden-img-type-badge { position: absolute; bottom: 3px; left: 3px; background: rgba(0,0,0,.65);
+  color: #fff; font-size: 9px; padding: 1px 5px; border-radius: 3px; pointer-events: none; }
+
+/* ════════════════════════════════════
+   ADD PRODUCT MODAL
+════════════════════════════════════ */
+#add-product-modal .modal { max-height: 95dvh; }
+
+/* ════════════════════════════════════
+   INVENTORY VIEW — MOBILE FIRST
+════════════════════════════════════ */
+#view-inventory { position: relative; }
+
+/* On mobile: stack vertically with a slide panel */
+.inv-layout {
+  display: flex; flex: 1; overflow: hidden;
+  flex-direction: column; /* mobile default */
+}
+@media (min-width: 700px) {
+  .inv-layout { flex-direction: row; }
+}
+
+/* Toolbar */
+.inv-toolbar {
+  padding: 10px 12px 8px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  flex-shrink: 0; border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.inv-toolbar input[type=date] {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px; color: var(--text);
+  font-size: 14px; font-family: inherit; width: auto;
+}
+.inv-flag { font-size: 12px; font-weight: 700; color: var(--red); margin-left: auto; }
+
+/* Left list panel */
+.inv-left {
+  background: var(--surface);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  /* mobile: fills available, collapses when detail is shown */
+  flex: 1;
+  min-height: 0;
+}
+@media (min-width: 700px) {
+  .inv-left { width: 340px; flex: none; border-right: 1px solid var(--border); }
+}
+
+.inv-left-header {
+  padding: 8px 12px;
+  font-size: 11px; color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+
+.inv-product-list {
+  flex: 1; overflow-y: auto;
+  padding: 6px; display: flex; flex-direction: column; gap: 3px;
+}
+
+.inv-item {
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: all .12s;
+  display: flex; align-items: center; gap: 10px;
+  -webkit-user-select: none; user-select: none;
+}
+.inv-item:active { background: var(--surface2); }
+@media (hover: hover) { .inv-item:hover { background: var(--surface2); border-color: var(--border); } }
+.inv-item.selected { background: rgba(124,106,247,.1); border-color: var(--accent); }
+.inv-item.status-ok   { border-left: 3px solid var(--green); }
+.inv-item.status-bad  { border-left: 3px solid var(--red); }
+.inv-item.status-none { border-left: 3px solid transparent; }
+
+.inv-item-info { flex: 1; min-width: 0; }
+.inv-item-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-item-sub  { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.inv-badge {
+  font-size: 11px; font-weight: 700; padding: 2px 7px;
+  border-radius: 5px; flex-shrink: 0;
+}
+.inv-badge.ok   { background: rgba(34,197,94,.15);  color: var(--green); }
+.inv-badge.bad  { background: rgba(239,68,68,.15);   color: var(--red);   }
+.inv-badge.none { color: var(--muted); }
+
+/* Add-to-list search bar at bottom of left panel */
+.inv-add-bar {
+  padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0;
+  position: relative;
+}
+.inv-add-bar input { font-size: 13px; }
+.add-dropdown {
+  position: absolute; bottom: calc(100% + 2px); left: 8px; right: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 50;
+  display: none;
+}
+.add-dropdown.open { display: block; }
+.add-opt {
+  padding: 9px 12px; cursor: pointer; font-size: 12px; transition: background .1s;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.add-opt:hover { background: var(--surface2); }
+.add-opt-jzm { font-weight: 700; color: var(--accent2); }
+.add-opt-meta { color: var(--muted); font-family: monospace; }
+
+/* Detail panel */
+.inv-right {
+  flex: 1; overflow-y: auto; padding: 12px;
+  /* on mobile, hidden until item selected */
+  display: none;
+}
+@media (min-width: 700px) { .inv-right { display: block; } }
+
+/* Mobile: when item is selected, show detail panel full-screen-ish */
+.inv-right.mobile-open { display: block; }
+.inv-left.mobile-hidden { display: none; }
+
+.inv-back-btn {
+  display: none; /* only on mobile */
+  align-items: center; gap: 6px;
+  background: none; border: none; color: var(--accent);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 0 0 10px; font-family: inherit;
+}
+@media (max-width: 699px) { .inv-back-btn { display: flex; } }
+
+/* Detail card */
+.inv-detail-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px;
+  max-width: 500px;
+}
+@media (max-width: 699px) { .inv-detail-card { max-width: none; } }
+
+.inv-detail-name { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+.inv-detail-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+
+/* Quantity inputs grid */
+.qty-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+
+.qty-field { display: flex; flex-direction: column; gap: 5px; }
+.qty-field label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+
+.qty-field input {
+  font-size: 16px; font-weight: 600; padding: 10px 12px;
+  text-align: center;
+}
+/* special highlight for restock/sold */
+.qty-field.hl input { border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.05); }
+/* closing count is biggest */
+.qty-field.closing { grid-column: 1 / -1; }
+.qty-field.closing input {
+  font-size: 22px; border-color: var(--accent);
+  background: rgba(124,106,247,.07);
+}
+
+/* ── 端 × 盒 calculator ── */
+.dan-calc {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
+}
+.dan-calc-title {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+}
+.dan-calc-row {
+  display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr 24px auto;
+  gap: 6px; align-items: center; font-size: 13px;
+}
+.dan-op { text-align: center; color: var(--muted); font-weight: 700; }
+.dan-calc-row input {
+  font-size: 15px; font-weight: 600; text-align: center; padding: 7px 4px;
+}
+.dan-result {
+  background: rgba(124,106,247,.15); color: var(--accent);
+  border-radius: 6px; padding: 7px 10px;
+  font-size: 15px; font-weight: 700; text-align: center; white-space: nowrap;
+}
+.dan-apply-btn {
+  display: block; width: 100%; margin-top: 8px;
+  background: rgba(124,106,247,.15); border: 1px solid rgba(124,106,247,.3);
+  color: var(--accent); border-radius: 7px; padding: 7px;
+  font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: all .15s;
+}
+.dan-apply-btn:hover { background: rgba(124,106,247,.25); }
+
+/* formula box */
+.inv-formula {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
+}
+.inv-formula .frow {
+  display: flex; justify-content: space-between; padding: 3px 0; align-items: center;
+}
+.inv-formula .frow.sep { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 8px; font-weight: 700; }
+.flabel { color: var(--muted); }
+.fval { font-weight: 600; font-family: monospace; }
+.fval.good { color: var(--green); }
+.fval.bad  { color: var(--red); }
+.fval.neutral { color: var(--text); }
+
+.inv-notes-field { margin-bottom: 12px; }
+.inv-notes-field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 5px; }
+
+.inv-detail-actions { display: flex; gap: 8px; align-items: center; }
+.inv-save-ok { font-size: 12px; color: var(--green); opacity: 0; transition: opacity .3s; }
+.inv-save-ok.show { opacity: 1; }
+
+/* ════════════════════════════════════
+   HISTORY VIEW
+════════════════════════════════════ */
+#view-history { overflow-y: auto; }
+.history-wrap { padding: 16px; max-width: 800px; }
+.history-title { font-size: 17px; font-weight: 700; margin-bottom: 14px; }
+.history-table { width: 100%; border-collapse: collapse; }
+.history-table th {
+  text-align: left; padding: 8px 12px;
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+.history-table td { padding: 10px 12px; border-bottom: 1px solid rgba(46,46,62,.5); font-size: 13px; }
+.history-table tr:hover td { background: var(--surface2); }
+.date-link { color: var(--accent); cursor: pointer; font-weight: 600; }
+.date-link:hover { text-decoration: underline; }
+.flag-bad  { color: var(--red);   background: rgba(239,68,68,.1);  padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+.flag-good { color: var(--green); background: rgba(34,197,94,.1);  padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+
+/* ════════════════════════════════════
+   STOCK VIEW
+════════════════════════════════════ */
+#view-stock { overflow: hidden; flex-direction: column; }
+
+.stock-toolbar {
+  padding: 10px 12px 6px;
+  display: flex; flex-direction: column; gap: 7px;
+  flex-shrink: 0; border-bottom: 1px solid var(--border);
+}
+.stock-search-wrap { position: relative; }
+.stock-search-wrap input { padding-left: 34px; font-size: 14px; }
+.stock-search-wrap .s-icon {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  font-size: 15px; pointer-events: none;
+}
+.stock-chips-row {
+  display: flex; gap: 5px; overflow-x: auto; padding-bottom: 2px;
+  -ms-overflow-style: none; scrollbar-width: none;
+}
+.stock-chips-row::-webkit-scrollbar { display: none; }
+
+/* Summary bar */
+.stock-summary-bar {
+  display: flex; gap: 8px; padding: 10px 12px;
+  flex-shrink: 0; border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.sum-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 14px; min-width: 100px;
+  display: flex; flex-direction: column; gap: 2px; flex-shrink: 0;
+}
+.sum-card.warn { border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.06); }
+.sum-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.sum-val { font-size: 24px; font-weight: 800; color: var(--text); line-height: 1; }
+.sum-card.warn .sum-val { color: var(--yellow); }
+.sum-sub { font-size: 11px; color: var(--muted); }
+
+/* Stock list */
+.stock-list-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+.stock-list { padding: 8px 12px 20px; display: flex; flex-direction: column; gap: 6px; }
+
+.show-all-bar {
+  text-align: center; padding: 10px;
+  font-size: 12px; color: var(--accent); cursor: pointer;
+  border-top: 1px solid var(--border); background: var(--surface);
+}
+.show-all-bar:hover { text-decoration: underline; }
+
+.stock-row {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px; align-items: center;
+  cursor: pointer; transition: all .12s;
+}
+.stock-row:active { background: var(--surface2); }
+@media (hover:hover) { .stock-row:hover { border-color: var(--accent); background: var(--surface2); } }
+
+.stock-row.low  { border-left: 3px solid var(--yellow); }
+.stock-row.out  { border-left: 3px solid var(--red);    opacity: .7; }
+.stock-row.good { border-left: 3px solid var(--green);  }
+
+.sr-left { min-width: 0; }
+.sr-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sr-jzm  { font-size: 12px; color: var(--accent2); font-weight: 700; }
+.sr-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+.sr-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+
+.loc-pill {
+  display: flex; flex-direction: column; align-items: center;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; min-width: 52px;
+}
+.lp-label { font-size: 9px; color: var(--muted); text-transform: uppercase; margin-bottom: 1px; }
+.lp-val   { font-size: 16px; font-weight: 800; line-height: 1; }
+.lp-sub   { font-size: 9px; color: var(--muted); }
+.loc-pill.up .lp-val { color: var(--accent); }
+.loc-pill.dn .lp-val { color: var(--green); }
+.loc-pill.zero .lp-val { color: var(--muted); }
+
+.ru-btn {
+  background: rgba(124,106,247,.15); border: 1px solid rgba(124,106,247,.3);
+  color: var(--accent); border-radius: 8px; padding: 8px 10px;
+  font-size: 12px; font-weight: 700; cursor: pointer;
+  font-family: inherit; white-space: nowrap; transition: all .12s;
+}
+.ru-btn:hover { background: rgba(124,106,247,.25); }
+
+/* Stock action modal pieces */
+.stock-cur-row {
+  display: flex; gap: 10px; margin-bottom: 16px;
+}
+.stock-cur-card {
+  flex: 1; border-radius: 10px; padding: 12px;
+  display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid var(--border);
+}
+.stock-cur-card.up { background: rgba(124,106,247,.08); border-color: rgba(124,106,247,.3); }
+.stock-cur-card.dn { background: rgba(34,197,94,.06);   border-color: rgba(34,197,94,.3);   }
+.sc-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.sc-val   { font-size: 26px; font-weight: 800; line-height: 1.1; }
+.stock-cur-card.up .sc-val { color: var(--accent); }
+.stock-cur-card.dn .sc-val { color: var(--green); }
+.sc-sub   { font-size: 11px; color: var(--muted); }
+
+/* Action tabs */
+.action-tabs {
+  display: flex; gap: 4px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border); padding-bottom: 10px;
+  overflow-x: auto; -ms-overflow-style: none; scrollbar-width: none;
+}
+.action-tabs::-webkit-scrollbar { display: none; }
+.atab {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px; padding: 6px 14px;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: inherit; white-space: nowrap; transition: all .12s; flex-shrink: 0;
+}
+.atab:hover { color: var(--text); }
+.atab.active { background: rgba(124,106,247,.18); color: var(--accent); border-color: var(--accent); }
+
+.atab-panel { display: block; }
+.atab-panel.hidden { display: none; }
+.atab-hint { font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.5; }
+.atab-hint strong { color: var(--text); }
+
+.adj-loc-btn.active { background: rgba(124,106,247,.18); color: var(--accent); border-color: var(--accent); }
+
+/* Transaction log */
+.txn-list { max-height: 240px; overflow-y: auto; }
+.txn-item {
+  padding: 8px 12px; border-bottom: 1px solid rgba(46,46,62,.5);
+  font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px;
+}
+.txn-type {
+  padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700;
+  flex-shrink: 0;
+}
+.txn-type.ru_dian        { background: rgba(124,106,247,.15); color: var(--accent); }
+.txn-type.restock_upstairs { background: rgba(34,197,94,.12); color: var(--green); }
+.txn-type.adjust          { background: rgba(245,158,11,.12); color: var(--yellow); }
+.txn-info { flex: 1; min-width: 0; }
+.txn-date { color: var(--muted); font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Desktop top header -->
+  <header class="top-header">
+    <div class="logo">POP<span>CORE</span></div>
+    <nav class="top-nav">
+      <button class="active" onclick="switchView('search')">🔍 产品搜索</button>
+      <button onclick="switchView('stock')">🏭 库存总览</button>
+      <button onclick="switchView('inventory')">📋 夜间盘点</button>
+      <button onclick="switchView('history')">📅 盘点历史</button>
+    </nav>
+  </header>
+
+  <!-- ══ SEARCH VIEW ══ -->
+  <div id="view-search" class="view active">
+    <div class="search-header">
+      <div class="search-row">
+        <div class="search-wrap">
+          <span class="s-icon">🔍</span>
+          <input type="search" id="search-input" placeholder="搜索产品名、记账名、SKU…" autocomplete="off" inputmode="search" />
+        </div>
+        <div class="new-btn-wrap">
+          <button class="btn btn-accent2" onclick="openAddProductModal()">＋ 新增</button>
+        </div>
+      </div>
+      <div class="chips-row" id="series-chips">
+        <div class="chip active" data-series="" onclick="filterSeries(this,'')">全部</div>
+      </div>
+      <div class="sort-row">
+        <span class="sort-label">排序：</span>
+        <button class="sort-btn active" id="sort-default" onclick="setSort('default')">默认</button>
+        <button class="sort-btn" id="sort-price-asc"  onclick="setSort('price-asc')">价格↑</button>
+        <button class="sort-btn" id="sort-price-desc" onclick="setSort('price-desc')">价格↓</button>
+        <button class="sort-btn" id="sort-date-desc"  onclick="setSort('date-desc')">最新发售</button>
+        <button class="sort-btn" id="sort-date-asc"   onclick="setSort('date-asc')">最早发售</button>
+        <button class="sort-btn" id="sort-name-asc"   onclick="setSort('name-asc')">名称 A→Z</button>
+      </div>
+    </div>
+    <div class="results-meta" id="results-meta">加载中…</div>
+    <div class="product-grid" id="product-grid">
+      <div class="empty-state"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- ══ STOCK VIEW ══ -->
+  <div id="view-stock" class="view">
+    <!-- Toolbar -->
+    <div class="stock-toolbar">
+      <div class="stock-search-wrap">
+        <span class="s-icon">🔍</span>
+        <input type="search" id="stock-search" placeholder="搜索产品…" autocomplete="off" />
+      </div>
+      <div class="stock-chips-row" id="stock-series-chips">
+        <div class="chip active" data-series="" onclick="stockFilterSeries(this,'')">全部</div>
+      </div>
+    </div>
+    <!-- Summary bar -->
+    <div class="stock-summary-bar" id="stock-summary-bar">
+      <div class="sum-card"><div class="sum-label">楼上库存</div><div class="sum-val" id="sum-upstairs">-</div><div class="sum-sub">端</div></div>
+      <div class="sum-card"><div class="sum-label">店内库存</div><div class="sum-val" id="sum-instore">-</div><div class="sum-sub">端</div></div>
+      <div class="sum-card warn"><div class="sum-label">楼上清零</div><div class="sum-val" id="sum-low">-</div><div class="sum-sub">款需补货</div></div>
+    </div>
+    <!-- Product stock list -->
+    <div class="stock-list-wrap">
+      <div class="stock-list" id="stock-list">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+      <div class="show-all-bar" id="show-all-bar" style="display:none" onclick="loadStockList(true)">
+        显示全部 543 款产品（包含未设库存）▼
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ INVENTORY VIEW ══ -->
+  <div id="view-inventory" class="view">
+    <div class="inv-toolbar">
+      <span style="font-size:13px;font-weight:600;color:var(--muted)">日期</span>
+      <input type="date" id="inv-date" />
+      <button class="btn btn-primary" onclick="loadInventoryDay()">加载</button>
+      <button class="btn btn-ghost" onclick="initDayRollover()">从昨日导入</button>
+      <span class="inv-flag" id="inv-flag"></span>
+    </div>
+    <div class="inv-layout">
+      <!-- Left list -->
+      <div class="inv-left" id="inv-left">
+        <div class="inv-left-header">
+          <span id="inv-list-title">产品列表</span>
+        </div>
+        <div class="inv-product-list" id="inv-product-list">
+          <div class="empty-state"><p>请选择日期并加载</p></div>
+        </div>
+        <div class="inv-add-bar">
+          <input type="search" id="add-product-input" placeholder="＋ 添加产品…" autocomplete="off" />
+          <div class="add-dropdown" id="add-dropdown"></div>
+        </div>
+      </div>
+      <!-- Right detail -->
+      <div class="inv-right" id="inv-right">
+        <div class="empty-state" id="inv-placeholder">
+          <div class="empty-big">📦</div>
+          <p>从左侧选择一个产品开始盘点</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ HISTORY VIEW ══ -->
+  <div id="view-history" class="view">
+    <div class="history-wrap">
+      <div class="history-title">盘点历史</div>
+      <table class="history-table">
+        <thead><tr><th>日期</th><th>产品数</th><th>差异项</th></tr></thead>
+        <tbody id="history-tbody"><tr><td colspan="3" style="color:var(--muted);padding:20px">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Mobile bottom tabs -->
+  <div class="bottom-tabs">
+    <div class="bottom-tabs-inner">
+      <button class="tab-btn active" onclick="switchView('search')">
+        <span class="tab-icon">🔍</span><span>搜索</span>
+      </button>
+      <button class="tab-btn" onclick="switchView('stock')">
+        <span class="tab-icon">🏭</span><span>库存</span>
+      </button>
+      <button class="tab-btn" onclick="switchView('inventory')">
+        <span class="tab-icon">📋</span><span>盘点</span>
+      </button>
+      <button class="tab-btn" onclick="switchView('history')">
+        <span class="tab-icon">📅</span><span>历史</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ PRODUCT DETAIL MODAL ══ -->
+<div class="modal-overlay" id="product-modal-overlay" onclick="overlayClose(event,'product-modal-overlay')">
+  <div class="modal">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-top">
+      <div class="modal-titles">
+        <div class="modal-title" id="modal-title">-</div>
+        <div class="modal-sku"  id="modal-sku">-</div>
+      </div>
+      <button class="modal-close" onclick="closeModal('product-modal-overlay')">✕</button>
+    </div>
+    <div class="field-stack">
+      <div class="field-pair">
+        <div class="field field-highlight">
+          <label>记账名 ★</label>
+          <input type="text" id="edit-jizhanming" />
+        </div>
+        <div class="field">
+          <label>价格 (C$)</label>
+          <input type="number" id="edit-price" step="0.01" inputmode="decimal" />
+        </div>
+      </div>
+      <div class="field-pair">
+        <div class="field">
+          <label>IP / 系列</label>
+          <input type="text" id="edit-series" />
+        </div>
+        <div class="field">
+          <label>产品类型</label>
+          <div class="type-wrap">
+            <select id="edit-product-type-sel" onchange="onEditTypeChange()">
+              <option value="盲盒">盲盒</option>
+              <option value="吊卡">吊卡</option>
+              <option value="Figure">Figure</option>
+              <option value="毛绒">毛绒</option>
+              <option value="卡片">卡片</option>
+              <option value="手办">手办</option>
+              <option value="挂件">挂件</option>
+              <option value="其他">其他 / 自定义</option>
+            </select>
+            <input type="text" id="edit-product-type-custom" class="type-custom" placeholder="自定义类型…" style="display:none" />
+          </div>
+        </div>
+      </div>
+      <div class="field-pair">
+        <div class="field">
+          <label>发售渠道</label>
+          <input type="text" id="edit-channel" />
+        </div>
+        <div class="field">
+          <label>发售时间</label>
+          <input type="text" id="edit-release-date" />
+        </div>
+      </div>
+      <div class="field-pair">
+        <div class="field">
+          <label>版本/限量</label>
+          <input type="text" id="edit-edition" />
+        </div>
+        <div class="field">
+          <label>每端盒数 (盒/端)</label>
+          <input type="number" id="edit-boxes-per-dan" min="1" inputmode="numeric" placeholder="例如 12" />
+        </div>
+      </div>
+      <div class="field">
+        <label>款式特点</label>
+        <input type="text" id="edit-style-notes" />
+      </div>
+      <div class="field">
+        <label>隐藏款</label>
+        <div class="hidden-section">
+          <!-- 数量选择 -->
+          <div class="hidden-count-row">
+            <label class="radio-lbl"><input type="radio" name="edit-hidden-count" value="0" checked> 无隐藏</label>
+            <label class="radio-lbl"><input type="radio" name="edit-hidden-count" value="1"> 单个隐藏</label>
+            <label class="radio-lbl"><input type="radio" name="edit-hidden-count" value="multi"> 多个隐藏</label>
+          </div>
+          <!-- 详情（有隐藏时展开） -->
+          <div class="hidden-detail" id="hidden-detail-section" style="display:none">
+            <!-- 类型 + 概率 -->
+            <div class="hidden-types-row">
+              <label class="check-lbl"><input type="checkbox" id="edit-hidden-small"> 小隐藏</label>
+              <input type="text" id="edit-hidden-prob-small" class="prob-input" placeholder="概率 如 1/144" />
+              <label class="check-lbl"><input type="checkbox" id="edit-hidden-large"> 大隐藏</label>
+              <input type="text" id="edit-hidden-prob-large" class="prob-input" placeholder="概率 如 1/720" />
+            </div>
+            <!-- 文字描述 -->
+            <input type="text" id="edit-hidden" placeholder="款式描述（可选）" />
+            <!-- 图片区 -->
+            <div>
+              <div class="hidden-imgs-header">
+                <span class="hidden-imgs-label">隐藏款图片</span>
+                <div class="hidden-img-btns">
+                  <button type="button" class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
+                          onclick="triggerHiddenImgUpload('general')">＋ 图片</button>
+                  <button type="button" class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
+                          onclick="triggerHiddenImgUpload('small')">＋ 小隐</button>
+                  <button type="button" class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
+                          onclick="triggerHiddenImgUpload('large')">＋ 大隐</button>
+                </div>
+              </div>
+              <input type="file" id="hidden-img-file" accept="image/*" style="display:none" />
+              <div class="hidden-imgs-grid" id="hidden-imgs-grid"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <label>产品名称（中英文）</label>
+        <input type="text" id="edit-name-full" />
+      </div>
+      <div class="field">
+        <label>内部备注</label>
+        <textarea id="edit-notes" rows="2"></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <span class="save-ok" id="modal-save-ok">已保存 ✓</span>
+      <button class="btn btn-ghost" onclick="closeModal('product-modal-overlay')">取消</button>
+      <button class="btn btn-primary" onclick="saveProduct()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ ADD PRODUCT MODAL ══ -->
+<div class="modal-overlay" id="add-product-modal" onclick="overlayClose(event,'add-product-modal')">
+  <div class="modal">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-top">
+      <div class="modal-titles">
+        <div class="modal-title">新增产品</div>
+        <div class="modal-sku">留空SKU则自动生成</div>
+      </div>
+      <button class="modal-close" onclick="closeModal('add-product-modal')">✕</button>
+    </div>
+    <div class="field-stack">
+      <div class="field-pair">
+        <div class="field field-highlight">
+          <label>记账名 ★</label>
+          <input type="text" id="new-jizhanming" placeholder="必填" />
+        </div>
+        <div class="field">
+          <label>价格 (C$)</label>
+          <input type="number" id="new-price" step="0.01" inputmode="decimal" placeholder="例如 29.99" />
+        </div>
+      </div>
+      <div class="field">
+        <label>产品名称（中英文）</label>
+        <input type="text" id="new-name" placeholder="例如 Labubu 盲盒…" />
+      </div>
+      <div class="field-pair">
+        <div class="field">
+          <label>IP 系列</label>
+          <select id="new-series">
+            <option value="">-- 选择系列 --</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>或新系列名称</label>
+          <input type="text" id="new-series-custom" placeholder="留空则用上方选择" />
+        </div>
+      </div>
+      <div class="field-pair">
+        <div class="field">
+          <label>产品类型</label>
+          <div class="type-wrap">
+            <select id="new-product-type-sel" onchange="onNewTypeChange()">
+              <option value="">-- 选择类型 --</option>
+              <option value="盲盒">盲盒</option>
+              <option value="吊卡">吊卡</option>
+              <option value="Figure">Figure</option>
+              <option value="毛绒">毛绒</option>
+              <option value="卡片">卡片</option>
+              <option value="手办">手办</option>
+              <option value="挂件">挂件</option>
+              <option value="其他">其他 / 自定义</option>
+            </select>
+            <input type="text" id="new-product-type-custom" class="type-custom" placeholder="自定义类型…" style="display:none" />
+          </div>
+        </div>
+        <div class="field">
+          <label>SKU（可留空）</label>
+          <input type="text" id="new-sku" placeholder="SP0XXXX" />
+        </div>
+      </div>
+      <div class="field">
+        <label>备注</label>
+        <textarea id="new-notes" rows="2" placeholder="其他备注…"></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <span class="save-ok" id="add-save-ok">已创建 ✓</span>
+      <button class="btn btn-ghost" onclick="closeModal('add-product-modal')">取消</button>
+      <button class="btn btn-primary" onclick="submitNewProduct()">创建产品</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ STOCK ACTION MODAL ══ -->
+<div class="modal-overlay" id="stock-action-modal" onclick="overlayClose(event,'stock-action-modal')">
+  <div class="modal">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-top">
+      <div class="modal-titles">
+        <div class="modal-title" id="stock-modal-title">-</div>
+        <div class="modal-sku" id="stock-modal-sub">-</div>
+      </div>
+      <button class="modal-close" onclick="closeModal('stock-action-modal')">✕</button>
+    </div>
+
+    <!-- Current stock display -->
+    <div class="stock-cur-row">
+      <div class="stock-cur-card up">
+        <div class="sc-label">楼上 (2F)</div>
+        <div class="sc-val" id="smd-upstairs">-</div>
+        <div class="sc-sub" id="smd-up-boxes">-</div>
+      </div>
+      <div class="stock-cur-card dn">
+        <div class="sc-label">店内 (1F)</div>
+        <div class="sc-val" id="smd-instore">-</div>
+        <div class="sc-sub" id="smd-in-boxes">-</div>
+      </div>
+    </div>
+
+    <!-- Action tabs -->
+    <div class="action-tabs">
+      <button class="atab active" onclick="switchStockTab('ru_dian')">入店</button>
+      <button class="atab" onclick="switchStockTab('restock')">入库 (补货)</button>
+      <button class="atab" onclick="switchStockTab('adjust')">手动调整</button>
+      <button class="atab" onclick="switchStockTab('log')">操作记录</button>
+    </div>
+
+    <!-- 入店 tab -->
+    <div class="atab-panel" id="panel-ru_dian">
+      <p class="atab-hint">将端从<strong>楼上（2F）</strong>移入<strong>店内（1F）</strong></p>
+      <div class="field-pair">
+        <div class="field">
+          <label>移入端数</label>
+          <input type="number" id="rd-qty" min="1" inputmode="numeric" placeholder="端数" oninput="calcRdBoxes()" />
+        </div>
+        <div class="field">
+          <label>≈ 盒数</label>
+          <div class="readonly-val" id="rd-boxes" style="font-size:16px;font-weight:700;color:var(--accent)">-</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>备注</label>
+        <input type="text" id="rd-notes" placeholder="可选" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="doRuDian()">确认入店</button>
+      </div>
+    </div>
+
+    <!-- 入库 tab -->
+    <div class="atab-panel hidden" id="panel-restock">
+      <p class="atab-hint">新货到库，增加<strong>楼上（2F）</strong>库存</p>
+      <div class="field-pair">
+        <div class="field">
+          <label>入库端数</label>
+          <input type="number" id="rs-qty" min="1" inputmode="numeric" placeholder="端数" oninput="calcRsBoxes()" />
+        </div>
+        <div class="field">
+          <label>≈ 盒数</label>
+          <div class="readonly-val" id="rs-boxes" style="font-size:16px;font-weight:700;color:var(--green)">-</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>备注</label>
+        <input type="text" id="rs-notes" placeholder="可选" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="doRestock()">确认入库</button>
+      </div>
+    </div>
+
+    <!-- 调整 tab -->
+    <div class="atab-panel hidden" id="panel-adjust">
+      <p class="atab-hint">直接修正某个位置的实际端数（盘点后修正用）</p>
+      <div class="field">
+        <label>位置</label>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost adj-loc-btn active" id="adj-btn-up" onclick="setAdjLoc('upstairs')">楼上 (2F)</button>
+          <button class="btn btn-ghost adj-loc-btn" id="adj-btn-in" onclick="setAdjLoc('instore')">店内 (1F)</button>
+        </div>
+      </div>
+      <div class="field-pair" style="margin-top:10px">
+        <div class="field">
+          <label>正确端数</label>
+          <input type="number" id="adj-qty" min="0" inputmode="numeric" placeholder="实际端数" />
+        </div>
+        <div class="field">
+          <label>备注</label>
+          <input type="text" id="adj-notes" placeholder="可选" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="doAdjust()">确认调整</button>
+      </div>
+    </div>
+
+    <!-- 记录 tab -->
+    <div class="atab-panel hidden" id="panel-log">
+      <div class="txn-list" id="txn-list">
+        <div style="color:var(--muted);text-align:center;padding:20px">加载中…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ══════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════
+let currentProductId = null;
+let currentSeries    = '';
+let currentSort      = 'default';
+let lastProducts     = [];
+let searchTimer      = null;
+let invRows          = [];
+let selectedPid      = null;
+let seriesList       = [];
+
+// ══════════════════════════════════════════════
+// NAVIGATION
+// ══════════════════════════════════════════════
+const VIEW_ORDER = ['search', 'stock', 'inventory', 'history'];
+
+function switchView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.top-nav button').forEach((b, i) => {
+    b.classList.toggle('active', VIEW_ORDER[i] === name);
+  });
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    b.classList.toggle('active', VIEW_ORDER[i] === name);
+  });
+  document.getElementById(`view-${name}`).classList.add('active');
+  if (name === 'history') loadHistory();
+  if (name === 'inventory') mobileShowList();
+  if (name === 'stock') loadStockView();
+}
+
+// ══════════════════════════════════════════════
+// TOAST
+// ══════════════════════════════════════════════
+let toastTimer;
+function toast(msg, type='ok', ms=2200) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `toast show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+// ══════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function todayStr() { return new Date().toISOString().slice(0,10); }
+
+// ══════════════════════════════════════════════
+// SEARCH
+// ══════════════════════════════════════════════
+async function loadSeries() {
+  const res = await fetch('/api/series');
+  seriesList = await res.json();
+  const chips = document.getElementById('series-chips');
+  chips.innerHTML = '<div class="chip active" data-series="" onclick="filterSeries(this,\'\')">全部</div>';
+  seriesList.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'chip';
+    el.dataset.series = s;
+    el.textContent = s;
+    el.onclick = () => filterSeries(el, s);
+    chips.appendChild(el);
+  });
+  // populate add-product series select
+  const sel = document.getElementById('new-series');
+  sel.innerHTML = '<option value="">-- 选择系列 --</option>';
+  seriesList.forEach(s => sel.innerHTML += `<option value="${esc(s)}">${esc(s)}</option>`);
+}
+
+function filterSeries(el, series) {
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  currentSeries = series;
+  doSearch();
+}
+
+function doSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = document.getElementById('search-input').value.trim();
+    const url = `/api/products/search?q=${encodeURIComponent(q)}&series=${encodeURIComponent(currentSeries)}&limit=120`;
+    const res = await fetch(url);
+    lastProducts = await res.json();
+    applySortAndRender();
+  }, 200);
+}
+
+function setSort(key) {
+  currentSort = key;
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('sort-' + key);
+  if (btn) btn.classList.add('active');
+  applySortAndRender();
+}
+
+function applySortAndRender() {
+  let arr = lastProducts.slice();
+  if (currentSort === 'price-asc') {
+    arr.sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity));
+  } else if (currentSort === 'price-desc') {
+    arr.sort((a, b) => (b.price ?? -Infinity) - (a.price ?? -Infinity));
+  } else if (currentSort === 'date-desc') {
+    arr.sort((a, b) => (b.release_date || '').localeCompare(a.release_date || ''));
+  } else if (currentSort === 'date-asc') {
+    arr.sort((a, b) => (a.release_date || '').localeCompare(b.release_date || ''));
+  } else if (currentSort === 'name-asc') {
+    arr.sort((a, b) => (a.jizhanming || a.name_cn_en || '').localeCompare(b.jizhanming || b.name_cn_en || '', 'zh-CN'));
+  }
+  // 'default' keeps server order (relevance / sku desc)
+  renderProducts(arr);
+}
+
+function renderProducts(products) {
+  const grid = document.getElementById('product-grid');
+  const meta = document.getElementById('results-meta');
+  meta.textContent = `找到 ${products.length} 个产品`;
+
+  if (!products.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="empty-big">🔍</div><p>未找到产品</p></div>';
+    return;
+  }
+
+  grid.innerHTML = products.map(p => `
+    <div class="product-card" onclick="openProduct(${p.id})">
+      <div class="card-sku">${esc(p.sku || '-')}</div>
+      <div class="card-name">${esc(p.name_cn_en || p.jizhanming || '-')}</div>
+      ${p.jizhanming ? `<div class="card-jzm">${esc(p.jizhanming)}</div>` : ''}
+      <div class="card-footer">
+        ${p.price != null ? `<span class="card-price">C$${p.price}</span>` : ''}
+        <span class="card-series">${esc(p.ip_series || '')}</span>
+        ${p.product_type ? `<span class="card-type">${esc(p.product_type)}</span>` : ''}
+      </div>
+      ${p.notes ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">📝 ${esc(p.notes)}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+// ══════════════════════════════════════════════
+// PRODUCT DETAIL MODAL
+// ══════════════════════════════════════════════
+async function openProduct(id) {
+  currentProductId = id;
+  const res = await fetch(`/api/products/${id}`);
+  const p = await res.json();
+
+  document.getElementById('modal-title').textContent = p.name_cn_en || p.jizhanming || p.sku;
+  document.getElementById('modal-sku').textContent   = p.sku;
+  document.getElementById('edit-series').value    = p.ip_series  || '';
+  document.getElementById('edit-name-full').value  = p.name_cn_en || '';
+  document.getElementById('edit-jizhanming').value    = p.jizhanming    || '';
+  document.getElementById('edit-price').value         = p.price ?? '';
+  setEditProductType(p.product_type || '');
+  document.getElementById('edit-channel').value       = p.channel       || '';
+  document.getElementById('edit-release-date').value  = p.release_date  || '';
+  document.getElementById('edit-edition').value       = p.edition_size  || '';
+  document.getElementById('edit-style-notes').value   = p.style_notes   || '';
+  document.getElementById('edit-boxes-per-dan').value = p.boxes_per_dan ?? '';
+  document.getElementById('edit-notes').value         = p.notes         || '';
+  // Hidden edition fields
+  setHiddenCount(p.hidden_count || '0');
+  document.getElementById('edit-hidden-small').checked    = !!(p.hidden_has_small);
+  document.getElementById('edit-hidden-large').checked    = !!(p.hidden_has_large);
+  document.getElementById('edit-hidden-prob-small').value = p.hidden_prob_small || '';
+  document.getElementById('edit-hidden-prob-large').value = p.hidden_prob_large || '';
+  document.getElementById('edit-hidden').value            = p.hidden || '';
+  loadHiddenImages(id);
+  document.getElementById('modal-save-ok').classList.remove('show');
+  openModal('product-modal-overlay');
+}
+
+async function saveProduct() {
+  if (!currentProductId) return;
+  const bpdRaw = document.getElementById('edit-boxes-per-dan').value;
+  const data = {
+    jizhanming:       document.getElementById('edit-jizhanming').value.trim(),
+    name_cn_en:       document.getElementById('edit-name-full').value.trim(),
+    ip_series:        document.getElementById('edit-series').value.trim(),
+    price:            parseFloat(document.getElementById('edit-price').value) || null,
+    product_type:     getEditProductType(),
+    channel:          document.getElementById('edit-channel').value.trim(),
+    release_date:     document.getElementById('edit-release-date').value.trim(),
+    edition_size:     document.getElementById('edit-edition').value.trim(),
+    style_notes:      document.getElementById('edit-style-notes').value.trim(),
+    boxes_per_dan:    bpdRaw !== '' ? parseInt(bpdRaw) : null,
+    notes:            document.getElementById('edit-notes').value.trim(),
+    // Hidden edition
+    hidden:           document.getElementById('edit-hidden').value.trim(),
+    hidden_count:     getHiddenCount(),
+    hidden_has_small: document.getElementById('edit-hidden-small').checked ? 1 : 0,
+    hidden_has_large: document.getElementById('edit-hidden-large').checked ? 1 : 0,
+    hidden_prob_small: document.getElementById('edit-hidden-prob-small').value.trim(),
+    hidden_prob_large: document.getElementById('edit-hidden-prob-large').value.trim(),
+  };
+  const res = await fetch(`/api/products/${currentProductId}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(data),
+  });
+  if (res.ok) {
+    document.getElementById('modal-save-ok').classList.add('show');
+    toast('已保存');
+    doSearch();
+  } else {
+    toast('保存失败', 'err');
+  }
+}
+
+// ══════════════════════════════════════════════
+// HIDDEN EDITION HELPERS
+// ══════════════════════════════════════════════
+function setHiddenCount(val) {
+  document.querySelectorAll('input[name="edit-hidden-count"]').forEach(r => {
+    r.checked = (r.value === String(val));
+  });
+  const show = (String(val) !== '0' && val != null && val !== '');
+  document.getElementById('hidden-detail-section').style.display = show ? '' : 'none';
+}
+
+function getHiddenCount() {
+  const r = document.querySelector('input[name="edit-hidden-count"]:checked');
+  return r ? r.value : '0';
+}
+
+// Set up radio listener once (call after DOM ready)
+function initHiddenSection() {
+  document.querySelectorAll('input[name="edit-hidden-count"]').forEach(r => {
+    r.addEventListener('change', () => {
+      document.getElementById('hidden-detail-section').style.display =
+        r.value === '0' ? 'none' : '';
+    });
+  });
+  document.getElementById('hidden-img-file').addEventListener('change', uploadHiddenImg);
+}
+
+let _hiddenImgUploadType = 'general';
+function triggerHiddenImgUpload(type) {
+  _hiddenImgUploadType = type;
+  const inp = document.getElementById('hidden-img-file');
+  inp.value = '';   // reset so same file can be re-selected
+  inp.click();
+}
+
+async function uploadHiddenImg(event) {
+  const file = event.target.files[0];
+  if (!file || !currentProductId) return;
+  const formData = new FormData();
+  formData.append('image', file);
+  formData.append('image_type', _hiddenImgUploadType);
+  const res = await fetch(`/api/products/${currentProductId}/hidden_images`, {
+    method: 'POST', body: formData,
+  });
+  if (res.ok) {
+    const img = await res.json();
+    appendHiddenImgThumb(img);
+    toast('图片已上传');
+  } else {
+    toast('上传失败', 'err');
+  }
+}
+
+function appendHiddenImgThumb(img) {
+  const grid = document.getElementById('hidden-imgs-grid');
+  const typeLabel = img.image_type === 'small' ? '小隐' : img.image_type === 'large' ? '大隐' : '';
+  const div = document.createElement('div');
+  div.className = 'hidden-img-thumb';
+  div.dataset.imgId = img.id;
+  const url = img.url || `/hidden_imgs/${img.filename}`;
+  div.innerHTML = `
+    <img src="${url}" alt="" onclick="window.open('${url}','_blank')" />
+    ${typeLabel ? `<span class="hidden-img-type-badge">${typeLabel}</span>` : ''}
+    <button class="img-del" onclick="deleteHiddenImg(${img.id},this)" title="删除">✕</button>
+  `;
+  grid.appendChild(div);
+}
+
+async function deleteHiddenImg(imgId, btn) {
+  if (!confirm('删除这张图片？')) return;
+  const res = await fetch(`/api/products/${currentProductId}/hidden_images/${imgId}`, {
+    method: 'DELETE',
+  });
+  if (res.ok) {
+    btn.closest('.hidden-img-thumb').remove();
+    toast('已删除');
+  } else {
+    toast('删除失败', 'err');
+  }
+}
+
+async function loadHiddenImages(pid) {
+  const grid = document.getElementById('hidden-imgs-grid');
+  grid.innerHTML = '';
+  try {
+    const res = await fetch(`/api/products/${pid}/hidden_images`);
+    if (res.ok) {
+      const imgs = await res.json();
+      imgs.forEach(img => appendHiddenImgThumb(img));
+    }
+  } catch (_) { /* ignore network errors */ }
+}
+
+// ══════════════════════════════════════════════
+// ADD PRODUCT MODAL
+// ══════════════════════════════════════════════
+function openAddProductModal() {
+  // clear form
+  ['new-jizhanming','new-price','new-name','new-sku','new-notes','new-series-custom']
+    .forEach(id => document.getElementById(id).value = '');
+  document.getElementById('new-series').value = '';
+  document.getElementById('new-product-type-sel').value = '';
+  document.getElementById('new-product-type-custom').style.display = 'none';
+  document.getElementById('new-product-type-custom').value = '';
+  document.getElementById('add-save-ok').classList.remove('show');
+  openModal('add-product-modal');
+}
+
+async function submitNewProduct() {
+  const jzm = document.getElementById('new-jizhanming').value.trim();
+  if (!jzm) { toast('请填写记账名', 'err'); return; }
+
+  const customSeries = document.getElementById('new-series-custom').value.trim();
+  const selectedSeries = document.getElementById('new-series').value;
+  const series = customSeries || selectedSeries;
+
+  const data = {
+    jizhanming:   jzm,
+    price:        document.getElementById('new-price').value || null,
+    name_cn_en:   document.getElementById('new-name').value.trim(),
+    ip_series:    series,
+    product_type: getNewProductType(),
+    sku:          document.getElementById('new-sku').value.trim(),
+    notes:        document.getElementById('new-notes').value.trim(),
+  };
+
+  const res = await fetch('/api/products', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+
+  if (res.ok) {
+    document.getElementById('add-save-ok').classList.add('show');
+    toast(`已创建 ${result.sku}`);
+    await loadSeries();
+    doSearch();
+    setTimeout(() => closeModal('add-product-modal'), 1200);
+  } else {
+    toast(result.error || '创建失败', 'err');
+  }
+}
+
+// ══════════════════════════════════════════════
+// MODAL HELPERS
+// ══════════════════════════════════════════════
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+function overlayClose(e, id) { if (e.target === document.getElementById(id)) closeModal(id); }
+
+// ── Product type dropdown helpers ──────────────────────────────────────────
+const PRESET_TYPES = ['盲盒','吊卡','Figure','毛绒','卡片','手办','挂件'];
+
+function setEditProductType(val) {
+  const sel = document.getElementById('edit-product-type-sel');
+  const custom = document.getElementById('edit-product-type-custom');
+  if (!val || PRESET_TYPES.includes(val)) {
+    sel.value = val || '盲盒';
+    custom.style.display = 'none';
+    custom.value = '';
+  } else {
+    sel.value = '其他';
+    custom.style.display = '';
+    custom.value = val;
+  }
+}
+function getEditProductType() {
+  const sel = document.getElementById('edit-product-type-sel');
+  if (sel.value === '其他') return document.getElementById('edit-product-type-custom').value.trim();
+  return sel.value;
+}
+function onEditTypeChange() {
+  const sel = document.getElementById('edit-product-type-sel');
+  const custom = document.getElementById('edit-product-type-custom');
+  custom.style.display = sel.value === '其他' ? '' : 'none';
+  if (sel.value === '其他') custom.focus();
+}
+
+function getNewProductType() {
+  const sel = document.getElementById('new-product-type-sel');
+  if (sel.value === '其他') return document.getElementById('new-product-type-custom').value.trim();
+  return sel.value;
+}
+function onNewTypeChange() {
+  const sel = document.getElementById('new-product-type-sel');
+  const custom = document.getElementById('new-product-type-custom');
+  custom.style.display = sel.value === '其他' ? '' : 'none';
+  if (sel.value === '其他') custom.focus();
+}
+
+// ══════════════════════════════════════════════
+// INVENTORY — LIST
+// ══════════════════════════════════════════════
+async function loadInventoryDay() {
+  const d = document.getElementById('inv-date').value;
+  if (!d) { toast('请选择日期', 'err'); return; }
+  const res = await fetch(`/api/inventory/date/${d}`);
+  invRows = await res.json();
+  selectedPid = null;
+  renderInvList();
+  mobileShowList();
+  document.getElementById('inv-right').innerHTML =
+    '<div class="empty-state" id="inv-placeholder"><div class="empty-big">📦</div><p>从左侧选择产品</p></div>';
+}
+
+async function initDayRollover() {
+  const d = document.getElementById('inv-date').value || todayStr();
+  document.getElementById('inv-date').value = d;
+  await fetch('/api/inventory/init_day', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({date: d}),
+  });
+  await loadInventoryDay();
+  toast('已从昨日数据导入');
+}
+
+function renderInvList() {
+  const list  = document.getElementById('inv-product-list');
+  const title = document.getElementById('inv-list-title');
+  const flag  = document.getElementById('inv-flag');
+
+  if (!invRows.length) {
+    list.innerHTML = '<div class="empty-state"><p>今日还没有产品<br>用下方搜索框添加</p></div>';
+    title.textContent = '产品列表';
+    flag.textContent = '';
+    return;
+  }
+
+  let flags = 0;
+  list.innerHTML = invRows.map(r => {
+    let statusClass = 'status-none';
+    let badge = '<span class="inv-badge none">未录入</span>';
+    if (r.closing_qty !== null && r.closing_qty !== undefined) {
+      const d = r.discrepancy || 0;
+      if (d === 0) {
+        statusClass = 'status-ok';
+        badge = '<span class="inv-badge ok">✓</span>';
+      } else {
+        statusClass = 'status-bad';
+        flags++;
+        badge = `<span class="inv-badge bad">${d > 0 ? '+' : ''}${d}</span>`;
+      }
+    }
+    const sel = selectedPid === r.product_id ? 'selected' : '';
+    return `
+      <div class="inv-item ${statusClass} ${sel}" data-pid="${r.product_id}"
+           onclick="selectInvItem(${r.product_id})">
+        <div class="inv-item-info">
+          <div class="inv-item-name">${esc(r.name_cn_en || r.jizhanming || r.sku)}</div>
+          <div class="inv-item-sub">${esc(r.jizhanming || '')} · ${r.sku}</div>
+        </div>
+        ${badge}
+      </div>`;
+  }).join('');
+
+  title.textContent = `产品列表 (${invRows.length})`;
+  flag.textContent  = flags ? `⚠ ${flags} 差异` : '';
+}
+
+// ══════════════════════════════════════════════
+// INVENTORY — DETAIL PANEL
+// ══════════════════════════════════════════════
+function selectInvItem(pid) {
+  selectedPid = pid;
+  const row = invRows.find(r => r.product_id === pid);
+  if (!row) return;
+  renderInvList(); // update selection highlight
+  renderInvDetail(row);
+  mobileShowDetail(); // on mobile, slide to detail
+}
+
+function renderInvDetail(row) {
+  const d        = document.getElementById('inv-date').value;
+  const opening  = row.opening_qty  || 0;
+  const restock  = row.restock_qty  || 0;
+  const sold     = row.sold_qty     || 0;
+  const expected = opening + restock - sold;
+  const closing  = (row.closing_qty !== null && row.closing_qty !== undefined) ? row.closing_qty : '';
+  const disc     = closing !== '' ? closing - expected : null;
+
+  const discHtml = disc !== null
+    ? `<div class="frow sep">
+         <span class="flabel">实际 vs 预期</span>
+         <span class="fval ${disc === 0 ? 'good' : 'bad'}">${disc === 0 ? '✓ 一致' : `⚠ ${disc > 0 ? '+' : ''}${disc} 件`}</span>
+       </div>`
+    : '';
+
+  document.getElementById('inv-right').innerHTML = `
+    <div class="inv-detail-card">
+      <button class="inv-back-btn" onclick="mobileShowList()">← 返回列表</button>
+
+      <div class="inv-detail-name">${esc(row.name_cn_en || row.jizhanming || row.sku)}</div>
+      <div class="inv-detail-sub">${esc(row.jizhanming || '')} · ${row.sku}${row.price != null ? ' · C$' + row.price : ''}</div>
+
+      <!-- Quantity inputs -->
+      <div class="qty-grid">
+        <div class="qty-field">
+          <label>昨日结存</label>
+          <input type="number" id="inp-opening" min="0" inputmode="numeric"
+            value="${opening}" onchange="refreshFormula('${d}',${row.product_id})" />
+        </div>
+        <div class="qty-field hl">
+          <label>今日补货</label>
+          <input type="number" id="inp-restock" min="0" inputmode="numeric"
+            value="${restock}" onchange="refreshFormula('${d}',${row.product_id})" />
+        </div>
+        <div class="qty-field hl">
+          <label>今日销售</label>
+          <input type="number" id="inp-sold" min="0" inputmode="numeric"
+            value="${sold}" onchange="refreshFormula('${d}',${row.product_id})" />
+        </div>
+        <div class="qty-field closing">
+          <label>实际盘点数量 ✏️</label>
+          <input type="number" id="inp-closing" min="0" inputmode="numeric"
+            value="${closing}" placeholder="填入实物数量"
+            onchange="refreshFormula('${d}',${row.product_id})" />
+        </div>
+      </div>
+
+      <!-- 端 × 盒 calculator -->
+      <div class="dan-calc">
+        <div class="dan-calc-title">📦 端 × 盒计算器 <span style="color:var(--text);font-size:12px;text-transform:none;letter-spacing:0">（端数 × 每端数量 + 零散）</span></div>
+        <div class="dan-calc-row">
+          <input type="number" id="dan-duan" min="0" inputmode="numeric" placeholder="端" oninput="calcDan()" />
+          <span class="dan-op">×</span>
+          <input type="number" id="dan-per" min="0" inputmode="numeric" placeholder="每端" oninput="calcDan()" />
+          <span class="dan-op">+</span>
+          <input type="number" id="dan-loose" min="0" inputmode="numeric" placeholder="零散" oninput="calcDan()" />
+          <span class="dan-op">=</span>
+          <div class="dan-result" id="dan-total">?</div>
+        </div>
+        <button class="dan-apply-btn" onclick="applyDanToClosing('${d}',${row.product_id})">
+          ↑ 填入盘点数量
+        </button>
+      </div>
+
+      <!-- Formula -->
+      <div class="inv-formula">
+        <div class="frow"><span class="flabel">昨日结存</span><span class="fval neutral" id="f-opening">${opening}</span></div>
+        <div class="frow"><span class="flabel">＋ 今日补货</span><span class="fval neutral" id="f-restock">+${restock}</span></div>
+        <div class="frow"><span class="flabel">－ 今日销售</span><span class="fval neutral" id="f-sold">−${sold}</span></div>
+        <div class="frow sep"><span class="flabel">= 预期库存</span><span class="fval neutral" id="f-expected">${expected}</span></div>
+        <div class="frow"><span class="flabel">实际盘点</span><span class="fval neutral" id="f-closing">${closing !== '' ? closing : '?'}</span></div>
+        <div id="f-disc">${discHtml}</div>
+      </div>
+
+      <!-- Notes -->
+      <div class="inv-notes-field">
+        <label>备注</label>
+        <textarea id="inp-notes" rows="2" onchange="autoSaveInv('${d}',${row.product_id})">${esc(row.notes || '')}</textarea>
+      </div>
+
+      <div class="inv-detail-actions">
+        <button class="btn btn-primary" onclick="saveInvRow('${d}',${row.product_id},true)">保存</button>
+        <span class="inv-save-ok" id="inv-save-ok">已保存 ✓</span>
+      </div>
+    </div>
+  `;
+}
+
+// Live formula update
+function refreshFormula(date, pid) {
+  const opening = parseInt(document.getElementById('inp-opening')?.value) || 0;
+  const restock = parseInt(document.getElementById('inp-restock')?.value) || 0;
+  const sold    = parseInt(document.getElementById('inp-sold')?.value)    || 0;
+  const closingEl = document.getElementById('inp-closing');
+  const closing = closingEl && closingEl.value !== '' ? parseInt(closingEl.value) : null;
+  const expected = opening + restock - sold;
+
+  const set = (id, val) => { const el=document.getElementById(id); if(el) el.textContent=val; };
+  set('f-opening', opening);
+  set('f-restock',  `+${restock}`);
+  set('f-sold',     `−${sold}`);
+  set('f-expected', expected);
+  set('f-closing',  closing !== null ? closing : '?');
+
+  const fd = document.getElementById('f-disc');
+  if (fd && closing !== null) {
+    const disc = closing - expected;
+    fd.innerHTML = `
+      <div class="frow sep">
+        <span class="flabel">实际 vs 预期</span>
+        <span class="fval ${disc===0?'good':'bad'}">${disc===0?'✓ 一致':`⚠ ${disc>0?'+':''}${disc} 件`}</span>
+      </div>`;
+  } else if (fd) {
+    fd.innerHTML = '';
+  }
+
+  // auto-save after short debounce
+  clearTimeout(window._invSaveTimer);
+  window._invSaveTimer = setTimeout(() => saveInvRow(date, pid, false), 800);
+}
+
+// ── 端×盒 calculator ──
+function calcDan() {
+  const duan  = parseInt(document.getElementById('dan-duan')?.value)  || 0;
+  const per   = parseInt(document.getElementById('dan-per')?.value)   || 0;
+  const loose = parseInt(document.getElementById('dan-loose')?.value) || 0;
+  const total = duan * per + loose;
+  const el = document.getElementById('dan-total');
+  if (el) el.textContent = total;
+}
+
+function applyDanToClosing(date, pid) {
+  const duan  = parseInt(document.getElementById('dan-duan')?.value)  || 0;
+  const per   = parseInt(document.getElementById('dan-per')?.value)   || 0;
+  const loose = parseInt(document.getElementById('dan-loose')?.value) || 0;
+  const total = duan * per + loose;
+  const el = document.getElementById('inp-closing');
+  if (el) {
+    el.value = total;
+    refreshFormula(date, pid);
+    // pulse highlight
+    el.style.borderColor = 'var(--green)';
+    setTimeout(() => el.style.borderColor = '', 1000);
+  }
+}
+
+async function saveInvRow(date, pid, explicit=false) {
+  const opening  = parseInt(document.getElementById('inp-opening')?.value)  || 0;
+  const restock  = parseInt(document.getElementById('inp-restock')?.value)  || 0;
+  const sold     = parseInt(document.getElementById('inp-sold')?.value)     || 0;
+  const closingEl = document.getElementById('inp-closing');
+  const closing  = closingEl && closingEl.value !== '' ? parseInt(closingEl.value) : null;
+  const notes    = document.getElementById('inp-notes')?.value || '';
+
+  const res = await fetch('/api/inventory/upsert', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id:pid, date, opening_qty:opening,
+      restock_qty:restock, sold_qty:sold, closing_qty:closing, notes}),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    const idx = invRows.findIndex(r => r.product_id === pid);
+    if (idx >= 0) {
+      Object.assign(invRows[idx], {
+        opening_qty: opening, restock_qty: restock, sold_qty: sold,
+        closing_qty: closing, expected_qty: data.expected, discrepancy: data.discrepancy,
+      });
+    }
+    renderInvList();
+    if (explicit) {
+      const si = document.getElementById('inv-save-ok');
+      if (si) { si.classList.add('show'); setTimeout(() => si.classList.remove('show'), 2000); }
+      toast('已保存');
+    }
+  } else {
+    if (explicit) toast('保存失败', 'err');
+  }
+}
+
+function autoSaveInv(date, pid) {
+  clearTimeout(window._invNotesTimer);
+  window._invNotesTimer = setTimeout(() => saveInvRow(date, pid, false), 1000);
+}
+
+// ══════════════════════════════════════════════
+// MOBILE PANEL TRANSITIONS
+// ══════════════════════════════════════════════
+function mobileShowDetail() {
+  if (window.innerWidth >= 700) return;
+  document.getElementById('inv-left').classList.add('mobile-hidden');
+  document.getElementById('inv-right').classList.add('mobile-open');
+}
+function mobileShowList() {
+  document.getElementById('inv-left').classList.remove('mobile-hidden');
+  document.getElementById('inv-right').classList.remove('mobile-open');
+}
+
+// ══════════════════════════════════════════════
+// ADD PRODUCT TO INVENTORY CHECK
+// ══════════════════════════════════════════════
+let addSearchTimer;
+document.addEventListener('DOMContentLoaded', () => {
+  const inp  = document.getElementById('add-product-input');
+  const drop = document.getElementById('add-dropdown');
+
+  inp.addEventListener('input', () => {
+    clearTimeout(addSearchTimer);
+    const q = inp.value.trim();
+    if (!q) { drop.classList.remove('open'); return; }
+    addSearchTimer = setTimeout(async () => {
+      const res = await fetch(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`);
+      const products = await res.json();
+      drop.innerHTML = products.map(p => `
+        <div class="add-opt" onclick="addToCheck(${p.id})">
+          <span class="add-opt-jzm">${esc(p.jizhanming || p.name_cn_en || '-')}</span>
+          <span class="add-opt-meta">${p.sku}${p.price != null ? ' · C$'+p.price : ''} · ${esc(p.ip_series||'')}</span>
+        </div>
+      `).join('') || '<div class="add-opt" style="color:var(--muted)">未找到</div>';
+      drop.classList.add('open');
+    }, 200);
+  });
+
+  inp.addEventListener('blur', () => setTimeout(() => drop.classList.remove('open'), 200));
+
+  // Set today's date
+  document.getElementById('inv-date').value = todayStr();
+});
+
+async function addToCheck(pid) {
+  const d = document.getElementById('inv-date').value;
+  if (!d) { toast('请先选择日期', 'err'); return; }
+  if (invRows.find(r => r.product_id === pid)) {
+    toast('该产品已在列表中');
+    document.getElementById('add-product-input').value = '';
+    document.getElementById('add-dropdown').classList.remove('open');
+    return;
+  }
+  await fetch('/api/inventory/add_product', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id: pid, date: d, opening_qty: 0}),
+  });
+  document.getElementById('add-product-input').value = '';
+  document.getElementById('add-dropdown').classList.remove('open');
+  await loadInventoryDay();
+  toast('已添加');
+  selectInvItem(pid);
+}
+
+// ══════════════════════════════════════════════
+// HISTORY
+// ══════════════════════════════════════════════
+async function loadHistory() {
+  const res = await fetch('/api/inventory/summary');
+  const rows = await res.json();
+  const tbody = document.getElementById('history-tbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted);padding:20px">还没有盘点记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td><span class="date-link" onclick="jumpToDate('${r.date}')">${r.date}</span></td>
+      <td>${r.total_items}</td>
+      <td><span class="${r.flagged ? 'flag-bad' : 'flag-good'}">${r.flagged ? r.flagged+' 项差异' : '✓ 全部一致'}</span></td>
+    </tr>
+  `).join('');
+}
+
+function jumpToDate(d) {
+  document.getElementById('inv-date').value = d;
+  switchView('inventory');
+  loadInventoryDay();
+}
+
+// ══════════════════════════════════════════════
+// STOCK VIEW
+// ══════════════════════════════════════════════
+let stockSearchTimer = null;
+let stockCurrentSeries = '';
+let stockModalPid = null;
+let stockModalData = null;
+let adjLocation = 'upstairs';
+let stockShowAll = false;  // whether to show all products or just ones with stock rows
+
+async function loadStockView() {
+  stockShowAll = false;
+  await Promise.all([loadStockSummary(), loadStockList()]);
+}
+
+async function loadStockSummary() {
+  try {
+    const res = await fetch('/api/stock/summary');
+    const s = await res.json();
+    document.getElementById('sum-upstairs').textContent = s.total_upstairs_dan ?? 0;
+    document.getElementById('sum-instore').textContent  = s.total_instore_dan  ?? 0;
+    document.getElementById('sum-low').textContent      = s.low_stock_count    ?? 0;
+  } catch(e) { console.error('summary error', e); }
+}
+
+async function loadStockList(showAll) {
+  if (showAll !== undefined) stockShowAll = showAll;
+  const q = document.getElementById('stock-search')?.value.trim() || '';
+  const hasQuery = q || stockCurrentSeries;
+
+  // If there's a search query, always show all products (include_all=1)
+  // Otherwise: default = only products with stock rows set (include_all=0)
+  const includeAll = (stockShowAll || hasQuery) ? 1 : 0;
+  const url = `/api/stock?include_all=${includeAll}&q=${encodeURIComponent(q)}&series=${encodeURIComponent(stockCurrentSeries)}`;
+
+  const list = document.getElementById('stock-list');
+  list.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+
+  try {
+    const res = await fetch(url);
+    const rows = await res.json();
+    renderStockList(rows, includeAll);
+  } catch(e) {
+    list.innerHTML = '<div class="empty-state"><p style="color:var(--red)">加载失败，请刷新</p></div>';
+    console.error('stock load error', e);
+  }
+}
+
+function renderStockList(rows, includeAll) {
+  const list = document.getElementById('stock-list');
+  const showAllBar = document.getElementById('show-all-bar');
+
+  if (!rows.length && !includeAll) {
+    // No stock rows set yet — prompt to show all
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-big">📦</div>
+        <p>还没有设置任何库存</p>
+        <p style="margin-top:8px;font-size:12px;color:var(--muted)">点击下方按钮显示所有产品，然后入库或调整数量</p>
+      </div>`;
+    showAllBar.style.display = 'block';
+    showAllBar.textContent = '显示全部产品（包含未设库存）▼';
+    return;
+  }
+
+  if (!rows.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-big">🔍</div><p>未找到产品</p></div>';
+    showAllBar.style.display = 'none';
+    return;
+  }
+
+  // Show "show all" bar only when not already showing all and no search active
+  const q = document.getElementById('stock-search')?.value.trim() || '';
+  if (!includeAll && !q && !stockCurrentSeries) {
+    showAllBar.style.display = 'block';
+    showAllBar.textContent = `已有库存记录 ${rows.length} 款 · 点击显示全部产品 ▼`;
+  } else {
+    showAllBar.style.display = 'none';
+  }
+
+  // Render in chunks so the browser never freezes on 500+ rows
+  list.innerHTML = '';
+  let offset = 0;
+  const PAGE = 60;
+
+  function renderChunk() {
+    const chunk = rows.slice(offset, offset + PAGE);
+    const frag = document.createDocumentFragment();
+    chunk.forEach(r => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = stockRowHtml(r);
+      frag.appendChild(tmp.firstElementChild);
+    });
+    // Remove old load-more btn if present
+    const old = list.querySelector('.stock-more-btn');
+    if (old) old.remove();
+    list.appendChild(frag);
+    offset += chunk.length;
+    if (offset < rows.length) {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-ghost stock-more-btn';
+      btn.style.cssText = 'width:100%;margin-top:8px';
+      btn.textContent = `显示更多 (还有 ${rows.length - offset} 款)`;
+      btn.onclick = renderChunk;
+      list.appendChild(btn);
+    }
+  }
+  renderChunk();
+}
+
+function stockRowHtml(r) {
+  const bpd = r.boxes_per_dan;
+  const upDan = r.upstairs_dan || 0;
+  const inDan = r.instore_dan  || 0;
+  const upBox = bpd ? upDan * bpd : null;
+  const inBox = bpd ? inDan * bpd : null;
+
+  let rowClass = '';
+  if (upDan === 0 && inDan === 0) rowClass = 'out';
+  else if (upDan === 0) rowClass = 'low';
+  else rowClass = 'good';
+
+  const upZero = upDan === 0 ? 'zero' : 'up';
+  const inZero = inDan === 0 ? 'zero' : 'dn';
+
+  return `
+    <div class="stock-row ${rowClass}" onclick="openStockModal(${r.id})">
+      <div class="sr-left">
+        <div class="sr-name">${esc(r.name_cn_en || r.jizhanming || r.sku)}</div>
+        <div class="sr-jzm">${esc(r.jizhanming || '')}</div>
+        <div class="sr-meta">${r.sku}${r.price != null ? ' · C$'+r.price : ''}${bpd ? ' · '+bpd+'盒/端' : ''}</div>
+      </div>
+      <div class="sr-right">
+        <div class="loc-pill ${upZero}">
+          <div class="lp-label">楼上</div>
+          <div class="lp-val">${upDan}</div>
+          <div class="lp-sub">${upBox !== null ? upBox+'盒' : '端'}</div>
+        </div>
+        <div class="loc-pill ${inZero}">
+          <div class="lp-label">店内</div>
+          <div class="lp-val">${inDan}</div>
+          <div class="lp-sub">${inBox !== null ? inBox+'盒' : '端'}</div>
+        </div>
+        <button class="ru-btn" onclick="event.stopPropagation();openStockModal(${r.id},'ru_dian')">入店→</button>
+      </div>
+    </div>`;
+}
+
+function stockFilterSeries(el, series) {
+  document.querySelectorAll('#stock-series-chips .chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  stockCurrentSeries = series;
+  loadStockList();
+}
+
+// ── Stock Action Modal ──
+async function openStockModal(pid, defaultTab = 'ru_dian') {
+  stockModalPid = pid;
+  // Reset inputs
+  ['rd-qty','rd-notes','rs-qty','rs-notes','adj-qty','adj-notes'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('rd-boxes').textContent = '-';
+  document.getElementById('rs-boxes').textContent = '-';
+  adjLocation = 'upstairs';
+  document.getElementById('adj-btn-up').classList.add('active');
+  document.getElementById('adj-btn-in').classList.remove('active');
+
+  await refreshStockModalHeader(pid);
+  switchStockTab(defaultTab);
+  openModal('stock-action-modal');
+}
+
+async function refreshStockModalHeader(pid) {
+  const res = await fetch(`/api/stock/${pid}`);
+  stockModalData = await res.json();
+  const s = stockModalData;
+  const bpd = s.boxes_per_dan;
+
+  document.getElementById('stock-modal-title').textContent = s.name_cn_en || s.jizhanming || s.sku;
+  document.getElementById('stock-modal-sub').textContent   = `${s.jizhanming || ''} · ${s.sku}`;
+
+  document.getElementById('smd-upstairs').textContent = s.upstairs_dan ?? 0;
+  document.getElementById('smd-instore').textContent  = s.instore_dan  ?? 0;
+  document.getElementById('smd-up-boxes').textContent = bpd ? `≈ ${(s.upstairs_dan||0)*bpd} 盒` : '(未设每端盒数)';
+  document.getElementById('smd-in-boxes').textContent = bpd ? `≈ ${(s.instore_dan||0)*bpd} 盒` : '';
+}
+
+function switchStockTab(tab) {
+  document.querySelectorAll('.atab').forEach((b,i) => {
+    b.classList.toggle('active', ['ru_dian','restock','adjust','log'][i] === tab);
+  });
+  ['ru_dian','restock','adjust','log'].forEach(t => {
+    document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
+  });
+  if (tab === 'log') loadTxnLog();
+}
+
+function calcRdBoxes() {
+  const qty = parseInt(document.getElementById('rd-qty').value) || 0;
+  const bpd = stockModalData?.boxes_per_dan;
+  document.getElementById('rd-boxes').textContent = bpd ? `${qty * bpd} 盒` : '-';
+}
+function calcRsBoxes() {
+  const qty = parseInt(document.getElementById('rs-qty').value) || 0;
+  const bpd = stockModalData?.boxes_per_dan;
+  document.getElementById('rs-boxes').textContent = bpd ? `${qty * bpd} 盒` : '-';
+}
+
+function setAdjLoc(loc) {
+  adjLocation = loc;
+  document.getElementById('adj-btn-up').classList.toggle('active', loc === 'upstairs');
+  document.getElementById('adj-btn-in').classList.toggle('active', loc === 'instore');
+}
+
+async function doRuDian() {
+  const qty = parseInt(document.getElementById('rd-qty').value);
+  if (!qty || qty <= 0) { toast('请输入有效的端数', 'err'); return; }
+  const notes = document.getElementById('rd-notes').value.trim();
+  const res = await fetch('/api/stock/ru_dian', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id: stockModalPid, dan_qty: qty,
+                          date: todayStr(), notes}),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    toast(`已入店 ${qty} 端`);
+    document.getElementById('rd-qty').value = '';
+    document.getElementById('rd-boxes').textContent = '-';
+    await refreshStockModalHeader(stockModalPid);
+    await loadStockList();
+    await loadStockSummary();
+  } else {
+    toast(data.error || '入店失败', 'err');
+  }
+}
+
+async function doRestock() {
+  const qty = parseInt(document.getElementById('rs-qty').value);
+  if (!qty || qty <= 0) { toast('请输入有效的端数', 'err'); return; }
+  const notes = document.getElementById('rs-notes').value.trim();
+  const res = await fetch('/api/stock/restock_upstairs', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id: stockModalPid, dan_qty: qty,
+                          date: todayStr(), notes}),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    toast(`已入库 ${qty} 端 (楼上)`);
+    document.getElementById('rs-qty').value = '';
+    document.getElementById('rs-boxes').textContent = '-';
+    await refreshStockModalHeader(stockModalPid);
+    await loadStockList();
+    await loadStockSummary();
+  } else {
+    toast(data.error || '入库失败', 'err');
+  }
+}
+
+async function doAdjust() {
+  const qty = document.getElementById('adj-qty').value;
+  if (qty === '') { toast('请输入端数', 'err'); return; }
+  const notes = document.getElementById('adj-notes').value.trim();
+  const res = await fetch('/api/stock/adjust', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id: stockModalPid, location: adjLocation,
+                          new_dan: parseInt(qty), date: todayStr(), notes}),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    toast(`已调整 ${adjLocation === 'upstairs' ? '楼上' : '店内'} → ${qty} 端`);
+    document.getElementById('adj-qty').value = '';
+    await refreshStockModalHeader(stockModalPid);
+    await loadStockList();
+    await loadStockSummary();
+  } else {
+    toast(data.error || '调整失败', 'err');
+  }
+}
+
+async function loadTxnLog() {
+  const res = await fetch(`/api/stock/transactions?product_id=${stockModalPid}&limit=30`);
+  const txns = await res.json();
+  const list = document.getElementById('txn-list');
+  if (!txns.length) {
+    list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px">暂无操作记录</div>';
+    return;
+  }
+  const typeLabels = { ru_dian:'入店', restock_upstairs:'入库', adjust:'调整' };
+  list.innerHTML = txns.map(t => {
+    const sign = t.dan_qty >= 0 ? '+' : '';
+    const label = typeLabels[t.txn_type] || t.txn_type;
+    return `
+      <div class="txn-item">
+        <span class="txn-type ${t.txn_type}">${label}</span>
+        <div class="txn-info">
+          <div>${sign}${t.dan_qty} 端${t.boxes_per_dan ? ` (≈${Math.abs(t.dan_qty)*t.boxes_per_dan}盒)` : ''} · ${esc(t.location||'')}</div>
+          ${t.notes ? `<div style="color:var(--muted)">${esc(t.notes)}</div>` : ''}
+        </div>
+        <div class="txn-date">${t.date}</div>
+      </div>`;
+  }).join('');
+}
+
+// ── Stock series chips (reuse loadSeries data) ──
+function buildStockSeriesChips(list) {
+  const chips = document.getElementById('stock-series-chips');
+  chips.innerHTML = '<div class="chip active" data-series="" onclick="stockFilterSeries(this,\'\')">全部</div>';
+  list.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'chip';
+    el.dataset.series = s;
+    el.textContent = s;
+    el.onclick = () => stockFilterSeries(el, s);
+    chips.appendChild(el);
+  });
+}
+
+// stock search input
+document.addEventListener('DOMContentLoaded', () => {
+  const si = document.getElementById('stock-search');
+  if (si) {
+    si.addEventListener('input', () => {
+      clearTimeout(stockSearchTimer);
+      stockSearchTimer = setTimeout(loadStockList, 220);
+    });
+  }
+  initHiddenSection();
+});
+
+// ══════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════
+document.getElementById('search-input').addEventListener('input', doSearch);
+loadSeries().then(list => {
+  doSearch();
+  buildStockSeriesChips(seriesList);
+});
+</script>
+</body>
+</html>
