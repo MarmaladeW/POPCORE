@@ -5,7 +5,8 @@ __pycache__/
 venv/
 env/
 
-# Database WAL temp files (keep the main .db but exclude these)
+# Database (lives on the server, don't overwrite with local copy)
+popcore_app/popcore.db
 popcore_app/popcore.db-shm
 popcore_app/popcore.db-wal
 
