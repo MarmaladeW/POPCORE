@@ -5,8 +5,7 @@ __pycache__/
 venv/
 env/
 
-# Database (regenerated from Excel on first run)
-popcore_app/popcore.db
+# Database WAL temp files (keep the main .db but exclude these)
 popcore_app/popcore.db-shm
 popcore_app/popcore.db-wal
 
