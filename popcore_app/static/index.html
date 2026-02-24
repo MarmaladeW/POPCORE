@@ -779,9 +779,12 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
   <div id="view-stock" class="view">
     <!-- Toolbar -->
     <div class="stock-toolbar">
-      <div class="stock-search-wrap">
-        <span class="s-icon">🔍</span>
-        <input type="search" id="stock-search" placeholder="搜索产品…" autocomplete="off" />
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="stock-search-wrap" style="flex:1">
+          <span class="s-icon">🔍</span>
+          <input type="search" id="stock-search" placeholder="搜索产品…" autocomplete="off" />
+        </div>
+        <button class="btn btn-ghost" onclick="openStockPasteModal()" style="padding:7px 12px;flex-shrink:0">📋 粘贴入库</button>
       </div>
       <div class="stock-chips-row" id="stock-series-chips">
         <div class="chip active" data-series="" onclick="stockFilterSeries(this,'')">全部</div>
@@ -847,7 +850,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
       <button class="btn btn-ghost" onclick="exportSalesCSV()" style="padding:7px 14px">⬇ 导出 CSV</button>
     </div>
     <div class="history-wrap">
-      <div class="history-title">销量记录</div>
+      <div class="history-title">销量记录 <span style="font-size:11px;color:var(--muted);font-weight:400">（点击日期可编辑）</span></div>
       <table class="history-table">
         <thead><tr><th>日期</th><th>产品款数</th><th>卡机</th><th>现金/转账</th><th>总计</th></tr></thead>
         <tbody id="saleslog-tbody"><tr><td colspan="5" style="color:var(--muted);padding:20px">加载中…</td></tr></tbody>
@@ -1231,6 +1234,88 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
   </div>
 </div>
 
+<!-- ══ SALES EDIT MODAL ══ -->
+<div class="modal-overlay" id="sales-edit-modal" onclick="overlayClose(event,'sales-edit-modal')">
+  <div class="modal" style="max-width:700px">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-top">
+      <div class="modal-titles">
+        <div class="modal-title">✏️ 编辑销量记录</div>
+        <div class="modal-sku" id="sedit-subtitle"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('sales-edit-modal')">✕</button>
+    </div>
+    <!-- Add product search -->
+    <div style="position:relative;margin-bottom:10px">
+      <input type="search" id="sedit-add-input" placeholder="＋ 搜索并添加产品到当日…" autocomplete="off" />
+      <div class="add-dropdown" id="sedit-add-dropdown" style="bottom:auto;top:calc(100% + 2px)"></div>
+    </div>
+    <!-- Editable table -->
+    <div style="overflow-x:auto;max-height:55vh;overflow-y:auto;margin-bottom:12px">
+      <table class="paste-match-table" id="sedit-table">
+        <thead>
+          <tr><th>产品</th><th>卡机</th><th>现金/转账</th><th>合计</th><th>备注</th><th></th></tr>
+        </thead>
+        <tbody id="sedit-tbody"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;align-items:center">
+      <span id="sedit-status" style="font-size:12px;color:var(--muted);margin-right:auto"></span>
+      <button class="btn btn-ghost" onclick="closeModal('sales-edit-modal')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ STOCK PASTE MODAL ══ -->
+<div class="modal-overlay" id="stock-paste-modal" onclick="overlayClose(event,'stock-paste-modal')">
+  <div class="modal">
+    <div class="modal-drag-handle"></div>
+    <div class="modal-top">
+      <div class="modal-titles">
+        <div class="modal-title">📋 粘贴入库操作</div>
+        <div class="modal-sku" id="stock-paste-op-label"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('stock-paste-modal')">✕</button>
+    </div>
+
+    <!-- Step 1 -->
+    <div id="stock-paste-step1" class="paste-step active">
+      <div class="action-tabs" style="margin-bottom:12px">
+        <button class="atab active" id="stop-rudian"  onclick="setStockOp('ru_dian')">📥 入店（楼上→店内）</button>
+        <button class="atab"        id="stop-restock" onclick="setStockOp('restock_upstairs')">📦 入库楼上</button>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+        粘贴格式：<code style="background:var(--surface2);padding:1px 5px;border-radius:3px">产品名*数量</code>，每行一个（或逗号分隔）。<br>
+        也可粘贴完整收据，自动识别"入店："区段。
+      </p>
+      <textarea class="paste-textarea" id="stock-paste-textarea"
+        placeholder="小狐狸*2&#10;大眼猫*3&#10;（或粘贴含"入店："区段的完整收据）"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
+        <span id="stock-parse-status" style="font-size:12px;color:var(--muted)"></span>
+        <button class="btn btn-ghost" onclick="closeModal('stock-paste-modal')">取消</button>
+        <button class="btn btn-primary" onclick="stockParsePasteAndMatch()">🔍 解析匹配</button>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div id="stock-paste-step2" class="paste-step">
+      <div style="overflow-x:auto;max-height:52vh;overflow-y:auto;margin-bottom:10px">
+        <table class="paste-match-table">
+          <thead>
+            <tr><th>原文</th><th>匹配产品</th><th>数量（端）</th><th></th></tr>
+          </thead>
+          <tbody id="stock-match-tbody"></tbody>
+        </table>
+      </div>
+      <div class="paste-actions">
+        <span class="paste-summary" id="stock-paste-summary"></span>
+        <button class="btn btn-ghost" onclick="showStockPasteStep(1)">← 重新粘贴</button>
+        <button class="btn btn-primary" id="stock-paste-confirm-btn" onclick="confirmStockPasteImport()">✓ 确认</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
@@ -1246,6 +1331,10 @@ let searchTimer       = null;
 let salesRows         = [];
 let selectedSalesPid  = null;
 let pasteItems        = [];   // [{raw, qty_pos, qty_cash, pid, name, candidates, status}]
+let seditDate         = '';
+let seditRows         = [];
+let stockPasteOp      = 'ru_dian';
+let stockPasteItems   = [];
 let seriesList        = [];
 
 // ══════════════════════════════════════════════
@@ -1842,6 +1931,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
   inp.addEventListener('blur', () => setTimeout(() => drop.classList.remove('open'), 200));
 
+  // sedit add-product search (for sales edit modal)
+  const seditInp  = document.getElementById('sedit-add-input');
+  const seditDrop = document.getElementById('sedit-add-dropdown');
+  let seditAddSearchTimer;
+  seditInp.addEventListener('input', () => {
+    clearTimeout(seditAddSearchTimer);
+    const q = seditInp.value.trim();
+    if (!q) { seditDrop.classList.remove('open'); return; }
+    seditAddSearchTimer = setTimeout(async () => {
+      const res = await fetch(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`);
+      const products = await res.json();
+      seditDrop.innerHTML = products.map(p => `
+        <div class="add-opt" onclick="addToSeditDay(${p.id})">
+          <span class="add-opt-jzm">${esc(p.jizhanming || p.name_cn_en || '-')}</span>
+          <span class="add-opt-meta">${p.sku}${p.price != null ? ' · C$'+p.price : ''} · ${esc(p.ip_series||'')}</span>
+        </div>
+      `).join('') || '<div class="add-opt" style="color:var(--muted)">未找到</div>';
+      seditDrop.classList.add('open');
+    }, 200);
+  });
+  seditInp.addEventListener('blur', () => setTimeout(() => seditDrop.classList.remove('open'), 200));
+
   // Set today's date
   document.getElementById('sales-date').value = todayStr();
 });
@@ -1888,7 +1999,9 @@ async function loadSalesLog() {
   }
   tbody.innerHTML = rows.map(r => `
     <tr>
-      <td><span class="date-link" onclick="jumpToSalesDate('${r.date}')">${r.date}</span></td>
+      <td>
+        <span class="date-link" onclick="openSalesEditModal('${r.date}')">${r.date}</span>
+      </td>
       <td>${r.product_count} 款</td>
       <td>${r.total_pos  || 0}</td>
       <td>${r.total_cash || 0}</td>
@@ -1901,6 +2014,298 @@ function jumpToSalesDate(d) {
   document.getElementById('sales-date').value = d;
   switchView('sales');
   loadSalesDay();
+}
+
+// ══════════════════════════════════════════════
+// SALES EDIT MODAL
+// ══════════════════════════════════════════════
+async function openSalesEditModal(d) {
+  seditDate = d;
+  document.getElementById('sedit-subtitle').textContent = d;
+  document.getElementById('sedit-status').textContent = '加载中…';
+  document.getElementById('sedit-tbody').innerHTML = '';
+  openModal('sales-edit-modal');
+
+  const res = await fetch(`/api/sales?date=${encodeURIComponent(d)}`);
+  seditRows = await res.json();
+  renderSalesEditTable();
+}
+
+function _seditHeader() {
+  const total = seditRows.reduce((s,r) => s+(r.qty_sold||0), 0);
+  const pos   = seditRows.reduce((s,r) => s+(r.qty_pos||0),  0);
+  const cash  = seditRows.reduce((s,r) => s+(r.qty_cash||0), 0);
+  document.getElementById('sedit-subtitle').textContent =
+    `${seditDate} · ${seditRows.length}款 · 共${total}件 (卡${pos}+现${cash})`;
+  document.getElementById('sedit-status').textContent = '';
+}
+
+function renderSalesEditTable() {
+  _seditHeader();
+  const tbody = document.getElementById('sedit-tbody');
+  if (!seditRows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:16px;text-align:center">当日暂无销量记录，用上方搜索框添加</td></tr>';
+    return;
+  }
+  tbody.innerHTML = seditRows.map(r => {
+    const qp = r.qty_pos || 0; const qc = r.qty_cash || 0; const qt = r.qty_sold || (qp+qc);
+    return `<tr id="sedit-row-${r.id}">
+      <td style="font-weight:600;color:var(--accent2);white-space:nowrap;font-size:12px">${esc(r.jizhanming||r.name_cn_en||r.sku)}</td>
+      <td><input type="number" class="paste-qty-inp" value="${qp}" min="0"
+            oninput="seditUpdateTotal(${r.id})"
+            onchange="autoSaveSeditRow(${r.product_id},${r.id})" /></td>
+      <td><input type="number" class="paste-qty-inp" value="${qc}" min="0"
+            oninput="seditUpdateTotal(${r.id})"
+            onchange="autoSaveSeditRow(${r.product_id},${r.id})" /></td>
+      <td><input type="number" class="paste-qty-inp" id="sedit-tot-${r.id}" value="${qt}" readonly
+            style="background:rgba(124,106,247,.07);border-color:var(--accent);color:var(--accent)" /></td>
+      <td><input type="text" style="font-size:12px;padding:5px 8px;min-width:70px;width:100%" value="${esc(r.notes||'')}"
+            onchange="autoSaveSeditRow(${r.product_id},${r.id})" /></td>
+      <td><button class="paste-remove-btn" onclick="deleteSeditRow(${r.id})" title="删除">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function seditUpdateTotal(recordId) {
+  const row = document.getElementById(`sedit-row-${recordId}`);
+  if (!row) return;
+  const nums = row.querySelectorAll('input[type=number]');
+  document.getElementById(`sedit-tot-${recordId}`).value =
+    (parseInt(nums[0].value)||0) + (parseInt(nums[1].value)||0);
+}
+
+function autoSaveSeditRow(pid, recordId) {
+  clearTimeout(window[`_st_${recordId}`]);
+  window[`_st_${recordId}`] = setTimeout(() => doSaveSeditRow(pid, recordId), 700);
+}
+
+async function doSaveSeditRow(pid, recordId) {
+  const row = document.getElementById(`sedit-row-${recordId}`);
+  if (!row) return;
+  const nums  = row.querySelectorAll('input[type=number]');
+  const texts = row.querySelectorAll('input[type=text]');
+  const qty_pos  = parseInt(nums[0].value)  || 0;
+  const qty_cash = parseInt(nums[1].value)  || 0;
+  const notes    = texts[0]?.value || '';
+
+  await fetch('/api/sales/upsert', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id: pid, date: seditDate, qty_pos, qty_cash, notes}),
+  });
+  const idx = seditRows.findIndex(r => r.id === recordId);
+  if (idx >= 0) {
+    seditRows[idx].qty_pos  = qty_pos;
+    seditRows[idx].qty_cash = qty_cash;
+    seditRows[idx].qty_sold = qty_pos + qty_cash;
+    seditRows[idx].notes    = notes;
+  }
+  _seditHeader();
+  // Refresh log in background so totals update if log is visible
+  if (document.getElementById('view-saleslog').classList.contains('active')) loadSalesLog();
+}
+
+async function deleteSeditRow(recordId) {
+  const res = await fetch(`/api/sales/record/${recordId}`, {method: 'DELETE'});
+  if (res.ok) {
+    seditRows = seditRows.filter(r => r.id !== recordId);
+    const rowEl = document.getElementById(`sedit-row-${recordId}`);
+    if (rowEl) rowEl.remove();
+    _seditHeader();
+    if (!seditRows.length) renderSalesEditTable(); // show empty state
+    if (document.getElementById('view-saleslog').classList.contains('active')) loadSalesLog();
+    toast('已删除');
+  } else {
+    toast('删除失败', 'err');
+  }
+}
+
+async function addToSeditDay(pid) {
+  if (!seditDate) return;
+  if (seditRows.find(r => r.product_id === pid)) {
+    toast('该产品已在列表中');
+    document.getElementById('sedit-add-input').value = '';
+    document.getElementById('sedit-add-dropdown').classList.remove('open');
+    return;
+  }
+  await fetch('/api/sales/add_product', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({product_id: pid, date: seditDate}),
+  });
+  document.getElementById('sedit-add-input').value = '';
+  document.getElementById('sedit-add-dropdown').classList.remove('open');
+  const res2 = await fetch(`/api/sales?date=${encodeURIComponent(seditDate)}`);
+  seditRows = await res2.json();
+  renderSalesEditTable();
+  toast('已添加');
+}
+
+// ══════════════════════════════════════════════
+// STOCK PASTE IMPORT
+// ══════════════════════════════════════════════
+function openStockPasteModal() {
+  document.getElementById('stock-paste-textarea').value = '';
+  document.getElementById('stock-parse-status').textContent = '';
+  setStockOp('ru_dian');
+  showStockPasteStep(1);
+  openModal('stock-paste-modal');
+}
+
+function setStockOp(op) {
+  stockPasteOp = op;
+  document.getElementById('stop-rudian').classList.toggle('active',  op === 'ru_dian');
+  document.getElementById('stop-restock').classList.toggle('active', op === 'restock_upstairs');
+  document.getElementById('stock-paste-op-label').textContent =
+    op === 'ru_dian' ? '入店（楼上→店内）' : '入库楼上';
+}
+
+function showStockPasteStep(n) {
+  document.getElementById('stock-paste-step1').classList.toggle('active', n === 1);
+  document.getElementById('stock-paste-step2').classList.toggle('active', n === 2);
+}
+
+function parseStockPasteText(text) {
+  const lines  = text.split('\n').map(l => l.trim()).filter(l => l);
+  const itemRe = /^(.+?)\s*[*×✕x]\s*(\d+)\s*$/u;
+  const itemMap = {};
+
+  // Smart mode: if text contains 卡机汇总/随手记汇总, treat as full receipt → only parse 入店 section
+  const isReceipt = /卡机汇总|随手记汇总/.test(text);
+  let inSection = !isReceipt; // simple list → parse everything; receipt → wait for 入店:
+
+  for (const line of lines) {
+    if (/入店[：:]/.test(line)) { inSection = true; continue; }
+    if (isReceipt && /卡机汇总|随手记汇总|现金[：:]/.test(line)) { inSection = false; continue; }
+    if (!inSection) continue;
+
+    const parts = line.split(/[，,]+/);
+    for (const part of parts) {
+      const m = part.trim().match(itemRe);
+      if (!m) continue;
+      const name = m[1].trim();
+      const qty  = parseInt(m[2]);
+      if (!itemMap[name]) itemMap[name] = 0;
+      itemMap[name] += qty;
+    }
+  }
+
+  return Object.entries(itemMap).map(([raw, qty]) => ({
+    raw, qty, pid: null, name: '', candidates: [], status: 'none'
+  }));
+}
+
+async function stockParsePasteAndMatch() {
+  const text = document.getElementById('stock-paste-textarea').value.trim();
+  if (!text) { toast('请先粘贴文本', 'err'); return; }
+
+  const statusEl = document.getElementById('stock-parse-status');
+  statusEl.textContent = '解析中…';
+
+  stockPasteItems = parseStockPasteText(text);
+  if (!stockPasteItems.length) {
+    statusEl.textContent = '未找到有效产品，格式：产品名*数量';
+    return;
+  }
+
+  statusEl.textContent = `找到 ${stockPasteItems.length} 个产品，匹配中…`;
+  for (let i = 0; i < stockPasteItems.length; i++) {
+    const item = stockPasteItems[i];
+    const res  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
+    const prods = await res.json();
+    if (prods.length > 0) {
+      item.pid = prods[0].id;
+      item.name = prods[0].jizhanming || prods[0].name_cn_en || prods[0].sku;
+      item.candidates = prods;
+      item.status = 'ok';
+    } else {
+      item.candidates = []; item.status = 'none';
+    }
+  }
+
+  statusEl.textContent = '';
+  renderStockMatchTable();
+  showStockPasteStep(2);
+}
+
+function renderStockMatchTable() {
+  const tbody = document.getElementById('stock-match-tbody');
+  tbody.innerHTML = stockPasteItems.map((item, idx) => {
+    const rowClass = item.status === 'none' ? 'row-unmatched' : '';
+    const badge = item.status === 'ok'
+      ? `<span class="paste-status-ok">✓</span>`
+      : `<span class="paste-status-none">未匹配</span>`;
+    const noneOpt = item.status === 'none' ? '<option value="">-- 跳过 --</option>' : '';
+    const opts = (item.candidates||[]).map(p =>
+      `<option value="${p.id}" ${p.id===item.pid?'selected':''}>${esc(p.jizhanming||p.name_cn_en||p.sku)}</option>`
+    ).join('');
+    return `<tr class="${rowClass}" id="stock-row-${idx}">
+      <td style="color:var(--accent2);font-weight:700;white-space:nowrap">${esc(item.raw)}</td>
+      <td>
+        <select class="paste-match-sel" onchange="setStockPasteMatch(${idx},this.value)">
+          ${noneOpt}${opts}
+        </select> ${badge}
+      </td>
+      <td><input type="number" class="paste-qty-inp" value="${item.qty}" min="1"
+            onchange="setStockPasteQty(${idx},this.value)" /></td>
+      <td><button class="paste-remove-btn" onclick="removeStockPasteRow(${idx})" title="移除">✕</button></td>
+    </tr>`;
+  }).join('');
+  updateStockPasteConfirmBtn();
+}
+
+function setStockPasteMatch(idx, pidStr) {
+  const pid = pidStr ? parseInt(pidStr) : null;
+  stockPasteItems[idx].pid    = pid;
+  stockPasteItems[idx].status = pid ? 'ok' : 'none';
+  const row = document.getElementById(`stock-row-${idx}`);
+  if (row) {
+    row.className = pid ? '' : 'row-unmatched';
+    const badge = row.querySelector('.paste-status-ok, .paste-status-none');
+    if (badge) { badge.className = pid ? 'paste-status-ok' : 'paste-status-none'; badge.textContent = pid ? '✓' : '未匹配'; }
+  }
+  updateStockPasteConfirmBtn();
+}
+function setStockPasteQty(idx, val) { stockPasteItems[idx].qty = parseInt(val) || 0; }
+function removeStockPasteRow(idx)   { stockPasteItems.splice(idx, 1); renderStockMatchTable(); }
+
+function updateStockPasteConfirmBtn() {
+  const matched = stockPasteItems.filter(i => i.pid && i.qty > 0).length;
+  const btn = document.getElementById('stock-paste-confirm-btn');
+  if (btn) {
+    btn.disabled    = matched === 0;
+    btn.textContent = `✓ 确认${stockPasteOp === 'ru_dian' ? '入店' : '入库'} (${matched} 款)`;
+  }
+  const sumEl = document.getElementById('stock-paste-summary');
+  if (sumEl) sumEl.textContent = `${matched}/${stockPasteItems.length} 个产品已匹配`;
+}
+
+async function confirmStockPasteImport() {
+  const matched = stockPasteItems.filter(i => i.pid && i.qty > 0);
+  if (!matched.length) { toast('没有可操作的产品', 'err'); return; }
+
+  const payload = {
+    operation: stockPasteOp,
+    date:      todayStr(),
+    items:     matched.map(i => ({product_id: i.pid, qty: i.qty, notes: '粘贴导入'}))
+  };
+
+  const res = await fetch('/api/stock/batch_operation', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  });
+
+  if (res.ok) {
+    const data   = await res.json();
+    const failed = (data.results||[]).filter(r => !r.ok);
+    closeModal('stock-paste-modal');
+    await loadStockView();
+    if (failed.length > 0) {
+      toast(`已完成，${failed.length} 款楼上库存不足已跳过`, 'err');
+    } else {
+      toast(`已${stockPasteOp === 'ru_dian' ? '入店' : '入库'} ${matched.length} 款`);
+    }
+  } else {
+    toast('操作失败', 'err');
+  }
 }
 
 // ══════════════════════════════════════════════

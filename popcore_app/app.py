@@ -845,6 +845,78 @@ def sales_summary():
     return jsonify(rows)
 
 
+@app.route('/api/sales/record/<int:record_id>', methods=['DELETE'])
+def delete_sales_record(record_id):
+    """Delete a single daily_sales row by its id."""
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('DELETE FROM daily_sales WHERE id = ?', (record_id,))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/stock/batch_operation', methods=['POST'])
+def batch_stock_operation():
+    """
+    Batch stock operation (paste import).
+    Body: { operation: 'ru_dian'|'restock_upstairs', date: '...', items: [{product_id, qty, notes}] }
+    """
+    data      = request.get_json()
+    operation = data.get('operation', 'ru_dian')
+    d         = data.get('date', str(date.today()))
+    items     = data.get('items', [])
+
+    if operation not in ('ru_dian', 'restock_upstairs'):
+        return jsonify({'error': 'Invalid operation'}), 400
+
+    con = get_db()
+    cur = con.cursor()
+    results = []
+
+    for item in items:
+        pid   = int(item['product_id'])
+        qty   = int(item.get('qty', 0))
+        notes = item.get('notes', '')
+        if qty <= 0:
+            continue
+
+        _ensure_stock_row(cur, pid)
+
+        if operation == 'ru_dian':
+            cur.execute('SELECT upstairs_dan FROM stock WHERE product_id = ?', (pid,))
+            row = cur.fetchone()
+            upstairs = row['upstairs_dan'] if row else 0
+            if qty > upstairs:
+                results.append({'pid': pid, 'ok': False,
+                                 'error': f'楼上库存不足（{upstairs}端）'})
+                continue
+            cur.execute('''
+                UPDATE stock SET upstairs_dan = upstairs_dan - ?,
+                                 instore_dan  = instore_dan  + ?,
+                                 last_updated = ?
+                WHERE product_id = ?
+            ''', (qty, qty, d, pid))
+            loc = 'upstairs->instore'
+        else:  # restock_upstairs
+            cur.execute('''
+                UPDATE stock SET upstairs_dan = upstairs_dan + ?,
+                                 last_updated = ?
+                WHERE product_id = ?
+            ''', (qty, d, pid))
+            loc = 'upstairs'
+
+        cur.execute('''
+            INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (pid, operation, qty, loc, d, notes))
+        results.append({'pid': pid, 'ok': True})
+
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'results': results})
+
+
 @app.route('/api/sales/batch_upsert', methods=['POST'])
 def batch_upsert_sales():
     """Upsert multiple products' sales for a date at once (paste import)."""
