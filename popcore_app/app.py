@@ -160,6 +160,29 @@ def _score_product(product, tokens, q_full):
     return score
 
 
+@app.route('/api/products/by_jizhanming')
+def get_by_jizhanming():
+    """
+    Exact (case-insensitive, trimmed) match on jizhanming.
+    Returns a list so callers can detect duplicates.
+    """
+    name = request.args.get('name', '').strip()
+    if not name:
+        return jsonify([])
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
+        FROM products
+        WHERE TRIM(LOWER(jizhanming)) = LOWER(?)
+        ORDER BY sku DESC
+        LIMIT 5
+    ''', (name,))
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
 @app.route('/api/products/search')
 def search_products():
     q = request.args.get('q', '').strip().lower()
@@ -989,6 +1012,190 @@ def export_sales():
         mimetype='text/csv; charset=utf-8',
         headers={'Content-Disposition': f'attachment; filename="{fname}"'}
     )
+
+
+@app.route('/api/stock/export')
+def export_stock():
+    """Export current stock as CSV (UTF-8 BOM for Excel)."""
+    series = request.args.get('series', '').strip()
+    q      = request.args.get('q', '').strip().lower()
+
+    con = get_db()
+    cur = con.cursor()
+
+    filters = []
+    params  = []
+    if series:
+        filters.append("p.ip_series = ?")
+        params.append(series)
+    if q:
+        for token in q.split():
+            filters.append("p.search_blob LIKE ?")
+            params.append(f'%{token}%')
+
+    where = ('AND ' + ' AND '.join(filters)) if filters else ''
+
+    cur.execute(f'''
+        SELECT p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
+               p.price, p.boxes_per_dan,
+               COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
+               COALESCE(s.instore_dan,  0) AS instore_dan,
+               COALESCE(s.last_updated, '') AS last_updated,
+               COALESCE(s.notes, '') AS stock_notes
+        FROM stock s
+        JOIN products p ON p.id = s.product_id
+        WHERE 1=1 {where}
+        ORDER BY p.ip_series, p.sku DESC
+    ''', params)
+    rows = cur.fetchall()
+    con.close()
+
+    def esc_csv(v):
+        s = str(v) if v is not None else ''
+        if ',' in s or '"' in s or '\n' in s:
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    header = 'SKU,记账名,产品名称,系列,类型,单价,每端盒数,楼上(端),店内(端),更新时间,备注'
+    lines  = ['\ufeff' + header]
+    for r in rows:
+        lines.append(','.join(esc_csv(v) for v in [
+            r['sku'], r['jizhanming'], r['name_cn_en'], r['ip_series'],
+            r['product_type'], r['price'], r['boxes_per_dan'],
+            r['upstairs_dan'], r['instore_dan'], r['last_updated'], r['stock_notes']
+        ]))
+
+    fname = f'stock_{date.today()}.csv'
+    return Response(
+        '\n'.join(lines),
+        mimetype='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{fname}"'}
+    )
+
+
+@app.route('/api/stock/rows', methods=['DELETE'])
+def delete_stock_rows():
+    """Remove products from stock tracking (delete their stock rows only)."""
+    pids = request.get_json()
+    if not isinstance(pids, list) or not pids:
+        return jsonify({'error': 'Expected a list of product_ids'}), 400
+    con = get_db()
+    cur = con.cursor()
+    ph  = ','.join('?' * len(pids))
+    cur.execute(f'DELETE FROM stock WHERE product_id IN ({ph})', pids)
+    deleted = cur.rowcount
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'deleted': deleted})
+
+
+@app.route('/api/sales/clear_day', methods=['DELETE'])
+def clear_sales_day():
+    """Delete all daily_sales records for a given date."""
+    d = request.args.get('date', '')
+    if not d:
+        return jsonify({'error': 'date param required'}), 400
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('DELETE FROM daily_sales WHERE date = ?', (d,))
+    deleted = cur.rowcount
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'deleted': deleted})
+
+
+@app.route('/api/products/export')
+def export_products():
+    """Export products as CSV, respecting series/q filters."""
+    series = request.args.get('series', '').strip()
+    q      = request.args.get('q', '').strip().lower()
+
+    con = get_db()
+    cur = con.cursor()
+
+    if q:
+        tokens = q.split()
+        and_cond = " AND ".join("search_blob LIKE ?" for _ in tokens)
+        params   = [f'%{t}%' for t in tokens]
+        if series:
+            and_cond += " AND ip_series = ?"
+            params.append(series)
+        cur.execute(f'''
+            SELECT sku, jizhanming, name_cn_en, ip_series, product_type,
+                   brand, price, release_date, edition_size, channel, notes
+            FROM products
+            WHERE {and_cond}
+            ORDER BY ip_series, sku DESC
+        ''', params)
+    else:
+        where  = "WHERE ip_series = ?" if series else ""
+        params = [series] if series else []
+        cur.execute(f'''
+            SELECT sku, jizhanming, name_cn_en, ip_series, product_type,
+                   brand, price, release_date, edition_size, channel, notes
+            FROM products
+            {where}
+            ORDER BY ip_series, sku DESC
+        ''', params)
+
+    rows = cur.fetchall()
+    con.close()
+
+    def esc_csv(v):
+        s = str(v) if v is not None else ''
+        if ',' in s or '"' in s or '\n' in s:
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    header = 'SKU,记账名,产品名称,系列,类型,品牌,单价,发售时间,版本/限量,渠道,备注'
+    lines  = ['\ufeff' + header]
+    for r in rows:
+        lines.append(','.join(esc_csv(v) for v in [
+            r['sku'], r['jizhanming'], r['name_cn_en'], r['ip_series'],
+            r['product_type'], r['brand'], r['price'],
+            r['release_date'], r['edition_size'], r['channel'], r['notes']
+        ]))
+
+    fname = f'products_{date.today()}.csv'
+    return Response(
+        '\n'.join(lines),
+        mimetype='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{fname}"'}
+    )
+
+
+@app.route('/api/products/bulk_delete', methods=['POST'])
+def bulk_delete_products():
+    """Delete multiple products with full cascade (images, sales, stock, transactions)."""
+    pids = request.get_json()
+    if not isinstance(pids, list) or not pids:
+        return jsonify({'error': 'Expected a list of product_ids'}), 400
+
+    con = get_db()
+    cur = con.cursor()
+    ph  = ','.join('?' * len(pids))
+
+    # Delete physical image files first
+    cur.execute(f'SELECT filename FROM hidden_images WHERE product_id IN ({ph})', pids)
+    for row in cur.fetchall():
+        fp = os.path.join(HIDDEN_IMG_DIR, row['filename'])
+        if os.path.exists(fp):
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+
+    # Cascade deletes
+    cur.execute(f'DELETE FROM hidden_images     WHERE product_id IN ({ph})', pids)
+    cur.execute(f'DELETE FROM daily_sales        WHERE product_id IN ({ph})', pids)
+    cur.execute(f'DELETE FROM stock_transactions WHERE product_id IN ({ph})', pids)
+    cur.execute(f'DELETE FROM stock              WHERE product_id IN ({ph})', pids)
+    cur.execute(f'DELETE FROM products           WHERE id         IN ({ph})', pids)
+    deleted = cur.rowcount
+
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'deleted': deleted})
 
 
 if __name__ == '__main__':

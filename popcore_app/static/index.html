@@ -566,8 +566,9 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 }
 .paste-match-table td { padding: 7px 8px; border-bottom: 1px solid rgba(46,46,62,.4); vertical-align: middle; }
 .paste-match-table tr.row-unmatched td { background: rgba(239,68,68,.05); }
-.paste-status-ok   { color: var(--green); font-size: 11px; font-weight: 700; }
-.paste-status-none { color: var(--red);   font-size: 11px; font-weight: 700; }
+.paste-status-ok     { color: var(--green);  font-size: 11px; font-weight: 700; }
+.paste-status-none   { color: var(--red);    font-size: 11px; font-weight: 700; }
+.paste-status-manual { color: var(--yellow); font-size: 11px; font-weight: 700; }
 .paste-match-sel { font-size: 12px; padding: 4px 8px; max-width: 200px; }
 .paste-qty-inp {
   width: 56px; font-size: 13px; font-weight: 600;
@@ -728,6 +729,82 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 .txn-type.adjust          { background: rgba(245,158,11,.12); color: var(--yellow); }
 .txn-info { flex: 1; min-width: 0; }
 .txn-date { color: var(--muted); font-size: 10px; }
+
+/* ════════════════════════════════════
+   BATCH OPERATIONS
+════════════════════════════════════ */
+.batch-wrap { position: relative; flex-shrink: 0; }
+.batch-btn {
+  padding: 7px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--muted); cursor: pointer;
+  font-size: 13px; font-weight: 600; font-family: inherit;
+  transition: all .12s; white-space: nowrap;
+}
+.batch-btn:hover { color: var(--text); }
+.batch-menu {
+  display: none; position: absolute; right: 0; top: calc(100% + 4px);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; min-width: 172px; z-index: 200;
+  box-shadow: 0 4px 24px rgba(0,0,0,.5); overflow: hidden;
+}
+.batch-menu.open { display: block; }
+.batch-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; cursor: pointer; font-size: 13px;
+  transition: background .1s; white-space: nowrap; color: var(--text);
+}
+.batch-item:hover { background: var(--surface2); }
+.batch-item.danger { color: var(--red); }
+.batch-menu-sep { height: 1px; background: var(--border); margin: 2px 0; }
+
+/* Select mode bar */
+.select-bar {
+  display: none; align-items: center; gap: 8px;
+  padding: 7px 12px; background: rgba(124,106,247,.1);
+  border-bottom: 1px solid rgba(124,106,247,.25); flex-shrink: 0;
+}
+.select-bar.show { display: flex; }
+.select-count { font-size: 13px; font-weight: 600; color: var(--accent); flex-shrink: 0; }
+.select-all-btn {
+  font-size: 12px; color: var(--muted); cursor: pointer;
+  background: none; border: none; font-family: inherit; flex-shrink: 0;
+}
+.select-all-btn:hover { color: var(--text); }
+.select-del-btn {
+  padding: 5px 12px; font-size: 12px; border-radius: 6px; border: none;
+  background: rgba(239,68,68,.15); color: var(--red); cursor: pointer;
+  font-family: inherit; font-weight: 600; transition: background .12s;
+}
+.select-del-btn:hover:not(:disabled) { background: rgba(239,68,68,.28); }
+.select-del-btn:disabled { opacity: .4; cursor: not-allowed; }
+.select-cancel-btn {
+  padding: 5px 12px; font-size: 12px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface2);
+  color: var(--muted); cursor: pointer; font-family: inherit;
+  margin-left: auto; transition: all .12s;
+}
+.select-cancel-btn:hover { color: var(--text); }
+
+/* Stock row: select mode adds checkbox column */
+.stock-row.selectable { grid-template-columns: 22px 1fr auto; cursor: default; }
+.stock-row.selectable:active { transform: none; background: var(--surface); }
+@media (hover:hover) {
+  .stock-row.selectable:hover { border-color: var(--border) !important; background: var(--surface) !important; transform: none !important; }
+}
+.stock-row.selectable.selected { background: rgba(124,106,247,.1) !important; border-color: var(--accent) !important; }
+.stock-cb { display: flex; align-items: center; justify-content: center; }
+.stock-cb input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+/* Product card: select mode */
+.product-card.selectable { position: relative; cursor: default; }
+.product-card.selectable:active { transform: none; background: var(--surface); }
+.product-card.selectable.selected { border-color: var(--accent) !important; background: rgba(124,106,247,.1) !important; }
+.prod-cb-overlay {
+  position: absolute; top: 8px; left: 8px;
+  width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+  z-index: 1;
+}
+.prod-cb-overlay input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -755,6 +832,14 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
         <div class="new-btn-wrap">
           <button class="btn btn-accent2" onclick="openAddProductModal()">＋ 新增</button>
         </div>
+        <div class="batch-wrap">
+          <button class="batch-btn" onclick="toggleBatchMenu('search-batch-menu')">⋯ 批量</button>
+          <div class="batch-menu" id="search-batch-menu">
+            <div class="batch-item" onclick="closeBatchMenus();exportProductsCSV()">📥 导出产品 CSV</div>
+            <div class="batch-menu-sep"></div>
+            <div class="batch-item danger" onclick="closeBatchMenus();enterProductSelectMode()">🗑 批量删除</div>
+          </div>
+        </div>
       </div>
       <div class="chips-row" id="series-chips">
         <div class="chip active" data-series="" onclick="filterSeries(this,'')">全部</div>
@@ -768,6 +853,13 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
         <button class="sort-btn" id="sort-date-asc"   onclick="setSort('date-asc')">最早发售</button>
         <button class="sort-btn" id="sort-name-asc"   onclick="setSort('name-asc')">名称 A→Z</button>
       </div>
+    </div>
+    <!-- Product select bar -->
+    <div class="select-bar" id="product-select-bar">
+      <span class="select-count" id="product-select-count">已选 0 个</span>
+      <button class="select-all-btn" onclick="selectAllProducts()">全选</button>
+      <button class="select-cancel-btn" onclick="exitProductSelectMode()">取消</button>
+      <button class="select-del-btn" id="product-delete-btn" onclick="deleteSelectedProducts()" disabled>删除选中</button>
     </div>
     <div class="results-meta" id="results-meta">加载中…</div>
     <div class="product-grid" id="product-grid">
@@ -785,6 +877,14 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
           <input type="search" id="stock-search" placeholder="搜索产品…" autocomplete="off" />
         </div>
         <button class="btn btn-ghost" onclick="openStockPasteModal()" style="padding:7px 12px;flex-shrink:0">📋 粘贴入库</button>
+        <div class="batch-wrap">
+          <button class="batch-btn" onclick="toggleBatchMenu('stock-batch-menu')">⋯ 批量</button>
+          <div class="batch-menu" id="stock-batch-menu">
+            <div class="batch-item" onclick="closeBatchMenus();exportStockCSV()">📥 导出库存 CSV</div>
+            <div class="batch-menu-sep"></div>
+            <div class="batch-item danger" onclick="closeBatchMenus();enterStockSelectMode()">🗑 批量移除</div>
+          </div>
+        </div>
       </div>
       <div class="stock-chips-row" id="stock-series-chips">
         <div class="chip active" data-series="" onclick="stockFilterSeries(this,'')">全部</div>
@@ -795,6 +895,13 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
       <div class="sum-card"><div class="sum-label">楼上库存</div><div class="sum-val" id="sum-upstairs">-</div><div class="sum-sub">端</div></div>
       <div class="sum-card"><div class="sum-label">店内库存</div><div class="sum-val" id="sum-instore">-</div><div class="sum-sub">端</div></div>
       <div class="sum-card warn"><div class="sum-label">楼上清零</div><div class="sum-val" id="sum-low">-</div><div class="sum-sub">款需补货</div></div>
+    </div>
+    <!-- Stock select bar -->
+    <div class="select-bar" id="stock-select-bar">
+      <span class="select-count" id="stock-select-count">已选 0 款</span>
+      <button class="select-all-btn" onclick="selectAllStockRows()">全选</button>
+      <button class="select-cancel-btn" onclick="exitStockSelectMode()">取消</button>
+      <button class="select-del-btn" id="stock-delete-btn" onclick="deleteSelectedStockRows()" disabled>移除选中</button>
     </div>
     <!-- Product stock list -->
     <div class="stock-list-wrap">
@@ -815,6 +922,12 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
       <button class="btn btn-primary" onclick="loadSalesDay()">加载</button>
       <button class="btn btn-ghost" onclick="openPasteModal()" style="padding:7px 12px">📋 粘贴导入</button>
       <span class="inv-flag" id="sales-total-label"></span>
+      <div class="batch-wrap">
+        <button class="batch-btn" onclick="toggleBatchMenu('sales-batch-menu')">⋯ 批量</button>
+        <div class="batch-menu" id="sales-batch-menu">
+          <div class="batch-item danger" onclick="closeBatchMenus();clearSalesDay()">🗑 清空当日记录</div>
+        </div>
+      </div>
     </div>
     <div class="inv-layout">
       <!-- Left list -->
@@ -1336,6 +1449,10 @@ let seditRows         = [];
 let stockPasteOp      = 'ru_dian';
 let stockPasteItems   = [];
 let seriesList        = [];
+let stockSelectMode   = false;
+let stockSelectedIds  = new Set();
+let productSelectMode  = false;
+let productSelectedIds = new Set();
 
 // ══════════════════════════════════════════════
 // NAVIGATION
@@ -1451,8 +1568,20 @@ function renderProducts(products) {
     return;
   }
 
-  grid.innerHTML = products.map(p => `
-    <div class="product-card" onclick="openProduct(${p.id})">
+  grid.innerHTML = products.map(p => {
+    const isSel      = productSelectedIds.has(p.id);
+    const selCls     = productSelectMode ? 'selectable' : '';
+    const selectedCls= isSel ? 'selected' : '';
+    const clickAttr  = productSelectMode
+      ? `onclick="toggleProductSelect(${p.id})"`
+      : `onclick="openProduct(${p.id})"`;
+    const cbHtml = productSelectMode ? `
+      <div class="prod-cb-overlay" onclick="event.stopPropagation();toggleProductSelect(${p.id})">
+        <input type="checkbox" ${isSel ? 'checked' : ''} onclick="event.stopPropagation();toggleProductSelect(${p.id})" />
+      </div>` : '';
+    return `
+    <div class="product-card ${selCls} ${selectedCls}" id="prod-card-${p.id}" ${clickAttr}>
+      ${cbHtml}
       <div class="card-sku">${esc(p.sku || '-')}</div>
       <div class="card-name">${esc(p.name_cn_en || p.jizhanming || '-')}</div>
       ${p.jizhanming ? `<div class="card-jzm">${esc(p.jizhanming)}</div>` : ''}
@@ -1462,8 +1591,8 @@ function renderProducts(products) {
         ${p.product_type ? `<span class="card-type">${esc(p.product_type)}</span>` : ''}
       </div>
       ${p.notes ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">📝 ${esc(p.notes)}</div>` : ''}
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 }
 
 // ══════════════════════════════════════════════
@@ -2209,15 +2338,23 @@ async function stockParsePasteAndMatch() {
   statusEl.textContent = `找到 ${stockPasteItems.length} 个产品，匹配中…`;
   for (let i = 0; i < stockPasteItems.length; i++) {
     const item = stockPasteItems[i];
-    const res  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
-    const prods = await res.json();
-    if (prods.length > 0) {
-      item.pid = prods[0].id;
-      item.name = prods[0].jizhanming || prods[0].name_cn_en || prods[0].sku;
-      item.candidates = prods;
-      item.status = 'ok';
+    statusEl.textContent = `匹配中 ${i + 1}/${stockPasteItems.length}…`;
+
+    // ① 精确匹配记账名
+    const exactRes  = await fetch(`/api/products/by_jizhanming?name=${encodeURIComponent(item.raw)}`);
+    const exactList = await exactRes.json();
+    if (exactList.length > 0) {
+      item.pid        = exactList[0].id;
+      item.name       = exactList[0].jizhanming || exactList[0].name_cn_en || exactList[0].sku;
+      item.candidates = exactList;
+      item.status     = 'ok';   // 精确匹配，锁定
     } else {
-      item.candidates = []; item.status = 'none';
+      // ② 精确失败 → 仅给模糊候选供手动选择，不自动选
+      const fuzzyRes  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
+      const fuzzyList = await fuzzyRes.json();
+      item.pid        = null;
+      item.candidates = fuzzyList;
+      item.status     = 'none';
     }
   }
 
@@ -2229,21 +2366,31 @@ async function stockParsePasteAndMatch() {
 function renderStockMatchTable() {
   const tbody = document.getElementById('stock-match-tbody');
   tbody.innerHTML = stockPasteItems.map((item, idx) => {
-    const rowClass = item.status === 'none' ? 'row-unmatched' : '';
-    const badge = item.status === 'ok'
-      ? `<span class="paste-status-ok">✓</span>`
-      : `<span class="paste-status-none">未匹配</span>`;
-    const noneOpt = item.status === 'none' ? '<option value="">-- 跳过 --</option>' : '';
-    const opts = (item.candidates||[]).map(p =>
-      `<option value="${p.id}" ${p.id===item.pid?'selected':''}>${esc(p.jizhanming||p.name_cn_en||p.sku)}</option>`
-    ).join('');
+    const isExact     = item.status === 'ok';
+    const isManual    = item.status === 'none' && item.pid;
+    const isUnmatched = item.status === 'none' && !item.pid;
+    const rowClass    = isUnmatched ? 'row-unmatched' : '';
+
+    let productCell, badge;
+    if (isExact) {
+      productCell = `<span style="font-size:12px;color:var(--text)">${esc(item.name)}</span>`;
+      badge       = `<span class="paste-status-ok">✓ 精确</span>`;
+    } else {
+      const opts = (item.candidates||[]).map(p =>
+        `<option value="${p.id}" ${p.id===item.pid?'selected':''}>${esc(p.jizhanming||p.name_cn_en||p.sku)}</option>`
+      ).join('');
+      productCell = `<select class="paste-match-sel" onchange="setStockPasteMatch(${idx},this.value)">
+        <option value="">— 跳过 —</option>
+        ${opts}
+      </select>`;
+      badge = isManual
+        ? `<span class="paste-status-manual">✓ 手动</span>`
+        : `<span class="paste-status-none">未匹配</span>`;
+    }
+
     return `<tr class="${rowClass}" id="stock-row-${idx}">
       <td style="color:var(--accent2);font-weight:700;white-space:nowrap">${esc(item.raw)}</td>
-      <td>
-        <select class="paste-match-sel" onchange="setStockPasteMatch(${idx},this.value)">
-          ${noneOpt}${opts}
-        </select> ${badge}
-      </td>
+      <td style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${productCell} ${badge}</td>
       <td><input type="number" class="paste-qty-inp" value="${item.qty}" min="1"
             onchange="setStockPasteQty(${idx},this.value)" /></td>
       <td><button class="paste-remove-btn" onclick="removeStockPasteRow(${idx})" title="移除">✕</button></td>
@@ -2254,13 +2401,16 @@ function renderStockMatchTable() {
 
 function setStockPasteMatch(idx, pidStr) {
   const pid = pidStr ? parseInt(pidStr) : null;
-  stockPasteItems[idx].pid    = pid;
-  stockPasteItems[idx].status = pid ? 'ok' : 'none';
+  stockPasteItems[idx].pid = pid;
+  // status stays 'none'; badge reflects manual pick
   const row = document.getElementById(`stock-row-${idx}`);
   if (row) {
     row.className = pid ? '' : 'row-unmatched';
-    const badge = row.querySelector('.paste-status-ok, .paste-status-none');
-    if (badge) { badge.className = pid ? 'paste-status-ok' : 'paste-status-none'; badge.textContent = pid ? '✓' : '未匹配'; }
+    const badge = row.querySelector('.paste-status-ok, .paste-status-none, .paste-status-manual');
+    if (badge) {
+      badge.className   = pid ? 'paste-status-manual' : 'paste-status-none';
+      badge.textContent = pid ? '✓ 手动' : '未匹配';
+    }
   }
   updateStockPasteConfirmBtn();
 }
@@ -2405,15 +2555,22 @@ async function parsePasteAndMatch() {
   pasteItems = items;
   for (let i = 0; i < pasteItems.length; i++) {
     const item = pasteItems[i];
-    const res  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
-    const prods = await res.json();
-    if (prods.length > 0) {
-      item.pid        = prods[0].id;
-      item.name       = prods[0].jizhanming || prods[0].name_cn_en || prods[0].sku;
-      item.candidates = prods;
-      item.status     = 'ok';
+    statusEl.textContent = `匹配中 ${i + 1}/${pasteItems.length}…`;
+
+    // ① 精确匹配记账名（大小写不敏感）
+    const exactRes  = await fetch(`/api/products/by_jizhanming?name=${encodeURIComponent(item.raw)}`);
+    const exactList = await exactRes.json();
+    if (exactList.length > 0) {
+      item.pid        = exactList[0].id;
+      item.name       = exactList[0].jizhanming || exactList[0].name_cn_en || exactList[0].sku;
+      item.candidates = exactList;
+      item.status     = 'ok';   // 精确匹配，锁定
     } else {
-      item.candidates = [];
+      // ② 精确失败 → 仅给模糊候选供手动选择，不自动选
+      const fuzzyRes  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
+      const fuzzyList = await fuzzyRes.json();
+      item.pid        = null;   // 不自动选
+      item.candidates = fuzzyList;
       item.status     = 'none';
     }
   }
@@ -2426,24 +2583,33 @@ async function parsePasteAndMatch() {
 function renderMatchTable() {
   const tbody = document.getElementById('paste-match-tbody');
   tbody.innerHTML = pasteItems.map((item, idx) => {
-    const rowClass = item.status === 'none' ? 'row-unmatched' : '';
-    const badge = item.status === 'ok'
-      ? `<span class="paste-status-ok">✓</span>`
-      : `<span class="paste-status-none">未匹配</span>`;
+    const isExact    = item.status === 'ok';
+    const isManual   = item.status === 'none' && item.pid;
+    const isUnmatched= item.status === 'none' && !item.pid;
+    const rowClass   = isUnmatched ? 'row-unmatched' : '';
 
-    const noneOpt = item.status === 'none' ? '<option value="">-- 跳过 --</option>' : '';
-    const opts = (item.candidates || []).map(p =>
-      `<option value="${p.id}" ${p.id === item.pid ? 'selected' : ''}>${esc(p.jizhanming || p.name_cn_en || p.sku)}</option>`
-    ).join('');
+    let productCell, badge;
+    if (isExact) {
+      // 精确匹配：锁定显示，不可误改
+      productCell = `<span style="font-size:12px;color:var(--text)">${esc(item.name)}</span>`;
+      badge       = `<span class="paste-status-ok">✓ 精确</span>`;
+    } else {
+      // 未精确匹配：显示模糊候选下拉，让用户手动确认
+      const opts = (item.candidates || []).map(p =>
+        `<option value="${p.id}" ${p.id === item.pid ? 'selected' : ''}>${esc(p.jizhanming || p.name_cn_en || p.sku)}</option>`
+      ).join('');
+      productCell = `<select class="paste-match-sel" onchange="setPasteMatch(${idx},this.value)">
+        <option value="">— 跳过 —</option>
+        ${opts}
+      </select>`;
+      badge = isManual
+        ? `<span class="paste-status-manual">✓ 手动</span>`
+        : `<span class="paste-status-none">未匹配</span>`;
+    }
 
     return `<tr class="${rowClass}" id="paste-row-${idx}">
       <td style="color:var(--accent2);font-weight:700;white-space:nowrap">${esc(item.raw)}</td>
-      <td>
-        <select class="paste-match-sel" onchange="setPasteMatch(${idx},this.value)">
-          ${noneOpt}${opts}
-        </select>
-        ${badge}
-      </td>
+      <td style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${productCell} ${badge}</td>
       <td><input type="number" class="paste-qty-inp" value="${item.qty_pos}"  min="0"
             onchange="setPasteQty(${idx},'pos',this.value)" /></td>
       <td><input type="number" class="paste-qty-inp" value="${item.qty_cash}" min="0"
@@ -2456,15 +2622,15 @@ function renderMatchTable() {
 
 function setPasteMatch(idx, pidStr) {
   const pid = pidStr ? parseInt(pidStr) : null;
-  pasteItems[idx].pid    = pid;
-  pasteItems[idx].status = pid ? 'ok' : 'none';
+  pasteItems[idx].pid = pid;
+  // Status stays 'none' (dropdown remains visible); badge reflects manual pick
   const row = document.getElementById(`paste-row-${idx}`);
   if (row) {
     row.className = pid ? '' : 'row-unmatched';
-    const badge = row.querySelector('.paste-status-ok, .paste-status-none');
+    const badge = row.querySelector('.paste-status-ok, .paste-status-none, .paste-status-manual');
     if (badge) {
-      badge.className   = pid ? 'paste-status-ok' : 'paste-status-none';
-      badge.textContent = pid ? '✓' : '未匹配';
+      badge.className   = pid ? 'paste-status-manual' : 'paste-status-none';
+      badge.textContent = pid ? '✓ 手动' : '未匹配';
     }
   }
   updatePasteConfirmBtn();
@@ -2635,20 +2801,50 @@ function stockRowHtml(r) {
   const upBox = bpd ? upDan * bpd : null;
   const inBox = bpd ? inDan * bpd : null;
 
-  let rowClass = '';
-  if (upDan === 0 && inDan === 0) rowClass = 'out';
-  else if (upDan === 0) rowClass = 'low';
-  else rowClass = 'good';
+  let statusCls = '';
+  if (upDan === 0 && inDan === 0) statusCls = 'out';
+  else if (upDan === 0) statusCls = 'low';
+  else statusCls = 'good';
 
   const upZero = upDan === 0 ? 'zero' : 'up';
   const inZero = inDan === 0 ? 'zero' : 'dn';
+  const metaStr = `${r.sku}${r.price != null ? ' · C$'+r.price : ''}${bpd ? ' · '+bpd+'盒/端' : ''}`;
 
-  return `
-    <div class="stock-row ${rowClass}" onclick="openStockModal(${r.id})">
+  if (stockSelectMode) {
+    const isSel = stockSelectedIds.has(r.id);
+    return `
+    <div class="stock-row ${statusCls} selectable ${isSel ? 'selected' : ''}"
+         id="stock-row-${r.id}" data-pid="${r.id}" onclick="toggleStockSelect(${r.id})">
+      <div class="stock-cb">
+        <input type="checkbox" ${isSel ? 'checked' : ''}
+               onclick="event.stopPropagation();toggleStockSelect(${r.id})" />
+      </div>
       <div class="sr-left">
         <div class="sr-name">${esc(r.name_cn_en || r.jizhanming || r.sku)}</div>
         <div class="sr-jzm">${esc(r.jizhanming || '')}</div>
-        <div class="sr-meta">${r.sku}${r.price != null ? ' · C$'+r.price : ''}${bpd ? ' · '+bpd+'盒/端' : ''}</div>
+        <div class="sr-meta">${metaStr}</div>
+      </div>
+      <div class="sr-right">
+        <div class="loc-pill ${upZero}">
+          <div class="lp-label">楼上</div>
+          <div class="lp-val">${upDan}</div>
+          <div class="lp-sub">${upBox !== null ? upBox+'盒' : '端'}</div>
+        </div>
+        <div class="loc-pill ${inZero}">
+          <div class="lp-label">店内</div>
+          <div class="lp-val">${inDan}</div>
+          <div class="lp-sub">${inBox !== null ? inBox+'盒' : '端'}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="stock-row ${statusCls}" id="stock-row-${r.id}" data-pid="${r.id}" onclick="openStockModal(${r.id})">
+      <div class="sr-left">
+        <div class="sr-name">${esc(r.name_cn_en || r.jizhanming || r.sku)}</div>
+        <div class="sr-jzm">${esc(r.jizhanming || '')}</div>
+        <div class="sr-meta">${metaStr}</div>
       </div>
       <div class="sr-right">
         <div class="loc-pill ${upZero}">
@@ -2848,6 +3044,213 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   initHiddenSection();
 });
+
+// ══════════════════════════════════════════════
+// BATCH OPERATIONS — SHARED
+// ══════════════════════════════════════════════
+function toggleBatchMenu(menuId) {
+  const menu = document.getElementById(menuId);
+  const wasOpen = menu.classList.contains('open');
+  closeBatchMenus();
+  if (!wasOpen) menu.classList.add('open');
+}
+function closeBatchMenus() {
+  document.querySelectorAll('.batch-menu').forEach(m => m.classList.remove('open'));
+}
+// Close batch menus when clicking anywhere outside
+document.addEventListener('click', e => {
+  if (!e.target.closest('.batch-wrap')) closeBatchMenus();
+});
+
+// ══════════════════════════════════════════════
+// BATCH — STOCK VIEW
+// ══════════════════════════════════════════════
+function exportStockCSV() {
+  const q      = document.getElementById('stock-search')?.value.trim() || '';
+  const series = stockCurrentSeries;
+  window.location.href = `/api/stock/export?q=${encodeURIComponent(q)}&series=${encodeURIComponent(series)}`;
+}
+
+function enterStockSelectMode() {
+  stockSelectMode  = true;
+  stockSelectedIds = new Set();
+  document.getElementById('stock-select-bar').classList.add('show');
+  updateStockSelectBar();
+  loadStockList();  // re-render with checkboxes
+}
+
+function exitStockSelectMode() {
+  stockSelectMode  = false;
+  stockSelectedIds = new Set();
+  document.getElementById('stock-select-bar').classList.remove('show');
+  loadStockList();  // re-render without checkboxes
+}
+
+function toggleStockSelect(pid) {
+  if (stockSelectedIds.has(pid)) {
+    stockSelectedIds.delete(pid);
+  } else {
+    stockSelectedIds.add(pid);
+  }
+  const row = document.getElementById(`stock-row-${pid}`);
+  if (row) {
+    row.classList.toggle('selected', stockSelectedIds.has(pid));
+    const cb = row.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = stockSelectedIds.has(pid);
+  }
+  updateStockSelectBar();
+}
+
+function selectAllStockRows() {
+  const rows = document.querySelectorAll('#stock-list [data-pid]');
+  const allSel = rows.length > 0 && Array.from(rows).every(r => r.classList.contains('selected'));
+  if (allSel) {
+    stockSelectedIds.clear();
+  } else {
+    rows.forEach(r => { const p = parseInt(r.dataset.pid); if (!isNaN(p)) stockSelectedIds.add(p); });
+  }
+  rows.forEach(r => {
+    const p = parseInt(r.dataset.pid);
+    r.classList.toggle('selected', stockSelectedIds.has(p));
+    const cb = r.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = stockSelectedIds.has(p);
+  });
+  updateStockSelectBar();
+}
+
+function updateStockSelectBar() {
+  const count = stockSelectedIds.size;
+  document.getElementById('stock-select-count').textContent = `已选 ${count} 款`;
+  const btn = document.getElementById('stock-delete-btn');
+  if (btn) btn.disabled = count === 0;
+}
+
+async function deleteSelectedStockRows() {
+  const pids = Array.from(stockSelectedIds);
+  if (!pids.length) return;
+  if (!confirm(`确定要从库存列表中移除选中的 ${pids.length} 款产品吗？\n（仅移除库存跟踪记录，不删除产品信息）`)) return;
+
+  const res = await fetch('/api/stock/rows', {
+    method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(pids),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    toast(`已移除 ${data.deleted} 款产品的库存记录`);
+    exitStockSelectMode();
+    await loadStockSummary();
+  } else {
+    toast('操作失败', 'err');
+  }
+}
+
+// ══════════════════════════════════════════════
+// BATCH — SALES VIEW
+// ══════════════════════════════════════════════
+async function clearSalesDay() {
+  const d = document.getElementById('sales-date').value;
+  if (!d) { toast('请先选择日期', 'err'); return; }
+  if (!salesRows.length) { toast('当日没有销量记录', 'err'); return; }
+  if (!confirm(`确定要清空 ${d} 的全部销量记录（共 ${salesRows.length} 款）？\n此操作不可撤销。`)) return;
+
+  const res = await fetch(`/api/sales/clear_day?date=${encodeURIComponent(d)}`, { method: 'DELETE' });
+  if (res.ok) {
+    const data = await res.json();
+    salesRows = [];
+    selectedSalesPid = null;
+    renderSalesList();
+    document.getElementById('sales-right').innerHTML =
+      '<div class="empty-state"><div class="empty-big">📊</div><p>今日记录已清空</p></div>';
+    toast(`已清空 ${data.deleted} 条记录`);
+  } else {
+    toast('操作失败', 'err');
+  }
+}
+
+// ══════════════════════════════════════════════
+// BATCH — PRODUCTS VIEW
+// ══════════════════════════════════════════════
+function exportProductsCSV() {
+  const q      = document.getElementById('search-input').value.trim();
+  const series = currentSeries;
+  window.location.href = `/api/products/export?q=${encodeURIComponent(q)}&series=${encodeURIComponent(series)}`;
+}
+
+function enterProductSelectMode() {
+  productSelectMode  = true;
+  productSelectedIds = new Set();
+  document.getElementById('product-select-bar').classList.add('show');
+  updateProductSelectBar();
+  applySortAndRender();  // re-render cards with checkboxes
+}
+
+function exitProductSelectMode() {
+  productSelectMode  = false;
+  productSelectedIds = new Set();
+  document.getElementById('product-select-bar').classList.remove('show');
+  applySortAndRender();  // re-render without checkboxes
+}
+
+function toggleProductSelect(pid) {
+  if (productSelectedIds.has(pid)) {
+    productSelectedIds.delete(pid);
+  } else {
+    productSelectedIds.add(pid);
+  }
+  const card = document.getElementById(`prod-card-${pid}`);
+  if (card) {
+    card.classList.toggle('selected', productSelectedIds.has(pid));
+    const cb = card.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = productSelectedIds.has(pid);
+  }
+  updateProductSelectBar();
+}
+
+function selectAllProducts() {
+  const cards = document.querySelectorAll('#product-grid [id^="prod-card-"]');
+  const allSel = cards.length > 0 && Array.from(cards).every(c => c.classList.contains('selected'));
+  if (allSel) {
+    productSelectedIds.clear();
+  } else {
+    cards.forEach(c => { const p = parseInt(c.id.replace('prod-card-', '')); if (!isNaN(p)) productSelectedIds.add(p); });
+  }
+  cards.forEach(c => {
+    const p = parseInt(c.id.replace('prod-card-', ''));
+    c.classList.toggle('selected', productSelectedIds.has(p));
+    const cb = c.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = productSelectedIds.has(p);
+  });
+  updateProductSelectBar();
+}
+
+function updateProductSelectBar() {
+  const count = productSelectedIds.size;
+  document.getElementById('product-select-count').textContent = `已选 ${count} 个`;
+  const btn = document.getElementById('product-delete-btn');
+  if (btn) btn.disabled = count === 0;
+}
+
+async function deleteSelectedProducts() {
+  const pids = Array.from(productSelectedIds);
+  if (!pids.length) return;
+  if (!confirm(`确定要永久删除选中的 ${pids.length} 个产品吗？\n相关的库存记录和销量记录也将一并删除，此操作不可撤销。`)) return;
+
+  const res = await fetch('/api/products/bulk_delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(pids),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    toast(`已删除 ${data.deleted} 个产品`);
+    exitProductSelectMode();
+    await loadSeries();
+    doSearch();
+  } else {
+    toast('删除失败', 'err');
+  }
+}
 
 // ══════════════════════════════════════════════
 // INIT
