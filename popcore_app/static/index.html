@@ -362,7 +362,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 /* ════════════════════════════════════
    INVENTORY VIEW — MOBILE FIRST
 ════════════════════════════════════ */
-#view-inventory { position: relative; }
+#view-sales { position: relative; }
 
 /* On mobile: stack vertically with a slide panel */
 .inv-layout {
@@ -509,52 +509,6 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
   background: rgba(124,106,247,.07);
 }
 
-/* ── 端 × 盒 calculator ── */
-.dan-calc {
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
-}
-.dan-calc-title {
-  font-size: 11px; color: var(--muted); text-transform: uppercase;
-  margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
-}
-.dan-calc-row {
-  display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr 24px auto;
-  gap: 6px; align-items: center; font-size: 13px;
-}
-.dan-op { text-align: center; color: var(--muted); font-weight: 700; }
-.dan-calc-row input {
-  font-size: 15px; font-weight: 600; text-align: center; padding: 7px 4px;
-}
-.dan-result {
-  background: rgba(124,106,247,.15); color: var(--accent);
-  border-radius: 6px; padding: 7px 10px;
-  font-size: 15px; font-weight: 700; text-align: center; white-space: nowrap;
-}
-.dan-apply-btn {
-  display: block; width: 100%; margin-top: 8px;
-  background: rgba(124,106,247,.15); border: 1px solid rgba(124,106,247,.3);
-  color: var(--accent); border-radius: 7px; padding: 7px;
-  font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
-  transition: all .15s;
-}
-.dan-apply-btn:hover { background: rgba(124,106,247,.25); }
-
-/* formula box */
-.inv-formula {
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
-}
-.inv-formula .frow {
-  display: flex; justify-content: space-between; padding: 3px 0; align-items: center;
-}
-.inv-formula .frow.sep { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 8px; font-weight: 700; }
-.flabel { color: var(--muted); }
-.fval { font-weight: 600; font-family: monospace; }
-.fval.good { color: var(--green); }
-.fval.bad  { color: var(--red); }
-.fval.neutral { color: var(--text); }
-
 .inv-notes-field { margin-bottom: 12px; }
 .inv-notes-field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 5px; }
 
@@ -565,7 +519,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 /* ════════════════════════════════════
    HISTORY VIEW
 ════════════════════════════════════ */
-#view-history { overflow-y: auto; }
+#view-saleslog { overflow-y: auto; }
 .history-wrap { padding: 16px; max-width: 800px; }
 .history-title { font-size: 17px; font-weight: 700; margin-bottom: 14px; }
 .history-table { width: 100%; border-collapse: collapse; }
@@ -739,8 +693,8 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
     <nav class="top-nav">
       <button class="active" onclick="switchView('search')">🔍 产品搜索</button>
       <button onclick="switchView('stock')">🏭 库存总览</button>
-      <button onclick="switchView('inventory')">📋 夜间盘点</button>
-      <button onclick="switchView('history')">📅 盘点历史</button>
+      <button onclick="switchView('sales')">📊 每日销量</button>
+      <button onclick="switchView('saleslog')">📈 销量记录</button>
     </nav>
   </header>
 
@@ -804,46 +758,45 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
     </div>
   </div>
 
-  <!-- ══ INVENTORY VIEW ══ -->
-  <div id="view-inventory" class="view">
+  <!-- ══ SALES VIEW ══ -->
+  <div id="view-sales" class="view">
     <div class="inv-toolbar">
       <span style="font-size:13px;font-weight:600;color:var(--muted)">日期</span>
-      <input type="date" id="inv-date" />
-      <button class="btn btn-primary" onclick="loadInventoryDay()">加载</button>
-      <button class="btn btn-ghost" onclick="initDayRollover()">从昨日导入</button>
-      <span class="inv-flag" id="inv-flag"></span>
+      <input type="date" id="sales-date" />
+      <button class="btn btn-primary" onclick="loadSalesDay()">加载</button>
+      <span class="inv-flag" id="sales-total-label"></span>
     </div>
     <div class="inv-layout">
       <!-- Left list -->
-      <div class="inv-left" id="inv-left">
+      <div class="inv-left" id="sales-left">
         <div class="inv-left-header">
-          <span id="inv-list-title">产品列表</span>
+          <span id="sales-list-title">产品列表</span>
         </div>
-        <div class="inv-product-list" id="inv-product-list">
+        <div class="inv-product-list" id="sales-product-list">
           <div class="empty-state"><p>请选择日期并加载</p></div>
         </div>
         <div class="inv-add-bar">
-          <input type="search" id="add-product-input" placeholder="＋ 添加产品…" autocomplete="off" />
-          <div class="add-dropdown" id="add-dropdown"></div>
+          <input type="search" id="sales-add-input" placeholder="＋ 添加产品…" autocomplete="off" />
+          <div class="add-dropdown" id="sales-add-dropdown"></div>
         </div>
       </div>
       <!-- Right detail -->
-      <div class="inv-right" id="inv-right">
-        <div class="empty-state" id="inv-placeholder">
-          <div class="empty-big">📦</div>
-          <p>从左侧选择一个产品开始盘点</p>
+      <div class="inv-right" id="sales-right">
+        <div class="empty-state" id="sales-placeholder">
+          <div class="empty-big">📊</div>
+          <p>从左侧选择一个产品录入销量</p>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ══ HISTORY VIEW ══ -->
-  <div id="view-history" class="view">
+  <!-- ══ SALES LOG VIEW ══ -->
+  <div id="view-saleslog" class="view">
     <div class="history-wrap">
-      <div class="history-title">盘点历史</div>
+      <div class="history-title">销量记录</div>
       <table class="history-table">
-        <thead><tr><th>日期</th><th>产品数</th><th>差异项</th></tr></thead>
-        <tbody id="history-tbody"><tr><td colspan="3" style="color:var(--muted);padding:20px">加载中…</td></tr></tbody>
+        <thead><tr><th>日期</th><th>产品款数</th><th>总销量</th></tr></thead>
+        <tbody id="saleslog-tbody"><tr><td colspan="3" style="color:var(--muted);padding:20px">加载中…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -857,11 +810,11 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
       <button class="tab-btn" onclick="switchView('stock')">
         <span class="tab-icon">🏭</span><span>库存</span>
       </button>
-      <button class="tab-btn" onclick="switchView('inventory')">
-        <span class="tab-icon">📋</span><span>盘点</span>
+      <button class="tab-btn" onclick="switchView('sales')">
+        <span class="tab-icon">📊</span><span>销量</span>
       </button>
-      <button class="tab-btn" onclick="switchView('history')">
-        <span class="tab-icon">📅</span><span>历史</span>
+      <button class="tab-btn" onclick="switchView('saleslog')">
+        <span class="tab-icon">📈</span><span>记录</span>
       </button>
     </div>
   </div>
@@ -898,13 +851,13 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
           <label>产品类型</label>
           <div class="type-wrap">
             <select id="edit-product-type-sel" onchange="onEditTypeChange()">
-              <option value="盲盒">盲盒</option>
+              <option value="盲盒Figure">盲盒Figure</option>
+              <option value="盲盒毛绒">盲盒毛绒</option>
               <option value="吊卡">吊卡</option>
-              <option value="Figure">Figure</option>
-              <option value="毛绒">毛绒</option>
-              <option value="卡片">卡片</option>
-              <option value="手办">手办</option>
-              <option value="挂件">挂件</option>
+              <option value="大娃">大娃</option>
+              <option value="配件">配件</option>
+              <option value="周边">周边</option>
+              <option value="盲盒（杂项）">盲盒（杂项）</option>
               <option value="其他">其他 / 自定义</option>
             </select>
             <input type="text" id="edit-product-type-custom" class="type-custom" placeholder="自定义类型…" style="display:none" />
@@ -1035,13 +988,13 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
           <div class="type-wrap">
             <select id="new-product-type-sel" onchange="onNewTypeChange()">
               <option value="">-- 选择类型 --</option>
-              <option value="盲盒">盲盒</option>
+              <option value="盲盒Figure">盲盒Figure</option>
+              <option value="盲盒毛绒">盲盒毛绒</option>
               <option value="吊卡">吊卡</option>
-              <option value="Figure">Figure</option>
-              <option value="毛绒">毛绒</option>
-              <option value="卡片">卡片</option>
-              <option value="手办">手办</option>
-              <option value="挂件">挂件</option>
+              <option value="大娃">大娃</option>
+              <option value="配件">配件</option>
+              <option value="周边">周边</option>
+              <option value="盲盒（杂项）">盲盒（杂项）</option>
               <option value="其他">其他 / 自定义</option>
             </select>
             <input type="text" id="new-product-type-custom" class="type-custom" placeholder="自定义类型…" style="display:none" />
@@ -1184,19 +1137,19 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 // ══════════════════════════════════════════════
 // STATE
 // ══════════════════════════════════════════════
-let currentProductId = null;
-let currentSeries    = '';
-let currentSort      = 'default';
-let lastProducts     = [];
-let searchTimer      = null;
-let invRows          = [];
-let selectedPid      = null;
-let seriesList       = [];
+let currentProductId  = null;
+let currentSeries     = '';
+let currentSort       = 'default';
+let lastProducts      = [];
+let searchTimer       = null;
+let salesRows         = [];
+let selectedSalesPid  = null;
+let seriesList        = [];
 
 // ══════════════════════════════════════════════
 // NAVIGATION
 // ══════════════════════════════════════════════
-const VIEW_ORDER = ['search', 'stock', 'inventory', 'history'];
+const VIEW_ORDER = ['search', 'stock', 'sales', 'saleslog'];
 
 function switchView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -1207,8 +1160,8 @@ function switchView(name) {
     b.classList.toggle('active', VIEW_ORDER[i] === name);
   });
   document.getElementById(`view-${name}`).classList.add('active');
-  if (name === 'history') loadHistory();
-  if (name === 'inventory') mobileShowList();
+  if (name === 'saleslog') loadSalesLog();
+  if (name === 'sales') salesMobileShowList();
   if (name === 'stock') loadStockView();
 }
 
@@ -1542,13 +1495,13 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 function overlayClose(e, id) { if (e.target === document.getElementById(id)) closeModal(id); }
 
 // ── Product type dropdown helpers ──────────────────────────────────────────
-const PRESET_TYPES = ['盲盒','吊卡','Figure','毛绒','卡片','手办','挂件'];
+const PRESET_TYPES = ['盲盒Figure','盲盒毛绒','吊卡','大娃','配件','周边','盲盒（杂项）'];
 
 function setEditProductType(val) {
   const sel = document.getElementById('edit-product-type-sel');
   const custom = document.getElementById('edit-product-type-custom');
   if (!val || PRESET_TYPES.includes(val)) {
-    sel.value = val || '盲盒';
+    sel.value = val || '盲盒Figure';
     custom.style.display = 'none';
     custom.value = '';
   } else {
@@ -1582,259 +1535,115 @@ function onNewTypeChange() {
 }
 
 // ══════════════════════════════════════════════
-// INVENTORY — LIST
+// SALES — LIST
 // ══════════════════════════════════════════════
-async function loadInventoryDay() {
-  const d = document.getElementById('inv-date').value;
+async function loadSalesDay() {
+  const d = document.getElementById('sales-date').value;
   if (!d) { toast('请选择日期', 'err'); return; }
-  const res = await fetch(`/api/inventory/date/${d}`);
-  invRows = await res.json();
-  selectedPid = null;
-  renderInvList();
-  mobileShowList();
-  document.getElementById('inv-right').innerHTML =
-    '<div class="empty-state" id="inv-placeholder"><div class="empty-big">📦</div><p>从左侧选择产品</p></div>';
+  const res = await fetch(`/api/sales?date=${encodeURIComponent(d)}`);
+  salesRows = await res.json();
+  selectedSalesPid = null;
+  renderSalesList();
+  salesMobileShowList();
+  document.getElementById('sales-right').innerHTML =
+    '<div class="empty-state"><div class="empty-big">📊</div><p>从左侧选择产品录入销量</p></div>';
 }
 
-async function initDayRollover() {
-  const d = document.getElementById('inv-date').value || todayStr();
-  document.getElementById('inv-date').value = d;
-  await fetch('/api/inventory/init_day', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({date: d}),
-  });
-  await loadInventoryDay();
-  toast('已从昨日数据导入');
-}
+function renderSalesList() {
+  const list  = document.getElementById('sales-product-list');
+  const title = document.getElementById('sales-list-title');
+  const label = document.getElementById('sales-total-label');
 
-function renderInvList() {
-  const list  = document.getElementById('inv-product-list');
-  const title = document.getElementById('inv-list-title');
-  const flag  = document.getElementById('inv-flag');
-
-  if (!invRows.length) {
+  if (!salesRows.length) {
     list.innerHTML = '<div class="empty-state"><p>今日还没有产品<br>用下方搜索框添加</p></div>';
     title.textContent = '产品列表';
-    flag.textContent = '';
+    label.textContent = '';
     return;
   }
 
-  let flags = 0;
-  list.innerHTML = invRows.map(r => {
-    let statusClass = 'status-none';
-    let badge = '<span class="inv-badge none">未录入</span>';
-    if (r.closing_qty !== null && r.closing_qty !== undefined) {
-      const d = r.discrepancy || 0;
-      if (d === 0) {
-        statusClass = 'status-ok';
-        badge = '<span class="inv-badge ok">✓</span>';
-      } else {
-        statusClass = 'status-bad';
-        flags++;
-        badge = `<span class="inv-badge bad">${d > 0 ? '+' : ''}${d}</span>`;
-      }
-    }
-    const sel = selectedPid === r.product_id ? 'selected' : '';
+  const totalSold = salesRows.reduce((s, r) => s + (r.qty_sold || 0), 0);
+  list.innerHTML = salesRows.map(r => {
+    const qty = r.qty_sold || 0;
+    const sel = selectedSalesPid === r.product_id ? 'selected' : '';
+    const statusClass = qty > 0 ? 'status-ok' : 'status-none';
+    const badge = qty > 0
+      ? `<span class="inv-badge ok">×${qty}</span>`
+      : `<span class="inv-badge none">未录入</span>`;
     return `
       <div class="inv-item ${statusClass} ${sel}" data-pid="${r.product_id}"
-           onclick="selectInvItem(${r.product_id})">
+           onclick="selectSalesItem(${r.product_id})">
         <div class="inv-item-info">
-          <div class="inv-item-name">${esc(r.name_cn_en || r.jizhanming || r.sku)}</div>
-          <div class="inv-item-sub">${esc(r.jizhanming || '')} · ${r.sku}</div>
+          <div class="inv-item-name">${esc(r.jizhanming || r.name_cn_en || r.sku)}</div>
+          <div class="inv-item-sub">${esc(r.ip_series || '')} · ${r.sku}</div>
         </div>
         ${badge}
       </div>`;
   }).join('');
 
-  title.textContent = `产品列表 (${invRows.length})`;
-  flag.textContent  = flags ? `⚠ ${flags} 差异` : '';
+  title.textContent = `产品列表 (${salesRows.length})`;
+  label.textContent = totalSold > 0 ? `共 ${totalSold} 件` : '';
 }
 
 // ══════════════════════════════════════════════
-// INVENTORY — DETAIL PANEL
+// SALES — DETAIL PANEL
 // ══════════════════════════════════════════════
-function selectInvItem(pid) {
-  selectedPid = pid;
-  const row = invRows.find(r => r.product_id === pid);
+function selectSalesItem(pid) {
+  selectedSalesPid = pid;
+  const row = salesRows.find(r => r.product_id === pid);
   if (!row) return;
-  renderInvList(); // update selection highlight
-  renderInvDetail(row);
-  mobileShowDetail(); // on mobile, slide to detail
+  renderSalesList();
+  renderSalesDetail(row);
+  salesMobileShowDetail();
 }
 
-function renderInvDetail(row) {
-  const d        = document.getElementById('inv-date').value;
-  const opening  = row.opening_qty  || 0;
-  const restock  = row.restock_qty  || 0;
-  const sold     = row.sold_qty     || 0;
-  const expected = opening + restock - sold;
-  const closing  = (row.closing_qty !== null && row.closing_qty !== undefined) ? row.closing_qty : '';
-  const disc     = closing !== '' ? closing - expected : null;
+function renderSalesDetail(row) {
+  const d   = document.getElementById('sales-date').value;
+  const qty = row.qty_sold || 0;
 
-  const discHtml = disc !== null
-    ? `<div class="frow sep">
-         <span class="flabel">实际 vs 预期</span>
-         <span class="fval ${disc === 0 ? 'good' : 'bad'}">${disc === 0 ? '✓ 一致' : `⚠ ${disc > 0 ? '+' : ''}${disc} 件`}</span>
-       </div>`
-    : '';
-
-  document.getElementById('inv-right').innerHTML = `
+  document.getElementById('sales-right').innerHTML = `
     <div class="inv-detail-card">
-      <button class="inv-back-btn" onclick="mobileShowList()">← 返回列表</button>
+      <button class="inv-back-btn" onclick="salesMobileShowList()">← 返回列表</button>
+      <div class="inv-detail-name">${esc(row.jizhanming || row.name_cn_en || row.sku)}</div>
+      <div class="inv-detail-sub">${esc(row.ip_series || '')} · ${row.sku}${row.price != null ? ' · C$' + row.price : ''}</div>
 
-      <div class="inv-detail-name">${esc(row.name_cn_en || row.jizhanming || row.sku)}</div>
-      <div class="inv-detail-sub">${esc(row.jizhanming || '')} · ${row.sku}${row.price != null ? ' · C$' + row.price : ''}</div>
-
-      <!-- Quantity inputs -->
-      <div class="qty-grid">
-        <div class="qty-field">
-          <label>昨日结存</label>
-          <input type="number" id="inp-opening" min="0" inputmode="numeric"
-            value="${opening}" onchange="refreshFormula('${d}',${row.product_id})" />
-        </div>
-        <div class="qty-field hl">
-          <label>今日补货</label>
-          <input type="number" id="inp-restock" min="0" inputmode="numeric"
-            value="${restock}" onchange="refreshFormula('${d}',${row.product_id})" />
-        </div>
-        <div class="qty-field hl">
-          <label>今日销售</label>
-          <input type="number" id="inp-sold" min="0" inputmode="numeric"
-            value="${sold}" onchange="refreshFormula('${d}',${row.product_id})" />
-        </div>
+      <div class="qty-grid" style="margin-top:16px">
         <div class="qty-field closing">
-          <label>实际盘点数量 ✏️</label>
-          <input type="number" id="inp-closing" min="0" inputmode="numeric"
-            value="${closing}" placeholder="填入实物数量"
-            onchange="refreshFormula('${d}',${row.product_id})" />
+          <label>今日销量（件）</label>
+          <input type="number" id="inp-sales-qty" min="0" inputmode="numeric"
+            value="${qty}" placeholder="0"
+            onchange="autoSaveSales('${d}',${row.product_id})" />
         </div>
       </div>
 
-      <!-- 端 × 盒 calculator -->
-      <div class="dan-calc">
-        <div class="dan-calc-title">📦 端 × 盒计算器 <span style="color:var(--text);font-size:12px;text-transform:none;letter-spacing:0">（端数 × 每端数量 + 零散）</span></div>
-        <div class="dan-calc-row">
-          <input type="number" id="dan-duan" min="0" inputmode="numeric" placeholder="端" oninput="calcDan()" />
-          <span class="dan-op">×</span>
-          <input type="number" id="dan-per" min="0" inputmode="numeric" placeholder="每端" oninput="calcDan()" />
-          <span class="dan-op">+</span>
-          <input type="number" id="dan-loose" min="0" inputmode="numeric" placeholder="零散" oninput="calcDan()" />
-          <span class="dan-op">=</span>
-          <div class="dan-result" id="dan-total">?</div>
-        </div>
-        <button class="dan-apply-btn" onclick="applyDanToClosing('${d}',${row.product_id})">
-          ↑ 填入盘点数量
-        </button>
-      </div>
-
-      <!-- Formula -->
-      <div class="inv-formula">
-        <div class="frow"><span class="flabel">昨日结存</span><span class="fval neutral" id="f-opening">${opening}</span></div>
-        <div class="frow"><span class="flabel">＋ 今日补货</span><span class="fval neutral" id="f-restock">+${restock}</span></div>
-        <div class="frow"><span class="flabel">－ 今日销售</span><span class="fval neutral" id="f-sold">−${sold}</span></div>
-        <div class="frow sep"><span class="flabel">= 预期库存</span><span class="fval neutral" id="f-expected">${expected}</span></div>
-        <div class="frow"><span class="flabel">实际盘点</span><span class="fval neutral" id="f-closing">${closing !== '' ? closing : '?'}</span></div>
-        <div id="f-disc">${discHtml}</div>
-      </div>
-
-      <!-- Notes -->
-      <div class="inv-notes-field">
+      <div class="inv-notes-field" style="margin-top:14px">
         <label>备注</label>
-        <textarea id="inp-notes" rows="2" onchange="autoSaveInv('${d}',${row.product_id})">${esc(row.notes || '')}</textarea>
+        <textarea id="inp-sales-notes" rows="2"
+          onchange="autoSaveSales('${d}',${row.product_id})">${esc(row.notes || '')}</textarea>
       </div>
 
       <div class="inv-detail-actions">
-        <button class="btn btn-primary" onclick="saveInvRow('${d}',${row.product_id},true)">保存</button>
-        <span class="inv-save-ok" id="inv-save-ok">已保存 ✓</span>
+        <button class="btn btn-primary" onclick="saveSalesRow('${d}',${row.product_id},true)">保存</button>
+        <span class="inv-save-ok" id="sales-save-ok">已保存 ✓</span>
       </div>
     </div>
   `;
 }
 
-// Live formula update
-function refreshFormula(date, pid) {
-  const opening = parseInt(document.getElementById('inp-opening')?.value) || 0;
-  const restock = parseInt(document.getElementById('inp-restock')?.value) || 0;
-  const sold    = parseInt(document.getElementById('inp-sold')?.value)    || 0;
-  const closingEl = document.getElementById('inp-closing');
-  const closing = closingEl && closingEl.value !== '' ? parseInt(closingEl.value) : null;
-  const expected = opening + restock - sold;
+async function saveSalesRow(date, pid, explicit=false) {
+  const qty   = parseInt(document.getElementById('inp-sales-qty')?.value)   || 0;
+  const notes = document.getElementById('inp-sales-notes')?.value || '';
 
-  const set = (id, val) => { const el=document.getElementById(id); if(el) el.textContent=val; };
-  set('f-opening', opening);
-  set('f-restock',  `+${restock}`);
-  set('f-sold',     `−${sold}`);
-  set('f-expected', expected);
-  set('f-closing',  closing !== null ? closing : '?');
-
-  const fd = document.getElementById('f-disc');
-  if (fd && closing !== null) {
-    const disc = closing - expected;
-    fd.innerHTML = `
-      <div class="frow sep">
-        <span class="flabel">实际 vs 预期</span>
-        <span class="fval ${disc===0?'good':'bad'}">${disc===0?'✓ 一致':`⚠ ${disc>0?'+':''}${disc} 件`}</span>
-      </div>`;
-  } else if (fd) {
-    fd.innerHTML = '';
-  }
-
-  // auto-save after short debounce
-  clearTimeout(window._invSaveTimer);
-  window._invSaveTimer = setTimeout(() => saveInvRow(date, pid, false), 800);
-}
-
-// ── 端×盒 calculator ──
-function calcDan() {
-  const duan  = parseInt(document.getElementById('dan-duan')?.value)  || 0;
-  const per   = parseInt(document.getElementById('dan-per')?.value)   || 0;
-  const loose = parseInt(document.getElementById('dan-loose')?.value) || 0;
-  const total = duan * per + loose;
-  const el = document.getElementById('dan-total');
-  if (el) el.textContent = total;
-}
-
-function applyDanToClosing(date, pid) {
-  const duan  = parseInt(document.getElementById('dan-duan')?.value)  || 0;
-  const per   = parseInt(document.getElementById('dan-per')?.value)   || 0;
-  const loose = parseInt(document.getElementById('dan-loose')?.value) || 0;
-  const total = duan * per + loose;
-  const el = document.getElementById('inp-closing');
-  if (el) {
-    el.value = total;
-    refreshFormula(date, pid);
-    // pulse highlight
-    el.style.borderColor = 'var(--green)';
-    setTimeout(() => el.style.borderColor = '', 1000);
-  }
-}
-
-async function saveInvRow(date, pid, explicit=false) {
-  const opening  = parseInt(document.getElementById('inp-opening')?.value)  || 0;
-  const restock  = parseInt(document.getElementById('inp-restock')?.value)  || 0;
-  const sold     = parseInt(document.getElementById('inp-sold')?.value)     || 0;
-  const closingEl = document.getElementById('inp-closing');
-  const closing  = closingEl && closingEl.value !== '' ? parseInt(closingEl.value) : null;
-  const notes    = document.getElementById('inp-notes')?.value || '';
-
-  const res = await fetch('/api/inventory/upsert', {
+  const res = await fetch('/api/sales/upsert', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({product_id:pid, date, opening_qty:opening,
-      restock_qty:restock, sold_qty:sold, closing_qty:closing, notes}),
+    body: JSON.stringify({product_id: pid, date, qty_sold: qty, notes}),
   });
 
   if (res.ok) {
-    const data = await res.json();
-    const idx = invRows.findIndex(r => r.product_id === pid);
-    if (idx >= 0) {
-      Object.assign(invRows[idx], {
-        opening_qty: opening, restock_qty: restock, sold_qty: sold,
-        closing_qty: closing, expected_qty: data.expected, discrepancy: data.discrepancy,
-      });
-    }
-    renderInvList();
+    const idx = salesRows.findIndex(r => r.product_id === pid);
+    if (idx >= 0) { salesRows[idx].qty_sold = qty; salesRows[idx].notes = notes; }
+    renderSalesList();
     if (explicit) {
-      const si = document.getElementById('inv-save-ok');
+      const si = document.getElementById('sales-save-ok');
       if (si) { si.classList.add('show'); setTimeout(() => si.classList.remove('show'), 2000); }
       toast('已保存');
     }
@@ -1843,41 +1652,41 @@ async function saveInvRow(date, pid, explicit=false) {
   }
 }
 
-function autoSaveInv(date, pid) {
-  clearTimeout(window._invNotesTimer);
-  window._invNotesTimer = setTimeout(() => saveInvRow(date, pid, false), 1000);
+function autoSaveSales(date, pid) {
+  clearTimeout(window._salesSaveTimer);
+  window._salesSaveTimer = setTimeout(() => saveSalesRow(date, pid, false), 800);
 }
 
 // ══════════════════════════════════════════════
-// MOBILE PANEL TRANSITIONS
+// MOBILE PANEL TRANSITIONS (SALES)
 // ══════════════════════════════════════════════
-function mobileShowDetail() {
+function salesMobileShowDetail() {
   if (window.innerWidth >= 700) return;
-  document.getElementById('inv-left').classList.add('mobile-hidden');
-  document.getElementById('inv-right').classList.add('mobile-open');
+  document.getElementById('sales-left').classList.add('mobile-hidden');
+  document.getElementById('sales-right').classList.add('mobile-open');
 }
-function mobileShowList() {
-  document.getElementById('inv-left').classList.remove('mobile-hidden');
-  document.getElementById('inv-right').classList.remove('mobile-open');
+function salesMobileShowList() {
+  document.getElementById('sales-left').classList.remove('mobile-hidden');
+  document.getElementById('sales-right').classList.remove('mobile-open');
 }
 
 // ══════════════════════════════════════════════
-// ADD PRODUCT TO INVENTORY CHECK
+// ADD PRODUCT TO SALES DAY
 // ══════════════════════════════════════════════
-let addSearchTimer;
+let salesAddSearchTimer;
 document.addEventListener('DOMContentLoaded', () => {
-  const inp  = document.getElementById('add-product-input');
-  const drop = document.getElementById('add-dropdown');
+  const inp  = document.getElementById('sales-add-input');
+  const drop = document.getElementById('sales-add-dropdown');
 
   inp.addEventListener('input', () => {
-    clearTimeout(addSearchTimer);
+    clearTimeout(salesAddSearchTimer);
     const q = inp.value.trim();
     if (!q) { drop.classList.remove('open'); return; }
-    addSearchTimer = setTimeout(async () => {
+    salesAddSearchTimer = setTimeout(async () => {
       const res = await fetch(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`);
       const products = await res.json();
       drop.innerHTML = products.map(p => `
-        <div class="add-opt" onclick="addToCheck(${p.id})">
+        <div class="add-opt" onclick="addToSales(${p.id})">
           <span class="add-opt-jzm">${esc(p.jizhanming || p.name_cn_en || '-')}</span>
           <span class="add-opt-meta">${p.sku}${p.price != null ? ' · C$'+p.price : ''} · ${esc(p.ip_series||'')}</span>
         </div>
@@ -1889,53 +1698,53 @@ document.addEventListener('DOMContentLoaded', () => {
   inp.addEventListener('blur', () => setTimeout(() => drop.classList.remove('open'), 200));
 
   // Set today's date
-  document.getElementById('inv-date').value = todayStr();
+  document.getElementById('sales-date').value = todayStr();
 });
 
-async function addToCheck(pid) {
-  const d = document.getElementById('inv-date').value;
+async function addToSales(pid) {
+  const d = document.getElementById('sales-date').value;
   if (!d) { toast('请先选择日期', 'err'); return; }
-  if (invRows.find(r => r.product_id === pid)) {
+  if (salesRows.find(r => r.product_id === pid)) {
     toast('该产品已在列表中');
-    document.getElementById('add-product-input').value = '';
-    document.getElementById('add-dropdown').classList.remove('open');
+    document.getElementById('sales-add-input').value = '';
+    document.getElementById('sales-add-dropdown').classList.remove('open');
     return;
   }
-  await fetch('/api/inventory/add_product', {
+  await fetch('/api/sales/add_product', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({product_id: pid, date: d, opening_qty: 0}),
+    body: JSON.stringify({product_id: pid, date: d}),
   });
-  document.getElementById('add-product-input').value = '';
-  document.getElementById('add-dropdown').classList.remove('open');
-  await loadInventoryDay();
+  document.getElementById('sales-add-input').value = '';
+  document.getElementById('sales-add-dropdown').classList.remove('open');
+  await loadSalesDay();
   toast('已添加');
-  selectInvItem(pid);
+  selectSalesItem(pid);
 }
 
 // ══════════════════════════════════════════════
-// HISTORY
+// SALES LOG
 // ══════════════════════════════════════════════
-async function loadHistory() {
-  const res = await fetch('/api/inventory/summary');
+async function loadSalesLog() {
+  const res = await fetch('/api/sales/summary');
   const rows = await res.json();
-  const tbody = document.getElementById('history-tbody');
+  const tbody = document.getElementById('saleslog-tbody');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted);padding:20px">还没有盘点记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted);padding:20px">还没有销量记录</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => `
     <tr>
-      <td><span class="date-link" onclick="jumpToDate('${r.date}')">${r.date}</span></td>
-      <td>${r.total_items}</td>
-      <td><span class="${r.flagged ? 'flag-bad' : 'flag-good'}">${r.flagged ? r.flagged+' 项差异' : '✓ 全部一致'}</span></td>
+      <td><span class="date-link" onclick="jumpToSalesDate('${r.date}')">${r.date}</span></td>
+      <td>${r.product_count} 款</td>
+      <td><span class="${(r.total_sold||0) > 0 ? 'flag-good' : ''}">${r.total_sold || 0} 件</span></td>
     </tr>
   `).join('');
 }
 
-function jumpToDate(d) {
-  document.getElementById('inv-date').value = d;
-  switchView('inventory');
-  loadInventoryDay();
+function jumpToSalesDate(d) {
+  document.getElementById('sales-date').value = d;
+  switchView('sales');
+  loadSalesDay();
 }
 
 // ══════════════════════════════════════════════

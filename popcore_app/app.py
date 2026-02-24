@@ -73,6 +73,17 @@ def migrate_db():
             notes      TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS daily_sales (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL REFERENCES products(id),
+            date       TEXT NOT NULL,
+            qty_sold   INTEGER NOT NULL DEFAULT 0,
+            notes      TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(product_id, date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sales(date);
+        CREATE INDEX IF NOT EXISTS idx_daily_sales_pid  ON daily_sales(product_id);
     ''')
 
     con.commit()
@@ -95,7 +106,7 @@ def index():
 def _score_product(product, tokens, q_full):
     """
     Return a relevance score (higher = better match).
-    Called in Python after a broad SQL fetch so we can rank properly.
+    Optimised for Chinese text: bigram matching + per-field character hits.
     """
     blob = product.get('search_blob', '')
     jzm  = (product.get('jizhanming') or '').lower()
@@ -104,21 +115,37 @@ def _score_product(product, tokens, q_full):
 
     score = 0
 
-    # Exact full-query match in key fields → top bonus
+    # ── Exact full-query match → highest bonus ──
     if q_full in jzm:  score += 100
     if q_full in sku:  score += 80
     if q_full in name: score += 60
 
-    # Per-token scoring
+    # ── Per-token scoring ──
     for t in tokens:
         if t in jzm:  score += 30
         if t in sku:  score += 20
         if t in name: score += 10
         if t in blob: score += 5
 
-    # Character-level: how many individual chars from q_full appear in blob
-    matched_chars = sum(1 for ch in q_full if ch in blob)
-    score += matched_chars * 2
+    # ── Bigram scoring (consecutive 2-char pairs, great for Chinese) ──
+    for i in range(len(q_full) - 1):
+        bg = q_full[i:i+2]
+        if not bg.strip():
+            continue
+        if bg in jzm:  score += 20
+        if bg in name: score += 12
+        if bg in blob: score += 6
+
+    # ── Character-level: hits in key fields (weighted by field importance) ──
+    chars = [ch for ch in q_full if ch.strip()]
+    if chars:
+        score += sum(6 for ch in chars if ch in jzm)
+        score += sum(3 for ch in chars if ch in name)
+        score += sum(1 for ch in chars if ch in blob)
+        # Ratio bonus: reward high coverage
+        ratio = sum(1 for ch in chars if ch in blob) / len(chars)
+        if ratio >= 0.85: score += 25
+        elif ratio >= 0.65: score += 12
 
     return score
 
@@ -191,11 +218,27 @@ def search_products():
         ''', char_params)
         char_rows = [dict(r) for r in cur.fetchall()]
 
+    # ── Strategy 4: bigram match — any consecutive 2-char pair of query in blob ──
+    # Catches partial Chinese name matches even when not all chars present
+    bigrams = [q[i:i+2] for i in range(len(q) - 1) if not q[i:i+2].isspace()]
+    bi_rows = []
+    if bigrams:
+        bi_cond   = " OR ".join("search_blob LIKE ?" for _ in bigrams)
+        bi_params = [f'%{b}%' for b in bigrams] + series_param
+        cur.execute(f'''
+            SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
+                   brand, notes, release_date, search_blob
+            FROM products
+            WHERE ({bi_cond}) {series_clause}
+            LIMIT 200
+        ''', bi_params)
+        bi_rows = [dict(r) for r in cur.fetchall()]
+
     con.close()
 
     # Merge all candidates (deduplicate by id)
     seen = {}
-    for r in and_rows + or_rows + char_rows:
+    for r in and_rows + or_rows + char_rows + bi_rows:
         if r['id'] not in seen:
             seen[r['id']] = r
 
@@ -404,197 +447,6 @@ def get_series():
     rows = [r[0] for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
-
-
-# ─── Inventory / Nightly Check API ───────────────────────────────────────────
-
-@app.route('/api/inventory/date/<check_date>')
-def get_inventory_for_date(check_date):
-    """Return all inventory rows for a given date, joined with product info."""
-    con = get_db()
-    cur = con.cursor()
-    cur.execute('''
-        SELECT i.id, i.product_id, i.date, i.opening_qty, i.restock_qty,
-               i.sold_qty, i.closing_qty, i.expected_qty, i.discrepancy, i.notes,
-               p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
-        FROM inventory i
-        JOIN products p ON p.id = i.product_id
-        WHERE i.date = ?
-        ORDER BY p.ip_series, p.sku
-    ''', (check_date,))
-    rows = [dict(r) for r in cur.fetchall()]
-    con.close()
-    return jsonify(rows)
-
-
-@app.route('/api/inventory/summary')
-def inventory_summary():
-    """Return dates that have inventory records, with discrepancy counts."""
-    con = get_db()
-    cur = con.cursor()
-    cur.execute('''
-        SELECT date,
-               COUNT(*) as total_items,
-               SUM(CASE WHEN discrepancy != 0 AND discrepancy IS NOT NULL THEN 1 ELSE 0 END) as flagged
-        FROM inventory
-        GROUP BY date
-        ORDER BY date DESC
-        LIMIT 30
-    ''')
-    rows = [dict(r) for r in cur.fetchall()]
-    con.close()
-    return jsonify(rows)
-
-
-@app.route('/api/inventory/init_day', methods=['POST'])
-def init_day():
-    """
-    Initialize inventory rows for a new check day.
-    Uses closing_qty from yesterday as today's opening_qty.
-    Body: { "date": "YYYY-MM-DD", "product_ids": [1,2,3,...] }
-    If product_ids is empty, rolls over all products that had a row yesterday.
-    """
-    data = request.get_json()
-    check_date = data.get('date', str(date.today()))
-    product_ids = data.get('product_ids', [])
-
-    yesterday = str(date.fromisoformat(check_date) - timedelta(days=1))
-
-    con = get_db()
-    cur = con.cursor()
-
-    if not product_ids:
-        # Roll over all products from yesterday
-        cur.execute('''
-            SELECT product_id, closing_qty
-            FROM inventory
-            WHERE date = ?
-        ''', (yesterday,))
-        yesterday_rows = {r['product_id']: r['closing_qty'] for r in cur.fetchall()}
-    else:
-        cur.execute(f'''
-            SELECT product_id, closing_qty
-            FROM inventory
-            WHERE date = ? AND product_id IN ({",".join("?" * len(product_ids))})
-        ''', [yesterday] + product_ids)
-        yesterday_rows = {r['product_id']: r['closing_qty'] for r in cur.fetchall()}
-
-    pids = product_ids if product_ids else list(yesterday_rows.keys())
-
-    for pid in pids:
-        opening = yesterday_rows.get(pid, 0) or 0
-        cur.execute('''
-            INSERT OR IGNORE INTO inventory (product_id, date, opening_qty, restock_qty, sold_qty)
-            VALUES (?, ?, ?, 0, 0)
-        ''', (pid, check_date, opening))
-
-    con.commit()
-    con.close()
-    return jsonify({'ok': True, 'date': check_date, 'products': len(pids)})
-
-
-@app.route('/api/inventory/upsert', methods=['POST'])
-def upsert_inventory():
-    """
-    Upsert one inventory row. Recalculates expected and discrepancy.
-    Body: { product_id, date, opening_qty, restock_qty, sold_qty, closing_qty, notes }
-    closing_qty can be null if not yet counted.
-    """
-    data = request.get_json()
-    pid = data['product_id']
-    check_date = data['date']
-    opening = int(data.get('opening_qty', 0) or 0)
-    restock = int(data.get('restock_qty', 0) or 0)
-    sold = int(data.get('sold_qty', 0) or 0)
-    closing = data.get('closing_qty')
-    notes = data.get('notes', '')
-
-    if closing is not None:
-        closing = int(closing)
-
-    expected = opening + restock - sold
-    discrepancy = (closing - expected) if closing is not None else None
-
-    con = get_db()
-    cur = con.cursor()
-    cur.execute('''
-        INSERT INTO inventory (product_id, date, opening_qty, restock_qty, sold_qty,
-                               closing_qty, expected_qty, discrepancy, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(product_id, date) DO UPDATE SET
-            opening_qty  = excluded.opening_qty,
-            restock_qty  = excluded.restock_qty,
-            sold_qty     = excluded.sold_qty,
-            closing_qty  = excluded.closing_qty,
-            expected_qty = excluded.expected_qty,
-            discrepancy  = excluded.discrepancy,
-            notes        = excluded.notes
-    ''', (pid, check_date, opening, restock, sold, closing, expected, discrepancy, notes))
-    con.commit()
-    con.close()
-    return jsonify({'ok': True, 'expected': expected, 'discrepancy': discrepancy})
-
-
-@app.route('/api/inventory/bulk_upsert', methods=['POST'])
-def bulk_upsert_inventory():
-    """Bulk upsert inventory rows. Body: { rows: [...] }"""
-    data = request.get_json()
-    rows = data.get('rows', [])
-
-    con = get_db()
-    cur = con.cursor()
-
-    for row in rows:
-        pid = row['product_id']
-        check_date = row['date']
-        opening = int(row.get('opening_qty', 0) or 0)
-        restock = int(row.get('restock_qty', 0) or 0)
-        sold = int(row.get('sold_qty', 0) or 0)
-        closing = row.get('closing_qty')
-        notes = row.get('notes', '')
-
-        if closing is not None:
-            closing = int(closing)
-
-        expected = opening + restock - sold
-        discrepancy = (closing - expected) if closing is not None else None
-
-        cur.execute('''
-            INSERT INTO inventory (product_id, date, opening_qty, restock_qty, sold_qty,
-                                   closing_qty, expected_qty, discrepancy, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(product_id, date) DO UPDATE SET
-                opening_qty  = excluded.opening_qty,
-                restock_qty  = excluded.restock_qty,
-                sold_qty     = excluded.sold_qty,
-                closing_qty  = excluded.closing_qty,
-                expected_qty = excluded.expected_qty,
-                discrepancy  = excluded.discrepancy,
-                notes        = excluded.notes
-        ''', (pid, check_date, opening, restock, sold, closing, expected, discrepancy, notes))
-
-    con.commit()
-    con.close()
-    return jsonify({'ok': True, 'updated': len(rows)})
-
-
-@app.route('/api/inventory/add_product', methods=['POST'])
-def add_product_to_check():
-    """Add a product to today's check with a starting qty. Body: { product_id, date, opening_qty }"""
-    data = request.get_json()
-    pid = data['product_id']
-    check_date = data.get('date', str(date.today()))
-    opening = int(data.get('opening_qty', 0) or 0)
-
-    con = get_db()
-    cur = con.cursor()
-    cur.execute('''
-        INSERT OR IGNORE INTO inventory (product_id, date, opening_qty, restock_qty, sold_qty)
-        VALUES (?, ?, ?, 0, 0)
-    ''', (pid, check_date, opening))
-    con.commit()
-    con.close()
-    return jsonify({'ok': True})
 
 
 # ─── Stock API ────────────────────────────────────────────────────────────────
@@ -893,7 +745,85 @@ def stock_summary():
     return jsonify(row)
 
 
-# ─── Inventory / Nightly Check API ───────────────────────────────────────────
+# ─── Daily Sales API ──────────────────────────────────────────────────────────
+
+@app.route('/api/sales')
+def get_sales():
+    """Get all sales records for a given date, joined with product info."""
+    d = request.args.get('date', str(date.today()))
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.notes,
+               p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
+        FROM daily_sales ds
+        JOIN products p ON p.id = ds.product_id
+        WHERE ds.date = ?
+        ORDER BY p.ip_series, p.jizhanming
+    ''', (d,))
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
+@app.route('/api/sales/upsert', methods=['POST'])
+def upsert_sale():
+    """Upsert a single product's sales qty for a date."""
+    data  = request.get_json()
+    pid   = int(data['product_id'])
+    d     = data.get('date', str(date.today()))
+    qty   = int(data.get('qty_sold', 0) or 0)
+    notes = data.get('notes', '')
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        INSERT INTO daily_sales (product_id, date, qty_sold, notes)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(product_id, date) DO UPDATE SET
+            qty_sold = excluded.qty_sold,
+            notes    = excluded.notes
+    ''', (pid, d, qty, notes))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/sales/add_product', methods=['POST'])
+def add_product_to_sales():
+    """Add a product to a date's sales list with 0 qty (idempotent)."""
+    data = request.get_json()
+    pid  = int(data['product_id'])
+    d    = data.get('date', str(date.today()))
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        INSERT OR IGNORE INTO daily_sales (product_id, date, qty_sold)
+        VALUES (?, ?, 0)
+    ''', (pid, d))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/sales/summary')
+def sales_summary():
+    """Recent dates with total qty sold and product count."""
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT date,
+               COUNT(*)       AS product_count,
+               SUM(qty_sold)  AS total_sold
+        FROM daily_sales
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 60
+    ''')
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
 
 
 if __name__ == '__main__':
