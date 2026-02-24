@@ -519,7 +519,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 /* ════════════════════════════════════
    HISTORY VIEW
 ════════════════════════════════════ */
-#view-saleslog { display: flex; flex-direction: column; overflow: hidden; }
+#view-saleslog { flex-direction: column; overflow: hidden; }
 .history-wrap { padding: 16px; max-width: 800px; overflow-y: auto; flex: 1; }
 .history-title { font-size: 17px; font-weight: 700; margin-bottom: 14px; }
 .history-table { width: 100%; border-collapse: collapse; }
@@ -1321,6 +1321,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
         placeholder="2026.2.26 DT店&#10;卡机汇总：&#10;小狐狸*2&#10;随手记汇总：&#10;小狐狸*1，大眼猫*3&#10;入店：（跳过）&#10;现金：（跳过）"></textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
         <span id="paste-parse-status" style="font-size:12px;color:var(--muted)"></span>
+        <button id="paste-continue-btn" class="btn btn-ghost" style="display:none;color:var(--accent)" onclick="continuePasteImport()">⏩ 继续上次未匹配</button>
         <button class="btn btn-ghost" onclick="closeModal('paste-modal-overlay')">取消</button>
         <button class="btn btn-primary" onclick="parsePasteAndMatch()">🔍 解析匹配</button>
       </div>
@@ -1405,6 +1406,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
         placeholder="小狐狸*2&#10;大眼猫*3&#10;（或粘贴含"入店："区段的完整收据）"></textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
         <span id="stock-parse-status" style="font-size:12px;color:var(--muted)"></span>
+        <button id="stock-continue-btn" class="btn btn-ghost" style="display:none;color:var(--accent)" onclick="continueStockPasteImport()">⏩ 继续上次未匹配</button>
         <button class="btn btn-ghost" onclick="closeModal('stock-paste-modal')">取消</button>
         <button class="btn btn-primary" onclick="stockParsePasteAndMatch()">🔍 解析匹配</button>
       </div>
@@ -2119,24 +2121,29 @@ async function loadSalesLog() {
     ef.value = d30.toISOString().split('T')[0];
   }
 
-  const res = await fetch('/api/sales/summary');
-  const rows = await res.json();
   const tbody = document.getElementById('saleslog-tbody');
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);padding:20px">还没有销量记录</td></tr>';
-    return;
+  try {
+    const res = await fetch('/api/sales/summary');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);padding:20px">还没有销量记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>
+          <span class="date-link" onclick="openSalesEditModal('${r.date}')">${r.date}</span>
+        </td>
+        <td>${r.product_count} 款</td>
+        <td>${r.total_pos  || 0}</td>
+        <td>${r.total_cash || 0}</td>
+        <td><span class="${(r.total_sold||0) > 0 ? 'flag-good' : ''}">${r.total_sold || 0}</span></td>
+      </tr>
+    `).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--danger);padding:20px">加载失败: ${e.message}</td></tr>`;
   }
-  tbody.innerHTML = rows.map(r => `
-    <tr>
-      <td>
-        <span class="date-link" onclick="openSalesEditModal('${r.date}')">${r.date}</span>
-      </td>
-      <td>${r.product_count} 款</td>
-      <td>${r.total_pos  || 0}</td>
-      <td>${r.total_cash || 0}</td>
-      <td><span class="${(r.total_sold||0) > 0 ? 'flag-good' : ''}">${r.total_sold || 0}</span></td>
-    </tr>
-  `).join('');
 }
 
 function jumpToSalesDate(d) {
@@ -2275,6 +2282,7 @@ function openStockPasteModal() {
   document.getElementById('stock-paste-textarea').value = '';
   document.getElementById('stock-parse-status').textContent = '';
   setStockOp('ru_dian');
+  _checkStockPasteContinue();
   showStockPasteStep(1);
   openModal('stock-paste-modal');
 }
@@ -2429,7 +2437,8 @@ function updateStockPasteConfirmBtn() {
 }
 
 async function confirmStockPasteImport() {
-  const matched = stockPasteItems.filter(i => i.pid && i.qty > 0);
+  const matched   = stockPasteItems.filter(i => i.pid && i.qty > 0);
+  const unmatched = stockPasteItems.filter(i => !i.pid);
   if (!matched.length) { toast('没有可操作的产品', 'err'); return; }
 
   const payload = {
@@ -2446,12 +2455,22 @@ async function confirmStockPasteImport() {
   if (res.ok) {
     const data   = await res.json();
     const failed = (data.results||[]).filter(r => !r.ok);
+    // Save unmatched items for later
+    if (unmatched.length > 0) {
+      localStorage.setItem('popcore_stock_unmatched', JSON.stringify({
+        op: stockPasteOp,
+        items: unmatched.map(i => ({ raw: i.raw, qty: i.qty || 1 }))
+      }));
+    } else {
+      localStorage.removeItem('popcore_stock_unmatched');
+    }
     closeModal('stock-paste-modal');
     await loadStockView();
+    const unmsg = unmatched.length > 0 ? `，${unmatched.length} 个未匹配已保存` : '';
     if (failed.length > 0) {
-      toast(`已完成，${failed.length} 款楼上库存不足已跳过`, 'err');
+      toast(`已完成，${failed.length} 款楼上库存不足已跳过${unmsg}`, 'err');
     } else {
-      toast(`已${stockPasteOp === 'ru_dian' ? '入店' : '入库'} ${matched.length} 款`);
+      toast(`已${stockPasteOp === 'ru_dian' ? '入店' : '入库'} ${matched.length} 款${unmsg}`);
     }
   } else {
     toast('操作失败', 'err');
@@ -2477,6 +2496,7 @@ function openPasteModal() {
   document.getElementById('paste-textarea').value = '';
   document.getElementById('paste-parse-status').textContent = '';
   document.getElementById('paste-date-label').textContent = '';
+  _checkPasteContinue();
   showPasteStep(1);
   openModal('paste-modal-overlay');
 }
@@ -2659,7 +2679,8 @@ function updatePasteConfirmBtn() {
 
 async function confirmPasteImport() {
   const d = document.getElementById('sales-date').value;
-  const matched = pasteItems.filter(i => i.pid);
+  const matched   = pasteItems.filter(i => i.pid);
+  const unmatched = pasteItems.filter(i => !i.pid);
   if (!matched.length) { toast('没有可导入的产品', 'err'); return; }
 
   const payload = matched.map(i => ({
@@ -2676,9 +2697,19 @@ async function confirmPasteImport() {
   });
 
   if (res.ok) {
+    // Save unmatched items for later
+    if (unmatched.length > 0) {
+      localStorage.setItem('popcore_paste_unmatched', JSON.stringify({
+        date: d,
+        items: unmatched.map(i => ({ raw: i.raw, qty_pos: i.qty_pos || 0, qty_cash: i.qty_cash || 0 }))
+      }));
+    } else {
+      localStorage.removeItem('popcore_paste_unmatched');
+    }
     closeModal('paste-modal-overlay');
     await loadSalesDay();
-    toast(`已导入 ${matched.length} 个产品的销量`);
+    const unmsg = unmatched.length > 0 ? `，${unmatched.length} 个未匹配已保存` : '';
+    toast(`已导入 ${matched.length} 个产品的销量${unmsg}`);
   } else {
     toast('导入失败', 'err');
   }
@@ -3250,6 +3281,141 @@ async function deleteSelectedProducts() {
   } else {
     toast('删除失败', 'err');
   }
+}
+
+// ══════════════════════════════════════════════
+// PASTE CONTINUE (localStorage persistence)
+// ══════════════════════════════════════════════
+
+function _checkPasteContinue() {
+  const btn = document.getElementById('paste-continue-btn');
+  if (!btn) return;
+  const raw = localStorage.getItem('popcore_paste_unmatched');
+  if (!raw) { btn.style.display = 'none'; return; }
+  try {
+    const saved = JSON.parse(raw);
+    const count = (saved.items || []).length;
+    if (!count) { btn.style.display = 'none'; return; }
+    btn.style.display = '';
+    btn.textContent = `⏩ 继续上次未匹配 (${count} 个, ${saved.date || '?'})`;
+  } catch(e) {
+    btn.style.display = 'none';
+  }
+}
+
+async function continuePasteImport() {
+  const raw = localStorage.getItem('popcore_paste_unmatched');
+  if (!raw) return;
+  let saved;
+  try { saved = JSON.parse(raw); } catch(e) { return; }
+  const savedItems = saved.items || [];
+  if (!savedItems.length) return;
+
+  // Show saved date in the label if available
+  const dateLabel = document.getElementById('paste-date-label');
+  if (dateLabel && saved.date) dateLabel.textContent = `上次未匹配 (${saved.date})`;
+
+  const statusEl = document.getElementById('paste-parse-status');
+  statusEl.textContent = `加载 ${savedItems.length} 个未匹配产品…`;
+
+  // Build pasteItems from saved data and re-run matching
+  pasteItems = savedItems.map(i => ({
+    raw:      i.raw,
+    qty_pos:  i.qty_pos  || 0,
+    qty_cash: i.qty_cash || 0,
+    pid:      null,
+    name:     '',
+    candidates: [],
+    status:   'none'
+  }));
+
+  for (let i = 0; i < pasteItems.length; i++) {
+    const item = pasteItems[i];
+    statusEl.textContent = `匹配中 ${i + 1}/${pasteItems.length}…`;
+    const exactRes  = await fetch(`/api/products/by_jizhanming?name=${encodeURIComponent(item.raw)}`);
+    const exactList = await exactRes.json();
+    if (exactList.length > 0) {
+      item.pid        = exactList[0].id;
+      item.name       = exactList[0].jizhanming || exactList[0].name_cn_en || exactList[0].sku;
+      item.candidates = exactList;
+      item.status     = 'ok';
+    } else {
+      const fuzzyRes  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
+      const fuzzyList = await fuzzyRes.json();
+      item.pid        = null;
+      item.candidates = fuzzyList;
+      item.status     = 'none';
+    }
+  }
+
+  statusEl.textContent = '';
+  renderMatchTable();
+  showPasteStep(2);
+}
+
+function _checkStockPasteContinue() {
+  const btn = document.getElementById('stock-continue-btn');
+  if (!btn) return;
+  const raw = localStorage.getItem('popcore_stock_unmatched');
+  if (!raw) { btn.style.display = 'none'; return; }
+  try {
+    const saved = JSON.parse(raw);
+    const count = (saved.items || []).length;
+    if (!count) { btn.style.display = 'none'; return; }
+    btn.style.display = '';
+    const opLabel = saved.op === 'ru_dian' ? '入店' : '入库';
+    btn.textContent = `⏩ 继续上次未匹配 (${count} 个, ${opLabel})`;
+  } catch(e) {
+    btn.style.display = 'none';
+  }
+}
+
+async function continueStockPasteImport() {
+  const raw = localStorage.getItem('popcore_stock_unmatched');
+  if (!raw) return;
+  let saved;
+  try { saved = JSON.parse(raw); } catch(e) { return; }
+  const savedItems = saved.items || [];
+  if (!savedItems.length) return;
+
+  // Restore the operation type
+  if (saved.op) setStockOp(saved.op);
+
+  const statusEl = document.getElementById('stock-parse-status');
+  statusEl.textContent = `加载 ${savedItems.length} 个未匹配产品…`;
+
+  // Build stockPasteItems from saved data and re-run matching
+  stockPasteItems = savedItems.map(i => ({
+    raw:    i.raw,
+    qty:    i.qty || 1,
+    pid:    null,
+    name:   '',
+    candidates: [],
+    status: 'none'
+  }));
+
+  for (let i = 0; i < stockPasteItems.length; i++) {
+    const item = stockPasteItems[i];
+    statusEl.textContent = `匹配中 ${i + 1}/${stockPasteItems.length}…`;
+    const exactRes  = await fetch(`/api/products/by_jizhanming?name=${encodeURIComponent(item.raw)}`);
+    const exactList = await exactRes.json();
+    if (exactList.length > 0) {
+      item.pid        = exactList[0].id;
+      item.name       = exactList[0].jizhanming || exactList[0].name_cn_en || exactList[0].sku;
+      item.candidates = exactList;
+      item.status     = 'ok';
+    } else {
+      const fuzzyRes  = await fetch(`/api/products/search?q=${encodeURIComponent(item.raw)}&limit=5`);
+      const fuzzyList = await fuzzyRes.json();
+      item.pid        = null;
+      item.candidates = fuzzyList;
+      item.status     = 'none';
+    }
+  }
+
+  statusEl.textContent = '';
+  renderStockMatchTable();
+  showStockPasteStep(2);
 }
 
 // ══════════════════════════════════════════════

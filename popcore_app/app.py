@@ -6,6 +6,7 @@ import sqlite3
 import os
 import json
 import uuid
+import re
 from datetime import date, timedelta
 from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.utils import secure_filename
@@ -160,10 +161,20 @@ def _score_product(product, tokens, q_full):
     return score
 
 
+def _normalize_jzm(s):
+    """Normalize jizhanming for fuzzy matching: lowercase, normalize spaces."""
+    s = (s or '').strip()
+    s = s.replace('\u3000', ' ')      # Chinese full-width space → ASCII space
+    s = re.sub(r'\s+', ' ', s)        # Multiple/mixed spaces → single space
+    return s.lower()
+
+
 @app.route('/api/products/by_jizhanming')
 def get_by_jizhanming():
     """
-    Exact (case-insensitive, trimmed) match on jizhanming.
+    Two-phase match on jizhanming:
+    ① Exact SQL match (case-insensitive, trimmed) — fast path
+    ② Normalized fallback: handles Chinese spaces, extra spaces, trailing 's'
     Returns a list so callers can detect duplicates.
     """
     name = request.args.get('name', '').strip()
@@ -171,6 +182,7 @@ def get_by_jizhanming():
         return jsonify([])
     con = get_db()
     cur = con.cursor()
+    # Phase 1: standard SQL exact match
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
         FROM products
@@ -179,8 +191,27 @@ def get_by_jizhanming():
         LIMIT 5
     ''', (name,))
     rows = [dict(r) for r in cur.fetchall()]
+    if rows:
+        con.close()
+        return jsonify(rows)
+    # Phase 2: normalized fallback (spaces, case, trailing 's')
+    name_norm = _normalize_jzm(name)
+    variants = {name_norm}
+    if name_norm.endswith('s'):
+        variants.add(name_norm[:-1])
+    else:
+        variants.add(name_norm + 's')
+    cur.execute('''
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
+        FROM products
+        WHERE jizhanming IS NOT NULL AND jizhanming != ''
+        ORDER BY sku DESC
+    ''')
+    all_products = [dict(r) for r in cur.fetchall()]
     con.close()
-    return jsonify(rows)
+    exact  = [p for p in all_products if _normalize_jzm(p.get('jizhanming', '')) == name_norm]
+    others = [p for p in all_products if _normalize_jzm(p.get('jizhanming', '')) in variants and p not in exact]
+    return jsonify((exact + others)[:5])
 
 
 @app.route('/api/products/search')
