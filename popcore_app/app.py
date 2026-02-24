@@ -7,7 +7,7 @@ import os
 import json
 import uuid
 from datetime import date, timedelta
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -85,6 +85,16 @@ def migrate_db():
         CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sales(date);
         CREATE INDEX IF NOT EXISTS idx_daily_sales_pid  ON daily_sales(product_id);
     ''')
+
+    # Add qty_pos / qty_cash to daily_sales if not yet present
+    cur.execute("PRAGMA table_info(daily_sales)")
+    ds_cols = {r['name'] for r in cur.fetchall()}
+    if 'qty_pos' not in ds_cols:
+        cur.execute('ALTER TABLE daily_sales ADD COLUMN qty_pos  INTEGER NOT NULL DEFAULT 0')
+    if 'qty_cash' not in ds_cols:
+        cur.execute('ALTER TABLE daily_sales ADD COLUMN qty_cash INTEGER NOT NULL DEFAULT 0')
+        # Backfill: treat existing qty_sold as qty_cash for all legacy rows
+        cur.execute('UPDATE daily_sales SET qty_cash = qty_sold WHERE qty_sold > 0')
 
     con.commit()
     con.close()
@@ -754,7 +764,7 @@ def get_sales():
     con = get_db()
     cur = con.cursor()
     cur.execute('''
-        SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.notes,
+        SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.qty_pos, ds.qty_cash, ds.notes,
                p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
         FROM daily_sales ds
         JOIN products p ON p.id = ds.product_id
@@ -769,21 +779,28 @@ def get_sales():
 @app.route('/api/sales/upsert', methods=['POST'])
 def upsert_sale():
     """Upsert a single product's sales qty for a date."""
-    data  = request.get_json()
-    pid   = int(data['product_id'])
-    d     = data.get('date', str(date.today()))
-    qty   = int(data.get('qty_sold', 0) or 0)
-    notes = data.get('notes', '')
+    data     = request.get_json()
+    pid      = int(data['product_id'])
+    d        = data.get('date', str(date.today()))
+    notes    = data.get('notes', '')
+    qty_pos  = int(data.get('qty_pos',  0) or 0)
+    qty_cash = int(data.get('qty_cash', 0) or 0)
+    # Backward compat: if caller only sends qty_sold, treat as qty_cash
+    if 'qty_pos' not in data and 'qty_cash' not in data:
+        qty_cash = int(data.get('qty_sold', 0) or 0)
+    qty_sold = qty_pos + qty_cash
 
     con = get_db()
     cur = con.cursor()
     cur.execute('''
-        INSERT INTO daily_sales (product_id, date, qty_sold, notes)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO daily_sales (product_id, date, qty_pos, qty_cash, qty_sold, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(product_id, date) DO UPDATE SET
+            qty_pos  = excluded.qty_pos,
+            qty_cash = excluded.qty_cash,
             qty_sold = excluded.qty_sold,
             notes    = excluded.notes
-    ''', (pid, d, qty, notes))
+    ''', (pid, d, qty_pos, qty_cash, qty_sold, notes))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -814,8 +831,10 @@ def sales_summary():
     cur = con.cursor()
     cur.execute('''
         SELECT date,
-               COUNT(*)       AS product_count,
-               SUM(qty_sold)  AS total_sold
+               COUNT(*)      AS product_count,
+               SUM(qty_sold) AS total_sold,
+               SUM(qty_pos)  AS total_pos,
+               SUM(qty_cash) AS total_cash
         FROM daily_sales
         GROUP BY date
         ORDER BY date DESC
@@ -824,6 +843,80 @@ def sales_summary():
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
+
+
+@app.route('/api/sales/batch_upsert', methods=['POST'])
+def batch_upsert_sales():
+    """Upsert multiple products' sales for a date at once (paste import)."""
+    items = request.get_json()  # list of {product_id, date, qty_pos, qty_cash, notes}
+    if not isinstance(items, list):
+        return jsonify({'error': 'Expected a list'}), 400
+
+    con = get_db()
+    cur = con.cursor()
+    for item in items:
+        pid      = int(item['product_id'])
+        d        = item.get('date', str(date.today()))
+        qty_pos  = int(item.get('qty_pos',  0) or 0)
+        qty_cash = int(item.get('qty_cash', 0) or 0)
+        qty_sold = qty_pos + qty_cash
+        notes    = item.get('notes', '')
+        cur.execute('''
+            INSERT INTO daily_sales (product_id, date, qty_pos, qty_cash, qty_sold, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, date) DO UPDATE SET
+                qty_pos  = excluded.qty_pos,
+                qty_cash = excluded.qty_cash,
+                qty_sold = excluded.qty_sold,
+                notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
+        ''', (pid, d, qty_pos, qty_cash, qty_sold, notes))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'count': len(items)})
+
+
+@app.route('/api/sales/export')
+def export_sales():
+    """Return CSV of sales records for a date range (UTF-8 BOM for Excel)."""
+    from_date = request.args.get('from', '')
+    to_date   = request.args.get('to',   str(date.today()))
+    if not from_date:
+        from_date = str(date.today() - timedelta(days=30))
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT ds.date, p.jizhanming, p.sku, p.ip_series, p.product_type,
+               p.price, ds.qty_pos, ds.qty_cash, ds.qty_sold, ds.notes
+        FROM daily_sales ds
+        JOIN products p ON p.id = ds.product_id
+        WHERE ds.date BETWEEN ? AND ?
+        ORDER BY ds.date DESC, p.ip_series, p.jizhanming
+    ''', (from_date, to_date))
+    rows = cur.fetchall()
+    con.close()
+
+    def esc_csv(v):
+        s = str(v) if v is not None else ''
+        if ',' in s or '"' in s or '\n' in s:
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    header = '日期,记账名,SKU,系列,类型,单价,卡机数量,现金/转账数量,总销量,备注'
+    lines  = ['\ufeff' + header]
+    for r in rows:
+        lines.append(','.join(esc_csv(v) for v in [
+            r['date'], r['jizhanming'], r['sku'], r['ip_series'], r['product_type'],
+            r['price'], r['qty_pos'], r['qty_cash'], r['qty_sold'], r['notes']
+        ]))
+
+    csv_content = '\n'.join(lines)
+    fname = f'sales_{from_date}_{to_date}.csv'
+    return Response(
+        csv_content,
+        mimetype='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{fname}"'}
+    )
 
 
 if __name__ == '__main__':
