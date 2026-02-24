@@ -164,10 +164,10 @@ def export():
     ws2['A6'] = '全部总端数'
     ws2['B6'] = sum((r['total_dan'] or 0) for r in rows)
 
+    ws2.column_dimensions['A'].width = 14
+    ws2.column_dimensions['B'].width = 20
     for r in range(1, 7):
         ws2.cell(row=r, column=1).font = Font(bold=True)
-        ws2.column_dimensions['A'].width = 14
-        ws2.column_dimensions['B'].width = 20
 
     wb.save(OUTPUT_FILE)
     print(f'✓ 导出完成: {OUTPUT_FILE}')

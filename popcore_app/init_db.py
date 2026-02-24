@@ -21,6 +21,9 @@ SKIP_SHEETS = {'📋 总览 Index'}
 
 def parse_master(path):
     """Parse copy of 11.xlsx → dict keyed by SKU with 记账名 and full name."""
+    if not os.path.exists(path):
+        print(f'ERROR: Master file not found: {path}')
+        return {}
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb.active
     records = {}
@@ -38,6 +41,9 @@ def parse_master(path):
 
 def parse_detail(path):
     """Parse POP_CORE_v3.xlsx → list of product dicts."""
+    if not os.path.exists(path):
+        print(f'ERROR: Detail file not found: {path}')
+        return []
     wb = openpyxl.load_workbook(path, data_only=True)
     products = []
     for sheet_name in wb.sheetnames:

@@ -7,6 +7,7 @@ import os
 import json
 import uuid
 import re
+import unicodedata
 from datetime import date, timedelta
 from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.utils import secure_filename
@@ -21,10 +22,19 @@ app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
 os.makedirs(HIDDEN_IMG_DIR, exist_ok=True)
 
 
+def esc_csv(v):
+    """Escape a value for CSV output (RFC 4180)."""
+    s = str(v) if v is not None else ''
+    if ',' in s or '"' in s or '\n' in s:
+        s = '"' + s.replace('"', '""') + '"'
+    return s
+
+
 def get_db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute('PRAGMA journal_mode=WAL')
+    con.execute('PRAGMA foreign_keys = ON')
     return con
 
 
@@ -161,28 +171,111 @@ def _score_product(product, tokens, q_full):
     return score
 
 
-def _normalize_jzm(s):
-    """Normalize jizhanming for fuzzy matching: lowercase, normalize spaces."""
+def _normalize_match(s):
+    """
+    Normalize a 记账名 string for fuzzy matching.
+    Handles mixed Chinese/English input from various IMEs:
+      · NFKC:  fullwidth→halfwidth  (ｓｐ→sp, Ａ→A, ！→!, etc.)
+      · lowercase
+      · strip ALL whitespace incl. Chinese fullwidth space \u3000
+        → "SA 草莓" and "SA草莓" become identical
+      · strip one trailing ASCII 's' (plural tolerance)
+        → "Dimoos" matches "Dimoo"
+    """
     s = (s or '').strip()
-    s = s.replace('\u3000', ' ')      # Chinese full-width space → ASCII space
-    s = re.sub(r'\s+', ' ', s)        # Multiple/mixed spaces → single space
-    return s.lower()
+    s = unicodedata.normalize('NFKC', s)    # fullwidth → halfwidth
+    s = s.lower()
+    s = re.sub(r'[\s\u3000]+', '', s)       # remove all whitespace
+    if s.endswith('s') and len(s) > 1:
+        s = s[:-1]
+    return s
+
+
+def _jzm_similarity(a_norm, b_norm):
+    """
+    Return a 0-100 similarity score between two pre-normalised strings.
+
+    Uses rapidfuzz.fuzz.WRatio when installed (pip install rapidfuzz).
+    WRatio tries simple ratio, partial ratio, and token-sort ratio then
+    returns the best — well-suited to short mixed Chinese/English names.
+
+    Falls back to bigram-Jaccard without rapidfuzz (lower precision).
+    """
+    if not a_norm or not b_norm:
+        return 0
+    if a_norm == b_norm:
+        return 100
+    if a_norm in b_norm or b_norm in a_norm:
+        return 90
+    try:
+        from rapidfuzz import fuzz
+        return int(fuzz.WRatio(a_norm, b_norm))
+    except ImportError:
+        pass
+    # Bigram-Jaccard fallback
+    if len(a_norm) == 1 or len(b_norm) == 1:
+        return 80 if (a_norm in b_norm or b_norm in a_norm) else 0
+    bg_a = {a_norm[i:i+2] for i in range(len(a_norm) - 1)}
+    bg_b = {b_norm[i:i+2] for i in range(len(b_norm) - 1)}
+    union = len(bg_a | bg_b)
+    return int(100 * len(bg_a & bg_b) / union) if union else 0
+
+
+def fuzzy_match_jzm(query, candidates, threshold=60, limit=5):
+    """
+    ── Central fuzzy matching function ───────────────────────────────────────
+    Use this everywhere a 记账名 must be matched to a product:
+      · paste-import (sales / stock)
+      · by_jizhanming API lookup
+      · any future feature that maps a name → product
+
+    Handles:
+      · Mixed Chinese/English names  ("Dimoo花花", "SA草莓", "sp小马")
+      · Case differences             ("sa草莓" == "SA草莓")
+      · Spaces / fullwidth spaces    ("SA 草莓" == "SA草莓")
+      · Fullwidth characters         ("ＳＡ草莓" == "SA草莓")
+      · Trailing ASCII 's'           ("dimoos" ≈ "dimoo")
+
+    Install `rapidfuzz` for best results:  pip install rapidfuzz
+    Without it the bigram-Jaccard fallback still works but is less precise.
+
+    Args:
+        query:      The 记账名 string to look up.
+        candidates: List of product dicts (must contain 'jizhanming').
+        threshold:  Minimum score (0–100) to include.  Default 60.
+        limit:      Max results returned, sorted by score desc.
+
+    Returns:
+        List of (score, product_dict) sorted by score descending.
+    """
+    qn = _normalize_match(query)
+    if not qn:
+        return []
+    scored = []
+    for p in candidates:
+        s = _jzm_similarity(qn, _normalize_match(p.get('jizhanming', '')))
+        if s >= threshold:
+            scored.append((s, p))
+    scored.sort(key=lambda x: -x[0])
+    return scored[:limit]
 
 
 @app.route('/api/products/by_jizhanming')
 def get_by_jizhanming():
     """
-    Two-phase match on jizhanming:
-    ① Exact SQL match (case-insensitive, trimmed) — fast path
-    ② Normalized fallback: handles Chinese spaces, extra spaces, trailing 's'
-    Returns a list so callers can detect duplicates.
+    Look up products by 记账名 using fuzzy_match_jzm.
+    Phase 1: fast exact SQL match (handles leading/trailing spaces & case).
+    Phase 2: fuzzy_match_jzm for spaces, fullwidth chars, trailing 's', etc.
+    Returns up to 5 candidates sorted by match score so callers can detect
+    duplicates or offer the user a choice.
     """
     name = request.args.get('name', '').strip()
     if not name:
         return jsonify([])
     con = get_db()
     cur = con.cursor()
-    # Phase 1: standard SQL exact match
+
+    # Phase 1: exact SQL match — fast path
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
         FROM products
@@ -194,24 +287,18 @@ def get_by_jizhanming():
     if rows:
         con.close()
         return jsonify(rows)
-    # Phase 2: normalized fallback (spaces, case, trailing 's')
-    name_norm = _normalize_jzm(name)
-    variants = {name_norm}
-    if name_norm.endswith('s'):
-        variants.add(name_norm[:-1])
-    else:
-        variants.add(name_norm + 's')
+
+    # Phase 2: fuzzy match via fuzzy_match_jzm (see its docstring)
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
         FROM products
         WHERE jizhanming IS NOT NULL AND jizhanming != ''
-        ORDER BY sku DESC
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
-    exact  = [p for p in all_products if _normalize_jzm(p.get('jizhanming', '')) == name_norm]
-    others = [p for p in all_products if _normalize_jzm(p.get('jizhanming', '')) in variants and p not in exact]
-    return jsonify((exact + others)[:5])
+
+    matches = fuzzy_match_jzm(name, all_products, threshold=65, limit=5)
+    return jsonify([p for _, p in matches])
 
 
 @app.route('/api/products/search')
@@ -1022,12 +1109,6 @@ def export_sales():
     rows = cur.fetchall()
     con.close()
 
-    def esc_csv(v):
-        s = str(v) if v is not None else ''
-        if ',' in s or '"' in s or '\n' in s:
-            s = '"' + s.replace('"', '""') + '"'
-        return s
-
     header = '日期,记账名,SKU,系列,类型,单价,卡机数量,现金/转账数量,总销量,备注'
     lines  = ['\ufeff' + header]
     for r in rows:
@@ -1080,12 +1161,6 @@ def export_stock():
     ''', params)
     rows = cur.fetchall()
     con.close()
-
-    def esc_csv(v):
-        s = str(v) if v is not None else ''
-        if ',' in s or '"' in s or '\n' in s:
-            s = '"' + s.replace('"', '""') + '"'
-        return s
 
     header = 'SKU,记账名,产品名称,系列,类型,单价,每端盒数,楼上(端),店内(端),更新时间,备注'
     lines  = ['\ufeff' + header]
@@ -1144,39 +1219,27 @@ def export_products():
     con = get_db()
     cur = con.cursor()
 
+    filters = []
+    params  = []
+    if series:
+        filters.append("ip_series = ?")
+        params.append(series)
     if q:
-        tokens = q.split()
-        and_cond = " AND ".join("search_blob LIKE ?" for _ in tokens)
-        params   = [f'%{t}%' for t in tokens]
-        if series:
-            and_cond += " AND ip_series = ?"
-            params.append(series)
-        cur.execute(f'''
-            SELECT sku, jizhanming, name_cn_en, ip_series, product_type,
-                   brand, price, release_date, edition_size, channel, notes
-            FROM products
-            WHERE {and_cond}
-            ORDER BY ip_series, sku DESC
-        ''', params)
-    else:
-        where  = "WHERE ip_series = ?" if series else ""
-        params = [series] if series else []
-        cur.execute(f'''
-            SELECT sku, jizhanming, name_cn_en, ip_series, product_type,
-                   brand, price, release_date, edition_size, channel, notes
-            FROM products
-            {where}
-            ORDER BY ip_series, sku DESC
-        ''', params)
+        for token in q.split():
+            filters.append("search_blob LIKE ?")
+            params.append(f'%{token}%')
+
+    where = ("WHERE " + " AND ".join(filters)) if filters else ""
+    cur.execute(f'''
+        SELECT sku, jizhanming, name_cn_en, ip_series, product_type,
+               brand, price, release_date, edition_size, channel, notes
+        FROM products
+        {where}
+        ORDER BY ip_series, sku DESC
+    ''', params)
 
     rows = cur.fetchall()
     con.close()
-
-    def esc_csv(v):
-        s = str(v) if v is not None else ''
-        if ',' in s or '"' in s or '\n' in s:
-            s = '"' + s.replace('"', '""') + '"'
-        return s
 
     header = 'SKU,记账名,产品名称,系列,类型,品牌,单价,发售时间,版本/限量,渠道,备注'
     lines  = ['\ufeff' + header]
