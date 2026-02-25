@@ -844,6 +844,9 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
       <div class="chips-row" id="series-chips">
         <div class="chip active" data-series="" onclick="filterSeries(this,'')">全部</div>
       </div>
+      <div class="chips-row" id="type-chips">
+        <div class="chip active" data-type="" onclick="filterProductType(this,'')">全部类型</div>
+      </div>
       <div class="sort-row">
         <span class="sort-label">排序：</span>
         <button class="sort-btn active" id="sort-default" onclick="setSort('default')">默认</button>
@@ -1108,6 +1111,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
     </div>
     <div class="modal-actions">
       <span class="save-ok" id="modal-save-ok">已保存 ✓</span>
+      <button class="select-del-btn" onclick="deleteCurrentProduct()" style="margin-right:auto">🗑 删除</button>
       <button class="btn btn-ghost" onclick="closeModal('product-modal-overlay')">取消</button>
       <button class="btn btn-primary" onclick="saveProduct()">保存</button>
     </div>
@@ -1440,6 +1444,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
 // ══════════════════════════════════════════════
 let currentProductId  = null;
 let currentSeries     = '';
+let currentProductType = '';
 let currentSort       = 'default';
 let lastProducts      = [];
 let searchTimer       = null;
@@ -1518,9 +1523,31 @@ async function loadSeries() {
 }
 
 function filterSeries(el, series) {
-  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  document.querySelectorAll('#series-chips .chip').forEach(c => c.classList.remove('active'));
   el.classList.add('active');
   currentSeries = series;
+  doSearch();
+}
+
+async function loadProductTypes() {
+  const res = await fetch('/api/product_types');
+  const types = await res.json();
+  const chips = document.getElementById('type-chips');
+  chips.innerHTML = '<div class="chip active" data-type="" onclick="filterProductType(this,\'\')">全部类型</div>';
+  types.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'chip';
+    el.dataset.type = t;
+    el.textContent = t;
+    el.onclick = () => filterProductType(el, t);
+    chips.appendChild(el);
+  });
+}
+
+function filterProductType(el, type) {
+  document.querySelectorAll('#type-chips .chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  currentProductType = type;
   doSearch();
 }
 
@@ -1528,7 +1555,7 @@ function doSearch() {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(async () => {
     const q = document.getElementById('search-input').value.trim();
-    const url = `/api/products/search?q=${encodeURIComponent(q)}&series=${encodeURIComponent(currentSeries)}&limit=120`;
+    const url = `/api/products/search?q=${encodeURIComponent(q)}&series=${encodeURIComponent(currentSeries)}&product_type=${encodeURIComponent(currentProductType)}&limit=120`;
     const res = await fetch(url);
     lastProducts = await res.json();
     applySortAndRender();
@@ -1801,7 +1828,7 @@ async function submitNewProduct() {
   if (res.ok) {
     document.getElementById('add-save-ok').classList.add('show');
     toast(`已创建 ${result.sku}`);
-    await loadSeries();
+    await Promise.all([loadSeries(), loadProductTypes()]);
     doSearch();
     setTimeout(() => closeModal('add-product-modal'), 1200);
   } else {
@@ -3262,6 +3289,26 @@ function updateProductSelectBar() {
   if (btn) btn.disabled = count === 0;
 }
 
+async function deleteCurrentProduct() {
+  if (!currentProductId) return;
+  const name = document.getElementById('modal-title').textContent;
+  if (!confirm(`确定要永久删除「${name}」吗？\n相关的库存记录和销量记录也将一并删除，此操作不可撤销。`)) return;
+
+  const res = await fetch('/api/products/bulk_delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify([currentProductId]),
+  });
+  if (res.ok) {
+    closeModal('product-modal-overlay');
+    toast('产品已删除');
+    await Promise.all([loadSeries(), loadProductTypes()]);
+    doSearch();
+  } else {
+    toast('删除失败', 'err');
+  }
+}
+
 async function deleteSelectedProducts() {
   const pids = Array.from(productSelectedIds);
   if (!pids.length) return;
@@ -3276,7 +3323,7 @@ async function deleteSelectedProducts() {
     const data = await res.json();
     toast(`已删除 ${data.deleted} 个产品`);
     exitProductSelectMode();
-    await loadSeries();
+    await Promise.all([loadSeries(), loadProductTypes()]);
     doSearch();
   } else {
     toast('删除失败', 'err');
@@ -3422,7 +3469,7 @@ async function continueStockPasteImport() {
 // INIT
 // ══════════════════════════════════════════════
 document.getElementById('search-input').addEventListener('input', doSearch);
-loadSeries().then(list => {
+Promise.all([loadSeries(), loadProductTypes()]).then(() => {
   doSearch();
   buildStockSeriesChips(seriesList);
 });

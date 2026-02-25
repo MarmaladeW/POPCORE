@@ -305,17 +305,25 @@ def get_by_jizhanming():
 def search_products():
     q = request.args.get('q', '').strip().lower()
     series = request.args.get('series', '').strip()
+    product_type = request.args.get('product_type', '').strip()
     limit = int(request.args.get('limit', 60))
 
     con = get_db()
     cur = con.cursor()
 
-    series_clause = "AND ip_series = ?" if series else ""
-    series_param  = [series] if series else []
+    filter_clauses = []
+    filter_params  = []
+    if series:
+        filter_clauses.append("ip_series = ?")
+        filter_params.append(series)
+    if product_type:
+        filter_clauses.append("product_type = ?")
+        filter_params.append(product_type)
+    filter_sql = ("AND " + " AND ".join(filter_clauses)) if filter_clauses else ""
 
     if not q:
-        # No query — just return all (filtered by series if set)
-        where = f"WHERE ip_series = ?" if series else ""
+        # No query — just return all (filtered by series/type if set)
+        where = ("WHERE " + " AND ".join(filter_clauses)) if filter_clauses else ""
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, search_blob
@@ -323,7 +331,7 @@ def search_products():
             {where}
             ORDER BY sku DESC
             LIMIT ?
-        ''', series_param + [limit])
+        ''', filter_params + [limit])
         rows = [dict(r) for r in cur.fetchall()]
         con.close()
         return jsonify(rows)
@@ -332,24 +340,24 @@ def search_products():
 
     # ── Strategy 1: AND match (all tokens must appear) ────────────────────
     and_conditions = " AND ".join("search_blob LIKE ?" for _ in tokens)
-    and_params = [f'%{t}%' for t in tokens] + series_param
+    and_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, search_blob
         FROM products
-        WHERE {and_conditions} {series_clause}
+        WHERE {and_conditions} {filter_sql}
         LIMIT 200
     ''', and_params)
     and_rows = [dict(r) for r in cur.fetchall()]
 
     # ── Strategy 2: OR match (any token appears) — broader net ────────────
     or_conditions = " OR ".join("search_blob LIKE ?" for _ in tokens)
-    or_params = [f'%{t}%' for t in tokens] + series_param
+    or_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, search_blob
         FROM products
-        WHERE ({or_conditions}) {series_clause}
+        WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
     ''', or_params)
     or_rows = [dict(r) for r in cur.fetchall()]
@@ -357,14 +365,14 @@ def search_products():
     # ── Strategy 3: character-level — each char in query appears in blob ──
     # Useful for Chinese where user types individual chars without spaces
     char_conditions = " AND ".join("search_blob LIKE ?" for ch in q if ch.strip())
-    char_params = [f'%{ch}%' for ch in q if ch.strip()] + series_param
+    char_params = [f'%{ch}%' for ch in q if ch.strip()] + filter_params
     char_rows = []
     if char_conditions:
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, search_blob
             FROM products
-            WHERE {char_conditions} {series_clause}
+            WHERE {char_conditions} {filter_sql}
             LIMIT 200
         ''', char_params)
         char_rows = [dict(r) for r in cur.fetchall()]
@@ -375,12 +383,12 @@ def search_products():
     bi_rows = []
     if bigrams:
         bi_cond   = " OR ".join("search_blob LIKE ?" for _ in bigrams)
-        bi_params = [f'%{b}%' for b in bigrams] + series_param
+        bi_params = [f'%{b}%' for b in bigrams] + filter_params
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, search_blob
             FROM products
-            WHERE ({bi_cond}) {series_clause}
+            WHERE ({bi_cond}) {filter_sql}
             LIMIT 200
         ''', bi_params)
         bi_rows = [dict(r) for r in cur.fetchall()]
@@ -595,6 +603,16 @@ def get_series():
     con = get_db()
     cur = con.cursor()
     cur.execute("SELECT DISTINCT ip_series FROM products WHERE ip_series != '' ORDER BY ip_series")
+    rows = [r[0] for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
+@app.route('/api/product_types')
+def get_product_types():
+    con = get_db()
+    cur = con.cursor()
+    cur.execute("SELECT DISTINCT product_type FROM products WHERE product_type IS NOT NULL AND product_type != '' ORDER BY product_type")
     rows = [r[0] for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
