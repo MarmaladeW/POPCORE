@@ -1072,8 +1072,12 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
           </div>
           <!-- 详情（有隐藏时展开） -->
           <div class="hidden-detail" id="hidden-detail-section" style="display:none">
-            <!-- 类型 + 概率 -->
-            <div class="hidden-types-row">
+            <!-- 区分大小隐藏（仅多个隐藏时显示） -->
+            <div id="hidden-distinguish-row" style="display:none">
+              <label class="check-lbl"><input type="checkbox" id="edit-hidden-distinguish"> 区分大小隐藏</label>
+            </div>
+            <!-- 类型 + 概率（仅区分大小时显示） -->
+            <div class="hidden-types-row" id="hidden-types-row" style="display:none">
               <label class="check-lbl"><input type="checkbox" id="edit-hidden-small"> 小隐藏</label>
               <input type="text" id="edit-hidden-prob-small" class="prob-input" placeholder="概率 如 1/144" />
               <label class="check-lbl"><input type="checkbox" id="edit-hidden-large"> 大隐藏</label>
@@ -1088,9 +1092,9 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
                 <div class="hidden-img-btns">
                   <button type="button" class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
                           onclick="triggerHiddenImgUpload('general')">＋ 图片</button>
-                  <button type="button" class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
+                  <button type="button" id="hidden-img-btn-small" class="btn btn-ghost" style="font-size:11px;padding:3px 8px;display:none"
                           onclick="triggerHiddenImgUpload('small')">＋ 小隐</button>
-                  <button type="button" class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
+                  <button type="button" id="hidden-img-btn-large" class="btn btn-ghost" style="font-size:11px;padding:3px 8px;display:none"
                           onclick="triggerHiddenImgUpload('large')">＋ 大隐</button>
                 </div>
               </div>
@@ -1646,12 +1650,14 @@ async function openProduct(id) {
   document.getElementById('edit-boxes-per-dan').value = p.boxes_per_dan ?? '';
   document.getElementById('edit-notes').value         = p.notes         || '';
   // Hidden edition fields
-  setHiddenCount(p.hidden_count || '0');
-  document.getElementById('edit-hidden-small').checked    = !!(p.hidden_has_small);
-  document.getElementById('edit-hidden-large').checked    = !!(p.hidden_has_large);
-  document.getElementById('edit-hidden-prob-small').value = p.hidden_prob_small || '';
-  document.getElementById('edit-hidden-prob-large').value = p.hidden_prob_large || '';
-  document.getElementById('edit-hidden').value            = p.hidden || '';
+  const _hasDistinction = !!(p.hidden_has_small || p.hidden_has_large);
+  document.getElementById('edit-hidden-distinguish').checked  = _hasDistinction;
+  document.getElementById('edit-hidden-small').checked        = !!(p.hidden_has_small);
+  document.getElementById('edit-hidden-large').checked        = !!(p.hidden_has_large);
+  document.getElementById('edit-hidden-prob-small').value     = p.hidden_prob_small || '';
+  document.getElementById('edit-hidden-prob-large').value     = p.hidden_prob_large || '';
+  document.getElementById('edit-hidden').value                = p.hidden || '';
+  setHiddenCount(p.hidden_count || '0');  // calls _updateHiddenDetailUI
   loadHiddenImages(id);
   document.getElementById('modal-save-ok').classList.remove('show');
   openModal('product-modal-overlay');
@@ -1675,10 +1681,15 @@ async function saveProduct() {
     // Hidden edition
     hidden:           document.getElementById('edit-hidden').value.trim(),
     hidden_count:     getHiddenCount(),
-    hidden_has_small: document.getElementById('edit-hidden-small').checked ? 1 : 0,
-    hidden_has_large: document.getElementById('edit-hidden-large').checked ? 1 : 0,
-    hidden_prob_small: document.getElementById('edit-hidden-prob-small').value.trim(),
-    hidden_prob_large: document.getElementById('edit-hidden-prob-large').value.trim(),
+    ...((() => {
+      const _distinguish = getHiddenCount() === 'multi' && document.getElementById('edit-hidden-distinguish').checked;
+      return {
+        hidden_has_small:  _distinguish ? (document.getElementById('edit-hidden-small').checked  ? 1 : 0) : 0,
+        hidden_has_large:  _distinguish ? (document.getElementById('edit-hidden-large').checked  ? 1 : 0) : 0,
+        hidden_prob_small: _distinguish ? document.getElementById('edit-hidden-prob-small').value.trim() : '',
+        hidden_prob_large: _distinguish ? document.getElementById('edit-hidden-prob-large').value.trim() : '',
+      };
+    })()),
   };
   const res = await fetch(`/api/products/${currentProductId}`, {
     method: 'PATCH', headers: {'Content-Type':'application/json'},
@@ -1696,12 +1707,24 @@ async function saveProduct() {
 // ══════════════════════════════════════════════
 // HIDDEN EDITION HELPERS
 // ══════════════════════════════════════════════
+function _updateHiddenDetailUI() {
+  const count = getHiddenCount();
+  const isMulti  = count === 'multi';
+  const hasHidden = count !== '0';
+  const distinguish = isMulti && document.getElementById('edit-hidden-distinguish').checked;
+
+  document.getElementById('hidden-detail-section').style.display    = hasHidden   ? '' : 'none';
+  document.getElementById('hidden-distinguish-row').style.display   = isMulti     ? '' : 'none';
+  document.getElementById('hidden-types-row').style.display         = distinguish ? '' : 'none';
+  document.getElementById('hidden-img-btn-small').style.display     = distinguish ? '' : 'none';
+  document.getElementById('hidden-img-btn-large').style.display     = distinguish ? '' : 'none';
+}
+
 function setHiddenCount(val) {
   document.querySelectorAll('input[name="edit-hidden-count"]').forEach(r => {
     r.checked = (r.value === String(val));
   });
-  const show = (String(val) !== '0' && val != null && val !== '');
-  document.getElementById('hidden-detail-section').style.display = show ? '' : 'none';
+  _updateHiddenDetailUI();
 }
 
 function getHiddenCount() {
@@ -1712,11 +1735,9 @@ function getHiddenCount() {
 // Set up radio listener once (call after DOM ready)
 function initHiddenSection() {
   document.querySelectorAll('input[name="edit-hidden-count"]').forEach(r => {
-    r.addEventListener('change', () => {
-      document.getElementById('hidden-detail-section').style.display =
-        r.value === '0' ? 'none' : '';
-    });
+    r.addEventListener('change', _updateHiddenDetailUI);
   });
+  document.getElementById('edit-hidden-distinguish').addEventListener('change', _updateHiddenDetailUI);
   document.getElementById('hidden-img-file').addEventListener('change', uploadHiddenImg);
 }
 
