@@ -107,6 +107,9 @@ def migrate_db():
         # Backfill: treat existing qty_sold as qty_cash for all legacy rows
         cur.execute('UPDATE daily_sales SET qty_cash = qty_sold WHERE qty_sold > 0')
 
+    # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒'
+    cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
+
     con.commit()
     con.close()
 

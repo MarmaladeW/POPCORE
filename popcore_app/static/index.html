@@ -1024,8 +1024,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
           <label>产品类型</label>
           <div class="type-wrap">
             <select id="edit-product-type-sel" onchange="onEditTypeChange()">
-              <option value="盲盒Figure">盲盒Figure</option>
-              <option value="盲盒毛绒">盲盒毛绒</option>
+              <option value="盲盒">盲盒</option>
               <option value="吊卡">吊卡</option>
               <option value="大娃">大娃</option>
               <option value="配件">配件</option>
@@ -1166,8 +1165,7 @@ label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-
           <div class="type-wrap">
             <select id="new-product-type-sel" onchange="onNewTypeChange()">
               <option value="">-- 选择类型 --</option>
-              <option value="盲盒Figure">盲盒Figure</option>
-              <option value="盲盒毛绒">盲盒毛绒</option>
+              <option value="盲盒">盲盒</option>
               <option value="吊卡">吊卡</option>
               <option value="大娃">大娃</option>
               <option value="配件">配件</option>
@@ -1865,13 +1863,13 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 function overlayClose(e, id) { if (e.target === document.getElementById(id)) closeModal(id); }
 
 // ── Product type dropdown helpers ──────────────────────────────────────────
-const PRESET_TYPES = ['盲盒Figure','盲盒毛绒','吊卡','大娃','配件','周边','盲盒（杂项）'];
+const PRESET_TYPES = ['盲盒','吊卡','大娃','配件','周边','盲盒（杂项）'];
 
 function setEditProductType(val) {
   const sel = document.getElementById('edit-product-type-sel');
   const custom = document.getElementById('edit-product-type-custom');
   if (!val || PRESET_TYPES.includes(val)) {
-    sel.value = val || '盲盒Figure';
+    sel.value = val || '盲盒';
     custom.style.display = 'none';
     custom.value = '';
   } else {
