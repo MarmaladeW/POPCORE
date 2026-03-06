@@ -1,0 +1,22 @@
+Starting POPCORE Inventory System
+  本机访问:  http://localhost:5000
+  手机访问:  http://10.5.0.2:5000
+  (手机需连接同一WiFi)
+ * Serving Flask app 'app'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.0.62:5000
+Press CTRL+C to quit
+127.0.0.1 - - [20/Feb/2026 23:32:56] "GET /api/products/search?q=labubu&limit=2 HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:33:18] "GET /api/products/search?q=labubu&limit=2 HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:33:46] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:33:46] "GET /api/series HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:33:46] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [20/Feb/2026 23:33:46] "GET /api/products/search?q=&series=&limit=120 HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:33:58] "GET /api/products/search?q=&series=Labubu&limit=120 HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:34:17] "GET /api/stock/summary HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:34:18] "GET /api/stock?include_all=0&q=&series= HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:34:18] "GET /api/stock/summary HTTP/1.1" 200 -
+127.0.0.1 - - [20/Feb/2026 23:34:19] "GET /api/stock?include_all=0&q=&series= HTTP/1.1" 200 -

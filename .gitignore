@@ -1,27 +1,17 @@
+# Claude Code
+.claude/settings.local.json
+
+# Database
+popcore_app/popcore.db
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.env
 venv/
-env/
-
-# Database (lives on the server, don't overwrite with local copy)
-popcore_app/popcore.db
-popcore_app/popcore.db-shm
-popcore_app/popcore.db-wal
+.venv/
 
 # Logs
-popcore_app/server.log
-
-# Exported reports (generated output, not source)
-POPCORE_export_*.xlsx
-
-# Uploaded product images (large binary files, manage separately)
-popcore_app/static/hidden_imgs/
-
-# Artifact files
-nul
-popcore_app/nul
-
-# Claude Code settings
-.claude/
+*.log

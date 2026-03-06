@@ -8,9 +8,14 @@ import json
 import uuid
 import re
 import unicodedata
+import threading
 from datetime import date, timedelta
 from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.utils import secure_filename
+
+# ─── Scrape-job state (single background thread) ──────────────────────────────
+_scrape_thread: threading.Thread | None = None
+_scrape_lock   = threading.Lock()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'popcore.db')
@@ -109,6 +114,40 @@ def migrate_db():
 
     # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒'
     cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
+
+    # ── Market price tables ────────────────────────────────────────────────
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS market_prices (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_key        TEXT    NOT NULL,
+            store_name       TEXT    NOT NULL,
+            external_title   TEXT    NOT NULL,
+            product_id       INTEGER REFERENCES products(id),
+            sku              TEXT,
+            price_cad        REAL,
+            compare_at_price REAL,
+            on_sale          INTEGER NOT NULL DEFAULT 0,
+            in_stock         INTEGER NOT NULL DEFAULT 1,
+            url              TEXT,
+            match_score      INTEGER,
+            scraped_at       TEXT,
+            UNIQUE(store_key, external_title)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mp_product ON market_prices(product_id);
+        CREATE INDEX IF NOT EXISTS idx_mp_store   ON market_prices(store_key);
+
+        CREATE TABLE IF NOT EXISTS scrape_log (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_key        TEXT    NOT NULL,
+            status           TEXT    NOT NULL DEFAULT 'running',
+            products_scraped INTEGER DEFAULT 0,
+            products_matched INTEGER DEFAULT 0,
+            error_msg        TEXT,
+            started_at       TEXT    DEFAULT (datetime('now')),
+            finished_at      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sl_store ON scrape_log(store_key);
+    ''')
 
     con.commit()
     con.close()
@@ -1311,6 +1350,128 @@ def bulk_delete_products():
     con.commit()
     con.close()
     return jsonify({'ok': True, 'deleted': deleted})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MARKET PRICES API
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/market/scrape', methods=['POST'])
+def start_market_scrape():
+    """
+    Launch a background scrape job.
+    Body (optional JSON): { "stores": ["popmart_ca", "mrpen", "whoopea"] }
+    Returns { ok, status } or 409 if already running.
+    """
+    global _scrape_thread
+    with _scrape_lock:
+        if _scrape_thread and _scrape_thread.is_alive():
+            return jsonify({'error': 'Scrape already running'}), 409
+
+    data       = request.get_json(silent=True) or {}
+    store_keys = data.get('stores') or None   # None → all stores
+
+    def _run():
+        try:
+            from scraper import run_scrape
+            run_scrape(store_keys, DB_PATH)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+
+    with _scrape_lock:
+        _scrape_thread = threading.Thread(target=_run, daemon=True, name='scrape')
+        _scrape_thread.start()
+
+    return jsonify({'ok': True, 'status': 'running', 'stores': store_keys or 'all'})
+
+
+@app.route('/api/market/status')
+def market_status():
+    """
+    Return per-store scrape status (last run only) + whether a job is running.
+    """
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT store_key, status, products_scraped, products_matched,
+               error_msg, started_at, finished_at
+        FROM scrape_log
+        WHERE id IN (SELECT MAX(id) FROM scrape_log GROUP BY store_key)
+        ORDER BY store_key
+    ''')
+    stores = {r['store_key']: dict(r) for r in cur.fetchall()}
+    con.close()
+
+    is_running = bool(_scrape_thread and _scrape_thread.is_alive())
+    return jsonify({'stores': stores, 'running': is_running})
+
+
+@app.route('/api/market/prices')
+def market_prices():
+    """
+    Return market_prices rows.
+    Query params:
+      product_id=<int>  → prices for one internal product (all stores)
+      store=<key>       → all prices for one store
+      (none)            → all rows
+    """
+    product_id = request.args.get('product_id', type=int)
+    store      = request.args.get('store', '').strip()
+
+    con = get_db()
+    cur = con.cursor()
+
+    if product_id:
+        cur.execute('''
+            SELECT * FROM market_prices
+            WHERE product_id = ?
+            ORDER BY store_key
+        ''', (product_id,))
+    elif store:
+        cur.execute('''
+            SELECT * FROM market_prices
+            WHERE store_key = ?
+            ORDER BY external_title
+        ''', (store,))
+    else:
+        cur.execute('''
+            SELECT * FROM market_prices
+            ORDER BY store_key, external_title
+        ''')
+
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
+@app.route('/api/market/overview')
+def market_overview():
+    """
+    Full market overview: all scraped items joined with internal product info.
+    Used by the Market tab to build the comparison table.
+    Query param: matched_only=1 to hide unmatched scraped items.
+    """
+    matched_only = request.args.get('matched_only', '0') == '1'
+    con = get_db()
+    cur = con.cursor()
+    where = 'WHERE mp.product_id IS NOT NULL' if matched_only else ''
+    cur.execute(f'''
+        SELECT
+            mp.id, mp.store_key, mp.store_name,
+            mp.external_title, mp.price_cad, mp.compare_at_price,
+            mp.on_sale, mp.in_stock, mp.url,
+            mp.match_score, mp.scraped_at,
+            mp.product_id, mp.sku,
+            p.jizhanming, p.name_cn_en, p.price AS our_price,
+            p.ip_series,  p.product_type
+        FROM market_prices mp
+        LEFT JOIN products p ON mp.product_id = p.id
+        {where}
+        ORDER BY mp.store_key, mp.external_title COLLATE NOCASE
+    ''')
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
 
 
 if __name__ == '__main__':
