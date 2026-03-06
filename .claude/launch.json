@@ -5,6 +5,7 @@
       "name": "popcore",
       "runtimeExecutable": "python",
       "runtimeArgs": ["app.py"],
+      "cwd": "D:\\hello\\popcore_app\\popcore_app",
       "port": 5000
     }
   ]
