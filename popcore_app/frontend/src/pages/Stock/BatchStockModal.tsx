@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import {
-  Modal, Steps, Select, Input, Button, Table, Space, Tag, Alert, message,
+  Modal, Steps, Select, Input, Button, Table, Space, Tag,
+  Alert, message, DatePicker, InputNumber, AutoComplete, Progress, Tooltip,
 } from 'antd'
-import dayjs from 'dayjs'
+import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
 
 interface Props {
@@ -12,6 +14,7 @@ interface Props {
 }
 
 interface MatchedItem {
+  _key: string
   rawName: string
   qty: number
   notes: string
@@ -22,52 +25,110 @@ interface MatchedItem {
   status: 'matched' | 'fuzzy' | 'unmatched'
 }
 
-function parsePaste(text: string) {
-  return text.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
-    const parts = line.split(/[\t\s]+/)
-    return { rawName: parts[0] || '', qty: parseInt(parts[1] || '1', 10) || 1, notes: parts.slice(2).join(' ') }
-  })
+/** Handles tab-sep, space-sep, and "名称2端" formats */
+function parseLine(line: string) {
+  const t = line.trim()
+  if (t.includes('\t')) {
+    const parts = t.split('\t').map(s => s.trim())
+    return { rawName: parts[0], qty: Math.abs(parseInt(parts[1] || '1', 10)) || 1, notes: parts.slice(2).join(' ') }
+  }
+  const glued = t.match(/^(.*\D)(\d+)[端个盒箱]?\s*(.*)$/)
+  if (glued && glued[1].trim()) {
+    return { rawName: glued[1].trim(), qty: parseInt(glued[2], 10) || 1, notes: glued[3].trim() }
+  }
+  const parts = t.split(/\s+/)
+  return { rawName: parts[0], qty: Math.abs(parseInt(parts[1] || '1', 10)) || 1, notes: parts.slice(2).join(' ') }
+}
+
+async function matchName(name: string): Promise<{ candidates: any[]; status: 'matched' | 'fuzzy' | 'unmatched' }> {
+  try {
+    const r = await client.get('/products/by_jizhanming', { params: { name } })
+    if (r.data.length === 1) return { candidates: r.data, status: 'matched' }
+    if (r.data.length > 1)  return { candidates: r.data, status: 'fuzzy' }
+  } catch { /* fall through */ }
+  try {
+    const r2 = await client.get('/products/search', { params: { q: name, limit: 6 } })
+    if (r2.data.length > 0) return { candidates: r2.data, status: 'fuzzy' }
+  } catch { /* fall through */ }
+  return { candidates: [], status: 'unmatched' }
+}
+
+function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
+  const [opts, setOpts] = useState<any[]>([])
+  async function search(q: string) {
+    if (!q) { setOpts([]); return }
+    const r = await client.get('/products/search', { params: { q, limit: 8 } })
+    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming} (${p.sku})`, product: p })))
+  }
+  return (
+    <AutoComplete
+      size="small"
+      style={{ width: 180 }}
+      placeholder="搜索产品..."
+      options={opts}
+      onSearch={search}
+      onSelect={(_, opt) => onSelect(opt.product)}
+    />
+  )
 }
 
 export default function BatchStockModal({ open, onClose, onDone }: Props) {
   const [step, setStep]       = useState(0)
   const [op, setOp]           = useState<'ru_dian' | 'restock_upstairs'>('restock_upstairs')
-  const [date, setDate]       = useState(dayjs().format('YYYY-MM-DD'))
+  const [date, setDate]       = useState<Dayjs>(dayjs())
   const [text, setText]       = useState('')
   const [items, setItems]     = useState<MatchedItem[]>([])
+  const [progress, setProgress] = useState(0)
   const [matching, setMatch]  = useState(false)
   const [submitting, setSub]  = useState(false)
   const [results, setResults] = useState<any[]>([])
 
-  function reset() { setStep(0); setText(''); setItems([]); setResults([]) }
+  function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0) }
 
   async function match() {
-    const parsed = parsePaste(text)
+    const parsed = text.split('\n').map(l => l.trim()).filter(Boolean).map(parseLine)
     if (!parsed.length) { message.warning('内容为空'); return }
     setMatch(true)
-    const out: MatchedItem[] = []
-    for (const p of parsed) {
-      const r = await client.get('/products/by_jizhanming', { params: { name: p.rawName } })
-      const cands = r.data
-      if (cands.length === 1) {
-        out.push({ ...p, product_id: cands[0].id, sku: cands[0].sku, jizhanming: cands[0].jizhanming, status: 'matched' })
-      } else if (cands.length > 1) {
-        out.push({ ...p, candidates: cands, product_id: cands[0].id, sku: cands[0].sku, jizhanming: cands[0].jizhanming, status: 'fuzzy' })
-      } else {
-        out.push({ ...p, status: 'unmatched' })
-      }
-    }
+    setProgress(0)
+    let done = 0
+    const out: MatchedItem[] = await Promise.all(
+      parsed.map(async (p, i) => {
+        const result = await matchName(p.rawName)
+        done++
+        setProgress(Math.round((done / parsed.length) * 100))
+        const top = result.candidates[0]
+        return {
+          ...p,
+          _key: `${i}-${p.rawName}`,
+          product_id: top?.id,
+          sku: top?.sku,
+          jizhanming: top?.jizhanming,
+          candidates: result.candidates.length > 1 ? result.candidates : undefined,
+          status: result.status,
+        }
+      })
+    )
     setMatch(false)
     setItems(out)
     setStep(1)
   }
 
+  function updateItem(key: string, patch: Partial<MatchedItem>) {
+    setItems(prev => prev.map(it => it._key === key ? { ...it, ...patch } : it))
+  }
+
+  function removeItem(key: string) {
+    setItems(prev => prev.filter(it => it._key !== key))
+  }
+
   async function submit() {
     const toSub = items.filter(i => i.product_id)
+    if (!toSub.length) { message.warning('没有可提交的行'); return }
     setSub(true)
     try {
       const r = await client.post('/stock/batch_operation', {
-        operation: op, date,
+        operation: op,
+        date: date.format('YYYY-MM-DD'),
         items: toSub.map(i => ({ product_id: i.product_id, qty: i.qty, notes: i.notes })),
       })
       setResults(r.data.results || [])
@@ -77,13 +138,70 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
     } finally { setSub(false) }
   }
 
+  const okCount = items.filter(i => i.product_id).length
+  const unmatchedCount = items.filter(i => i.status === 'unmatched').length
+
+  const reviewColumns = [
+    {
+      title: '输入名称', dataIndex: 'rawName', width: 110,
+      render: (v: string, r: MatchedItem) => (
+        <span style={{ color: r.status === 'unmatched' ? '#cf1322' : undefined }}>{v}</span>
+      ),
+    },
+    {
+      title: '匹配产品', key: 'm', width: 210,
+      render: (_: any, r: MatchedItem) => {
+        if (r.status === 'unmatched') return (
+          <Space size={4}>
+            <Tag color="red">未匹配</Tag>
+            <ProductPicker onSelect={p => updateItem(r._key, {
+              product_id: p.id, sku: p.sku, jizhanming: p.jizhanming, status: 'matched', candidates: undefined,
+            })} />
+          </Space>
+        )
+        if (r.candidates && r.candidates.length > 1) return (
+          <Select
+            size="small"
+            value={r.product_id}
+            style={{ width: 200 }}
+            onChange={v => {
+              const c = r.candidates!.find(x => x.id === v)
+              updateItem(r._key, { product_id: v, jizhanming: c?.jizhanming, sku: c?.sku, status: 'matched' })
+            }}
+            options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming} (${c.sku})` }))}
+          />
+        )
+        return <Space size={4}><Tag color="green">✓</Tag><span>{r.jizhanming}</span><Tag>{r.sku}</Tag></Space>
+      },
+    },
+    {
+      title: '数量(端)', key: 'qty', width: 90,
+      render: (_: any, r: MatchedItem) => (
+        <InputNumber size="small" min={1} value={r.qty} style={{ width: 70 }}
+          onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
+      ),
+    },
+    {
+      title: '备注', dataIndex: 'notes', width: 100,
+      render: (v: string, r: MatchedItem) => (
+        <Input size="small" value={v} onChange={e => updateItem(r._key, { notes: e.target.value })} />
+      ),
+    },
+    {
+      title: '', key: 'del', width: 40,
+      render: (_: any, r: MatchedItem) => (
+        <Tooltip title="移除"><Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeItem(r._key)} /></Tooltip>
+      ),
+    },
+  ]
+
   return (
     <Modal
       title="批量库存导入"
       open={open}
       onCancel={() => { reset(); onClose() }}
       footer={null}
-      width={680}
+      width={760}
       destroyOnClose
     >
       <Steps current={step} size="small" style={{ marginBottom: 16 }}
@@ -97,47 +215,36 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
                 { value: 'restock_upstairs', label: '入库（楼上）' },
                 { value: 'ru_dian', label: '入店' },
               ]} />
-            <Input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ width: 150 }} />
+            <DatePicker value={date} onChange={d => setDate(d ?? dayjs())} allowClear={false} style={{ width: 150 }} />
           </Space>
+          <Alert type="info" message="支持格式"
+            description={
+              <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.8 }}>
+                {'记账名  数量  [备注]   ← 空格分隔\n'}
+                {'记账名\t数量          ← 表格粘贴\n'}
+                {'记账名2端            ← 数字紧跟名称'}
+              </div>
+            }
+          />
           <Input.TextArea rows={8} value={text} onChange={e => setText(e.target.value)}
-            placeholder="记账名 数量 [备注]" style={{ fontFamily: 'monospace' }} />
+            placeholder={'Dimoo花花 2\nSA草莓 1\nMolly精灵3端'} style={{ fontFamily: 'monospace' }} />
+          {matching && <Progress percent={progress} />}
           <Button type="primary" loading={matching} onClick={match}>匹配产品</Button>
         </Space>
       )}
 
       {step === 1 && (
         <>
-          {items.some(i => i.status === 'unmatched') && (
-            <Alert type="warning" message={`${items.filter(i => i.status === 'unmatched').length} 行未匹配将被跳过`} style={{ marginBottom: 8 }} />
+          {unmatchedCount > 0 && (
+            <Alert type="warning" icon={<WarningOutlined />} showIcon style={{ marginBottom: 8 }}
+              message={`${unmatchedCount} 行未自动匹配 — 可手动搜索指定产品，或点删除按钮跳过`} />
           )}
-          <Table size="small" rowKey="rawName" dataSource={items} pagination={false} scroll={{ y: 300 }}
-            columns={[
-              { title: '名称', dataIndex: 'rawName', width: 120 },
-              {
-                title: '匹配', key: 'm', width: 170,
-                render: (_, r, idx) => {
-                  if (r.status === 'unmatched') return <Tag color="red">未匹配</Tag>
-                  if (r.status === 'fuzzy' && r.candidates) return (
-                    <Select size="small" value={r.product_id} style={{ width: 160 }}
-                      onChange={v => {
-                        const c = r.candidates!.find(x => x.id === v)
-                        setItems(p => p.map((it, i) => i === idx
-                          ? { ...it, product_id: v, jizhanming: c?.jizhanming, sku: c?.sku, status: 'matched' }
-                          : it))
-                      }}
-                      options={r.candidates!.map(c => ({ value: c.id, label: `${c.jizhanming} (${c.sku})` }))} />
-                  )
-                  return <span>{r.jizhanming} <Tag>{r.sku}</Tag></span>
-                },
-              },
-              { title: '数量', dataIndex: 'qty', width: 60 },
-              { title: '备注', dataIndex: 'notes' },
-            ]} />
+          <Table size="small" rowKey="_key" dataSource={items} columns={reviewColumns}
+            pagination={false} scroll={{ y: 320 }} />
           <Space style={{ marginTop: 12 }}>
             <Button onClick={() => setStep(0)}>返回</Button>
-            <Button type="primary" loading={submitting} onClick={submit}
-              disabled={!items.some(i => i.product_id)}>
-              提交 {items.filter(i => i.product_id).length} 条
+            <Button type="primary" loading={submitting} onClick={submit} disabled={!okCount}>
+              提交 {okCount} 条
             </Button>
           </Space>
         </>
@@ -145,9 +252,8 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
 
       {step === 2 && (
         <>
-          <Alert type="success" showIcon
-            message={`成功 ${results.filter(r => r.ok).length} / 失败 ${results.filter(r => !r.ok).length}`}
-            style={{ marginBottom: 8 }} />
+          <Alert type="success" icon={<CheckCircleOutlined />} showIcon style={{ marginBottom: 8 }}
+            message={`成功 ${results.filter(r => r.ok).length} 条 / 失败 ${results.filter(r => !r.ok).length} 条`} />
           {results.filter(r => !r.ok).map((r, i) => (
             <Alert key={i} type="error" message={`${r.pid}: ${r.error}`} style={{ marginBottom: 4 }} />
           ))}

@@ -1,23 +1,30 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
-  Modal, Steps, Select, Input, InputNumber, Button, Space,
-  AutoComplete, message, Alert,
+  Modal, Steps, Select, InputNumber, Input, Button, Space,
+  AutoComplete, message, Alert, DatePicker,
 } from 'antd'
 import dayjs from 'dayjs'
 import client from '../../api/client'
 
 type Op = 'restock_upstairs' | 'ru_dian' | 'adjust'
 
+interface InitialProduct {
+  id: number
+  jizhanming: string
+  sku: string
+}
+
 interface Props {
   open: boolean
   onClose: () => void
   onDone: () => void
+  initialProduct?: InitialProduct
 }
 
-export default function RestockModal({ open, onClose, onDone }: Props) {
+export default function RestockModal({ open, onClose, onDone, initialProduct }: Props) {
   const [step, setStep]       = useState(0)
   const [op, setOp]           = useState<Op>('restock_upstairs')
-  const [date, setDate]       = useState(dayjs().format('YYYY-MM-DD'))
+  const [date, setDate]       = useState(dayjs())
   const [searchVal, setSearch] = useState('')
   const [options, setOptions] = useState<any[]>([])
   const [product, setProduct] = useState<any>(null)
@@ -28,8 +35,21 @@ export default function RestockModal({ open, onClose, onDone }: Props) {
   const [result, setResult]   = useState<any>(null)
   const [loading, setLoading] = useState(false)
 
+  // Pre-seed product when opened from a row's quick-adjust button
+  useEffect(() => {
+    if (open && initialProduct) {
+      setProduct(initialProduct)
+      setSearch(`${initialProduct.jizhanming} (${initialProduct.sku})`)
+    } else if (!open) {
+      // reset on close
+      setStep(0); setProduct(null); setSearch(''); setQty(1); setNotes(''); setResult(null)
+      setDate(dayjs())
+    }
+  }, [open, initialProduct])
+
   function reset() {
     setStep(0); setProduct(null); setSearch(''); setQty(1); setNotes(''); setResult(null)
+    setDate(dayjs())
   }
 
   async function searchProducts(v: string) {
@@ -46,19 +66,20 @@ export default function RestockModal({ open, onClose, onDone }: Props) {
   async function handleSubmit() {
     if (!product) { message.warning('请选择产品'); return }
     setLoading(true)
+    const dateStr = date.format('YYYY-MM-DD')
     try {
       let resp
       if (op === 'adjust') {
         resp = await client.post('/stock/adjust', {
-          product_id: product.id, location, new_dan: newDan, date, notes,
+          product_id: product.id, location, new_dan: newDan, date: dateStr, notes,
         })
       } else if (op === 'ru_dian') {
         resp = await client.post('/stock/ru_dian', {
-          product_id: product.id, dan_qty: qty, date, notes,
+          product_id: product.id, dan_qty: qty, date: dateStr, notes,
         })
       } else {
         resp = await client.post('/stock/restock_upstairs', {
-          product_id: product.id, dan_qty: qty, date, notes,
+          product_id: product.id, dan_qty: qty, date: dateStr, notes,
         })
       }
       setResult(resp.data)
@@ -100,10 +121,11 @@ export default function RestockModal({ open, onClose, onDone }: Props) {
             options={Object.entries(OP_LABELS).map(([v, l]) => ({ value: v, label: l }))}
             style={{ width: '100%' }}
           />
-          <Input
-            type="date"
+          <DatePicker
             value={date}
-            onChange={e => setDate(e.target.value)}
+            onChange={d => setDate(d ?? dayjs())}
+            style={{ width: '100%' }}
+            allowClear={false}
           />
           <AutoComplete
             placeholder="搜索产品（记账名 / SKU）"

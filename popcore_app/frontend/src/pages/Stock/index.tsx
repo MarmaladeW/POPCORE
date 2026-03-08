@@ -3,7 +3,7 @@ import {
   Table, Input, Select, Button, Space, Tag, Tabs, Popconfirm,
   message, Typography, Row, Col, Statistic, Card,
 } from 'antd'
-import { ReloadOutlined, ExportOutlined, DeleteOutlined } from '@ant-design/icons'
+import { ReloadOutlined, ExportOutlined, DeleteOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -66,6 +66,10 @@ export default function StockPage() {
   const [selected, setSelected] = useState<React.Key[]>([])
   const [restockOpen, setRestockOpen] = useState(false)
   const [batchOpen, setBatchOpen]     = useState(false)
+  const [quickProduct, setQuickProduct] = useState<StockRow | null>(null)
+
+  // Inline notes editing
+  const [editingNotes, setEditingNotes] = useState<{ id: number; value: string } | null>(null)
 
   const loadStock = useCallback(() => {
     setLoading(true)
@@ -106,6 +110,21 @@ export default function StockPage() {
     window.location.href = `/api/stock/export?${params}`
   }
 
+  async function saveNotes(productId: number, notes: string) {
+    try {
+      await client.patch(`/stock/${productId}`, { notes })
+      setEditingNotes(null)
+      setStock(prev => prev.map(r => r.id === productId ? { ...r, stock_notes: notes } : r))
+    } catch {
+      message.error('保存备注失败')
+    }
+  }
+
+  function openQuickAdjust(row: StockRow) {
+    setQuickProduct(row)
+    setRestockOpen(true)
+  }
+
   const stockColumns: ColumnsType<StockRow> = [
     { title: 'SKU', dataIndex: 'sku', width: 110, render: v => <Text code>{v}</Text> },
     { title: '记账名', dataIndex: 'jizhanming', width: 130 },
@@ -128,7 +147,69 @@ export default function StockPage() {
       render: v => v ?? '-',
     },
     { title: '更新时间', dataIndex: 'last_updated', width: 150 },
-    { title: '备注', dataIndex: 'stock_notes', ellipsis: true },
+    {
+      title: '备注',
+      dataIndex: 'stock_notes',
+      ellipsis: true,
+      render: (v, r) => {
+        if (editingNotes?.id === r.id) {
+          return (
+            <Space size={4}>
+              <Input
+                size="small"
+                value={editingNotes.value}
+                onChange={e => setEditingNotes({ id: r.id, value: e.target.value })}
+                onPressEnter={() => saveNotes(r.id, editingNotes.value)}
+                style={{ width: 160 }}
+                autoFocus
+              />
+              <Button
+                size="small"
+                type="link"
+                icon={<CheckOutlined />}
+                onClick={() => saveNotes(r.id, editingNotes.value)}
+              />
+              <Button
+                size="small"
+                type="link"
+                danger
+                icon={<CloseOutlined />}
+                onClick={() => setEditingNotes(null)}
+              />
+            </Space>
+          )
+        }
+        return (
+          <Space size={4}>
+            <span style={{ color: v ? undefined : '#ccc' }}>{v || '—'}</span>
+            <Button
+              size="small"
+              type="link"
+              icon={<EditOutlined />}
+              onClick={() => setEditingNotes({ id: r.id, value: v || '' })}
+            />
+          </Space>
+        )
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 70,
+      align: 'center',
+      render: (_, r) => (
+        <RoleGuard minRole="staff">
+          <Button
+            size="small"
+            type="default"
+            icon={<EditOutlined />}
+            onClick={() => openQuickAdjust(r)}
+          >
+            调整
+          </Button>
+        </RoleGuard>
+      ),
+    },
   ]
 
   const txnColumns: ColumnsType<Transaction> = [
@@ -191,7 +272,7 @@ export default function StockPage() {
             <RoleGuard minRole="staff">
               <Col>
                 <Space>
-                  <Button type="primary" onClick={() => setRestockOpen(true)}>
+                  <Button type="primary" onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
                     入库 / 入店
                   </Button>
                   <Button onClick={() => setBatchOpen(true)}>批量导入</Button>
@@ -223,7 +304,7 @@ export default function StockPage() {
             columns={stockColumns}
             rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
             pagination={{ pageSize: 60, showTotal: t => `共 ${t} 条` }}
-            scroll={{ x: 800 }}
+            scroll={{ x: 900 }}
           />
         </div>
       ),
@@ -261,8 +342,9 @@ export default function StockPage() {
       />
       <RestockModal
         open={restockOpen}
-        onClose={() => setRestockOpen(false)}
-        onDone={() => { setRestockOpen(false); loadStock() }}
+        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku } : undefined}
+        onClose={() => { setRestockOpen(false); setQuickProduct(null) }}
+        onDone={() => { setRestockOpen(false); setQuickProduct(null); loadStock() }}
       />
       <BatchStockModal
         open={batchOpen}

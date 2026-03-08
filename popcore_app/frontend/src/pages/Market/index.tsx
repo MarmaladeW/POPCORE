@@ -157,7 +157,7 @@ export default function MarketPage() {
       dataIndex: 'our_price',
       width: 90,
       align: 'right',
-      render: v => v != null ? `¥${v}` : '-',
+      render: v => v != null ? `C$${v}` : '-',
     },
     {
       title: '库存',

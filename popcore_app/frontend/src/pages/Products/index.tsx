@@ -3,7 +3,7 @@ import {
   Table, Input, Select, Button, Space, Tag, Image, Popconfirm,
   message, Typography, Row, Col, Tooltip,
 } from 'antd'
-import { PlusOutlined, ExportOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons'
+import { PlusOutlined, ExportOutlined, DeleteOutlined, SearchOutlined, EditOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -116,7 +116,7 @@ export default function ProductsPage() {
       dataIndex: 'price',
       width: 80,
       align: 'right',
-      render: (v) => v != null ? `¥${v}` : '-',
+      render: (v) => v != null ? `C$${v}` : '-',
     },
     {
       title: '盲盒',
@@ -140,6 +140,15 @@ export default function ProductsPage() {
         <Button size="small" type="link" onClick={() => setImagesProduct(r)}>
           图
         </Button>
+      ),
+    },
+    {
+      title: '',
+      key: 'edit',
+      width: 50,
+      align: 'center',
+      render: (_, r) => (
+        <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)} />
       ),
     },
   ]

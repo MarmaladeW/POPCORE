@@ -1061,6 +1061,19 @@ def get_stock(product_id):
     return jsonify(dict(row))
 
 
+@app.route('/api/stock/<int:product_id>', methods=['PATCH'])
+@role_required('staff')
+def patch_stock(product_id):
+    """Update notes for a stock row."""
+    data = request.get_json() or {}
+    notes = data.get('notes', '')
+    con = get_db()
+    con.execute('UPDATE stock SET notes=? WHERE product_id=?', (notes, product_id))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/stock/ru_dian', methods=['POST'])
 @role_required('staff')
 def ru_dian():

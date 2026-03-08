@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Table, Input, Button, Space, Tag, Tabs, Popconfirm, message,
-  Typography, Row, Col, InputNumber, Statistic, Card, DatePicker,
+  Table, Button, Space, Tag, Tabs, Popconfirm, message,
+  Typography, Row, Col, InputNumber, Statistic, Card,
+  DatePicker, AutoComplete,
 } from 'antd'
 import {
-  PlusOutlined, ExportOutlined, DeleteOutlined, SearchOutlined,
+  PlusOutlined, ExportOutlined, DeleteOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import dayjs from 'dayjs'
+import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import BatchSalesModal from './BatchSalesModal'
@@ -38,23 +39,26 @@ interface SummaryRow {
 }
 
 export default function SalesPage() {
-  const [date, setDate]         = useState(dayjs().format('YYYY-MM-DD'))
+  const [date, setDate]         = useState<Dayjs>(dayjs())
   const [sales, setSales]       = useState<SaleRow[]>([])
   const [summary, setSummary]   = useState<SummaryRow[]>([])
   const [loading, setLoading]   = useState(false)
   const [addSearch, setAddSearch] = useState('')
   const [addOptions, setAddOptions] = useState<any[]>([])
-  const [editingId, setEditingId]   = useState<number | null>(null)
   const [batchOpen, setBatchOpen]   = useState(false)
-  const [exportFrom, setExportFrom] = useState(dayjs().subtract(30, 'day').format('YYYY-MM-DD'))
-  const [exportTo, setExportTo]     = useState(dayjs().format('YYYY-MM-DD'))
+  const [exportFrom, setExportFrom] = useState<Dayjs>(dayjs().subtract(30, 'day'))
+  const [exportTo, setExportTo]     = useState<Dayjs>(dayjs())
+  // Track in-progress edits locally so InputNumber updates visually before API confirms
+  const [localEdits, setLocalEdits] = useState<Record<number, { pos: number; cash: number }>>({})
+
+  const dateStr = date.format('YYYY-MM-DD')
 
   const loadSales = useCallback(() => {
     setLoading(true)
-    client.get('/sales', { params: { date } })
+    client.get('/sales', { params: { date: dateStr } })
       .then(r => setSales(r.data))
       .finally(() => setLoading(false))
-  }, [date])
+  }, [dateStr])
 
   const loadSummary = useCallback(() => {
     client.get('/sales/summary').then(r => setSummary(r.data))
@@ -66,12 +70,16 @@ export default function SalesPage() {
     setAddSearch(v)
     if (!v) { setAddOptions([]); return }
     const r = await client.get('/products/search', { params: { q: v, limit: 8 } })
-    setAddOptions(r.data)
+    setAddOptions(r.data.map((p: any) => ({
+      value: String(p.id),
+      label: `${p.jizhanming} (${p.sku})`,
+      product: p,
+    })))
   }
 
   async function addProduct(pid: number) {
     try {
-      await client.post('/sales/add_product', { product_id: pid, date })
+      await client.post('/sales/add_product', { product_id: pid, date: dateStr })
       setAddSearch('')
       setAddOptions([])
       loadSales()
@@ -80,25 +88,37 @@ export default function SalesPage() {
     }
   }
 
+  function setLocalQty(rowId: number, field: 'pos' | 'cash', val: number) {
+    setLocalEdits(prev => ({
+      ...prev,
+      [rowId]: {
+        pos:  prev[rowId]?.pos  ?? sales.find(s => s.id === rowId)?.qty_pos  ?? 0,
+        cash: prev[rowId]?.cash ?? sales.find(s => s.id === rowId)?.qty_cash ?? 0,
+        [field]: val,
+      },
+    }))
+  }
+
   async function upsert(row: SaleRow, field: 'qty_pos' | 'qty_cash', val: number) {
-    const update = {
-      product_id: row.product_id,
-      date,
-      qty_pos:  field === 'qty_pos'  ? val : row.qty_pos,
-      qty_cash: field === 'qty_cash' ? val : row.qty_cash,
-      notes: row.notes,
-    }
+    const local = localEdits[row.id]
+    const newPos  = field === 'qty_pos'  ? val : (local?.pos  ?? row.qty_pos)
+    const newCash = field === 'qty_cash' ? val : (local?.cash ?? row.qty_cash)
+    // Optimistic update in canonical state
+    setSales(prev => prev.map(s =>
+      s.id === row.id ? { ...s, qty_pos: newPos, qty_cash: newCash, qty_sold: newPos + newCash } : s
+    ))
+    setLocalEdits(prev => { const n = { ...prev }; delete n[row.id]; return n })
     try {
-      await client.post('/sales/upsert', update)
-      setSales(prev => prev.map(s =>
-        s.id === row.id ? {
-          ...s,
-          [field]: val,
-          qty_sold: (field === 'qty_pos' ? val : s.qty_pos) + (field === 'qty_cash' ? val : s.qty_cash),
-        } : s
-      ))
+      await client.post('/sales/upsert', {
+        product_id: row.product_id,
+        date: dateStr,
+        qty_pos: newPos,
+        qty_cash: newCash,
+        notes: row.notes,
+      })
     } catch {
       message.error('更新失败')
+      loadSales() // revert on failure
     }
   }
 
@@ -114,7 +134,7 @@ export default function SalesPage() {
 
   async function clearDay() {
     try {
-      await client.delete('/sales/clear_day', { params: { date } })
+      await client.delete('/sales/clear_day', { params: { date: dateStr } })
       message.success('已清空')
       loadSales()
     } catch {
@@ -135,7 +155,7 @@ export default function SalesPage() {
     { title: 'SKU', dataIndex: 'sku', width: 100, render: v => <Text code>{v}</Text> },
     {
       title: '单价', dataIndex: 'price', width: 70, align: 'right',
-      render: v => v != null ? `¥${v}` : '-',
+      render: v => v != null ? `C$${v}` : '-',
     },
     {
       title: '卡机',
@@ -146,9 +166,10 @@ export default function SalesPage() {
         <InputNumber
           size="small"
           min={0}
-          value={v}
-          onBlur={e => upsert(r, 'qty_pos', parseInt(e.target.value || '0', 10))}
-          onPressEnter={e => upsert(r, 'qty_pos', parseInt((e.target as HTMLInputElement).value || '0', 10))}
+          value={localEdits[r.id]?.pos ?? v}
+          onChange={val => setLocalQty(r.id, 'pos', val ?? 0)}
+          onBlur={() => upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v)}
+          onPressEnter={() => upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v)}
           style={{ width: 70 }}
         />
       ),
@@ -162,9 +183,10 @@ export default function SalesPage() {
         <InputNumber
           size="small"
           min={0}
-          value={v}
-          onBlur={e => upsert(r, 'qty_cash', parseInt(e.target.value || '0', 10))}
-          onPressEnter={e => upsert(r, 'qty_cash', parseInt((e.target as HTMLInputElement).value || '0', 10))}
+          value={localEdits[r.id]?.cash ?? v}
+          onChange={val => setLocalQty(r.id, 'cash', val ?? 0)}
+          onBlur={() => upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v)}
+          onPressEnter={() => upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v)}
           style={{ width: 70 }}
         />
       ),
@@ -208,51 +230,33 @@ export default function SalesPage() {
     <div>
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }} align="middle">
         <Col>
-          <Input
-            type="date"
+          <DatePicker
             value={date}
-            onChange={e => setDate(e.target.value)}
+            onChange={d => setDate(d ?? dayjs())}
+            allowClear={false}
             style={{ width: 160 }}
           />
         </Col>
         <RoleGuard minRole="staff">
-          <Col flex="auto">
-            <div style={{ position: 'relative' }}>
-              <Input
-                prefix={<SearchOutlined />}
-                placeholder="搜索产品并添加"
-                value={addSearch}
-                onChange={e => searchToAdd(e.target.value)}
-                style={{ width: 280 }}
-              />
-              {addOptions.length > 0 && (
-                <div style={{
-                  position: 'absolute', top: '100%', left: 0, width: 340,
-                  background: '#fff', border: '1px solid #d9d9d9',
-                  borderRadius: 4, boxShadow: '0 2px 8px rgba(0,0,0,.15)', zIndex: 100,
-                }}>
-                  {addOptions.map(p => (
-                    <div
-                      key={p.id}
-                      onClick={() => addProduct(p.id)}
-                      style={{ padding: '6px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}
-                      onMouseEnter={e => (e.currentTarget.style.background = '#f5f5f5')}
-                      onMouseLeave={e => (e.currentTarget.style.background = '')}
-                    >
-                      {p.jizhanming} <Text type="secondary" style={{ fontSize: 12 }}>({p.sku})</Text>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+          <Col>
+            <AutoComplete
+              placeholder="搜索产品并添加"
+              value={addSearch}
+              options={addOptions}
+              onSearch={searchToAdd}
+              onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
+              onClear={() => { setAddSearch(''); setAddOptions([]) }}
+              allowClear
+              style={{ width: 280 }}
+            />
           </Col>
           <Col>
-            <Button onClick={() => setBatchOpen(true)}>批量导入</Button>
+            <Button icon={<PlusOutlined />} onClick={() => setBatchOpen(true)}>批量导入</Button>
           </Col>
         </RoleGuard>
         <RoleGuard minRole="manager">
           <Col>
-            <Popconfirm title={`清空 ${date} 的所有销售记录？`} onConfirm={clearDay}>
+            <Popconfirm title={`清空 ${dateStr} 的所有销售记录？`} onConfirm={clearDay}>
               <Button danger>清空当日</Button>
             </Popconfirm>
           </Col>
@@ -284,7 +288,7 @@ export default function SalesPage() {
 
       <BatchSalesModal
         open={batchOpen}
-        date={date}
+        date={dateStr}
         onClose={() => setBatchOpen(false)}
         onDone={() => { setBatchOpen(false); loadSales() }}
       />
@@ -300,22 +304,22 @@ export default function SalesPage() {
         <RoleGuard minRole="manager">
           <Col>
             <Space>
-              <Input
-                type="date"
+              <DatePicker
                 value={exportFrom}
-                onChange={e => setExportFrom(e.target.value)}
+                onChange={d => setExportFrom(d ?? dayjs().subtract(30, 'day'))}
+                allowClear={false}
                 style={{ width: 150 }}
               />
               <Text>至</Text>
-              <Input
-                type="date"
+              <DatePicker
                 value={exportTo}
-                onChange={e => setExportTo(e.target.value)}
+                onChange={d => setExportTo(d ?? dayjs())}
+                allowClear={false}
                 style={{ width: 150 }}
               />
               <Button
                 icon={<ExportOutlined />}
-                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom}&to=${exportTo}`}
+                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
               >
                 导出
               </Button>
