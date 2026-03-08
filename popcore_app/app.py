@@ -10,8 +10,25 @@ import re
 import unicodedata
 import threading
 from datetime import date, timedelta
-from flask import Flask, request, jsonify, send_from_directory, Response
+import hashlib
+import secrets
+from functools import wraps
+from flask import Flask, request, jsonify, send_from_directory, Response, session
 from werkzeug.utils import secure_filename
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
+
+# ─── Sentry — error monitoring & performance tracing ──────────────────────────
+sentry_sdk.init(
+    dsn=os.environ.get("SENTRY_DSN", ""),
+    integrations=[FlaskIntegration()],
+    send_default_pii=True,
+    traces_sample_rate=0.2,
+    profiles_sample_rate=0.1,
+    environment=os.environ.get("APP_ENV", "development"),
+    release=os.environ.get("APP_RELEASE", "local"),
+    server_name=os.environ.get("SERVER_NAME", "localhost"),
+)
 
 # ─── Scrape-job state (single background thread) ──────────────────────────────
 _scrape_thread: threading.Thread | None = None
@@ -23,6 +40,20 @@ STATIC_DIR = os.path.join(BASE_DIR, 'static')
 HIDDEN_IMG_DIR = os.path.join(STATIC_DIR, 'hidden_imgs')
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
+
+# ─── Secret key (persisted across restarts so sessions survive) ───────────────
+_KEY_FILE = os.path.join(BASE_DIR, '.flask_secret_key')
+if os.path.exists(_KEY_FILE):
+    with open(_KEY_FILE) as _f:
+        app.secret_key = _f.read().strip()
+else:
+    app.secret_key = secrets.token_hex(32)
+    with open(_KEY_FILE, 'w') as _f:
+        _f.write(app.secret_key)
+
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 os.makedirs(HIDDEN_IMG_DIR, exist_ok=True)
 
@@ -147,6 +178,19 @@ def migrate_db():
             finished_at      TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_sl_store ON scrape_log(store_key);
+
+        CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT    NOT NULL,
+            salt          TEXT    NOT NULL,
+            role          TEXT    NOT NULL DEFAULT 'viewer'
+                                  CHECK(role IN ('admin','manager','staff','viewer')),
+            is_active     INTEGER NOT NULL DEFAULT 1,
+            created_at    TEXT    DEFAULT (datetime('now')),
+            last_login    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
     ''')
 
     con.commit()
@@ -155,6 +199,58 @@ def migrate_db():
 
 if os.path.exists(DB_PATH):
     migrate_db()
+    def _ensure_default_admin():
+        con = get_db()
+        if con.execute('SELECT COUNT(*) FROM users').fetchone()[0] == 0:
+            salt = _make_salt()
+            con.execute(
+                "INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, 'admin')",
+                ('admin', _hash_password('admin123', salt), salt)
+            )
+            con.commit()
+            print('[Auth] Default admin created  →  username: admin   password: admin123')
+            print('[Auth] Please change this password after first login.')
+        con.close()
+
+
+# ─── Auth helpers ─────────────────────────────────────────────────────────────
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+
+def _make_salt() -> str:
+    return secrets.token_hex(16)
+
+def _check_password(password: str, salt: str, stored_hash: str) -> bool:
+    return secrets.compare_digest(_hash_password(password, salt), stored_hash)
+
+_ensure_default_admin()
+
+
+# ─── RBAC decorators ──────────────────────────────────────────────────────────
+
+ROLE_HIERARCHY = {'viewer': 0, 'staff': 1, 'manager': 2, 'admin': 3}
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+def role_required(*allowed_roles):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if 'user_id' not in session:
+                return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
+            min_level = min(ROLE_HIERARCHY.get(r, 99) for r in allowed_roles)
+            if ROLE_HIERARCHY.get(session.get('role', 'viewer'), 0) < min_level:
+                return jsonify({'error': 'Forbidden'}), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
 
 
 # ─── Serve frontend ──────────────────────────────────────────────────────────
@@ -162,6 +258,133 @@ if os.path.exists(DB_PATH):
 @app.route('/')
 def index():
     return send_from_directory(STATIC_DIR, 'index.html')
+
+
+# ─── Auth API ────────────────────────────────────────────────────────────────
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data     = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '')
+    if not username or not password:
+        return jsonify({'error': '请填写用户名和密码'}), 400
+    con = get_db()
+    row = con.execute(
+        'SELECT id, username, password_hash, salt, role, is_active FROM users WHERE username = ?',
+        (username,)
+    ).fetchone()
+    con.close()
+    if not row or not row['is_active']:
+        return jsonify({'error': '用户名或密码错误'}), 401
+    if not _check_password(password, row['salt'], row['password_hash']):
+        return jsonify({'error': '用户名或密码错误'}), 401
+    con = get_db()
+    con.execute("UPDATE users SET last_login = datetime('now') WHERE id = ?", (row['id'],))
+    con.commit()
+    con.close()
+    session.permanent = True
+    session['user_id']  = row['id']
+    session['username'] = row['username']
+    session['role']     = row['role']
+    return jsonify({'ok': True, 'username': row['username'], 'role': row['role']})
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    session.clear()
+    return jsonify({'ok': True})
+
+@app.route('/api/auth/me')
+def auth_me():
+    if 'user_id' not in session:
+        return jsonify({'logged_in': False, 'login_required': True}), 401
+    return jsonify({
+        'logged_in': True,
+        'user_id':   session['user_id'],
+        'username':  session['username'],
+        'role':      session['role'],
+    })
+
+
+# ─── User Management API (Admin only) ────────────────────────────────────────
+
+@app.route('/api/users')
+@role_required('admin')
+def list_users():
+    con = get_db()
+    rows = [dict(r) for r in con.execute(
+        'SELECT id, username, role, is_active, created_at, last_login FROM users ORDER BY id'
+    ).fetchall()]
+    con.close()
+    return jsonify(rows)
+
+@app.route('/api/users', methods=['POST'])
+@role_required('admin')
+def create_user():
+    data     = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+    role     = (data.get('role') or 'viewer').strip()
+    if not username or not password:
+        return jsonify({'error': '用户名和密码必填'}), 400
+    if len(password) < 6:
+        return jsonify({'error': '密码至少6位'}), 400
+    if role not in ('admin', 'manager', 'staff', 'viewer'):
+        return jsonify({'error': '无效角色'}), 400
+    salt  = _make_salt()
+    phash = _hash_password(password, salt)
+    try:
+        con = get_db()
+        cur = con.cursor()
+        cur.execute(
+            'INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)',
+            (username, phash, salt, role)
+        )
+        new_id = cur.lastrowid
+        con.commit()
+        con.close()
+    except sqlite3.IntegrityError:
+        con.close()
+        return jsonify({'error': f'用户名 {username} 已存在'}), 409
+    return jsonify({'ok': True, 'id': new_id}), 201
+
+@app.route('/api/users/<int:uid>', methods=['PATCH'])
+@role_required('admin')
+def update_user(uid):
+    data    = request.get_json() or {}
+    updates = {}
+    if 'role' in data:
+        if data['role'] not in ('admin', 'manager', 'staff', 'viewer'):
+            return jsonify({'error': '无效角色'}), 400
+        updates['role'] = data['role']
+    if 'is_active' in data:
+        updates['is_active'] = int(bool(data['is_active']))
+    if data.get('password'):
+        salt = _make_salt()
+        updates['password_hash'] = _hash_password(data['password'], salt)
+        updates['salt']          = salt
+    if not updates:
+        return jsonify({'error': 'Nothing to update'}), 400
+    set_clause = ', '.join(f'{k} = ?' for k in updates)
+    con = get_db()
+    con.execute(f'UPDATE users SET {set_clause} WHERE id = ?', list(updates.values()) + [uid])
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+@app.route('/api/users/<int:uid>', methods=['DELETE'])
+@role_required('admin')
+def delete_user(uid):
+    if uid == session.get('user_id'):
+        return jsonify({'error': '不能删除当前登录账户'}), 400
+    con = get_db()
+    cur = con.execute('DELETE FROM users WHERE id = ?', (uid,))
+    deleted = cur.rowcount
+    con.commit()
+    con.close()
+    if not deleted:
+        return jsonify({'error': 'User not found'}), 404
+    return jsonify({'ok': True})
 
 
 # ─── Products API ─────────────────────────────────────────────────────────────
@@ -303,6 +526,7 @@ def fuzzy_match_jzm(query, candidates, threshold=60, limit=5):
 
 
 @app.route('/api/products/by_jizhanming')
+@login_required
 def get_by_jizhanming():
     """
     Look up products by 记账名 using fuzzy_match_jzm.
@@ -344,6 +568,7 @@ def get_by_jizhanming():
 
 
 @app.route('/api/products/search')
+@login_required
 def search_products():
     q = request.args.get('q', '').strip().lower()
     series = request.args.get('series', '').strip()
@@ -460,6 +685,7 @@ def search_products():
 
 
 @app.route('/api/products/<int:pid>')
+@login_required
 def get_product(pid):
     con = get_db()
     cur = con.cursor()
@@ -478,6 +704,7 @@ ALLOWED_IMG_TYPES = {'general', 'small', 'large'}
 
 
 @app.route('/api/products/<int:pid>/hidden_images')
+@login_required
 def list_hidden_images(pid):
     con = get_db()
     cur = con.cursor()
@@ -488,6 +715,7 @@ def list_hidden_images(pid):
 
 
 @app.route('/api/products/<int:pid>/hidden_images', methods=['POST'])
+@role_required('manager')
 def upload_hidden_image(pid):
     if 'image' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
@@ -521,6 +749,7 @@ def upload_hidden_image(pid):
 
 
 @app.route('/api/products/<int:pid>/hidden_images/<int:img_id>', methods=['DELETE'])
+@role_required('manager')
 def delete_hidden_image(pid, img_id):
     con = get_db()
     cur = con.cursor()
@@ -541,6 +770,7 @@ def delete_hidden_image(pid, img_id):
 # ─── Products PATCH ───────────────────────────────────────────────────────────
 
 @app.route('/api/products/<int:pid>', methods=['PATCH'])
+@role_required('manager')
 def update_product(pid):
     data = request.get_json()
     allowed = {'jizhanming', 'price', 'notes', 'name_cn_en', 'product_type',
@@ -578,6 +808,7 @@ def update_product(pid):
 
 
 @app.route('/api/products', methods=['POST'])
+@role_required('manager')
 def create_product():
     """Create a brand-new product. Body: { sku, jizhanming, name_cn_en, price, ip_series, ... }"""
     data = request.get_json()
@@ -641,6 +872,7 @@ def create_product():
 
 
 @app.route('/api/series')
+@login_required
 def get_series():
     con = get_db()
     cur = con.cursor()
@@ -651,6 +883,7 @@ def get_series():
 
 
 @app.route('/api/product_types')
+@login_required
 def get_product_types():
     con = get_db()
     cur = con.cursor()
@@ -675,6 +908,7 @@ def _ensure_stock_row(cur, product_id):
 
 
 @app.route('/api/stock')
+@login_required
 def get_all_stock():
     """
     Return all products that have a stock row (or all products if include_all=1),
@@ -733,6 +967,7 @@ def get_all_stock():
 
 
 @app.route('/api/stock/<int:product_id>')
+@login_required
 def get_stock(product_id):
     """Get stock for a single product."""
     con = get_db()
@@ -756,6 +991,7 @@ def get_stock(product_id):
 
 
 @app.route('/api/stock/ru_dian', methods=['POST'])
+@role_required('staff')
 def ru_dian():
     """
     入店: Move 端 from upstairs (2F) to in-store (1F).
@@ -807,6 +1043,7 @@ def ru_dian():
 
 
 @app.route('/api/stock/restock_upstairs', methods=['POST'])
+@role_required('staff')
 def restock_upstairs():
     """
     Receive new stock into upstairs (2F) storage — e.g. order arrived.
@@ -845,6 +1082,7 @@ def restock_upstairs():
 
 
 @app.route('/api/stock/adjust', methods=['POST'])
+@role_required('staff')
 def adjust_stock():
     """
     Manual adjustment (correction) of upstairs or instore count.
@@ -890,6 +1128,7 @@ def adjust_stock():
 
 
 @app.route('/api/stock/transactions')
+@login_required
 def get_transactions():
     """Recent transactions for a product or all products."""
     pid   = request.args.get('product_id')
@@ -928,6 +1167,7 @@ def get_transactions():
 
 
 @app.route('/api/stock/summary')
+@login_required
 def stock_summary():
     """Overview stats: total products in stock, totals per location."""
     con = get_db()
@@ -959,6 +1199,7 @@ def stock_summary():
 # ─── Daily Sales API ──────────────────────────────────────────────────────────
 
 @app.route('/api/sales')
+@login_required
 def get_sales():
     """Get all sales records for a given date, joined with product info."""
     d = request.args.get('date', str(date.today()))
@@ -978,6 +1219,7 @@ def get_sales():
 
 
 @app.route('/api/sales/upsert', methods=['POST'])
+@role_required('staff')
 def upsert_sale():
     """Upsert a single product's sales qty for a date."""
     data     = request.get_json()
@@ -1008,6 +1250,7 @@ def upsert_sale():
 
 
 @app.route('/api/sales/add_product', methods=['POST'])
+@role_required('staff')
 def add_product_to_sales():
     """Add a product to a date's sales list with 0 qty (idempotent)."""
     data = request.get_json()
@@ -1026,6 +1269,7 @@ def add_product_to_sales():
 
 
 @app.route('/api/sales/summary')
+@login_required
 def sales_summary():
     """Recent dates with total qty sold and product count."""
     con = get_db()
@@ -1047,6 +1291,7 @@ def sales_summary():
 
 
 @app.route('/api/sales/record/<int:record_id>', methods=['DELETE'])
+@role_required('manager')
 def delete_sales_record(record_id):
     """Delete a single daily_sales row by its id."""
     con = get_db()
@@ -1058,6 +1303,7 @@ def delete_sales_record(record_id):
 
 
 @app.route('/api/stock/batch_operation', methods=['POST'])
+@role_required('staff')
 def batch_stock_operation():
     """
     Batch stock operation (paste import).
@@ -1119,6 +1365,7 @@ def batch_stock_operation():
 
 
 @app.route('/api/sales/batch_upsert', methods=['POST'])
+@role_required('staff')
 def batch_upsert_sales():
     """Upsert multiple products' sales for a date at once (paste import)."""
     items = request.get_json()  # list of {product_id, date, qty_pos, qty_cash, notes}
@@ -1149,6 +1396,7 @@ def batch_upsert_sales():
 
 
 @app.route('/api/sales/export')
+@role_required('manager')
 def export_sales():
     """Return CSV of sales records for a date range (UTF-8 BOM for Excel)."""
     from_date = request.args.get('from', '')
@@ -1187,6 +1435,7 @@ def export_sales():
 
 
 @app.route('/api/stock/export')
+@role_required('manager')
 def export_stock():
     """Export current stock as CSV (UTF-8 BOM for Excel)."""
     series = request.args.get('series', '').strip()
@@ -1240,6 +1489,7 @@ def export_stock():
 
 
 @app.route('/api/stock/rows', methods=['DELETE'])
+@role_required('manager')
 def delete_stock_rows():
     """Remove products from stock tracking (delete their stock rows only)."""
     pids = request.get_json()
@@ -1256,6 +1506,7 @@ def delete_stock_rows():
 
 
 @app.route('/api/sales/clear_day', methods=['DELETE'])
+@role_required('manager')
 def clear_sales_day():
     """Delete all daily_sales records for a given date."""
     d = request.args.get('date', '')
@@ -1271,6 +1522,7 @@ def clear_sales_day():
 
 
 @app.route('/api/products/export')
+@role_required('manager')
 def export_products():
     """Export products as CSV, respecting series/q filters."""
     series = request.args.get('series', '').strip()
@@ -1319,6 +1571,7 @@ def export_products():
 
 
 @app.route('/api/products/bulk_delete', methods=['POST'])
+@role_required('manager')
 def bulk_delete_products():
     """Delete multiple products with full cascade (images, sales, stock, transactions)."""
     pids = request.get_json()
@@ -1357,6 +1610,7 @@ def bulk_delete_products():
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route('/api/market/scrape', methods=['POST'])
+@role_required('manager')
 def start_market_scrape():
     """
     Launch a background scrape job.
@@ -1386,6 +1640,7 @@ def start_market_scrape():
 
 
 @app.route('/api/market/status')
+@login_required
 def market_status():
     """
     Return per-store scrape status (last run only) + whether a job is running.
@@ -1407,6 +1662,7 @@ def market_status():
 
 
 @app.route('/api/market/prices')
+@login_required
 def market_prices():
     """
     Return market_prices rows.
@@ -1445,6 +1701,7 @@ def market_prices():
 
 
 @app.route('/api/market/overview')
+@login_required
 def market_overview():
     """
     Full market overview: all scraped items joined with internal product info.
