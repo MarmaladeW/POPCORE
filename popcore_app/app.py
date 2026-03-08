@@ -9,12 +9,15 @@ import uuid
 import re
 import unicodedata
 import threading
+import time
+import urllib.parse
 from datetime import date, timedelta
-import hashlib
-import secrets
 from functools import wraps
-from flask import Flask, request, jsonify, send_from_directory, Response, session
+from flask import Flask, request, jsonify, send_from_directory, Response
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from jose import jwt as jose_jwt
+import requests as http_req
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 
@@ -37,23 +40,22 @@ _scrape_lock   = threading.Lock()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'popcore.db')
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
-HIDDEN_IMG_DIR = os.path.join(STATIC_DIR, 'hidden_imgs')
+HIDDEN_IMG_DIR = os.path.join(BASE_DIR, 'uploads', 'hidden_imgs')
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
 
-# ─── Secret key (persisted across restarts so sessions survive) ───────────────
-_KEY_FILE = os.path.join(BASE_DIR, '.flask_secret_key')
-if os.path.exists(_KEY_FILE):
-    with open(_KEY_FILE) as _f:
-        app.secret_key = _f.read().strip()
-else:
-    app.secret_key = secrets.token_hex(32)
-    with open(_KEY_FILE, 'w') as _f:
-        _f.write(app.secret_key)
+# ─── CORS (allow Vite dev server) ─────────────────────────────────────────────
+CORS(app, origins=['http://localhost:5173'], supports_credentials=False)
 
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+# ─── Auth0 configuration ──────────────────────────────────────────────────────
+AUTH0_DOMAIN             = os.environ.get('AUTH0_DOMAIN',   'dev-n0833ddaix42sr23.us.auth0.com')
+AUTH0_AUDIENCE           = os.environ.get('AUTH0_AUDIENCE', 'https://popcore/api')
+AUTH0_MGMT_CLIENT_ID     = os.environ.get('AUTH0_MGMT_CLIENT_ID', '')
+AUTH0_MGMT_CLIENT_SECRET = os.environ.get('AUTH0_MGMT_CLIENT_SECRET', '')
+AUTH0_MGMT_AUDIENCE      = f'https://{AUTH0_DOMAIN}/api/v2/'
+AUTH0_CONNECTION         = 'Username-Password-Authentication'
+ROLE_CLAIM               = 'https://popcore/role'
+ALGORITHMS               = ['RS256']
 
 os.makedirs(HIDDEN_IMG_DIR, exist_ok=True)
 
@@ -179,18 +181,6 @@ def migrate_db():
         );
         CREATE INDEX IF NOT EXISTS idx_sl_store ON scrape_log(store_key);
 
-        CREATE TABLE IF NOT EXISTS users (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-            password_hash TEXT    NOT NULL,
-            salt          TEXT    NOT NULL,
-            role          TEXT    NOT NULL DEFAULT 'viewer'
-                                  CHECK(role IN ('admin','manager','staff','viewer')),
-            is_active     INTEGER NOT NULL DEFAULT 1,
-            created_at    TEXT    DEFAULT (datetime('now')),
-            last_login    TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
     ''')
 
     con.commit()
@@ -199,124 +189,189 @@ def migrate_db():
 
 if os.path.exists(DB_PATH):
     migrate_db()
-    def _ensure_default_admin():
-        con = get_db()
-        if con.execute('SELECT COUNT(*) FROM users').fetchone()[0] == 0:
-            salt = _make_salt()
-            con.execute(
-                "INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, 'admin')",
-                ('admin', _hash_password('admin123', salt), salt)
-            )
-            con.commit()
-            print('[Auth] Default admin created  →  username: admin   password: admin123')
-            print('[Auth] Please change this password after first login.')
-        con.close()
 
 
-# ─── Auth helpers ─────────────────────────────────────────────────────────────
-
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
-
-def _make_salt() -> str:
-    return secrets.token_hex(16)
-
-def _check_password(password: str, salt: str, stored_hash: str) -> bool:
-    return secrets.compare_digest(_hash_password(password, salt), stored_hash)
-
-_ensure_default_admin()
-
-
-# ─── RBAC decorators ──────────────────────────────────────────────────────────
+# ─── Auth0 JWT helpers ────────────────────────────────────────────────────────
 
 ROLE_HIERARCHY = {'viewer': 0, 'staff': 1, 'manager': 2, 'admin': 3}
+
+_jwks_cache: dict | None = None
+
+def _get_jwks() -> dict:
+    global _jwks_cache
+    if _jwks_cache is None:
+        resp = http_req.get(
+            f'https://{AUTH0_DOMAIN}/.well-known/jwks.json', timeout=10
+        )
+        resp.raise_for_status()
+        _jwks_cache = resp.json()
+    return _jwks_cache
+
+def _decode_token(token: str) -> dict:
+    global _jwks_cache
+    jwks = _get_jwks()
+    header = jose_jwt.get_unverified_header(token)
+    key = next((k for k in jwks['keys'] if k['kid'] == header['kid']), None)
+    if key is None:
+        # Refresh JWKS once in case of key rotation
+        _jwks_cache = None
+        jwks = _get_jwks()
+        key = next((k for k in jwks['keys'] if k['kid'] == header['kid']), None)
+    if key is None:
+        raise ValueError(f'Unknown key id: {header.get("kid")}')
+    return jose_jwt.decode(token, key, algorithms=ALGORITHMS, audience=AUTH0_AUDIENCE)
+
 
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if 'user_id' not in session:
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
+        try:
+            request.jwt_payload = _decode_token(auth[7:])
+        except Exception:
             return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
         return f(*args, **kwargs)
     return decorated
 
 def role_required(*allowed_roles):
+    min_level = min(ROLE_HIERARCHY.get(r, 99) for r in allowed_roles)
     def decorator(f):
         @wraps(f)
         def decorated(*args, **kwargs):
-            if 'user_id' not in session:
+            auth = request.headers.get('Authorization', '')
+            if not auth.startswith('Bearer '):
                 return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
-            min_level = min(ROLE_HIERARCHY.get(r, 99) for r in allowed_roles)
-            if ROLE_HIERARCHY.get(session.get('role', 'viewer'), 0) < min_level:
+            try:
+                payload = _decode_token(auth[7:])
+                request.jwt_payload = payload
+            except Exception:
+                return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
+            role = payload.get(ROLE_CLAIM, 'viewer')
+            if ROLE_HIERARCHY.get(role, 0) < min_level:
                 return jsonify({'error': 'Forbidden'}), 403
             return f(*args, **kwargs)
         return decorated
     return decorator
 
 
-# ─── Serve frontend ──────────────────────────────────────────────────────────
+# ─── Auth0 Management API helpers ─────────────────────────────────────────────
 
-@app.route('/')
-def index():
-    return send_from_directory(STATIC_DIR, 'index.html')
+_mgmt_token_cache: dict = {'token': None, 'expiry': 0.0}
+_role_ids_cache:   dict | None = None
+
+def _get_mgmt_token() -> str:
+    if _mgmt_token_cache['token'] and time.time() < _mgmt_token_cache['expiry']:
+        return _mgmt_token_cache['token']
+    resp = http_req.post(
+        f'https://{AUTH0_DOMAIN}/oauth/token',
+        json={
+            'client_id':     AUTH0_MGMT_CLIENT_ID,
+            'client_secret': AUTH0_MGMT_CLIENT_SECRET,
+            'audience':      AUTH0_MGMT_AUDIENCE,
+            'grant_type':    'client_credentials',
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    _mgmt_token_cache['token']  = data['access_token']
+    _mgmt_token_cache['expiry'] = time.time() + data.get('expires_in', 86400) - 60
+    return _mgmt_token_cache['token']
+
+def _mgmt_headers() -> dict:
+    return {'Authorization': f'Bearer {_get_mgmt_token()}',
+            'Content-Type': 'application/json'}
+
+def _mgmt_get(path: str, **kw):
+    return http_req.get(
+        f'{AUTH0_MGMT_AUDIENCE}{path}',
+        headers={'Authorization': f'Bearer {_get_mgmt_token()}'},
+        timeout=10, **kw,
+    )
+
+def _mgmt_post(path: str, **kw):
+    return http_req.post(
+        f'{AUTH0_MGMT_AUDIENCE}{path}', headers=_mgmt_headers(), timeout=10, **kw
+    )
+
+def _mgmt_patch(path: str, **kw):
+    return http_req.patch(
+        f'{AUTH0_MGMT_AUDIENCE}{path}', headers=_mgmt_headers(), timeout=10, **kw
+    )
+
+def _mgmt_delete(path: str, **kw):
+    return http_req.delete(
+        f'{AUTH0_MGMT_AUDIENCE}{path}',
+        headers={'Authorization': f'Bearer {_get_mgmt_token()}'},
+        timeout=10, **kw,
+    )
+
+def _get_role_map() -> dict:
+    """Return {role_name: role_id} for our 4 roles (cached per process)."""
+    global _role_ids_cache
+    if _role_ids_cache:
+        return _role_ids_cache
+    resp = _mgmt_get('roles', params={'per_page': 100})
+    resp.raise_for_status()
+    _role_ids_cache = {r['name']: r['id'] for r in resp.json()
+                       if r['name'] in ROLE_HIERARCHY}
+    return _role_ids_cache
 
 
-# ─── Auth API ────────────────────────────────────────────────────────────────
+# ─── Serve hidden images (stored outside static/) ────────────────────────────
 
-@app.route('/api/auth/login', methods=['POST'])
-def auth_login():
-    data     = request.get_json() or {}
-    username = (data.get('username') or '').strip()
-    password = (data.get('password') or '')
-    if not username or not password:
-        return jsonify({'error': '请填写用户名和密码'}), 400
-    con = get_db()
-    row = con.execute(
-        'SELECT id, username, password_hash, salt, role, is_active FROM users WHERE username = ?',
-        (username,)
-    ).fetchone()
-    con.close()
-    if not row or not row['is_active']:
-        return jsonify({'error': '用户名或密码错误'}), 401
-    if not _check_password(password, row['salt'], row['password_hash']):
-        return jsonify({'error': '用户名或密码错误'}), 401
-    con = get_db()
-    con.execute("UPDATE users SET last_login = datetime('now') WHERE id = ?", (row['id'],))
-    con.commit()
-    con.close()
-    session.permanent = True
-    session['user_id']  = row['id']
-    session['username'] = row['username']
-    session['role']     = row['role']
-    return jsonify({'ok': True, 'username': row['username'], 'role': row['role']})
-
-@app.route('/api/auth/logout', methods=['POST'])
-def auth_logout():
-    session.clear()
-    return jsonify({'ok': True})
-
-@app.route('/api/auth/me')
-def auth_me():
-    if 'user_id' not in session:
-        return jsonify({'logged_in': False, 'login_required': True}), 401
-    return jsonify({
-        'logged_in': True,
-        'user_id':   session['user_id'],
-        'username':  session['username'],
-        'role':      session['role'],
-    })
+@app.route('/hidden_imgs/<path:filename>')
+def serve_hidden_img(filename):
+    safe = os.path.normpath(filename).lstrip(os.sep)
+    return send_from_directory(HIDDEN_IMG_DIR, safe)
 
 
-# ─── User Management API (Admin only) ────────────────────────────────────────
+# ─── User Management API (Admin only — backed by Auth0 Management API) ────────
+
+_ORDER = ['admin', 'manager', 'staff', 'viewer']
+
+def _highest_role(user_roles: list, id_to_name: dict) -> str:
+    for r in _ORDER:
+        if any(id_to_name.get(ur['id']) == r for ur in user_roles):
+            return r
+    return 'viewer'
+
 
 @app.route('/api/users')
 @role_required('admin')
 def list_users():
-    con = get_db()
-    rows = [dict(r) for r in con.execute(
-        'SELECT id, username, role, is_active, created_at, last_login FROM users ORDER BY id'
-    ).fetchall()]
-    con.close()
-    return jsonify(rows)
+    resp = _mgmt_get('users', params={
+        'q': f'identities.connection:"{AUTH0_CONNECTION}"',
+        'search_engine': 'v3',
+        'fields': 'user_id,username,nickname,blocked,created_at,last_login',
+        'include_fields': 'true',
+        'per_page': 100,
+    })
+    if not resp.ok:
+        return jsonify({'error': 'Failed to fetch users from Auth0'}), 502
+    users = resp.json()
+
+    role_map   = _get_role_map()             # {name: id}
+    id_to_name = {v: k for k, v in role_map.items()}
+
+    result = []
+    for u in users:
+        uid = u['user_id']
+        uid_enc = urllib.parse.quote(uid, safe='')
+        roles_resp = _mgmt_get(f'users/{uid_enc}/roles')
+        user_roles = roles_resp.json() if roles_resp.ok else []
+        result.append({
+            'id':         uid,
+            'username':   u.get('username') or u.get('nickname') or uid,
+            'role':       _highest_role(user_roles, id_to_name),
+            'is_active':  0 if u.get('blocked') else 1,
+            'created_at': u.get('created_at', ''),
+            'last_login': u.get('last_login', ''),
+        })
+    return jsonify(result)
+
 
 @app.route('/api/users', methods=['POST'])
 @role_required('admin')
@@ -327,63 +382,79 @@ def create_user():
     role     = (data.get('role') or 'viewer').strip()
     if not username or not password:
         return jsonify({'error': '用户名和密码必填'}), 400
-    if len(password) < 6:
-        return jsonify({'error': '密码至少6位'}), 400
-    if role not in ('admin', 'manager', 'staff', 'viewer'):
+    if len(password) < 8:
+        return jsonify({'error': '密码至少8位'}), 400
+    if role not in ROLE_HIERARCHY:
         return jsonify({'error': '无效角色'}), 400
-    salt  = _make_salt()
-    phash = _hash_password(password, salt)
-    try:
-        con = get_db()
-        cur = con.cursor()
-        cur.execute(
-            'INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)',
-            (username, phash, salt, role)
-        )
-        new_id = cur.lastrowid
-        con.commit()
-        con.close()
-    except sqlite3.IntegrityError:
-        con.close()
-        return jsonify({'error': f'用户名 {username} 已存在'}), 409
-    return jsonify({'ok': True, 'id': new_id}), 201
 
-@app.route('/api/users/<int:uid>', methods=['PATCH'])
+    create_resp = _mgmt_post('users', json={
+        'connection':     AUTH0_CONNECTION,
+        'username':       username,
+        'email':          f'{username}@popcore.internal',
+        'password':       password,
+        'email_verified': True,
+    })
+    if not create_resp.ok:
+        err = create_resp.json().get('message', 'Create failed')
+        code = 409 if ('already exists' in err.lower() or create_resp.status_code == 409) else 502
+        return jsonify({'error': f'用户名 {username} 已存在' if code == 409 else err}), code
+
+    user_id = create_resp.json()['user_id']
+    role_map = _get_role_map()
+    role_id  = role_map.get(role)
+    if role_id:
+        _mgmt_post(
+            f'users/{urllib.parse.quote(user_id, safe="")}/roles',
+            json={'roles': [role_id]},
+        )
+    return jsonify({'ok': True, 'id': user_id}), 201
+
+
+@app.route('/api/users/<string:uid>', methods=['PATCH'])
 @role_required('admin')
 def update_user(uid):
+    uid_enc = urllib.parse.quote(uid, safe='')
     data    = request.get_json() or {}
-    updates = {}
+
     if 'role' in data:
-        if data['role'] not in ('admin', 'manager', 'staff', 'viewer'):
+        new_role = data['role']
+        if new_role not in ROLE_HIERARCHY:
             return jsonify({'error': '无效角色'}), 400
-        updates['role'] = data['role']
+        role_map    = _get_role_map()
+        new_role_id = role_map.get(new_role)
+        if not new_role_id:
+            return jsonify({'error': 'Role not found in Auth0'}), 500
+        cur_resp = _mgmt_get(f'users/{uid_enc}/roles')
+        if cur_resp.ok:
+            cur_ids = [r['id'] for r in cur_resp.json()]
+            if cur_ids:
+                _mgmt_delete(f'users/{uid_enc}/roles', json={'roles': cur_ids})
+        _mgmt_post(f'users/{uid_enc}/roles', json={'roles': [new_role_id]})
+
+    body = {}
     if 'is_active' in data:
-        updates['is_active'] = int(bool(data['is_active']))
+        body['blocked'] = not bool(data['is_active'])
     if data.get('password'):
-        salt = _make_salt()
-        updates['password_hash'] = _hash_password(data['password'], salt)
-        updates['salt']          = salt
-    if not updates:
-        return jsonify({'error': 'Nothing to update'}), 400
-    set_clause = ', '.join(f'{k} = ?' for k in updates)
-    con = get_db()
-    con.execute(f'UPDATE users SET {set_clause} WHERE id = ?', list(updates.values()) + [uid])
-    con.commit()
-    con.close()
+        if len(data['password']) < 8:
+            return jsonify({'error': '密码至少8位'}), 400
+        body['password']   = data['password']
+        body['connection'] = AUTH0_CONNECTION
+    if body:
+        resp = _mgmt_patch(f'users/{uid_enc}', json=body)
+        if not resp.ok:
+            return jsonify({'error': resp.json().get('message', 'Update failed')}), 502
     return jsonify({'ok': True})
 
-@app.route('/api/users/<int:uid>', methods=['DELETE'])
+
+@app.route('/api/users/<string:uid>', methods=['DELETE'])
 @role_required('admin')
 def delete_user(uid):
-    if uid == session.get('user_id'):
+    if uid == request.jwt_payload.get('sub', ''):
         return jsonify({'error': '不能删除当前登录账户'}), 400
-    con = get_db()
-    cur = con.execute('DELETE FROM users WHERE id = ?', (uid,))
-    deleted = cur.rowcount
-    con.commit()
-    con.close()
-    if not deleted:
-        return jsonify({'error': 'User not found'}), 404
+    uid_enc = urllib.parse.quote(uid, safe='')
+    resp    = _mgmt_delete(f'users/{uid_enc}')
+    if not resp.ok and resp.status_code != 404:
+        return jsonify({'error': 'Delete failed'}), 502
     return jsonify({'ok': True})
 
 
@@ -1729,6 +1800,15 @@ def market_overview():
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
+
+
+# ─── SPA fallback (React Router) ─────────────────────────────────────────────
+
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith('/api/') or request.path.startswith('/hidden_imgs/'):
+        return jsonify({'error': 'Not found'}), 404
+    return send_from_directory(STATIC_DIR, 'index.html')
 
 
 if __name__ == '__main__':

@@ -7,6 +7,13 @@
       "runtimeArgs": ["app.py"],
       "cwd": "D:\\hello\\popcore_app\\popcore_app",
       "port": 5000
+    },
+    {
+      "name": "popcore-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "D:\\hello\\popcore_app\\popcore_app\\frontend",
+      "port": 5173
     }
   ]
 }

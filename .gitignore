@@ -4,6 +4,9 @@
 # Database
 popcore_app/popcore.db
 
+# Flask secret key (do not commit)
+popcore_app/.flask_secret_key
+
 # Python
 __pycache__/
 *.pyc
