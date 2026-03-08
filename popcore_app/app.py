@@ -45,7 +45,7 @@ HIDDEN_IMG_DIR = os.path.join(BASE_DIR, 'uploads', 'hidden_imgs')
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
 
 # ─── CORS (allow Vite dev server) ─────────────────────────────────────────────
-CORS(app, origins=['http://localhost:5173'], supports_credentials=False)
+CORS(app, origins=['http://localhost:5173', 'https://138.197.150.41'], supports_credentials=False)
 
 # ─── Auth0 configuration ──────────────────────────────────────────────────────
 AUTH0_DOMAIN             = os.environ.get('AUTH0_DOMAIN',   'dev-n0833ddaix42sr23.us.auth0.com')
