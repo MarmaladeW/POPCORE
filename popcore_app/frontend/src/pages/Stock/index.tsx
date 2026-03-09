@@ -302,6 +302,8 @@ export default function StockPage() {
             loading={loading}
             dataSource={stock}
             columns={stockColumns}
+            rowHoverable
+            rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
             rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
             pagination={{ pageSize: 60, showTotal: t => `共 ${t} 条` }}
             scroll={{ x: 900 }}
@@ -326,6 +328,8 @@ export default function StockPage() {
             size="small"
             dataSource={txns}
             columns={txnColumns}
+            rowHoverable
+            rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
             pagination={{ pageSize: 50, showTotal: t => `共 ${t} 条` }}
             scroll={{ x: 700 }}
           />

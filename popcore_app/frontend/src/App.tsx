@@ -55,7 +55,16 @@ function AppInner() {
 
 export default function App() {
   return (
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        token: {
+          colorPrimary: '#6366f1',
+          borderRadius: 8,
+          fontFamily: "'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+        },
+      }}
+    >
       <ProtectedRoute>
         <AppInner />
       </ProtectedRoute>

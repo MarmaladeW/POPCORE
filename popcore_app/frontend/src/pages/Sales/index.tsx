@@ -282,6 +282,8 @@ export default function SalesPage() {
         loading={loading}
         dataSource={sales}
         columns={entryColumns}
+        rowHoverable
+        rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
         pagination={false}
         scroll={{ x: 700, y: 500 }}
       />
@@ -332,6 +334,8 @@ export default function SalesPage() {
         size="small"
         dataSource={summary}
         columns={summaryColumns}
+        rowHoverable
+        rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
         pagination={{ pageSize: 30, showTotal: t => `共 ${t} 天` }}
       />
     </div>
