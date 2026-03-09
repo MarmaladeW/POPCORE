@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Table, Button, Space, Tag, Tabs, Switch, Statistic, Card,
-  Row, Col, message, Badge, Tooltip, Typography,
+  Table, Button, Tag, Tabs, Card, Row, Col,
+  message, Typography, Switch, Space, Badge,
 } from 'antd'
-import { SyncOutlined, ReloadOutlined, LinkOutlined } from '@ant-design/icons'
+import {
+  SyncOutlined, ReloadOutlined, LinkOutlined,
+  RiseOutlined, FallOutlined, ShopOutlined,
+} from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
+import dayjs from 'dayjs'
 
-const { Text } = Typography
+const { Text, Title } = Typography
 
 interface OverviewRow {
   id: number
@@ -39,18 +43,25 @@ interface ScrapeStatus {
   }>
 }
 
+const STORE_KEYS = ['popmart_ca', 'mrpen', 'whoopea'] as const
+const STORE_NAMES: Record<string, string> = {
+  popmart_ca: 'PopMart CA',
+  mrpen:      'MrPen',
+  whoopea:    'Whoopea',
+}
 const STORE_COLORS: Record<string, string> = {
-  popmart_ca: 'blue',
-  mrpen:      'purple',
-  whoopea:    'green',
+  popmart_ca: '#3b82f6',
+  mrpen:      '#8b5cf6',
+  whoopea:    '#10b981',
 }
 
 export default function MarketPage() {
-  const [overview, setOverview] = useState<OverviewRow[]>([])
-  const [status, setStatus]     = useState<ScrapeStatus | null>(null)
+  const [overview,    setOverview]    = useState<OverviewRow[]>([])
+  const [status,      setStatus]      = useState<ScrapeStatus | null>(null)
   const [matchedOnly, setMatchedOnly] = useState(true)
-  const [loading, setLoading]   = useState(false)
-  const [scraping, setScraping] = useState(false)
+  const [loading,     setLoading]     = useState(false)
+  const [scraping,    setScraping]    = useState<Record<string, boolean>>({})
+  const [activeSource, setActiveSource] = useState<string>('all')
 
   const loadOverview = useCallback(() => {
     setLoading(true)
@@ -62,212 +73,350 @@ export default function MarketPage() {
   const loadStatus = useCallback(() => {
     client.get('/market/status').then(r => {
       setStatus(r.data)
-      setScraping(r.data.running)
+      if (r.data.running) {
+        setScraping(prev => ({ ...prev, all: true }))
+      }
     })
   }, [])
 
   useEffect(() => { loadOverview() }, [loadOverview])
-  useEffect(() => { loadStatus() }, [loadStatus])
+  useEffect(() => { loadStatus() },  [loadStatus])
 
-  // Poll while scraping
+  // Poll while any scrape is running
   useEffect(() => {
-    if (!scraping) return
+    const anyRunning = Object.values(scraping).some(Boolean)
+    if (!anyRunning) return
     const id = setInterval(() => {
       client.get('/market/status').then(r => {
         setStatus(r.data)
-        if (!r.data.running) { setScraping(false); loadOverview() }
+        if (!r.data.running) {
+          setScraping({})
+          loadOverview()
+        }
       })
     }, 5000)
     return () => clearInterval(id)
   }, [scraping, loadOverview])
 
-  async function startScrape() {
-    setScraping(true)
+  async function startScrape(storeKey?: string) {
+    const key = storeKey ?? 'all'
+    setScraping(prev => ({ ...prev, [key]: true }))
     try {
-      await client.post('/market/scrape')
-      message.info('爬取已启动，请稍候...')
+      const body = storeKey ? { stores: [storeKey] } : {}
+      await client.post('/market/scrape', body)
+      message.info(`Scraping ${storeKey ? STORE_NAMES[storeKey] : 'all stores'}...`)
     } catch (err: any) {
-      setScraping(false)
-      message.error(err?.response?.data?.error ?? '启动失败')
+      setScraping(prev => ({ ...prev, [key]: false }))
+      message.error(err?.response?.data?.error ?? 'Scrape failed')
     }
   }
 
-  const stores = status ? Object.keys(status.stores) : []
-  const lastScraped = status?.stores
-    ? Object.values(status.stores)
-        .map(s => s.finished_at)
-        .filter(Boolean)
-        .sort()
-        .at(-1)
-    : null
+  // Derive stat cards from overview
+  const matched = overview.filter(r => r.product_id != null)
+  const cheaper  = matched.filter(r => r.our_price != null && r.price_cad != null && r.our_price < r.price_cad).length
+  const pricier  = matched.filter(r => r.our_price != null && r.price_cad != null && r.our_price > r.price_cad).length
+  const diffs    = matched.filter(r => r.our_price != null && r.price_cad != null).map(r => r.our_price! - r.price_cad!)
+  const avgDiff  = diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : null
 
-  const overviewColumns: ColumnsType<OverviewRow> = [
+  const summaryCards = [
     {
-      title: '商店',
-      dataIndex: 'store_key',
-      width: 110,
-      filters: stores.map(s => ({ text: s, value: s })),
-      onFilter: (v, r) => r.store_key === v,
-      render: (v, r) => <Tag color={STORE_COLORS[v] ?? 'default'}>{r.store_name || v}</Tag>,
+      label: 'Products Tracked',
+      value: matched.length,
+      color: '#6366F1',
+      icon: <ShopOutlined />,
     },
     {
-      title: '标题',
+      label: 'Cheaper than Market',
+      value: cheaper,
+      color: '#10B981',
+      icon: <FallOutlined />,
+      sub: `${matched.length ? Math.round(cheaper / matched.length * 100) : 0}% of tracked`,
+    },
+    {
+      label: 'Overpriced vs Market',
+      value: pricier,
+      color: '#ef4444',
+      icon: <RiseOutlined />,
+      sub: `${matched.length ? Math.round(pricier / matched.length * 100) : 0}% of tracked`,
+    },
+    {
+      label: 'Avg Price Diff',
+      value: avgDiff != null ? `${avgDiff >= 0 ? '+' : ''}CA$${avgDiff.toFixed(2)}` : '—',
+      color: avgDiff != null && avgDiff < 0 ? '#10B981' : '#f59e0b',
+      icon: null,
+      sub: 'Our price vs market avg',
+    },
+  ]
+
+  // Filter rows by active source
+  const filteredRows = activeSource === 'all'
+    ? overview
+    : overview.filter(r => r.store_key === activeSource)
+
+  const columns: ColumnsType<OverviewRow> = [
+    {
+      title: 'Product',
+      dataIndex: 'jizhanming',
+      width: 160,
+      render: (v, r) => v
+        ? (
+          <div>
+            <div style={{ fontWeight: 500, color: '#111827', fontSize: 13 }}>{v}</div>
+            {r.ip_series && <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.ip_series}</div>}
+          </div>
+        )
+        : <Text type="secondary" style={{ fontSize: 12 }}>Unmatched</Text>,
+    },
+    {
+      title: 'External Title',
       dataIndex: 'external_title',
       ellipsis: true,
       render: (v, r) => (
-        <Space>
-          <span>{v}</span>
+        <Space size={4}>
+          <span style={{ fontSize: 12 }}>{v}</span>
           {r.url && (
             <a href={r.url} target="_blank" rel="noreferrer">
-              <LinkOutlined />
+              <LinkOutlined style={{ color: '#9ca3af', fontSize: 11 }} />
             </a>
           )}
         </Space>
       ),
     },
     {
-      title: '对应产品',
-      dataIndex: 'jizhanming',
-      width: 130,
-      render: (v, r) => v
-        ? <span>{v} {r.match_score && <Tag color="geekblue" style={{ fontSize: 11 }}>{r.match_score}</Tag>}</span>
-        : <Text type="secondary">未匹配</Text>,
+      title: 'Source',
+      dataIndex: 'store_key',
+      width: 110,
+      render: (v, r) => (
+        <Tag
+          style={{
+            background: `${STORE_COLORS[v] ?? '#6b7280'}18`,
+            color: STORE_COLORS[v] ?? '#6b7280',
+            border: `1px solid ${STORE_COLORS[v] ?? '#6b7280'}40`,
+            borderRadius: 6,
+            fontSize: 11,
+          }}
+        >
+          {r.store_name || STORE_NAMES[v] || v}
+        </Tag>
+      ),
     },
     {
-      title: '外部价格(CAD)',
+      title: 'Market Price',
       dataIndex: 'price_cad',
-      width: 130,
+      width: 120,
       align: 'right',
+      sorter: (a, b) => (a.price_cad ?? 0) - (b.price_cad ?? 0),
       render: (v, r) => {
-        if (v == null) return '-'
+        if (v == null) return <Text type="secondary">—</Text>
+        const diff = r.our_price != null ? r.our_price - v : null
+        const isLower = diff != null && diff > 0   // market cheaper than us
+        const isHigher = diff != null && diff < 0  // market more expensive
         return (
-          <span>
-            {r.on_sale ? <Tag color="red" style={{ marginRight: 4 }}>折扣</Tag> : null}
-            C${v.toFixed(2)}
+          <div style={{ textAlign: 'right' }}>
+            <span style={{
+              fontWeight: 600, fontSize: 13,
+              color: isHigher ? '#10b981' : isLower ? '#ef4444' : '#374151',
+            }}>
+              CA${v.toFixed(2)}
+            </span>
+            {r.on_sale ? <Tag color="red" style={{ marginLeft: 4, fontSize: 10 }}>Sale</Tag> : null}
             {r.compare_at_price && r.compare_at_price > v
-              ? <Text delete type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>C${r.compare_at_price.toFixed(2)}</Text>
+              ? <Text delete type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                  CA${r.compare_at_price.toFixed(2)}
+                </Text>
               : null}
-          </span>
+          </div>
         )
       },
-      sorter: (a, b) => (a.price_cad ?? 0) - (b.price_cad ?? 0),
     },
     {
-      title: '我方单价',
+      title: 'Our Price',
       dataIndex: 'our_price',
       width: 90,
       align: 'right',
-      render: v => v != null ? `C$${v}` : '-',
+      render: v => v != null
+        ? <Text style={{ color: '#6366F1', fontWeight: 600 }}>CA${v.toFixed(2)}</Text>
+        : <Text type="secondary">—</Text>,
     },
     {
-      title: '库存',
+      title: 'Diff',
+      width: 80,
+      align: 'right',
+      render: (_, r) => {
+        if (r.our_price == null || r.price_cad == null) return <Text type="secondary">—</Text>
+        const d = r.our_price - r.price_cad
+        return (
+          <Text style={{ color: d > 0 ? '#ef4444' : '#10b981', fontWeight: 600, fontSize: 12 }}>
+            {d > 0 ? '+' : ''}{d.toFixed(2)}
+          </Text>
+        )
+      },
+    },
+    {
+      title: 'Stock',
       dataIndex: 'in_stock',
       width: 70,
       align: 'center',
-      render: v => v ? <Badge status="success" text="有" /> : <Badge status="default" text="无" />,
-      filters: [{ text: '有库存', value: 1 }, { text: '缺货', value: 0 }],
-      onFilter: (v, r) => r.in_stock === v,
+      render: v => v
+        ? <Badge status="success" text="In Stock" />
+        : <Badge status="default" text="Out" />,
     },
     {
-      title: '更新',
+      title: 'Updated',
       dataIndex: 'scraped_at',
-      width: 130,
-      render: v => v ? <Text type="secondary" style={{ fontSize: 11 }}>{v.slice(0, 16)}</Text> : '-',
+      width: 100,
+      render: v => v
+        ? <Text type="secondary" style={{ fontSize: 11 }}>{dayjs(v).format('MM/DD HH:mm')}</Text>
+        : '—',
     },
   ]
 
-  const statusTab = (
+  const lastScrapedByStore = (sk: string) => {
+    const s = status?.stores?.[sk]
+    if (!s?.finished_at) return null
+    return dayjs(s.finished_at).format('MMM D, HH:mm')
+  }
+
+  const sourceTabs = [
+    { key: 'all', label: `All Sources (${overview.length})` },
+    ...STORE_KEYS.map(sk => ({
+      key: sk,
+      label: (
+        <span>
+          <span style={{ color: STORE_COLORS[sk] }}>●</span>{' '}
+          {STORE_NAMES[sk]} ({overview.filter(r => r.store_key === sk).length})
+        </span>
+      ),
+    })),
+  ]
+
+  return (
     <div>
-      <Row gutter={16} style={{ marginBottom: 20 }}>
-        {stores.map(sk => {
-          const s = status!.stores[sk]
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <Title level={3} style={{ margin: 0 }}>Market Prices</Title>
+          <Text style={{ color: '#6b7280' }}>
+            Competitor pricing across {STORE_KEYS.length} stores
+          </Text>
+        </div>
+        <RoleGuard minRole="manager">
+          <Button
+            type="primary"
+            icon={scraping.all ? <SyncOutlined spin /> : <SyncOutlined />}
+            loading={!!scraping.all}
+            onClick={() => startScrape()}
+          >
+            {scraping.all ? 'Scraping...' : 'Scrape All'}
+          </Button>
+        </RoleGuard>
+      </div>
+
+      {/* Stat cards */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+        {summaryCards.map(c => (
+          <Col key={c.label} xs={12} sm={6}>
+            <Card
+              style={{ borderRadius: 10, borderLeft: `4px solid ${c.color}` }}
+              bodyStyle={{ padding: '16px 20px' }}
+            >
+              <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
+              {c.sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{c.sub}</div>}
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      {/* Per-source scrape cards */}
+      <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
+        {STORE_KEYS.map(sk => {
+          const s = status?.stores?.[sk]
+          const isRunning = !!scraping[sk] || !!scraping.all
           return (
-            <Col key={sk} xs={24} sm={12} md={8}>
-              <Card size="small" title={<Tag color={STORE_COLORS[sk] ?? 'default'}>{sk}</Tag>}>
-                <Row gutter={8}>
-                  <Col span={12}>
-                    <Statistic title="爬取" value={s.products_scraped} />
-                  </Col>
-                  <Col span={12}>
-                    <Statistic title="匹配" value={s.products_matched} />
-                  </Col>
-                </Row>
-                <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
-                  {s.status === 'error' && s.error_msg
-                    ? <Text type="danger">{s.error_msg}</Text>
-                    : <Tag color={s.status === 'done' ? 'green' : 'processing'}>{s.status}</Tag>}
-                  {s.finished_at && <span style={{ marginLeft: 8 }}>{s.finished_at.slice(0, 16)}</span>}
+            <Col key={sk} xs={24} sm={8}>
+              <Card
+                size="small"
+                style={{ borderRadius: 10, borderTop: `3px solid ${STORE_COLORS[sk]}` }}
+                bodyStyle={{ padding: '12px 16px' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: '#111827', fontSize: 13 }}>
+                      {STORE_NAMES[sk]}
+                    </div>
+                    {s ? (
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                        {s.products_scraped} scraped · {s.products_matched} matched
+                        {lastScrapedByStore(sk) && ` · ${lastScrapedByStore(sk)}`}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: '#9ca3af' }}>No data yet</div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {s?.status && (
+                      <Tag color={s.status === 'done' ? 'green' : s.status === 'error' ? 'red' : 'processing'}>
+                        {s.status}
+                      </Tag>
+                    )}
+                    <RoleGuard minRole="manager">
+                      <Button
+                        size="small"
+                        icon={isRunning ? <SyncOutlined spin /> : <ReloadOutlined />}
+                        loading={isRunning}
+                        onClick={() => startScrape(sk)}
+                      >
+                        Scrape
+                      </Button>
+                    </RoleGuard>
+                  </div>
                 </div>
+                {s?.error_msg && (
+                  <Text type="danger" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+                    {s.error_msg}
+                  </Text>
+                )}
               </Card>
             </Col>
           )
         })}
       </Row>
-      <RoleGuard minRole="manager">
-        <Space>
-          <Button
-            type="primary"
-            icon={scraping ? <SyncOutlined spin /> : <ReloadOutlined />}
-            loading={scraping}
-            onClick={startScrape}
-          >
-            {scraping ? '爬取中...' : '开始爬取'}
-          </Button>
-          <Button onClick={loadStatus} icon={<ReloadOutlined />}>刷新状态</Button>
-        </Space>
-      </RoleGuard>
-      {lastScraped && (
-        <div style={{ marginTop: 12, color: '#999', fontSize: 12 }}>
-          最后更新：{lastScraped.slice(0, 16)}
+
+      {/* Main table */}
+      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+        <div style={{ padding: '16px 20px 0', borderBottom: '1px solid #e5e7eb' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Tabs
+              activeKey={activeSource}
+              onChange={setActiveSource}
+              items={sourceTabs}
+              style={{ marginBottom: 0 }}
+              tabBarStyle={{ margin: 0 }}
+            />
+            <Space size={8} style={{ marginBottom: 8 }}>
+              <Space size={4}>
+                <Text style={{ fontSize: 12, color: '#6b7280' }}>Matched only</Text>
+                <Switch size="small" checked={matchedOnly} onChange={setMatchedOnly} />
+              </Space>
+              <Button size="small" icon={<ReloadOutlined />} onClick={loadOverview}>
+                Refresh
+              </Button>
+            </Space>
+          </div>
         </div>
-      )}
+        <div style={{ padding: 20 }}>
+          <Table
+            rowKey="id"
+            size="middle"
+            loading={loading}
+            dataSource={filteredRows}
+            columns={columns}
+            pagination={{ pageSize: 80, showTotal: t => `${t} products` }}
+            scroll={{ x: 950 }}
+          />
+        </div>
+      </div>
     </div>
-  )
-
-  const pricesTab = (
-    <div>
-      <Row gutter={12} align="middle" style={{ marginBottom: 12 }}>
-        <Col>
-          <Space>
-            <span>仅显示已匹配</span>
-            <Switch checked={matchedOnly} onChange={setMatchedOnly} />
-          </Space>
-        </Col>
-        <Col>
-          <Button icon={<ReloadOutlined />} onClick={loadOverview}>刷新</Button>
-        </Col>
-        <RoleGuard minRole="manager">
-          <Col>
-            <Button
-              type="primary"
-              icon={scraping ? <SyncOutlined spin /> : <SyncOutlined />}
-              loading={scraping}
-              onClick={startScrape}
-            >
-              {scraping ? '爬取中...' : '立即爬取'}
-            </Button>
-          </Col>
-        </RoleGuard>
-      </Row>
-      <Table
-        rowKey="id"
-        size="small"
-        loading={loading}
-        dataSource={overview}
-        columns={overviewColumns}
-        pagination={{ pageSize: 80, showTotal: t => `共 ${t} 条` }}
-        scroll={{ x: 900 }}
-      />
-    </div>
-  )
-
-  return (
-    <Tabs
-      items={[
-        { key: 'prices', label: `市场价格 (${overview.length})`, children: pricesTab },
-        { key: 'status', label: '爬取状态', children: statusTab },
-      ]}
-      onChange={k => { if (k === 'status') loadStatus() }}
-    />
   )
 }

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { Auth0Provider } from '@auth0/auth0-react'
 import App from './App'
 import 'antd/dist/reset.css'
+import './index.css'
 
 const AUTH0_DOMAIN   = 'dev-n0833ddaix42sr23.us.auth0.com'
 const AUTH0_CLIENT_ID = 'LA11pKQ6PFceQOm3dzB9M5iFkbLUFrVB'

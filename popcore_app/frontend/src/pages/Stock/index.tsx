@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Input, Select, Button, Space, Tag, Tabs, Popconfirm,
-  message, Typography, Row, Col, Statistic, Card,
+  message, Typography, Row, Col, Card,
 } from 'antd'
-import { ReloadOutlined, ExportOutlined, DeleteOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons'
+import {
+  ReloadOutlined, ExportOutlined, DeleteOutlined,
+  EditOutlined, CheckOutlined, CloseOutlined,
+  InboxOutlined, ArrowUpOutlined, WarningOutlined,
+} from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -12,7 +16,7 @@ import RestockModal from './RestockModal'
 import BatchStockModal from './BatchStockModal'
 
 const { Search } = Input
-const { Text } = Typography
+const { Text, Title } = Typography
 
 interface StockRow {
   id: number
@@ -26,6 +30,7 @@ interface StockRow {
   instore_dan: number
   last_updated: string
   stock_notes: string
+  price: number | null
 }
 
 interface Transaction {
@@ -42,33 +47,44 @@ interface Transaction {
 }
 
 interface Summary {
-  products_tracked: number
+  products_tracked:   number
   total_upstairs_dan: number
-  total_instore_dan: number
-  low_stock_count: number
+  total_instore_dan:  number
+  low_stock_count:    number
   out_of_stock_count: number
 }
 
 const TXN_LABELS: Record<string, string> = {
-  ru_dian:          '入店',
-  restock_upstairs: '入库',
-  adjust:           '调整',
+  ru_dian:          'In-Store',
+  restock_upstairs: 'Restock',
+  adjust:           'Adjust',
+}
+
+const TXN_COLORS: Record<string, string> = {
+  ru_dian:          'blue',
+  restock_upstairs: 'green',
+  adjust:           'orange',
+}
+
+function stockStatus(total: number) {
+  if (total === 0)   return <Tag color="red">Out of Stock</Tag>
+  if (total <= 3)    return <Tag color="orange">Low Stock</Tag>
+  if (total <= 10)   return <Tag color="default">Normal</Tag>
+  return <Tag color="green">Well Stocked</Tag>
 }
 
 export default function StockPage() {
   const { series } = useAppStore()
-  const [stock, setStock]       = useState<StockRow[]>([])
-  const [txns, setTxns]         = useState<Transaction[]>([])
-  const [summary, setSummary]   = useState<Summary | null>(null)
-  const [loading, setLoading]   = useState(false)
-  const [q, setQ]               = useState('')
+  const [stock,    setStock]   = useState<StockRow[]>([])
+  const [txns,     setTxns]    = useState<Transaction[]>([])
+  const [summary,  setSummary] = useState<Summary | null>(null)
+  const [loading,  setLoading] = useState(false)
+  const [q,        setQ]       = useState('')
   const [filterSeries, setFilterSeries] = useState('')
   const [selected, setSelected] = useState<React.Key[]>([])
   const [restockOpen, setRestockOpen] = useState(false)
-  const [batchOpen, setBatchOpen]     = useState(false)
+  const [batchOpen,   setBatchOpen]   = useState(false)
   const [quickProduct, setQuickProduct] = useState<StockRow | null>(null)
-
-  // Inline notes editing
   const [editingNotes, setEditingNotes] = useState<{ id: number; value: string } | null>(null)
 
   const loadStock = useCallback(() => {
@@ -95,15 +111,15 @@ export default function StockPage() {
   async function handleDeleteRows() {
     try {
       await client.delete('/stock/rows', { data: selected })
-      message.success(`已移除 ${selected.length} 条库存`)
+      message.success(`Removed ${selected.length} stock records`)
       setSelected([])
       loadStock()
     } catch {
-      message.error('删除失败')
+      message.error('Delete failed')
     }
   }
 
-  async function handleExport() {
+  function handleExport() {
     const params = new URLSearchParams()
     if (filterSeries) params.set('series', filterSeries)
     if (q) params.set('q', q)
@@ -116,96 +132,89 @@ export default function StockPage() {
       setEditingNotes(null)
       setStock(prev => prev.map(r => r.id === productId ? { ...r, stock_notes: notes } : r))
     } catch {
-      message.error('保存备注失败')
+      message.error('Failed to save notes')
     }
   }
 
-  function openQuickAdjust(row: StockRow) {
-    setQuickProduct(row)
-    setRestockOpen(true)
-  }
-
   const stockColumns: ColumnsType<StockRow> = [
-    { title: 'SKU', dataIndex: 'sku', width: 110, render: v => <Text code>{v}</Text> },
-    { title: '记账名', dataIndex: 'jizhanming', width: 130 },
     {
-      title: '系列', dataIndex: 'ip_series', width: 110,
-      render: v => v ? <Tag color="blue">{v}</Tag> : '-',
+      title: 'SKU', dataIndex: 'sku', width: 110,
+      render: v => <Text style={{ fontFamily: 'monospace', fontSize: 11, color: '#6b7280' }}>{v}</Text>,
     },
     {
-      title: '楼上(端)', dataIndex: 'upstairs_dan', width: 90, align: 'center',
-      render: v => <Tag color={v === 0 ? 'red' : 'green'}>{v}</Tag>,
+      title: 'Product',
+      render: (_, r) => (
+        <div>
+          <div style={{ fontWeight: 500, color: '#111827', fontSize: 13 }}>{r.jizhanming || '—'}</div>
+          {r.product_type && <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.product_type}</div>}
+        </div>
+      ),
+    },
+    {
+      title: 'Series', dataIndex: 'ip_series', width: 120,
+      render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—',
+    },
+    {
+      title: <><ArrowUpOutlined /> Upstairs</>,
+      dataIndex: 'upstairs_dan',
+      width: 90, align: 'center',
       sorter: (a, b) => a.upstairs_dan - b.upstairs_dan,
+      render: v => (
+        <span style={{ fontWeight: 600, color: v === 0 ? '#ef4444' : '#374151' }}>{v}</span>
+      ),
     },
     {
-      title: '店内(端)', dataIndex: 'instore_dan', width: 90, align: 'center',
-      render: v => <Tag color={v === 0 ? 'default' : 'cyan'}>{v}</Tag>,
+      title: <><InboxOutlined /> In-Store</>,
+      dataIndex: 'instore_dan',
+      width: 90, align: 'center',
       sorter: (a, b) => a.instore_dan - b.instore_dan,
+      render: v => (
+        <span style={{ fontWeight: 600, color: v === 0 ? '#9ca3af' : '#374151' }}>{v}</span>
+      ),
     },
     {
-      title: '每端盒数', dataIndex: 'boxes_per_dan', width: 80, align: 'center',
-      render: v => v ?? '-',
-    },
-    { title: '更新时间', dataIndex: 'last_updated', width: 150 },
-    {
-      title: '备注',
-      dataIndex: 'stock_notes',
-      ellipsis: true,
-      render: (v, r) => {
-        if (editingNotes?.id === r.id) {
-          return (
-            <Space size={4}>
-              <Input
-                size="small"
-                value={editingNotes.value}
-                onChange={e => setEditingNotes({ id: r.id, value: e.target.value })}
-                onPressEnter={() => saveNotes(r.id, editingNotes.value)}
-                style={{ width: 160 }}
-                autoFocus
-              />
-              <Button
-                size="small"
-                type="link"
-                icon={<CheckOutlined />}
-                onClick={() => saveNotes(r.id, editingNotes.value)}
-              />
-              <Button
-                size="small"
-                type="link"
-                danger
-                icon={<CloseOutlined />}
-                onClick={() => setEditingNotes(null)}
-              />
-            </Space>
-          )
-        }
+      title: 'Total',
+      width: 80, align: 'center',
+      sorter: (a, b) => (a.upstairs_dan + a.instore_dan) - (b.upstairs_dan + b.instore_dan),
+      render: (_, r) => {
+        const t = r.upstairs_dan + r.instore_dan
         return (
-          <Space size={4}>
-            <span style={{ color: v ? undefined : '#ccc' }}>{v || '—'}</span>
-            <Button
-              size="small"
-              type="link"
-              icon={<EditOutlined />}
-              onClick={() => setEditingNotes({ id: r.id, value: v || '' })}
-            />
-          </Space>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 28, height: 28, borderRadius: '50%', fontWeight: 700, fontSize: 13,
+            background: t === 0 ? '#fef2f2' : t <= 3 ? '#fffbeb' : '#f0fdf4',
+            color:      t === 0 ? '#ef4444' : t <= 3 ? '#d97706' : '#16a34a',
+          }}>{t}</span>
         )
       },
     },
     {
-      title: '操作',
-      key: 'action',
-      width: 70,
-      align: 'center',
+      title: 'Stock Value',
+      width: 110, align: 'right',
+      render: (_, r) => {
+        const total = r.upstairs_dan + r.instore_dan
+        const val = r.price ? total * r.price : null
+        return val != null
+          ? <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${val.toFixed(2)}</Text>
+          : <Text type="secondary">—</Text>
+      },
+    },
+    {
+      title: 'Status',
+      width: 120,
+      render: (_, r) => stockStatus(r.upstairs_dan + r.instore_dan),
+    },
+    {
+      title: 'Actions',
+      key: 'action', width: 90, align: 'center',
       render: (_, r) => (
         <RoleGuard minRole="staff">
           <Button
             size="small"
-            type="default"
             icon={<EditOutlined />}
-            onClick={() => openQuickAdjust(r)}
+            onClick={() => { setQuickProduct(r); setRestockOpen(true) }}
           >
-            调整
+            Adjust
           </Button>
         </RoleGuard>
       ),
@@ -213,137 +222,140 @@ export default function StockPage() {
   ]
 
   const txnColumns: ColumnsType<Transaction> = [
-    { title: '日期', dataIndex: 'date', width: 100 },
-    { title: 'SKU', dataIndex: 'sku', width: 100, render: v => <Text code>{v}</Text> },
-    { title: '记账名', dataIndex: 'jizhanming', width: 120 },
+    { title: 'Date', dataIndex: 'date', width: 100 },
+    { title: 'SKU',  dataIndex: 'sku',  width: 110, render: v => <Text code>{v}</Text> },
+    { title: 'Product', dataIndex: 'jizhanming', width: 130 },
     {
-      title: '操作', dataIndex: 'txn_type', width: 80,
-      render: v => <Tag color={v === 'adjust' ? 'orange' : 'green'}>{TXN_LABELS[v] ?? v}</Tag>,
+      title: 'Type', dataIndex: 'txn_type', width: 100,
+      render: v => <Tag color={TXN_COLORS[v] ?? 'default'}>{TXN_LABELS[v] ?? v}</Tag>,
     },
     {
-      title: '数量', dataIndex: 'dan_qty', width: 70, align: 'right',
+      title: 'Qty', dataIndex: 'dan_qty', width: 70, align: 'right',
       render: v => <Text type={v < 0 ? 'danger' : 'success'}>{v > 0 ? `+${v}` : v}</Text>,
     },
-    { title: '位置', dataIndex: 'location', width: 120 },
-    { title: '备注', dataIndex: 'notes', ellipsis: true },
+    { title: 'Location', dataIndex: 'location', width: 120 },
+    { title: 'Notes', dataIndex: 'notes', ellipsis: true },
   ]
 
-  const tabItems = [
-    {
-      key: 'overview',
-      label: '库存概览',
-      children: (
-        <div>
-          {summary && (
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              {[
-                { title: '追踪产品', value: summary.products_tracked },
-                { title: '楼上(端)', value: summary.total_upstairs_dan },
-                { title: '店内(端)', value: summary.total_instore_dan },
-                { title: '低库存', value: summary.low_stock_count, valueStyle: { color: '#fa8c16' } },
-                { title: '缺货', value: summary.out_of_stock_count, valueStyle: { color: '#cf1322' } },
-              ].map(s => (
-                <Col key={s.title} xs={12} sm={8} md={5}>
-                  <Card size="small">
-                    <Statistic {...s} />
-                  </Card>
-                </Col>
-              ))}
-            </Row>
-          )}
-          <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-            <Col flex="auto">
-              <Search
-                placeholder="搜索产品"
-                allowClear
-                onSearch={setQ}
-                onChange={e => { if (!e.target.value) setQ('') }}
-              />
-            </Col>
-            <Col>
-              <Select
-                placeholder="系列"
-                allowClear
-                style={{ width: 140 }}
-                options={series.map(s => ({ value: s, label: s }))}
-                onChange={v => setFilterSeries(v ?? '')}
-              />
-            </Col>
-            <RoleGuard minRole="staff">
-              <Col>
-                <Space>
-                  <Button type="primary" onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
-                    入库 / 入店
-                  </Button>
-                  <Button onClick={() => setBatchOpen(true)}>批量导入</Button>
-                </Space>
-              </Col>
-            </RoleGuard>
-            <RoleGuard minRole="manager">
-              <Col>
-                <Space>
-                  <Button icon={<ExportOutlined />} onClick={handleExport}>导出</Button>
-                  {selected.length > 0 && (
-                    <Popconfirm
-                      title={`移除 ${selected.length} 条库存记录？`}
-                      onConfirm={handleDeleteRows}
-                      okButtonProps={{ danger: true }}
-                    >
-                      <Button danger icon={<DeleteOutlined />}>移除 ({selected.length})</Button>
-                    </Popconfirm>
-                  )}
-                </Space>
-              </Col>
-            </RoleGuard>
-          </Row>
-          <Table
-            rowKey="id"
-            size="small"
-            loading={loading}
-            dataSource={stock}
-            columns={stockColumns}
-            rowHoverable
-            rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
-            rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
-            pagination={{ pageSize: 60, showTotal: t => `共 ${t} 条` }}
-            scroll={{ x: 900 }}
-          />
-        </div>
-      ),
-    },
-    {
-      key: 'history',
-      label: '操作记录',
-      children: (
-        <div>
-          <Button
-            icon={<ReloadOutlined />}
-            style={{ marginBottom: 12 }}
-            onClick={loadTxns}
-          >
-            刷新
-          </Button>
-          <Table
-            rowKey="id"
-            size="small"
-            dataSource={txns}
-            columns={txnColumns}
-            rowHoverable
-            rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
-            pagination={{ pageSize: 50, showTotal: t => `共 ${t} 条` }}
-            scroll={{ x: 700 }}
-          />
-        </div>
-      ),
-    },
-  ]
+  const summaryCards = summary ? [
+    { label: 'Upstairs Total', value: summary.total_upstairs_dan, color: '#6366F1',  icon: <ArrowUpOutlined /> },
+    { label: 'In-Store Total', value: summary.total_instore_dan,  color: '#10B981',  icon: <InboxOutlined /> },
+    { label: 'Total Stock Value', value: `CA$ ${(
+        stock.reduce((acc, r) => acc + (r.price ?? 0) * (r.upstairs_dan + r.instore_dan), 0)
+      ).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      color: '#6366F1', icon: null },
+    { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count, color: '#ef4444', icon: <WarningOutlined /> },
+  ] : []
 
   return (
     <div>
-      <Tabs
-        items={tabItems}
-        onChange={k => { if (k === 'history') loadTxns() }}
-      />
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <Title level={3} style={{ margin: 0 }}>Stock Management</Title>
+          <Text style={{ color: '#6b7280' }}>Manage upstairs warehouse and in-store inventory</Text>
+        </div>
+        <RoleGuard minRole="staff">
+          <Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
+            Adjust Stock
+          </Button>
+        </RoleGuard>
+      </div>
+
+      {/* Summary cards */}
+      {summary && (
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          {summaryCards.map(c => (
+            <Col key={c.label} xs={12} sm={6}>
+              <Card style={{ borderRadius: 10, borderLeft: `4px solid ${c.color}` }} bodyStyle={{ padding: '16px 20px' }}>
+                <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
+              </Card>
+            </Col>
+          ))}
+        </Row>
+      )}
+
+      {/* Tabs */}
+      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+        <Tabs
+          style={{ padding: '0 20px' }}
+          items={[
+            {
+              key: 'overview',
+              label: 'Current Stock',
+              children: (
+                <div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+                    <Search
+                      placeholder="Search products"
+                      allowClear
+                      style={{ width: 220 }}
+                      onSearch={setQ}
+                      onChange={e => { if (!e.target.value) setQ('') }}
+                    />
+                    <Select
+                      placeholder="All Series"
+                      allowClear
+                      style={{ width: 140 }}
+                      options={series.map(s => ({ value: s, label: s }))}
+                      onChange={v => setFilterSeries(v ?? '')}
+                    />
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                      <RoleGuard minRole="staff">
+                        <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
+                      </RoleGuard>
+                      <RoleGuard minRole="manager">
+                        <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
+                        {selected.length > 0 && (
+                          <Popconfirm
+                            title={`Remove ${selected.length} stock records?`}
+                            onConfirm={handleDeleteRows}
+                            okButtonProps={{ danger: true }}
+                          >
+                            <Button danger icon={<DeleteOutlined />}>Remove ({selected.length})</Button>
+                          </Popconfirm>
+                        )}
+                      </RoleGuard>
+                    </div>
+                  </div>
+                  <Table
+                    rowKey="id"
+                    size="middle"
+                    loading={loading}
+                    dataSource={stock}
+                    columns={stockColumns}
+                    rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
+                    pagination={{ pageSize: 50, showTotal: t => `${t} products` }}
+                    scroll={{ x: 1000 }}
+                  />
+                </div>
+              ),
+            },
+            {
+              key: 'history',
+              label: `Transaction History (${txns.length})`,
+              children: (
+                <div>
+                  <Button icon={<ReloadOutlined />} style={{ marginBottom: 12 }} onClick={loadTxns}>
+                    Refresh
+                  </Button>
+                  <Table
+                    rowKey="id"
+                    size="middle"
+                    dataSource={txns}
+                    columns={txnColumns}
+                    pagination={{ pageSize: 50, showTotal: t => `${t} transactions` }}
+                    scroll={{ x: 700 }}
+                  />
+                </div>
+              ),
+            },
+          ]}
+          onChange={k => { if (k === 'history') loadTxns() }}
+        />
+      </div>
+
       <RestockModal
         open={restockOpen}
         initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku } : undefined}

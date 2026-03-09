@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Modal, Form, Input, InputNumber, Select, Row, Col, message } from 'antd'
+import { Modal, Form, Input, InputNumber, Select, Divider, message } from 'antd'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 
@@ -29,6 +29,11 @@ interface Props {
   onSaved: () => void
 }
 
+const YN_OPTIONS = [
+  { value: 0, label: 'No' },
+  { value: 1, label: 'Yes' },
+]
+
 export default function ProductModal({ open, product, onClose, onSaved }: Props) {
   const [form] = Form.useForm()
   const { series, productTypes } = useAppStore()
@@ -47,120 +52,131 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       const values = await form.validateFields()
       if (isEdit) {
         await client.patch(`/products/${product!.id}`, values)
-        message.success('更新成功')
+        message.success('Product updated')
       } else {
         await client.post('/products', values)
-        message.success('创建成功')
+        message.success('Product created')
       }
       onSaved()
     } catch (err: any) {
-      if (err?.errorFields) return // validation error, already shown
-      message.error(err?.response?.data?.error ?? '操作失败')
+      if (err?.errorFields) return
+      message.error(err?.response?.data?.error ?? 'Save failed')
     }
   }
 
-  const seriesOptions = series.map(s => ({ value: s, label: s }))
-  const typeOptions   = productTypes.map(t => ({ value: t, label: t }))
+  const seriesOptions   = series.map(s => ({ value: s, label: s }))
+  const typeOptions     = productTypes.map(t => ({ value: t, label: t }))
 
   return (
     <Modal
-      title={isEdit ? '编辑产品' : '新增产品'}
+      title={
+        <div style={{ fontWeight: 700, fontSize: 16 }}>
+          {isEdit ? 'Edit Product' : 'Add Product'}
+          {isEdit && product?.sku && (
+            <span style={{ marginLeft: 10, fontFamily: 'monospace', fontSize: 12, color: '#9ca3af', fontWeight: 400 }}>
+              {product.sku}
+            </span>
+          )}
+        </div>
+      }
       open={open}
       onOk={handleOk}
       onCancel={onClose}
-      width={680}
-      okText={isEdit ? '保存' : '创建'}
+      width={640}
+      okText={isEdit ? 'Save' : 'Create'}
+      cancelText="Cancel"
+      destroyOnClose
     >
-      <Form form={form} layout="vertical" size="small">
-        <Row gutter={12}>
-          <Col span={8}>
-            <Form.Item name="sku" label="SKU">
-              <Input placeholder="留空自动生成" />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="jizhanming" label="记账名">
-              <Input />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="price" label="单价">
-              <InputNumber style={{ width: '100%' }} min={0} precision={2} />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Form.Item name="name_cn_en" label="产品名称">
-          <Input />
+      <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
+
+        {/* — Core identity — */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
+          <Form.Item name="sku" label="SKU">
+            <Input placeholder="Auto-generated if blank" style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+          <Form.Item name="jizhanming" label="记账名 (Internal Name)">
+            <Input />
+          </Form.Item>
+        </div>
+
+        <Form.Item name="name_cn_en" label="Full Product Name">
+          <Input placeholder="e.g. DIMOO Memories We Hold Series" />
         </Form.Item>
-        <Row gutter={12}>
-          <Col span={12}>
-            <Form.Item name="ip_series" label="系列">
-              <Select
-                showSearch
-                allowClear
-                options={seriesOptions}
-                optionFilterProp="label"
-                dropdownRender={(menu) => (
-                  <>
-                    {menu}
-                    <div style={{ padding: '4px 8px', borderTop: '1px solid #f0f0f0', fontSize: 12, color: '#999' }}>
-                      直接输入新系列名
-                    </div>
-                  </>
-                )}
-                onSearch={(v) => form.setFieldValue('ip_series', v)}
-              />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="product_type" label="类型">
-              <Select
-                showSearch
-                allowClear
-                options={typeOptions}
-                optionFilterProp="label"
-                onSearch={(v) => form.setFieldValue('product_type', v)}
-              />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={12}>
-          <Col span={8}>
-            <Form.Item name="brand" label="品牌">
-              <Input />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="release_date" label="发售日期">
-              <Input placeholder="YYYY-MM-DD" />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item name="boxes_per_dan" label="每端盒数">
-              <InputNumber style={{ width: '100%' }} min={1} />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={12}>
-          <Col span={6}>
-            <Form.Item name="hidden_count" label="盲盒款数">
-              <Input placeholder="0" />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="hidden_has_small" label="含小盲盒">
-              <Select options={[{ value: 0, label: '无' }, { value: 1, label: '有' }]} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="hidden_has_large" label="含大盲盒">
-              <Select options={[{ value: 0, label: '无' }, { value: 1, label: '有' }]} />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Form.Item name="notes" label="备注">
-          <Input.TextArea rows={2} />
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 16px' }}>
+          <Form.Item name="ip_series" label="Series">
+            <Select
+              showSearch
+              allowClear
+              options={seriesOptions}
+              optionFilterProp="label"
+              placeholder="Select or type..."
+              dropdownRender={menu => (
+                <>
+                  {menu}
+                  <div style={{ padding: '4px 8px', borderTop: '1px solid #f0f0f0', fontSize: 11, color: '#9ca3af' }}>
+                    Type to add new series
+                  </div>
+                </>
+              )}
+              onSearch={v => form.setFieldValue('ip_series', v)}
+            />
+          </Form.Item>
+          <Form.Item name="product_type" label="Type">
+            <Select
+              showSearch
+              allowClear
+              options={typeOptions}
+              optionFilterProp="label"
+              placeholder="Select or type..."
+              onSearch={v => form.setFieldValue('product_type', v)}
+            />
+          </Form.Item>
+          <Form.Item name="price" label="Price (CA$)">
+            <InputNumber
+              style={{ width: '100%' }}
+              min={0}
+              precision={2}
+              prefix="$"
+              placeholder="0.00"
+            />
+          </Form.Item>
+        </div>
+
+        <Divider style={{ margin: '4px 0 16px', borderColor: '#f0f0f0' }} />
+
+        {/* — Details — */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 16px' }}>
+          <Form.Item name="brand" label="Brand">
+            <Input />
+          </Form.Item>
+          <Form.Item name="release_date" label="Release Date">
+            <Input placeholder="YYYY-MM-DD" />
+          </Form.Item>
+          <Form.Item name="boxes_per_dan" label="Boxes / Dan (端)">
+            <InputNumber style={{ width: '100%' }} min={1} placeholder="e.g. 12" />
+          </Form.Item>
+        </div>
+
+        <Divider style={{ margin: '4px 0 16px', borderColor: '#f0f0f0' }} />
+
+        {/* — Hidden figures — */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 16px' }}>
+          <Form.Item name="hidden_count" label="# Secret Variants">
+            <Input placeholder="0" />
+          </Form.Item>
+          <Form.Item name="hidden_has_small" label="Has Small Secret">
+            <Select options={YN_OPTIONS} />
+          </Form.Item>
+          <Form.Item name="hidden_has_large" label="Has Large Secret">
+            <Select options={YN_OPTIONS} />
+          </Form.Item>
+        </div>
+
+        <Form.Item name="notes" label="Notes" style={{ marginBottom: 0 }}>
+          <Input.TextArea rows={2} placeholder="Optional internal notes..." />
         </Form.Item>
+
       </Form>
     </Modal>
   )

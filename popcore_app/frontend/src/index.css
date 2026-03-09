@@ -1,0 +1,3 @@
+/* Tailwind v4 — utilities only, no preflight reset (prevents Ant Design conflicts) */
+@import "tailwindcss/theme" layer(theme);
+@import "tailwindcss/utilities" layer(utilities);

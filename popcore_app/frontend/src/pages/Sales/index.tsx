@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Table, Button, Space, Tag, Tabs, Popconfirm, message,
-  Typography, Row, Col, InputNumber, Statistic, Card,
+  Table, Button, Space, Tag, Popconfirm, message,
+  Typography, Row, Col, InputNumber, Card,
   DatePicker, AutoComplete,
 } from 'antd'
 import {
@@ -9,11 +9,16 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { Dayjs } from 'dayjs'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip as RechartTooltip, ResponsiveContainer,
+  BarChart as HBarChart,
+} from 'recharts'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import BatchSalesModal from './BatchSalesModal'
 
-const { Text } = Typography
+const { Text, Title } = Typography
 
 interface SaleRow {
   id: number
@@ -39,17 +44,16 @@ interface SummaryRow {
 }
 
 export default function SalesPage() {
-  const [date, setDate]         = useState<Dayjs>(dayjs())
-  const [sales, setSales]       = useState<SaleRow[]>([])
-  const [summary, setSummary]   = useState<SummaryRow[]>([])
-  const [loading, setLoading]   = useState(false)
-  const [addSearch, setAddSearch] = useState('')
-  const [addOptions, setAddOptions] = useState<any[]>([])
-  const [batchOpen, setBatchOpen]   = useState(false)
-  const [exportFrom, setExportFrom] = useState<Dayjs>(dayjs().subtract(30, 'day'))
-  const [exportTo, setExportTo]     = useState<Dayjs>(dayjs())
-  // Track in-progress edits locally so InputNumber updates visually before API confirms
-  const [localEdits, setLocalEdits] = useState<Record<number, { pos: number; cash: number }>>({})
+  const [date,    setDate]    = useState<Dayjs>(dayjs())
+  const [sales,   setSales]   = useState<SaleRow[]>([])
+  const [summary, setSummary] = useState<SummaryRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [addSearch,   setAddSearch]   = useState('')
+  const [addOptions,  setAddOptions]  = useState<any[]>([])
+  const [batchOpen,   setBatchOpen]   = useState(false)
+  const [exportFrom,  setExportFrom]  = useState<Dayjs>(dayjs().subtract(30, 'day'))
+  const [exportTo,    setExportTo]    = useState<Dayjs>(dayjs())
+  const [localEdits,  setLocalEdits]  = useState<Record<number, { pos: number; cash: number }>>({})
 
   const dateStr = date.format('YYYY-MM-DD')
 
@@ -64,7 +68,7 @@ export default function SalesPage() {
     client.get('/sales/summary').then(r => setSummary(r.data))
   }, [])
 
-  useEffect(() => { loadSales() }, [loadSales])
+  useEffect(() => { loadSales(); loadSummary() }, [loadSales, loadSummary])
 
   async function searchToAdd(v: string) {
     setAddSearch(v)
@@ -73,19 +77,15 @@ export default function SalesPage() {
     setAddOptions(r.data.map((p: any) => ({
       value: String(p.id),
       label: `${p.jizhanming} (${p.sku})`,
-      product: p,
     })))
   }
 
   async function addProduct(pid: number) {
     try {
       await client.post('/sales/add_product', { product_id: pid, date: dateStr })
-      setAddSearch('')
-      setAddOptions([])
+      setAddSearch(''); setAddOptions([])
       loadSales()
-    } catch {
-      message.error('添加失败')
-    }
+    } catch { message.error('Failed to add product') }
   }
 
   function setLocalQty(rowId: number, field: 'pos' | 'cash', val: number) {
@@ -100,108 +100,111 @@ export default function SalesPage() {
   }
 
   async function upsert(row: SaleRow, field: 'qty_pos' | 'qty_cash', val: number) {
-    const local = localEdits[row.id]
+    const local   = localEdits[row.id]
     const newPos  = field === 'qty_pos'  ? val : (local?.pos  ?? row.qty_pos)
     const newCash = field === 'qty_cash' ? val : (local?.cash ?? row.qty_cash)
-    // Optimistic update in canonical state
     setSales(prev => prev.map(s =>
       s.id === row.id ? { ...s, qty_pos: newPos, qty_cash: newCash, qty_sold: newPos + newCash } : s
     ))
     setLocalEdits(prev => { const n = { ...prev }; delete n[row.id]; return n })
     try {
-      await client.post('/sales/upsert', {
-        product_id: row.product_id,
-        date: dateStr,
-        qty_pos: newPos,
-        qty_cash: newCash,
-        notes: row.notes,
-      })
-    } catch {
-      message.error('更新失败')
-      loadSales() // revert on failure
-    }
+      await client.post('/sales/upsert', { product_id: row.product_id, date: dateStr, qty_pos: newPos, qty_cash: newCash, notes: row.notes })
+    } catch { message.error('Update failed'); loadSales() }
   }
 
   async function deleteRecord(id: number) {
     try {
       await client.delete(`/sales/record/${id}`)
-      message.success('已删除')
+      message.success('Deleted')
       loadSales()
-    } catch {
-      message.error('删除失败')
-    }
+    } catch { message.error('Delete failed') }
   }
 
   async function clearDay() {
     try {
       await client.delete('/sales/clear_day', { params: { date: dateStr } })
-      message.success('已清空')
+      message.success('Cleared')
       loadSales()
-    } catch {
-      message.error('失败')
-    }
+    } catch { message.error('Failed') }
   }
 
-  const totalPos  = sales.reduce((s, r) => s + r.qty_pos, 0)
-  const totalCash = sales.reduce((s, r) => s + r.qty_cash, 0)
-  const totalSold = sales.reduce((s, r) => s + r.qty_sold, 0)
+  const totalRevenue = sales.reduce((s, r) => s + (r.price ?? 0) * r.qty_sold, 0)
+  const totalPos     = sales.reduce((s, r) => s + r.qty_pos, 0)
+  const totalCash    = sales.reduce((s, r) => s + r.qty_cash, 0)
+  const totalSold    = sales.reduce((s, r) => s + r.qty_sold, 0)
+
+  // Weekly bar chart data (last 7 days from summary)
+  const weeklyData = summary.slice(0, 7).reverse().map(r => ({
+    date: dayjs(r.date).format('ddd MM/DD'),
+    Revenue: r.total_sold, // proxy — no revenue in summary, use qty
+  }))
+
+  // Top products for today
+  const topProducts = [...sales]
+    .sort((a, b) => b.qty_sold - a.qty_sold)
+    .slice(0, 6)
+    .map(r => ({ name: r.jizhanming || r.sku, POS: r.qty_pos, Cash: r.qty_cash }))
 
   const entryColumns: ColumnsType<SaleRow> = [
     {
-      title: '系列', dataIndex: 'ip_series', width: 100,
-      render: v => v ? <Tag color="blue">{v}</Tag> : '-',
+      title: 'Product',
+      render: (_, r) => (
+        <div>
+          <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{r.jizhanming || '—'}</div>
+          <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.sku}</div>
+        </div>
+      ),
     },
-    { title: '记账名', dataIndex: 'jizhanming', width: 130 },
-    { title: 'SKU', dataIndex: 'sku', width: 100, render: v => <Text code>{v}</Text> },
     {
-      title: '单价', dataIndex: 'price', width: 70, align: 'right',
-      render: v => v != null ? `C$${v}` : '-',
+      title: 'Series', dataIndex: 'ip_series', width: 110,
+      render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—',
     },
     {
-      title: '卡机',
-      dataIndex: 'qty_pos',
-      width: 100,
-      align: 'center',
+      title: 'Price', dataIndex: 'price', width: 80, align: 'right',
+      render: v => v != null ? <Text style={{ fontSize: 12 }}>CA${v}</Text> : '—',
+    },
+    {
+      title: 'POS Qty', dataIndex: 'qty_pos', width: 100, align: 'center',
       render: (v, r) => (
         <InputNumber
-          size="small"
-          min={0}
+          size="small" min={0}
           value={localEdits[r.id]?.pos ?? v}
           onChange={val => setLocalQty(r.id, 'pos', val ?? 0)}
           onBlur={() => upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v)}
           onPressEnter={() => upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v)}
-          style={{ width: 70 }}
+          style={{ width: 65 }}
         />
       ),
     },
     {
-      title: '现金/转账',
-      dataIndex: 'qty_cash',
-      width: 110,
-      align: 'center',
+      title: 'Cash Qty', dataIndex: 'qty_cash', width: 100, align: 'center',
       render: (v, r) => (
         <InputNumber
-          size="small"
-          min={0}
+          size="small" min={0}
           value={localEdits[r.id]?.cash ?? v}
           onChange={val => setLocalQty(r.id, 'cash', val ?? 0)}
           onBlur={() => upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v)}
           onPressEnter={() => upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v)}
-          style={{ width: 70 }}
+          style={{ width: 65 }}
         />
       ),
     },
     {
-      title: '合计', dataIndex: 'qty_sold', width: 70, align: 'center',
-      render: v => <Tag color={v > 0 ? 'green' : 'default'}>{v}</Tag>,
+      title: 'Total Units', dataIndex: 'qty_sold', width: 90, align: 'center',
+      render: v => <Text style={{ fontWeight: 600, color: v > 0 ? '#10B981' : '#9ca3af' }}>{v}</Text>,
     },
     {
-      title: '',
-      key: 'del',
-      width: 50,
+      title: 'Revenue', width: 90, align: 'right',
+      render: (_, r) => {
+        const rev = (r.price ?? 0) * r.qty_sold
+        return <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${rev.toFixed(2)}</Text>
+      },
+    },
+    {
+      title: '', key: 'del', width: 50,
       render: (_, r) => (
         <RoleGuard minRole="manager">
-          <Popconfirm title="删除此记录？" onConfirm={() => deleteRecord(r.id)}>
+          <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(r.id)}>
             <Button size="small" danger type="text" icon={<DeleteOutlined />} />
           </Popconfirm>
         </RoleGuard>
@@ -210,83 +213,153 @@ export default function SalesPage() {
   ]
 
   const summaryColumns: ColumnsType<SummaryRow> = [
-    { title: '日期', dataIndex: 'date', width: 110 },
-    { title: '产品数', dataIndex: 'product_count', width: 80, align: 'center' },
-    {
-      title: '卡机', dataIndex: 'total_pos', width: 80, align: 'center',
-      render: v => <Tag color="blue">{v}</Tag>,
-    },
-    {
-      title: '现金/转账', dataIndex: 'total_cash', width: 100, align: 'center',
-      render: v => <Tag color="cyan">{v}</Tag>,
-    },
-    {
-      title: '总销量', dataIndex: 'total_sold', width: 80, align: 'center',
-      render: v => <Tag color="green">{v}</Tag>,
-    },
+    { title: 'Date', dataIndex: 'date', width: 110 },
+    { title: 'Products', dataIndex: 'product_count', width: 90, align: 'center' },
+    { title: 'POS', dataIndex: 'total_pos', width: 80, align: 'center', render: v => <Tag color="blue">{v}</Tag> },
+    { title: 'Cash', dataIndex: 'total_cash', width: 80, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
+    { title: 'Total Sold', dataIndex: 'total_sold', width: 90, align: 'center', render: v => <Tag color="green">{v}</Tag> },
   ]
 
-  const entryTab = (
+  return (
     <div>
-      <Row gutter={[12, 12]} style={{ marginBottom: 12 }} align="middle">
-        <Col>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <Title level={3} style={{ margin: 0 }}>Daily Sales</Title>
+          <Text style={{ color: '#6b7280' }}>Track POS and cash sales by product</Text>
+        </div>
+        <Space>
           <DatePicker
             value={date}
             onChange={d => setDate(d ?? dayjs())}
             allowClear={false}
             style={{ width: 160 }}
           />
-        </Col>
-        <RoleGuard minRole="staff">
-          <Col>
+          <RoleGuard minRole="staff">
             <AutoComplete
-              placeholder="搜索产品并添加"
+              placeholder="Search & add product..."
               value={addSearch}
               options={addOptions}
               onSearch={searchToAdd}
               onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
               onClear={() => { setAddSearch(''); setAddOptions([]) }}
               allowClear
-              style={{ width: 280 }}
+              style={{ width: 240 }}
             />
-          </Col>
-          <Col>
-            <Button icon={<PlusOutlined />} onClick={() => setBatchOpen(true)}>批量导入</Button>
-          </Col>
-        </RoleGuard>
-        <RoleGuard minRole="manager">
-          <Col>
-            <Popconfirm title={`清空 ${dateStr} 的所有销售记录？`} onConfirm={clearDay}>
-              <Button danger>清空当日</Button>
-            </Popconfirm>
-          </Col>
-        </RoleGuard>
-      </Row>
+            <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)}>
+              Add Entry
+            </Button>
+          </RoleGuard>
+        </Space>
+      </div>
 
-      <Row gutter={12} style={{ marginBottom: 12 }}>
+      {/* Stat cards */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         {[
-          { title: '卡机', value: totalPos },
-          { title: '现金/转账', value: totalCash },
-          { title: '总销量', value: totalSold },
-          { title: '产品数', value: sales.length },
-        ].map(s => (
-          <Col key={s.title} xs={12} sm={6}>
-            <Card size="small"><Statistic {...s} /></Card>
+          { label: 'Total Revenue',  value: `CA$${totalRevenue.toFixed(2)}`, color: '#6366F1' },
+          { label: 'Units Sold',     value: totalSold,                       color: '#10B981' },
+          { label: 'POS Sales',      value: `${totalPos} units`,             color: '#6366F1' },
+          { label: 'Cash Sales',     value: `${totalCash} units`,            color: '#10B981' },
+        ].map(c => (
+          <Col key={c.label} xs={12} sm={6}>
+            <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '14px 20px' }}>
+              <div style={{ fontSize: 12, color: '#9ca3af' }}>{c.label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: c.color, marginTop: 4 }}>{c.value}</div>
+            </Card>
           </Col>
         ))}
       </Row>
 
-      <Table
-        rowKey="id"
-        size="small"
-        loading={loading}
-        dataSource={sales}
-        columns={entryColumns}
-        rowHoverable
-        rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
-        pagination={false}
-        scroll={{ x: 700, y: 500 }}
-      />
+      {/* Charts */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+        <Col xs={24} lg={12}>
+          <Card title="Weekly Revenue (Last 7 Days)" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <RechartTooltip />
+                <Bar dataKey="Revenue" fill="#6366F1" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title={`Top Products — ${date.format('MMM D')}`} style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
+            <ResponsiveContainer width="100%" height={200}>
+              <HBarChart data={topProducts} layout="vertical" margin={{ top: 0, right: 10, left: 60, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 10 }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={60} />
+                <RechartTooltip />
+                <Bar dataKey="POS"  fill="#6366F1" radius={[0, 4, 4, 0]} stackId="a" />
+                <Bar dataKey="Cash" fill="#10B981" radius={[0, 4, 4, 0]} stackId="a" />
+              </HBarChart>
+            </ResponsiveContainer>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* Sales table + log */}
+      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+        <div style={{ padding: '16px 20px 0', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontWeight: 600, color: '#111827' }}>
+            Sales for {date.format('dddd, MMMM D, YYYY')}
+            <Text style={{ color: '#9ca3af', fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
+              {sales.length} products sold
+            </Text>
+          </div>
+          <Space>
+            <RoleGuard minRole="manager">
+              <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
+                <Button danger size="small">Clear Day</Button>
+              </Popconfirm>
+              <Button
+                size="small"
+                icon={<ExportOutlined />}
+                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
+              >
+                Export
+              </Button>
+            </RoleGuard>
+          </Space>
+        </div>
+        <Table
+          rowKey="id"
+          size="middle"
+          loading={loading}
+          dataSource={sales}
+          columns={entryColumns}
+          pagination={false}
+          scroll={{ x: 800, y: 500 }}
+        />
+      </div>
+
+      {/* Summary section */}
+      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', marginTop: 16, overflow: 'hidden' }}>
+        <div style={{ padding: '16px 20px 0', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 600, color: '#111827' }}>Sales Log</span>
+          <RoleGuard minRole="manager">
+            <Space>
+              <DatePicker value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} style={{ width: 140 }} />
+              <Text style={{ color: '#9ca3af' }}>to</Text>
+              <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 140 }} />
+              <Button
+                icon={<ExportOutlined />}
+                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
+              >Export</Button>
+            </Space>
+          </RoleGuard>
+        </div>
+        <Table
+          rowKey="date"
+          size="middle"
+          dataSource={summary}
+          columns={summaryColumns}
+          pagination={{ pageSize: 30, showTotal: t => `${t} days` }}
+        />
+      </div>
 
       <BatchSalesModal
         open={batchOpen}
@@ -295,59 +368,5 @@ export default function SalesPage() {
         onDone={() => { setBatchOpen(false); loadSales() }}
       />
     </div>
-  )
-
-  const logTab = (
-    <div>
-      <Row gutter={12} align="middle" style={{ marginBottom: 12 }}>
-        <Col>
-          <Button onClick={loadSummary}>加载销售记录</Button>
-        </Col>
-        <RoleGuard minRole="manager">
-          <Col>
-            <Space>
-              <DatePicker
-                value={exportFrom}
-                onChange={d => setExportFrom(d ?? dayjs().subtract(30, 'day'))}
-                allowClear={false}
-                style={{ width: 150 }}
-              />
-              <Text>至</Text>
-              <DatePicker
-                value={exportTo}
-                onChange={d => setExportTo(d ?? dayjs())}
-                allowClear={false}
-                style={{ width: 150 }}
-              />
-              <Button
-                icon={<ExportOutlined />}
-                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
-              >
-                导出
-              </Button>
-            </Space>
-          </Col>
-        </RoleGuard>
-      </Row>
-      <Table
-        rowKey="date"
-        size="small"
-        dataSource={summary}
-        columns={summaryColumns}
-        rowHoverable
-        rowClassName={(_, i) => i % 2 !== 0 ? 'ant-table-row-alt' : ''}
-        pagination={{ pageSize: 30, showTotal: t => `共 ${t} 天` }}
-      />
-    </div>
-  )
-
-  return (
-    <Tabs
-      items={[
-        { key: 'entry', label: '销售录入', children: entryTab },
-        { key: 'log',   label: '销售记录', children: logTab },
-      ]}
-      onChange={k => { if (k === 'log') loadSummary() }}
-    />
   )
 }

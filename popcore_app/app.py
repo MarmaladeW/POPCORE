@@ -1745,6 +1745,24 @@ def market_status():
     return jsonify({'stores': stores, 'running': is_running})
 
 
+@app.route('/api/market/scrape_log')
+@login_required
+def market_scrape_log():
+    """Return last 100 scrape_log rows ordered by started_at DESC."""
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT id, store_key, status, products_scraped, products_matched,
+               error_msg, started_at, finished_at
+        FROM scrape_log
+        ORDER BY started_at DESC
+        LIMIT 100
+    ''')
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
 @app.route('/api/market/prices')
 @login_required
 def market_prices():

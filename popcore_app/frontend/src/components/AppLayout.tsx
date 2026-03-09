@@ -1,146 +1,225 @@
-import { Layout, Menu, Avatar, Dropdown, Typography } from 'antd'
+import { useState } from 'react'
+import { Layout, Menu, Avatar, Dropdown, Badge, Tag } from 'antd'
 import {
+  DashboardOutlined,
   AppstoreOutlined,
   InboxOutlined,
-  BarChartOutlined,
-  ShopOutlined,
+  DollarOutlined,
+  TagsOutlined,
+  SyncOutlined,
   UserOutlined,
+  BellOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useRole, useHasRole } from '../auth/useRole'
+import dayjs from 'dayjs'
 
-const { Header, Sider, Content } = Layout
-const { Text } = Typography
+const { Sider, Header, Content } = Layout
 
-const ROLE_LABEL: Record<string, string> = {
-  admin:   '管理员',
-  manager: '经理',
-  staff:   '店员',
-  viewer:  '查看',
+const ROLE_COLORS: Record<string, string> = {
+  viewer:  '#64748b',
+  staff:   '#0ea5e9',
+  manager: '#8b5cf6',
+  admin:   '#ef4444',
 }
 
-const globalCSS = `
-  /* Page fade-in */
-  @keyframes pageIn {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  .page-fade { animation: pageIn 0.2s ease; }
+const ROLE_LABELS: Record<string, string> = {
+  viewer:  'Viewer',
+  staff:   'Staff',
+  manager: 'Manager',
+  admin:   'Admin',
+}
 
-  /* Product cards */
-  .product-card {
-    border-radius: 12px;
-    border: 1px solid #f0f0f0;
-    padding: 16px;
-    background: #fff;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    transition: box-shadow 0.2s, transform 0.15s;
-    position: relative;
-  }
-  .product-card:hover {
-    box-shadow: 0 6px 20px rgba(0,0,0,0.13);
-    transform: translateY(-2px);
-  }
-
-  /* Primary button hover scale */
-  .ant-btn-primary:not(:disabled):hover { transform: scale(1.02); }
-
-  /* Series tag chips */
-  .series-chip {
-    cursor: pointer;
-    user-select: none;
-    transition: all 0.15s;
-    border-radius: 20px !important;
-    margin: 0 !important;
-  }
-  .series-chip:hover { opacity: 0.82; }
-
-  /* Zebra striping for tables */
-  .ant-table-row-alt > td.ant-table-cell {
-    background: rgba(0,0,0,0.018) !important;
-  }
-
-  /* Highlight search match */
-  mark.search-hl { background: #fef08a; padding: 0; border-radius: 2px; }
-
-  /* Sidebar menu transitions */
-  .ant-menu-item { transition: background 0.15s, color 0.15s !important; }
-`
+const SIDEBAR_BG = '#0D1B2A'
+const SIDEBAR_W  = 220
+const SIDEBAR_C  = 64
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const [collapsed, setCollapsed] = useState(false)
   const navigate  = useNavigate()
   const location  = useLocation()
   const { user, logout } = useAuth0()
-  const role      = useRole()
-  const isAdmin   = useHasRole('admin')
+  const role    = useRole()
+  const isAdmin = useHasRole('admin')
 
-  const menuItems = [
-    { key: '/products', icon: <AppstoreOutlined />, label: '产品' },
-    { key: '/stock',    icon: <InboxOutlined />,    label: '库存' },
-    { key: '/sales',    icon: <BarChartOutlined />, label: '销售' },
-    { key: '/market',   icon: <ShopOutlined />,     label: '市场' },
-    ...(isAdmin ? [{ key: '/users', icon: <UserOutlined />, label: '用户' }] : []),
+  const selectedKey = location.pathname === '/' ? '/' : '/' + location.pathname.split('/')[1]
+
+  const navItems = [
+    { key: '/',              icon: <DashboardOutlined />, label: 'Dashboard'     },
+    { key: '/products',      icon: <AppstoreOutlined />,  label: 'Products'      },
+    { key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         },
+    { key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         },
+    { key: '/market-prices', icon: <TagsOutlined />,      label: 'Market Prices' },
+    { key: '/scrape-log',    icon: <SyncOutlined />,      label: 'Scrape Log'    },
+    ...(isAdmin ? [{ key: '/users', icon: <UserOutlined />, label: 'Users' }] : []),
   ]
 
-  const userMenuItems = [
+  const userMenu = [
     {
       key: 'logout',
       icon: <LogoutOutlined />,
-      label: '退出登录',
+      label: 'Sign Out',
+      danger: true,
       onClick: () => logout({ logoutParams: { returnTo: window.location.origin } }),
     },
   ]
 
-  const selectedKey = '/' + location.pathname.split('/')[1]
+  const sideW = collapsed ? SIDEBAR_C : SIDEBAR_W
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <style>{globalCSS}</style>
-      <Sider width={180} theme="dark" collapsible breakpoint="lg">
+    <Layout style={{ minHeight: '100vh', background: '#f0f2f5' }}>
+      {/* Fixed sidebar */}
+      <Sider
+        collapsible
+        collapsed={collapsed}
+        trigger={null}
+        width={SIDEBAR_W}
+        collapsedWidth={SIDEBAR_C}
+        style={{
+          background:    SIDEBAR_BG,
+          position:      'fixed',
+          left:          0,
+          top:           0,
+          bottom:        0,
+          zIndex:        100,
+          overflow:      'auto',
+          boxShadow:     '2px 0 8px rgba(0,0,0,0.3)',
+          display:       'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {/* Logo */}
         <div style={{
-          padding: '16px 24px',
-          fontWeight: 800,
-          fontSize: 18,
-          background: 'linear-gradient(135deg, #818cf8, #c4b5fd)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          backgroundClip: 'text',
-          letterSpacing: 1,
+          padding:      collapsed ? '20px 14px' : '20px 20px',
+          display:      'flex',
+          alignItems:   'center',
+          gap:          10,
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
+          marginBottom: 8,
+          flexShrink:   0,
         }}>
-          POPCORE
+          <div style={{
+            width:          36,
+            height:         36,
+            borderRadius:   10,
+            background:     'linear-gradient(135deg, #6366F1, #8B5CF6)',
+            display:        'flex',
+            alignItems:     'center',
+            justifyContent: 'center',
+            fontWeight:     700,
+            fontSize:       16,
+            color:          '#fff',
+            flexShrink:     0,
+          }}>P</div>
+          {!collapsed && (
+            <div>
+              <div style={{ color: '#fff', fontWeight: 700, fontSize: 15, lineHeight: 1.2 }}>POPCORE</div>
+              <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>Inventory System</div>
+            </div>
+          )}
         </div>
+
+        {/* Nav menu */}
         <Menu
           theme="dark"
           mode="inline"
           selectedKeys={[selectedKey]}
-          items={menuItems}
+          items={navItems}
           onClick={({ key }) => navigate(key)}
+          style={{ background: SIDEBAR_BG, borderRight: 'none', flex: 1 }}
         />
-      </Sider>
-      <Layout>
-        <Header style={{
-          background: '#fff',
-          padding: '0 24px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'flex-end',
-          gap: 12,
-          boxShadow: '0 1px 4px rgba(0,0,0,.08)',
-        }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>{ROLE_LABEL[role] ?? role}</Text>
-          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <Text>{user?.nickname ?? user?.name ?? '用户'}</Text>
-            </div>
-          </Dropdown>
-        </Header>
-        <Content
-          className="page-fade"
-          style={{ margin: 24, background: '#fff', borderRadius: 8, padding: 24, overflow: 'auto' }}
+
+        {/* Collapse button */}
+        <div
+          onClick={() => setCollapsed(!collapsed)}
+          style={{
+            padding:    '14px 20px',
+            color:      'rgba(255,255,255,0.45)',
+            cursor:     'pointer',
+            display:    'flex',
+            alignItems: 'center',
+            gap:        8,
+            fontSize:   13,
+            borderTop:  '1px solid rgba(255,255,255,0.08)',
+            flexShrink: 0,
+          }}
         >
+          {collapsed
+            ? <MenuUnfoldOutlined />
+            : <><MenuFoldOutlined /><span>Collapse</span></>
+          }
+        </div>
+      </Sider>
+
+      {/* Main */}
+      <Layout style={{ marginLeft: sideW, transition: 'margin-left 0.2s', background: '#f0f2f5', minHeight: '100vh' }}>
+        {/* Header */}
+        <Header style={{
+          background:     '#fff',
+          padding:        '0 24px',
+          height:         64,
+          display:        'flex',
+          alignItems:     'center',
+          justifyContent: 'space-between',
+          boxShadow:      '0 1px 4px rgba(0,0,0,0.08)',
+          position:       'sticky',
+          top:            0,
+          zIndex:         99,
+        }}>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>
+            {dayjs().format('dddd, MMMM D, YYYY')}
+          </span>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {/* Role badge */}
+            <Tag
+              style={{
+                background:   `${ROLE_COLORS[role] ?? '#6b7280'}18`,
+                color:        ROLE_COLORS[role] ?? '#6b7280',
+                border:       `1px solid ${ROLE_COLORS[role] ?? '#6b7280'}40`,
+                borderRadius: 6,
+                fontWeight:   500,
+                fontSize:     12,
+                padding:      '2px 8px',
+                margin:       0,
+              }}
+            >
+              {ROLE_LABELS[role] ?? role}
+            </Tag>
+
+            {/* Bell */}
+            <Badge count={0} showZero={false}>
+              <BellOutlined style={{ fontSize: 18, color: '#6b7280', cursor: 'pointer' }} />
+            </Badge>
+
+            {/* User dropdown */}
+            <Dropdown menu={{ items: userMenu }} placement="bottomRight" trigger={['click']}>
+              <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Avatar
+                  size={32}
+                  src={user?.picture}
+                  icon={!user?.picture ? <UserOutlined /> : undefined}
+                  style={{ background: '#6366F1' }}
+                />
+                <div style={{ lineHeight: 1.3 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>
+                    {user?.nickname ?? user?.name ?? 'User'}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                    {ROLE_LABELS[role] ?? role}
+                  </div>
+                </div>
+              </div>
+            </Dropdown>
+          </div>
+        </Header>
+
+        {/* Page content */}
+        <Content style={{ padding: 24 }}>
           {children}
         </Content>
       </Layout>
