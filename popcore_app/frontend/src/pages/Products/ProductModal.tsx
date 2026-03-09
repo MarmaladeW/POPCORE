@@ -82,7 +82,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       open={open}
       onOk={handleOk}
       onCancel={onClose}
-      width={640}
+      width={Math.min(640, window.innerWidth - 32)}
       okText={isEdit ? 'Save' : 'Create'}
       cancelText="Cancel"
       destroyOnClose

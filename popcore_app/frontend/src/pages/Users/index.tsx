@@ -186,7 +186,7 @@ export default function UsersPage() {
         onOk={handleOk}
         onCancel={() => setModalOpen(false)}
         okText={editUser ? '保存' : '创建'}
-        width={400}
+        width={Math.min(400, window.innerWidth - 32)}
       >
         <Form form={form} layout="vertical" size="small">
           <Form.Item

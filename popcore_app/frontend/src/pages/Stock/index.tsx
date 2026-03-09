@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Input, Select, Button, Space, Tag, Tabs, Popconfirm,
-  message, Typography, Row, Col, Card,
+  message, Typography, Row, Col, Card, Grid,
 } from 'antd'
 import {
   ReloadOutlined, ExportOutlined, DeleteOutlined,
@@ -17,6 +17,7 @@ import BatchStockModal from './BatchStockModal'
 
 const { Search } = Input
 const { Text, Title } = Typography
+const { useBreakpoint } = Grid
 
 interface StockRow {
   id: number
@@ -74,6 +75,8 @@ function stockStatus(total: number) {
 }
 
 export default function StockPage() {
+  const screens  = useBreakpoint()
+  const isMobile = !screens.md
   const { series } = useAppStore()
   const [stock,    setStock]   = useState<StockRow[]>([])
   const [txns,     setTxns]    = useState<Transaction[]>([])
@@ -301,7 +304,7 @@ export default function StockPage() {
                       options={series.map(s => ({ value: s, label: s }))}
                       onChange={v => setFilterSeries(v ?? '')}
                     />
-                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    <div style={{ marginLeft: isMobile ? 0 : 'auto', display: 'flex', gap: 6 }}>
                       <RoleGuard minRole="staff">
                         <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
                       </RoleGuard>

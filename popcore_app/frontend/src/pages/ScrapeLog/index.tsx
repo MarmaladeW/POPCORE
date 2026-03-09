@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Button, Tag, Select, Card, Row, Col,
-  message, Typography, Space, Badge,
+  message, Typography, Space, Badge, Grid,
 } from 'antd'
 import {
   SyncOutlined, ReloadOutlined, CheckCircleOutlined,
@@ -13,6 +13,7 @@ import RoleGuard from '../../components/RoleGuard'
 import dayjs from 'dayjs'
 
 const { Text, Title } = Typography
+const { useBreakpoint } = Grid
 
 interface ScrapeLogRow {
   id: number
@@ -62,6 +63,8 @@ function durationStr(started: string, finished: string | null) {
 }
 
 export default function ScrapeLogPage() {
+  const screens  = useBreakpoint()
+  const isMobile = !screens.md
   const [logs,       setLogs]       = useState<ScrapeLogRow[]>([])
   const [status,     setStatus]     = useState<ScrapeStatus | null>(null)
   const [loading,    setLoading]    = useState(false)
@@ -343,7 +346,7 @@ export default function ScrapeLogPage() {
             ]}
             onChange={v => setFilterStat(v ?? '')}
           />
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: isMobile ? 0 : 'auto' }}>
             <Button icon={<ReloadOutlined />} onClick={() => { loadLogs(); loadStatus() }}>
               Refresh
             </Button>

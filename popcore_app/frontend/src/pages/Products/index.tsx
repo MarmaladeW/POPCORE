@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Input, Select, Button, Space, Tag, Popconfirm,
-  message, Typography, Table, Badge,
+  Button, Space, Tag, Popconfirm,
+  message, Typography, Table, Badge, Grid,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
-  SearchOutlined, EditOutlined, PictureOutlined,
+  EditOutlined, PictureOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -14,8 +14,10 @@ import RoleGuard from '../../components/RoleGuard'
 import ProductModal from './ProductModal'
 import HiddenImagesModal from './HiddenImagesModal'
 import PasteImportModal from './PasteImportModal'
+import ProductSearchBar from './ProductSearchBar'
 
-const { Title, Text } = Typography
+const { Title, Text }  = Typography
+const { useBreakpoint } = Grid
 
 interface Product {
   id: number
@@ -38,15 +40,6 @@ interface StockRow {
   instore_dan:  number
 }
 
-function useDebounce<T>(value: T, delay: number): T {
-  const [dv, setDv] = useState<T>(value)
-  useEffect(() => {
-    const h = setTimeout(() => setDv(value), delay)
-    return () => clearTimeout(h)
-  }, [value, delay])
-  return dv
-}
-
 const TYPE_COLORS: Record<string, string> = {
   'Blind Box': 'purple',
   'MEGA':      'orange',
@@ -60,14 +53,15 @@ function stockBadge(total: number) {
 }
 
 export default function ProductsPage() {
+  const screens  = useBreakpoint()
+  const isMobile = !screens.md
   const { series, productTypes } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
   const [stockMap,  setStockMap]  = useState<Map<number, number>>(new Map())
   const [loading,   setLoading]   = useState(false)
-  const [inputQ,    setInputQ]    = useState('')
-  const debouncedQ                = useDebounce(inputQ, 300)
-  const [filterSeries, setFilterSeries] = useState<string>('')
-  const [filterType,   setFilterType]   = useState<string>('')
+  const [searchQ,      setSearchQ]      = useState('')
+  const [searchSeries, setSearchSeries] = useState('')
+  const [searchType,   setSearchType]   = useState('')
   const [selected,  setSelected]  = useState<number[]>([])
 
   const [editProduct,    setEditProduct]    = useState<Product | null>(null)
@@ -78,9 +72,9 @@ export default function ProductsPage() {
   const load = useCallback(() => {
     setLoading(true)
     const params: Record<string, string> = { limit: '200' }
-    if (debouncedQ)   params.q = debouncedQ
-    if (filterSeries) params.series = filterSeries
-    if (filterType)   params.product_type = filterType
+    if (searchQ)      params.q = searchQ
+    if (searchSeries) params.series = searchSeries
+    if (searchType)   params.product_type = searchType
     Promise.all([
       client.get('/products/search', { params }),
       client.get('/stock'),
@@ -92,7 +86,7 @@ export default function ProductsPage() {
       })
       setStockMap(m)
     }).finally(() => setLoading(false))
-  }, [debouncedQ, filterSeries, filterType])
+  }, [searchQ, searchSeries, searchType])
 
   useEffect(() => { load() }, [load])
 
@@ -113,8 +107,8 @@ export default function ProductsPage() {
 
   function handleExport() {
     const params = new URLSearchParams()
-    if (filterSeries) params.set('series', filterSeries)
-    if (debouncedQ)   params.set('q', debouncedQ)
+    if (searchSeries) params.set('series', searchSeries)
+    if (searchQ)      params.set('q', searchQ)
     window.location.href = `/api/products/export?${params}`
   }
 
@@ -245,32 +239,13 @@ export default function ProductsPage() {
         boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
       }}>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <Input
-            prefix={<SearchOutlined style={{ color: '#9ca3af' }} />}
-            placeholder="Search name, SKU, 记账名..."
-            allowClear
-            value={inputQ}
-            onChange={e => setInputQ(e.target.value)}
-            style={{ width: 260 }}
-          />
-          <Select
-            placeholder="All Series"
-            allowClear
-            value={filterSeries || undefined}
-            style={{ width: 140 }}
-            options={series.map(s => ({ value: s, label: s }))}
-            onChange={v => setFilterSeries(v ?? '')}
-          />
-          <Select
-            placeholder="All Types"
-            allowClear
-            value={filterType || undefined}
-            style={{ width: 120 }}
-            options={productTypes.map(t => ({ value: t, label: t }))}
-            onChange={v => setFilterType(v ?? '')}
+          <ProductSearchBar
+            series={series}
+            productTypes={productTypes}
+            onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
           />
           <RoleGuard minRole="manager">
-            <Space size={6} style={{ marginLeft: 'auto' }}>
+            <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto' }}>
               <Button onClick={() => setPasteOpen(true)}>Import</Button>
               <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
               {selected.length > 0 && (
