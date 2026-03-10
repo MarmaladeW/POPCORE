@@ -11,19 +11,19 @@ const { Text } = Typography
 const { useBreakpoint } = Grid
 
 interface CheckItem {
-  product_id:       number
-  sku:              string
-  jizhanming:       string
-  name_cn_en:       string
-  ip_series:        string
-  product_type:     string
+  product_id:          number
+  sku:                 string
+  jizhanming:          string
+  name_cn_en:          string
+  ip_series:           string
+  product_type:        string
   current_instore_dan: number
-  theoretical_qty:  number
-  base_check_date:  string
-  is_base_abnormal: boolean
-  check_id:         number | null
-  actual_qty:       number | null
-  discrepancy:      number | null
+  theoretical_qty:     number
+  base_check_date:     string
+  is_base_abnormal:    boolean
+  check_id:            number | null
+  actual_qty:          number | null
+  discrepancy:         number | null
 }
 
 interface TodayData {
@@ -45,18 +45,29 @@ export default function EveningCheckStep() {
     try {
       const { data: d } = await client.get<TodayData>('/inventory-check/today')
       setData(d)
-      // Pre-fill saved actual_qty
-      const prefill: Record<number, number> = {}
-      for (const item of d.items) {
-        if (item.actual_qty !== null) prefill[item.product_id] = item.actual_qty
-      }
-      setActualQty(prefill)
+      // Pre-fill saved actual_qty (don't override user's in-progress edits)
+      setActualQty(prev => {
+        const prefill: Record<number, number> = { ...prev }
+        for (const item of d.items) {
+          if (item.actual_qty !== null && prefill[item.product_id] === undefined) {
+            prefill[item.product_id] = item.actual_qty
+          }
+        }
+        return prefill
+      })
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const items = data?.items ?? []
+
+  // A row is "done" if the user has typed a value OR it was already saved
+  const allFilled = items.length > 0 && items.every(i =>
+    actualQty[i.product_id] !== undefined || i.check_id !== null
+  )
 
   function localDiscrepancy(item: CheckItem): number | null {
     const actual = actualQty[item.product_id]
@@ -65,10 +76,13 @@ export default function EveningCheckStep() {
   }
 
   async function handleSubmitAll() {
-    if (!data) return
-    const toSave = data.items.filter(i => actualQty[i.product_id] !== undefined)
-    if (toSave.length === 0) { message.warning('请先填写实际库存数量'); return }
-
+    const toSave = items.filter(i =>
+      actualQty[i.product_id] !== undefined && i.check_id === null
+    )
+    if (toSave.length === 0) {
+      message.warning('没有需要提交的新数据（均已保存或未填写）')
+      return
+    }
     setSaving(true)
     try {
       const { data: res } = await client.post('/inventory-check/submit', {
@@ -77,12 +91,10 @@ export default function EveningCheckStep() {
           actual_qty: actualQty[item.product_id],
         })),
       })
-      if (res.conflicts?.length > 0 && res.saved === 0) {
-        message.error('今日已提交晚盘，如需修改请联系管理员')
-      } else {
-        message.success(`晚盘完成，已保存 ${res.saved} 项${res.conflicts?.length ? `，${res.conflicts.length} 项冲突跳过` : ''}`)
-        load()
-      }
+      const { saved, conflicts } = res as { saved: number; conflicts: number[] }
+      if (saved > 0) message.success(`晚盘完成，已保存 ${saved} 项`)
+      if (conflicts?.length > 0) message.warning(`${conflicts.length} 项今日已提交，跳过`)
+      load()
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       if (status === 409) {
@@ -95,7 +107,13 @@ export default function EveningCheckStep() {
     }
   }
 
-  const hasAbnormal = data?.items.some(i => i.is_base_abnormal) ?? false
+  const savedCount  = items.filter(i => i.check_id !== null).length
+  const filledCount = items.filter(i => actualQty[i.product_id] !== undefined).length
+  const diffCount   = items.filter(i => {
+    const d = localDiscrepancy(i)
+    return d !== null && d !== 0
+  }).length
+  const allSaved = savedCount === items.length && items.length > 0
 
   const columns: ColumnsType<CheckItem> = [
     {
@@ -105,20 +123,16 @@ export default function EveningCheckStep() {
         <div>
           <div style={{ fontWeight: 500 }}>{r.jizhanming || r.name_cn_en}</div>
           <Text type="secondary" style={{ fontSize: 12 }}>{r.sku} · {r.ip_series}</Text>
-        </div>
-      ),
-    },
-    {
-      title: '基准日期',
-      key: 'base',
-      width: 130,
-      render: (_, r) => (
-        <Space size={4}>
-          <Text style={{ fontSize: 12 }}>{r.base_check_date}</Text>
           {r.is_base_abnormal && (
-            <WarningOutlined style={{ color: '#F59E0B', fontSize: 13 }} title="基准非昨日" />
+            <div style={{
+              color: '#F59E0B', fontSize: 11,
+              display: 'flex', alignItems: 'center', gap: 3, marginTop: 2,
+            }}>
+              <WarningOutlined />
+              <span>基准日期：{r.base_check_date}，请核查</span>
+            </div>
           )}
-        </Space>
+        </div>
       ),
     },
     {
@@ -130,21 +144,23 @@ export default function EveningCheckStep() {
     {
       title: '实际库存',
       key: 'actual_qty',
-      width: 110,
-      render: (_, r) => (
-        r.check_id !== null && actualQty[r.product_id] === undefined
-          ? <Tag color="success">{r.actual_qty} 端</Tag>
-          : (
-            <InputNumber
-              min={0} max={9999}
-              value={actualQty[r.product_id] ?? (r.actual_qty ?? undefined)}
-              placeholder="输入"
-              onChange={v => setActualQty(prev => ({ ...prev, [r.product_id]: v ?? 0 }))}
-              style={{ width: 85 }}
-              size="small"
-            />
-          )
-      ),
+      width: 120,
+      render: (_, r) => {
+        // Show Tag (locked) if already saved AND user hasn't started editing again
+        if (r.check_id !== null && actualQty[r.product_id] === undefined) {
+          return <Tag color="success">{r.actual_qty} 端</Tag>
+        }
+        return (
+          <InputNumber
+            min={0} max={9999} precision={0}
+            value={actualQty[r.product_id] ?? (r.actual_qty ?? undefined)}
+            placeholder="输入"
+            onChange={v => setActualQty(prev => ({ ...prev, [r.product_id]: v ?? 0 }))}
+            style={{ width: 90 }}
+            size="small"
+          />
+        )
+      },
     },
     {
       title: '差异',
@@ -152,10 +168,14 @@ export default function EveningCheckStep() {
       width: 80,
       render: (_, r) => {
         const diff = localDiscrepancy(r)
-        if (diff === null) return '—'
-        if (diff === 0) return <Tag color="success">正常</Tag>
-        if (diff > 0)   return <Tag color="blue">+{diff}</Tag>
-        return <Tag color="error">{diff}</Tag>
+        if (diff === null) return <Text type="secondary">—</Text>
+        if (diff === 0)    return <Tag color="success">正常</Tag>
+        // Non-zero: red bold
+        return (
+          <span style={{ color: '#EF4444', fontWeight: 700 }}>
+            {diff > 0 ? `+${diff}` : diff}
+          </span>
+        )
       },
     },
   ]
@@ -164,39 +184,26 @@ export default function EveningCheckStep() {
     return <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
   }
 
-  const items = data?.items ?? []
-  const filledCount = items.filter(i => actualQty[i.product_id] !== undefined).length
-  const savedCount  = items.filter(i => i.check_id !== null).length
-  const diffCount   = items.filter(i => {
-    const diff = localDiscrepancy(i)
-    return diff !== null && diff !== 0
-  }).length
-
   return (
     <div style={{ paddingTop: 16 }}>
       <Alert
         type="info"
         message="晚盘核查"
-        description="核实参与晚盘畅销品的实际门店库存。理论库存 = 上次盘点实际值 - 销售量 + 补货入店量。"
+        description="核实畅销品实际门店库存。理论库存 = 上次盘点实际值 − 期间销售 + 期间补货入店。"
         style={{ marginBottom: 12 }}
         showIcon
       />
 
-      {hasAbnormal && (
-        <Alert
-          type="warning"
-          message="部分商品基准日期非昨日，理论值可能不准确，请核查后提交。"
-          style={{ marginBottom: 12 }}
-          showIcon
-        />
+      {allSaved && (
+        <Alert type="success" message="今日晚盘已全部提交" style={{ marginBottom: 12 }} showIcon />
       )}
 
       {items.length === 0 ? (
         <Empty
           description={
             <span>
-              暂无畅销品。请在 Products 页面，将需要晚盘的产品 PATCH
-              <Tag style={{ margin: '0 4px' }}>is_bestseller=true</Tag>。
+              暂无畅销品。请在 Products 页面为需要晚盘的商品开启
+              <Tag style={{ margin: '0 4px' }}>is_bestseller</Tag>。
             </span>
           }
           style={{ padding: 40 }}
@@ -209,15 +216,16 @@ export default function EveningCheckStep() {
           }}>
             <Space wrap>
               <Tag>共 {items.length} 项</Tag>
-              <Tag color="success">已保存 {savedCount}</Tag>
+              {savedCount  > 0 && <Tag color="success">已保存 {savedCount}</Tag>}
               {filledCount > 0 && <Tag color="processing">已填写 {filledCount}</Tag>}
               {diffCount   > 0 && <Tag color="error">有差异 {diffCount}</Tag>}
             </Space>
 
             <Button
               type="primary" icon={<AuditOutlined />}
-              loading={saving} onClick={handleSubmitAll}
-              disabled={filledCount === 0}
+              loading={saving}
+              onClick={handleSubmitAll}
+              disabled={!allFilled || saving}
               size={isMobile ? 'middle' : 'large'}
             >
               提交晚盘
@@ -231,6 +239,10 @@ export default function EveningCheckStep() {
             rowKey="product_id"
             pagination={false}
             scroll={{ x: true }}
+            rowClassName={r => {
+              const diff = localDiscrepancy(r)
+              return diff !== null && diff !== 0 ? 'row-discrepancy' : ''
+            }}
           />
         </>
       )}

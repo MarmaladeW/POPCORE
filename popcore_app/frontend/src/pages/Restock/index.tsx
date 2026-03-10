@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Tabs, Typography, Tag, Spin, Grid } from 'antd'
-import { InboxOutlined, CheckSquareOutlined, AuditOutlined } from '@ant-design/icons'
+import { InboxOutlined, CheckSquareOutlined, AuditOutlined, StarOutlined } from '@ant-design/icons'
 import client from '../../api/client'
+import { useHasRole } from '../../auth/useRole'
 import RequestStep from './RequestStep'
 import PickingStep from './PickingStep'
 import EveningCheckStep from './EveningCheckStep'
+import BestsellerManage from './BestsellerManage'
 
 const { Title, Text } = Typography
 const { useBreakpoint } = Grid
@@ -54,6 +56,8 @@ export default function RestockPage() {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
 
+  const isAdmin = useHasRole('admin')
+
   const [session, setSession] = useState<RestockSession | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('request')
@@ -101,6 +105,11 @@ export default function RestockPage() {
       label:    <span><AuditOutlined /> 晚盘核查</span>,
       children: <EveningCheckStep />,
     },
+    ...(isAdmin ? [{
+      key:      'bestsellers',
+      label:    <span><StarOutlined /> 畅销品管理</span>,
+      children: <BestsellerManage />,
+    }] : []),
   ]
 
   return (

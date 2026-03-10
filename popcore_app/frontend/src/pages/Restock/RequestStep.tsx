@@ -1,28 +1,29 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import {
-  Input, Button, InputNumber, Table, Popconfirm,
-  message, Space, Typography, Empty, Tag, Grid,
+  Input, Button, InputNumber, Table, Popconfirm, Modal,
+  message, Space, Typography, Empty, Tag, Grid, Alert,
 } from 'antd'
-import { PlusOutlined, DeleteOutlined, SendOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, SendOutlined, LockOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import type { RestockSession, RestockItem } from './index'
 
-const { Search } = Input
 const { Text } = Typography
 const { useBreakpoint } = Grid
 
 interface SearchProduct {
-  id: number
-  sku: string
-  jizhanming: string
-  name_cn_en: string
-  ip_series: string
+  id:           number
+  sku:          string
+  jizhanming:   string
+  name_cn_en:   string
+  ip_series:    string
   product_type: string
+  is_bestseller: number
+  upstairs_dan: number   // warehouse stock (via include_stock=1)
 }
 
 interface Props {
-  session: RestockSession
+  session:   RestockSession
   onRefresh: () => void
 }
 
@@ -30,31 +31,54 @@ export default function RequestStep({ session, onRefresh }: Props) {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
 
+  const [searchValue,   setSearchValue]   = useState('')
   const [searchResults, setSearchResults] = useState<SearchProduct[]>([])
   const [searching,     setSearching]     = useState(false)
   const [submitting,    setSubmitting]    = useState(false)
-  const [qtyMap,        setQtyMap]        = useState<Record<number, number>>({})
-  const searchRef = useRef<string>('')
+  // Local edits to requested_qty before blur-save
+  const [editQtyMap,    setEditQtyMap]    = useState<Record<number, number>>({})
+  // qty for new items being added from search results
+  const [addQtyMap,     setAddQtyMap]     = useState<Record<number, number>>({})
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isReadOnly = session.status !== 'pending'
+  const addedIds   = new Set(session.items.map(i => i.product_id))
 
-  async function handleSearch(value: string) {
-    searchRef.current = value
-    if (!value.trim()) { setSearchResults([]); return }
+  // ── Search (debounced 300ms) ───────────────────────────────────────────────
+
+  const doSearch = useCallback(async (val: string) => {
+    if (!val.trim()) { setSearchResults([]); return }
     setSearching(true)
     try {
       const { data } = await client.get<SearchProduct[]>('/products/search', {
-        params: { q: value, limit: 20 },
+        params: { q: val, include_stock: 1, limit: 20 },
       })
       setSearchResults(data)
     } finally {
       setSearching(false)
     }
+  }, [])
+
+  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value
+    setSearchValue(val)
+    if (!val.trim()) { setSearchResults([]); return }
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => doSearch(val), 300)
   }
 
+  function handleClear() {
+    setSearchValue('')
+    setSearchResults([])
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+  }
+
+  // ── Add item ──────────────────────────────────────────────────────────────
+
   async function handleAdd(product: SearchProduct) {
-    const qty = qtyMap[product.id] ?? 1
-    if (qty <= 0) { message.warning('请输入有效数量'); return }
+    const qty = addQtyMap[product.id] ?? 1
+    if (qty < 1) { message.warning('请输入有效数量'); return }
     try {
       await client.post('/restock/items', {
         session_id:    session.id,
@@ -68,6 +92,30 @@ export default function RequestStep({ session, onRefresh }: Props) {
     }
   }
 
+  // ── Inline qty edit (blur-save) ───────────────────────────────────────────
+
+  async function handleQtyBlur(item: RestockItem) {
+    const newQty = editQtyMap[item.id]
+    if (newQty === undefined || newQty === item.requested_qty) return
+    if (newQty < 1) {
+      setEditQtyMap(prev => { const m = { ...prev }; delete m[item.id]; return m })
+      return
+    }
+    try {
+      await client.post('/restock/items', {
+        session_id:    session.id,
+        product_id:    item.product_id,
+        requested_qty: newQty,
+      })
+      setEditQtyMap(prev => { const m = { ...prev }; delete m[item.id]; return m })
+      onRefresh()
+    } catch {
+      message.error('更新数量失败')
+    }
+  }
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+
   async function handleDelete(item: RestockItem) {
     try {
       await client.delete(`/restock/items/${item.id}`)
@@ -78,8 +126,20 @@ export default function RequestStep({ session, onRefresh }: Props) {
     }
   }
 
-  async function handleSubmit() {
+  // ── Submit (Modal confirm) ────────────────────────────────────────────────
+
+  function handleSubmitClick() {
     if (session.items.length === 0) { message.warning('请至少添加一个补货产品'); return }
+    Modal.confirm({
+      title:   '确认提交补货申请？',
+      content: `共 ${session.items.length} 件产品，提交后将锁定清单，仓库开始拣货。`,
+      okText:  '确认提交',
+      cancelText: '取消',
+      onOk:    doSubmit,
+    })
+  }
+
+  async function doSubmit() {
     setSubmitting(true)
     try {
       await client.post(`/restock/session/${session.id}/submit`)
@@ -92,7 +152,80 @@ export default function RequestStep({ session, onRefresh }: Props) {
     }
   }
 
-  const itemColumns: ColumnsType<RestockItem> = [
+  // ── Read-only banner ──────────────────────────────────────────────────────
+
+  function statusBanner() {
+    if (session.status === 'submitted' || session.status === 'picking') {
+      return (
+        <Alert
+          type="info" showIcon icon={<LockOutlined />}
+          message="补货申请已提交，仓库拣货进行中"
+          style={{ marginBottom: 16 }}
+        />
+      )
+    }
+    if (session.status === 'completed') {
+      return (
+        <Alert
+          type="success" showIcon
+          message={`本日补货已完成${session.completed_at ? `（${session.completed_at.slice(0, 16)}）` : ''}`}
+          style={{ marginBottom: 16 }}
+        />
+      )
+    }
+    return null
+  }
+
+  // ── Columns ───────────────────────────────────────────────────────────────
+
+  const searchCols: ColumnsType<SearchProduct> = [
+    {
+      title: '产品',
+      key: 'product',
+      render: (_, r) => (
+        <div>
+          <div style={{ fontWeight: 500 }}>{r.jizhanming || r.name_cn_en}</div>
+          <Text type="secondary" style={{ fontSize: 12 }}>{r.sku} · {r.ip_series}</Text>
+        </div>
+      ),
+    },
+    {
+      title: '仓库库存',
+      dataIndex: 'upstairs_dan',
+      width: 90,
+      render: v => <Tag color={v > 0 ? 'blue' : 'red'}>{v} 端</Tag>,
+    },
+    {
+      title: '数量',
+      key: 'qty',
+      width: 90,
+      render: (_, r) => (
+        <InputNumber
+          min={1} max={999} precision={0}
+          value={addQtyMap[r.id] ?? 1}
+          onChange={v => setAddQtyMap(prev => ({ ...prev, [r.id]: v ?? 1 }))}
+          style={{ width: 70 }}
+          size="small"
+        />
+      ),
+    },
+    {
+      title: '',
+      key: 'add',
+      width: 80,
+      render: (_, r) => (
+        addedIds.has(r.id)
+          ? <Button size="small" disabled>已添加</Button>
+          : (
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => handleAdd(r)}>
+              添加
+            </Button>
+          )
+      ),
+    },
+  ]
+
+  const itemCols: ColumnsType<RestockItem> = [
     {
       title: '产品',
       key: 'product',
@@ -104,16 +237,23 @@ export default function RequestStep({ session, onRefresh }: Props) {
       ),
     },
     {
-      title: '仓库库存',
-      dataIndex: 'warehouse_stock_snapshot',
-      width: 90,
-      render: v => <Tag color={v > 0 ? 'blue' : 'red'}>{v} 端</Tag>,
-    },
-    {
       title: '申请数量',
-      dataIndex: 'requested_qty',
-      width: 90,
-      render: v => <Tag>{v} 端</Tag>,
+      key: 'requested_qty',
+      width: 120,
+      render: (_, r) => {
+        if (isReadOnly) return <Tag>{r.requested_qty} 端</Tag>
+        return (
+          <InputNumber
+            min={1} max={999} precision={0}
+            value={editQtyMap[r.id] ?? r.requested_qty}
+            onChange={v => setEditQtyMap(prev => ({ ...prev, [r.id]: v ?? r.requested_qty }))}
+            onBlur={() => handleQtyBlur(r)}
+            onPressEnter={() => handleQtyBlur(r)}
+            style={{ width: 90 }}
+            size="small"
+          />
+        )
+      },
     },
     ...(!isReadOnly ? [{
       title: '',
@@ -127,105 +267,78 @@ export default function RequestStep({ session, onRefresh }: Props) {
     }] : []),
   ]
 
-  const searchColumns: ColumnsType<SearchProduct> = [
-    {
-      title: '产品',
-      key: 'product',
-      render: (_, r) => (
-        <div>
-          <div style={{ fontWeight: 500 }}>{r.jizhanming || r.name_cn_en}</div>
-          <Text type="secondary" style={{ fontSize: 12 }}>{r.sku} · {r.ip_series}</Text>
-        </div>
-      ),
-    },
-    {
-      title: '数量',
-      key: 'qty',
-      width: 100,
-      render: (_, r) => (
-        <InputNumber
-          min={1} max={999}
-          value={qtyMap[r.id] ?? 1}
-          onChange={v => setQtyMap(prev => ({ ...prev, [r.id]: v ?? 1 }))}
-          style={{ width: 70 }}
-          size="small"
-        />
-      ),
-    },
-    {
-      title: '',
-      key: 'add',
-      width: 70,
-      render: (_, r) => (
-        <Button
-          type="primary" size="small" icon={<PlusOutlined />}
-          onClick={() => handleAdd(r)}
-        >
-          添加
-        </Button>
-      ),
-    },
-  ]
-
   return (
     <div style={{ paddingTop: 16 }}>
+      {/* Status banner for read-only states */}
+      {isReadOnly && statusBanner()}
+
+      {/* Search box (edit mode only) */}
       {!isReadOnly && (
         <div style={{ marginBottom: 16 }}>
-          <Search
+          <Input
             placeholder="搜索产品（记账名、SKU、系列…）"
-            onSearch={handleSearch}
-            onChange={e => { if (!e.target.value) setSearchResults([]) }}
-            loading={searching}
+            value={searchValue}
+            onChange={handleInputChange}
             allowClear
+            onClear={handleClear}
+            suffix={searching ? undefined : undefined}
             style={{ maxWidth: 480 }}
           />
+          {searching && <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>搜索中…</Text>}
           {searchResults.length > 0 && (
             <Table
               size="small"
-              columns={searchColumns}
+              columns={searchCols}
               dataSource={searchResults}
               rowKey="id"
               pagination={false}
-              style={{ marginTop: 8, maxWidth: 600 }}
+              style={{ marginTop: 8, maxWidth: 640 }}
               scroll={{ x: true }}
             />
           )}
         </div>
       )}
 
+      {/* Current items list */}
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Text strong>补货清单 ({session.items.length} 项)</Text>
         {!isReadOnly && session.items.length > 0 && (
           <Button
             type="primary" icon={<SendOutlined />}
-            loading={submitting} onClick={handleSubmit}
+            loading={submitting} onClick={handleSubmitClick}
+            size={isMobile ? 'middle' : 'middle'}
           >
-            {isMobile ? '提交' : '提交补货申请'}
+            {isMobile ? '提交' : '确认提交，生成仓库清单'}
           </Button>
         )}
       </div>
 
-      {session.items.length === 0 ? (
-        <Empty description={isReadOnly ? '暂无补货项目' : '搜索并添加需要补货的产品'} style={{ padding: 40 }} />
-      ) : (
-        <Table
-          size="small"
-          columns={itemColumns}
-          dataSource={session.items}
-          rowKey="id"
-          pagination={false}
-          scroll={{ x: true }}
-        />
-      )}
+      {session.items.length === 0
+        ? <Empty description={isReadOnly ? '暂无补货项目' : '搜索并添加需要补货的产品'} style={{ padding: 40 }} />
+        : (
+          <Table
+            size="small"
+            columns={itemCols}
+            dataSource={session.items}
+            rowKey="id"
+            pagination={false}
+            scroll={{ x: true }}
+          />
+        )
+      }
 
-      {!isReadOnly && session.items.length > 0 && (
+      {/* Bottom submit (desktop) */}
+      {!isReadOnly && session.items.length > 0 && !isMobile && (
         <div style={{ marginTop: 16, textAlign: 'right' }}>
-          <Button
-            type="primary" size="large" icon={<SendOutlined />}
-            loading={submitting} onClick={handleSubmit}
-          >
-            提交补货申请
-          </Button>
+          <Space>
+            <Text type="secondary" style={{ fontSize: 12 }}>提交后清单将锁定，仓库开始拣货</Text>
+            <Button
+              type="primary" size="large" icon={<SendOutlined />}
+              loading={submitting} onClick={handleSubmitClick}
+            >
+              确认提交，生成仓库清单
+            </Button>
+          </Space>
         </div>
       )}
     </div>

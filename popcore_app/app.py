@@ -654,10 +654,11 @@ def save_alias():
 @app.route('/api/products/search')
 @login_required
 def search_products():
-    q = request.args.get('q', '').strip().lower()
-    series = request.args.get('series', '').strip()
-    product_type = request.args.get('product_type', '').strip()
-    limit = int(request.args.get('limit', 60))
+    q             = request.args.get('q', '').strip().lower()
+    series        = request.args.get('series', '').strip()
+    product_type  = request.args.get('product_type', '').strip()
+    limit         = int(request.args.get('limit', 60))
+    include_stock = request.args.get('include_stock', '0') == '1'
 
     con = get_db()
     cur = con.cursor()
@@ -677,13 +678,23 @@ def search_products():
         where = ("WHERE " + " AND ".join(filter_clauses)) if filter_clauses else ""
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob
+                   brand, notes, release_date, search_blob, is_bestseller
             FROM products
             {where}
             ORDER BY sku DESC
             LIMIT ?
         ''', filter_params + [limit])
         rows = [dict(r) for r in cur.fetchall()]
+        if include_stock and rows:
+            pids = [r['id'] for r in rows]
+            cur.execute(
+                'SELECT product_id, COALESCE(upstairs_dan,0) AS upstairs_dan FROM stock'
+                f' WHERE product_id IN ({",".join("?"*len(pids))})',
+                pids,
+            )
+            sm = {r['product_id']: r['upstairs_dan'] for r in cur.fetchall()}
+            for r in rows:
+                r['upstairs_dan'] = sm.get(r['id'], 0)
         con.close()
         return jsonify(rows)
 
@@ -694,7 +705,7 @@ def search_products():
     and_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-               brand, notes, release_date, search_blob
+               brand, notes, release_date, search_blob, is_bestseller
         FROM products
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
@@ -706,7 +717,7 @@ def search_products():
     or_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-               brand, notes, release_date, search_blob
+               brand, notes, release_date, search_blob, is_bestseller
         FROM products
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
@@ -744,8 +755,6 @@ def search_products():
         ''', bi_params)
         bi_rows = [dict(r) for r in cur.fetchall()]
 
-    con.close()
-
     # Merge all candidates (deduplicate by id)
     seen = {}
     for r in and_rows + or_rows + char_rows + bi_rows:
@@ -760,12 +769,26 @@ def search_products():
 
     candidates.sort(key=lambda x: -x['_score'])
 
-    # Strip internal field and return top N
-    for c in candidates:
+    # Strip internal fields
+    final = candidates[:limit]
+    for c in final:
         c.pop('search_blob', None)
         c.pop('_score', None)
 
-    return jsonify(candidates[:limit])
+    # Optional batch-fetch warehouse stock
+    if include_stock and final:
+        pids = [c['id'] for c in final]
+        cur.execute(
+            'SELECT product_id, COALESCE(upstairs_dan,0) AS upstairs_dan FROM stock'
+            f' WHERE product_id IN ({",".join("?"*len(pids))})',
+            pids,
+        )
+        sm = {r['product_id']: r['upstairs_dan'] for r in cur.fetchall()}
+        for c in final:
+            c['upstairs_dan'] = sm.get(c['id'], 0)
+
+    con.close()
+    return jsonify(final)
 
 
 @app.route('/api/products/<int:pid>')
