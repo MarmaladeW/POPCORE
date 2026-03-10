@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
   Typography, Row, Col, InputNumber, Card,
-  DatePicker, AutoComplete, Grid,
+  DatePicker, AutoComplete, Grid, Spin,
 } from 'antd'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
@@ -329,15 +329,77 @@ export default function SalesPage() {
             </Space>
           </RoleGuard>
         </div>
-        <Table
-          rowKey="id"
-          size="middle"
-          loading={loading}
-          dataSource={sales}
-          columns={entryColumns}
-          pagination={false}
-          scroll={{ x: 800, y: 500 }}
-        />
+        {isMobile ? (
+          <Spin spinning={loading}>
+            {sales.length === 0 && !loading ? (
+              <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>
+                No products added for this date
+              </div>
+            ) : sales.map(row => (
+              <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                {/* Product name row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: 13, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {row.jizhanming || '—'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{row.sku}</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 8 }}>
+                    <Text style={{ fontWeight: 700, fontSize: 18, color: row.qty_sold > 0 ? '#10B981' : '#d1d5db' }}>
+                      {row.qty_sold}
+                    </Text>
+                    <RoleGuard minRole="manager">
+                      <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(row.id)}>
+                        <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+                      </Popconfirm>
+                    </RoleGuard>
+                  </div>
+                </div>
+                {/* Qty inputs row */}
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, color: '#6b7280', width: 28 }}>POS</span>
+                    <InputNumber
+                      size="small" min={0}
+                      value={localEdits[row.id]?.pos ?? row.qty_pos}
+                      onChange={val => setLocalQty(row.id, 'pos', val ?? 0)}
+                      onBlur={() => upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos)}
+                      onPressEnter={() => upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos)}
+                      style={{ width: 65 }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, color: '#6b7280', width: 34 }}>Cash</span>
+                    <InputNumber
+                      size="small" min={0}
+                      value={localEdits[row.id]?.cash ?? row.qty_cash}
+                      onChange={val => setLocalQty(row.id, 'cash', val ?? 0)}
+                      onBlur={() => upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash)}
+                      onPressEnter={() => upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash)}
+                      style={{ width: 65 }}
+                    />
+                  </div>
+                  {row.price != null && (
+                    <Text style={{ fontSize: 11, color: '#6366F1', marginLeft: 'auto' }}>
+                      CA${((row.price ?? 0) * row.qty_sold).toFixed(2)}
+                    </Text>
+                  )}
+                </div>
+              </div>
+            ))}
+          </Spin>
+        ) : (
+          <Table
+            rowKey="id"
+            size="middle"
+            loading={loading}
+            dataSource={sales}
+            columns={entryColumns}
+            pagination={false}
+            scroll={{ x: 800, y: 500 }}
+          />
+        )}
       </div>
 
       {/* Summary section */}
@@ -363,6 +425,7 @@ export default function SalesPage() {
           dataSource={summary}
           columns={summaryColumns}
           pagination={{ pageSize: 30, showTotal: t => `${t} days` }}
+          scroll={{ x: 'max-content' }}
         />
       </div>
 
