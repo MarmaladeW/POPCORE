@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
   Typography, Row, Col, InputNumber, Card,
-  DatePicker, AutoComplete,
+  DatePicker, AutoComplete, Grid,
 } from 'antd'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
@@ -19,6 +19,7 @@ import RoleGuard from '../../components/RoleGuard'
 import BatchSalesModal from './BatchSalesModal'
 
 const { Text, Title } = Typography
+const { useBreakpoint } = Grid
 
 interface SaleRow {
   id: number
@@ -44,6 +45,9 @@ interface SummaryRow {
 }
 
 export default function SalesPage() {
+  const screens  = useBreakpoint()
+  const isMobile = !screens.md
+
   const [date,    setDate]    = useState<Dayjs>(dayjs())
   const [sales,   setSales]   = useState<SaleRow[]>([])
   const [summary, setSummary] = useState<SummaryRow[]>([])
@@ -223,17 +227,17 @@ export default function SalesPage() {
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, gap: 12 }}>
         <div>
           <Title level={3} style={{ margin: 0 }}>Daily Sales</Title>
           <Text style={{ color: '#6b7280' }}>Track POS and cash sales by product</Text>
         </div>
-        <Space>
+        <Space wrap size={[8, 8]}>
           <DatePicker
             value={date}
             onChange={d => setDate(d ?? dayjs())}
             allowClear={false}
-            style={{ width: 160 }}
+            style={{ width: 140 }}
           />
           <RoleGuard minRole="staff">
             <AutoComplete
@@ -244,7 +248,7 @@ export default function SalesPage() {
               onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
               onClear={() => { setAddSearch(''); setAddOptions([]) }}
               allowClear
-              style={{ width: 240 }}
+              style={{ width: isMobile ? 160 : 240 }}
             />
             <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)}>
               Add Entry
@@ -303,15 +307,15 @@ export default function SalesPage() {
 
       {/* Sales table + log */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <div style={{ padding: '16px 20px 0', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ fontWeight: 600, color: '#111827' }}>
-            Sales for {date.format('dddd, MMMM D, YYYY')}
+            Sales for {date.format(isMobile ? 'MMM D, YYYY' : 'dddd, MMMM D, YYYY')}
             <Text style={{ color: '#9ca3af', fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
-              {sales.length} products sold
+              {sales.length} products
             </Text>
           </div>
-          <Space>
-            <RoleGuard minRole="manager">
+          <RoleGuard minRole="manager">
+            <Space size={8}>
               <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
                 <Button danger size="small">Clear Day</Button>
               </Popconfirm>
@@ -322,8 +326,8 @@ export default function SalesPage() {
               >
                 Export
               </Button>
-            </RoleGuard>
-          </Space>
+            </Space>
+          </RoleGuard>
         </div>
         <Table
           rowKey="id"
@@ -338,14 +342,15 @@ export default function SalesPage() {
 
       {/* Summary section */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', marginTop: 16, overflow: 'hidden' }}>
-        <div style={{ padding: '16px 20px 0', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ fontWeight: 600, color: '#111827' }}>Sales Log</span>
           <RoleGuard minRole="manager">
-            <Space>
-              <DatePicker value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} style={{ width: 140 }} />
-              <Text style={{ color: '#9ca3af' }}>to</Text>
-              <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 140 }} />
+            <Space wrap size={[8, 8]}>
+              {!isMobile && <DatePicker value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} style={{ width: 130 }} />}
+              {!isMobile && <Text style={{ color: '#9ca3af' }}>to</Text>}
+              {!isMobile && <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 130 }} />}
               <Button
+                size="small"
                 icon={<ExportOutlined />}
                 onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
               >Export</Button>
