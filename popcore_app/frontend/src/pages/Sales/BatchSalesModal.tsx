@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import client from '../../api/client'
-import { batchMatch, isHeaderLine, saveAlias, cleanName } from '../../api/matcher'
+import { batchMatch, isHeaderLine, saveAlias, cleanName, MatchResult } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -71,7 +71,7 @@ function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
   async function search(q: string) {
     if (!q) { setOpts([]); return }
     const r = await client.get('/products/search', { params: { q, limit: 8 } })
-    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming} (${p.sku})`, product: p })))
+    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming || p.name_cn_en || p.sku} (${p.sku})`, product: p })))
   }
   return (
     <AutoComplete
@@ -97,18 +97,41 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   function reset() { setStep(0); setText(''); setItems([]); setProgress(0) }
 
   async function match() {
-    const tokens = text.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
-    if (!tokens.length) { message.warning('内容为空'); return }
+    const lines = text.split(/[\n,，]+/).map(t => t.trim()).filter(Boolean)
+    if (!lines.length) { message.warning('内容为空'); return }
     setMatch(true)
     setProgress(10)
 
-    // Parse all tokens; header lines are filtered server-side (status: 'skipped')
-    const parsed = tokens.map(parseLine)
+    // Section-aware parsing: track 卡机 vs 现金/转账 sections
+    // When only one number is given in a line, assign it to the correct qty field based on current section
+    let section: 'pos' | 'cash' = 'pos'
+    const parsed: Array<{ rawName: string; qty_pos: number; qty_cash: number; notes: string }> = []
+
+    for (const line of lines) {
+      if (isHeaderLine(line)) {
+        const lower = cleanName(line).toLowerCase()
+        if (/^(现金|转账|cash|随手记)/.test(lower)) {
+          section = 'cash'
+        } else if (/^(卡机|pos|刷卡)/.test(lower)) {
+          section = 'pos'
+        }
+        continue
+      }
+      const p = parseLine(line)
+      // If only one number was found (qty_pos only), assign based on current section
+      if (section === 'cash' && p.qty_pos > 0 && p.qty_cash === 0) {
+        parsed.push({ ...p, qty_cash: p.qty_pos, qty_pos: 0 })
+      } else {
+        parsed.push(p)
+      }
+    }
+
+    if (!parsed.length) { message.warning('内容为空'); setMatch(false); return }
     const queries = parsed.map(p => p.rawName)
 
-    let results
+    let matchResults: MatchResult[]
     try {
-      results = await batchMatch(queries)
+      matchResults = await batchMatch(queries)
     } catch {
       message.error('匹配失败，请重试')
       setMatch(false)
@@ -116,7 +139,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
     }
     setProgress(100)
 
-    const out: MatchedItem[] = results
+    const out: MatchedItem[] = matchResults
       .map((r, i) => {
         if (r.status === 'skipped') return null
         const top = r.candidates[0]
@@ -194,7 +217,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
               const c = r.candidates!.find(x => x.id === v)
               handleManualSelect(r._key, r.rawName, c)
             }}
-            options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming} (${c.sku})` }))}
+            options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming || c.name_cn_en || c.sku} (${c.sku})` }))}
           />
         )
         return <Space size={4}><Tag color="green">✓</Tag><span>{r.jizhanming}</span><Tag>{r.sku}</Tag></Space>

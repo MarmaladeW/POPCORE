@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Button, Space, Tag, Popconfirm,
-  message, Typography, Table, Badge, Grid,
+  message, Typography, Table, Badge, Grid, Spin,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -264,21 +264,52 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Table / Card list */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={products}
-          columns={columns}
-          size="middle"
-          rowSelection={{
-            selectedRowKeys: selected,
-            onChange: keys => setSelected(keys as number[]),
-          }}
-          pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
-          scroll={{ x: 900 }}
-        />
+        {isMobile ? (
+          <Spin spinning={loading}>
+            {!loading && products.length === 0 && (
+              <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No products found</div>
+            )}
+            {products.map(p => (
+              <div key={p.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{p.jizhanming || p.name_cn_en || '—'}</div>
+                    {p.name_cn_en && p.jizhanming && (
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name_cn_en}</div>
+                    )}
+                    <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{p.sku}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }}>
+                    {stockBadge(stockMap.get(p.id) ?? 0)}
+                    <Button type="text" size="small" icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
+                    <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {p.ip_series && <Tag color="blue" style={{ fontSize: 10 }}>{p.ip_series}</Tag>}
+                  {p.product_type && <Tag color={TYPE_COLORS[p.product_type] ?? 'default'} style={{ fontSize: 10 }}>{p.product_type}</Tag>}
+                  {p.price != null && <Text style={{ fontSize: 12, color: '#6366F1', fontWeight: 600 }}>${p.price.toFixed(2)}</Text>}
+                </div>
+              </div>
+            ))}
+          </Spin>
+        ) : (
+          <Table
+            rowKey="id"
+            loading={loading}
+            dataSource={products}
+            columns={columns}
+            size="middle"
+            rowSelection={{
+              selectedRowKeys: selected,
+              onChange: keys => setSelected(keys as number[]),
+            }}
+            pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
+            scroll={{ x: 900 }}
+          />
+        )}
       </div>
 
       <ProductModal

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Input, Select, Button, Space, Tag, Tabs, Popconfirm,
-  message, Typography, Row, Col, Card, Grid,
+  message, Typography, Row, Col, Card, Grid, Spin,
 } from 'antd'
 import {
   ReloadOutlined, ExportOutlined, DeleteOutlined,
@@ -322,16 +322,58 @@ export default function StockPage() {
                       </RoleGuard>
                     </div>
                   </div>
-                  <Table
-                    rowKey="id"
-                    size="middle"
-                    loading={loading}
-                    dataSource={stock}
-                    columns={stockColumns}
-                    rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
-                    pagination={{ pageSize: 50, showTotal: t => `${t} products` }}
-                    scroll={{ x: 1000 }}
-                  />
+                  {isMobile ? (
+                    <Spin spinning={loading}>
+                      {!loading && stock.length === 0 && (
+                        <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No stock records</div>
+                      )}
+                      {stock.map(row => {
+                        const total = row.upstairs_dan + row.instore_dan
+                        return (
+                          <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{row.jizhanming || '—'}</div>
+                                <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>{row.sku}</div>
+                                {row.ip_series && <Tag color="blue" style={{ fontSize: 10, marginTop: 2 }}>{row.ip_series}</Tag>}
+                              </div>
+                              <div style={{ flexShrink: 0, marginLeft: 8 }}>{stockStatus(total)}</div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 12, color: '#6b7280' }}>
+                                <ArrowUpOutlined /> <strong>{row.upstairs_dan}</strong>
+                                <span style={{ margin: '0 6px' }}>·</span>
+                                <InboxOutlined /> <strong>{row.instore_dan}</strong>
+                                <span style={{ margin: '0 6px' }}>·</span>
+                                合计 <strong style={{ color: total === 0 ? '#ef4444' : '#374151' }}>{total}</strong>
+                              </span>
+                              <RoleGuard minRole="staff">
+                                <Button
+                                  size="small"
+                                  icon={<EditOutlined />}
+                                  onClick={() => { setQuickProduct(row); setRestockOpen(true) }}
+                                  style={{ marginLeft: 'auto' }}
+                                >
+                                  Adjust
+                                </Button>
+                              </RoleGuard>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </Spin>
+                  ) : (
+                    <Table
+                      rowKey="id"
+                      size="middle"
+                      loading={loading}
+                      dataSource={stock}
+                      columns={stockColumns}
+                      rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
+                      pagination={{ pageSize: 50, showTotal: t => `${t} products` }}
+                      scroll={{ x: 1000 }}
+                    />
+                  )}
                 </div>
               ),
             },
@@ -343,14 +385,39 @@ export default function StockPage() {
                   <Button icon={<ReloadOutlined />} style={{ marginBottom: 12 }} onClick={loadTxns}>
                     Refresh
                   </Button>
-                  <Table
-                    rowKey="id"
-                    size="middle"
-                    dataSource={txns}
-                    columns={txnColumns}
-                    pagination={{ pageSize: 50, showTotal: t => `${t} transactions` }}
-                    scroll={{ x: 700 }}
-                  />
+                  {isMobile ? (
+                    <div>
+                      {txns.length === 0 && (
+                        <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No transactions</div>
+                      )}
+                      {txns.map(txn => (
+                        <div key={txn.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                            <span style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{txn.jizhanming || '—'}</span>
+                            <Tag color={TXN_COLORS[txn.txn_type] ?? 'default'}>{TXN_LABELS[txn.txn_type] ?? txn.txn_type}</Tag>
+                          </div>
+                          <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#6b7280', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span>{txn.date}</span>
+                            <Text code style={{ fontSize: 11 }}>{txn.sku}</Text>
+                            <Text type={txn.dan_qty < 0 ? 'danger' : 'success'} style={{ fontWeight: 600 }}>
+                              {txn.dan_qty > 0 ? `+${txn.dan_qty}` : txn.dan_qty}
+                            </Text>
+                            {txn.location && <span>{txn.location}</span>}
+                          </div>
+                          {txn.notes && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{txn.notes}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Table
+                      rowKey="id"
+                      size="middle"
+                      dataSource={txns}
+                      columns={txnColumns}
+                      pagination={{ pageSize: 50, showTotal: t => `${t} transactions` }}
+                      scroll={{ x: 700 }}
+                    />
+                  )}
                 </div>
               ),
             },

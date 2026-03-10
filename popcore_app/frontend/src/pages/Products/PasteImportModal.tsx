@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
+import { isHeaderLine } from '../../api/matcher'
 
 const { Text } = Typography
 
@@ -50,7 +51,7 @@ function parseLine(line: string): ParsedItem {
 }
 
 function parsePasteText(text: string): ParsedItem[] {
-  return text.split('\n').map(l => l.trim()).filter(Boolean).map(parseLine)
+  return text.split(/[\n,，]+/).map(l => l.trim()).filter(Boolean).filter(l => !isHeaderLine(l)).map(parseLine)
 }
 
 async function matchName(name: string): Promise<{ candidates: any[]; status: 'matched' | 'fuzzy' | 'unmatched' }> {
@@ -71,7 +72,7 @@ function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
   async function search(q: string) {
     if (!q) { setOpts([]); return }
     const r = await client.get('/products/search', { params: { q, limit: 8 } })
-    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming} (${p.sku})`, product: p })))
+    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming || p.name_cn_en || p.sku} (${p.sku})`, product: p })))
   }
   return (
     <AutoComplete
@@ -211,7 +212,7 @@ export default function PasteImportModal({ open, onClose, onDone }: Props) {
                 const cand = r.candidates!.find(c => c.id === v)
                 updateItem(r._key, { product_id: v, jizhanming: cand?.jizhanming, sku: cand?.sku, status: 'matched' })
               }}
-              options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming} (${c.sku})` }))}
+              options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming || c.name_cn_en || c.sku} (${c.sku})` }))}
             />
           )
         }
