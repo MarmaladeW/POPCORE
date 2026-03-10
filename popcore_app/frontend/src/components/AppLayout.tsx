@@ -13,6 +13,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MenuOutlined,
+  ShopOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
@@ -143,6 +144,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     { key: '/',              icon: <DashboardOutlined />, label: 'Dashboard'     },
     { key: '/products',      icon: <AppstoreOutlined />,  label: 'Products'      },
     { key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         },
+    { key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       },
     { key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         },
     { key: '/market-prices', icon: <TagsOutlined />,      label: 'Market Prices' },
     { key: '/scrape-log',    icon: <SyncOutlined />,      label: 'Scrape Log'    },

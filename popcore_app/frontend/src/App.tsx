@@ -12,6 +12,7 @@ import client from './api/client'
 import DashboardPage from './pages/Dashboard'
 import ProductsPage  from './pages/Products'
 import StockPage     from './pages/Stock'
+import RestockPage   from './pages/Restock'
 import SalesPage     from './pages/Sales'
 import MarketPage    from './pages/Market'
 import ScrapeLogPage from './pages/ScrapeLog'
@@ -39,6 +40,7 @@ function AppInner() {
         <Route path="/"              element={<DashboardPage />} />
         <Route path="/products"      element={<ProductsPage />} />
         <Route path="/stock"         element={<StockPage />} />
+        <Route path="/restock"       element={<RestockPage />} />
         <Route path="/sales"         element={<SalesPage />} />
         <Route path="/market-prices" element={<MarketPage />} />
         <Route path="/scrape-log"    element={<ScrapeLogPage />} />
