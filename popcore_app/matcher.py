@@ -29,6 +29,7 @@ match_title(scraped_title, products, threshold=65)
 
 import re
 import unicodedata
+from collections import Counter
 
 
 # ─── Noise cleaning ───────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
         "sa草莓" (4) vs "sa草莓" (4) → exact → 100
     · CJK coverage: query's Chinese chars must appear in candidate.
         "sa草莓" vs "sa宇航员" → coverage=0 → score=0
-        "dimoo花花" vs "dimoo花园" → coverage=1.0 → no penalty (both have 花)
+        "dimoo花花" vs "dimoo花园" → coverage=0.5 → heavy penalty (花花 needs two 花)
     """
     if not qn or not cn:
         return 0
@@ -139,7 +140,7 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
 
     # Substring hit
     if qn in cn or cn in qn:
-        base = 88 if shorter >= 4 else 68
+        base = 92 if shorter >= 4 else 68
         s    = int(base * (0.5 + 0.5 * lr))
     else:
         raw = _raw_sim(qn, cn)
@@ -149,13 +150,15 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
         else:
             s = int(raw * (0.65 + 0.35 * lr))
 
-    # CJK coverage penalty
-    query_cjk = {ch for ch in qn if '\u4e00' <= ch <= '\u9fff'}
-    if query_cjk:
-        cand_cjk = {ch for ch in cn if '\u4e00' <= ch <= '\u9fff'}
-        coverage = len(query_cjk & cand_cjk) / len(query_cjk)
-        if coverage < 0.5:
-            s = int(s * coverage * 2)
+    # CJK coverage penalty (multiset-aware: "花花" requires two 花 in candidate)
+    q_cjk = [ch for ch in qn if '\u4e00' <= ch <= '\u9fff']
+    if q_cjk:
+        q_cnt = Counter(q_cjk)
+        c_cnt = Counter(ch for ch in cn if '\u4e00' <= ch <= '\u9fff')
+        matched = sum(min(n, c_cnt.get(ch, 0)) for ch, n in q_cnt.items())
+        coverage = matched / len(q_cjk)
+        if coverage < 1.0:
+            s = int(s * coverage)
 
     return min(s, 99)   # 100 is reserved for exact match only
 

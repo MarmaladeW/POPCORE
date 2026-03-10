@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import client from '../../api/client'
-import { batchMatch, isHeaderLine, saveAlias } from '../../api/matcher'
+import { batchMatch, isHeaderLine, saveAlias, cleanName } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -28,9 +28,15 @@ interface MatchedItem {
   aliasSaved?: boolean
 }
 
-/** Handles tab-sep, space-sep, and mixed formats for sales lines */
+/** Handles name*qty, tab-sep, space-sep, and mixed formats for sales lines */
 function parseLine(line: string) {
   const t = line.trim()
+  if (t.includes('*')) {
+    const star = t.lastIndexOf('*')
+    const rawName = t.slice(0, star).trim()  // keep trailing : for server header detection
+    const qty_pos = parseInt(t.slice(star + 1).trim(), 10) || 0
+    return { rawName, qty_pos, qty_cash: 0, notes: '' }
+  }
   if (t.includes('\t')) {
     const parts = t.split('\t').map(s => s.trim())
     return {
@@ -91,13 +97,13 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   function reset() { setStep(0); setText(''); setItems([]); setProgress(0) }
 
   async function match() {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-    if (!lines.length) { message.warning('内容为空'); return }
+    const tokens = text.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+    if (!tokens.length) { message.warning('内容为空'); return }
     setMatch(true)
     setProgress(10)
 
-    // Parse all lines; filter header-only lines before sending to server
-    const parsed = lines.map(parseLine)
+    // Parse all tokens; header lines are filtered server-side (status: 'skipped')
+    const parsed = tokens.map(parseLine)
     const queries = parsed.map(p => p.rawName)
 
     let results

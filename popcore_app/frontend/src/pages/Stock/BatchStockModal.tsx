@@ -6,7 +6,7 @@ import {
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
-import { batchMatch, saveAlias } from '../../api/matcher'
+import { batchMatch, saveAlias, cleanName } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -26,9 +26,15 @@ interface MatchedItem {
   status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
 }
 
-/** Handles tab-sep, space-sep, and "名称2端" formats */
+/** Handles name*qty, tab-sep, space-sep, and "名称2端" formats */
 function parseLine(line: string) {
   const t = line.trim()
+  if (t.includes('*')) {
+    const star = t.lastIndexOf('*')
+    const rawName = t.slice(0, star).trim()  // keep trailing : for server header detection
+    const qty = parseInt(t.slice(star + 1).trim(), 10) || 1
+    return { rawName, qty, notes: '' }
+  }
   if (t.includes('\t')) {
     const parts = t.split('\t').map(s => s.trim())
     return { rawName: parts[0], qty: Math.abs(parseInt(parts[1] || '1', 10)) || 1, notes: parts.slice(2).join(' ') }
@@ -75,12 +81,12 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
   function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0) }
 
   async function match() {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-    if (!lines.length) { message.warning('内容为空'); return }
+    const tokens = text.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+    if (!tokens.length) { message.warning('内容为空'); return }
     setMatch(true)
     setProgress(10)
 
-    const parsed = lines.map(parseLine)
+    const parsed = tokens.map(parseLine)
     const queries = parsed.map(p => p.rawName)
 
     let results
