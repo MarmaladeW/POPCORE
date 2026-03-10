@@ -110,7 +110,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
     for (const line of lines) {
       if (isHeaderLine(line)) {
         const lower = cleanName(line).toLowerCase()
-        if (/^(现金|转账|cash)/.test(lower)) {
+        if (/^(现金|转账|cash|随手记)/.test(lower)) {
           section = 'cash'
         } else if (/^(卡机|pos|刷卡)/.test(lower)) {
           section = 'pos'
