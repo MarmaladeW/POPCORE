@@ -7,7 +7,6 @@ import os
 import json
 import uuid
 import re
-import unicodedata
 import threading
 import time
 import urllib.parse
@@ -20,6 +19,7 @@ from jose import jwt as jose_jwt
 import requests as http_req
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
+from matcher import match_jzm, batch_match_jzm, normalize as norm_jzm
 
 # ─── Sentry — error monitoring & performance tracing ──────────────────────────
 sentry_sdk.init(
@@ -181,6 +181,14 @@ def migrate_db():
         );
         CREATE INDEX IF NOT EXISTS idx_sl_store ON scrape_log(store_key);
 
+        CREATE TABLE IF NOT EXISTS product_aliases (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            alias      TEXT    NOT NULL,
+            alias_norm TEXT    NOT NULL,
+            created_at TEXT    DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_aliases_norm ON product_aliases(alias_norm);
     ''')
 
     con.commit()
@@ -507,104 +515,14 @@ def _score_product(product, tokens, q_full):
     return score
 
 
-def _normalize_match(s):
-    """
-    Normalize a 记账名 string for fuzzy matching.
-    Handles mixed Chinese/English input from various IMEs:
-      · NFKC:  fullwidth→halfwidth  (ｓｐ→sp, Ａ→A, ！→!, etc.)
-      · lowercase
-      · strip ALL whitespace incl. Chinese fullwidth space \u3000
-        → "SA 草莓" and "SA草莓" become identical
-      · strip one trailing ASCII 's' (plural tolerance)
-        → "Dimoos" matches "Dimoo"
-    """
-    s = (s or '').strip()
-    s = unicodedata.normalize('NFKC', s)    # fullwidth → halfwidth
-    s = s.lower()
-    s = re.sub(r'[\s\u3000]+', '', s)       # remove all whitespace
-    if s.endswith('s') and len(s) > 1:
-        s = s[:-1]
-    return s
-
-
-def _jzm_similarity(a_norm, b_norm):
-    """
-    Return a 0-100 similarity score between two pre-normalised strings.
-
-    Uses rapidfuzz.fuzz.WRatio when installed (pip install rapidfuzz).
-    WRatio tries simple ratio, partial ratio, and token-sort ratio then
-    returns the best — well-suited to short mixed Chinese/English names.
-
-    Falls back to bigram-Jaccard without rapidfuzz (lower precision).
-    """
-    if not a_norm or not b_norm:
-        return 0
-    if a_norm == b_norm:
-        return 100
-    if a_norm in b_norm or b_norm in a_norm:
-        return 90
-    try:
-        from rapidfuzz import fuzz
-        return int(fuzz.WRatio(a_norm, b_norm))
-    except ImportError:
-        pass
-    # Bigram-Jaccard fallback
-    if len(a_norm) == 1 or len(b_norm) == 1:
-        return 80 if (a_norm in b_norm or b_norm in a_norm) else 0
-    bg_a = {a_norm[i:i+2] for i in range(len(a_norm) - 1)}
-    bg_b = {b_norm[i:i+2] for i in range(len(b_norm) - 1)}
-    union = len(bg_a | bg_b)
-    return int(100 * len(bg_a & bg_b) / union) if union else 0
-
-
-def fuzzy_match_jzm(query, candidates, threshold=60, limit=5):
-    """
-    ── Central fuzzy matching function ───────────────────────────────────────
-    Use this everywhere a 记账名 must be matched to a product:
-      · paste-import (sales / stock)
-      · by_jizhanming API lookup
-      · any future feature that maps a name → product
-
-    Handles:
-      · Mixed Chinese/English names  ("Dimoo花花", "SA草莓", "sp小马")
-      · Case differences             ("sa草莓" == "SA草莓")
-      · Spaces / fullwidth spaces    ("SA 草莓" == "SA草莓")
-      · Fullwidth characters         ("ＳＡ草莓" == "SA草莓")
-      · Trailing ASCII 's'           ("dimoos" ≈ "dimoo")
-
-    Install `rapidfuzz` for best results:  pip install rapidfuzz
-    Without it the bigram-Jaccard fallback still works but is less precise.
-
-    Args:
-        query:      The 记账名 string to look up.
-        candidates: List of product dicts (must contain 'jizhanming').
-        threshold:  Minimum score (0–100) to include.  Default 60.
-        limit:      Max results returned, sorted by score desc.
-
-    Returns:
-        List of (score, product_dict) sorted by score descending.
-    """
-    qn = _normalize_match(query)
-    if not qn:
-        return []
-    scored = []
-    for p in candidates:
-        s = _jzm_similarity(qn, _normalize_match(p.get('jizhanming', '')))
-        if s >= threshold:
-            scored.append((s, p))
-    scored.sort(key=lambda x: -x[0])
-    return scored[:limit]
-
-
 @app.route('/api/products/by_jizhanming')
 @login_required
 def get_by_jizhanming():
     """
-    Look up products by 记账名 using fuzzy_match_jzm.
-    Phase 1: fast exact SQL match (handles leading/trailing spaces & case).
-    Phase 2: fuzzy_match_jzm for spaces, fullwidth chars, trailing 's', etc.
-    Returns up to 5 candidates sorted by match score so callers can detect
-    duplicates or offer the user a choice.
+    Look up products by 记账名.
+    Phase 1: alias exact lookup — score 100.
+    Phase 2: fuzzy match via matcher.match_jzm.
+    Returns up to 5 candidates sorted by match score.
     """
     name = request.args.get('name', '').strip()
     if not name:
@@ -612,20 +530,11 @@ def get_by_jizhanming():
     con = get_db()
     cur = con.cursor()
 
-    # Phase 1: exact SQL match — fast path
-    cur.execute('''
-        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
-        FROM products
-        WHERE TRIM(LOWER(jizhanming)) = LOWER(?)
-        ORDER BY sku DESC
-        LIMIT 5
-    ''', (name,))
-    rows = [dict(r) for r in cur.fetchall()]
-    if rows:
-        con.close()
-        return jsonify(rows)
+    # Load aliases
+    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
+    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
 
-    # Phase 2: fuzzy match via fuzzy_match_jzm (see its docstring)
+    # Load all products for fuzzy match
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
         FROM products
@@ -634,8 +543,62 @@ def get_by_jizhanming():
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
 
-    matches = fuzzy_match_jzm(name, all_products, threshold=65, limit=5)
+    matches = match_jzm(name, all_products, aliases=aliases, threshold=75, limit=5)
     return jsonify([p for _, p in matches])
+
+
+@app.route('/api/products/match', methods=['POST'])
+@login_required
+def batch_match_products():
+    """
+    Batch-match multiple 记账名 strings against products in one request.
+    Body: { "queries": ["SA草莓", "Dimoo花花", ...], "threshold": 75 }
+    Returns: { "results": [{query, status, candidates: [{id,sku,jizhanming,...}]}] }
+    status ∈ matched | fuzzy | unmatched | skipped
+    """
+    data = request.get_json(silent=True) or {}
+    queries   = data.get('queries', [])
+    threshold = int(data.get('threshold', 75))
+    if not queries:
+        return jsonify({'results': []})
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
+    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
+    cur.execute('''
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
+        FROM products WHERE jizhanming IS NOT NULL AND jizhanming != ''
+    ''')
+    all_products = [dict(r) for r in cur.fetchall()]
+    con.close()
+
+    raw_results = batch_match_jzm(queries, all_products, aliases=aliases, threshold=threshold)
+    return jsonify({'results': raw_results})
+
+
+@app.route('/api/products/aliases', methods=['POST'])
+@login_required
+def save_alias():
+    """Save a manual alias mapping: { product_id, alias }."""
+    data = request.get_json(silent=True) or {}
+    pid  = data.get('product_id')
+    alias = (data.get('alias') or '').strip()
+    if not pid or not alias:
+        return jsonify({'error': 'product_id and alias required'}), 400
+    alias_norm = norm_jzm(alias)
+    if not alias_norm:
+        return jsonify({'error': 'alias normalises to empty'}), 400
+    con = get_db()
+    try:
+        con.execute(
+            'INSERT OR REPLACE INTO product_aliases (product_id, alias, alias_norm) VALUES (?,?,?)',
+            (pid, alias, alias_norm),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/products/search')

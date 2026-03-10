@@ -15,13 +15,12 @@ Run standalone:
 import os
 import sys
 import json
-import re
-import unicodedata
 import sqlite3
 import asyncio
 from datetime import datetime
 from urllib.request import urlopen, Request as UReq
 from urllib.error import URLError, HTTPError
+from matcher import match_title
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -58,86 +57,8 @@ POPMART_CA_SEED_URLS = [
 ]
 POPMART_CA_HOME = 'https://www.popmart.com/ca'
 
-MATCH_THRESHOLD = 62   # minimum rapidfuzz score to link scraped → our product
 SCROLL_ROUNDS   = 6    # scroll iterations per page (for infinite scroll)
 PAGE_TIMEOUT    = 30_000  # ms — navigation timeout per collection page
-
-# ─── Text normalisation ───────────────────────────────────────────────────────
-
-def _norm(s: str) -> str:
-    """NFKC → lowercase → collapse whitespace → strip trailing 's'."""
-    if not s:
-        return ''
-    s = unicodedata.normalize('NFKC', s).lower()
-    s = re.sub(r'[\s\u3000]+', ' ', s).strip()
-    if s.endswith('s') and len(s) > 2:
-        s = s[:-1]
-    return s
-
-
-def _english_part(text: str) -> str:
-    """
-    Extract the Latin/ASCII portion of a mixed Chinese-English string.
-    e.g. '怪兽宇宙 THE MONSTERS SPACE ADVENTURES' → 'the monsters space adventures'
-    """
-    parts = re.findall(r'[^\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef\u3000-\u303f]+', text or '')
-    return ' '.join(p.strip() for p in parts if p.strip())
-
-
-def _similarity(a: str, b: str) -> int:
-    """
-    Fuzzy similarity 0–100 using rapidfuzz.WRatio (installed).
-    Falls back to bigram-Jaccard if import fails.
-    """
-    if not a or not b:
-        return 0
-    if a == b:
-        return 100
-    try:
-        from rapidfuzz import fuzz
-        return int(fuzz.WRatio(a, b))
-    except ImportError:
-        if a in b or b in a:
-            return 90
-        bga = {a[i:i+2] for i in range(len(a) - 1)}
-        bgb = {b[i:i+2] for i in range(len(b) - 1)}
-        u = len(bga | bgb)
-        return int(100 * len(bga & bgb) / u) if u else 0
-
-
-# ─── Product matching ─────────────────────────────────────────────────────────
-
-def match_title(scraped_title: str, db_products: list) -> tuple:
-    """
-    Match a scraped product title against all internal products.
-    Checks:
-      1. English portion of name_cn_en  (best for English-named stores)
-      2. Full name_cn_en                (catches mixed names)
-      3. jizhanming                     (Chinese shorthand names)
-    Returns (product_id, sku, score) or (None, None, best_score).
-    """
-    t = _norm(scraped_title)
-    best_score, best_pid, best_sku = 0, None, None
-
-    for p in db_products:
-        eng   = _norm(_english_part(p.get('name_cn_en') or ''))
-        full  = _norm(p.get('name_cn_en') or '')
-        jzm   = _norm(p.get('jizhanming') or '')
-
-        s = max(
-            _similarity(t, eng)  if eng  else 0,
-            _similarity(t, full) if full else 0,
-            _similarity(t, jzm)  if jzm  else 0,
-        )
-        if s > best_score:
-            best_score = s
-            best_pid   = p['id']
-            best_sku   = p['sku']
-
-    if best_score >= MATCH_THRESHOLD:
-        return best_pid, best_sku, best_score
-    return None, None, best_score
-
 
 # ─── Shopify scraper ──────────────────────────────────────────────────────────
 

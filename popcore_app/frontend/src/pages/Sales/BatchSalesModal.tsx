@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import client from '../../api/client'
+import { batchMatch, isHeaderLine, saveAlias } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -23,7 +24,8 @@ interface MatchedItem {
   sku?: string
   jizhanming?: string
   candidates?: any[]
-  status: 'matched' | 'fuzzy' | 'unmatched'
+  status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
+  aliasSaved?: boolean
 }
 
 /** Handles tab-sep, space-sep, and mixed formats for sales lines */
@@ -57,18 +59,6 @@ function parseLine(line: string) {
   }
 }
 
-async function matchName(name: string): Promise<{ candidates: any[]; status: 'matched' | 'fuzzy' | 'unmatched' }> {
-  try {
-    const r = await client.get('/products/by_jizhanming', { params: { name } })
-    if (r.data.length === 1) return { candidates: r.data, status: 'matched' }
-    if (r.data.length > 1)  return { candidates: r.data, status: 'fuzzy' }
-  } catch { /* fall through */ }
-  try {
-    const r2 = await client.get('/products/search', { params: { q: name, limit: 6 } })
-    if (r2.data.length > 0) return { candidates: r2.data, status: 'fuzzy' }
-  } catch { /* fall through */ }
-  return { candidates: [], status: 'unmatched' }
-}
 
 function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
   const [opts, setOpts] = useState<any[]>([])
@@ -101,28 +91,41 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   function reset() { setStep(0); setText(''); setItems([]); setProgress(0) }
 
   async function match() {
-    const parsed = text.split('\n').map(l => l.trim()).filter(Boolean).map(parseLine)
-    if (!parsed.length) { message.warning('内容为空'); return }
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+    if (!lines.length) { message.warning('内容为空'); return }
     setMatch(true)
-    setProgress(0)
-    let done = 0
-    const out: MatchedItem[] = await Promise.all(
-      parsed.map(async (p, i) => {
-        const result = await matchName(p.rawName)
-        done++
-        setProgress(Math.round((done / parsed.length) * 100))
-        const top = result.candidates[0]
+    setProgress(10)
+
+    // Parse all lines; filter header-only lines before sending to server
+    const parsed = lines.map(parseLine)
+    const queries = parsed.map(p => p.rawName)
+
+    let results
+    try {
+      results = await batchMatch(queries)
+    } catch {
+      message.error('匹配失败，请重试')
+      setMatch(false)
+      return
+    }
+    setProgress(100)
+
+    const out: MatchedItem[] = results
+      .map((r, i) => {
+        if (r.status === 'skipped') return null
+        const top = r.candidates[0]
         return {
-          ...p,
-          _key: `${i}-${p.rawName}`,
+          ...parsed[i],
+          _key: `${i}-${r.query}`,
           product_id: top?.id,
           sku: top?.sku,
           jizhanming: top?.jizhanming,
-          candidates: result.candidates.length > 1 ? result.candidates : undefined,
-          status: result.status,
-        }
+          candidates: r.candidates.length > 1 ? r.candidates : undefined,
+          status: r.status,
+        } as MatchedItem
       })
-    )
+      .filter(Boolean) as MatchedItem[]
+
     setMatch(false)
     setItems(out)
     setStep(1)
@@ -153,7 +156,12 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   }
 
   const okCount = items.filter(i => i.product_id).length
-  const unmatchedCount = items.filter(i => i.status === 'unmatched').length
+  const unmatchedCount = items.filter(i => i.status === 'unmatched' || i.status === 'fuzzy').length
+
+  async function handleManualSelect(key: string, rawName: string, p: any) {
+    updateItem(key, { product_id: p.id, sku: p.sku, jizhanming: p.jizhanming, status: 'matched', candidates: undefined })
+    try { await saveAlias(p.id, rawName) } catch { /* silently ignore alias save errors */ }
+  }
 
   const reviewColumns = [
     {
@@ -168,9 +176,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
         if (r.status === 'unmatched') return (
           <Space size={4}>
             <Tag color="red">未匹配</Tag>
-            <ProductPicker onSelect={p => updateItem(r._key, {
-              product_id: p.id, sku: p.sku, jizhanming: p.jizhanming, status: 'matched', candidates: undefined,
-            })} />
+            <ProductPicker onSelect={p => handleManualSelect(r._key, r.rawName, p)} />
           </Space>
         )
         if (r.candidates && r.candidates.length > 1) return (
@@ -180,7 +186,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
             style={{ width: 200 }}
             onChange={v => {
               const c = r.candidates!.find(x => x.id === v)
-              updateItem(r._key, { product_id: v, jizhanming: c?.jizhanming, sku: c?.sku, status: 'matched' })
+              handleManualSelect(r._key, r.rawName, c)
             }}
             options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming} (${c.sku})` }))}
           />
