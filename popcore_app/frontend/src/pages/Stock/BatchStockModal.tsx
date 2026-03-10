@@ -6,7 +6,7 @@ import {
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
-import { batchMatch, saveAlias, cleanName } from '../../api/matcher'
+import { batchMatch, saveAlias, cleanName, isHeaderLine } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -53,7 +53,7 @@ function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
   async function search(q: string) {
     if (!q) { setOpts([]); return }
     const r = await client.get('/products/search', { params: { q, limit: 8 } })
-    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming} (${p.sku})`, product: p })))
+    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming || p.name_cn_en || p.sku} (${p.sku})`, product: p })))
   }
   return (
     <AutoComplete
@@ -81,12 +81,13 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
   function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0) }
 
   async function match() {
-    const tokens = text.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+    const tokens = text.split(/[\n,，]+/).map(t => t.trim()).filter(Boolean)
     if (!tokens.length) { message.warning('内容为空'); return }
     setMatch(true)
     setProgress(10)
 
-    const parsed = tokens.map(parseLine)
+    const validTokens = tokens.filter(t => !isHeaderLine(t))
+    const parsed = validTokens.map(parseLine)
     const queries = parsed.map(p => p.rawName)
 
     let results
@@ -178,7 +179,7 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
               const c = r.candidates!.find(x => x.id === v)
               handleManualSelect(r._key, r.rawName, c)
             }}
-            options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming} (${c.sku})` }))}
+            options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming || c.name_cn_en || c.sku} (${c.sku})` }))}
           />
         )
         return <Space size={4}><Tag color="green">✓</Tag><span>{r.jizhanming}</span><Tag>{r.sku}</Tag></Space>
