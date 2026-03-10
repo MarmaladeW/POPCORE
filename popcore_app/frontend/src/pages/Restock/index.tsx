@@ -60,9 +60,8 @@ export default function RestockPage() {
 
   const loadSession = useCallback(async () => {
     try {
-      const { data } = await client.get<RestockSession>('/restock/today')
-      // fetch full session with items
-      const { data: full } = await client.get<RestockSession>(`/restock/sessions/${data.id}`)
+      const { data } = await client.get<RestockSession>('/restock/session/today')
+      const { data: full } = await client.get<RestockSession>(`/restock/session/${data.id}`)
       setSession(full)
     } finally {
       setLoading(false)

@@ -26,26 +26,28 @@ export default function PickingStep({ session, onRefresh }: Props) {
   const isCompleted = session.status === 'completed'
 
   async function handlePickUpdate(item: RestockItem, pickStatus: 'found' | 'not_found') {
-    const foundQty = pickStatus === 'found' ? (localFoundQty[item.id] ?? item.requested_qty) : 0
+    const foundQty = pickStatus === 'found' ? (localFoundQty[item.id] ?? item.requested_qty) : undefined
     try {
-      await client.patch(`/restock/sessions/${session.id}/items/${item.id}`, {
+      await client.patch(`/restock/items/${item.id}/pick`, {
         pick_status: pickStatus,
-        found_qty:   foundQty,
+        ...(foundQty !== undefined ? { found_qty: foundQty } : {}),
       })
       onRefresh()
-    } catch {
-      message.error('更新失败')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(msg || '更新失败')
     }
   }
 
   async function handleComplete() {
     setCompleting(true)
     try {
-      const { data } = await client.post(`/restock/sessions/${session.id}/complete`)
+      const { data } = await client.post(`/restock/session/${session.id}/complete`)
       message.success(`入店完成，共同步 ${data.synced} 件产品`)
       onRefresh()
-    } catch {
-      message.error('完成失败')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      message.error(msg || '完成失败')
     } finally {
       setCompleting(false)
     }

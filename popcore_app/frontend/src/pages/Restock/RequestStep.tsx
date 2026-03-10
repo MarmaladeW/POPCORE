@@ -56,7 +56,8 @@ export default function RequestStep({ session, onRefresh }: Props) {
     const qty = qtyMap[product.id] ?? 1
     if (qty <= 0) { message.warning('请输入有效数量'); return }
     try {
-      await client.post(`/restock/sessions/${session.id}/items`, {
+      await client.post('/restock/items', {
+        session_id:    session.id,
         product_id:    product.id,
         requested_qty: qty,
       })
@@ -69,7 +70,7 @@ export default function RequestStep({ session, onRefresh }: Props) {
 
   async function handleDelete(item: RestockItem) {
     try {
-      await client.delete(`/restock/sessions/${session.id}/items/${item.id}`)
+      await client.delete(`/restock/items/${item.id}`)
       message.success('已删除')
       onRefresh()
     } catch {
@@ -81,8 +82,8 @@ export default function RequestStep({ session, onRefresh }: Props) {
     if (session.items.length === 0) { message.warning('请至少添加一个补货产品'); return }
     setSubmitting(true)
     try {
-      await client.post(`/restock/sessions/${session.id}/submit`)
-      message.success('补货申请已提交，进入拣货阶段')
+      await client.post(`/restock/session/${session.id}/submit`)
+      message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
       onRefresh()
     } catch {
       message.error('提交失败')

@@ -1848,10 +1848,27 @@ def market_overview():
 
 # ─── Restock API ─────────────────────────────────────────────────────────────
 
-@app.route('/api/restock/today')
+def _restock_session_items(cur, sid):
+    """Return items for a session, joined with product and live stock info."""
+    cur.execute('''
+        SELECT ri.id, ri.product_id, ri.requested_qty, ri.warehouse_stock_snapshot,
+               ri.found_qty, ri.pick_status,
+               p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
+               COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
+               COALESCE(s.instore_dan,  0) AS instore_dan
+        FROM restock_items ri
+        JOIN products p ON p.id = ri.product_id
+        LEFT JOIN stock s ON s.product_id = ri.product_id
+        WHERE ri.session_id = ?
+        ORDER BY ri.id
+    ''', (sid,))
+    return [dict(r) for r in cur.fetchall()]
+
+
+@app.route('/api/restock/session/today')
 @login_required
-def restock_today():
-    """Get or create today's restock session."""
+def restock_session_today():
+    """Get or create today's restock session (without items)."""
     today = date.today().isoformat()
     con = get_db()
     cur = con.cursor()
@@ -1865,15 +1882,14 @@ def restock_today():
         con.commit()
         cur.execute('SELECT * FROM restock_sessions WHERE date = ?', (today,))
         row = cur.fetchone()
-    session = dict(row)
     con.close()
-    return jsonify(session)
+    return jsonify(dict(row))
 
 
-@app.route('/api/restock/sessions/<int:sid>')
+@app.route('/api/restock/session/<int:sid>')
 @login_required
 def get_restock_session(sid):
-    """Get session details with all items (joined product + stock info)."""
+    """Get session details with items (live warehouse/store stock included)."""
     con = get_db()
     cur = con.cursor()
     cur.execute('SELECT * FROM restock_sessions WHERE id = ?', (sid,))
@@ -1882,87 +1898,84 @@ def get_restock_session(sid):
         con.close()
         return jsonify({'error': 'Session not found'}), 404
     session = dict(row)
-    cur.execute('''
-        SELECT ri.id, ri.product_id, ri.requested_qty, ri.warehouse_stock_snapshot,
-               ri.found_qty, ri.pick_status,
-               p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
-               COALESCE(s.instore_dan,  0) AS instore_dan
-        FROM restock_items ri
-        JOIN products p ON p.id = ri.product_id
-        LEFT JOIN stock s ON s.product_id = ri.product_id
-        WHERE ri.session_id = ?
-        ORDER BY ri.id
-    ''', (sid,))
-    session['items'] = [dict(r) for r in cur.fetchall()]
+    session['items'] = _restock_session_items(cur, sid)
     con.close()
     return jsonify(session)
 
 
-@app.route('/api/restock/sessions/<int:sid>/items', methods=['POST'])
+@app.route('/api/restock/items', methods=['POST'])
 @role_required('staff')
-def add_restock_item(sid):
-    """Add or update a restock item. Body: { product_id, requested_qty }."""
+def add_restock_item():
+    """
+    Add or upsert a restock item.
+    Body: { session_id, product_id, requested_qty }
+    Snapshot is NOT taken here; it happens at submit time.
+    """
+    data = request.get_json() or {}
+    sid  = data.get('session_id')
+    pid  = data.get('product_id')
+    qty  = data.get('requested_qty')
+    if not sid or not pid or not qty or int(qty) <= 0:
+        return jsonify({'error': 'session_id, product_id, requested_qty 必须填写且有效'}), 400
+
     con = get_db()
     cur = con.cursor()
-    cur.execute("SELECT status FROM restock_sessions WHERE id = ?", (sid,))
+    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (int(sid),))
     sess = cur.fetchone()
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
     if sess['status'] != 'pending':
         con.close()
-        return jsonify({'error': '只能在 pending 状态下修改清单'}), 400
-
-    data = request.get_json() or {}
-    pid = int(data.get('product_id', 0))
-    qty = int(data.get('requested_qty', 0))
-    if not pid or qty <= 0:
-        con.close()
-        return jsonify({'error': 'product_id 和 requested_qty 必须填写'}), 400
-
-    # Snapshot current warehouse stock
-    cur.execute('SELECT COALESCE(upstairs_dan, 0) FROM stock WHERE product_id = ?', (pid,))
-    snap_row = cur.fetchone()
-    snapshot = snap_row[0] if snap_row else 0
+        return jsonify({'error': '只能在 pending 状态下修改清单'}), 403
 
     cur.execute('''
-        INSERT INTO restock_items (session_id, product_id, requested_qty, warehouse_stock_snapshot)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO restock_items (session_id, product_id, requested_qty)
+        VALUES (?, ?, ?)
         ON CONFLICT(session_id, product_id) DO UPDATE SET
-            requested_qty = excluded.requested_qty,
-            warehouse_stock_snapshot = excluded.warehouse_stock_snapshot
-    ''', (sid, pid, qty, snapshot))
+            requested_qty = excluded.requested_qty
+    ''', (int(sid), int(pid), int(qty)))
     con.commit()
     item_id = cur.lastrowid
     con.close()
     return jsonify({'ok': True, 'id': item_id}), 201
 
 
-@app.route('/api/restock/sessions/<int:sid>/items/<int:iid>', methods=['DELETE'])
+@app.route('/api/restock/items/<int:iid>', methods=['DELETE'])
 @role_required('staff')
-def delete_restock_item(sid, iid):
-    """Remove an item from a pending session."""
+def delete_restock_item(iid):
+    """Remove an item; validates via its session that status is pending."""
     con = get_db()
     cur = con.cursor()
-    cur.execute("SELECT status FROM restock_sessions WHERE id = ?", (sid,))
-    sess = cur.fetchone()
-    if not sess or sess['status'] != 'pending':
+    cur.execute('''
+        SELECT rs.status FROM restock_items ri
+        JOIN restock_sessions rs ON rs.id = ri.session_id
+        WHERE ri.id = ?
+    ''', (iid,))
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        return jsonify({'error': 'Item not found'}), 404
+    if row['status'] != 'pending':
         con.close()
         return jsonify({'error': '只能在 pending 状态下删除条目'}), 400
-    cur.execute('DELETE FROM restock_items WHERE id = ? AND session_id = ?', (iid, sid))
+    cur.execute('DELETE FROM restock_items WHERE id = ?', (iid,))
     con.commit()
     con.close()
     return jsonify({'ok': True})
 
 
-@app.route('/api/restock/sessions/<int:sid>/submit', methods=['POST'])
+@app.route('/api/restock/session/<int:sid>/submit', methods=['POST'])
 @role_required('staff')
 def submit_restock_session(sid):
-    """pending → submitted: freeze the picking list."""
+    """
+    pending → submitted.
+    Snapshots current warehouse stock (upstairs_dan) into warehouse_stock_snapshot
+    for every item in this session at the moment of submission.
+    """
     con = get_db()
     cur = con.cursor()
-    cur.execute("SELECT status FROM restock_sessions WHERE id = ?", (sid,))
+    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
@@ -1970,6 +1983,17 @@ def submit_restock_session(sid):
     if sess['status'] != 'pending':
         con.close()
         return jsonify({'error': f'当前状态 {sess["status"]} 不可提交'}), 400
+
+    # Batch-snapshot warehouse stock at submission time
+    cur.execute('''
+        UPDATE restock_items
+        SET warehouse_stock_snapshot = (
+            SELECT COALESCE(s.upstairs_dan, 0)
+            FROM stock s
+            WHERE s.product_id = restock_items.product_id
+        )
+        WHERE session_id = ?
+    ''', (sid,))
     cur.execute(
         "UPDATE restock_sessions SET status='submitted', submitted_at=datetime('now') WHERE id=?",
         (sid,),
@@ -1979,49 +2003,91 @@ def submit_restock_session(sid):
     return jsonify({'ok': True})
 
 
-@app.route('/api/restock/sessions/<int:sid>/items/<int:iid>', methods=['PATCH'])
-@role_required('staff')
-def patch_restock_item(sid, iid):
-    """Update picking result. Body: { found_qty, pick_status }."""
+@app.route('/api/restock/session/<int:sid>/picking-list')
+@login_required
+def restock_picking_list(sid):
+    """Return items for warehouse pickers: product info + snapshot + current pick status."""
     con = get_db()
     cur = con.cursor()
-    cur.execute("SELECT status FROM restock_sessions WHERE id = ?", (sid,))
+    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
-    if not sess or sess['status'] not in ('submitted', 'picking'):
+    if not sess:
+        con.close()
+        return jsonify({'error': 'Session not found'}), 404
+    items = _restock_session_items(cur, sid)
+    con.close()
+    return jsonify({'session_status': sess['status'], 'items': items})
+
+
+@app.route('/api/restock/items/<int:iid>/pick', methods=['PATCH'])
+@role_required('staff')
+def pick_restock_item(iid):
+    """
+    Update pick result for one item.
+    Body: { pick_status: 'found'|'not_found', found_qty?: number }
+    - not_found: found_qty forced to 0
+    - found: found_qty must be >= 1 and <= requested_qty
+    """
+    data = request.get_json() or {}
+    pick_status = data.get('pick_status', '')
+    if pick_status not in ('found', 'not_found'):
+        return jsonify({'error': 'pick_status 必须为 found 或 not_found'}), 400
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT ri.*, rs.status AS session_status, rs.id AS session_id
+        FROM restock_items ri
+        JOIN restock_sessions rs ON rs.id = ri.session_id
+        WHERE ri.id = ?
+    ''', (iid,))
+    item = cur.fetchone()
+    if not item:
+        con.close()
+        return jsonify({'error': 'Item not found'}), 404
+    if item['session_status'] not in ('submitted', 'picking'):
         con.close()
         return jsonify({'error': '只能在 submitted/picking 状态下更新拣货结果'}), 400
 
-    data = request.get_json() or {}
-    allowed_status = {'pending', 'found', 'not_found'}
-    pick_status = data.get('pick_status', 'pending')
-    if pick_status not in allowed_status:
-        con.close()
-        return jsonify({'error': '无效的 pick_status'}), 400
-    found_qty = data.get('found_qty')
+    if pick_status == 'not_found':
+        found_qty = 0
+    else:
+        found_qty = data.get('found_qty')
+        if found_qty is None:
+            con.close()
+            return jsonify({'error': 'found 时须提供 found_qty'}), 400
+        found_qty = int(found_qty)
+        if found_qty < 1:
+            con.close()
+            return jsonify({'error': 'found_qty 须 >= 1'}), 400
+        if found_qty > item['requested_qty']:
+            con.close()
+            return jsonify({'error': f'found_qty ({found_qty}) 不可超过 requested_qty ({item["requested_qty"]})'}), 400
 
     cur.execute(
-        'UPDATE restock_items SET found_qty=?, pick_status=? WHERE id=? AND session_id=?',
-        (found_qty, pick_status, iid, sid),
+        'UPDATE restock_items SET found_qty=?, pick_status=? WHERE id=?',
+        (found_qty, pick_status, iid),
     )
-    # Move session to picking once first update happens
-    if sess['status'] == 'submitted':
-        cur.execute("UPDATE restock_sessions SET status='picking' WHERE id=?", (sid,))
+    # Advance session status to 'picking' on first pick action
+    if item['session_status'] == 'submitted':
+        cur.execute("UPDATE restock_sessions SET status='picking' WHERE id=?", (item['session_id'],))
     con.commit()
     con.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'found_qty': found_qty, 'pick_status': pick_status})
 
 
-@app.route('/api/restock/sessions/<int:sid>/complete', methods=['POST'])
+@app.route('/api/restock/session/<int:sid>/complete', methods=['POST'])
 @role_required('staff')
 def complete_restock_session(sid):
     """
-    picking → completed: sync stock for all found items.
-    Decreases upstairs_dan (warehouse) and increases instore_dan (store).
-    Logs entries in stock_movements and stock_transactions.
+    picking/submitted → completed.
+    Validates all items have been picked (no 'pending' pick_status).
+    Syncs stock in a single transaction: upstairs_dan -= effective, instore_dan += effective.
+    effective = min(found_qty, actual_upstairs_dan) to guard against negatives.
     """
     con = get_db()
     cur = con.cursor()
-    cur.execute("SELECT status FROM restock_sessions WHERE id = ?", (sid,))
+    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
@@ -2030,40 +2096,61 @@ def complete_restock_session(sid):
         con.close()
         return jsonify({'error': f'当前状态 {sess["status"]} 不可完成'}), 400
 
+    # Validate no pending items
+    cur.execute(
+        "SELECT COUNT(*) FROM restock_items WHERE session_id=? AND pick_status='pending'",
+        (sid,),
+    )
+    pending_count = cur.fetchone()[0]
+    if pending_count > 0:
+        cur.execute(
+            "SELECT ri.id, p.jizhanming FROM restock_items ri JOIN products p ON p.id=ri.product_id WHERE ri.session_id=? AND ri.pick_status='pending'",
+            (sid,),
+        )
+        unhandled = [dict(r) for r in cur.fetchall()]
+        con.close()
+        return jsonify({'error': f'还有 {pending_count} 条未确认拣货', 'unhandled': unhandled}), 400
+
     cur.execute(
         "SELECT * FROM restock_items WHERE session_id=? AND pick_status='found' AND found_qty > 0",
         (sid,),
     )
-    items = [dict(r) for r in cur.fetchall()]
+    found_items = [dict(r) for r in cur.fetchall()]
     today = date.today().isoformat()
+    synced_details = []
 
-    for item in items:
+    for item in found_items:
         pid = item['product_id']
-        qty = item['found_qty']
-        # Ensure stock row exists
+        requested_found = item['found_qty']
         cur.execute('INSERT OR IGNORE INTO stock (product_id, upstairs_dan, instore_dan) VALUES (?,0,0)', (pid,))
-        # Sync stock
+        cur.execute('SELECT upstairs_dan FROM stock WHERE product_id=?', (pid,))
+        stock_row = cur.fetchone()
+        actual_warehouse = stock_row['upstairs_dan'] if stock_row else 0
+        effective_qty = min(requested_found, actual_warehouse)
+        if effective_qty <= 0:
+            synced_details.append({'product_id': pid, 'requested': requested_found, 'found': requested_found, 'effective': 0})
+            continue
+
         cur.execute('''
             UPDATE stock
-            SET upstairs_dan = MAX(0, upstairs_dan - ?),
-                instore_dan  = instore_dan + ?,
+            SET upstairs_dan = upstairs_dan - ?,
+                instore_dan  = instore_dan  + ?,
                 last_updated = datetime('now')
             WHERE product_id = ?
-        ''', (qty, qty, pid))
-        # Log movements
+        ''', (effective_qty, effective_qty, pid))
         cur.execute('''
             INSERT INTO stock_movements (product_id, session_id, movement_type, qty_change, location)
             VALUES (?, ?, 'restock_out', ?, 'warehouse')
-        ''', (pid, sid, -qty))
+        ''', (pid, sid, -effective_qty))
         cur.execute('''
             INSERT INTO stock_movements (product_id, session_id, movement_type, qty_change, location)
             VALUES (?, ?, 'restock_in', ?, 'store')
-        ''', (pid, sid, qty))
-        # Also log in legacy stock_transactions for compatibility
+        ''', (pid, sid, effective_qty))
         cur.execute('''
             INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
-            VALUES (?, 'ru_dian', ?, 'instore', ?, ?)
-        ''', (pid, qty, today, f'补货入店 session#{sid}'))
+            VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?)
+        ''', (pid, effective_qty, today, f'补货入店 session#{sid}'))
+        synced_details.append({'product_id': pid, 'requested': requested_found, 'found': requested_found, 'effective': effective_qty})
 
     cur.execute(
         "UPDATE restock_sessions SET status='completed', completed_at=datetime('now') WHERE id=?",
@@ -2071,77 +2158,284 @@ def complete_restock_session(sid):
     )
     con.commit()
     con.close()
-    return jsonify({'ok': True, 'synced': len(items)})
+    return jsonify({'ok': True, 'synced': len(synced_details), 'items': synced_details})
 
 
-# ─── Inventory Checks API ─────────────────────────────────────────────────────
+# ─── Inventory Check API ──────────────────────────────────────────────────────
 
-@app.route('/api/inventory_checks/today')
-@login_required
-def inventory_checks_today():
+def _calc_theoretical_qty(cur, product_id: int, today: str) -> tuple[int, str, bool]:
     """
-    Return bestseller products with their theoretical stock (instore_dan)
-    and any existing check record for today.
+    Calculate theoretical store stock for a bestseller product.
+    Returns (theoretical_qty, base_check_date, is_base_abnormal).
+
+    Logic:
+      - Find most recent inventory_checks record (base).
+      - If no base: use current instore_dan, base_check_date = today.
+      - If base found:
+          theoretical = base.actual_qty
+                        - SUM(sales since base.date)
+                        + SUM(restock_in movements since base.date)
+      - is_base_abnormal = base exists but base.date != yesterday.
+    """
+    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+
+    cur.execute('''
+        SELECT actual_qty, date AS check_date
+        FROM inventory_checks
+        WHERE product_id = ?
+        ORDER BY date DESC
+        LIMIT 1
+    ''', (product_id,))
+    base = cur.fetchone()
+
+    if not base:
+        cur.execute('SELECT COALESCE(instore_dan, 0) FROM stock WHERE product_id = ?', (product_id,))
+        row = cur.fetchone()
+        return (row[0] if row else 0), today, False
+
+    base_date = base['check_date']
+    theoretical = base['actual_qty']
+
+    cur.execute('''
+        SELECT COALESCE(SUM(qty_pos + qty_cash), 0)
+        FROM daily_sales
+        WHERE product_id = ? AND date > ?
+    ''', (product_id, base_date))
+    sales_since = cur.fetchone()[0] or 0
+
+    cur.execute('''
+        SELECT COALESCE(SUM(qty_change), 0)
+        FROM stock_movements
+        WHERE product_id = ? AND movement_type = 'restock_in'
+          AND location = 'store' AND date(created_at) > ?
+    ''', (product_id, base_date))
+    restock_since = cur.fetchone()[0] or 0
+
+    theoretical = theoretical - sales_since + restock_since
+    is_base_abnormal = base_date != yesterday
+    return theoretical, base_date, is_base_abnormal
+
+
+@app.route('/api/inventory-check/today')
+@login_required
+def inventory_check_today():
+    """
+    Return bestseller products with dynamically-calculated theoretical_qty.
+    theoretical_qty = base.actual_qty - sales_since_base + restocks_since_base
+    If no base record, uses current instore_dan as theoretical_qty.
     """
     today = date.today().isoformat()
     con = get_db()
     cur = con.cursor()
+
     cur.execute('''
         SELECT p.id AS product_id, p.sku, p.jizhanming, p.name_cn_en,
                p.ip_series, p.product_type,
-               COALESCE(s.instore_dan, 0) AS theoretical_qty,
-               ic.actual_qty, ic.discrepancy, ic.base_check_date,
-               ic.id AS check_id
+               COALESCE(s.instore_dan, 0) AS current_instore_dan,
+               ic.id AS check_id, ic.actual_qty, ic.discrepancy,
+               ic.base_check_date AS saved_base_check_date
         FROM products p
         LEFT JOIN stock s ON s.product_id = p.id
-        LEFT JOIN inventory_checks ic
-               ON ic.product_id = p.id AND ic.date = ?
+        LEFT JOIN inventory_checks ic ON ic.product_id = p.id AND ic.date = ?
         WHERE p.is_bestseller = 1
         ORDER BY p.ip_series, p.sku DESC
     ''', (today,))
     rows = [dict(r) for r in cur.fetchall()]
+
+    result = []
+    for row in rows:
+        pid = row['product_id']
+        theoretical_qty, base_check_date, is_base_abnormal = _calc_theoretical_qty(cur, pid, today)
+        result.append({
+            **row,
+            'theoretical_qty':   theoretical_qty,
+            'base_check_date':   base_check_date,
+            'is_base_abnormal':  is_base_abnormal,
+        })
+
     con.close()
-    return jsonify({'date': today, 'items': rows})
+    return jsonify({'date': today, 'items': result})
 
 
-@app.route('/api/inventory_checks', methods=['POST'])
+@app.route('/api/inventory-check/submit', methods=['POST'])
 @role_required('staff')
-def create_inventory_check():
+def submit_inventory_check():
     """
-    Submit one inventory check record.
-    Body: { product_id, actual_qty, base_check_date }
-    discrepancy is calculated server-side from instore_dan.
+    Batch-submit inventory check records.
+    Body: { checks: [{ product_id, actual_qty }] }
+    (date, product_id) conflict returns 409 — no overwrite.
     """
-    data = request.get_json() or {}
-    pid  = data.get('product_id')
-    actual_qty = data.get('actual_qty')
-    base_check_date = (data.get('base_check_date') or '').strip()
-    if pid is None or actual_qty is None:
-        return jsonify({'error': 'product_id 和 actual_qty 必须填写'}), 400
+    data   = request.get_json() or {}
+    checks = data.get('checks', [])
+    if not checks:
+        return jsonify({'error': 'checks 不能为空'}), 400
 
-    today = date.today().isoformat()
+    today      = date.today().isoformat()
+    created_by = request.jwt_payload.get('sub')
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT COALESCE(instore_dan, 0) FROM stock WHERE product_id = ?', (pid,))
-    row = cur.fetchone()
-    theoretical = row[0] if row else 0
-    discrepancy = int(actual_qty) - theoretical
 
-    created_by = request.jwt_payload.get('sub')
-    cur.execute('''
-        INSERT INTO inventory_checks
-            (date, product_id, theoretical_qty, actual_qty, discrepancy, base_check_date, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(date, product_id) DO UPDATE SET
-            theoretical_qty = excluded.theoretical_qty,
-            actual_qty      = excluded.actual_qty,
-            discrepancy     = excluded.discrepancy,
-            base_check_date = excluded.base_check_date
-    ''', (today, pid, theoretical, int(actual_qty), discrepancy,
-          base_check_date or today, created_by))
+    saved   = 0
+    results = []
+    conflicts = []
+
+    for chk in checks:
+        pid        = chk.get('product_id')
+        actual_qty = chk.get('actual_qty')
+        if pid is None or actual_qty is None:
+            continue
+
+        theoretical_qty, base_check_date, _ = _calc_theoretical_qty(cur, int(pid), today)
+        discrepancy = int(actual_qty) - theoretical_qty
+
+        try:
+            cur.execute('''
+                INSERT INTO inventory_checks
+                    (date, product_id, theoretical_qty, actual_qty, discrepancy,
+                     base_check_date, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (today, int(pid), theoretical_qty, int(actual_qty),
+                  discrepancy, base_check_date, created_by))
+            saved += 1
+            results.append({'product_id': pid, 'discrepancy': discrepancy})
+        except sqlite3.IntegrityError:
+            conflicts.append(pid)
+
     con.commit()
     con.close()
-    return jsonify({'ok': True, 'discrepancy': discrepancy}), 201
+
+    if conflicts and saved == 0:
+        return jsonify({'error': '今日该商品已提交晚盘，如需修改请联系管理员', 'conflicts': conflicts}), 409
+
+    return jsonify({'ok': True, 'saved': saved, 'results': results,
+                    'conflicts': conflicts}), 201
+
+
+# ─── Bestseller Management API ────────────────────────────────────────────────
+
+@app.route('/api/bestsellers')
+@login_required
+def get_bestsellers():
+    """Return all products marked as bestsellers with their store stock."""
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
+               COALESCE(s.instore_dan, 0) AS instore_dan
+        FROM products p
+        LEFT JOIN stock s ON s.product_id = p.id
+        WHERE p.is_bestseller = 1
+        ORDER BY p.ip_series, p.sku DESC
+    ''')
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
+@app.route('/api/products/<int:pid>/bestseller', methods=['PATCH'])
+@role_required('staff')
+def set_bestseller(pid):
+    """Toggle is_bestseller for a product. Body: { is_bestseller: boolean }."""
+    data = request.get_json() or {}
+    if 'is_bestseller' not in data:
+        return jsonify({'error': 'is_bestseller 必须填写'}), 400
+    flag = 1 if data['is_bestseller'] else 0
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('UPDATE products SET is_bestseller=? WHERE id=?', (flag, pid))
+    if cur.rowcount == 0:
+        con.close()
+        return jsonify({'error': 'Product not found'}), 404
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'is_bestseller': bool(flag)})
+
+
+# ─── History API ──────────────────────────────────────────────────────────────
+
+@app.route('/api/history/restock')
+@login_required
+def history_restock():
+    """
+    Paginated restock session history.
+    Params: date_from, date_to, page (1-based), page_size (default 20)
+    """
+    date_from = request.args.get('date_from', '')
+    date_to   = request.args.get('date_to',   '')
+    page      = max(1, int(request.args.get('page', 1)))
+    page_size = min(100, max(1, int(request.args.get('page_size', 20))))
+    offset    = (page - 1) * page_size
+
+    filters = []
+    params  = []
+    if date_from:
+        filters.append('rs.date >= ?'); params.append(date_from)
+    if date_to:
+        filters.append('rs.date <= ?'); params.append(date_to)
+    where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute(f'SELECT COUNT(*) FROM restock_sessions rs {where}', params)
+    total = cur.fetchone()[0]
+
+    cur.execute(f'''
+        SELECT rs.id, rs.date, rs.status, rs.created_at, rs.submitted_at, rs.completed_at,
+               COUNT(ri.id)                                     AS item_count,
+               COALESCE(SUM(ri.requested_qty), 0)               AS total_requested,
+               COALESCE(SUM(CASE WHEN ri.pick_status='found' THEN ri.found_qty ELSE 0 END), 0)
+                                                                AS total_found
+        FROM restock_sessions rs
+        LEFT JOIN restock_items ri ON ri.session_id = rs.id
+        {where}
+        GROUP BY rs.id
+        ORDER BY rs.date DESC
+        LIMIT ? OFFSET ?
+    ''', params + [page_size, offset])
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify({'total': total, 'page': page, 'page_size': page_size, 'sessions': rows})
+
+
+@app.route('/api/history/inventory-check')
+@login_required
+def history_inventory_check():
+    """
+    Inventory check history.
+    Params: date_from, date_to, product_id, only_discrepancy (1/0)
+    """
+    date_from        = request.args.get('date_from', '')
+    date_to          = request.args.get('date_to',   '')
+    product_id       = request.args.get('product_id', type=int)
+    only_discrepancy = request.args.get('only_discrepancy', '0') == '1'
+
+    filters = []
+    params  = []
+    if date_from:
+        filters.append('ic.date >= ?'); params.append(date_from)
+    if date_to:
+        filters.append('ic.date <= ?'); params.append(date_to)
+    if product_id:
+        filters.append('ic.product_id = ?'); params.append(product_id)
+    if only_discrepancy:
+        filters.append('ic.discrepancy != 0')
+    where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
+
+    con = get_db()
+    cur = con.cursor()
+    cur.execute(f'''
+        SELECT ic.id, ic.date, ic.product_id,
+               p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
+               ic.theoretical_qty, ic.actual_qty, ic.discrepancy,
+               ic.base_check_date, ic.created_at
+        FROM inventory_checks ic
+        JOIN products p ON p.id = ic.product_id
+        {where}
+        ORDER BY ic.date DESC, p.sku DESC
+    ''', params)
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
 
 
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
