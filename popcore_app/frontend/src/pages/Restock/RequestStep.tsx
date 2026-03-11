@@ -144,15 +144,15 @@ export default function RequestStep({ session, onRefresh }: Props) {
     try {
       await client.post(`/restock/session/${session.id}/submit`)
     } catch (err: unknown) {
-      const axiosErr = err as { response?: { data?: { error?: string }; status?: number } }
+      const axiosErr = err as { response?: { data?: { error?: string }; status?: number }; message?: string; code?: string }
       const serverMsg = axiosErr?.response?.data?.error
       const status = axiosErr?.response?.status
-      if (status === 403) {
-        message.error('提交失败：权限不足（需要 staff 或以上角色）')
-      } else if (serverMsg) {
+      if (serverMsg) {
         message.error(`提交失败：${serverMsg}`)
+      } else if (status) {
+        message.error(`提交失败：HTTP ${status}`)
       } else {
-        message.error('提交失败，请检查网络或重试')
+        message.error(`提交失败：${axiosErr?.code ?? axiosErr?.message ?? '未知错误'}`)
       }
       setSubmitting(false)
       return
