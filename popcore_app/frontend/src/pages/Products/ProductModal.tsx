@@ -86,6 +86,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       okText={isEdit ? 'Save' : 'Create'}
       cancelText="Cancel"
       destroyOnClose
+      getContainer={false}
     >
       <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
 
@@ -111,6 +112,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
               options={seriesOptions}
               optionFilterProp="label"
               placeholder="Select or type..."
+              getPopupContainer={trigger => trigger.parentElement!}
               dropdownRender={menu => (
                 <>
                   {menu}
@@ -129,6 +131,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
               options={typeOptions}
               optionFilterProp="label"
               placeholder="Select or type..."
+              getPopupContainer={trigger => trigger.parentElement!}
               onSearch={v => form.setFieldValue('product_type', v)}
             />
           </Form.Item>
@@ -166,10 +169,10 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
             <Input placeholder="0" />
           </Form.Item>
           <Form.Item name="hidden_has_small" label="Has Small Secret">
-            <Select options={YN_OPTIONS} />
+            <Select options={YN_OPTIONS} getPopupContainer={trigger => trigger.parentElement!} />
           </Form.Item>
           <Form.Item name="hidden_has_large" label="Has Large Secret">
-            <Select options={YN_OPTIONS} />
+            <Select options={YN_OPTIONS} getPopupContainer={trigger => trigger.parentElement!} />
           </Form.Item>
         </div>
 

@@ -143,13 +143,23 @@ export default function RequestStep({ session, onRefresh }: Props) {
     setSubmitting(true)
     try {
       await client.post(`/restock/session/${session.id}/submit`)
-      message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
-      onRefresh()
-    } catch {
-      message.error('提交失败')
-    } finally {
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string }; status?: number }; message?: string; code?: string }
+      const serverMsg = axiosErr?.response?.data?.error
+      const status = axiosErr?.response?.status
+      if (serverMsg) {
+        message.error(`提交失败：${serverMsg}`)
+      } else if (status) {
+        message.error(`提交失败：HTTP ${status}`)
+      } else {
+        message.error(`提交失败：${axiosErr?.code ?? axiosErr?.message ?? '未知错误'}`)
+      }
       setSubmitting(false)
+      return
     }
+    setSubmitting(false)
+    message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
+    onRefresh()
   }
 
   // ── Read-only banner ──────────────────────────────────────────────────────
@@ -302,13 +312,12 @@ export default function RequestStep({ session, onRefresh }: Props) {
       {/* Current items list */}
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Text strong>补货清单 ({session.items.length} 项)</Text>
-        {!isReadOnly && session.items.length > 0 && (
+        {!isReadOnly && session.items.length > 0 && isMobile && (
           <Button
             type="primary" icon={<SendOutlined />}
             loading={submitting} onClick={handleSubmitClick}
-            size={isMobile ? 'middle' : 'middle'}
           >
-            {isMobile ? '提交' : '确认提交，生成仓库清单'}
+            提交
           </Button>
         )}
       </div>

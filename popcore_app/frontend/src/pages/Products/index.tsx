@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Button, Space, Tag, Popconfirm,
-  message, Typography, Table, Badge, Grid,
+  message, Typography, Table, Badge, Grid, Spin,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -15,6 +15,7 @@ import ProductModal from './ProductModal'
 import HiddenImagesModal from './HiddenImagesModal'
 import PasteImportModal from './PasteImportModal'
 import ProductSearchBar from './ProductSearchBar'
+import ProductDetailDrawer from './ProductDetailDrawer'
 
 const { Title, Text }  = Typography
 const { useBreakpoint } = Grid
@@ -68,6 +69,7 @@ export default function ProductsPage() {
   const [modalOpen,      setModalOpen]      = useState(false)
   const [imagesProduct,  setImagesProduct]  = useState<Product | null>(null)
   const [pasteOpen,      setPasteOpen]      = useState(false)
+  const [detailId,       setDetailId]       = useState<number | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -85,6 +87,8 @@ export default function ProductsPage() {
         m.set(r.product_id, (r.upstairs_dan ?? 0) + (r.instore_dan ?? 0))
       })
       setStockMap(m)
+    }).catch(() => {
+      message.error('加载失败，请刷新页面')
     }).finally(() => setLoading(false))
   }, [searchQ, searchSeries, searchType])
 
@@ -129,8 +133,8 @@ export default function ProductsPage() {
           <div style={{ fontWeight: 500, color: '#111827' }}>{v || '—'}</div>
           {r.hidden_count && r.hidden_count !== '0' && (
             <div style={{ marginTop: 2 }}>
-              {r.hidden_has_small ? <Tag color="gold" style={{ fontSize: 10, margin: '0 2px 0 0' }}>Small Secret</Tag> : null}
-              {r.hidden_has_large ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>Large Secret</Tag> : null}
+              {r.hidden_has_small ? <Tag color="gold" style={{ fontSize: 10, margin: '0 2px 0 0' }}>小隐藏</Tag> : null}
+              {r.hidden_has_large ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>大隐藏</Tag> : null}
             </div>
           )}
         </div>
@@ -187,13 +191,15 @@ export default function ProductsPage() {
             onClick={() => setImagesProduct(r)}
             style={{ color: '#6b7280' }}
           />
-          <Button
-            type="text"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEdit(r)}
-            style={{ color: '#6366F1' }}
-          />
+          <RoleGuard minRole="manager">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => openEdit(r)}
+              style={{ color: '#6366F1' }}
+            />
+          </RoleGuard>
           <RoleGuard minRole="manager">
             <Popconfirm
               title="Delete this product?"
@@ -264,21 +270,60 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Table / Card list */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={products}
-          columns={columns}
-          size="middle"
-          rowSelection={{
-            selectedRowKeys: selected,
-            onChange: keys => setSelected(keys as number[]),
-          }}
-          pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
-          scroll={{ x: 900 }}
-        />
+        {isMobile ? (
+          <Spin spinning={loading}>
+            {!loading && products.length === 0 && (
+              <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No products found</div>
+            )}
+            {products.map(p => (
+              <div key={p.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }} onClick={() => setDetailId(p.id)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{p.jizhanming || p.name_cn_en || '—'}</div>
+                    {p.name_cn_en && p.jizhanming && (
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name_cn_en}</div>
+                    )}
+                    <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{p.sku}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                    {stockBadge(stockMap.get(p.id) ?? 0)}
+                    <Button type="text" size="small" icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
+                    <RoleGuard minRole="manager"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {p.ip_series && <Tag color="blue" style={{ fontSize: 10 }}>{p.ip_series}</Tag>}
+                  {p.product_type && <Tag color={TYPE_COLORS[p.product_type] ?? 'default'} style={{ fontSize: 10 }}>{p.product_type}</Tag>}
+                  {p.price != null && <Text style={{ fontSize: 12, color: '#6366F1', fontWeight: 600 }}>${p.price.toFixed(2)}</Text>}
+                </div>
+              </div>
+            ))}
+          </Spin>
+        ) : (
+          <Table
+            rowKey="id"
+            loading={loading}
+            dataSource={products}
+            columns={columns}
+            size="middle"
+            rowSelection={{
+              selectedRowKeys: selected,
+              onChange: keys => setSelected(keys as number[]),
+            }}
+            pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
+            scroll={{ x: 900 }}
+            onRow={(r) => ({
+              onClick: (e) => {
+                const target = e.target as HTMLElement
+                if (target.closest('button') || target.closest('.ant-checkbox')) return
+                setDetailId(r.id)
+              },
+              style: { cursor: 'pointer' },
+            })}
+          />
+        )}
       </div>
 
       <ProductModal
@@ -296,6 +341,13 @@ export default function ProductsPage() {
         open={pasteOpen}
         onClose={() => setPasteOpen(false)}
         onDone={() => { setPasteOpen(false); load() }}
+      />
+      <ProductDetailDrawer
+        productId={detailId}
+        stockTotal={stockMap.get(detailId ?? 0) ?? 0}
+        onClose={() => setDetailId(null)}
+        onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
+        onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
       />
     </div>
   )

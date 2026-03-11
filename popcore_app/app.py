@@ -894,7 +894,11 @@ def update_product(pid):
 
     # Rebuild search_blob if key fields changed
     cur.execute('SELECT * FROM products WHERE id = ?', (pid,))
-    product = dict(cur.fetchone())
+    _row = cur.fetchone()
+    if _row is None:
+        con.close()
+        return jsonify({'error': 'Product not found'}), 404
+    product = dict(_row)
     product.update(updates)
     search_blob = ' '.join([
         (product.get('sku') or '').lower(),
@@ -1119,8 +1123,11 @@ def ru_dian():
     dan_qty must be positive.
     """
     data = request.get_json()
-    pid     = int(data['product_id'])
-    qty     = int(data.get('dan_qty', 0))
+    try:
+        pid = int(data['product_id'])
+        qty = int(data.get('dan_qty', 0))
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({'error': f'Invalid input: {e}'}), 400
     d       = data.get('date', str(date.today()))
     notes   = data.get('notes', '')
 
@@ -1157,7 +1164,8 @@ def ru_dian():
     con.commit()
 
     cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
-    s = dict(cur.fetchone())
+    _row = cur.fetchone()
+    s = dict(_row) if _row else {'upstairs_dan': 0, 'instore_dan': 0}
     con.close()
     return jsonify({'ok': True, 'upstairs_dan': s['upstairs_dan'], 'instore_dan': s['instore_dan']})
 
@@ -1170,8 +1178,11 @@ def restock_upstairs():
     Body: { product_id, dan_qty, date, notes }
     """
     data  = request.get_json()
-    pid   = int(data['product_id'])
-    qty   = int(data.get('dan_qty', 0))
+    try:
+        pid = int(data['product_id'])
+        qty = int(data.get('dan_qty', 0))
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({'error': f'Invalid input: {e}'}), 400
     d     = data.get('date', str(date.today()))
     notes = data.get('notes', '')
 
@@ -1196,7 +1207,8 @@ def restock_upstairs():
 
     con.commit()
     cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
-    s = dict(cur.fetchone())
+    _row = cur.fetchone()
+    s = dict(_row) if _row else {'upstairs_dan': 0, 'instore_dan': 0}
     con.close()
     return jsonify({'ok': True, 'upstairs_dan': s['upstairs_dan'], 'instore_dan': s['instore_dan']})
 
@@ -1210,9 +1222,12 @@ def adjust_stock():
     Sets the value directly (not delta) and logs the diff.
     """
     data     = request.get_json()
-    pid      = int(data['product_id'])
+    try:
+        pid     = int(data['product_id'])
+        new_dan = int(data.get('new_dan', 0))
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({'error': f'Invalid input: {e}'}), 400
     location = data.get('location', 'upstairs')  # 'upstairs' or 'instore'
-    new_dan  = int(data.get('new_dan', 0))
     d        = data.get('date', str(date.today()))
     notes    = data.get('notes', '')
 
@@ -1224,7 +1239,11 @@ def adjust_stock():
     _ensure_stock_row(cur, pid)
 
     cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
-    s = dict(cur.fetchone())
+    _row = cur.fetchone()
+    if _row is None:
+        con.close()
+        return jsonify({'error': 'Stock row not found'}), 404
+    s = dict(_row)
     old_val = s[f'{location}_dan']
     delta   = new_dan - old_val
 
@@ -1242,7 +1261,8 @@ def adjust_stock():
 
     con.commit()
     cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
-    s2 = dict(cur.fetchone())
+    _row2 = cur.fetchone()
+    s2 = dict(_row2) if _row2 else {'upstairs_dan': 0, 'instore_dan': 0}
     con.close()
     return jsonify({'ok': True, 'upstairs_dan': s2['upstairs_dan'], 'instore_dan': s2['instore_dan']})
 
@@ -2010,10 +2030,9 @@ def submit_restock_session(sid):
     # Batch-snapshot warehouse stock at submission time
     cur.execute('''
         UPDATE restock_items
-        SET warehouse_stock_snapshot = (
-            SELECT COALESCE(s.upstairs_dan, 0)
-            FROM stock s
-            WHERE s.product_id = restock_items.product_id
+        SET warehouse_stock_snapshot = COALESCE(
+            (SELECT s.upstairs_dan FROM stock s WHERE s.product_id = restock_items.product_id),
+            0
         )
         WHERE session_id = ?
     ''', (sid,))

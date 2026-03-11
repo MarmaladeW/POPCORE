@@ -4,6 +4,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { ConfigProvider } from 'antd'
 
 import ProtectedRoute from './auth/ProtectedRoute'
+import { useHasRole, type Role } from './auth/useRole'
 import AppLayout from './components/AppLayout'
 import { setTokenGetter } from './api/client'
 import { useAppStore } from './store'
@@ -17,6 +18,10 @@ import SalesPage     from './pages/Sales'
 import MarketPage    from './pages/Market'
 import ScrapeLogPage from './pages/ScrapeLog'
 import UsersPage     from './pages/Users'
+
+function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
+  return useHasRole(minRole) ? <>{element}</> : <Navigate to="/products" replace />
+}
 
 function AppInner() {
   const { getAccessTokenSilently, isAuthenticated } = useAuth0()
@@ -37,14 +42,14 @@ function AppInner() {
   return (
     <AppLayout>
       <Routes>
-        <Route path="/"              element={<DashboardPage />} />
+        <Route path="/"              element={<RoleRoute minRole="staff"   element={<DashboardPage />} />} />
         <Route path="/products"      element={<ProductsPage />} />
-        <Route path="/stock"         element={<StockPage />} />
-        <Route path="/restock"       element={<RestockPage />} />
-        <Route path="/sales"         element={<SalesPage />} />
-        <Route path="/market-prices" element={<MarketPage />} />
-        <Route path="/scrape-log"    element={<ScrapeLogPage />} />
-        <Route path="/users"         element={<UsersPage />} />
+        <Route path="/stock"         element={<RoleRoute minRole="staff"   element={<StockPage />} />} />
+        <Route path="/restock"       element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
+        <Route path="/sales"         element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
+        <Route path="/market-prices" element={<RoleRoute minRole="manager" element={<MarketPage />} />} />
+        <Route path="/scrape-log"    element={<RoleRoute minRole="manager" element={<ScrapeLogPage />} />} />
+        <Route path="/users"         element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
         <Route path="/market"        element={<Navigate to="/market-prices" replace />} />
         <Route path="*"              element={<Navigate to="/" replace />} />
       </Routes>
