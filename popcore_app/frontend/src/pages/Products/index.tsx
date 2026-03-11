@@ -15,6 +15,7 @@ import ProductModal from './ProductModal'
 import HiddenImagesModal from './HiddenImagesModal'
 import PasteImportModal from './PasteImportModal'
 import ProductSearchBar from './ProductSearchBar'
+import ProductDetailDrawer from './ProductDetailDrawer'
 
 const { Title, Text }  = Typography
 const { useBreakpoint } = Grid
@@ -68,6 +69,7 @@ export default function ProductsPage() {
   const [modalOpen,      setModalOpen]      = useState(false)
   const [imagesProduct,  setImagesProduct]  = useState<Product | null>(null)
   const [pasteOpen,      setPasteOpen]      = useState(false)
+  const [detailId,       setDetailId]       = useState<number | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -276,7 +278,7 @@ export default function ProductsPage() {
               <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No products found</div>
             )}
             {products.map(p => (
-              <div key={p.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+              <div key={p.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }} onClick={() => setDetailId(p.id)}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{p.jizhanming || p.name_cn_en || '—'}</div>
@@ -312,6 +314,14 @@ export default function ProductsPage() {
             }}
             pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
             scroll={{ x: 900 }}
+            onRow={(r) => ({
+              onClick: (e) => {
+                const target = e.target as HTMLElement
+                if (target.closest('button') || target.closest('.ant-checkbox')) return
+                setDetailId(r.id)
+              },
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </div>
@@ -331,6 +341,13 @@ export default function ProductsPage() {
         open={pasteOpen}
         onClose={() => setPasteOpen(false)}
         onDone={() => { setPasteOpen(false); load() }}
+      />
+      <ProductDetailDrawer
+        productId={detailId}
+        stockTotal={stockMap.get(detailId ?? 0) ?? 0}
+        onClose={() => setDetailId(null)}
+        onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
+        onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
       />
     </div>
   )
