@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Drawer, Spin, Tag, Typography, Space, Button, Divider, Badge } from 'antd'
+import { Drawer, Spin, Tag, Typography, Space, Button, Divider, Badge, Grid } from 'antd'
 import { EditOutlined, PictureOutlined, TrophyOutlined } from '@ant-design/icons'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 
-const { Text, Title } = Typography
+const { Text } = Typography
+const { useBreakpoint } = Grid
 
 interface ProductDetail {
   id: number
@@ -57,6 +58,8 @@ interface Props {
 export default function ProductDetailDrawer({ productId, stockTotal, onClose, onEdit, onImages }: Props) {
   const [product, setProduct] = useState<ProductDetail | null>(null)
   const [loading, setLoading] = useState(false)
+  const screens  = useBreakpoint()
+  const isMobile = !screens.md
 
   useEffect(() => {
     if (!productId) { setProduct(null); return }
@@ -72,7 +75,8 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
     <Drawer
       open={!!productId}
       onClose={onClose}
-      width={420}
+      width={isMobile ? '100%' : 420}
+      style={isMobile ? { position: 'fixed', top: 0, bottom: 0 } : undefined}
       title={
         product ? (
           <div style={{ lineHeight: 1.3 }}>
@@ -157,12 +161,12 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
                 <Space wrap style={{ marginBottom: 8 }}>
                   {product.hidden_has_small ? (
                     <Tag color="gold">
-                      Small Secret{product.hidden_prob_small ? ` (${product.hidden_prob_small})` : ''}
+                      小隐藏{product.hidden_prob_small ? ` (${product.hidden_prob_small})` : ''}
                     </Tag>
                   ) : null}
                   {product.hidden_has_large ? (
                     <Tag color="orange">
-                      Large Secret{product.hidden_prob_large ? ` (${product.hidden_prob_large})` : ''}
+                      大隐藏{product.hidden_prob_large ? ` (${product.hidden_prob_large})` : ''}
                     </Tag>
                   ) : null}
                 </Space>
