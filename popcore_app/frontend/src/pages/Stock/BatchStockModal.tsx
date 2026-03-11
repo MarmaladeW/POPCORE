@@ -26,7 +26,7 @@ interface MatchedItem {
   status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
 }
 
-/** Handles name*qty, tab-sep, space-sep, and "名称2端" formats */
+/** Handles name*qty, name：qty, name: qty, tab-sep, space-sep, and "名称2端" formats */
 function parseLine(line: string) {
   const t = line.trim()
   if (t.includes('*')) {
@@ -38,6 +38,11 @@ function parseLine(line: string) {
   if (t.includes('\t')) {
     const parts = t.split('\t').map(s => s.trim())
     return { rawName: parts[0], qty: Math.abs(parseInt(parts[1] || '1', 10)) || 1, notes: parts.slice(2).join(' ') }
+  }
+  // Colon separator: "名称：数量" or "名称: 数量"
+  const colonM = t.match(/^(.+?)\s*[：:]\s*(\d+)\s*(.*)$/)
+  if (colonM && colonM[1].trim()) {
+    return { rawName: colonM[1].trim(), qty: parseInt(colonM[2], 10) || 1, notes: colonM[3].trim() }
   }
   const glued = t.match(/^(.*\D)(\d+)[端个盒箱]?\s*(.*)$/)
   if (glued && glued[1].trim()) {

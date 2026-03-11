@@ -28,7 +28,7 @@ interface MatchedItem {
   aliasSaved?: boolean
 }
 
-/** Handles name*qty, tab-sep, space-sep, and mixed formats for sales lines */
+/** Handles name*qty, name：qty, name: qty, tab-sep, space-sep, and mixed formats for sales lines */
 function parseLine(line: string) {
   const t = line.trim()
   if (t.includes('*')) {
@@ -44,6 +44,16 @@ function parseLine(line: string) {
       qty_pos:  parseInt(parts[1] || '0', 10) || 0,
       qty_cash: parseInt(parts[2] || '0', 10) || 0,
       notes: parts.slice(3).join(' '),
+    }
+  }
+  // Colon separator: "名称：数量" or "名称: 数量 数量2"
+  const colonM = t.match(/^(.+?)\s*[：:]\s*(\d+)\s*(\d*)\s*(.*)$/)
+  if (colonM && colonM[1].trim()) {
+    return {
+      rawName:  colonM[1].trim(),
+      qty_pos:  parseInt(colonM[2] || '0', 10) || 0,
+      qty_cash: parseInt(colonM[3] || '0', 10) || 0,
+      notes: colonM[4].trim(),
     }
   }
   // Name glued to first number — treat first digit block after last CJK char as qty_pos
