@@ -143,8 +143,6 @@ export default function RequestStep({ session, onRefresh }: Props) {
     setSubmitting(true)
     try {
       await client.post(`/restock/session/${session.id}/submit`)
-      message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
-      await onRefresh()
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { error?: string }; status?: number } }
       const serverMsg = axiosErr?.response?.data?.error
@@ -156,9 +154,12 @@ export default function RequestStep({ session, onRefresh }: Props) {
       } else {
         message.error('提交失败，请检查网络或重试')
       }
-    } finally {
       setSubmitting(false)
+      return
     }
+    setSubmitting(false)
+    message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
+    onRefresh()
   }
 
   // ── Read-only banner ──────────────────────────────────────────────────────
