@@ -49,6 +49,8 @@ export default function ProductSearchBar({ series, productTypes, onChange }: Pro
         style={{ width: isMobile ? '100%' : 140 }}
         options={series.map(s => ({ value: s, label: s }))}
         onChange={v => setFilterSeries(v ?? '')}
+        onClear={() => setFilterSeries('')}
+        dropdownStyle={{ overscrollBehavior: 'contain' }}
       />
       <Select
         placeholder="All Types"
@@ -57,6 +59,8 @@ export default function ProductSearchBar({ series, productTypes, onChange }: Pro
         style={{ width: isMobile ? '100%' : 120 }}
         options={productTypes.map(t => ({ value: t, label: t }))}
         onChange={v => setFilterType(v ?? '')}
+        onClear={() => setFilterType('')}
+        dropdownStyle={{ overscrollBehavior: 'contain' }}
       />
     </>
   )

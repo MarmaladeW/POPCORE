@@ -133,8 +133,8 @@ export default function ProductsPage() {
           <div style={{ fontWeight: 500, color: '#111827' }}>{v || '—'}</div>
           {r.hidden_count && r.hidden_count !== '0' && (
             <div style={{ marginTop: 2 }}>
-              {r.hidden_has_small ? <Tag color="gold" style={{ fontSize: 10, margin: '0 2px 0 0' }}>Small Secret</Tag> : null}
-              {r.hidden_has_large ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>Large Secret</Tag> : null}
+              {r.hidden_has_small ? <Tag color="gold" style={{ fontSize: 10, margin: '0 2px 0 0' }}>小隐藏</Tag> : null}
+              {r.hidden_has_large ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>大隐藏</Tag> : null}
             </div>
           )}
         </div>
@@ -287,7 +287,7 @@ export default function ProductsPage() {
                     )}
                     <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{p.sku}</div>
                   </div>
-                  <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
                     {stockBadge(stockMap.get(p.id) ?? 0)}
                     <Button type="text" size="small" icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
                     <RoleGuard minRole="manager"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
