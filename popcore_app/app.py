@@ -202,8 +202,10 @@ def migrate_db():
             # Recreate without the UNIQUE constraint.
             # Disable FK enforcement for the duration of the DDL swap.
             cur.execute('PRAGMA foreign_keys = OFF')
+            # Drop any leftover from a previous failed migration attempt
+            cur.execute('DROP TABLE IF EXISTS restock_sessions_new')
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS restock_sessions_new (
+                CREATE TABLE restock_sessions_new (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     date         TEXT    NOT NULL,
                     status       TEXT    NOT NULL DEFAULT 'pending',
