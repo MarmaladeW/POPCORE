@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Tabs, Typography, Tag, Spin, Grid } from 'antd'
-import { InboxOutlined, CheckSquareOutlined, AuditOutlined, StarOutlined } from '@ant-design/icons'
+import { InboxOutlined, CheckSquareOutlined, AuditOutlined, StarOutlined, HistoryOutlined } from '@ant-design/icons'
 import client from '../../api/client'
 import { useHasRole } from '../../auth/useRole'
 import RequestStep from './RequestStep'
 import PickingStep from './PickingStep'
 import EveningCheckStep from './EveningCheckStep'
 import BestsellerManage from './BestsellerManage'
+import HistoryTab from './HistoryTab'
 
 const { Title, Text } = Typography
 const { useBreakpoint } = Grid
@@ -104,6 +105,11 @@ export default function RestockPage() {
       key:      'evening',
       label:    <span><AuditOutlined /> 晚盘核查</span>,
       children: <EveningCheckStep />,
+    },
+    {
+      key:      'history',
+      label:    <span><HistoryOutlined /> 历史记录</span>,
+      children: <HistoryTab />,
     },
     ...(isAdmin ? [{
       key:      'bestsellers',
