@@ -193,10 +193,30 @@ def migrate_db():
     ''')
 
     # ── Restock & evening inventory tables ────────────────────────────────
+    # Remove UNIQUE constraint on restock_sessions.date (allow multiple sessions per day)
+    cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='restock_sessions'")
+    _ddl_row = cur.fetchone()
+    if _ddl_row:
+        _ddl = _ddl_row['sql'] if hasattr(_ddl_row, 'keys') else _ddl_row[0]
+        if 'UNIQUE' in _ddl and 'date' in _ddl:
+            cur.executescript('''
+                CREATE TABLE IF NOT EXISTS restock_sessions_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date         TEXT    NOT NULL,
+                    status       TEXT    NOT NULL DEFAULT 'pending',
+                    created_at   TEXT    DEFAULT (datetime('now')),
+                    submitted_at TEXT,
+                    completed_at TEXT
+                );
+                INSERT INTO restock_sessions_new SELECT * FROM restock_sessions;
+                DROP TABLE restock_sessions;
+                ALTER TABLE restock_sessions_new RENAME TO restock_sessions;
+            ''')
+
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS restock_sessions (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            date         TEXT    NOT NULL UNIQUE,
+            date         TEXT    NOT NULL,
             status       TEXT    NOT NULL DEFAULT 'pending',
             created_at   TEXT    DEFAULT (datetime('now')),
             submitted_at TEXT,
@@ -1908,24 +1928,116 @@ def _restock_session_items(cur, sid):
     return [dict(r) for r in cur.fetchall()]
 
 
-@app.route('/api/restock/session/today')
+@app.route('/api/restock/sessions/today')
 @login_required
-def restock_session_today():
-    """Get or create today's restock session (without items)."""
+def restock_sessions_today():
+    """Return all of today's restock sessions with summary counts, newest first."""
     today = date.today().isoformat()
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT * FROM restock_sessions WHERE date = ?', (today,))
-    row = cur.fetchone()
-    if not row:
-        cur.execute(
-            "INSERT INTO restock_sessions (date, status) VALUES (?, 'pending')",
-            (today,),
-        )
-        con.commit()
-        cur.execute('SELECT * FROM restock_sessions WHERE date = ?', (today,))
-        row = cur.fetchone()
+    cur.execute('''
+        SELECT rs.id, rs.date, rs.status, rs.created_at, rs.submitted_at, rs.completed_at,
+               COUNT(ri.id)                                                          AS item_count,
+               COALESCE(SUM(ri.requested_qty), 0)                                   AS total_requested,
+               COALESCE(SUM(CASE WHEN ri.pick_status='found' THEN ri.found_qty ELSE 0 END), 0)
+                                                                                    AS total_found
+        FROM restock_sessions rs
+        LEFT JOIN restock_items ri ON ri.session_id = rs.id
+        WHERE rs.date = ?
+        GROUP BY rs.id
+        ORDER BY rs.created_at DESC
+    ''', (today,))
+    rows = [dict(r) for r in cur.fetchall()]
     con.close()
+    return jsonify(rows)
+
+
+@app.route('/api/restock/sessions', methods=['POST'])
+@role_required('staff')
+def create_restock_session():
+    """Create a new restock session for today (multiple per day allowed)."""
+    today = date.today().isoformat()
+    con = get_db()
+    cur = con.cursor()
+    cur.execute(
+        "INSERT INTO restock_sessions (date, status) VALUES (?, 'pending')",
+        (today,),
+    )
+    con.commit()
+    sid = cur.lastrowid
+    cur.execute('SELECT * FROM restock_sessions WHERE id = ?', (sid,))
+    row = dict(cur.fetchone())
+    con.close()
+    return jsonify(row), 201
+
+
+@app.route('/api/restock/session/<int:sid>', methods=['DELETE'])
+@role_required('staff')
+def delete_restock_session(sid):
+    """
+    Cancel / delete a restock session.
+    - pending / submitted / picking: delete items then session (no stock changes).
+    - completed: reverse stock movements first, then delete.
+    """
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
+    sess = cur.fetchone()
+    if not sess:
+        con.close()
+        return jsonify({'error': 'Session not found'}), 404
+
+    status = sess['status']
+    reversed_count = 0
+
+    if status == 'completed':
+        # Reverse restock_in movements (store ← warehouse)
+        cur.execute('''
+            SELECT product_id, qty_change
+            FROM stock_movements
+            WHERE session_id = ? AND movement_type = 'restock_in' AND location = 'store'
+        ''', (sid,))
+        movements = cur.fetchall()
+        for m in movements:
+            pid = m['product_id']
+            qty = m['qty_change']   # positive: was added to store
+            cur.execute('''
+                UPDATE stock
+                SET instore_dan  = MAX(0, instore_dan  - ?),
+                    upstairs_dan = upstairs_dan + ?,
+                    last_updated = datetime('now')
+                WHERE product_id = ?
+            ''', (qty, qty, pid))
+            reversed_count += 1
+        # Remove movement and transaction records for this session
+        cur.execute('DELETE FROM stock_movements WHERE session_id = ?', (sid,))
+        cur.execute(
+            "DELETE FROM stock_transactions WHERE notes LIKE ?",
+            (f'%session#{sid}%',),
+        )
+
+    cur.execute('DELETE FROM restock_items WHERE session_id = ?', (sid,))
+    cur.execute('DELETE FROM restock_sessions WHERE id = ?', (sid,))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'reversed_count': reversed_count})
+
+
+@app.route('/api/restock/session/today')
+@login_required
+def restock_session_today():
+    """Legacy: return the most recent pending session today, or 404."""
+    today = date.today().isoformat()
+    con = get_db()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT * FROM restock_sessions WHERE date = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+        (today,),
+    )
+    row = cur.fetchone()
+    con.close()
+    if not row:
+        return jsonify({'error': 'No pending session today'}), 404
     return jsonify(dict(row))
 
 
