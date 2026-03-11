@@ -189,13 +189,15 @@ export default function ProductsPage() {
             onClick={() => setImagesProduct(r)}
             style={{ color: '#6b7280' }}
           />
-          <Button
-            type="text"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEdit(r)}
-            style={{ color: '#6366F1' }}
-          />
+          <RoleGuard minRole="manager">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => openEdit(r)}
+              style={{ color: '#6366F1' }}
+            />
+          </RoleGuard>
           <RoleGuard minRole="manager">
             <Popconfirm
               title="Delete this product?"
@@ -286,7 +288,7 @@ export default function ProductsPage() {
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }}>
                     {stockBadge(stockMap.get(p.id) ?? 0)}
                     <Button type="text" size="small" icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
-                    <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} />
+                    <RoleGuard minRole="manager"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
