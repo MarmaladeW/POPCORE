@@ -21,3 +21,6 @@ venv/
 
 # Node
 node_modules/
+
+# Frontend node_modules (nested path)
+popcore_app/frontend/node_modules/
