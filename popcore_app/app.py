@@ -199,19 +199,24 @@ def migrate_db():
     if _ddl_row:
         _ddl = _ddl_row['sql'] if hasattr(_ddl_row, 'keys') else _ddl_row[0]
         if 'UNIQUE' in _ddl and 'date' in _ddl:
-            cur.executescript('''
-                CREATE TABLE IF NOT EXISTS restock_sessions_new (
+            # Recreate without the UNIQUE constraint.
+            # Disable FK enforcement for the duration of the DDL swap.
+            cur.execute('PRAGMA foreign_keys = OFF')
+            cur.execute('''
+                CREATE TABLE restock_sessions_new (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     date         TEXT    NOT NULL,
                     status       TEXT    NOT NULL DEFAULT 'pending',
                     created_at   TEXT    DEFAULT (datetime('now')),
                     submitted_at TEXT,
                     completed_at TEXT
-                );
-                INSERT INTO restock_sessions_new SELECT * FROM restock_sessions;
-                DROP TABLE restock_sessions;
-                ALTER TABLE restock_sessions_new RENAME TO restock_sessions;
+                )
             ''')
+            cur.execute('INSERT INTO restock_sessions_new SELECT * FROM restock_sessions')
+            cur.execute('DROP TABLE restock_sessions')
+            cur.execute('ALTER TABLE restock_sessions_new RENAME TO restock_sessions')
+            con.commit()
+            cur.execute('PRAGMA foreign_keys = ON')
 
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS restock_sessions (
