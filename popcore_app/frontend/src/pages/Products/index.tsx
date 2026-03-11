@@ -85,6 +85,8 @@ export default function ProductsPage() {
         m.set(r.product_id, (r.upstairs_dan ?? 0) + (r.instore_dan ?? 0))
       })
       setStockMap(m)
+    }).catch(() => {
+      message.error('加载失败，请刷新页面')
     }).finally(() => setLoading(false))
   }, [searchQ, searchSeries, searchType])
 
