@@ -203,7 +203,7 @@ def migrate_db():
             # Disable FK enforcement for the duration of the DDL swap.
             cur.execute('PRAGMA foreign_keys = OFF')
             cur.execute('''
-                CREATE TABLE restock_sessions_new (
+                CREATE TABLE IF NOT EXISTS restock_sessions_new (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     date         TEXT    NOT NULL,
                     status       TEXT    NOT NULL DEFAULT 'pending',
