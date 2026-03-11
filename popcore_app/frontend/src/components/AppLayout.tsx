@@ -136,19 +136,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const location  = useLocation()
   const { user, logout } = useAuth0()
   const role    = useRole()
-  const isAdmin = useHasRole('admin')
+  const isAdmin   = useHasRole('admin')
+  const isManager = useHasRole('manager')
+  const isStaff   = useHasRole('staff')
 
   const selectedKey = location.pathname === '/' ? '/' : '/' + location.pathname.split('/')[1]
 
   const navItems = [
-    { key: '/',              icon: <DashboardOutlined />, label: 'Dashboard'     },
+    ...(isStaff   ? [{ key: '/',              icon: <DashboardOutlined />, label: 'Dashboard'     }] : []),
     { key: '/products',      icon: <AppstoreOutlined />,  label: 'Products'      },
-    { key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         },
-    { key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       },
-    { key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         },
-    { key: '/market-prices', icon: <TagsOutlined />,      label: 'Market Prices' },
-    { key: '/scrape-log',    icon: <SyncOutlined />,      label: 'Scrape Log'    },
-    ...(isAdmin ? [{ key: '/users', icon: <UserOutlined />, label: 'Users' }] : []),
+    ...(isStaff   ? [{ key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         }] : []),
+    ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       }] : []),
+    ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         }] : []),
+    ...(isManager ? [{ key: '/market-prices', icon: <TagsOutlined />,      label: 'Market Prices' }] : []),
+    ...(isManager ? [{ key: '/scrape-log',    icon: <SyncOutlined />,      label: 'Scrape Log'    }] : []),
+    ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,      label: 'Users'         }] : []),
   ]
 
   const userMenu = [
