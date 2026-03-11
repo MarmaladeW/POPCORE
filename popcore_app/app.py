@@ -2030,10 +2030,9 @@ def submit_restock_session(sid):
     # Batch-snapshot warehouse stock at submission time
     cur.execute('''
         UPDATE restock_items
-        SET warehouse_stock_snapshot = (
-            SELECT COALESCE(s.upstairs_dan, 0)
-            FROM stock s
-            WHERE s.product_id = restock_items.product_id
+        SET warehouse_stock_snapshot = COALESCE(
+            (SELECT s.upstairs_dan FROM stock s WHERE s.product_id = restock_items.product_id),
+            0
         )
         WHERE session_id = ?
     ''', (sid,))
