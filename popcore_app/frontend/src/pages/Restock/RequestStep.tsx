@@ -144,9 +144,18 @@ export default function RequestStep({ session, onRefresh }: Props) {
     try {
       await client.post(`/restock/session/${session.id}/submit`)
       message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
-      onRefresh()
-    } catch {
-      message.error('提交失败')
+      await onRefresh()
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string }; status?: number } }
+      const serverMsg = axiosErr?.response?.data?.error
+      const status = axiosErr?.response?.status
+      if (status === 403) {
+        message.error('提交失败：权限不足（需要 staff 或以上角色）')
+      } else if (serverMsg) {
+        message.error(`提交失败：${serverMsg}`)
+      } else {
+        message.error('提交失败，请检查网络或重试')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -302,13 +311,12 @@ export default function RequestStep({ session, onRefresh }: Props) {
       {/* Current items list */}
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Text strong>补货清单 ({session.items.length} 项)</Text>
-        {!isReadOnly && session.items.length > 0 && (
+        {!isReadOnly && session.items.length > 0 && isMobile && (
           <Button
             type="primary" icon={<SendOutlined />}
             loading={submitting} onClick={handleSubmitClick}
-            size={isMobile ? 'middle' : 'middle'}
           >
-            {isMobile ? '提交' : '确认提交，生成仓库清单'}
+            提交
           </Button>
         )}
       </div>
