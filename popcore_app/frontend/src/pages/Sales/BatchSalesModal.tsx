@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import client from '../../api/client'
-import { batchMatch, isHeaderLine, saveAlias, cleanName, MatchResult } from '../../api/matcher'
+import { batchMatch, isHeaderLine, saveAlias, cleanName, detectSalesSection, MatchResult, SectionType } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -14,11 +14,14 @@ interface Props {
   onDone: () => void
 }
 
+type ActiveSection = Exclude<SectionType, 'ignore'>
+
 interface MatchedItem {
   _key: string
   rawName: string
   qty_pos: number
   qty_cash: number
+  qty: number          // for stock ops
   notes: string
   product_id?: number
   sku?: string
@@ -26,6 +29,7 @@ interface MatchedItem {
   candidates?: any[]
   status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
   aliasSaved?: boolean
+  section: ActiveSection
 }
 
 /** Handles name*qty, name：qty, name: qty, tab-sep, space-sep, and mixed formats for sales lines */
@@ -75,6 +79,13 @@ function parseLine(line: string) {
   }
 }
 
+const SECTION_LABELS: Record<ActiveSection, { label: string; color: string }> = {
+  pos:       { label: '卡机',  color: 'blue'   },
+  cash:      { label: '现金',  color: 'green'  },
+  stock_in:  { label: '入店',  color: 'purple' },
+  stock_out: { label: '出店',  color: 'orange' },
+  claw:      { label: '娃娃机', color: 'gold'  },
+}
 
 function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
   const [opts, setOpts] = useState<any[]>([])
@@ -112,27 +123,46 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
     setMatch(true)
     setProgress(10)
 
-    // Section-aware parsing: track 卡机 vs 现金/转账 sections
-    // When only one number is given in a line, assign it to the correct qty field based on current section
-    let section: 'pos' | 'cash' = 'pos'
-    const parsed: Array<{ rawName: string; qty_pos: number; qty_cash: number; notes: string }> = []
-
-    for (const line of lines) {
-      if (isHeaderLine(line)) {
-        const lower = cleanName(line).toLowerCase()
-        if (/^(现金|转账|cash|随手记)/.test(lower)) {
-          section = 'cash'
-        } else if (/^(卡机|pos|刷卡)/.test(lower)) {
-          section = 'pos'
-        }
-        continue
+    // ── Step 1: pre-scan to find all section boundaries ──────────────────
+    const boundaries: Array<{ idx: number; section: ActiveSection }> = []
+    for (let i = 0; i < lines.length; i++) {
+      const sec = detectSalesSection(lines[i])
+      if (sec !== null && sec !== 'ignore') {
+        boundaries.push({ idx: i, section: sec as ActiveSection })
       }
-      const p = parseLine(line)
-      // If only one number was found (qty_pos only), assign based on current section
+    }
+
+    function sectionAt(i: number): ActiveSection | 'ignore' {
+      let cur: ActiveSection | 'ignore' = 'pos'
+      for (const b of boundaries) {
+        if (b.idx <= i) cur = b.section
+        else break
+      }
+      // If the line itself is an ignored section header, that overrides
+      const sec = detectSalesSection(lines[i])
+      if (sec === 'ignore') return 'ignore'
+      return cur
+    }
+
+    // ── Step 2: parse lines with section awareness ────────────────────────
+    type ParsedLine = {
+      rawName: string; qty_pos: number; qty_cash: number; qty: number
+      notes: string; section: ActiveSection
+    }
+    const parsed: ParsedLine[] = []
+
+    for (let i = 0; i < lines.length; i++) {
+      if (isHeaderLine(lines[i])) continue
+      const section = sectionAt(i)
+      if (section === 'ignore') continue
+      const p = parseLine(lines[i])
+      const qty = p.qty_pos || p.qty_cash || 1
       if (section === 'cash' && p.qty_pos > 0 && p.qty_cash === 0) {
-        parsed.push({ ...p, qty_cash: p.qty_pos, qty_pos: 0 })
+        parsed.push({ ...p, qty, qty_cash: p.qty_pos, qty_pos: 0, section })
+      } else if (section === 'stock_in' || section === 'stock_out' || section === 'claw') {
+        parsed.push({ ...p, qty: p.qty_pos || 1, section })
       } else {
-        parsed.push(p)
+        parsed.push({ ...p, qty, section })
       }
     }
 
@@ -182,11 +212,31 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
     const toSub = items.filter(i => i.product_id)
     if (!toSub.length) { message.warning('没有可提交的行'); return }
     setSub(true)
+
+    const salesItems = toSub.filter(i => i.section === 'pos' || i.section === 'cash')
+    const stockGroups: Record<string, MatchedItem[]> = {
+      ru_dian:      toSub.filter(i => i.section === 'stock_in'),
+      out_dian:     toSub.filter(i => i.section === 'stock_out'),
+      ru_dian_claw: toSub.filter(i => i.section === 'claw'),
+    }
+
     try {
-      await client.post('/sales/batch_upsert', toSub.map(i => ({
-        product_id: i.product_id, date,
-        qty_pos: i.qty_pos, qty_cash: i.qty_cash, notes: i.notes,
-      })))
+      const promises: Promise<any>[] = []
+      if (salesItems.length) {
+        promises.push(client.post('/sales/batch_upsert', salesItems.map(i => ({
+          product_id: i.product_id, date,
+          qty_pos: i.qty_pos, qty_cash: i.qty_cash, notes: i.notes,
+        }))))
+      }
+      for (const [op, opItems] of Object.entries(stockGroups)) {
+        if (opItems.length) {
+          promises.push(client.post('/stock/batch_operation', {
+            operation: op, date,
+            items: opItems.map(i => ({ product_id: i.product_id, qty: i.qty, notes: i.notes })),
+          }))
+        }
+      }
+      await Promise.all(promises)
       setResults({ ok: toSub.length, fail: items.length - toSub.length })
       setStep(2)
     } catch (err: any) {
@@ -203,6 +253,13 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   }
 
   const reviewColumns = [
+    {
+      title: '类型', key: 'sec', width: 72,
+      render: (_: any, r: MatchedItem) => {
+        const s = SECTION_LABELS[r.section]
+        return <Tag color={s.color}>{s.label}</Tag>
+      },
+    },
     {
       title: '输入名称', dataIndex: 'rawName', width: 110,
       render: (v: string, r: MatchedItem) => (
@@ -234,24 +291,34 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
       },
     },
     {
-      title: '卡机', key: 'pos', width: 80,
-      render: (_: any, r: MatchedItem) => (
-        <InputNumber size="small" min={0} value={r.qty_pos} style={{ width: 65 }}
+      title: '卡机', key: 'pos', width: 72,
+      render: (_: any, r: MatchedItem) => r.section !== 'pos' ? null : (
+        <InputNumber size="small" min={0} value={r.qty_pos} style={{ width: 58 }}
           onChange={v => updateItem(r._key, { qty_pos: v ?? 0 })} />
       ),
     },
     {
-      title: '现金/转账', key: 'cash', width: 90,
-      render: (_: any, r: MatchedItem) => (
-        <InputNumber size="small" min={0} value={r.qty_cash} style={{ width: 65 }}
+      title: '现金/转账', key: 'cash', width: 82,
+      render: (_: any, r: MatchedItem) => r.section !== 'cash' ? null : (
+        <InputNumber size="small" min={0} value={r.qty_cash} style={{ width: 58 }}
           onChange={v => updateItem(r._key, { qty_cash: v ?? 0 })} />
       ),
     },
     {
-      title: '合计', key: 'total', width: 60, align: 'center' as const,
+      title: '数量', key: 'qty', width: 70,
       render: (_: any, r: MatchedItem) => {
-        const t = r.qty_pos + r.qty_cash
-        return <Tag color={t > 0 ? 'green' : 'default'}>{t}</Tag>
+        if (r.section === 'pos') {
+          const t = r.qty_pos + r.qty_cash
+          return <Tag color={t > 0 ? 'green' : 'default'}>{t}</Tag>
+        }
+        if (r.section === 'cash') {
+          const t = r.qty_pos + r.qty_cash
+          return <Tag color={t > 0 ? 'green' : 'default'}>{t}</Tag>
+        }
+        return (
+          <InputNumber size="small" min={1} value={r.qty} style={{ width: 58 }}
+            onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
+        )
       },
     },
     {
@@ -272,11 +339,11 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
 
   return (
     <Modal
-      title="批量销售导入"
+      title="批量导入"
       open={open}
       onCancel={() => { reset(); onClose() }}
       footer={null}
-      width={800}
+      width={860}
       destroyOnClose
     >
       <Steps current={step} size="small" style={{ marginBottom: 16 }}
@@ -289,17 +356,22 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
             message={`导入日期：${date}`}
             description={
               <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.8 }}>
-                {'格式：记账名  卡机数  现金数  [备注]\n'}
-                {'示例：Dimoo花花  3  1\n'}
-                {'      SA草莓\t0\t2\t破损'}
+                {'卡机汇总         ← 以下行视为卡机销售\n'}
+                {'Dimoo花花*3\n'}
+                {'随手记汇总       ← 以下行视为现金/转账\n'}
+                {'哭娃度假*1\n'}
+                {'入店             ← 以下行视为入店库存\n'}
+                {'SA草莓 2端\n'}
+                {'出店             ← 减少店内库存\n'}
+                {'娃娃机           ← 入娃娃机库存'}
               </div>
             }
           />
           <Input.TextArea
-            rows={8}
+            rows={10}
             value={text}
             onChange={e => setText(e.target.value)}
-            placeholder={'Dimoo花花  3  1\nSA草莓  0  2\nMolly精灵  1  0  赠品'}
+            placeholder={'卡机汇总\nDimoo花花*3\n随手记汇总\n哭娃度假*1'}
             style={{ fontFamily: 'monospace' }}
           />
           {matching && <Progress percent={progress} />}
@@ -314,7 +386,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
               message={`${unmatchedCount} 行未自动匹配 — 可手动搜索指定产品，或点删除按钮跳过`} />
           )}
           <Table size="small" rowKey="_key" dataSource={items} columns={reviewColumns}
-            pagination={false} scroll={{ y: 320 }} />
+            pagination={false} scroll={{ y: 340 }} />
           <Space style={{ marginTop: 12 }}>
             <Button onClick={() => setStep(0)}>返回</Button>
             <Button type="primary" loading={submitting} onClick={submit} disabled={!okCount}>

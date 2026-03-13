@@ -17,9 +17,38 @@ export interface MatchResult {
 }
 
 const _TRAILING_PUNCT = /[*＊:：、。！!～~]+$/
-const _HEADER_RE = /^(卡机|现金|转账|合计|汇总|小计|总计|入店|出店|在店|随手记|pos).*[：:]\s*$/i
 // Matches date strings like 2024/3/10, 2024-3-10, 2024年3月10日, 3月10日, 3/10
 const _DATE_RE = /^\d{1,4}[年\/\-]\d{1,2}([月\/\-]\d{1,2}[日号]?)?[日号]?\s*[：:]*\s*$/
+
+export type SectionType = 'pos' | 'cash' | 'stock_in' | 'stock_out' | 'claw' | 'ignore'
+
+// Whitelist of known section headers (substring match, longer/more-specific first)
+const SECTION_WHITELIST: Array<{ keyword: string; section: SectionType }> = [
+  { keyword: '卡机汇总',  section: 'pos'      },
+  { keyword: '随手记汇总', section: 'cash'     },
+  { keyword: '随手记',    section: 'cash'     },
+  { keyword: '入店',      section: 'stock_in' },
+  { keyword: '出店',      section: 'stock_out'},
+  { keyword: '娃娃机',    section: 'claw'     },
+  { keyword: '卖display', section: 'ignore'   },
+  { keyword: '拆display', section: 'ignore'   },
+  { keyword: '员工折扣',  section: 'ignore'   },
+  { keyword: '晚盘',      section: 'ignore'   },
+  { keyword: '博主探店',  section: 'ignore'   },
+  { keyword: '现金',      section: 'ignore'   },
+]
+
+/**
+ * Returns the section type if the line is a known section header, or null if
+ * it looks like a product line. Uses substring containment — no colon required.
+ */
+export function detectSalesSection(line: string): SectionType | null {
+  const lower = line.toLowerCase()
+  for (const { keyword, section } of SECTION_WHITELIST) {
+    if (lower.includes(keyword.toLowerCase())) return section
+  }
+  return null
+}
 
 export function cleanName(raw: string): string {
   return raw.trim().replace(_TRAILING_PUNCT, '').trim()
@@ -30,7 +59,7 @@ export function isHeaderLine(raw: string): boolean {
   if (!s) return true
   if (s.endsWith(':') || s.endsWith('：')) return true
   if (_DATE_RE.test(raw.trim())) return true
-  return _HEADER_RE.test(raw.trim())
+  return detectSalesSection(raw) !== null
 }
 
 export async function batchMatch(
