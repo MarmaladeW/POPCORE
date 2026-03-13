@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Table, Input, Select, Button, Space, Tag, Tabs, Popconfirm,
-  message, Typography, Row, Col, Card, Grid, Spin,
+  Table, Input, Select, Button, Space, Tag, Popconfirm,
+  message, Typography, Row, Col, Card, Spin,
 } from 'antd'
 import {
   ReloadOutlined, ExportOutlined, DeleteOutlined,
-  EditOutlined, CheckOutlined, CloseOutlined,
+  EditOutlined,
   InboxOutlined, ArrowUpOutlined, WarningOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -14,10 +14,10 @@ import { useAppStore } from '../../store'
 import RoleGuard from '../../components/RoleGuard'
 import RestockModal from './RestockModal'
 import BatchStockModal from './BatchStockModal'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Search } = Input
 const { Text, Title } = Typography
-const { useBreakpoint } = Grid
 
 interface StockRow {
   id: number
@@ -75,8 +75,7 @@ function stockStatus(total: number) {
 }
 
 export default function StockPage() {
-  const screens  = useBreakpoint()
-  const isMobile = !screens.md
+  const isMobile = useIsMobile()
   const { series } = useAppStore()
   const [stock,    setStock]   = useState<StockRow[]>([])
   const [txns,     setTxns]    = useState<Transaction[]>([])
@@ -89,6 +88,7 @@ export default function StockPage() {
   const [batchOpen,   setBatchOpen]   = useState(false)
   const [quickProduct, setQuickProduct] = useState<StockRow | null>(null)
   const [editingNotes, setEditingNotes] = useState<{ id: number; value: string } | null>(null)
+  const [activeTab, setActiveTab] = useState<'overview' | 'history'>('overview')
 
   const loadStock = useCallback(() => {
     setLoading(true)
@@ -281,149 +281,215 @@ export default function StockPage() {
 
       {/* Tabs */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <Tabs
-          style={{ padding: '0 20px' }}
-          items={[
-            {
-              key: 'overview',
-              label: 'Current Stock',
-              children: (
-                <div>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
-                    <Search
-                      placeholder="Search products"
-                      allowClear
-                      style={{ width: 220 }}
-                      onSearch={setQ}
-                      onChange={e => { if (!e.target.value) setQ('') }}
-                    />
-                    <Select
-                      placeholder="All Series"
-                      allowClear
-                      style={{ width: 140 }}
-                      options={series.map(s => ({ value: s, label: s }))}
-                      onChange={v => setFilterSeries(v ?? '')}
-                    />
-                    <div style={{ marginLeft: isMobile ? 0 : 'auto', display: 'flex', gap: 6 }}>
-                      <RoleGuard minRole="staff">
-                        <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
-                      </RoleGuard>
-                      <RoleGuard minRole="manager">
-                        <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
-                        {selected.length > 0 && (
-                          <Popconfirm
-                            title={`Remove ${selected.length} stock records?`}
-                            onConfirm={handleDeleteRows}
-                            okButtonProps={{ danger: true }}
-                          >
-                            <Button danger icon={<DeleteOutlined />}>Remove ({selected.length})</Button>
-                          </Popconfirm>
-                        )}
-                      </RoleGuard>
-                    </div>
-                  </div>
-                  {isMobile ? (
-                    <Spin spinning={loading}>
-                      {!loading && stock.length === 0 && (
-                        <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No stock records</div>
-                      )}
-                      {stock.map(row => {
-                        const total = row.upstairs_dan + row.instore_dan
-                        return (
-                          <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{row.jizhanming || '—'}</div>
-                                <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>{row.sku}</div>
-                                {row.ip_series && <Tag color="blue" style={{ fontSize: 10, marginTop: 2 }}>{row.ip_series}</Tag>}
-                              </div>
-                              <div style={{ flexShrink: 0, marginLeft: 8 }}>{stockStatus(total)}</div>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: 12, color: '#6b7280' }}>
-                                <ArrowUpOutlined /> <strong>{row.upstairs_dan}</strong>
-                                <span style={{ margin: '0 6px' }}>·</span>
-                                <InboxOutlined /> <strong>{row.instore_dan}</strong>
-                                <span style={{ margin: '0 6px' }}>·</span>
-                                合计 <strong style={{ color: total === 0 ? '#ef4444' : '#374151' }}>{total}</strong>
-                              </span>
-                              <RoleGuard minRole="staff">
-                                <Button
-                                  size="small"
-                                  icon={<EditOutlined />}
-                                  onClick={() => { setQuickProduct(row); setRestockOpen(true) }}
-                                  style={{ marginLeft: 'auto' }}
-                                >
-                                  Adjust
-                                </Button>
-                              </RoleGuard>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </Spin>
-                  ) : (
-                    <Table
-                      rowKey="id"
-                      size="middle"
-                      loading={loading}
-                      dataSource={stock}
-                      columns={stockColumns}
-                      rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
-                      pagination={{ pageSize: 50, showTotal: t => `${t} products` }}
-                      scroll={{ x: 1000 }}
-                    />
-                  )}
+
+        {/* Mobile: pill-style tab switcher */}
+        {isMobile ? (
+          <div style={{ padding: '12px 16px 0', borderBottom: '1px solid #f0f0f0' }}>
+            <div style={{
+              display: 'inline-flex',
+              background: '#f3f4f6',
+              borderRadius: 8,
+              padding: 3,
+            }}>
+              {([
+                { key: 'overview', label: 'Current Stock' },
+                { key: 'history', label: `History (${txns.length})` },
+              ] as const).map(t => (
+                <button
+                  key={t.key}
+                  onClick={() => { setActiveTab(t.key); if (t.key === 'history') loadTxns() }}
+                  style={{
+                    padding:      '6px 14px',
+                    borderRadius: 6,
+                    border:       'none',
+                    cursor:       'pointer',
+                    fontSize:     13,
+                    fontWeight:   activeTab === t.key ? 600 : 400,
+                    background:   activeTab === t.key ? '#fff' : 'transparent',
+                    color:        activeTab === t.key ? '#111827' : '#6b7280',
+                    boxShadow:    activeTab === t.key ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                    transition:   'all 0.15s',
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* Desktop: inline tab labels */
+          <div style={{ padding: '0 20px', borderBottom: '1px solid #f0f0f0', display: 'flex', gap: 0 }}>
+            {([
+              { key: 'overview', label: 'Current Stock' },
+              { key: 'history', label: `Transaction History (${txns.length})` },
+            ] as const).map(t => (
+              <button
+                key={t.key}
+                onClick={() => { setActiveTab(t.key); if (t.key === 'history') loadTxns() }}
+                style={{
+                  padding:       '14px 16px',
+                  border:        'none',
+                  borderBottom:  activeTab === t.key ? '2px solid #6366F1' : '2px solid transparent',
+                  background:    'transparent',
+                  cursor:        'pointer',
+                  fontSize:      14,
+                  fontWeight:    activeTab === t.key ? 600 : 400,
+                  color:         activeTab === t.key ? '#6366F1' : '#6b7280',
+                  marginBottom:  -1,
+                  transition:    'all 0.15s',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ padding: isMobile ? '12px 0' : '16px 20px' }}>
+          {activeTab === 'overview' ? (
+            <div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14, padding: isMobile ? '0 16px' : 0 }}>
+                <Search
+                  placeholder="Search products"
+                  allowClear
+                  style={{ width: isMobile ? '100%' : 220 }}
+                  onSearch={setQ}
+                  onChange={e => { if (!e.target.value) setQ('') }}
+                />
+                <Select
+                  placeholder="All Series"
+                  allowClear
+                  style={{ width: isMobile ? '100%' : 140 }}
+                  options={series.map(s => ({ value: s, label: s }))}
+                  onChange={v => setFilterSeries(v ?? '')}
+                />
+                <div style={{ marginLeft: isMobile ? 0 : 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <RoleGuard minRole="staff">
+                    <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
+                  </RoleGuard>
+                  <RoleGuard minRole="manager">
+                    <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
+                    {selected.length > 0 && (
+                      <Popconfirm
+                        title={`Remove ${selected.length} stock records?`}
+                        onConfirm={handleDeleteRows}
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Button danger icon={<DeleteOutlined />}>Remove ({selected.length})</Button>
+                      </Popconfirm>
+                    )}
+                  </RoleGuard>
                 </div>
-              ),
-            },
-            {
-              key: 'history',
-              label: `Transaction History (${txns.length})`,
-              children: (
-                <div>
-                  <Button icon={<ReloadOutlined />} style={{ marginBottom: 12 }} onClick={loadTxns}>
-                    Refresh
-                  </Button>
-                  {isMobile ? (
-                    <div>
-                      {txns.length === 0 && (
-                        <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No transactions</div>
-                      )}
-                      {txns.map(txn => (
-                        <div key={txn.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                            <span style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{txn.jizhanming || '—'}</span>
-                            <Tag color={TXN_COLORS[txn.txn_type] ?? 'default'}>{TXN_LABELS[txn.txn_type] ?? txn.txn_type}</Tag>
+              </div>
+              {isMobile ? (
+                <Spin spinning={loading}>
+                  {!loading && stock.length === 0 && (
+                    <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No stock records</div>
+                  )}
+                  {stock.map(row => {
+                    const total = row.upstairs_dan + row.instore_dan
+                    const stockVal = row.price ? total * row.price : null
+                    return (
+                      <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 500, fontSize: 13, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.jizhanming || '—'}</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{row.sku}</div>
+                            {row.ip_series && <Tag color="blue" style={{ fontSize: 10, marginTop: 4 }}>{row.ip_series}</Tag>}
                           </div>
-                          <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#6b7280', alignItems: 'center', flexWrap: 'wrap' }}>
-                            <span>{txn.date}</span>
-                            <Text code style={{ fontSize: 11 }}>{txn.sku}</Text>
-                            <Text type={txn.dan_qty < 0 ? 'danger' : 'success'} style={{ fontWeight: 600 }}>
-                              {txn.dan_qty > 0 ? `+${txn.dan_qty}` : txn.dan_qty}
-                            </Text>
-                            {txn.location && <span>{txn.location}</span>}
-                          </div>
-                          {txn.notes && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{txn.notes}</div>}
+                          <div style={{ flexShrink: 0, marginLeft: 8 }}>{stockStatus(total)}</div>
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <Table
-                      rowKey="id"
-                      size="middle"
-                      dataSource={txns}
-                      columns={txnColumns}
-                      pagination={{ pageSize: 50, showTotal: t => `${t} transactions` }}
-                      scroll={{ x: 700 }}
-                    />
+                        {/* All 4 quantities visible at a glance */}
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: 16 }}>
+                            <div style={{ textAlign: 'center' }}>
+                              <div style={{ fontSize: 10, color: '#9ca3af' }}>Upstairs</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: row.upstairs_dan === 0 ? '#ef4444' : '#374151' }}>{row.upstairs_dan}</div>
+                            </div>
+                            <div style={{ textAlign: 'center' }}>
+                              <div style={{ fontSize: 10, color: '#9ca3af' }}>In-Store</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: row.instore_dan === 0 ? '#9ca3af' : '#374151' }}>{row.instore_dan}</div>
+                            </div>
+                            <div style={{ textAlign: 'center' }}>
+                              <div style={{ fontSize: 10, color: '#9ca3af' }}>Total</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: total === 0 ? '#ef4444' : total <= 3 ? '#d97706' : '#16a34a' }}>{total}</div>
+                            </div>
+                            {stockVal != null && (
+                              <div style={{ textAlign: 'center' }}>
+                                <div style={{ fontSize: 10, color: '#9ca3af' }}>Value</div>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: '#6366F1' }}>CA${stockVal.toFixed(0)}</div>
+                              </div>
+                            )}
+                          </div>
+                          <RoleGuard minRole="staff">
+                            <Button
+                              size="small"
+                              icon={<EditOutlined />}
+                              onClick={() => { setQuickProduct(row); setRestockOpen(true) }}
+                              style={{ marginLeft: 'auto' }}
+                            >
+                              Adjust
+                            </Button>
+                          </RoleGuard>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </Spin>
+              ) : (
+                <Table
+                  rowKey="id"
+                  size="middle"
+                  loading={loading}
+                  dataSource={stock}
+                  columns={stockColumns}
+                  rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
+                  pagination={{ pageSize: 50, showTotal: t => `${t} products` }}
+                  scroll={{ x: 1000 }}
+                />
+              )}
+            </div>
+          ) : (
+            <div>
+              <Button icon={<ReloadOutlined />} style={{ marginBottom: 12, marginLeft: isMobile ? 16 : 0 }} onClick={loadTxns}>
+                Refresh
+              </Button>
+              {isMobile ? (
+                <div>
+                  {txns.length === 0 && (
+                    <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No transactions</div>
                   )}
+                  {txns.map(txn => (
+                    <div key={txn.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <span style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{txn.jizhanming || '—'}</span>
+                        <Tag color={TXN_COLORS[txn.txn_type] ?? 'default'}>{TXN_LABELS[txn.txn_type] ?? txn.txn_type}</Tag>
+                      </div>
+                      <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#6b7280', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span>{txn.date}</span>
+                        <Text code style={{ fontSize: 11 }}>{txn.sku}</Text>
+                        <Text type={txn.dan_qty < 0 ? 'danger' : 'success'} style={{ fontWeight: 600 }}>
+                          {txn.dan_qty > 0 ? `+${txn.dan_qty}` : txn.dan_qty}
+                        </Text>
+                        {txn.location && <span>{txn.location}</span>}
+                      </div>
+                      {txn.notes && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{txn.notes}</div>}
+                    </div>
+                  ))}
                 </div>
-              ),
-            },
-          ]}
-          onChange={k => { if (k === 'history') loadTxns() }}
-        />
+              ) : (
+                <Table
+                  rowKey="id"
+                  size="middle"
+                  dataSource={txns}
+                  columns={txnColumns}
+                  pagination={{ pageSize: 50, showTotal: t => `${t} transactions` }}
+                  scroll={{ x: 700 }}
+                />
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <RestockModal

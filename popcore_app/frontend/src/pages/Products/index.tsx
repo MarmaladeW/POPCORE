@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Button, Space, Tag, Popconfirm,
-  message, Typography, Table, Badge, Grid, Spin,
+  message, Typography, Table, Badge, Spin,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
-  EditOutlined, PictureOutlined,
+  EditOutlined, PictureOutlined, FilterOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -16,9 +16,9 @@ import HiddenImagesModal from './HiddenImagesModal'
 import PasteImportModal from './PasteImportModal'
 import ProductSearchBar from './ProductSearchBar'
 import ProductDetailDrawer from './ProductDetailDrawer'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Title, Text }  = Typography
-const { useBreakpoint } = Grid
 
 interface Product {
   id: number
@@ -54,8 +54,7 @@ function stockBadge(total: number) {
 }
 
 export default function ProductsPage() {
-  const screens  = useBreakpoint()
-  const isMobile = !screens.md
+  const isMobile = useIsMobile()
   const { series, productTypes } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
   const [stockMap,  setStockMap]  = useState<Map<number, number>>(new Map())
@@ -70,6 +69,7 @@ export default function ProductsPage() {
   const [imagesProduct,  setImagesProduct]  = useState<Product | null>(null)
   const [pasteOpen,      setPasteOpen]      = useState(false)
   const [detailId,       setDetailId]       = useState<number | null>(null)
+  const [filtersVisible, setFiltersVisible] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -224,51 +224,64 @@ export default function ProductsPage() {
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
-          <Title level={3} style={{ margin: 0 }}>Products</Title>
-          <Text style={{ color: '#6b7280' }}>{products.length} of {products.length} products</Text>
+          <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>Products</Title>
+          <Text style={{ color: '#6b7280', fontSize: 13 }}>{products.length} products</Text>
         </div>
-        <RoleGuard minRole="manager">
-          <Button type="primary" icon={<PlusOutlined />} onClick={openNew}>
-            Add Product
-          </Button>
-        </RoleGuard>
+        <Space size={8}>
+          {/* Filter toggle on mobile */}
+          {isMobile && (
+            <Button
+              icon={<FilterOutlined />}
+              onClick={() => setFiltersVisible(v => !v)}
+              type={filtersVisible ? 'primary' : 'default'}
+              style={{ minWidth: 40 }}
+            />
+          )}
+          <RoleGuard minRole="manager">
+            <Button type="primary" icon={<PlusOutlined />} onClick={openNew}>
+              {isMobile ? '' : 'Add Product'}
+            </Button>
+          </RoleGuard>
+        </Space>
       </div>
 
-      {/* Filters */}
-      <div style={{
-        background: '#fff',
-        borderRadius: 10,
-        padding: '16px 20px',
-        marginBottom: 16,
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-      }}>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <ProductSearchBar
-            series={series}
-            productTypes={productTypes}
-            onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
-          />
-          <RoleGuard minRole="manager">
-            <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto' }}>
-              <Button onClick={() => setPasteOpen(true)}>Import</Button>
-              <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
-              {selected.length > 0 && (
-                <Popconfirm
-                  title={`Delete ${selected.length} products? This cannot be undone.`}
-                  onConfirm={handleBulkDelete}
-                  okButtonProps={{ danger: true }}
-                >
-                  <Button danger icon={<DeleteOutlined />}>
-                    Delete ({selected.length})
-                  </Button>
-                </Popconfirm>
-              )}
-            </Space>
-          </RoleGuard>
+      {/* Filters — always visible on desktop, toggle on mobile */}
+      {(!isMobile || filtersVisible) && (
+        <div style={{
+          background: '#fff',
+          borderRadius: 10,
+          padding: isMobile ? '12px 16px' : '16px 20px',
+          marginBottom: 16,
+          boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+        }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: isMobile ? 0 : 12 }}>
+            <ProductSearchBar
+              series={series}
+              productTypes={productTypes}
+              onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
+            />
+            <RoleGuard minRole="manager">
+              <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto', flexWrap: 'wrap' }}>
+                <Button onClick={() => setPasteOpen(true)}>Import</Button>
+                <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
+                {selected.length > 0 && (
+                  <Popconfirm
+                    title={`Delete ${selected.length} products? This cannot be undone.`}
+                    onConfirm={handleBulkDelete}
+                    okButtonProps={{ danger: true }}
+                  >
+                    <Button danger icon={<DeleteOutlined />}>
+                      Delete ({selected.length})
+                    </Button>
+                  </Popconfirm>
+                )}
+              </Space>
+            </RoleGuard>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Table / Card list */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
