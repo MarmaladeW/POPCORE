@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Button, Tag, Select, Card, Row, Col,
-  message, Typography, Space, Badge, Grid,
+  message, Typography, Space, Badge,
 } from 'antd'
 import {
   SyncOutlined, ReloadOutlined, CheckCircleOutlined,
@@ -11,9 +11,9 @@ import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import dayjs from 'dayjs'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Text, Title } = Typography
-const { useBreakpoint } = Grid
 
 interface ScrapeLogRow {
   id: number
@@ -63,8 +63,7 @@ function durationStr(started: string, finished: string | null) {
 }
 
 export default function ScrapeLogPage() {
-  const screens  = useBreakpoint()
-  const isMobile = !screens.md
+  const isMobile = useIsMobile()
   const [logs,       setLogs]       = useState<ScrapeLogRow[]>([])
   const [status,     setStatus]     = useState<ScrapeStatus | null>(null)
   const [loading,    setLoading]    = useState(false)
@@ -137,6 +136,8 @@ export default function ScrapeLogPage() {
     if (filterStat && r.status   !== filterStat)  return false
     return true
   })
+
+  const STORE_KEYS = ['popmart_ca', 'mrpen', 'whoopea']
 
   const columns: ColumnsType<ScrapeLogRow> = [
     {
@@ -226,15 +227,15 @@ export default function ScrapeLogPage() {
     },
   ]
 
-  const STORE_KEYS = ['popmart_ca', 'mrpen', 'whoopea']
-
   return (
     <div>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div>
-          <Title level={3} style={{ margin: 0 }}>Scrape Log</Title>
-          <Text style={{ color: '#6b7280' }}>Monitor scraping jobs and health per source</Text>
+          <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>Scrape Log</Title>
+          {!isMobile && (
+            <Text style={{ color: '#6b7280' }}>Monitor scraping jobs and health per source</Text>
+          )}
         </div>
         <RoleGuard minRole="manager">
           <Button
@@ -249,22 +250,22 @@ export default function ScrapeLogPage() {
       </div>
 
       {/* Summary cards */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+      <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
         {summaryCards.map(c => (
           <Col key={c.label} xs={12} sm={6}>
             <Card
               style={{ borderRadius: 10, borderLeft: `4px solid ${c.color}` }}
-              bodyStyle={{ padding: '16px 20px' }}
+              bodyStyle={{ padding: isMobile ? '12px 14px' : '16px 20px' }}
             >
-              <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
+              <div style={{ fontSize: isMobile ? 11 : 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
+              <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
             </Card>
           </Col>
         ))}
       </Row>
 
       {/* Per-source health cards */}
-      <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
+      <Row gutter={[12, 12]} style={{ marginBottom: isMobile ? 16 : 20 }}>
         {STORE_KEYS.map(sk => {
           const s = status?.stores?.[sk]
           const isRunning = !!scraping[sk] || !!scraping.all
@@ -279,7 +280,7 @@ export default function ScrapeLogPage() {
                 bodyStyle={{ padding: '14px 16px' }}
               >
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                  <div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, color: '#111827', marginBottom: 8 }}>
                       {STORE_NAMES[sk]}
                     </div>
@@ -322,23 +323,31 @@ export default function ScrapeLogPage() {
         })}
       </Row>
 
-      {/* Log table */}
+      {/* Log section */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontWeight: 600, fontSize: 14, color: '#111827', marginRight: 8 }}>
+        {/* Filters */}
+        <div style={{
+          padding: isMobile ? '14px 16px' : '16px 20px',
+          borderBottom: '1px solid #e5e7eb',
+          display: 'flex',
+          gap: 10,
+          flexWrap: 'wrap',
+          alignItems: 'center',
+        }}>
+          <span style={{ fontWeight: 600, fontSize: 14, color: '#111827', width: isMobile ? '100%' : 'auto' }}>
             Run History
           </span>
           <Select
             placeholder="All Sources"
             allowClear
-            style={{ width: 130 }}
+            style={{ width: isMobile ? '100%' : 130 }}
             options={STORE_KEYS.map(sk => ({ value: sk, label: STORE_NAMES[sk] }))}
             onChange={v => setFilterSrc(v ?? '')}
           />
           <Select
             placeholder="All Statuses"
             allowClear
-            style={{ width: 130 }}
+            style={{ width: isMobile ? '100%' : 130 }}
             options={[
               { value: 'done',    label: 'Done' },
               { value: 'error',   label: 'Error' },
@@ -352,17 +361,86 @@ export default function ScrapeLogPage() {
             </Button>
           </div>
         </div>
-        <div style={{ padding: 20 }}>
-          <Table
-            rowKey="id"
-            size="middle"
-            loading={loading}
-            dataSource={filteredLogs}
-            columns={columns}
-            pagination={{ pageSize: 50, showTotal: t => `${t} runs` }}
-            scroll={{ x: 900 }}
-          />
-        </div>
+
+        {/* Log entries: cards on mobile, table on desktop */}
+        {isMobile ? (
+          <div>
+            {loading && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>Loading...</div>
+            )}
+            {!loading && filteredLogs.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#9ca3af', fontSize: 13 }}>No runs found</div>
+            )}
+            {filteredLogs.map(row => {
+              const storeColor = STORE_COLORS[row.store_key] ?? '#6b7280'
+              const dur = durationStr(row.started_at, row.finished_at)
+              return (
+                <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    {/* Source badge */}
+                    <Tag
+                      style={{
+                        background:   `${storeColor}18`,
+                        color:        storeColor,
+                        border:       `1px solid ${storeColor}40`,
+                        borderRadius: 6,
+                        fontSize:     11,
+                        margin:       0,
+                      }}
+                    >
+                      {STORE_NAMES[row.store_key] ?? row.store_key}
+                    </Tag>
+                    {/* Status tag */}
+                    <Space size={4}>
+                      {statusIcon(row.status)}
+                      <Text style={{
+                        fontSize: 12,
+                        color: row.status === 'done' ? '#10b981' : row.status === 'error' ? '#ef4444' : '#6366F1',
+                        textTransform: 'capitalize',
+                        fontWeight: 600,
+                      }}>
+                        {row.status}
+                      </Text>
+                    </Space>
+                  </div>
+                  <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#6b7280', flexWrap: 'wrap' }}>
+                    <span>
+                      <Text type="secondary">Started: </Text>
+                      {dayjs(row.started_at).format('MM/DD HH:mm')}
+                    </span>
+                    <span>
+                      <Text type="secondary">Duration: </Text>
+                      {dur}
+                    </span>
+                    <span>
+                      <Text type="secondary">Scraped: </Text>
+                      <Text style={{ fontWeight: 600 }}>{row.products_scraped ?? 0}</Text>
+                    </span>
+                    <span>
+                      <Text type="secondary">Matched: </Text>
+                      <Text style={{ fontWeight: 600, color: '#6366F1' }}>{row.products_matched ?? 0}</Text>
+                    </span>
+                  </div>
+                  {row.error_msg && (
+                    <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{row.error_msg}</div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div style={{ padding: 20 }}>
+            <Table
+              rowKey="id"
+              size="middle"
+              loading={loading}
+              dataSource={filteredLogs}
+              columns={columns}
+              pagination={{ pageSize: 50, showTotal: t => `${t} runs` }}
+              scroll={{ x: 900 }}
+            />
+          </div>
+        )}
       </div>
     </div>
   )

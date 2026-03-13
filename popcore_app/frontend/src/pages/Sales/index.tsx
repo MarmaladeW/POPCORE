@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
   Typography, Row, Col, InputNumber, Card,
-  DatePicker, AutoComplete, Grid, Spin,
+  DatePicker, AutoComplete, Spin,
 } from 'antd'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
+  LeftOutlined, RightOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { Dayjs } from 'dayjs'
@@ -17,9 +18,9 @@ import {
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import BatchSalesModal from './BatchSalesModal'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Text, Title } = Typography
-const { useBreakpoint } = Grid
 
 interface SaleRow {
   id: number
@@ -45,8 +46,7 @@ interface SummaryRow {
 }
 
 export default function SalesPage() {
-  const screens  = useBreakpoint()
-  const isMobile = !screens.md
+  const isMobile = useIsMobile()
 
   const [date,    setDate]    = useState<Dayjs>(dayjs())
   const [sales,   setSales]   = useState<SaleRow[]>([])
@@ -227,51 +227,114 @@ export default function SalesPage() {
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, gap: 12 }}>
-        <div>
-          <Title level={3} style={{ margin: 0 }}>Daily Sales</Title>
-          <Text style={{ color: '#6b7280' }}>Track POS and cash sales by product</Text>
+      {isMobile ? (
+        /* Mobile: Day-navigator with ‹ prev / date / next › */
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Button
+                type="text"
+                icon={<LeftOutlined />}
+                onClick={() => setDate(d => d.subtract(1, 'day'))}
+                style={{ color: '#374151', padding: '0 8px' }}
+              />
+              <span style={{ fontWeight: 600, fontSize: 15, color: '#111827', minWidth: 110, textAlign: 'center' }}>
+                {date.format('ddd, MMM D')}
+              </span>
+              <Button
+                type="text"
+                icon={<RightOutlined />}
+                onClick={() => setDate(d => d.add(1, 'day'))}
+                disabled={date.isSame(dayjs(), 'day')}
+                style={{ color: '#374151', padding: '0 8px' }}
+              />
+            </div>
+            <RoleGuard minRole="staff">
+              <Space size={6}>
+                <AutoComplete
+                  placeholder="Add product..."
+                  value={addSearch}
+                  options={addOptions}
+                  onSearch={searchToAdd}
+                  onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
+                  onClear={() => { setAddSearch(''); setAddOptions([]) }}
+                  allowClear
+                  style={{ width: 150 }}
+                />
+                <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)} />
+              </Space>
+            </RoleGuard>
+          </div>
         </div>
-        <Space wrap size={[8, 8]}>
-          <DatePicker
-            value={date}
-            onChange={d => setDate(d ?? dayjs())}
-            allowClear={false}
-            style={{ width: 140 }}
-          />
-          <RoleGuard minRole="staff">
-            <AutoComplete
-              placeholder="Search & add product..."
-              value={addSearch}
-              options={addOptions}
-              onSearch={searchToAdd}
-              onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
-              onClear={() => { setAddSearch(''); setAddOptions([]) }}
-              allowClear
-              style={{ width: isMobile ? 160 : 240 }}
+      ) : (
+        /* Desktop: original header */
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, gap: 12 }}>
+          <div>
+            <Title level={3} style={{ margin: 0 }}>Daily Sales</Title>
+            <Text style={{ color: '#6b7280' }}>Track POS and cash sales by product</Text>
+          </div>
+          <Space wrap size={[8, 8]}>
+            <DatePicker
+              value={date}
+              onChange={d => setDate(d ?? dayjs())}
+              allowClear={false}
+              style={{ width: 140 }}
             />
-            <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)}>
-              Add Entry
-            </Button>
-          </RoleGuard>
-        </Space>
-      </div>
+            <RoleGuard minRole="staff">
+              <AutoComplete
+                placeholder="Search & add product..."
+                value={addSearch}
+                options={addOptions}
+                onSearch={searchToAdd}
+                onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
+                onClear={() => { setAddSearch(''); setAddOptions([]) }}
+                allowClear
+                style={{ width: 240 }}
+              />
+              <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)}>
+                Add Entry
+              </Button>
+            </RoleGuard>
+          </Space>
+        </div>
+      )}
 
-      {/* Stat cards */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        {[
-          { label: 'Total Revenue',  value: `CA$${totalRevenue.toFixed(2)}`, color: '#6366F1' },
-          { label: 'Units Sold',     value: totalSold,                       color: '#10B981' },
-          { label: 'POS Sales',      value: `${totalPos} units`,             color: '#6366F1' },
-          { label: 'Cash Sales',     value: `${totalCash} units`,            color: '#10B981' },
-        ].map(c => (
-          <Col key={c.label} xs={12} sm={6}>
-            <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '14px 20px' }}>
-              <div style={{ fontSize: 12, color: '#9ca3af' }}>{c.label}</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: c.color, marginTop: 4 }}>{c.value}</div>
-            </Card>
-          </Col>
-        ))}
+      {/* Stat cards — 3-col KPI strip on mobile, 4-col on desktop */}
+      <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
+        {isMobile ? (
+          // 3-column KPI strip on mobile: Revenue, Units, POS
+          <>
+            {[
+              { label: 'Revenue',    value: `CA$${totalRevenue.toFixed(0)}`, color: '#6366F1' },
+              { label: 'Units Sold', value: totalSold,                       color: '#10B981' },
+              { label: 'POS / Cash', value: `${totalPos} / ${totalCash}`,   color: '#f59e0b' },
+            ].map(c => (
+              <Col key={c.label} xs={8}>
+                <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '10px 12px' }}>
+                  <div style={{ fontSize: 10, color: '#9ca3af' }}>{c.label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: c.color, marginTop: 2 }}>{c.value}</div>
+                </Card>
+              </Col>
+            ))}
+          </>
+        ) : (
+          // 4-column on desktop
+          <>
+            {[
+              { label: 'Total Revenue',  value: `CA$${totalRevenue.toFixed(2)}`, color: '#6366F1' },
+              { label: 'Units Sold',     value: totalSold,                       color: '#10B981' },
+              { label: 'POS Sales',      value: `${totalPos} units`,             color: '#6366F1' },
+              { label: 'Cash Sales',     value: `${totalCash} units`,            color: '#10B981' },
+            ].map(c => (
+              <Col key={c.label} xs={12} sm={6}>
+                <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '14px 20px' }}>
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>{c.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: c.color, marginTop: 4 }}>{c.value}</div>
+                </Card>
+              </Col>
+            ))}
+          </>
+        )}
       </Row>
 
       {/* Charts */}

@@ -1,3 +1,24 @@
 /* Tailwind v4 — utilities only, no preflight reset (prevents Ant Design conflicts) */
 @import "tailwindcss/theme" layer(theme);
 @import "tailwindcss/utilities" layer(utilities);
+
+/* ── Global mobile fixes ── */
+html, body, #root {
+  overflow-x: hidden;
+}
+
+/* Ensure touch-friendly tap targets on mobile */
+@media (max-width: 767px) {
+  .ant-btn {
+    min-height: 36px;
+  }
+  .ant-input,
+  .ant-input-affix-wrapper,
+  .ant-select-selector,
+  .ant-picker {
+    min-height: 38px !important;
+  }
+  .ant-input-number-input {
+    min-height: 34px;
+  }
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Table, Button, Tag, Tabs, Card, Row, Col,
+  Table, Button, Tag, Card, Row, Col,
   message, Typography, Switch, Space, Badge,
 } from 'antd'
 import {
@@ -11,6 +11,7 @@ import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import dayjs from 'dayjs'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Text, Title } = Typography
 
@@ -56,6 +57,7 @@ const STORE_COLORS: Record<string, string> = {
 }
 
 export default function MarketPage() {
+  const isMobile = useIsMobile()
   const [overview,    setOverview]    = useState<OverviewRow[]>([])
   const [status,      setStatus]      = useState<ScrapeStatus | null>(null)
   const [matchedOnly, setMatchedOnly] = useState(true)
@@ -130,21 +132,21 @@ export default function MarketPage() {
       value: cheaper,
       color: '#10B981',
       icon: <FallOutlined />,
-      sub: `${matched.length ? Math.round(cheaper / matched.length * 100) : 0}% of tracked`,
+      sub: `${matched.length ? Math.round(cheaper / matched.length * 100) : 0}%`,
     },
     {
       label: 'Overpriced vs Market',
       value: pricier,
       color: '#ef4444',
       icon: <RiseOutlined />,
-      sub: `${matched.length ? Math.round(pricier / matched.length * 100) : 0}% of tracked`,
+      sub: `${matched.length ? Math.round(pricier / matched.length * 100) : 0}%`,
     },
     {
       label: 'Avg Price Diff',
       value: avgDiff != null ? `${avgDiff >= 0 ? '+' : ''}CA$${avgDiff.toFixed(2)}` : '—',
       color: avgDiff != null && avgDiff < 0 ? '#10B981' : '#f59e0b',
       icon: null,
-      sub: 'Our price vs market avg',
+      sub: 'vs market avg',
     },
   ]
 
@@ -209,8 +211,8 @@ export default function MarketPage() {
       render: (v, r) => {
         if (v == null) return <Text type="secondary">—</Text>
         const diff = r.our_price != null ? r.our_price - v : null
-        const isLower = diff != null && diff > 0   // market cheaper than us
-        const isHigher = diff != null && diff < 0  // market more expensive
+        const isLower = diff != null && diff > 0
+        const isHigher = diff != null && diff < 0
         return (
           <div style={{ textAlign: 'right' }}>
             <span style={{
@@ -277,28 +279,19 @@ export default function MarketPage() {
     return dayjs(s.finished_at).format('MMM D, HH:mm')
   }
 
-  const sourceTabs = [
-    { key: 'all', label: `All Sources (${overview.length})` },
-    ...STORE_KEYS.map(sk => ({
-      key: sk,
-      label: (
-        <span>
-          <span style={{ color: STORE_COLORS[sk] }}>●</span>{' '}
-          {STORE_NAMES[sk]} ({overview.filter(r => r.store_key === sk).length})
-        </span>
-      ),
-    })),
-  ]
+  const sourceFilterKeys = ['all', ...STORE_KEYS]
 
   return (
     <div>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div>
-          <Title level={3} style={{ margin: 0 }}>Market Prices</Title>
-          <Text style={{ color: '#6b7280' }}>
-            Competitor pricing across {STORE_KEYS.length} stores
-          </Text>
+          <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>Market Prices</Title>
+          {!isMobile && (
+            <Text style={{ color: '#6b7280' }}>
+              Competitor pricing across {STORE_KEYS.length} stores
+            </Text>
+          )}
         </div>
         <RoleGuard minRole="manager">
           <Button
@@ -306,6 +299,7 @@ export default function MarketPage() {
             icon={scraping.all ? <SyncOutlined spin /> : <SyncOutlined />}
             loading={!!scraping.all}
             onClick={() => startScrape()}
+            style={isMobile ? { width: '100%', marginTop: 8 } : undefined}
           >
             {scraping.all ? 'Scraping...' : 'Scrape All'}
           </Button>
@@ -313,23 +307,23 @@ export default function MarketPage() {
       </div>
 
       {/* Stat cards */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+      <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
         {summaryCards.map(c => (
           <Col key={c.label} xs={12} sm={6}>
             <Card
               style={{ borderRadius: 10, borderLeft: `4px solid ${c.color}` }}
-              bodyStyle={{ padding: '16px 20px' }}
+              bodyStyle={{ padding: isMobile ? '12px 14px' : '16px 20px' }}
             >
-              <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
-              {c.sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{c.sub}</div>}
+              <div style={{ fontSize: isMobile ? 11 : 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
+              <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
+              {c.sub && <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>{c.sub}</div>}
             </Card>
           </Col>
         ))}
       </Row>
 
       {/* Per-source scrape cards */}
-      <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
+      <Row gutter={[12, 12]} style={{ marginBottom: isMobile ? 16 : 20 }}>
         {STORE_KEYS.map(sk => {
           const s = status?.stores?.[sk]
           const isRunning = !!scraping[sk] || !!scraping.all
@@ -341,7 +335,7 @@ export default function MarketPage() {
                 bodyStyle={{ padding: '12px 16px' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, color: '#111827', fontSize: 13 }}>
                       {STORE_NAMES[sk]}
                     </div>
@@ -354,7 +348,7 @@ export default function MarketPage() {
                       <div style={{ fontSize: 11, color: '#9ca3af' }}>No data yet</div>
                     )}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 8 }}>
                     {s?.status && (
                       <Tag color={s.status === 'done' ? 'green' : s.status === 'error' ? 'red' : 'processing'}>
                         {s.status}
@@ -366,6 +360,7 @@ export default function MarketPage() {
                         icon={isRunning ? <SyncOutlined spin /> : <ReloadOutlined />}
                         loading={isRunning}
                         onClick={() => startScrape(sk)}
+                        style={isMobile ? { width: '100%' } : undefined}
                       >
                         Scrape
                       </Button>
@@ -383,39 +378,197 @@ export default function MarketPage() {
         })}
       </Row>
 
-      {/* Main table */}
+      {/* Main data section */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <div style={{ padding: '16px 20px 0', borderBottom: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Tabs
-              activeKey={activeSource}
-              onChange={setActiveSource}
-              items={sourceTabs}
-              style={{ marginBottom: 0 }}
-              tabBarStyle={{ margin: 0 }}
-            />
-            <Space size={8} style={{ marginBottom: 8 }}>
-              <Space size={4}>
-                <Text style={{ fontSize: 12, color: '#6b7280' }}>Matched only</Text>
-                <Switch size="small" checked={matchedOnly} onChange={setMatchedOnly} />
+
+        {/* Source filter — horizontal scroll pills on mobile, tabs on desktop */}
+        <div style={{
+          padding: isMobile ? '12px 16px 0' : '16px 20px 0',
+          borderBottom: '1px solid #e5e7eb',
+        }}>
+          {isMobile ? (
+            <div style={{
+              display:    'flex',
+              gap:        8,
+              overflowX:  'auto',
+              WebkitOverflowScrolling: 'touch' as any,
+              paddingBottom: 12,
+              scrollbarWidth: 'none',
+            }}>
+              {sourceFilterKeys.map(k => {
+                const count = k === 'all' ? overview.length : overview.filter(r => r.store_key === k).length
+                const isActive = activeSource === k
+                return (
+                  <button
+                    key={k}
+                    onClick={() => setActiveSource(k)}
+                    style={{
+                      flexShrink:   0,
+                      padding:      '6px 14px',
+                      borderRadius: 20,
+                      border:       `1px solid ${isActive ? (STORE_COLORS[k] ?? '#6366F1') : '#e5e7eb'}`,
+                      background:   isActive ? `${(STORE_COLORS[k] ?? '#6366F1')}18` : '#fff',
+                      color:        isActive ? (STORE_COLORS[k] ?? '#6366F1') : '#6b7280',
+                      fontSize:     13,
+                      fontWeight:   isActive ? 600 : 400,
+                      cursor:       'pointer',
+                      whiteSpace:   'nowrap',
+                    }}
+                  >
+                    {k === 'all' ? `All (${count})` : `${STORE_NAMES[k]} (${count})`}
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ display: 'flex', gap: 0 }}>
+                {sourceFilterKeys.map(k => {
+                  const count = k === 'all' ? overview.length : overview.filter(r => r.store_key === k).length
+                  const isActive = activeSource === k
+                  return (
+                    <button
+                      key={k}
+                      onClick={() => setActiveSource(k)}
+                      style={{
+                        padding:      '10px 16px',
+                        border:       'none',
+                        borderBottom: isActive ? '2px solid #6366F1' : '2px solid transparent',
+                        background:   'transparent',
+                        cursor:       'pointer',
+                        fontSize:     14,
+                        fontWeight:   isActive ? 600 : 400,
+                        color:        isActive ? '#6366F1' : '#6b7280',
+                        marginBottom: -1,
+                      }}
+                    >
+                      {k === 'all' ? `All Sources (${count})` : (
+                        <span>
+                          <span style={{ color: STORE_COLORS[k] }}>● </span>
+                          {STORE_NAMES[k]} ({count})
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <Space size={8} style={{ marginBottom: 8 }}>
+                <Space size={4}>
+                  <Text style={{ fontSize: 12, color: '#6b7280' }}>Matched only</Text>
+                  <Switch size="small" checked={matchedOnly} onChange={setMatchedOnly} />
+                </Space>
+                <Button size="small" icon={<ReloadOutlined />} onClick={loadOverview}>
+                  Refresh
+                </Button>
               </Space>
-              <Button size="small" icon={<ReloadOutlined />} onClick={loadOverview}>
-                Refresh
-              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Matched-only toggle + refresh on mobile */}
+        {isMobile && (
+          <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f0f0f0' }}>
+            <Space size={6}>
+              <Text style={{ fontSize: 13, color: '#6b7280' }}>Matched only</Text>
+              <Switch size="small" checked={matchedOnly} onChange={setMatchedOnly} />
             </Space>
+            <Button size="small" icon={<ReloadOutlined />} onClick={loadOverview}>Refresh</Button>
           </div>
-        </div>
-        <div style={{ padding: 20 }}>
-          <Table
-            rowKey="id"
-            size="middle"
-            loading={loading}
-            dataSource={filteredRows}
-            columns={columns}
-            pagination={{ pageSize: 80, showTotal: t => `${t} products` }}
-            scroll={{ x: 950 }}
-          />
-        </div>
+        )}
+
+        {/* Data: cards on mobile, table on desktop */}
+        {isMobile ? (
+          <div>
+            {loading && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>Loading...</div>
+            )}
+            {!loading && filteredRows.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#9ca3af', fontSize: 13 }}>No data</div>
+            )}
+            {filteredRows.map(row => {
+              const diff = row.our_price != null && row.price_cad != null ? row.our_price - row.price_cad : null
+              const storeColor = STORE_COLORS[row.store_key] ?? '#6b7280'
+              return (
+                <div key={row.id} style={{ padding: '14px 16px', borderBottom: '1px solid #f5f5f5' }}>
+                  {/* Product name */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {row.jizhanming ? (
+                        <>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {row.jizhanming}
+                          </div>
+                          {row.ip_series && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{row.ip_series}</div>}
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>Unmatched</div>
+                      )}
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {row.external_title}
+                      </div>
+                    </div>
+                    {/* Competitor badge */}
+                    <Tag
+                      style={{
+                        background:   `${storeColor}18`,
+                        color:        storeColor,
+                        border:       `1px solid ${storeColor}40`,
+                        borderRadius: 6,
+                        fontSize:     11,
+                        flexShrink:   0,
+                        marginLeft:   8,
+                      }}
+                    >
+                      {STORE_NAMES[row.store_key] || row.store_key}
+                    </Tag>
+                  </div>
+                  {/* Price row */}
+                  <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: '#9ca3af' }}>Market</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: diff != null && diff < 0 ? '#10b981' : diff != null && diff > 0 ? '#ef4444' : '#374151' }}>
+                        {row.price_cad != null ? `CA$${row.price_cad.toFixed(2)}` : '—'}
+                        {row.on_sale ? <Tag color="red" style={{ marginLeft: 4, fontSize: 10 }}>Sale</Tag> : null}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: '#9ca3af' }}>Ours</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: '#6366F1' }}>
+                        {row.our_price != null ? `CA$${row.our_price.toFixed(2)}` : '—'}
+                      </div>
+                    </div>
+                    {diff != null && (
+                      <div>
+                        <div style={{ fontSize: 10, color: '#9ca3af' }}>Diff</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: diff > 0 ? '#ef4444' : '#10b981' }}>
+                          {diff > 0 ? '▲' : '▼'} {Math.abs(diff).toFixed(2)}
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ marginLeft: 'auto' }}>
+                      {row.in_stock
+                        ? <Badge status="success" text={<span style={{ fontSize: 11 }}>In Stock</span>} />
+                        : <Badge status="default" text={<span style={{ fontSize: 11 }}>Out</span>} />
+                      }
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div style={{ padding: 20 }}>
+            <Table
+              rowKey="id"
+              size="middle"
+              loading={loading}
+              dataSource={filteredRows}
+              columns={columns}
+              pagination={{ pageSize: 80, showTotal: t => `${t} products` }}
+              scroll={{ x: 950 }}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
