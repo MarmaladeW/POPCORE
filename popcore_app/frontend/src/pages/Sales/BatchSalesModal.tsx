@@ -5,7 +5,7 @@ import {
 } from 'antd'
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import client from '../../api/client'
-import { batchMatch, isHeaderLine, saveAlias, cleanName, detectSalesSection, MatchResult, SectionType } from '../../api/matcher'
+import { batchMatch, isHeaderLine, saveAlias, detectSalesSection, MatchResult, SectionType } from '../../api/matcher'
 
 interface Props {
   open: boolean
@@ -30,53 +30,69 @@ interface MatchedItem {
   status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
   aliasSaved?: boolean
   section: ActiveSection
+  box_size?: number    // trailing number stripped from name (stock sections only)
+  flagged?: boolean    // true = qty could not be determined
 }
 
-/** Handles name*qty, name：qty, name: qty, tab-sep, space-sep, and mixed formats for sales lines */
-function parseLine(line: string) {
-  const t = line.trim()
-  if (t.includes('*')) {
-    const star = t.lastIndexOf('*')
-    const rawName = t.slice(0, star).trim()  // keep trailing : for server header detection
-    const qty_pos = parseInt(t.slice(star + 1).trim(), 10) || 0
-    return { rawName, qty_pos, qty_cash: 0, notes: '' }
+type ParsedLine = {
+  rawName: string; qty_pos: number; qty_cash: number; qty: number
+  notes: string; section: ActiveSection; box_size?: number; flagged: boolean
+}
+
+/**
+ * Explicit line parser — section-aware, no greedy fallbacks.
+ *
+ * Steps (in order, stops at first success):
+ *  1. name*qty  — lastIndexOf('*'), unambiguous
+ *  2. Stock sections only: trailing number stripped from name = box count
+ *     "smiski hipper 12" → name="smiski hipper", box_size=12
+ *     "比奇堡6端" → name="比奇堡", box_size=6
+ *     No number → name=full string, qty=1 (single unit)
+ *  3. Tab separator — Excel paste fallback
+ *  4. Flag — qty unknown for sales sections; surfaces to user
+ */
+function parseItem(raw: string, section: ActiveSection): ParsedLine {
+  const t = raw.trim()
+  const isStock = section === 'stock_in' || section === 'stock_out' || section === 'claw'
+  const base = { section, notes: '', qty_pos: 0, qty_cash: 0, flagged: false }
+
+  // Step 1: * separator (universal, unambiguous)
+  const starIdx = t.lastIndexOf('*')
+  if (starIdx > 0) {
+    const rawName = t.slice(0, starIdx).trim()
+    const qty = parseInt(t.slice(starIdx + 1).trim(), 10) || 0
+    if (rawName && qty > 0) {
+      if (section === 'cash') return { ...base, rawName, qty, qty_cash: qty }
+      return { ...base, rawName, qty, qty_pos: qty }
+    }
   }
+
+  // Step 2: Stock sections — trailing number = box count, strip from name
+  if (isStock) {
+    const stripped = t.replace(/[端个盒箱]+$/, '').trim()
+    const m = stripped.match(/^(.*\D)\s*(\d+)$/)
+    if (m && m[1].trim()) {
+      const rawName = m[1].trim()
+      const box_size = parseInt(m[2], 10)
+      return { ...base, rawName, qty: box_size, qty_pos: box_size, box_size }
+    }
+    // No trailing number → single unit, not flagged
+    return { ...base, rawName: stripped || t, qty: 1, qty_pos: 1 }
+  }
+
+  // Step 3: Tab separator (Excel paste)
   if (t.includes('\t')) {
     const parts = t.split('\t').map(s => s.trim())
-    return {
-      rawName: parts[0],
-      qty_pos:  parseInt(parts[1] || '0', 10) || 0,
-      qty_cash: parseInt(parts[2] || '0', 10) || 0,
-      notes: parts.slice(3).join(' '),
+    const qty_pos = parseInt(parts[1] || '0', 10) || 0
+    const qty_cash = parseInt(parts[2] || '0', 10) || 0
+    if (parts[0]) {
+      const qty = section === 'cash' ? qty_cash : qty_pos
+      return { ...base, rawName: parts[0], qty, qty_pos, qty_cash, notes: parts.slice(3).join(' ') }
     }
   }
-  // Colon separator: "名称：数量" or "名称: 数量 数量2"
-  const colonM = t.match(/^(.+?)\s*[：:]\s*(\d+)\s*(\d*)\s*(.*)$/)
-  if (colonM && colonM[1].trim()) {
-    return {
-      rawName:  colonM[1].trim(),
-      qty_pos:  parseInt(colonM[2] || '0', 10) || 0,
-      qty_cash: parseInt(colonM[3] || '0', 10) || 0,
-      notes: colonM[4].trim(),
-    }
-  }
-  // Name glued to first number — treat first digit block after last CJK char as qty_pos
-  const glued = t.match(/^(.*\D)(\d+)\s*(\d*)\s*(.*)$/)
-  if (glued && glued[1].trim()) {
-    return {
-      rawName: glued[1].trim(),
-      qty_pos:  parseInt(glued[2] || '0', 10) || 0,
-      qty_cash: parseInt(glued[3] || '0', 10) || 0,
-      notes: glued[4].trim(),
-    }
-  }
-  const parts = t.split(/\s+/)
-  return {
-    rawName: parts[0],
-    qty_pos:  parseInt(parts[1] || '0', 10) || 0,
-    qty_cash: parseInt(parts[2] || '0', 10) || 0,
-    notes: parts.slice(3).join(' '),
-  }
+
+  // Step 4: Flag — qty unknown, surface to user
+  return { ...base, rawName: t, qty: 0, flagged: true }
 }
 
 const SECTION_LABELS: Record<ActiveSection, { label: string; color: string }> = {
@@ -118,12 +134,18 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   function reset() { setStep(0); setText(''); setItems([]); setProgress(0) }
 
   async function match() {
-    const lines = text.split(/[\n,，]+/).map(t => t.trim()).filter(Boolean)
+    // Step 1: split on newlines first, then commas — explicit two-stage
+    const lines = text
+      .split('\n')
+      .flatMap(l => l.split(/[,，]/))
+      .map(t => t.trim())
+      .filter(Boolean)
+
     if (!lines.length) { message.warning('内容为空'); return }
     setMatch(true)
     setProgress(10)
 
-    // ── Step 1: pre-scan to find all section boundaries ──────────────────
+    // ── Pre-scan to find all section boundaries ───────────────────────────
     const boundaries: Array<{ idx: number; section: ActiveSection }> = []
     for (let i = 0; i < lines.length; i++) {
       const sec = detectSalesSection(lines[i])
@@ -138,32 +160,18 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
         if (b.idx <= i) cur = b.section
         else break
       }
-      // If the line itself is an ignored section header, that overrides
       const sec = detectSalesSection(lines[i])
       if (sec === 'ignore') return 'ignore'
       return cur
     }
 
-    // ── Step 2: parse lines with section awareness ────────────────────────
-    type ParsedLine = {
-      rawName: string; qty_pos: number; qty_cash: number; qty: number
-      notes: string; section: ActiveSection
-    }
+    // ── Parse each line with section context ──────────────────────────────
     const parsed: ParsedLine[] = []
-
     for (let i = 0; i < lines.length; i++) {
       if (isHeaderLine(lines[i])) continue
       const section = sectionAt(i)
       if (section === 'ignore') continue
-      const p = parseLine(lines[i])
-      const qty = p.qty_pos || p.qty_cash || 1
-      if (section === 'cash' && p.qty_pos > 0 && p.qty_cash === 0) {
-        parsed.push({ ...p, qty, qty_cash: p.qty_pos, qty_pos: 0, section })
-      } else if (section === 'stock_in' || section === 'stock_out' || section === 'claw') {
-        parsed.push({ ...p, qty: p.qty_pos || 1, section })
-      } else {
-        parsed.push({ ...p, qty, section })
-      }
+      parsed.push(parseItem(lines[i], section))
     }
 
     if (!parsed.length) { message.warning('内容为空'); setMatch(false); return }
@@ -209,7 +217,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
   }
 
   async function submit() {
-    const toSub = items.filter(i => i.product_id)
+    const toSub = items.filter(i => i.product_id && !i.flagged)
     if (!toSub.length) { message.warning('没有可提交的行'); return }
     setSub(true)
 
@@ -244,8 +252,9 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
     } finally { setSub(false) }
   }
 
-  const okCount = items.filter(i => i.product_id).length
-  const unmatchedCount = items.filter(i => i.status === 'unmatched' || i.status === 'fuzzy').length
+  const okCount    = items.filter(i => i.product_id && !i.flagged).length
+  const flaggedCount   = items.filter(i => i.flagged).length
+  const unmatchedCount = items.filter(i => !i.flagged && (i.status === 'unmatched' || i.status === 'fuzzy')).length
 
   async function handleManualSelect(key: string, rawName: string, p: any) {
     updateItem(key, { product_id: p.id, sku: p.sku, jizhanming: p.jizhanming, status: 'matched', candidates: undefined })
@@ -261,7 +270,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
       },
     },
     {
-      title: '输入名称', dataIndex: 'rawName', width: 110,
+      title: '输入名称', dataIndex: 'rawName', width: 120,
       render: (v: string, r: MatchedItem) => (
         <span style={{ color: r.status === 'unmatched' ? '#cf1322' : undefined }}>{v}</span>
       ),
@@ -291,22 +300,31 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
       },
     },
     {
-      title: '卡机', key: 'pos', width: 72,
+      title: '卡机', key: 'pos', width: 68,
       render: (_: any, r: MatchedItem) => r.section !== 'pos' ? null : (
-        <InputNumber size="small" min={0} value={r.qty_pos} style={{ width: 58 }}
+        <InputNumber size="small" min={0} value={r.qty_pos} style={{ width: 55 }}
           onChange={v => updateItem(r._key, { qty_pos: v ?? 0 })} />
       ),
     },
     {
-      title: '现金/转账', key: 'cash', width: 82,
+      title: '现金/转账', key: 'cash', width: 80,
       render: (_: any, r: MatchedItem) => r.section !== 'cash' ? null : (
-        <InputNumber size="small" min={0} value={r.qty_cash} style={{ width: 58 }}
+        <InputNumber size="small" min={0} value={r.qty_cash} style={{ width: 55 }}
           onChange={v => updateItem(r._key, { qty_cash: v ?? 0 })} />
       ),
     },
     {
-      title: '数量', key: 'qty', width: 70,
+      title: '数量', key: 'qty', width: 100,
       render: (_: any, r: MatchedItem) => {
+        if (r.flagged) {
+          return (
+            <Space size={4}>
+              <Tag color="red" icon={<WarningOutlined />}>无数量</Tag>
+              <InputNumber size="small" min={0} value={0} style={{ width: 50 }}
+                onChange={v => updateItem(r._key, { qty: v ?? 0, qty_pos: v ?? 0, flagged: false })} />
+            </Space>
+          )
+        }
         if (r.section === 'pos') {
           const t = r.qty_pos + r.qty_cash
           return <Tag color={t > 0 ? 'green' : 'default'}>{t}</Tag>
@@ -315,9 +333,13 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
           const t = r.qty_pos + r.qty_cash
           return <Tag color={t > 0 ? 'green' : 'default'}>{t}</Tag>
         }
+        // Stock sections
         return (
-          <InputNumber size="small" min={1} value={r.qty} style={{ width: 58 }}
-            onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
+          <Space size={4}>
+            {r.box_size != null && <Tag style={{ fontSize: 11 }}>{r.box_size}端</Tag>}
+            <InputNumber size="small" min={1} value={r.qty} style={{ width: 55 }}
+              onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
+          </Space>
         )
       },
     },
@@ -356,14 +378,13 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
             message={`导入日期：${date}`}
             description={
               <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.8 }}>
-                {'卡机汇总         ← 以下行视为卡机销售\n'}
+                {'卡机汇总         ← 以下行视为卡机销售（格式：名称*数量）\n'}
                 {'Dimoo花花*3\n'}
                 {'随手记汇总       ← 以下行视为现金/转账\n'}
                 {'哭娃度假*1\n'}
-                {'入店             ← 以下行视为入店库存\n'}
-                {'SA草莓 2端\n'}
-                {'出店             ← 减少店内库存\n'}
-                {'娃娃机           ← 入娃娃机库存'}
+                {'入店             ← 以下行视为入店（格式：名称数量 或 名称*数量）\n'}
+                {'smiski hipper 12\n'}
+                {'出店 / 娃娃机    ← 其他库存操作'}
               </div>
             }
           />
@@ -381,9 +402,12 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
 
       {step === 1 && (
         <>
-          {unmatchedCount > 0 && (
+          {(unmatchedCount > 0 || flaggedCount > 0) && (
             <Alert type="warning" icon={<WarningOutlined />} showIcon style={{ marginBottom: 8 }}
-              message={`${unmatchedCount} 行未自动匹配 — 可手动搜索指定产品，或点删除按钮跳过`} />
+              message={[
+                unmatchedCount > 0 && `${unmatchedCount} 行未自动匹配`,
+                flaggedCount > 0   && `${flaggedCount} 行缺少数量 — 请补填或删除`,
+              ].filter(Boolean).join('；')} />
           )}
           <Table size="small" rowKey="_key" dataSource={items} columns={reviewColumns}
             pagination={false} scroll={{ y: 340 }} />
@@ -399,7 +423,7 @@ export default function BatchSalesModal({ open, date, onClose, onDone }: Props) 
       {step === 2 && (
         <>
           <Alert type="success" icon={<CheckCircleOutlined />} showIcon style={{ marginBottom: 8 }}
-            message={`成功提交 ${results.ok} 条，跳过 ${results.fail} 条未匹配`} />
+            message={`成功提交 ${results.ok} 条，跳过 ${results.fail} 条`} />
           <Button type="primary" onClick={() => { reset(); onDone() }}>完成</Button>
         </>
       )}

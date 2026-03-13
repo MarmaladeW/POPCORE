@@ -24,32 +24,51 @@ interface MatchedItem {
   jizhanming?: string
   candidates?: any[]
   status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
+  flagged?: boolean  // true = qty could not be determined
 }
 
-/** Handles name*qty, name：qty, name: qty, tab-sep, space-sep, and "名称2端" formats */
-function parseLine(line: string) {
-  const t = line.trim()
-  if (t.includes('*')) {
-    const star = t.lastIndexOf('*')
-    const rawName = t.slice(0, star).trim()  // keep trailing : for server header detection
-    const qty = parseInt(t.slice(star + 1).trim(), 10) || 1
-    return { rawName, qty, notes: '' }
+/**
+ * Explicit stock line parser — no greedy fallbacks.
+ *
+ * Steps (in order):
+ *  1. name*qty  — lastIndexOf('*'), unambiguous
+ *  2. Trailing number after stripping unit words (端个盒箱)
+ *     "比奇堡6端" → name="比奇堡", qty=6
+ *     "smiski hipper 12" → name="smiski hipper", qty=12
+ *  3. Tab separator — Excel paste fallback
+ *  4. No number → qty=1 (single unit, not flagged)
+ */
+function parseLine(raw: string): { rawName: string; qty: number; flagged: boolean; notes: string } {
+  const t = raw.trim()
+
+  // Step 1: * separator
+  const starIdx = t.lastIndexOf('*')
+  if (starIdx > 0) {
+    const rawName = t.slice(0, starIdx).trim()
+    const qty = parseInt(t.slice(starIdx + 1).trim(), 10) || 0
+    if (rawName && qty > 0) return { rawName, qty, flagged: false, notes: '' }
   }
+
+  // Step 2: Trailing number with optional unit suffix
+  const stripped = t.replace(/[端个盒箱]+$/, '').trim()
+  const m = stripped.match(/^(.*\D)\s*(\d+)$/)
+  if (m && m[1].trim()) {
+    return { rawName: m[1].trim(), qty: parseInt(m[2], 10), flagged: false, notes: '' }
+  }
+
+  // Step 3: Tab separator
   if (t.includes('\t')) {
     const parts = t.split('\t').map(s => s.trim())
-    return { rawName: parts[0], qty: Math.abs(parseInt(parts[1] || '1', 10)) || 1, notes: parts.slice(2).join(' ') }
+    const qty = parseInt(parts[1] || '0', 10) || 0
+    if (parts[0] && qty > 0) return { rawName: parts[0], qty, flagged: false, notes: parts.slice(2).join(' ') }
   }
-  // Colon separator: "名称：数量" or "名称: 数量"
-  const colonM = t.match(/^(.+?)\s*[：:]\s*(\d+)\s*(.*)$/)
-  if (colonM && colonM[1].trim()) {
-    return { rawName: colonM[1].trim(), qty: parseInt(colonM[2], 10) || 1, notes: colonM[3].trim() }
+
+  // Step 4: No number — single unit if the string looks like a product name
+  if (stripped && /[\u4e00-\u9fff\w]/.test(stripped)) {
+    return { rawName: stripped, qty: 1, flagged: false, notes: '' }
   }
-  const glued = t.match(/^(.*\D)(\d+)[端个盒箱]?\s*(.*)$/)
-  if (glued && glued[1].trim()) {
-    return { rawName: glued[1].trim(), qty: parseInt(glued[2], 10) || 1, notes: glued[3].trim() }
-  }
-  const parts = t.split(/\s+/)
-  return { rawName: parts[0], qty: Math.abs(parseInt(parts[1] || '1', 10)) || 1, notes: parts.slice(2).join(' ') }
+
+  return { rawName: t, qty: 0, flagged: true, notes: '' }
 }
 
 
@@ -86,7 +105,12 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
   function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0) }
 
   async function match() {
-    const tokens = text.split(/[\n,，]+/).map(t => t.trim()).filter(Boolean)
+    // Two-stage split: newlines first, then commas — explicit ordering
+    const tokens = text
+      .split('\n')
+      .flatMap(l => l.split(/[,，]/))
+      .map(t => t.trim())
+      .filter(Boolean)
     if (!tokens.length) { message.warning('内容为空'); return }
     setMatch(true)
     setProgress(10)
@@ -117,6 +141,7 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
           jizhanming: top?.jizhanming,
           candidates: r.candidates.length > 1 ? r.candidates : undefined,
           status: r.status,
+          flagged: parsed[i].flagged,
         } as MatchedItem
       })
       .filter(Boolean) as MatchedItem[]
@@ -135,7 +160,7 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
   }
 
   async function submit() {
-    const toSub = items.filter(i => i.product_id)
+    const toSub = items.filter(i => i.product_id && !i.flagged)
     if (!toSub.length) { message.warning('没有可提交的行'); return }
     setSub(true)
     try {
@@ -151,8 +176,9 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
     } finally { setSub(false) }
   }
 
-  const okCount = items.filter(i => i.product_id).length
-  const unmatchedCount = items.filter(i => i.status === 'unmatched' || i.status === 'fuzzy').length
+  const okCount        = items.filter(i => i.product_id && !i.flagged).length
+  const flaggedCount   = items.filter(i => i.flagged).length
+  const unmatchedCount = items.filter(i => !i.flagged && (i.status === 'unmatched' || i.status === 'fuzzy')).length
 
   async function handleManualSelect(key: string, rawName: string, p: any) {
     updateItem(key, { product_id: p.id, sku: p.sku, jizhanming: p.jizhanming, status: 'matched', candidates: undefined })
@@ -191,8 +217,14 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
       },
     },
     {
-      title: '数量(端)', key: 'qty', width: 90,
-      render: (_: any, r: MatchedItem) => (
+      title: '数量(端)', key: 'qty', width: 110,
+      render: (_: any, r: MatchedItem) => r.flagged ? (
+        <Space size={4}>
+          <Tag color="red" icon={<WarningOutlined />}>无数量</Tag>
+          <InputNumber size="small" min={1} value={1} style={{ width: 55 }}
+            onChange={v => updateItem(r._key, { qty: v ?? 1, flagged: false })} />
+        </Space>
+      ) : (
         <InputNumber size="small" min={1} value={r.qty} style={{ width: 70 }}
           onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
       ),
@@ -236,9 +268,10 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
           <Alert type="info" message="支持格式"
             description={
               <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.8 }}>
-                {'记账名  数量  [备注]   ← 空格分隔\n'}
-                {'记账名\t数量          ← 表格粘贴\n'}
-                {'记账名2端            ← 数字紧跟名称'}
+                {'记账名*数量          ← 星号分隔（推荐）\n'}
+                {'记账名数量端         ← 数字紧跟名称\n'}
+                {'记账名\t数量         ← 表格粘贴\n'}
+                {'记账名               ← 无数量时默认1端'}
               </div>
             }
           />
@@ -251,9 +284,12 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
 
       {step === 1 && (
         <>
-          {unmatchedCount > 0 && (
+          {(unmatchedCount > 0 || flaggedCount > 0) && (
             <Alert type="warning" icon={<WarningOutlined />} showIcon style={{ marginBottom: 8 }}
-              message={`${unmatchedCount} 行未自动匹配 — 可手动搜索指定产品，或点删除按钮跳过`} />
+              message={[
+                unmatchedCount > 0 && `${unmatchedCount} 行未自动匹配`,
+                flaggedCount > 0   && `${flaggedCount} 行缺少数量 — 请补填或删除`,
+              ].filter(Boolean).join('；')} />
           )}
           <Table size="small" rowKey="_key" dataSource={items} columns={reviewColumns}
             pagination={false} scroll={{ y: 320 }} />
