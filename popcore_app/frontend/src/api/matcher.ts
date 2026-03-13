@@ -44,3 +44,7 @@ export async function batchMatch(
 export async function saveAlias(productId: number, alias: string): Promise<void> {
   await client.post('/products/aliases', { product_id: productId, alias })
 }
+
+export async function deleteAlias(productId: number, aliasId: number): Promise<void> {
+  await client.delete(`/products/${productId}/aliases/${aliasId}`)
+}

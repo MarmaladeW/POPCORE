@@ -164,7 +164,8 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
 
 
 def _score_product_jzm(qn: str, product: dict) -> int:
-    """Best score of qn against a product's jizhanming, name_cn_en, and sku."""
+    """Best score of qn against a product's jizhanming, name_cn_en, and sku.
+    Kept for scraper/legacy use. Prefer the waterfall in match_jzm for batch import."""
     jzm_n  = normalize(product.get('jizhanming') or '')
     name_n = normalize(product.get('name_cn_en') or '')
     sku    = (product.get('sku') or '').lower().replace('-', '')
@@ -188,14 +189,24 @@ def match_jzm(
     limit: int = 5,
 ) -> list:
     """
-    Match a raw 记账名 string against a product list.
+    Match a raw 记账名 string against a product list using a strict waterfall.
+
+    Stages (stops at the first stage that yields results):
+      1. Jizhanming — score query against product.jizhanming
+      2. Name       — score query against product.name_cn_en
+      3. Alias      — exact lookup in the alias table (score 100)
+      4. Not found  — return []
+
+    This prevents cross-stage false matches (e.g. "哭娃度假" matching
+    "哭娃度假吸管杯") because each stage only returns results when the
+    similarity is clearly above the threshold.
 
     Args:
         query:     Raw input (may contain *, spaces, colons, etc.)
         products:  List of product dicts (id, jizhanming, name_cn_en, sku, …)
-        aliases:   {alias_norm → product_id} for instant exact alias lookup.
+        aliases:   {alias_norm → product_id} for exact alias lookup (stage 3).
         threshold: Minimum score to include (default 75).
-        limit:     Max results returned, sorted by score desc.
+        limit:     Max results returned per stage, sorted by score desc.
 
     Returns:
         List of (score: int, product: dict) sorted by score descending.
@@ -212,21 +223,46 @@ def match_jzm(
     if not qn:
         return []
 
-    # 1. Alias exact match → score 100
+    # Stage 1 — Jizhanming match
+    jzm_hits = []
+    for p in products:
+        jzm_n = normalize(p.get('jizhanming') or '')
+        if not jzm_n:
+            continue
+        # SKU exact hit: treat as jizhanming-level match
+        sku = (p.get('sku') or '').lower().replace('-', '')
+        if sku and sku in qn:
+            jzm_hits.append((95, p))
+            continue
+        s = _score_pair_jzm(qn, jzm_n)
+        if s >= threshold:
+            jzm_hits.append((s, p))
+    if jzm_hits:
+        jzm_hits.sort(key=lambda x: -x[0])
+        return jzm_hits[:limit]
+
+    # Stage 2 — Name (name_cn_en) match
+    name_hits = []
+    for p in products:
+        name_n = normalize(p.get('name_cn_en') or '')
+        if not name_n:
+            continue
+        s = _score_pair_jzm(qn, name_n)
+        if s >= threshold:
+            name_hits.append((s, p))
+    if name_hits:
+        name_hits.sort(key=lambda x: -x[0])
+        return name_hits[:limit]
+
+    # Stage 3 — Alias exact match
     if qn in aliases:
         pid = aliases[qn]
         for p in products:
             if p['id'] == pid:
                 return [(100, p)]
 
-    # 2. Fuzzy match against all products
-    scored = []
-    for p in products:
-        s = _score_product_jzm(qn, p)
-        if s >= threshold:
-            scored.append((s, p))
-    scored.sort(key=lambda x: -x[0])
-    return scored[:limit]
+    # Stage 4 — Not found
+    return []
 
 
 def batch_match_jzm(

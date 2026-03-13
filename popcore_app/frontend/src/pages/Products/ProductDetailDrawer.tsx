@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Drawer, Spin, Tag, Typography, Space, Button, Divider, Badge, Grid } from 'antd'
-import { EditOutlined, PictureOutlined, TrophyOutlined } from '@ant-design/icons'
+import { Drawer, Spin, Tag, Typography, Space, Button, Divider, Badge, Grid, Input } from 'antd'
+import { EditOutlined, PictureOutlined, TrophyOutlined, PlusOutlined } from '@ant-design/icons'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
+import { saveAlias, deleteAlias } from '../../api/matcher'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -29,6 +30,7 @@ interface ProductDetail {
   hidden_prob_small: string
   hidden_prob_large: string
   is_bestseller: number
+  aliases?: { id: number; alias: string }[]
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -58,16 +60,34 @@ interface Props {
 export default function ProductDetailDrawer({ productId, stockTotal, onClose, onEdit, onImages }: Props) {
   const [product, setProduct] = useState<ProductDetail | null>(null)
   const [loading, setLoading] = useState(false)
+  const [aliases, setAliases] = useState<{ id: number; alias: string }[]>([])
+  const [aliasInput, setAliasInput] = useState('')
   const screens  = useBreakpoint()
   const isMobile = !screens.md
 
   useEffect(() => {
-    if (!productId) { setProduct(null); return }
+    if (!productId) { setProduct(null); setAliases([]); return }
     setLoading(true)
     client.get(`/products/${productId}`)
-      .then(r => setProduct(r.data))
+      .then(r => { setProduct(r.data); setAliases(r.data.aliases ?? []) })
       .finally(() => setLoading(false))
   }, [productId])
+
+  async function handleAddAlias() {
+    if (!aliasInput.trim() || !product) return
+    try {
+      await saveAlias(product.id, aliasInput.trim())
+      const r = await client.get(`/products/${product.id}`)
+      setAliases(r.data.aliases ?? [])
+      setAliasInput('')
+    } catch { /* duplicate or empty alias — ignore */ }
+  }
+
+  async function handleDeleteAlias(aliasId: number) {
+    if (!product) return
+    await deleteAlias(product.id, aliasId)
+    setAliases(prev => prev.filter(a => a.id !== aliasId))
+  }
 
   const hasSecrets = product && product.hidden_count && product.hidden_count !== '0'
 
@@ -184,6 +204,34 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
                 </div>
               </>
             )}
+
+            {/* Aliases */}
+            <Divider style={{ margin: '12px 0' }} />
+            <div>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>别名 (Also Known As)</div>
+              <Space wrap style={{ marginBottom: 8 }}>
+                {aliases.map(a => (
+                  <RoleGuard key={a.id} minRole="manager" fallback={<Tag>{a.alias}</Tag>}>
+                    <Tag closable onClose={() => handleDeleteAlias(a.id)}>{a.alias}</Tag>
+                  </RoleGuard>
+                ))}
+                {aliases.length === 0 && (
+                  <span style={{ fontSize: 12, color: '#d1d5db' }}>None</span>
+                )}
+              </Space>
+              <RoleGuard minRole="manager">
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    size="small"
+                    placeholder="Add alias..."
+                    value={aliasInput}
+                    onChange={e => setAliasInput(e.target.value)}
+                    onPressEnter={handleAddAlias}
+                  />
+                  <Button size="small" icon={<PlusOutlined />} onClick={handleAddAlias} />
+                </Space.Compact>
+              </RoleGuard>
+            </div>
           </div>
         )}
       </Spin>
