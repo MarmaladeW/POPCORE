@@ -97,6 +97,15 @@ def migrate_db():
         if col not in existing:
             cur.execute(f'ALTER TABLE products ADD COLUMN {col} {defn}')
 
+    # Add claw_dan to stock table if missing (migration for existing DBs)
+    cur.execute("PRAGMA table_info(stock)")
+    stock_cols = {r['name'] for r in cur.fetchall()}
+    if 'claw_dan' not in stock_cols:
+        try:
+            cur.execute('ALTER TABLE stock ADD COLUMN claw_dan INTEGER NOT NULL DEFAULT 0')
+        except Exception:
+            pass
+
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS hidden_images (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +119,7 @@ def migrate_db():
             product_id   INTEGER PRIMARY KEY REFERENCES products(id),
             upstairs_dan INTEGER NOT NULL DEFAULT 0,
             instore_dan  INTEGER NOT NULL DEFAULT 0,
+            claw_dan     INTEGER NOT NULL DEFAULT 0,
             last_updated TEXT,
             notes        TEXT DEFAULT ''
         );
@@ -1488,14 +1498,21 @@ def delete_sales_record(record_id):
 def batch_stock_operation():
     """
     Batch stock operation (paste import).
-    Body: { operation: 'ru_dian'|'restock_upstairs', date: '...', items: [{product_id, qty, notes}] }
+    Body: { operation: 'ru_dian'|'restock_upstairs'|'out_dian'|'ru_dian_claw',
+            date: '...', items: [{product_id, qty, notes}] }
+
+    Operations:
+      ru_dian        — move upstairs_dan → instore_dan (入店)
+      restock_upstairs — add to upstairs_dan
+      out_dian       — decrease instore_dan directly (出店)
+      ru_dian_claw   — move upstairs_dan → claw_dan (+ instore_dan, 娃娃机)
     """
     data      = request.get_json()
     operation = data.get('operation', 'ru_dian')
     d         = data.get('date', str(date.today()))
     items     = data.get('items', [])
 
-    if operation not in ('ru_dian', 'restock_upstairs'):
+    if operation not in ('ru_dian', 'restock_upstairs', 'out_dian', 'ru_dian_claw'):
         return jsonify({'error': 'Invalid operation'}), 400
 
     con = get_db()
@@ -1526,6 +1543,36 @@ def batch_stock_operation():
                 WHERE product_id = ?
             ''', (qty, qty, d, pid))
             loc = 'upstairs->instore'
+        elif operation == 'out_dian':
+            cur.execute('SELECT instore_dan FROM stock WHERE product_id = ?', (pid,))
+            row = cur.fetchone()
+            instore = row['instore_dan'] if row else 0
+            if qty > instore:
+                results.append({'pid': pid, 'ok': False,
+                                 'error': f'店内库存不足（{instore}端）'})
+                continue
+            cur.execute('''
+                UPDATE stock SET instore_dan = instore_dan - ?,
+                                 last_updated = ?
+                WHERE product_id = ?
+            ''', (qty, d, pid))
+            loc = 'instore_out'
+        elif operation == 'ru_dian_claw':
+            cur.execute('SELECT upstairs_dan FROM stock WHERE product_id = ?', (pid,))
+            row = cur.fetchone()
+            upstairs = row['upstairs_dan'] if row else 0
+            if qty > upstairs:
+                results.append({'pid': pid, 'ok': False,
+                                 'error': f'楼上库存不足（{upstairs}端）'})
+                continue
+            cur.execute('''
+                UPDATE stock SET upstairs_dan = upstairs_dan - ?,
+                                 instore_dan  = instore_dan  + ?,
+                                 claw_dan     = claw_dan     + ?,
+                                 last_updated = ?
+                WHERE product_id = ?
+            ''', (qty, qty, qty, d, pid))
+            loc = 'upstairs->claw'
         else:  # restock_upstairs
             cur.execute('''
                 UPDATE stock SET upstairs_dan = upstairs_dan + ?,

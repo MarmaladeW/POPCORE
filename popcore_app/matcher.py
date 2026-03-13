@@ -34,13 +34,14 @@ from collections import Counter
 
 # ─── Noise cleaning ───────────────────────────────────────────────────────────
 
-# Category header / summary line patterns (not product names)
-_HEADER_RE = re.compile(
-    r'^(卡机|现金|转账|合计|汇总|小计|总计|入店|出店|在店|随手记|pos)'
-    r'.*[：:]\s*$',
-    re.IGNORECASE,
-)
 _TRAILING_PUNCT = re.compile(r'[*＊:：、。！!～~]+$')
+
+# Whitelist of section header keywords (substring match, order matters: longer first)
+_SECTION_KEYWORDS = [
+    '卡机汇总', '随手记汇总', '随手记',
+    '入店', '出店', '娃娃机',
+    '卖display', '拆display', '员工折扣', '晚盘', '博主探店', '现金',
+]
 
 
 def clean_name(raw: str) -> str:
@@ -50,15 +51,17 @@ def clean_name(raw: str) -> str:
 
 def is_header_line(raw: str) -> bool:
     """
-    Return True if the line looks like a summary/header row, not a product.
-    Examples that return True: "卡机汇总:", "现金:", "随手记汇总:", "入店:"
+    Return True if the line is a known section header, total row, or empty.
+    Uses substring containment against the whitelist — no colon required.
+    Examples that return True: "卡机汇总", "随手记汇总:", "入店", "现金汇总"
     """
     s = clean_name(raw)
     if not s:
         return True
     if s.endswith((':', '：')):
         return True
-    return bool(_HEADER_RE.match(raw.strip()))
+    low = raw.lower()
+    return any(kw.lower() in low for kw in _SECTION_KEYWORDS)
 
 
 # ─── Normalisation ────────────────────────────────────────────────────────────
