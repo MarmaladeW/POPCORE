@@ -90,9 +90,9 @@ export default function SessionModal({ sessionId, onClose }: Props) {
       onCancel={onClose}
       footer={null}
       title={title}
-      width={900}
+      width={Math.min(900, window.innerWidth - 16)}
       destroyOnClose
-      styles={{ body: { padding: '0 0 8px' } }}
+      styles={{ body: { padding: '0 0 8px', maxHeight: '80vh', overflowY: 'auto' } }}
     >
       {loading && !session ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>

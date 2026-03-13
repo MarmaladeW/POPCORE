@@ -21,4 +21,19 @@ html, body, #root {
   .ant-input-number-input {
     min-height: 34px;
   }
+
+  /* ── Prevent iOS Safari auto-zoom on input focus ──
+     iOS zooms in whenever a focused input has font-size < 16px.
+     Setting all inputs to 16px stops that behaviour entirely. */
+  .ant-input,
+  .ant-input-affix-wrapper input,
+  .ant-input-number-input,
+  .ant-select-selection-search-input,
+  .ant-picker-input input,
+  .ant-auto-complete input,
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }

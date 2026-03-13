@@ -1,15 +1,15 @@
 import { useState, useRef, useCallback } from 'react'
 import {
   Input, Button, InputNumber, Table, Popconfirm, Modal,
-  message, Space, Typography, Empty, Tag, Grid, Alert,
+  message, Space, Typography, Empty, Tag, Alert,
 } from 'antd'
 import { PlusOutlined, DeleteOutlined, SendOutlined, LockOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import type { RestockSession, RestockItem } from './index'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Text } = Typography
-const { useBreakpoint } = Grid
 
 interface SearchProduct {
   id:           number
@@ -28,8 +28,7 @@ interface Props {
 }
 
 export default function RequestStep({ session, onRefresh }: Props) {
-  const screens  = useBreakpoint()
-  const isMobile = !screens.md
+  const isMobile = useIsMobile()
 
   const [searchValue,   setSearchValue]   = useState('')
   const [searchResults, setSearchResults] = useState<SearchProduct[]>([])
@@ -186,7 +185,7 @@ export default function RequestStep({ session, onRefresh }: Props) {
     return null
   }
 
-  // ── Columns ───────────────────────────────────────────────────────────────
+  // ── Desktop columns ───────────────────────────────────────────────────────
 
   const searchCols: ColumnsType<SearchProduct> = [
     {
@@ -291,20 +290,53 @@ export default function RequestStep({ session, onRefresh }: Props) {
             onChange={handleInputChange}
             allowClear
             onClear={handleClear}
-            suffix={searching ? undefined : undefined}
-            style={{ maxWidth: 480 }}
+            style={{ maxWidth: isMobile ? '100%' : 480 }}
           />
           {searching && <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>搜索中…</Text>}
+
           {searchResults.length > 0 && (
-            <Table
-              size="small"
-              columns={searchCols}
-              dataSource={searchResults}
-              rowKey="id"
-              pagination={false}
-              style={{ marginTop: 8, maxWidth: 640 }}
-              scroll={{ x: true }}
-            />
+            isMobile ? (
+              /* Mobile: card list for search results */
+              <div style={{ marginTop: 8, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+                {searchResults.map(r => (
+                  <div key={r.id} style={{ padding: '10px 14px', borderBottom: '1px solid #f5f5f5', display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500, fontSize: 14, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.jizhanming || r.name_cn_en}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
+                        {r.sku}
+                        {r.ip_series ? ` · ${r.ip_series}` : ''}
+                        <Tag color={r.upstairs_dan > 0 ? 'blue' : 'red'} style={{ marginLeft: 6, fontSize: 11 }}>{r.upstairs_dan} 端</Tag>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <InputNumber
+                        min={1} max={999} precision={0}
+                        value={addQtyMap[r.id] ?? 1}
+                        onChange={v => setAddQtyMap(prev => ({ ...prev, [r.id]: v ?? 1 }))}
+                        style={{ width: 60 }}
+                        size="small"
+                      />
+                      {addedIds.has(r.id)
+                        ? <Button size="small" disabled style={{ flexShrink: 0 }}>已添加</Button>
+                        : <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => handleAdd(r)} style={{ flexShrink: 0 }}>添加</Button>
+                      }
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Table
+                size="small"
+                columns={searchCols}
+                dataSource={searchResults}
+                rowKey="id"
+                pagination={false}
+                style={{ marginTop: 8, maxWidth: 640 }}
+                scroll={{ x: true }}
+              />
+            )
           )}
         </div>
       )}
@@ -325,14 +357,51 @@ export default function RequestStep({ session, onRefresh }: Props) {
       {session.items.length === 0
         ? <Empty description={isReadOnly ? '暂无补货项目' : '搜索并添加需要补货的产品'} style={{ padding: 40 }} />
         : (
-          <Table
-            size="small"
-            columns={itemCols}
-            dataSource={session.items}
-            rowKey="id"
-            pagination={false}
-            scroll={{ x: true }}
-          />
+          isMobile ? (
+            /* Mobile: card list for items */
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+              {session.items.map(r => (
+                <div key={r.id} style={{ padding: '10px 14px', borderBottom: '1px solid #f5f5f5', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: 14, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.jizhanming || r.name_cn_en}
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{r.sku}</Text>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    {isReadOnly
+                      ? <Tag>{r.requested_qty} 端</Tag>
+                      : (
+                        <InputNumber
+                          min={1} max={999} precision={0}
+                          value={editQtyMap[r.id] ?? r.requested_qty}
+                          onChange={v => setEditQtyMap(prev => ({ ...prev, [r.id]: v ?? r.requested_qty }))}
+                          onBlur={() => handleQtyBlur(r)}
+                          onPressEnter={() => handleQtyBlur(r)}
+                          style={{ width: 70 }}
+                          size="small"
+                        />
+                      )
+                    }
+                    {!isReadOnly && (
+                      <Popconfirm title="确认删除？" onConfirm={() => handleDelete(r)} okText="删除" cancelText="取消">
+                        <Button type="text" danger icon={<DeleteOutlined />} size="small" />
+                      </Popconfirm>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Table
+              size="small"
+              columns={itemCols}
+              dataSource={session.items}
+              rowKey="id"
+              pagination={false}
+              scroll={{ x: true }}
+            />
+          )
         )
       }
 
