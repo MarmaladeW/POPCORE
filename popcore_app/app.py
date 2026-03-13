@@ -678,6 +678,17 @@ def save_alias():
     return jsonify({'ok': True})
 
 
+@app.route('/api/products/<int:pid>/aliases/<int:alias_id>', methods=['DELETE'])
+@role_required('manager')
+def delete_alias(pid, alias_id):
+    """Delete a specific alias for a product."""
+    con = get_db()
+    con.execute('DELETE FROM product_aliases WHERE id = ? AND product_id = ?', (alias_id, pid))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/products/search')
 @login_required
 def search_products():
@@ -825,10 +836,13 @@ def get_product(pid):
     cur = con.cursor()
     cur.execute('SELECT * FROM products WHERE id = ?', (pid,))
     row = cur.fetchone()
-    con.close()
     if not row:
+        con.close()
         return jsonify({'error': 'Not found'}), 404
-    return jsonify(dict(row))
+    cur.execute('SELECT id, alias FROM product_aliases WHERE product_id = ? ORDER BY id', (pid,))
+    aliases = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify({**dict(row), 'aliases': aliases})
 
 
 # ─── Hidden Images API ────────────────────────────────────────────────────────
