@@ -1,10 +1,17 @@
+import { useEffect } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { Spin, Result, Button } from 'antd'
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isLoading, isAuthenticated, loginWithRedirect, error } = useAuth0()
 
-  if (isLoading) {
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated && !error) {
+      loginWithRedirect()
+    }
+  }, [isLoading, isAuthenticated, error, loginWithRedirect])
+
+  if (isLoading || (!isAuthenticated && !error)) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
         <Spin size="large" />
@@ -21,11 +28,6 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
         extra={<Button type="primary" onClick={() => loginWithRedirect()}>重试</Button>}
       />
     )
-  }
-
-  if (!isAuthenticated) {
-    loginWithRedirect()
-    return null
   }
 
   return <>{children}</>

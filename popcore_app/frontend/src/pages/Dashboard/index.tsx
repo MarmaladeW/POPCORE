@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Card, Col, Row, Typography, Spin, Tag } from 'antd'
+import { Card, Col, Row, Typography, Spin, Tag, message } from 'antd'
 import {
   AppstoreOutlined,
   InboxOutlined,
@@ -126,7 +126,8 @@ export default function DashboardPage() {
           .slice(0, 8)
       )
       setProducts(prods.data)
-    }).finally(() => setLoading(false))
+    }).catch(() => message.error('Failed to load dashboard data'))
+      .finally(() => setLoading(false))
   }, [])
 
   const totalUnits = stockSummary

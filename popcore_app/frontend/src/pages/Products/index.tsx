@@ -113,6 +113,7 @@ export default function ProductsPage() {
     const params = new URLSearchParams()
     if (searchSeries) params.set('series', searchSeries)
     if (searchQ)      params.set('q', searchQ)
+    if (searchType)   params.set('product_type', searchType)
     window.location.href = `/api/products/export?${params}`
   }
 

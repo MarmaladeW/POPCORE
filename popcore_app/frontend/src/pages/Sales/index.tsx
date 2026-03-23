@@ -73,6 +73,7 @@ export default function SalesPage() {
   }, [])
 
   useEffect(() => { loadSales(); loadSummary() }, [loadSales, loadSummary])
+  useEffect(() => { setLocalEdits({}) }, [dateStr])
 
   async function searchToAdd(v: string) {
     setAddSearch(v)
@@ -140,7 +141,7 @@ export default function SalesPage() {
   // Weekly bar chart data (last 7 days from summary)
   const weeklyData = summary.slice(0, 7).reverse().map(r => ({
     date: dayjs(r.date).format('ddd MM/DD'),
-    Revenue: r.total_sold, // proxy — no revenue in summary, use qty
+    'Units Sold': r.total_sold,
   }))
 
   // Top products for today
@@ -286,7 +287,7 @@ export default function SalesPage() {
                 value={addSearch}
                 options={addOptions}
                 onSearch={searchToAdd}
-                onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
+                onSelect={(val) => { setAddSearch(''); setAddOptions([]); addProduct(Number(val)) }}
                 onClear={() => { setAddSearch(''); setAddOptions([]) }}
                 allowClear
                 style={{ width: 240 }}
@@ -347,7 +348,7 @@ export default function SalesPage() {
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} />
                 <RechartTooltip />
-                <Bar dataKey="Revenue" fill="#6366F1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Units Sold" fill="#6366F1" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </Card>
