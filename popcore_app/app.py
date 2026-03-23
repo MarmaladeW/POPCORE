@@ -1752,9 +1752,10 @@ def clear_sales_day():
 @app.route('/api/products/export')
 @role_required('manager')
 def export_products():
-    """Export products as CSV, respecting series/q filters."""
-    series = request.args.get('series', '').strip()
-    q      = request.args.get('q', '').strip().lower()
+    """Export products as CSV, respecting series/q/product_type filters."""
+    series       = request.args.get('series', '').strip()
+    q            = request.args.get('q', '').strip().lower()
+    product_type = request.args.get('product_type', '').strip()
 
     con = get_db()
     cur = con.cursor()
@@ -1764,6 +1765,9 @@ def export_products():
     if series:
         filters.append("ip_series = ?")
         params.append(series)
+    if product_type:
+        filters.append("product_type = ?")
+        params.append(product_type)
     if q:
         for token in q.split():
             filters.append("search_blob LIKE ?")

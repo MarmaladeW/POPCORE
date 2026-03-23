@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import {
   Input, Button, InputNumber, Table, Popconfirm, Modal,
   message, Space, Typography, Empty, Tag, Grid, Alert,
@@ -41,6 +41,10 @@ export default function RequestStep({ session, onRefresh }: Props) {
   const [addQtyMap,     setAddQtyMap]     = useState<Record<number, number>>({})
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [])
 
   const isReadOnly = session.status !== 'pending'
   const addedIds   = new Set(session.items.map(i => i.product_id))

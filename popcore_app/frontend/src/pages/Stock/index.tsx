@@ -196,7 +196,7 @@ export default function StockPage() {
       width: 110, align: 'right',
       render: (_, r) => {
         const total = r.upstairs_dan + r.instore_dan
-        const val = r.price ? total * r.price : null
+        const val = r.price != null ? total * r.price : null
         return val != null
           ? <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${val.toFixed(2)}</Text>
           : <Text type="secondary">—</Text>
