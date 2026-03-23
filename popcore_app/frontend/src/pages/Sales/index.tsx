@@ -256,7 +256,7 @@ export default function SalesPage() {
                   value={addSearch}
                   options={addOptions}
                   onSearch={searchToAdd}
-                  onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
+                  onSelect={(val) => { setAddSearch(''); setAddOptions([]); addProduct(Number(val)) }}
                   onClear={() => { setAddSearch(''); setAddOptions([]) }}
                   allowClear
                   style={{ width: 150 }}
@@ -471,9 +471,9 @@ export default function SalesPage() {
           <span style={{ fontWeight: 600, color: '#111827' }}>Sales Log</span>
           <RoleGuard minRole="manager">
             <Space wrap size={[8, 8]}>
-              {!isMobile && <DatePicker value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} style={{ width: 130 }} />}
-              {!isMobile && <Text style={{ color: '#9ca3af' }}>to</Text>}
-              {!isMobile && <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 130 }} />}
+              <DatePicker value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} style={{ width: 130 }} />
+              <Text style={{ color: '#9ca3af' }}>to</Text>
+              <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 130 }} />
               <Button
                 size="small"
                 icon={<ExportOutlined />}

@@ -240,7 +240,7 @@ export default function ProductsPage() {
             />
           )}
           <RoleGuard minRole="manager">
-            <Button type="primary" icon={<PlusOutlined />} onClick={openNew}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openNew} aria-label="Add Product">
               {isMobile ? '' : 'Add Product'}
             </Button>
           </RoleGuard>

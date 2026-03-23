@@ -253,7 +253,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {/* Right: bell + avatar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               <Badge count={0} showZero={false}>
-                <BellOutlined style={{ fontSize: 18, color: 'rgba(255,255,255,0.7)', cursor: 'pointer' }} />
+                <BellOutlined aria-label="Notifications" style={{ fontSize: 18, color: 'rgba(255,255,255,0.7)', cursor: 'pointer' }} />
               </Badge>
               <Dropdown
                 menu={{
@@ -315,7 +315,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </Tag>
 
               <Badge count={0} showZero={false}>
-                <BellOutlined style={{ fontSize: 18, color: '#6b7280', cursor: 'pointer' }} />
+                <BellOutlined aria-label="Notifications" style={{ fontSize: 18, color: '#6b7280', cursor: 'pointer' }} />
               </Badge>
 
               {/* User dropdown */}
@@ -392,6 +392,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   color:          isActive ? '#6366F1' : 'rgba(255,255,255,0.45)',
                   transition:     'color 0.15s',
                   minHeight:      54,
+                  position:       'relative',
                 }}
               >
                 <div style={{ fontSize: 20 }}>{tab.icon}</div>

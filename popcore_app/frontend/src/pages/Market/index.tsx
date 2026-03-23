@@ -211,13 +211,13 @@ export default function MarketPage() {
       render: (v, r) => {
         if (v == null) return <Text type="secondary">—</Text>
         const diff = r.our_price != null ? r.our_price - v : null
-        const isLower = diff != null && diff > 0
-        const isHigher = diff != null && diff < 0
+        const marketIsLower  = diff != null && diff > 0   // market price is lower than ours
+        const marketIsHigher = diff != null && diff < 0   // market price is higher than ours
         return (
           <div style={{ textAlign: 'right' }}>
             <span style={{
               fontWeight: 600, fontSize: 13,
-              color: isHigher ? '#10b981' : isLower ? '#ef4444' : '#374151',
+              color: marketIsHigher ? '#10b981' : marketIsLower ? '#ef4444' : '#374151',
             }}>
               CA${v.toFixed(2)}
             </span>

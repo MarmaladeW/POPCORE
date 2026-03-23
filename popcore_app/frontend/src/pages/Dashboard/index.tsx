@@ -297,8 +297,8 @@ export default function DashboardPage() {
           {todaySales
             .sort((a, b) => b.qty_sold - a.qty_sold)
             .slice(0, 10)
-            .map((row, i) => (
-              <div key={i} style={{ padding: '10px 16px', borderBottom: '1px solid #f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            .map((row) => (
+              <div key={row.sku} style={{ padding: '10px 16px', borderBottom: '1px solid #f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 500, fontSize: 13, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {row.jizhanming || row.sku}
