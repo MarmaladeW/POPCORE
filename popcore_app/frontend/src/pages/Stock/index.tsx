@@ -300,6 +300,7 @@ export default function StockPage() {
                   onClick={() => { setActiveTab(t.key); if (t.key === 'history') loadTxns() }}
                   style={{
                     padding:      '6px 14px',
+                    minHeight:    44,
                     borderRadius: 6,
                     border:       'none',
                     cursor:       'pointer',

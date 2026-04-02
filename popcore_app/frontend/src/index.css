@@ -49,6 +49,18 @@ a,
   word-break: break-word;
 }
 
+/* ── Drawer and modal body text wrapping ── */
+.ant-drawer-body,
+.ant-modal-body {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* ── iOS smooth scroll in table body containers ── */
+.ant-table-body {
+  -webkit-overflow-scrolling: touch;
+}
+
 /* ── Touch-friendly tap targets + mobile layout ── */
 @media (max-width: 767px) {
   .ant-btn {
@@ -70,5 +82,10 @@ a,
   .ant-modal {
     max-width: calc(100vw - 32px) !important;
     margin: 16px auto !important;
+  }
+  .ant-tabs-tab {
+    min-height: 44px !important;
+    display: flex !important;
+    align-items: center !important;
   }
 }
