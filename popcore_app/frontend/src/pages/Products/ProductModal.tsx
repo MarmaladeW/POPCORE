@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Modal, Form, Input, InputNumber, Select, Divider, message } from 'antd'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 
@@ -38,6 +39,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
   const [form] = Form.useForm()
   const { series, productTypes } = useAppStore()
   const isEdit = !!product?.id
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     if (open) {
@@ -91,7 +93,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
 
         {/* — Core identity — */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0 16px' }}>
           <Form.Item name="sku" label="SKU">
             <Input placeholder="Auto-generated if blank" style={{ fontFamily: 'monospace' }} />
           </Form.Item>
@@ -104,7 +106,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
           <Input placeholder="e.g. DIMOO Memories We Hold Series" />
         </Form.Item>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0 16px' }}>
           <Form.Item name="ip_series" label="Series">
             <Select
               showSearch
@@ -149,7 +151,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
         <Divider style={{ margin: '4px 0 16px', borderColor: '#f0f0f0' }} />
 
         {/* — Details — */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0 16px' }}>
           <Form.Item name="brand" label="Brand">
             <Input />
           </Form.Item>
@@ -164,7 +166,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
         <Divider style={{ margin: '4px 0 16px', borderColor: '#f0f0f0' }} />
 
         {/* — Hidden figures — */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0 16px' }}>
           <Form.Item name="hidden_count" label="# Secret Variants">
             <Input placeholder="0" />
           </Form.Item>

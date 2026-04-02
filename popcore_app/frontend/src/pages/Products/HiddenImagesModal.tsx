@@ -79,7 +79,7 @@ export default function HiddenImagesModal({ open, product, onClose }: Props) {
       open={open}
       onCancel={onClose}
       footer={null}
-      width={640}
+      width={Math.min(640, window.innerWidth - 32)}
     >
       {canManage && (
         <Space style={{ marginBottom: 12 }}>

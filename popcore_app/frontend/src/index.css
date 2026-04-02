@@ -2,12 +2,54 @@
 @import "tailwindcss/theme" layer(theme);
 @import "tailwindcss/utilities" layer(utilities);
 
+/* ── Box-sizing reset (Tailwind preflight disabled — do it manually) ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+html, body {
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
 /* ── Global mobile fixes ── */
 html, body, #root {
   overflow-x: hidden;
 }
 
-/* Ensure touch-friendly tap targets on mobile */
+/* ── iOS font-size: prevent Safari auto-zoom on inputs (must be ≥ 16px) ── */
+.ant-input,
+.ant-input-affix-wrapper input,
+.ant-select-selector,
+.ant-picker-input input,
+.ant-input-number-input,
+textarea.ant-input {
+  font-size: 16px !important;
+}
+
+/* ── Touch UX: remove tap flash, use fast-tap ── */
+button,
+a,
+[role="button"],
+.ant-btn,
+.ant-menu-item,
+.ant-tabs-tab,
+.ant-select-selector,
+.ant-picker {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Typography overflow prevention (Chinese + English mixed content) ── */
+.ant-table-cell,
+.ant-descriptions-item-content,
+.ant-card-body,
+.ant-typography {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* ── Touch-friendly tap targets + mobile layout ── */
 @media (max-width: 767px) {
   .ant-btn {
     min-height: 36px;
@@ -20,5 +62,13 @@ html, body, #root {
   }
   .ant-input-number-input {
     min-height: 34px;
+  }
+  .ant-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ant-modal {
+    max-width: calc(100vw - 32px) !important;
+    margin: 16px auto !important;
   }
 }
