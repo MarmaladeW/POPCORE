@@ -200,7 +200,7 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
                 <Divider style={{ margin: '12px 0' }} />
                 <div>
                   <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>Notes</div>
-                  <div style={{ fontSize: 13, color: '#374151', whiteSpace: 'pre-wrap' }}>{product.notes}</div>
+                  <div style={{ fontSize: 13, color: '#374151', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{product.notes}</div>
                 </div>
               </>
             )}
