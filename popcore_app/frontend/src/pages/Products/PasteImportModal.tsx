@@ -285,7 +285,7 @@ export default function PasteImportModal({ open, onClose, onDone }: Props) {
       open={open}
       onCancel={() => { reset(); onClose() }}
       footer={null}
-      width={800}
+      width={Math.min(800, window.innerWidth - 32)}
       destroyOnClose
     >
       <Steps
@@ -302,7 +302,7 @@ export default function PasteImportModal({ open, onClose, onDone }: Props) {
       {/* ── Step 0: Paste ── */}
       {step === 0 && (
         <div>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Operation</div>
               <Select
@@ -344,7 +344,7 @@ export default function PasteImportModal({ open, onClose, onDone }: Props) {
             placeholder={'Dimoo花花 2\nSA草莓 1 damaged\nMolly精灵3端'}
             value={pasteText}
             onChange={e => setPasteText(e.target.value)}
-            style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 12 }}
+            style={{ fontFamily: 'monospace', fontSize: 16, marginBottom: 12 }}
           />
 
           {matching && (
