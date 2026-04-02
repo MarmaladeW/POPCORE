@@ -15,8 +15,6 @@ import ProductsPage  from './pages/Products'
 import StockPage     from './pages/Stock'
 import RestockPage   from './pages/Restock'
 import SalesPage     from './pages/Sales'
-import MarketPage    from './pages/Market'
-import ScrapeLogPage from './pages/ScrapeLog'
 import UsersPage     from './pages/Users'
 
 function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
@@ -47,10 +45,7 @@ function AppInner() {
         <Route path="/stock"         element={<RoleRoute minRole="staff"   element={<StockPage />} />} />
         <Route path="/restock"       element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
         <Route path="/sales"         element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
-        <Route path="/market-prices" element={<RoleRoute minRole="manager" element={<MarketPage />} />} />
-        <Route path="/scrape-log"    element={<RoleRoute minRole="manager" element={<ScrapeLogPage />} />} />
         <Route path="/users"         element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
-        <Route path="/market"        element={<Navigate to="/market-prices" replace />} />
         <Route path="*"              element={<Navigate to="/" replace />} />
       </Routes>
     </AppLayout>

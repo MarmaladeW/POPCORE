@@ -5,8 +5,8 @@ import {
   DatePicker, AutoComplete, Spin,
 } from 'antd'
 import {
-  PlusOutlined, ExportOutlined, DeleteOutlined,
-  LeftOutlined, RightOutlined,
+  ExportOutlined, DeleteOutlined,
+  LeftOutlined, RightOutlined, ImportOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { Dayjs } from 'dayjs'
@@ -17,7 +17,7 @@ import {
 } from 'recharts'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
-import BatchSalesModal from './BatchSalesModal'
+import DailyReportEntry from './DailyReportEntry'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Text, Title } = Typography
@@ -52,10 +52,10 @@ export default function SalesPage() {
   const [sales,   setSales]   = useState<SaleRow[]>([])
   const [summary, setSummary] = useState<SummaryRow[]>([])
   const [loading, setLoading] = useState(false)
-  const [addSearch,   setAddSearch]   = useState('')
-  const [addOptions,  setAddOptions]  = useState<any[]>([])
-  const [batchOpen,   setBatchOpen]   = useState(false)
-  const [exportFrom,  setExportFrom]  = useState<Dayjs>(dayjs().subtract(30, 'day'))
+  const [addSearch,    setAddSearch]    = useState('')
+  const [addOptions,   setAddOptions]   = useState<any[]>([])
+  const [importMode,   setImportMode]   = useState(false)
+  const [exportFrom,   setExportFrom]   = useState<Dayjs>(dayjs().subtract(30, 'day'))
   const [exportTo,    setExportTo]    = useState<Dayjs>(dayjs())
   const [localEdits,  setLocalEdits]  = useState<Record<number, { pos: number; cash: number }>>({})
 
@@ -261,7 +261,7 @@ export default function SalesPage() {
                   allowClear
                   style={{ width: 150 }}
                 />
-                <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)} />
+                <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)} />
               </Space>
             </RoleGuard>
           </div>
@@ -291,8 +291,8 @@ export default function SalesPage() {
                 allowClear
                 style={{ width: 240 }}
               />
-              <Button icon={<PlusOutlined />} type="primary" onClick={() => setBatchOpen(true)}>
-                Add Entry
+              <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)}>
+                Import Report
               </Button>
             </RoleGuard>
           </Space>
@@ -368,7 +368,27 @@ export default function SalesPage() {
         </Col>
       </Row>
 
+      {/* Daily Report Entry — shown when no sales yet OR user clicks Import */}
+      {(importMode || (!loading && sales.length === 0)) && (
+        <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px 20px', marginBottom: 20 }}>
+          {importMode && sales.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <Button size="small" onClick={() => setImportMode(false)}>← Back to Sales View</Button>
+            </div>
+          )}
+          <DailyReportEntry
+            date={dateStr}
+            onComplete={(d, _s) => {
+              setImportMode(false)
+              if (d !== dateStr) setDate(dayjs(d))
+              loadSales()
+            }}
+          />
+        </div>
+      )}
+
       {/* Sales table + log */}
+      {(sales.length > 0 || loading) && !importMode && (
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ fontWeight: 600, color: '#111827' }}>
@@ -377,8 +397,11 @@ export default function SalesPage() {
               {sales.length} products
             </Text>
           </div>
-          <RoleGuard minRole="manager">
-            <Space size={8}>
+          <Space size={8}>
+            <Button size="small" icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
+              Re-import
+            </Button>
+            <RoleGuard minRole="manager">
               <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
                 <Button danger size="small">Clear Day</Button>
               </Popconfirm>
@@ -389,8 +412,8 @@ export default function SalesPage() {
               >
                 Export
               </Button>
-            </Space>
-          </RoleGuard>
+            </RoleGuard>
+          </Space>
         </div>
         {isMobile ? (
           <Spin spinning={loading}>
@@ -464,8 +487,9 @@ export default function SalesPage() {
           />
         )}
       </div>
+      )}
 
-      {/* Summary section */}
+      {/* Sales Log — always visible */}
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', marginTop: 16, overflow: 'hidden' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ fontWeight: 600, color: '#111827' }}>Sales Log</span>
@@ -491,13 +515,6 @@ export default function SalesPage() {
           scroll={{ x: 'max-content' }}
         />
       </div>
-
-      <BatchSalesModal
-        open={batchOpen}
-        date={dateStr}
-        onClose={() => setBatchOpen(false)}
-        onDone={() => { setBatchOpen(false); loadSales() }}
-      />
     </div>
   )
 }
