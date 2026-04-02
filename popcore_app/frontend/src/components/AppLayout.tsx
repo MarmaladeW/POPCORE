@@ -5,8 +5,6 @@ import {
   AppstoreOutlined,
   InboxOutlined,
   DollarOutlined,
-  TagsOutlined,
-  SyncOutlined,
   UserOutlined,
   BellOutlined,
   LogoutOutlined,
@@ -149,8 +147,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isStaff   ? [{ key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         }] : []),
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       }] : []),
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         }] : []),
-    ...(isManager ? [{ key: '/market-prices', icon: <TagsOutlined />,      label: 'Market Prices' }] : []),
-    ...(isManager ? [{ key: '/scrape-log',    icon: <SyncOutlined />,      label: 'Scrape Log'    }] : []),
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,      label: 'Users'         }] : []),
   ]
 
@@ -165,8 +161,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // "More" drawer extra nav items
   const moreNavItems = [
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,   label: 'Restock'       }] : []),
-    ...(isManager ? [{ key: '/market-prices', icon: <TagsOutlined />,   label: 'Market Prices' }] : []),
-    ...(isManager ? [{ key: '/scrape-log',    icon: <SyncOutlined />,   label: 'Scrape Log'    }] : []),
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,   label: 'Users'         }] : []),
   ]
 

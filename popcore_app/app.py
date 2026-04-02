@@ -7,7 +7,6 @@ import os
 import json
 import uuid
 import re
-import threading
 import time
 import urllib.parse
 from datetime import date, timedelta
@@ -32,10 +31,6 @@ sentry_sdk.init(
     release=os.environ.get("APP_RELEASE", "local"),
     server_name=os.environ.get("SERVER_NAME", "localhost"),
 )
-
-# ─── Scrape-job state (single background thread) ──────────────────────────────
-_scrape_thread: threading.Thread | None = None
-_scrape_lock   = threading.Lock()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'popcore.db')
@@ -155,6 +150,9 @@ def migrate_db():
         cur.execute('ALTER TABLE daily_sales ADD COLUMN qty_cash INTEGER NOT NULL DEFAULT 0')
         # Backfill: treat existing qty_sold as qty_cash for all legacy rows
         cur.execute('UPDATE daily_sales SET qty_cash = qty_sold WHERE qty_sold > 0')
+    if 'store' not in ds_cols:
+        cur.execute("ALTER TABLE daily_sales ADD COLUMN store TEXT NOT NULL DEFAULT 'DT'")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ds_store ON daily_sales(store)")
 
     # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒'
     cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
@@ -200,6 +198,13 @@ def migrate_db():
             created_at TEXT    DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_aliases_norm ON product_aliases(alias_norm);
+
+        CREATE TABLE IF NOT EXISTS section_aliases (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            alias_norm   TEXT    NOT NULL UNIQUE,
+            section_type TEXT    NOT NULL,
+            created_at   TEXT    DEFAULT (datetime('now'))
+        );
     ''')
 
     # ── Restock & evening inventory tables ────────────────────────────────
@@ -694,6 +699,55 @@ def delete_alias(pid, alias_id):
     """Delete a specific alias for a product."""
     con = get_db()
     con.execute('DELETE FROM product_aliases WHERE id = ? AND product_id = ?', (alias_id, pid))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/section-aliases', methods=['GET'])
+@login_required
+def get_section_aliases():
+    """Return all saved section header → section_type mappings."""
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('SELECT id, alias_norm, section_type, created_at FROM section_aliases ORDER BY created_at DESC')
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
+@app.route('/api/section-aliases', methods=['POST'])
+@login_required
+def save_section_alias():
+    """Save a section alias: { alias: string, section_type: string }."""
+    data         = request.get_json(silent=True) or {}
+    alias        = (data.get('alias') or '').strip()
+    section_type = (data.get('section_type') or '').strip()
+    valid_types  = {'pos', 'cash', 'stock_in', 'stock_out', 'claw',
+                    'sell_display', 'break_display', 'employee_discount', 'ignore'}
+    if not alias or section_type not in valid_types:
+        return jsonify({'error': 'alias and valid section_type required'}), 400
+    alias_norm = re.sub(r'\s+', '', alias).lower()
+    if not alias_norm:
+        return jsonify({'error': 'alias normalises to empty'}), 400
+    con = get_db()
+    try:
+        con.execute(
+            'INSERT OR REPLACE INTO section_aliases (alias_norm, section_type) VALUES (?,?)',
+            (alias_norm, section_type),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/section-aliases/<int:alias_id>', methods=['DELETE'])
+@role_required('manager')
+def delete_section_alias(alias_id):
+    """Delete a saved section alias."""
+    con = get_db()
+    con.execute('DELETE FROM section_aliases WHERE id = ?', (alias_id,))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -1623,6 +1677,143 @@ def batch_upsert_sales():
     return jsonify({'ok': True, 'count': len(items)})
 
 
+@app.route('/api/sales/submit_daily_report', methods=['POST'])
+@role_required('staff')
+def submit_daily_report():
+    """
+    Submit a parsed daily report in one atomic transaction.
+
+    Body:
+    {
+      "date":  "2026-04-01",          (required)
+      "store": "DT",                  (optional, default "DT")
+      "items": [                      (required, list of parsed items)
+        {
+          "product_id":  <int>,
+          "section":     "pos"|"cash"|"claw"|"sell_display"|"employee_discount"
+                         |"break_display"|"stock_in",
+          "qty_pos":     <int, optional, sales sections>,
+          "qty_cash":    <int, optional, sales sections>,
+          "qty":         <int, optional, break_display>,
+          "box_size":    <int, optional, stock_in>,
+          "num_boxes":   <int, optional, stock_in>,
+          "notes":       <str, optional>
+        },
+        ...
+      ]
+    }
+
+    Sales sections (pos/cash/claw/sell_display/employee_discount):
+      → UPSERT into daily_sales, accumulating qty_pos + qty_cash additively.
+
+    break_display:
+      → INSERT into stock_transactions (txn_type='display_open')
+      → DECREMENT stock.instore_dan by qty
+
+    stock_in:
+      → total_units = box_size * num_boxes
+      → INSERT into stock_transactions (txn_type='report_stock_in')
+      → DECREMENT stock.upstairs_dan by num_boxes
+      → INCREMENT stock.instore_dan by total_units
+    """
+    data  = request.get_json(silent=True) or {}
+    d     = (data.get('date') or '').strip()
+    store = (data.get('store') or 'DT').strip()
+    items = data.get('items')
+
+    if not d or not isinstance(items, list):
+        return jsonify({'error': 'date and items required'}), 400
+
+    SALES_SECTIONS = {'pos', 'cash', 'claw', 'sell_display', 'employee_discount'}
+
+    con = get_db()
+    cur = con.cursor()
+    sales_count = 0
+    txn_count   = 0
+
+    try:
+        for item in items:
+            pid     = item.get('product_id')
+            section = (item.get('section') or '').strip()
+            notes   = (item.get('notes') or '').strip()
+            if not pid or not section:
+                continue
+
+            if section in SALES_SECTIONS:
+                qty_pos  = int(item.get('qty_pos',  0) or 0)
+                qty_cash = int(item.get('qty_cash', 0) or 0)
+                # claw / sell_display / employee_discount have no pos/cash split
+                # — frontend sets qty_pos for simplicity
+                qty_sold = qty_pos + qty_cash
+
+                # Build notes tag
+                tag = notes
+                if section == 'employee_discount' and not tag:
+                    tag = 'employee_discount'
+                elif section == 'sell_display' and not tag:
+                    tag = 'display_sold'
+                elif section == 'claw' and not tag:
+                    tag = 'claw_machine'
+
+                cur.execute('''
+                    INSERT INTO daily_sales
+                        (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(product_id, date) DO UPDATE SET
+                        qty_pos  = qty_pos  + excluded.qty_pos,
+                        qty_cash = qty_cash + excluded.qty_cash,
+                        qty_sold = qty_sold + excluded.qty_sold,
+                        notes    = CASE
+                            WHEN notes = '' THEN excluded.notes
+                            WHEN excluded.notes = '' THEN notes
+                            ELSE notes || '; ' || excluded.notes
+                        END
+                ''', (pid, d, store, qty_pos, qty_cash, qty_sold, tag))
+                sales_count += 1
+
+            elif section == 'break_display':
+                qty = int(item.get('qty', 1) or 1)
+                cur.execute('''
+                    INSERT INTO stock_transactions
+                        (product_id, txn_type, dan_qty, location, date, notes)
+                    VALUES (?, 'display_open', ?, 'instore', ?, ?)
+                ''', (pid, -qty, d, notes or 'display opened'))
+                cur.execute('''
+                    UPDATE stock SET instore_dan = MAX(0, instore_dan - ?),
+                                     last_updated = datetime('now')
+                    WHERE product_id = ?
+                ''', (qty, pid))
+                txn_count += 1
+
+            elif section == 'stock_in':
+                box_size  = int(item.get('box_size',  1) or 1)
+                num_boxes = int(item.get('num_boxes', 1) or 1)
+                total_units = box_size * num_boxes
+                cur.execute('''
+                    INSERT INTO stock_transactions
+                        (product_id, txn_type, dan_qty, location, date, notes)
+                    VALUES (?, 'report_stock_in', ?, 'upstairs→instore', ?, ?)
+                ''', (pid, total_units, d, notes or f'{num_boxes}x{box_size}'))
+                cur.execute('''
+                    INSERT INTO stock (product_id, upstairs_dan, instore_dan)
+                    VALUES (?, 0, ?)
+                    ON CONFLICT(product_id) DO UPDATE SET
+                        upstairs_dan = MAX(0, upstairs_dan - ?),
+                        instore_dan  = instore_dan + ?,
+                        last_updated = datetime('now')
+                ''', (pid, total_units, num_boxes, total_units))
+                txn_count += 1
+
+        con.commit()
+    except Exception as e:
+        con.rollback()
+        con.close()
+        return jsonify({'error': str(e)}), 500
+
+    con.close()
+    return jsonify({'ok': True, 'sales_upserted': sales_count, 'stock_transactions': txn_count})
+
+
 @app.route('/api/sales/export')
 @role_required('manager')
 def export_sales():
@@ -1831,150 +2022,6 @@ def bulk_delete_products():
     con.commit()
     con.close()
     return jsonify({'ok': True, 'deleted': deleted})
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MARKET PRICES API
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.route('/api/market/scrape', methods=['POST'])
-@role_required('manager')
-def start_market_scrape():
-    """
-    Launch a background scrape job.
-    Body (optional JSON): { "stores": ["popmart_ca", "mrpen", "whoopea"] }
-    Returns { ok, status } or 409 if already running.
-    """
-    global _scrape_thread
-    with _scrape_lock:
-        if _scrape_thread and _scrape_thread.is_alive():
-            return jsonify({'error': 'Scrape already running'}), 409
-
-    data       = request.get_json(silent=True) or {}
-    store_keys = data.get('stores') or None   # None → all stores
-
-    def _run():
-        try:
-            from scraper import run_scrape
-            run_scrape(store_keys, DB_PATH)
-        except Exception as e:
-            import traceback; traceback.print_exc()
-
-    with _scrape_lock:
-        _scrape_thread = threading.Thread(target=_run, daemon=True, name='scrape')
-        _scrape_thread.start()
-
-    return jsonify({'ok': True, 'status': 'running', 'stores': store_keys or 'all'})
-
-
-@app.route('/api/market/status')
-@login_required
-def market_status():
-    """
-    Return per-store scrape status (last run only) + whether a job is running.
-    """
-    con = get_db()
-    cur = con.cursor()
-    cur.execute('''
-        SELECT store_key, status, products_scraped, products_matched,
-               error_msg, started_at, finished_at
-        FROM scrape_log
-        WHERE id IN (SELECT MAX(id) FROM scrape_log GROUP BY store_key)
-        ORDER BY store_key
-    ''')
-    stores = {r['store_key']: dict(r) for r in cur.fetchall()}
-    con.close()
-
-    is_running = bool(_scrape_thread and _scrape_thread.is_alive())
-    return jsonify({'stores': stores, 'running': is_running})
-
-
-@app.route('/api/market/scrape_log')
-@login_required
-def market_scrape_log():
-    """Return last 100 scrape_log rows ordered by started_at DESC."""
-    con = get_db()
-    cur = con.cursor()
-    cur.execute('''
-        SELECT id, store_key, status, products_scraped, products_matched,
-               error_msg, started_at, finished_at
-        FROM scrape_log
-        ORDER BY started_at DESC
-        LIMIT 100
-    ''')
-    rows = [dict(r) for r in cur.fetchall()]
-    con.close()
-    return jsonify(rows)
-
-
-@app.route('/api/market/prices')
-@login_required
-def market_prices():
-    """
-    Return market_prices rows.
-    Query params:
-      product_id=<int>  → prices for one internal product (all stores)
-      store=<key>       → all prices for one store
-      (none)            → all rows
-    """
-    product_id = request.args.get('product_id', type=int)
-    store      = request.args.get('store', '').strip()
-
-    con = get_db()
-    cur = con.cursor()
-
-    if product_id:
-        cur.execute('''
-            SELECT * FROM market_prices
-            WHERE product_id = ?
-            ORDER BY store_key
-        ''', (product_id,))
-    elif store:
-        cur.execute('''
-            SELECT * FROM market_prices
-            WHERE store_key = ?
-            ORDER BY external_title
-        ''', (store,))
-    else:
-        cur.execute('''
-            SELECT * FROM market_prices
-            ORDER BY store_key, external_title
-        ''')
-
-    rows = [dict(r) for r in cur.fetchall()]
-    con.close()
-    return jsonify(rows)
-
-
-@app.route('/api/market/overview')
-@login_required
-def market_overview():
-    """
-    Full market overview: all scraped items joined with internal product info.
-    Used by the Market tab to build the comparison table.
-    Query param: matched_only=1 to hide unmatched scraped items.
-    """
-    matched_only = request.args.get('matched_only', '0') == '1'
-    con = get_db()
-    cur = con.cursor()
-    where = 'WHERE mp.product_id IS NOT NULL' if matched_only else ''
-    cur.execute(f'''
-        SELECT
-            mp.id, mp.store_key, mp.store_name,
-            mp.external_title, mp.price_cad, mp.compare_at_price,
-            mp.on_sale, mp.in_stock, mp.url,
-            mp.match_score, mp.scraped_at,
-            mp.product_id, mp.sku,
-            p.jizhanming, p.name_cn_en, p.price AS our_price,
-            p.ip_series,  p.product_type
-        FROM market_prices mp
-        LEFT JOIN products p ON mp.product_id = p.id
-        {where}
-        ORDER BY mp.store_key, mp.external_title COLLATE NOCASE
-    ''')
-    rows = [dict(r) for r in cur.fetchall()]
-    con.close()
-    return jsonify(rows)
 
 
 # ─── Restock API ─────────────────────────────────────────────────────────────
