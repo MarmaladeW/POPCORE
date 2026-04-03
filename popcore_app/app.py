@@ -759,7 +759,8 @@ def search_products():
     q             = request.args.get('q', '').strip().lower()
     series        = request.args.get('series', '').strip()
     product_type  = request.args.get('product_type', '').strip()
-    limit         = int(request.args.get('limit', 60))
+    limit_raw     = request.args.get('limit')
+    limit         = int(limit_raw) if limit_raw else None
     include_stock = request.args.get('include_stock', '0') == '1'
 
     con = get_db()
@@ -777,15 +778,17 @@ def search_products():
 
     if not q:
         # No query — just return all (filtered by series/type if set)
-        where = ("WHERE " + " AND ".join(filter_clauses)) if filter_clauses else ""
+        where        = ("WHERE " + " AND ".join(filter_clauses)) if filter_clauses else ""
+        limit_clause = 'LIMIT ?' if limit else ''
+        limit_param  = [limit] if limit else []
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, search_blob, is_bestseller
             FROM products
             {where}
             ORDER BY sku DESC
-            LIMIT ?
-        ''', filter_params + [limit])
+            {limit_clause}
+        ''', filter_params + limit_param)
         rows = [dict(r) for r in cur.fetchall()]
         if include_stock and rows:
             pids = [r['id'] for r in rows]
@@ -872,7 +875,7 @@ def search_products():
     candidates.sort(key=lambda x: -x['_score'])
 
     # Strip internal fields
-    final = candidates[:limit]
+    final = candidates[:limit] if limit else candidates
     for c in final:
         c.pop('search_blob', None)
         c.pop('_score', None)
@@ -891,6 +894,17 @@ def search_products():
 
     con.close()
     return jsonify(final)
+
+
+@app.route('/api/products/count')
+@login_required
+def products_count():
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('SELECT COUNT(*) FROM products')
+    n = cur.fetchone()[0]
+    con.close()
+    return jsonify({'count': n})
 
 
 @app.route('/api/products/<int:pid>')
