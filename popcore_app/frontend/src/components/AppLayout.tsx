@@ -1,12 +1,11 @@
 import { useState } from 'react'
-import { Layout, Menu, Avatar, Dropdown, Badge, Tag, Drawer, Grid, Button } from 'antd'
+import { Layout, Menu, Avatar, Dropdown, Tag, Drawer, Grid, Button } from 'antd'
 import {
   DashboardOutlined,
   AppstoreOutlined,
   InboxOutlined,
   DollarOutlined,
   UserOutlined,
-  BellOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -244,11 +243,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <div style={{ color: '#fff', fontWeight: 700, fontSize: 15 }}>POPCORE</div>
             </div>
 
-            {/* Right: bell + avatar */}
+            {/* Right: avatar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <Badge count={0} showZero={false}>
-                <BellOutlined style={{ fontSize: 18, color: 'rgba(255,255,255,0.7)', cursor: 'pointer' }} />
-              </Badge>
               <Dropdown
                 menu={{
                   items: [{
@@ -307,10 +303,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               >
                 {ROLE_LABELS[role] ?? role}
               </Tag>
-
-              <Badge count={0} showZero={false}>
-                <BellOutlined style={{ fontSize: 18, color: '#6b7280', cursor: 'pointer' }} />
-              </Badge>
 
               {/* User dropdown */}
               <Dropdown

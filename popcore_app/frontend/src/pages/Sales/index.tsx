@@ -54,10 +54,15 @@ export default function SalesPage() {
   const [loading, setLoading] = useState(false)
   const [addSearch,    setAddSearch]    = useState('')
   const [addOptions,   setAddOptions]   = useState<any[]>([])
+  const [pendingAdd,   setPendingAdd]   = useState<{ id: number; label: string } | null>(null)
+  const [pendingPos,   setPendingPos]   = useState(0)
+  const [pendingCash,  setPendingCash]  = useState(0)
   const [importMode,   setImportMode]   = useState(false)
   const [exportFrom,   setExportFrom]   = useState<Dayjs>(dayjs().subtract(30, 'day'))
   const [exportTo,    setExportTo]    = useState<Dayjs>(dayjs())
   const [localEdits,  setLocalEdits]  = useState<Record<number, { pos: number; cash: number }>>({})
+  const [expandedSales,  setExpandedSales]  = useState<Record<string, SaleRow[]>>({})
+  const [expandLoading,  setExpandLoading]  = useState<Record<string, boolean>>({})
 
   const dateStr = date.format('YYYY-MM-DD')
 
@@ -90,6 +95,39 @@ export default function SalesPage() {
       setAddSearch(''); setAddOptions([])
       loadSales()
     } catch { message.error('Failed to add product') }
+  }
+
+  async function confirmAdd() {
+    if (!pendingAdd) return
+    try {
+      await client.post('/sales/upsert', {
+        product_id: pendingAdd.id,
+        date: dateStr,
+        qty_pos: pendingPos,
+        qty_cash: pendingCash,
+        notes: '',
+      })
+      setPendingAdd(null); setAddSearch(''); setAddOptions([])
+      setPendingPos(0); setPendingCash(0)
+      loadSales()
+    } catch { message.error('Failed to add product') }
+  }
+
+  async function doExport() {
+    try {
+      const res = await client.get('/sales/export', {
+        params: { from: exportFrom.format('YYYY-MM-DD'), to: exportTo.format('YYYY-MM-DD') },
+        responseType: 'blob',
+      })
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
+      const a   = document.createElement('a')
+      a.href     = url
+      a.download = `sales_${exportFrom.format('YYYY-MM-DD')}_${exportTo.format('YYYY-MM-DD')}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch { message.error('Export failed') }
   }
 
   function setLocalQty(rowId: number, field: 'pos' | 'cash', val: number) {
@@ -224,6 +262,30 @@ export default function SalesPage() {
     { title: 'Total Sold', dataIndex: 'total_sold', width: 90, align: 'center', render: v => <Tag color="green">{v}</Tag> },
   ]
 
+  const drillColumns: ColumnsType<SaleRow> = [
+    {
+      title: 'Product', key: 'product',
+      render: (_, r) => (
+        <div>
+          <div style={{ fontWeight: 500, fontSize: 12 }}>{r.jizhanming || '—'}</div>
+          <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.sku}</div>
+        </div>
+      ),
+    },
+    { title: 'Series', dataIndex: 'ip_series', width: 100, render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—' },
+    { title: 'POS', dataIndex: 'qty_pos',  width: 70, align: 'center', render: v => <Tag color="blue">{v}</Tag> },
+    { title: 'Cash', dataIndex: 'qty_cash', width: 70, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
+    { title: 'Total', dataIndex: 'qty_sold', width: 70, align: 'center', render: v => <Text style={{ fontWeight: 600, color: v > 0 ? '#10B981' : '#9ca3af' }}>{v}</Text> },
+    { title: 'Unit Price', dataIndex: 'price', width: 90, align: 'right', render: v => v != null ? `CA$${v}` : '—' },
+    {
+      title: 'Line Total', width: 100, align: 'right',
+      render: (_, r) => {
+        const rev = (r.price ?? 0) * r.qty_sold
+        return <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${rev.toFixed(2)}</Text>
+      },
+    },
+  ]
+
   return (
     <div>
       {/* Header */}
@@ -250,18 +312,37 @@ export default function SalesPage() {
               />
             </div>
             <RoleGuard minRole="staff">
-              <Space size={6}>
-                <AutoComplete
-                  placeholder="Add product..."
-                  value={addSearch}
-                  options={addOptions}
-                  onSearch={searchToAdd}
-                  onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
-                  onClear={() => { setAddSearch(''); setAddOptions([]) }}
-                  allowClear
-                  style={{ width: 150 }}
-                />
-                <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)} />
+              <Space size={6} direction="vertical" style={{ width: '100%' }}>
+                <Space size={6}>
+                  <AutoComplete
+                    placeholder="Add product..."
+                    value={addSearch}
+                    options={addOptions}
+                    onSearch={searchToAdd}
+                    onSelect={(val, opt) => {
+                      setPendingAdd({ id: Number(val), label: opt.label as string })
+                      setPendingPos(0); setPendingCash(0)
+                      setAddSearch(opt.label as string); setAddOptions([])
+                    }}
+                    onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
+                    allowClear
+                    style={{ width: 150 }}
+                  />
+                  <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)} />
+                </Space>
+                {pendingAdd && (
+                  <Space size={4} style={{ background: '#f0f4ff', borderRadius: 6, padding: '6px 8px' }}>
+                    <span style={{ fontSize: 11, color: '#6366F1', fontWeight: 500, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {pendingAdd.label}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>POS</span>
+                    <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 55 }} />
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>Cash</span>
+                    <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 55 }} />
+                    <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
+                    <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
+                  </Space>
+                )}
               </Space>
             </RoleGuard>
           </div>
@@ -286,11 +367,28 @@ export default function SalesPage() {
                 value={addSearch}
                 options={addOptions}
                 onSearch={searchToAdd}
-                onSelect={(val, opt) => { addProduct(Number(val)); setAddSearch(opt.label as string) }}
-                onClear={() => { setAddSearch(''); setAddOptions([]) }}
+                onSelect={(val, opt) => {
+                  setPendingAdd({ id: Number(val), label: opt.label as string })
+                  setPendingPos(0); setPendingCash(0)
+                  setAddSearch(opt.label as string); setAddOptions([])
+                }}
+                onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
                 allowClear
                 style={{ width: 240 }}
               />
+              {pendingAdd && (
+                <Space size={4} style={{ background: '#f0f4ff', borderRadius: 6, padding: '4px 10px' }}>
+                  <span style={{ fontSize: 12, color: '#6366F1', fontWeight: 500, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {pendingAdd.label}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#6b7280' }}>POS</span>
+                  <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 60 }} />
+                  <span style={{ fontSize: 12, color: '#6b7280' }}>Cash</span>
+                  <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 60 }} />
+                  <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
+                  <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
+                </Space>
+              )}
               <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)}>
                 Import Report
               </Button>
@@ -408,7 +506,7 @@ export default function SalesPage() {
               <Button
                 size="small"
                 icon={<ExportOutlined />}
-                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
+                onClick={doExport}
               >
                 Export
               </Button>
@@ -501,7 +599,7 @@ export default function SalesPage() {
               <Button
                 size="small"
                 icon={<ExportOutlined />}
-                onClick={() => window.location.href = `/api/sales/export?from=${exportFrom.format('YYYY-MM-DD')}&to=${exportTo.format('YYYY-MM-DD')}`}
+                onClick={doExport}
               >Export</Button>
             </Space>
           </RoleGuard>
@@ -513,6 +611,30 @@ export default function SalesPage() {
           columns={summaryColumns}
           pagination={{ pageSize: 30, showTotal: t => `${t} days` }}
           scroll={{ x: 'max-content' }}
+          expandable={{
+            expandedRowRender: (record) => {
+              const rows = expandedSales[record.date]
+              if (expandLoading[record.date] || !rows) return <Spin style={{ padding: 16 }} />
+              return (
+                <Table
+                  rowKey="id"
+                  size="small"
+                  dataSource={rows}
+                  columns={drillColumns}
+                  pagination={false}
+                  style={{ margin: '4px 0' }}
+                />
+              )
+            },
+            onExpand: (expanded, record) => {
+              if (expanded && !expandedSales[record.date]) {
+                setExpandLoading(prev => ({ ...prev, [record.date]: true }))
+                client.get('/sales', { params: { date: record.date } })
+                  .then(r => setExpandedSales(prev => ({ ...prev, [record.date]: r.data })))
+                  .finally(() => setExpandLoading(prev => ({ ...prev, [record.date]: false })))
+              }
+            },
+          }}
         />
       </div>
     </div>
