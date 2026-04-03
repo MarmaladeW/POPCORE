@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
   Typography, Row, Col, InputNumber, Card,
@@ -47,6 +48,7 @@ interface SummaryRow {
 
 export default function SalesPage() {
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
 
   const [date,    setDate]    = useState<Dayjs>(dayjs())
   const [sales,   setSales]   = useState<SaleRow[]>([])
@@ -61,8 +63,6 @@ export default function SalesPage() {
   const [exportFrom,   setExportFrom]   = useState<Dayjs>(dayjs().subtract(30, 'day'))
   const [exportTo,    setExportTo]    = useState<Dayjs>(dayjs())
   const [localEdits,  setLocalEdits]  = useState<Record<number, { pos: number; cash: number }>>({})
-  const [expandedSales,  setExpandedSales]  = useState<Record<string, SaleRow[]>>({})
-  const [expandLoading,  setExpandLoading]  = useState<Record<string, boolean>>({})
 
   const dateStr = date.format('YYYY-MM-DD')
 
@@ -262,29 +262,6 @@ export default function SalesPage() {
     { title: 'Total Sold', dataIndex: 'total_sold', width: 90, align: 'center', render: v => <Tag color="green">{v}</Tag> },
   ]
 
-  const drillColumns: ColumnsType<SaleRow> = [
-    {
-      title: 'Product', key: 'product',
-      render: (_, r) => (
-        <div>
-          <div style={{ fontWeight: 500, fontSize: 12 }}>{r.jizhanming || '—'}</div>
-          <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.sku}</div>
-        </div>
-      ),
-    },
-    { title: 'Series', dataIndex: 'ip_series', width: 100, render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—' },
-    { title: 'POS', dataIndex: 'qty_pos',  width: 70, align: 'center', render: v => <Tag color="blue">{v}</Tag> },
-    { title: 'Cash', dataIndex: 'qty_cash', width: 70, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
-    { title: 'Total', dataIndex: 'qty_sold', width: 70, align: 'center', render: v => <Text style={{ fontWeight: 600, color: v > 0 ? '#10B981' : '#9ca3af' }}>{v}</Text> },
-    { title: 'Unit Price', dataIndex: 'price', width: 90, align: 'right', render: v => v != null ? `CA$${v}` : '—' },
-    {
-      title: 'Line Total', width: 100, align: 'right',
-      render: (_, r) => {
-        const rev = (r.price ?? 0) * r.qty_sold
-        return <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${rev.toFixed(2)}</Text>
-      },
-    },
-  ]
 
   return (
     <div>
@@ -328,7 +305,6 @@ export default function SalesPage() {
                     allowClear
                     style={{ width: 150 }}
                   />
-                  <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)} />
                 </Space>
                 {pendingAdd && (
                   <Space size={4} style={{ background: '#f0f4ff', borderRadius: 6, padding: '6px 8px' }}>
@@ -389,9 +365,6 @@ export default function SalesPage() {
                   <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
                 </Space>
               )}
-              <Button icon={<ImportOutlined />} type="primary" onClick={() => setImportMode(true)}>
-                Import Report
-              </Button>
             </RoleGuard>
           </Space>
         </div>
@@ -611,30 +584,10 @@ export default function SalesPage() {
           columns={summaryColumns}
           pagination={{ pageSize: 30, showTotal: t => `${t} days` }}
           scroll={{ x: 'max-content' }}
-          expandable={{
-            expandedRowRender: (record) => {
-              const rows = expandedSales[record.date]
-              if (expandLoading[record.date] || !rows) return <Spin style={{ padding: 16 }} />
-              return (
-                <Table
-                  rowKey="id"
-                  size="small"
-                  dataSource={rows}
-                  columns={drillColumns}
-                  pagination={false}
-                  style={{ margin: '4px 0' }}
-                />
-              )
-            },
-            onExpand: (expanded, record) => {
-              if (expanded && !expandedSales[record.date]) {
-                setExpandLoading(prev => ({ ...prev, [record.date]: true }))
-                client.get('/sales', { params: { date: record.date } })
-                  .then(r => setExpandedSales(prev => ({ ...prev, [record.date]: r.data })))
-                  .finally(() => setExpandLoading(prev => ({ ...prev, [record.date]: false })))
-              }
-            },
-          }}
+          onRow={(record) => ({
+            onClick: () => navigate(`/sales/day/${record.date}`),
+            style: { cursor: 'pointer' },
+          })}
         />
       </div>
     </div>
