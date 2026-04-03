@@ -269,7 +269,7 @@ export default function SalesPage() {
       {isMobile ? (
         /* Mobile: Day-navigator with ‹ prev / date / next › */
         <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: pendingAdd ? 8 : 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <Button
                 type="text"
@@ -289,39 +289,39 @@ export default function SalesPage() {
               />
             </div>
             <RoleGuard minRole="staff">
-              <Space size={6} direction="vertical" style={{ width: '100%' }}>
-                <Space size={6}>
-                  <AutoComplete
-                    placeholder="Add product..."
-                    value={addSearch}
-                    options={addOptions}
-                    onSearch={searchToAdd}
-                    onSelect={(val, opt) => {
-                      setPendingAdd({ id: Number(val), label: opt.label as string })
-                      setPendingPos(0); setPendingCash(0)
-                      setAddSearch(opt.label as string); setAddOptions([])
-                    }}
-                    onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
-                    allowClear
-                    style={{ width: 150 }}
-                  />
-                </Space>
-                {pendingAdd && (
-                  <Space size={4} style={{ background: '#f0f4ff', borderRadius: 6, padding: '6px 8px' }}>
-                    <span style={{ fontSize: 11, color: '#6366F1', fontWeight: 500, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {pendingAdd.label}
-                    </span>
-                    <span style={{ fontSize: 11, color: '#6b7280' }}>POS</span>
-                    <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 55 }} />
-                    <span style={{ fontSize: 11, color: '#6b7280' }}>Cash</span>
-                    <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 55 }} />
-                    <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
-                    <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
-                  </Space>
-                )}
-              </Space>
+              <AutoComplete
+                placeholder="Add product..."
+                value={addSearch}
+                options={addOptions}
+                onSearch={searchToAdd}
+                onSelect={(val, opt) => {
+                  setPendingAdd({ id: Number(val), label: opt.label as string })
+                  setPendingPos(0); setPendingCash(0)
+                  setAddSearch(opt.label as string); setAddOptions([])
+                }}
+                onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
+                allowClear
+                style={{ width: 150 }}
+              />
             </RoleGuard>
           </div>
+          {pendingAdd && (
+            <div style={{
+              display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6,
+              background: '#f0f4ff', borderRadius: 6, padding: '8px 10px',
+              marginBottom: 4,
+            }}>
+              <span style={{ fontSize: 13, color: '#6366F1', fontWeight: 500, flexShrink: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {pendingAdd.label}
+              </span>
+              <span style={{ fontSize: 13, color: '#6b7280' }}>POS</span>
+              <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
+              <span style={{ fontSize: 13, color: '#6b7280' }}>Cash</span>
+              <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
+              <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
+              <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
+            </div>
+          )}
         </div>
       ) : (
         /* Desktop: original header */
