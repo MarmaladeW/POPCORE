@@ -73,7 +73,7 @@ export default function ProductsPage() {
 
   const load = useCallback(() => {
     setLoading(true)
-    const params: Record<string, string> = { limit: '200' }
+    const params: Record<string, string> = {}
     if (searchQ)      params.q = searchQ
     if (searchSeries) params.series = searchSeries
     if (searchType)   params.product_type = searchType

@@ -104,7 +104,7 @@ export default function DashboardPage() {
   const [salesSummary, setSalesSummary] = useState<SalesSummaryRow[]>([])
   const [todaySales,   setTodaySales]   = useState<SalesRow[]>([])
   const [lowStock,     setLowStock]     = useState<StockRow[]>([])
-  const [products,     setProducts]     = useState<ProductRow[]>([])
+  const [productCount, setProductCount] = useState<number>(0)
   const [loading,      setLoading]      = useState(true)
 
   useEffect(() => {
@@ -114,8 +114,8 @@ export default function DashboardPage() {
       client.get('/sales/summary'),
       client.get('/sales', { params: { date: today } }),
       client.get('/stock'),
-      client.get('/products/search', { params: { limit: 500 } }),
-    ]).then(([ss, summary, ts, stock, prods]) => {
+      client.get('/products/count'),
+    ]).then(([ss, summary, ts, stock, countRes]) => {
       setStockSummary(ss.data)
       setSalesSummary(summary.data)
       setTodaySales(ts.data)
@@ -125,7 +125,7 @@ export default function DashboardPage() {
           .filter(r => (r.upstairs_dan + r.instore_dan) > 0 && (r.upstairs_dan + r.instore_dan) <= 3)
           .slice(0, 8)
       )
-      setProducts(prods.data)
+      setProductCount(countRes.data.count)
     }).finally(() => setLoading(false))
   }, [])
 
@@ -161,7 +161,7 @@ export default function DashboardPage() {
   const statCards = [
     {
       title: 'Total Products',
-      value: products.length,
+      value: productCount,
       sub: `${stockSummary?.low_stock_count ?? 0} low stock`,
       icon: <AppstoreOutlined />,
       accentColor: '#6366F1',
