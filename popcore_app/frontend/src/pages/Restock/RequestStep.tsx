@@ -19,7 +19,7 @@ interface SearchProduct {
   ip_series:    string
   product_type: string
   is_bestseller: number
-  upstairs_dan: number   // warehouse stock (via include_stock=1)
+  upstairs_qty: number   // warehouse stock (via include_stock=1)
 }
 
 interface Props {
@@ -201,9 +201,9 @@ export default function RequestStep({ session, onRefresh }: Props) {
     },
     {
       title: '仓库库存',
-      dataIndex: 'upstairs_dan',
+      dataIndex: 'upstairs_qty',
       width: 90,
-      render: v => <Tag color={v > 0 ? 'blue' : 'red'}>{v} 端</Tag>,
+      render: v => <Tag color={v > 0 ? 'blue' : 'red'}>{v}</Tag>,
     },
     {
       title: '数量',
