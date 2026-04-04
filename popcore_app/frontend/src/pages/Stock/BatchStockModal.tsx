@@ -50,7 +50,7 @@ function parseLine(raw: string): { rawName: string; qty: number; flagged: boolea
   }
 
   // Step 2: Trailing number with optional unit suffix
-  const stripped = t.replace(/[端个盒箱]+$/, '').trim()
+  const stripped = t.replace(/[端个盒箱件]+$/, '').trim()
   const m = stripped.match(/^(.*\D)\s*(\d+)$/)
   if (m && m[1].trim()) {
     return { rawName: m[1].trim(), qty: parseInt(m[2], 10), flagged: false, notes: '' }
@@ -217,7 +217,7 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
       },
     },
     {
-      title: '数量(端)', key: 'qty', width: 110,
+      title: '数量', key: 'qty', width: 110,
       render: (_: any, r: MatchedItem) => r.flagged ? (
         <Space size={4}>
           <Tag color="red" icon={<WarningOutlined />}>无数量</Tag>
@@ -269,9 +269,9 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
             description={
               <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.8 }}>
                 {'记账名*数量          ← 星号分隔（推荐）\n'}
-                {'记账名数量端         ← 数字紧跟名称\n'}
+                {'记账名数量端/件/盒   ← 数字紧跟名称\n'}
                 {'记账名\t数量         ← 表格粘贴\n'}
-                {'记账名               ← 无数量时默认1端'}
+                {'记账名               ← 无数量时默认1'}
               </div>
             }
           />

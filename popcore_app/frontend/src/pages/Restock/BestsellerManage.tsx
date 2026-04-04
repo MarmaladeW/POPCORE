@@ -18,8 +18,8 @@ interface Product {
   ip_series:     string
   product_type:  string
   is_bestseller: number
-  instore_dan?:  number
-  upstairs_dan?: number
+  instore_qty?:  number
+  upstairs_qty?: number
 }
 
 export default function BestsellerManage() {
@@ -126,8 +126,8 @@ export default function BestsellerManage() {
       key: 'instore',
       width: 100,
       render: (_: unknown, r: Product) => {
-        const qty = r.instore_dan ?? 0
-        return <Tag color={qty > 0 ? 'blue' : 'default'}>{qty} 端</Tag>
+        const qty = r.instore_qty ?? 0
+        return <Tag color={qty > 0 ? 'blue' : 'default'}>{qty}</Tag>
       },
     }] : []),
     {

@@ -34,8 +34,8 @@ export interface RestockItem {
   name_cn_en: string
   ip_series: string
   product_type: string
-  upstairs_dan: number
-  instore_dan: number
+  upstairs_qty: number
+  instore_qty: number
 }
 
 export interface RestockSession {

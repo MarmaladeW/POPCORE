@@ -92,12 +92,14 @@ def migrate_db():
         if col not in existing:
             cur.execute(f'ALTER TABLE products ADD COLUMN {col} {defn}')
 
-    # Add claw_dan to stock table if missing (migration for existing DBs)
+    # Add claw_dan/claw_qty to stock table if missing (migration for existing DBs).
+    # We handle both the old name (claw_dan) and the new name (claw_qty) since the
+    # column rename migration runs later in this same function.
     cur.execute("PRAGMA table_info(stock)")
     stock_cols = {r['name'] for r in cur.fetchall()}
-    if 'claw_dan' not in stock_cols:
+    if 'claw_dan' not in stock_cols and 'claw_qty' not in stock_cols:
         try:
-            cur.execute('ALTER TABLE stock ADD COLUMN claw_dan INTEGER NOT NULL DEFAULT 0')
+            cur.execute('ALTER TABLE stock ADD COLUMN claw_qty INTEGER NOT NULL DEFAULT 0')
         except Exception:
             pass
 
@@ -112,9 +114,9 @@ def migrate_db():
         CREATE INDEX IF NOT EXISTS idx_hidden_imgs_pid ON hidden_images(product_id);
         CREATE TABLE IF NOT EXISTS stock (
             product_id   INTEGER PRIMARY KEY REFERENCES products(id),
-            upstairs_dan INTEGER NOT NULL DEFAULT 0,
-            instore_dan  INTEGER NOT NULL DEFAULT 0,
-            claw_dan     INTEGER NOT NULL DEFAULT 0,
+            upstairs_qty INTEGER NOT NULL DEFAULT 0,
+            instore_qty  INTEGER NOT NULL DEFAULT 0,
+            claw_qty     INTEGER NOT NULL DEFAULT 0,
             last_updated TEXT,
             notes        TEXT DEFAULT ''
         );
@@ -122,7 +124,7 @@ def migrate_db():
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL REFERENCES products(id),
             txn_type   TEXT NOT NULL,
-            dan_qty    INTEGER NOT NULL,
+            qty        INTEGER NOT NULL,
             location   TEXT,
             date       TEXT NOT NULL,
             notes      TEXT DEFAULT '',
@@ -156,6 +158,65 @@ def migrate_db():
 
     # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒'
     cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
+
+    # ── Product-type schema: add dan_per_xiang ────────────────────────────────
+    cur.execute("PRAGMA table_info(products)")
+    existing = {r['name'] for r in cur.fetchall()}
+    if 'dan_per_xiang' not in existing:
+        cur.execute('ALTER TABLE products ADD COLUMN dan_per_xiang INTEGER')
+
+    # ── Stock column renames: *_dan → *_qty ────────────────────────────────────
+    # SQLite ≥ 3.25 supports ALTER TABLE … RENAME COLUMN.
+    # We guard each rename with a PRAGMA check so this migration is safe to re-run.
+    cur.execute("PRAGMA table_info(stock)")
+    stock_col_names = {r['name'] for r in cur.fetchall()}
+
+    if 'upstairs_dan' in stock_col_names:
+        cur.execute('ALTER TABLE stock RENAME COLUMN upstairs_dan TO upstairs_qty')
+    if 'instore_dan' in stock_col_names:
+        cur.execute('ALTER TABLE stock RENAME COLUMN instore_dan TO instore_qty')
+    if 'claw_dan' in stock_col_names:
+        cur.execute('ALTER TABLE stock RENAME COLUMN claw_dan TO claw_qty')
+
+    cur.execute("PRAGMA table_info(stock_transactions)")
+    txn_col_names = {r['name'] for r in cur.fetchall()}
+    if 'dan_qty' in txn_col_names:
+        cur.execute('ALTER TABLE stock_transactions RENAME COLUMN dan_qty TO qty')
+
+    # ── Data migration: convert blind-box stock from 端 → 盒 ──────────────────
+    # Only run if the migration sentinel is not yet set.
+    # We check whether any blind-box product with boxes_per_dan > 1 still has
+    # suspiciously low stock that looks un-multiplied by checking a flag table.
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS _migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT DEFAULT (datetime('now'))
+        )
+    ''')
+    cur.execute("SELECT 1 FROM _migrations WHERE name='blind_box_stock_to_he'")
+    if not cur.fetchone():
+        # Convert upstairs_qty, instore_qty, claw_qty from 端 to 盒 for blind boxes.
+        cur.execute('''
+            UPDATE stock SET
+                upstairs_qty = upstairs_qty * p.boxes_per_dan,
+                instore_qty  = instore_qty  * p.boxes_per_dan,
+                claw_qty     = claw_qty     * p.boxes_per_dan
+            FROM products p
+            WHERE stock.product_id = p.id
+              AND p.product_type = '盲盒'
+              AND p.boxes_per_dan IS NOT NULL
+              AND p.boxes_per_dan > 0
+        ''')
+        # Convert stock_transactions.qty from 端 to 盒 for blind boxes.
+        cur.execute('''
+            UPDATE stock_transactions SET qty = qty * p.boxes_per_dan
+            FROM products p
+            WHERE stock_transactions.product_id = p.id
+              AND p.product_type = '盲盒'
+              AND p.boxes_per_dan IS NOT NULL
+              AND p.boxes_per_dan > 0
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('blind_box_stock_to_he')")
 
     # ── Market price tables ────────────────────────────────────────────────
     cur.executescript('''
@@ -793,13 +854,13 @@ def search_products():
         if include_stock and rows:
             pids = [r['id'] for r in rows]
             cur.execute(
-                'SELECT product_id, COALESCE(upstairs_dan,0) AS upstairs_dan FROM stock'
+                'SELECT product_id, COALESCE(upstairs_qty,0) AS upstairs_qty FROM stock'
                 f' WHERE product_id IN ({",".join("?"*len(pids))})',
                 pids,
             )
-            sm = {r['product_id']: r['upstairs_dan'] for r in cur.fetchall()}
+            sm = {r['product_id']: r['upstairs_qty'] for r in cur.fetchall()}
             for r in rows:
-                r['upstairs_dan'] = sm.get(r['id'], 0)
+                r['upstairs_qty'] = sm.get(r['id'], 0)
         con.close()
         return jsonify(rows)
 
@@ -884,13 +945,13 @@ def search_products():
     if include_stock and final:
         pids = [c['id'] for c in final]
         cur.execute(
-            'SELECT product_id, COALESCE(upstairs_dan,0) AS upstairs_dan FROM stock'
+            'SELECT product_id, COALESCE(upstairs_qty,0) AS upstairs_qty FROM stock'
             f' WHERE product_id IN ({",".join("?"*len(pids))})',
             pids,
         )
-        sm = {r['product_id']: r['upstairs_dan'] for r in cur.fetchall()}
+        sm = {r['product_id']: r['upstairs_qty'] for r in cur.fetchall()}
         for c in final:
-            c['upstairs_dan'] = sm.get(c['id'], 0)
+            c['upstairs_qty'] = sm.get(c['id'], 0)
 
     con.close()
     return jsonify(final)
@@ -1001,7 +1062,7 @@ def update_product(pid):
     data = request.get_json()
     allowed = {'jizhanming', 'price', 'notes', 'name_cn_en', 'product_type',
                'brand', 'release_date', 'edition_size', 'channel', 'hidden',
-               'style_notes', 'boxes_per_dan', 'ip_series',
+               'style_notes', 'boxes_per_dan', 'dan_per_xiang', 'ip_series',
                'hidden_count', 'hidden_has_small', 'hidden_has_large',
                'hidden_prob_small', 'hidden_prob_large', 'is_bestseller'}
     updates = {k: v for k, v in data.items() if k in allowed}
@@ -1043,19 +1104,21 @@ def create_product():
     """Create a brand-new product. Body: { sku, jizhanming, name_cn_en, price, ip_series, ... }"""
     data = request.get_json()
 
-    sku         = (data.get('sku') or '').strip().upper()
-    jizhanming  = (data.get('jizhanming') or '').strip()
-    name_cn_en  = (data.get('name_cn_en') or '').strip()
-    price_raw   = data.get('price')
-    ip_series   = (data.get('ip_series') or '').strip()
-    product_type= (data.get('product_type') or '').strip()
-    brand       = (data.get('brand') or '').strip()
-    release_date= (data.get('release_date') or '').strip()
-    edition_size= (data.get('edition_size') or '').strip()
-    channel     = (data.get('channel') or '').strip()
-    hidden      = (data.get('hidden') or '').strip()
-    style_notes = (data.get('style_notes') or '').strip()
-    notes       = (data.get('notes') or '').strip()
+    sku          = (data.get('sku') or '').strip().upper()
+    jizhanming   = (data.get('jizhanming') or '').strip()
+    name_cn_en   = (data.get('name_cn_en') or '').strip()
+    price_raw    = data.get('price')
+    ip_series    = (data.get('ip_series') or '').strip()
+    product_type = (data.get('product_type') or '').strip()
+    brand        = (data.get('brand') or '').strip()
+    release_date = (data.get('release_date') or '').strip()
+    edition_size = (data.get('edition_size') or '').strip()
+    channel      = (data.get('channel') or '').strip()
+    hidden       = (data.get('hidden') or '').strip()
+    style_notes  = (data.get('style_notes') or '').strip()
+    notes        = (data.get('notes') or '').strip()
+    boxes_per_dan_raw = data.get('boxes_per_dan')
+    dan_per_xiang_raw = data.get('dan_per_xiang')
 
     if not sku and not jizhanming and not name_cn_en:
         return jsonify({'error': '至少填写SKU、记账名或产品名称'}), 400
@@ -1084,13 +1147,23 @@ def create_product():
             sku = 'SP00001'
 
     try:
+        boxes_per_dan = int(boxes_per_dan_raw) if boxes_per_dan_raw not in (None, '', 'null') else None
+    except (TypeError, ValueError):
+        boxes_per_dan = None
+    try:
+        dan_per_xiang = int(dan_per_xiang_raw) if dan_per_xiang_raw not in (None, '', 'null') else None
+    except (TypeError, ValueError):
+        dan_per_xiang = None
+
+    try:
         cur.execute('''
             INSERT INTO products (sku, name_cn_en, jizhanming, price, ip_series, product_type,
                                   brand, release_date, edition_size, channel, hidden,
-                                  style_notes, notes, search_blob)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  style_notes, notes, boxes_per_dan, dan_per_xiang, search_blob)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (sku, name_cn_en, jizhanming, price, ip_series, product_type,
-              brand, release_date, edition_size, channel, hidden, style_notes, notes, search_blob))
+              brand, release_date, edition_size, channel, hidden, style_notes, notes,
+              boxes_per_dan, dan_per_xiang, search_blob))
         new_id = cur.lastrowid
         con.commit()
     except sqlite3.IntegrityError:
@@ -1124,15 +1197,16 @@ def get_product_types():
 
 
 # ─── Stock API ────────────────────────────────────────────────────────────────
-# Stock tracks quantities in 端 (display units) per location:
-#   upstairs  = 2F storage
-#   instore   = 1F in-store storage
-# boxes_per_dan on the product tells you how many 盒 per 端.
+# Stock quantities are stored in the product's base unit:
+#   Blind box (product_type='盲盒'): stored in 盒 (individual boxes).
+#     Use boxes_per_dan and dan_per_xiang for 端/箱 display conversions.
+#   Non-blind box: stored in units/pieces (件).
+# Locations: upstairs = 2F warehouse, instore = 1F store, claw = claw machine.
 
 def _ensure_stock_row(cur, product_id):
     """Insert a stock row for product if it doesn't exist yet."""
     cur.execute('''
-        INSERT OR IGNORE INTO stock (product_id, upstairs_dan, instore_dan)
+        INSERT OR IGNORE INTO stock (product_id, upstairs_qty, instore_qty)
         VALUES (?, 0, 0)
     ''', (product_id,))
 
@@ -1168,9 +1242,9 @@ def get_all_stock():
         # Return every product, LEFT JOIN stock so zeros show for new products
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
-                   p.ip_series, p.product_type, p.boxes_per_dan,
-                   COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
-                   COALESCE(s.instore_dan,  0) AS instore_dan,
+                   p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
+                   COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
+                   COALESCE(s.instore_qty,  0) AS instore_qty,
                    COALESCE(s.last_updated, '') AS last_updated,
                    COALESCE(s.notes, '')        AS stock_notes
             FROM products p
@@ -1182,8 +1256,8 @@ def get_all_stock():
         # Only products with a stock row
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
-                   p.ip_series, p.product_type, p.boxes_per_dan,
-                   s.upstairs_dan, s.instore_dan,
+                   p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
+                   s.upstairs_qty, s.instore_qty,
                    s.last_updated, COALESCE(s.notes, '') AS stock_notes
             FROM stock s
             JOIN products p ON p.id = s.product_id
@@ -1204,9 +1278,9 @@ def get_stock(product_id):
     cur = con.cursor()
     cur.execute('''
         SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
-               p.ip_series, p.product_type, p.boxes_per_dan,
-               COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
-               COALESCE(s.instore_dan,  0) AS instore_dan,
+               p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
+               COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
+               COALESCE(s.instore_qty,  0) AS instore_qty,
                COALESCE(s.last_updated, '') AS last_updated,
                COALESCE(s.notes, '') AS stock_notes
         FROM products p
@@ -1237,14 +1311,15 @@ def patch_stock(product_id):
 @role_required('staff')
 def ru_dian():
     """
-    入店: Move 端 from upstairs (2F) to in-store (1F).
-    Body: { product_id, dan_qty, date, notes }
-    dan_qty must be positive.
+    入店: Move stock from upstairs (2F) to in-store (1F).
+    Body: { product_id, qty, date, notes }
+    qty is in 盒 for blind boxes, units for non-blind box. Must be positive.
+    Accepts legacy field name dan_qty as fallback.
     """
     data = request.get_json()
     try:
         pid = int(data['product_id'])
-        qty = int(data.get('dan_qty', 0))
+        qty = int(data.get('qty') or data.get('dan_qty', 0))
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
     d       = data.get('date', str(date.today()))
@@ -1258,35 +1333,35 @@ def ru_dian():
     _ensure_stock_row(cur, pid)
 
     # Check sufficient upstairs stock
-    cur.execute('SELECT upstairs_dan FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ?', (pid,))
     row = cur.fetchone()
-    upstairs = row['upstairs_dan'] if row else 0
+    upstairs = row['upstairs_qty'] if row else 0
     if qty > upstairs:
         con.close()
-        return jsonify({'error': f'楼上库存不足（现有 {upstairs} 端）'}), 400
+        return jsonify({'error': f'楼上库存不足（现有 {upstairs}）'}), 400
 
     # Move: upstairs -= qty, instore += qty
     cur.execute('''
         UPDATE stock
-        SET upstairs_dan  = upstairs_dan - ?,
-            instore_dan   = instore_dan  + ?,
-            last_updated  = ?
+        SET upstairs_qty = upstairs_qty - ?,
+            instore_qty  = instore_qty  + ?,
+            last_updated = ?
         WHERE product_id = ?
     ''', (qty, qty, d, pid))
 
     # Log transaction
     cur.execute('''
-        INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
+        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
         VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?)
     ''', (pid, qty, d, notes))
 
     con.commit()
 
-    cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
     _row = cur.fetchone()
-    s = dict(_row) if _row else {'upstairs_dan': 0, 'instore_dan': 0}
+    s = dict(_row) if _row else {'upstairs_qty': 0, 'instore_qty': 0}
     con.close()
-    return jsonify({'ok': True, 'upstairs_dan': s['upstairs_dan'], 'instore_dan': s['instore_dan']})
+    return jsonify({'ok': True, 'upstairs_qty': s['upstairs_qty'], 'instore_qty': s['instore_qty']})
 
 
 @app.route('/api/stock/restock_upstairs', methods=['POST'])
@@ -1294,12 +1369,14 @@ def ru_dian():
 def restock_upstairs():
     """
     Receive new stock into upstairs (2F) storage — e.g. order arrived.
-    Body: { product_id, dan_qty, date, notes }
+    Body: { product_id, qty, date, notes }
+    qty is in 盒 for blind boxes, units for non-blind box.
+    Accepts legacy field name dan_qty as fallback.
     """
     data  = request.get_json()
     try:
         pid = int(data['product_id'])
-        qty = int(data.get('dan_qty', 0))
+        qty = int(data.get('qty') or data.get('dan_qty', 0))
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
     d     = data.get('date', str(date.today()))
@@ -1314,22 +1391,22 @@ def restock_upstairs():
 
     cur.execute('''
         UPDATE stock
-        SET upstairs_dan = upstairs_dan + ?,
+        SET upstairs_qty = upstairs_qty + ?,
             last_updated = ?
         WHERE product_id = ?
     ''', (qty, d, pid))
 
     cur.execute('''
-        INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
+        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
         VALUES (?, 'restock_upstairs', ?, 'upstairs', ?, ?)
     ''', (pid, qty, d, notes))
 
     con.commit()
-    cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
     _row = cur.fetchone()
-    s = dict(_row) if _row else {'upstairs_dan': 0, 'instore_dan': 0}
+    s = dict(_row) if _row else {'upstairs_qty': 0, 'instore_qty': 0}
     con.close()
-    return jsonify({'ok': True, 'upstairs_dan': s['upstairs_dan'], 'instore_dan': s['instore_dan']})
+    return jsonify({'ok': True, 'upstairs_qty': s['upstairs_qty'], 'instore_qty': s['instore_qty']})
 
 
 @app.route('/api/stock/adjust', methods=['POST'])
@@ -1337,13 +1414,14 @@ def restock_upstairs():
 def adjust_stock():
     """
     Manual adjustment (correction) of upstairs or instore count.
-    Body: { product_id, location ('upstairs'|'instore'), new_dan, date, notes }
+    Body: { product_id, location ('upstairs'|'instore'), new_qty, date, notes }
     Sets the value directly (not delta) and logs the diff.
+    Accepts legacy field name new_dan as fallback.
     """
     data     = request.get_json()
     try:
         pid     = int(data['product_id'])
-        new_dan = int(data.get('new_dan', 0))
+        new_qty = int(data.get('new_qty') if data.get('new_qty') is not None else data.get('new_dan', 0))
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
     location = data.get('location', 'upstairs')  # 'upstairs' or 'instore'
@@ -1357,33 +1435,33 @@ def adjust_stock():
     cur = con.cursor()
     _ensure_stock_row(cur, pid)
 
-    cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
     _row = cur.fetchone()
     if _row is None:
         con.close()
         return jsonify({'error': 'Stock row not found'}), 404
     s = dict(_row)
-    old_val = s[f'{location}_dan']
-    delta   = new_dan - old_val
+    old_val = s[f'{location}_qty']
+    delta   = new_qty - old_val
 
     if location == 'upstairs':
-        cur.execute('UPDATE stock SET upstairs_dan = ?, last_updated = ? WHERE product_id = ?',
-                    (new_dan, d, pid))
+        cur.execute('UPDATE stock SET upstairs_qty = ?, last_updated = ? WHERE product_id = ?',
+                    (new_qty, d, pid))
     else:
-        cur.execute('UPDATE stock SET instore_dan = ?, last_updated = ? WHERE product_id = ?',
-                    (new_dan, d, pid))
+        cur.execute('UPDATE stock SET instore_qty = ?, last_updated = ? WHERE product_id = ?',
+                    (new_qty, d, pid))
 
     cur.execute('''
-        INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
+        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
         VALUES (?, 'adjust', ?, ?, ?, ?)
-    ''', (pid, delta, location, d, notes or f'手动调整: {old_val}→{new_dan}'))
+    ''', (pid, delta, location, d, notes or f'手动调整: {old_val}→{new_qty}'))
 
     con.commit()
-    cur.execute('SELECT upstairs_dan, instore_dan FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
     _row2 = cur.fetchone()
-    s2 = dict(_row2) if _row2 else {'upstairs_dan': 0, 'instore_dan': 0}
+    s2 = dict(_row2) if _row2 else {'upstairs_qty': 0, 'instore_qty': 0}
     con.close()
-    return jsonify({'ok': True, 'upstairs_dan': s2['upstairs_dan'], 'instore_dan': s2['instore_dan']})
+    return jsonify({'ok': True, 'upstairs_qty': s2['upstairs_qty'], 'instore_qty': s2['instore_qty']})
 
 
 @app.route('/api/stock/transactions')
@@ -1410,9 +1488,9 @@ def get_transactions():
     params.append(limit)
 
     cur.execute(f'''
-        SELECT t.id, t.product_id, t.txn_type, t.dan_qty, t.location,
+        SELECT t.id, t.product_id, t.txn_type, t.qty, t.location,
                t.date, t.notes, t.created_at,
-               p.jizhanming, p.sku, p.name_cn_en, p.boxes_per_dan
+               p.jizhanming, p.sku, p.name_cn_en, p.boxes_per_dan, p.dan_per_xiang, p.product_type
         FROM stock_transactions t
         JOIN products p ON p.id = t.product_id
         {where}
@@ -1434,21 +1512,21 @@ def stock_summary():
     cur.execute('''
         SELECT
             COUNT(*) AS products_tracked,
-            SUM(upstairs_dan) AS total_upstairs_dan,
-            SUM(instore_dan)  AS total_instore_dan
+            SUM(upstairs_qty) AS total_upstairs_qty,
+            SUM(instore_qty)  AS total_instore_qty
         FROM stock
     ''')
     row = dict(cur.fetchone())
 
-    # Low stock alert: upstairs_dan = 0 but instore > 0 (need to reorder)
+    # Low stock alert: upstairs_qty = 0 but instore > 0 (need to reorder)
     cur.execute('''
         SELECT COUNT(*) FROM stock
-        WHERE upstairs_dan = 0 AND instore_dan > 0
+        WHERE upstairs_qty = 0 AND instore_qty > 0
     ''')
     row['low_stock_count'] = cur.fetchone()[0]
 
     # Out of stock: both 0
-    cur.execute('SELECT COUNT(*) FROM stock WHERE upstairs_dan = 0 AND instore_dan = 0')
+    cur.execute('SELECT COUNT(*) FROM stock WHERE upstairs_qty = 0 AND instore_qty = 0')
     row['out_of_stock_count'] = cur.fetchone()[0]
 
     con.close()
@@ -1570,10 +1648,10 @@ def batch_stock_operation():
             date: '...', items: [{product_id, qty, notes}] }
 
     Operations:
-      ru_dian        — move upstairs_dan → instore_dan (入店)
-      restock_upstairs — add to upstairs_dan
-      out_dian       — decrease instore_dan directly (出店)
-      ru_dian_claw   — move upstairs_dan → claw_dan (+ instore_dan, 娃娃机)
+      ru_dian        — move upstairs_qty → instore_qty (入店)
+      restock_upstairs — add to upstairs_qty
+      out_dian       — decrease instore_qty directly (出店)
+      ru_dian_claw   — move upstairs_qty → claw_qty (+ instore_qty, 娃娃机)
     """
     data      = request.get_json()
     operation = data.get('operation', 'ru_dian')
@@ -1597,60 +1675,60 @@ def batch_stock_operation():
         _ensure_stock_row(cur, pid)
 
         if operation == 'ru_dian':
-            cur.execute('SELECT upstairs_dan FROM stock WHERE product_id = ?', (pid,))
+            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ?', (pid,))
             row = cur.fetchone()
-            upstairs = row['upstairs_dan'] if row else 0
+            upstairs = row['upstairs_qty'] if row else 0
             if qty > upstairs:
                 results.append({'pid': pid, 'ok': False,
-                                 'error': f'楼上库存不足（{upstairs}端）'})
+                                 'error': f'楼上库存不足（{upstairs}）'})
                 continue
             cur.execute('''
-                UPDATE stock SET upstairs_dan = upstairs_dan - ?,
-                                 instore_dan  = instore_dan  + ?,
+                UPDATE stock SET upstairs_qty = upstairs_qty - ?,
+                                 instore_qty  = instore_qty  + ?,
                                  last_updated = ?
                 WHERE product_id = ?
             ''', (qty, qty, d, pid))
             loc = 'upstairs->instore'
         elif operation == 'out_dian':
-            cur.execute('SELECT instore_dan FROM stock WHERE product_id = ?', (pid,))
+            cur.execute('SELECT instore_qty FROM stock WHERE product_id = ?', (pid,))
             row = cur.fetchone()
-            instore = row['instore_dan'] if row else 0
+            instore = row['instore_qty'] if row else 0
             if qty > instore:
                 results.append({'pid': pid, 'ok': False,
-                                 'error': f'店内库存不足（{instore}端）'})
+                                 'error': f'店内库存不足（{instore}）'})
                 continue
             cur.execute('''
-                UPDATE stock SET instore_dan = instore_dan - ?,
+                UPDATE stock SET instore_qty = instore_qty - ?,
                                  last_updated = ?
                 WHERE product_id = ?
             ''', (qty, d, pid))
             loc = 'instore_out'
         elif operation == 'ru_dian_claw':
-            cur.execute('SELECT upstairs_dan FROM stock WHERE product_id = ?', (pid,))
+            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ?', (pid,))
             row = cur.fetchone()
-            upstairs = row['upstairs_dan'] if row else 0
+            upstairs = row['upstairs_qty'] if row else 0
             if qty > upstairs:
                 results.append({'pid': pid, 'ok': False,
-                                 'error': f'楼上库存不足（{upstairs}端）'})
+                                 'error': f'楼上库存不足（{upstairs}）'})
                 continue
             cur.execute('''
-                UPDATE stock SET upstairs_dan = upstairs_dan - ?,
-                                 instore_dan  = instore_dan  + ?,
-                                 claw_dan     = claw_dan     + ?,
+                UPDATE stock SET upstairs_qty = upstairs_qty - ?,
+                                 instore_qty  = instore_qty  + ?,
+                                 claw_qty     = claw_qty     + ?,
                                  last_updated = ?
                 WHERE product_id = ?
             ''', (qty, qty, qty, d, pid))
             loc = 'upstairs->claw'
         else:  # restock_upstairs
             cur.execute('''
-                UPDATE stock SET upstairs_dan = upstairs_dan + ?,
+                UPDATE stock SET upstairs_qty = upstairs_qty + ?,
                                  last_updated = ?
                 WHERE product_id = ?
             ''', (qty, d, pid))
             loc = 'upstairs'
 
         cur.execute('''
-            INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
+            INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (pid, operation, qty, loc, d, notes))
         results.append({'pid': pid, 'ok': True})
@@ -1722,13 +1800,14 @@ def submit_daily_report():
 
     break_display:
       → INSERT into stock_transactions (txn_type='display_open')
-      → DECREMENT stock.instore_dan by qty
+      → DECREMENT stock.instore_qty by qty
 
     stock_in:
-      → total_units = box_size * num_boxes
+      → box_size = dan per carton (端/箱), num_boxes = cartons received
+      → total_dan = box_size * num_boxes
+      → total_units = total_dan * boxes_per_dan (for blind box) or total_dan (non-blind)
       → INSERT into stock_transactions (txn_type='report_stock_in')
-      → DECREMENT stock.upstairs_dan by num_boxes
-      → INCREMENT stock.instore_dan by total_units
+      → DECREMENT stock.upstairs_qty by total_units, INCREMENT instore_qty by total_units
     """
     data  = request.get_json(silent=True) or {}
     d     = (data.get('date') or '').strip()
@@ -1789,33 +1868,42 @@ def submit_daily_report():
                 qty = int(item.get('qty', 1) or 1)
                 cur.execute('''
                     INSERT INTO stock_transactions
-                        (product_id, txn_type, dan_qty, location, date, notes)
+                        (product_id, txn_type, qty, location, date, notes)
                     VALUES (?, 'display_open', ?, 'instore', ?, ?)
                 ''', (pid, -qty, d, notes or 'display opened'))
                 cur.execute('''
-                    UPDATE stock SET instore_dan = MAX(0, instore_dan - ?),
+                    UPDATE stock SET instore_qty = MAX(0, instore_qty - ?),
                                      last_updated = datetime('now')
                     WHERE product_id = ?
                 ''', (qty, pid))
                 txn_count += 1
 
             elif section == 'stock_in':
+                # box_size = 端/箱 (dan per carton), num_boxes = number of cartons (箱)
+                # total_units = total 端 received, which for blind boxes is then
+                # multiplied by boxes_per_dan to get 盒 count.
+                # The frontend sends box_size=dan_per_xiang and num_boxes=carton count.
                 box_size  = int(item.get('box_size',  1) or 1)
                 num_boxes = int(item.get('num_boxes', 1) or 1)
-                total_units = box_size * num_boxes
+                total_dan = box_size * num_boxes   # total 端 being moved instore
+                # Look up boxes_per_dan for blind box conversion
+                cur.execute('SELECT product_type, boxes_per_dan FROM products WHERE id=?', (pid,))
+                prow = cur.fetchone()
+                bpd  = (prow['boxes_per_dan'] or 1) if (prow and prow['product_type'] == '盲盒') else 1
+                total_units = total_dan * bpd  # 盒 for blind box, same as dan for non-blind box
                 cur.execute('''
                     INSERT INTO stock_transactions
-                        (product_id, txn_type, dan_qty, location, date, notes)
+                        (product_id, txn_type, qty, location, date, notes)
                     VALUES (?, 'report_stock_in', ?, 'upstairs→instore', ?, ?)
-                ''', (pid, total_units, d, notes or f'{num_boxes}x{box_size}'))
+                ''', (pid, total_units, d, notes or f'{num_boxes}箱×{box_size}端'))
                 cur.execute('''
-                    INSERT INTO stock (product_id, upstairs_dan, instore_dan)
+                    INSERT INTO stock (product_id, upstairs_qty, instore_qty)
                     VALUES (?, 0, ?)
                     ON CONFLICT(product_id) DO UPDATE SET
-                        upstairs_dan = MAX(0, upstairs_dan - ?),
-                        instore_dan  = instore_dan + ?,
+                        upstairs_qty = MAX(0, upstairs_qty - ?),
+                        instore_qty  = instore_qty + ?,
                         last_updated = datetime('now')
-                ''', (pid, total_units, num_boxes, total_units))
+                ''', (pid, total_units, total_units, total_units))
                 txn_count += 1
 
         con.commit()
@@ -1891,9 +1979,9 @@ def export_stock():
 
     cur.execute(f'''
         SELECT p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               p.price, p.boxes_per_dan,
-               COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
-               COALESCE(s.instore_dan,  0) AS instore_dan,
+               p.price, p.boxes_per_dan, p.dan_per_xiang,
+               COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
+               COALESCE(s.instore_qty,  0) AS instore_qty,
                COALESCE(s.last_updated, '') AS last_updated,
                COALESCE(s.notes, '') AS stock_notes
         FROM stock s
@@ -1904,13 +1992,13 @@ def export_stock():
     rows = cur.fetchall()
     con.close()
 
-    header = 'SKU,记账名,产品名称,系列,类型,单价,每端盒数,楼上(端),店内(端),更新时间,备注'
+    header = 'SKU,记账名,产品名称,系列,类型,单价,每端盒数,每箱端数,楼上(盒/件),店内(盒/件),更新时间,备注'
     lines  = ['\ufeff' + header]
     for r in rows:
         lines.append(','.join(esc_csv(v) for v in [
             r['sku'], r['jizhanming'], r['name_cn_en'], r['ip_series'],
-            r['product_type'], r['price'], r['boxes_per_dan'],
-            r['upstairs_dan'], r['instore_dan'], r['last_updated'], r['stock_notes']
+            r['product_type'], r['price'], r['boxes_per_dan'], r['dan_per_xiang'],
+            r['upstairs_qty'], r['instore_qty'], r['last_updated'], r['stock_notes']
         ]))
 
     fname = f'stock_{date.today()}.csv'
@@ -2046,8 +2134,9 @@ def _restock_session_items(cur, sid):
         SELECT ri.id, ri.product_id, ri.requested_qty, ri.warehouse_stock_snapshot,
                ri.found_qty, ri.pick_status,
                p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               COALESCE(s.upstairs_dan, 0) AS upstairs_dan,
-               COALESCE(s.instore_dan,  0) AS instore_dan
+               p.boxes_per_dan, p.dan_per_xiang,
+               COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
+               COALESCE(s.instore_qty,  0) AS instore_qty
         FROM restock_items ri
         JOIN products p ON p.id = ri.product_id
         LEFT JOIN stock s ON s.product_id = ri.product_id
@@ -2132,8 +2221,8 @@ def delete_restock_session(sid):
             qty = m['qty_change']   # positive: was added to store
             cur.execute('''
                 UPDATE stock
-                SET instore_dan  = MAX(0, instore_dan  - ?),
-                    upstairs_dan = upstairs_dan + ?,
+                SET instore_qty  = MAX(0, instore_qty  - ?),
+                    upstairs_qty = upstairs_qty + ?,
                     last_updated = datetime('now')
                 WHERE product_id = ?
             ''', (qty, qty, pid))
@@ -2254,7 +2343,7 @@ def delete_restock_item(iid):
 def submit_restock_session(sid):
     """
     pending → submitted.
-    Snapshots current warehouse stock (upstairs_dan) into warehouse_stock_snapshot
+    Snapshots current warehouse stock (upstairs_qty) into warehouse_stock_snapshot
     for every item in this session at the moment of submission.
     """
     con = get_db()
@@ -2272,7 +2361,7 @@ def submit_restock_session(sid):
     cur.execute('''
         UPDATE restock_items
         SET warehouse_stock_snapshot = COALESCE(
-            (SELECT s.upstairs_dan FROM stock s WHERE s.product_id = restock_items.product_id),
+            (SELECT s.upstairs_qty FROM stock s WHERE s.product_id = restock_items.product_id),
             0
         )
         WHERE session_id = ?
@@ -2365,8 +2454,8 @@ def complete_restock_session(sid):
     """
     picking/submitted → completed.
     Validates all items have been picked (no 'pending' pick_status).
-    Syncs stock in a single transaction: upstairs_dan -= effective, instore_dan += effective.
-    effective = min(found_qty, actual_upstairs_dan) to guard against negatives.
+    Syncs stock in a single transaction: upstairs_qty -= effective, instore_qty += effective.
+    effective = min(found_qty, actual_upstairs_qty) to guard against negatives.
     """
     con = get_db()
     cur = con.cursor()
@@ -2405,10 +2494,10 @@ def complete_restock_session(sid):
     for item in found_items:
         pid = item['product_id']
         requested_found = item['found_qty']
-        cur.execute('INSERT OR IGNORE INTO stock (product_id, upstairs_dan, instore_dan) VALUES (?,0,0)', (pid,))
-        cur.execute('SELECT upstairs_dan FROM stock WHERE product_id=?', (pid,))
+        cur.execute('INSERT OR IGNORE INTO stock (product_id, upstairs_qty, instore_qty) VALUES (?,0,0)', (pid,))
+        cur.execute('SELECT upstairs_qty FROM stock WHERE product_id=?', (pid,))
         stock_row = cur.fetchone()
-        actual_warehouse = stock_row['upstairs_dan'] if stock_row else 0
+        actual_warehouse = stock_row['upstairs_qty'] if stock_row else 0
         effective_qty = min(requested_found, actual_warehouse)
         if effective_qty <= 0:
             synced_details.append({'product_id': pid, 'requested': requested_found, 'found': requested_found, 'effective': 0})
@@ -2416,8 +2505,8 @@ def complete_restock_session(sid):
 
         cur.execute('''
             UPDATE stock
-            SET upstairs_dan = upstairs_dan - ?,
-                instore_dan  = instore_dan  + ?,
+            SET upstairs_qty = upstairs_qty - ?,
+                instore_qty  = instore_qty  + ?,
                 last_updated = datetime('now')
             WHERE product_id = ?
         ''', (effective_qty, effective_qty, pid))
@@ -2430,7 +2519,7 @@ def complete_restock_session(sid):
             VALUES (?, ?, 'restock_in', ?, 'store')
         ''', (pid, sid, effective_qty))
         cur.execute('''
-            INSERT INTO stock_transactions (product_id, txn_type, dan_qty, location, date, notes)
+            INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
             VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?)
         ''', (pid, effective_qty, today, f'补货入店 session#{sid}'))
         synced_details.append({'product_id': pid, 'requested': requested_found, 'found': requested_found, 'effective': effective_qty})
@@ -2453,7 +2542,7 @@ def _calc_theoretical_qty(cur, product_id: int, today: str) -> tuple[int, str, b
 
     Logic:
       - Find most recent inventory_checks record (base).
-      - If no base: use current instore_dan, base_check_date = today.
+      - If no base: use current instore_qty, base_check_date = today.
       - If base found:
           theoretical = base.actual_qty
                         - SUM(sales since base.date)
@@ -2472,7 +2561,7 @@ def _calc_theoretical_qty(cur, product_id: int, today: str) -> tuple[int, str, b
     base = cur.fetchone()
 
     if not base:
-        cur.execute('SELECT COALESCE(instore_dan, 0) FROM stock WHERE product_id = ?', (product_id,))
+        cur.execute('SELECT COALESCE(instore_qty, 0) FROM stock WHERE product_id = ?', (product_id,))
         row = cur.fetchone()
         return (row[0] if row else 0), today, False
 
@@ -2505,7 +2594,7 @@ def inventory_check_today():
     """
     Return bestseller products with dynamically-calculated theoretical_qty.
     theoretical_qty = base.actual_qty - sales_since_base + restocks_since_base
-    If no base record, uses current instore_dan as theoretical_qty.
+    If no base record, uses current instore_qty as theoretical_qty.
     """
     today = date.today().isoformat()
     con = get_db()
@@ -2514,7 +2603,7 @@ def inventory_check_today():
     cur.execute('''
         SELECT p.id AS product_id, p.sku, p.jizhanming, p.name_cn_en,
                p.ip_series, p.product_type,
-               COALESCE(s.instore_dan, 0) AS current_instore_dan,
+               COALESCE(s.instore_qty, 0) AS current_instore_qty,
                ic.id AS check_id, ic.actual_qty, ic.discrepancy,
                ic.base_check_date AS saved_base_check_date
         FROM products p
@@ -2604,7 +2693,7 @@ def get_bestsellers():
     cur = con.cursor()
     cur.execute('''
         SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               COALESCE(s.instore_dan, 0) AS instore_dan
+               COALESCE(s.instore_qty, 0) AS instore_qty
         FROM products p
         LEFT JOIN stock s ON s.product_id = p.id
         WHERE p.is_bestseller = 1

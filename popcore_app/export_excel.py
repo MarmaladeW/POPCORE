@@ -46,9 +46,10 @@ def export():
             p.hidden,
             p.style_notes,
             p.boxes_per_dan,
-            COALESCE(s.upstairs_dan, 0)  AS upstairs_dan,
-            COALESCE(s.instore_dan, 0)   AS instore_dan,
-            (COALESCE(s.upstairs_dan, 0) + COALESCE(s.instore_dan, 0)) AS total_dan,
+            p.dan_per_xiang,
+            COALESCE(s.upstairs_qty, 0)  AS upstairs_qty,
+            COALESCE(s.instore_qty, 0)   AS instore_qty,
+            (COALESCE(s.upstairs_qty, 0) + COALESCE(s.instore_qty, 0)) AS total_qty,
             p.notes
         FROM products p
         LEFT JOIN stock s ON s.product_id = p.id
@@ -87,9 +88,10 @@ def export():
         ('隐藏款',        8),
         ('款式特点',     20),
         ('每端盒数',      8),
-        ('楼上(端)',      8),
-        ('店内(端)',      8),
-        ('合计(端)',      8),
+        ('每箱端数',      8),
+        ('楼上(盒/件)',   10),
+        ('店内(盒/件)',   10),
+        ('合计(盒/件)',   10),
         ('备注',         20),
     ]
 
@@ -122,9 +124,10 @@ def export():
             row['hidden'],
             row['style_notes'],
             row['boxes_per_dan'],
-            row['upstairs_dan'],
-            row['instore_dan'],
-            row['total_dan'],
+            row['dan_per_xiang'],
+            row['upstairs_qty'],
+            row['instore_qty'],
+            row['total_qty'],
             row['notes'],
         ]
 
@@ -138,7 +141,7 @@ def export():
             # Number formatting
             if col_idx == 7 and value is not None:   # price
                 cell.number_format = price_fmt
-            elif col_idx in (13, 14, 15, 16) and value is not None:  # qty columns
+            elif col_idx in (13, 14, 15, 16, 17) and value is not None:  # qty/ratio columns
                 cell.number_format = int_fmt
 
         ws.row_dimensions[row_idx].height = 18
@@ -154,15 +157,15 @@ def export():
     ws2['B2'] = len(rows)
 
     # Count products with stock
-    with_stock = sum(1 for r in rows if (r['upstairs_dan'] or 0) + (r['instore_dan'] or 0) > 0)
+    with_stock = sum(1 for r in rows if (r['upstairs_qty'] or 0) + (r['instore_qty'] or 0) > 0)
     ws2['A3'] = '有库存品种'
     ws2['B3'] = with_stock
-    ws2['A4'] = '楼上总端数'
-    ws2['B4'] = sum((r['upstairs_dan'] or 0) for r in rows)
-    ws2['A5'] = '店内总端数'
-    ws2['B5'] = sum((r['instore_dan'] or 0) for r in rows)
-    ws2['A6'] = '全部总端数'
-    ws2['B6'] = sum((r['total_dan'] or 0) for r in rows)
+    ws2['A4'] = '楼上总数(盒/件)'
+    ws2['B4'] = sum((r['upstairs_qty'] or 0) for r in rows)
+    ws2['A5'] = '店内总数(盒/件)'
+    ws2['B5'] = sum((r['instore_qty'] or 0) for r in rows)
+    ws2['A6'] = '全部总数(盒/件)'
+    ws2['B6'] = sum((r['total_qty'] or 0) for r in rows)
 
     ws2.column_dimensions['A'].width = 14
     ws2.column_dimensions['B'].width = 20

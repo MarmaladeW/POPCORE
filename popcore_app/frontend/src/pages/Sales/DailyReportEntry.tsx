@@ -456,10 +456,10 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           )
           if (section === 'stock_in' && r.box_size != null && r.num_boxes != null) return (
             <Space size={4}>
-              <Tag style={{ fontSize: 11 }}>{r.box_size}端</Tag>
-              <span style={{ color: '#9ca3af' }}>×</span>
               <Tag style={{ fontSize: 11 }}>{r.num_boxes}箱</Tag>
-              <span style={{ fontWeight: 600, color: '#6366F1' }}>={r.qty}</span>
+              <span style={{ color: '#9ca3af' }}>×</span>
+              <Tag style={{ fontSize: 11 }}>{r.box_size}端/箱</Tag>
+              <span style={{ fontWeight: 600, color: '#6366F1' }}>={r.qty}端入店</span>
             </Space>
           )
           if (section === 'break_display') return (

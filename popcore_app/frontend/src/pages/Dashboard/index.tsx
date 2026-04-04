@@ -17,10 +17,10 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 const { Title, Text } = Typography
 
 interface StockSummary {
-  products_tracked:  number
-  total_upstairs_dan: number
-  total_instore_dan:  number
-  low_stock_count:   number
+  products_tracked:   number
+  total_upstairs_qty: number
+  total_instore_qty:  number
+  low_stock_count:    number
   out_of_stock_count: number
 }
 
@@ -43,12 +43,12 @@ interface SalesRow {
 }
 
 interface StockRow {
-  product_id:    number
-  sku:           string
-  jizhanming:    string
-  ip_series:     string
-  upstairs_dan:  number
-  instore_dan:   number
+  product_id:   number
+  sku:          string
+  jizhanming:   string
+  ip_series:    string
+  upstairs_qty: number
+  instore_qty:  number
 }
 
 interface ProductRow {
@@ -122,7 +122,7 @@ export default function DashboardPage() {
       const stockRows: StockRow[] = stock.data
       setLowStock(
         stockRows
-          .filter(r => (r.upstairs_dan + r.instore_dan) > 0 && (r.upstairs_dan + r.instore_dan) <= 3)
+          .filter(r => (r.upstairs_qty + r.instore_qty) > 0 && (r.upstairs_qty + r.instore_qty) <= 3)
           .slice(0, 8)
       )
       setProductCount(countRes.data.count)
@@ -130,7 +130,7 @@ export default function DashboardPage() {
   }, [])
 
   const totalUnits = stockSummary
-    ? (stockSummary.total_upstairs_dan ?? 0) + (stockSummary.total_instore_dan ?? 0)
+    ? (stockSummary.total_upstairs_qty ?? 0) + (stockSummary.total_instore_qty ?? 0)
     : 0
 
   const todayRevenue = todaySales.reduce(
@@ -251,7 +251,7 @@ export default function DashboardPage() {
               </div>
             ) : (
               lowStock.map(item => {
-                const total = item.upstairs_dan + item.instore_dan
+                const total = item.upstairs_qty + item.instore_qty
                 return (
                   <div
                     key={item.product_id}

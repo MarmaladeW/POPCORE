@@ -36,9 +36,9 @@ interface Product {
 }
 
 interface StockRow {
-  product_id:   number
-  upstairs_dan: number
-  instore_dan:  number
+  product_id:  number
+  upstairs_qty: number
+  instore_qty:  number
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -84,7 +84,7 @@ export default function ProductsPage() {
       setProducts(prodR.data)
       const m = new Map<number, number>()
       ;(stockR.data as StockRow[]).forEach(r => {
-        m.set(r.product_id, (r.upstairs_dan ?? 0) + (r.instore_dan ?? 0))
+        m.set(r.product_id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
       })
       setStockMap(m)
     }).catch(() => {

@@ -17,7 +17,7 @@ interface CheckItem {
   name_cn_en:          string
   ip_series:           string
   product_type:        string
-  current_instore_dan: number
+  current_instore_qty: number
   theoretical_qty:     number
   base_check_date:     string
   is_base_abnormal:    boolean

@@ -27,8 +27,9 @@ interface StockRow {
   ip_series: string
   product_type: string
   boxes_per_dan: number | null
-  upstairs_dan: number
-  instore_dan: number
+  dan_per_xiang: number | null
+  upstairs_qty: number
+  instore_qty: number
   last_updated: string
   stock_notes: string
   price: number | null
@@ -38,7 +39,7 @@ interface Transaction {
   id: number
   product_id: number
   txn_type: string
-  dan_qty: number
+  qty: number
   location: string
   date: string
   notes: string
@@ -48,11 +49,11 @@ interface Transaction {
 }
 
 interface Summary {
-  products_tracked:   number
-  total_upstairs_dan: number
-  total_instore_dan:  number
-  low_stock_count:    number
-  out_of_stock_count: number
+  products_tracked:    number
+  total_upstairs_qty:  number
+  total_instore_qty:   number
+  low_stock_count:     number
+  out_of_stock_count:  number
 }
 
 const TXN_LABELS: Record<string, string> = {
@@ -65,6 +66,33 @@ const TXN_COLORS: Record<string, string> = {
   ru_dian:          'blue',
   restock_upstairs: 'green',
   adjust:           'orange',
+}
+
+/** Format a raw qty number into a human-readable breakdown based on product type. */
+function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan' | 'dan_per_xiang'>): string {
+  if (row.product_type !== '盲盒' || !row.boxes_per_dan) {
+    return `${qty} 件`
+  }
+  const bpd = row.boxes_per_dan
+  const dpx = row.dan_per_xiang
+  if (dpx) {
+    const xiang = Math.floor(qty / (bpd * dpx))
+    const drem  = Math.floor((qty % (bpd * dpx)) / bpd)
+    const he    = qty % bpd
+    return [
+      xiang > 0 ? `${xiang}箱` : '',
+      drem  > 0 ? `${drem}端`  : '',
+      he    > 0 ? `${he}盒`    : '',
+      xiang === 0 && drem === 0 && he === 0 ? '0盒' : '',
+    ].filter(Boolean).join(' ')
+  }
+  const duan = Math.floor(qty / bpd)
+  const he   = qty % bpd
+  return [
+    duan > 0 ? `${duan}端` : '',
+    he   > 0 ? `${he}盒`  : '',
+    duan === 0 && he === 0 ? '0盒' : '',
+  ].filter(Boolean).join(' ')
 }
 
 function stockStatus(total: number) {
@@ -159,35 +187,39 @@ export default function StockPage() {
     },
     {
       title: <><ArrowUpOutlined /> Upstairs</>,
-      dataIndex: 'upstairs_dan',
-      width: 90, align: 'center',
-      sorter: (a, b) => a.upstairs_dan - b.upstairs_dan,
-      render: v => (
-        <span style={{ fontWeight: 600, color: v === 0 ? '#ef4444' : '#374151' }}>{v}</span>
+      dataIndex: 'upstairs_qty',
+      width: 110, align: 'center',
+      sorter: (a, b) => a.upstairs_qty - b.upstairs_qty,
+      render: (v, r) => (
+        <span style={{ fontWeight: 600, color: v === 0 ? '#ef4444' : '#374151', fontSize: 12 }}>
+          {formatQty(v, r)}
+        </span>
       ),
     },
     {
       title: <><InboxOutlined /> In-Store</>,
-      dataIndex: 'instore_dan',
-      width: 90, align: 'center',
-      sorter: (a, b) => a.instore_dan - b.instore_dan,
-      render: v => (
-        <span style={{ fontWeight: 600, color: v === 0 ? '#9ca3af' : '#374151' }}>{v}</span>
+      dataIndex: 'instore_qty',
+      width: 110, align: 'center',
+      sorter: (a, b) => a.instore_qty - b.instore_qty,
+      render: (v, r) => (
+        <span style={{ fontWeight: 600, color: v === 0 ? '#9ca3af' : '#374151', fontSize: 12 }}>
+          {formatQty(v, r)}
+        </span>
       ),
     },
     {
       title: 'Total',
-      width: 80, align: 'center',
-      sorter: (a, b) => (a.upstairs_dan + a.instore_dan) - (b.upstairs_dan + b.instore_dan),
+      width: 110, align: 'center',
+      sorter: (a, b) => (a.upstairs_qty + a.instore_qty) - (b.upstairs_qty + b.instore_qty),
       render: (_, r) => {
-        const t = r.upstairs_dan + r.instore_dan
+        const t = r.upstairs_qty + r.instore_qty
         return (
           <span style={{
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            width: 28, height: 28, borderRadius: '50%', fontWeight: 700, fontSize: 13,
+            display: 'inline-block', borderRadius: 6, fontWeight: 700, fontSize: 12,
+            padding: '2px 8px',
             background: t === 0 ? '#fef2f2' : t <= 3 ? '#fffbeb' : '#f0fdf4',
             color:      t === 0 ? '#ef4444' : t <= 3 ? '#d97706' : '#16a34a',
-          }}>{t}</span>
+          }}>{formatQty(t, r)}</span>
         )
       },
     },
@@ -195,7 +227,8 @@ export default function StockPage() {
       title: 'Stock Value',
       width: 110, align: 'right',
       render: (_, r) => {
-        const total = r.upstairs_dan + r.instore_dan
+        // Value is price × total boxes (or units) for non-blind box
+        const total = r.upstairs_qty + r.instore_qty
         const val = r.price ? total * r.price : null
         return val != null
           ? <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${val.toFixed(2)}</Text>
@@ -205,7 +238,7 @@ export default function StockPage() {
     {
       title: 'Status',
       width: 120,
-      render: (_, r) => stockStatus(r.upstairs_dan + r.instore_dan),
+      render: (_, r) => stockStatus(r.upstairs_qty + r.instore_qty),
     },
     {
       title: 'Actions',
@@ -233,7 +266,7 @@ export default function StockPage() {
       render: v => <Tag color={TXN_COLORS[v] ?? 'default'}>{TXN_LABELS[v] ?? v}</Tag>,
     },
     {
-      title: 'Qty', dataIndex: 'dan_qty', width: 70, align: 'right',
+      title: 'Qty', dataIndex: 'qty', width: 70, align: 'right',
       render: v => <Text type={v < 0 ? 'danger' : 'success'}>{v > 0 ? `+${v}` : v}</Text>,
     },
     { title: 'Location', dataIndex: 'location', width: 120 },
@@ -241,10 +274,10 @@ export default function StockPage() {
   ]
 
   const summaryCards = summary ? [
-    { label: 'Upstairs Total', value: summary.total_upstairs_dan, color: '#6366F1',  icon: <ArrowUpOutlined /> },
-    { label: 'In-Store Total', value: summary.total_instore_dan,  color: '#10B981',  icon: <InboxOutlined /> },
+    { label: 'Upstairs Total', value: summary.total_upstairs_qty, color: '#6366F1',  icon: <ArrowUpOutlined /> },
+    { label: 'In-Store Total', value: summary.total_instore_qty,  color: '#10B981',  icon: <InboxOutlined /> },
     { label: 'Total Stock Value', value: `CA$ ${(
-        stock.reduce((acc, r) => acc + (r.price ?? 0) * (r.upstairs_dan + r.instore_dan), 0)
+        stock.reduce((acc, r) => acc + (r.price ?? 0) * (r.upstairs_qty + r.instore_qty), 0)
       ).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       color: '#6366F1', icon: null },
     { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count, color: '#ef4444', icon: <WarningOutlined /> },
@@ -388,7 +421,7 @@ export default function StockPage() {
                     <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No stock records</div>
                   )}
                   {stock.map(row => {
-                    const total = row.upstairs_dan + row.instore_dan
+                    const total = row.upstairs_qty + row.instore_qty
                     const stockVal = row.price ? total * row.price : null
                     return (
                       <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
@@ -400,20 +433,20 @@ export default function StockPage() {
                           </div>
                           <div style={{ flexShrink: 0, marginLeft: 8 }}>{stockStatus(total)}</div>
                         </div>
-                        {/* All 4 quantities visible at a glance */}
+                        {/* All quantities visible at a glance */}
                         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                           <div style={{ display: 'flex', gap: 16 }}>
                             <div style={{ textAlign: 'center' }}>
                               <div style={{ fontSize: 10, color: '#9ca3af' }}>Upstairs</div>
-                              <div style={{ fontSize: 15, fontWeight: 700, color: row.upstairs_dan === 0 ? '#ef4444' : '#374151' }}>{row.upstairs_dan}</div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: row.upstairs_qty === 0 ? '#ef4444' : '#374151' }}>{formatQty(row.upstairs_qty, row)}</div>
                             </div>
                             <div style={{ textAlign: 'center' }}>
                               <div style={{ fontSize: 10, color: '#9ca3af' }}>In-Store</div>
-                              <div style={{ fontSize: 15, fontWeight: 700, color: row.instore_dan === 0 ? '#9ca3af' : '#374151' }}>{row.instore_dan}</div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: row.instore_qty === 0 ? '#9ca3af' : '#374151' }}>{formatQty(row.instore_qty, row)}</div>
                             </div>
                             <div style={{ textAlign: 'center' }}>
                               <div style={{ fontSize: 10, color: '#9ca3af' }}>Total</div>
-                              <div style={{ fontSize: 15, fontWeight: 700, color: total === 0 ? '#ef4444' : total <= 3 ? '#d97706' : '#16a34a' }}>{total}</div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: total === 0 ? '#ef4444' : total <= 3 ? '#d97706' : '#16a34a' }}>{formatQty(total, row)}</div>
                             </div>
                             {stockVal != null && (
                               <div style={{ textAlign: 'center' }}>
@@ -469,8 +502,8 @@ export default function StockPage() {
                       <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#6b7280', alignItems: 'center', flexWrap: 'wrap' }}>
                         <span>{txn.date}</span>
                         <Text code style={{ fontSize: 11 }}>{txn.sku}</Text>
-                        <Text type={txn.dan_qty < 0 ? 'danger' : 'success'} style={{ fontWeight: 600 }}>
-                          {txn.dan_qty > 0 ? `+${txn.dan_qty}` : txn.dan_qty}
+                        <Text type={txn.qty < 0 ? 'danger' : 'success'} style={{ fontWeight: 600 }}>
+                          {txn.qty > 0 ? `+${txn.qty}` : txn.qty}
                         </Text>
                         {txn.location && <span>{txn.location}</span>}
                       </div>
@@ -495,7 +528,7 @@ export default function StockPage() {
 
       <RestockModal
         open={restockOpen}
-        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku } : undefined}
+        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku, product_type: quickProduct.product_type, boxes_per_dan: quickProduct.boxes_per_dan, dan_per_xiang: quickProduct.dan_per_xiang } : undefined}
         onClose={() => { setRestockOpen(false); setQuickProduct(null) }}
         onDone={() => { setRestockOpen(false); setQuickProduct(null); loadStock() }}
       />
