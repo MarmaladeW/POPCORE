@@ -10,6 +10,11 @@
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.2.4",
+    "@fullcalendar/core": "^6.1.20",
+    "@fullcalendar/daygrid": "^6.1.20",
+    "@fullcalendar/interaction": "^6.1.20",
+    "@fullcalendar/react": "^6.1.20",
+    "@fullcalendar/timegrid": "^6.1.20",
     "antd": "^5.20.0",
     "axios": "^1.7.7",
     "dayjs": "^1.11.13",

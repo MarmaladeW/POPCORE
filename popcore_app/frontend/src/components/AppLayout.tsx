@@ -11,6 +11,7 @@ import {
   MenuUnfoldOutlined,
   ShopOutlined,
   EllipsisOutlined,
+  CalendarOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
@@ -146,6 +147,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isStaff   ? [{ key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         }] : []),
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       }] : []),
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         }] : []),
+    { key: '/schedule',      icon: <CalendarOutlined />,  label: 'Schedule'      },
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,      label: 'Users'         }] : []),
   ]
 
@@ -154,12 +156,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isStaff   ? [{ key: '/',        icon: <DashboardOutlined />, label: 'Dashboard' }] : []),
     { key: '/products',  icon: <AppstoreOutlined />,  label: 'Products'  },
     ...(isStaff   ? [{ key: '/stock',   icon: <InboxOutlined />,     label: 'Stock'     }] : []),
-    ...(isManager ? [{ key: '/sales',   icon: <DollarOutlined />,    label: 'Sales'     }] : []),
+    { key: '/schedule',  icon: <CalendarOutlined />,  label: 'Schedule'  },
   ]
 
   // "More" drawer extra nav items
   const moreNavItems = [
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,   label: 'Restock'       }] : []),
+    ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />, label: 'Sales'         }] : []),
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,   label: 'Users'         }] : []),
   ]
 

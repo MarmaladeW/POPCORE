@@ -10,13 +10,14 @@ import { setTokenGetter } from './api/client'
 import { useAppStore } from './store'
 import client from './api/client'
 
-import DashboardPage from './pages/Dashboard'
-import ProductsPage  from './pages/Products'
-import StockPage     from './pages/Stock'
-import RestockPage   from './pages/Restock'
-import SalesPage     from './pages/Sales'
-import DayDetailPage from './pages/Sales/DayDetail'
-import UsersPage     from './pages/Users'
+import DashboardPage  from './pages/Dashboard'
+import ProductsPage   from './pages/Products'
+import StockPage      from './pages/Stock'
+import RestockPage    from './pages/Restock'
+import SalesPage      from './pages/Sales'
+import DayDetailPage  from './pages/Sales/DayDetail'
+import UsersPage      from './pages/Users'
+import SchedulePage   from './pages/Schedule'
 
 function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
   return useHasRole(minRole) ? <>{element}</> : <Navigate to="/products" replace />
@@ -48,6 +49,7 @@ function AppInner() {
         <Route path="/sales"          element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
         <Route path="/sales/day/:date" element={<RoleRoute minRole="manager" element={<DayDetailPage />} />} />
         <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
+        <Route path="/schedule"      element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
         <Route path="*"              element={<Navigate to="/" replace />} />
       </Routes>
     </AppLayout>
