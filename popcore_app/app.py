@@ -3019,9 +3019,9 @@ def schedule_avail_delete(avail_id):
     if not row:
         con.close()
         return jsonify({'error': 'Not found'}), 404
-    # Employees can only delete their own; managers can delete any
+    # Everyone can only delete their own availability
     emp = _get_or_create_employee(con, auth0_id)
-    if row['employee_id'] != emp['id'] and ROLE_HIERARCHY.get(role, 0) < ROLE_HIERARCHY['manager']:
+    if row['employee_id'] != emp['id']:
         con.close()
         return jsonify({'error': 'Forbidden'}), 403
     con.execute('DELETE FROM availability WHERE id = ?', (avail_id,))
