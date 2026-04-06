@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
-import { Modal, Form, Select, Row, Col, Input, Button, message } from 'antd'
+import { Modal, Form, Select, Row, Col, Input, Button, message, Tag } from 'antd'
 import {
   createShift,
   updateShift,
   deleteShift,
+  type Availability,
   type Employee,
   type Shift,
 } from './scheduleApi'
@@ -13,6 +14,7 @@ interface Props {
   date: string | null
   employees: Employee[]
   existing: Shift | null
+  availForDate: Availability[]   // availability records for the selected date
   onClose: () => void
   onSaved: () => void
 }
@@ -29,9 +31,21 @@ function buildTimeOptions() {
 }
 const TIME_OPTIONS = buildTimeOptions()
 
-export default function ShiftModal({ open, date, employees, existing, onClose, onSaved }: Props) {
+export default function ShiftModal({
+  open, date, employees, existing, availForDate, onClose, onSaved,
+}: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
+
+  // Quick lookup: employee_id → their availability on this date
+  const availByEmpId: Record<number, Availability> = {}
+  for (const a of availForDate) availByEmpId[a.employee_id] = a
+
+  // Employees with availability first, then the rest
+  const sortedEmployees = [
+    ...employees.filter((e) => availByEmpId[e.id]),
+    ...employees.filter((e) => !availByEmpId[e.id]),
+  ]
 
   useEffect(() => {
     if (!open) return
@@ -46,6 +60,15 @@ export default function ShiftModal({ open, date, employees, existing, onClose, o
       form.resetFields()
     }
   }, [open, existing, form])
+
+  // When the manager picks an employee, auto-fill times from their availability
+  const handleEmployeeChange = (empId: number) => {
+    if (existing) return  // don't overwrite when editing
+    const avail = availByEmpId[empId]
+    if (avail) {
+      form.setFieldsValue({ start_time: avail.start_time, end_time: avail.end_time })
+    }
+  }
 
   const handleSave = async () => {
     try {
@@ -108,7 +131,38 @@ export default function ShiftModal({ open, date, employees, existing, onClose, o
         ]}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        {/* Availability summary for this date */}
+        {availForDate.length > 0 && (
+          <div
+            style={{
+              background: '#f0fdf4',
+              border: '1px solid #86efac',
+              borderRadius: 8,
+              padding: '8px 12px',
+              marginBottom: 16,
+              fontSize: 13,
+            }}
+          >
+            <div style={{ fontWeight: 600, color: '#166534', marginBottom: 4 }}>
+              Available on {date}:
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {availForDate.map((a) => {
+                const emp = employees.find((e) => e.id === a.employee_id)
+                const name = emp
+                  ? (emp.name || emp.email || `ID ${emp.id}`)
+                  : (a.employee_name || `ID ${a.employee_id}`)
+                return (
+                  <Tag key={a.id} color="green" style={{ margin: 0 }}>
+                    {name}  {a.start_time}–{a.end_time}
+                  </Tag>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        <Form form={form} layout="vertical">
           <Form.Item
             name="employee_id"
             label="Employee"
@@ -119,10 +173,17 @@ export default function ShiftModal({ open, date, employees, existing, onClose, o
               placeholder="Select employee"
               optionFilterProp="label"
               disabled={!!existing}
-              options={employees.map((e) => ({
-                value: e.id,
-                label: e.name || e.email || e.auth0_id,
-              }))}
+              onChange={handleEmployeeChange}
+              options={sortedEmployees.map((e) => {
+                const avail = availByEmpId[e.id]
+                const baseName = e.name || e.email || e.auth0_id
+                return {
+                  value: e.id,
+                  label: avail
+                    ? `${baseName}  ·  ${avail.start_time}–${avail.end_time}`
+                    : baseName,
+                }
+              })}
             />
           </Form.Item>
 

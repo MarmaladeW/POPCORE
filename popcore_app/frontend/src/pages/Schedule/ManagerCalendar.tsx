@@ -40,8 +40,11 @@ export default function ManagerCalendar() {
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
+  const [availForDate, setAvailForDate] = useState<Availability[]>([])
 
   const shiftById = useRef<Record<number, Shift>>({})
+  // Per-date map of raw availability objects — used to pass context to ShiftModal
+  const availsByDate = useRef<Record<string, Availability[]>>({})
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
 
   useEffect(() => {
@@ -81,9 +84,14 @@ export default function ManagerCalendar() {
       employees.forEach((e, i) => { empIdToIdx[e.id] = i })
 
       shiftById.current = {}
+      availsByDate.current = {}  // Reset per-date availability map
       const evts: EventInput[] = []
 
       for (const a of avails) {
+        // Populate the per-date lookup
+        if (!availsByDate.current[a.date]) availsByDate.current[a.date] = []
+        availsByDate.current[a.date].push(a)
+
         const idx   = empIdToIdx[a.employee_id] ?? 0
         const color = colorForEmployee(idx)
         evts.push({
@@ -133,6 +141,7 @@ export default function ManagerCalendar() {
   const handleDateClick = useCallback((arg: DateClickArg) => {
     setSelectedDate(arg.dateStr)
     setSelectedShift(null)
+    setAvailForDate(availsByDate.current[arg.dateStr] ?? [])
     setModalOpen(true)
   }, [])
 
@@ -146,6 +155,7 @@ export default function ManagerCalendar() {
       if (shift) {
         setSelectedDate(shift.date)
         setSelectedShift(shift)
+        setAvailForDate(availsByDate.current[shift.date] ?? [])
         setModalOpen(true)
       }
     }
@@ -219,6 +229,7 @@ export default function ManagerCalendar() {
         date={selectedDate}
         employees={employees}
         existing={selectedShift}
+        availForDate={availForDate}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />
