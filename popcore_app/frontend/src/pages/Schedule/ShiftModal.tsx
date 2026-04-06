@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
-import { Modal, Form, Select, TimePicker, Input, Button, message } from 'antd'
-import dayjs from 'dayjs'
+import { Modal, Form, Select, Row, Col, Input, Button, message } from 'antd'
 import {
   createShift,
   updateShift,
@@ -18,7 +17,17 @@ interface Props {
   onSaved: () => void
 }
 
-const FMT = 'HH:mm'
+function buildTimeOptions() {
+  const opts: { value: string; label: string }[] = []
+  for (let h = 6; h < 24; h++) {
+    for (const m of [0, 30]) {
+      const label = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+      opts.push({ value: label, label })
+    }
+  }
+  return opts
+}
+const TIME_OPTIONS = buildTimeOptions()
 
 export default function ShiftModal({ open, date, employees, existing, onClose, onSaved }: Props) {
   const [form] = Form.useForm()
@@ -29,8 +38,9 @@ export default function ShiftModal({ open, date, employees, existing, onClose, o
     if (existing) {
       form.setFieldsValue({
         employee_id: existing.employee_id,
-        time: [dayjs(existing.start_time, FMT), dayjs(existing.end_time, FMT)],
-        notes: existing.notes,
+        start_time:  existing.start_time,
+        end_time:    existing.end_time,
+        notes:       existing.notes,
       })
     } else {
       form.resetFields()
@@ -40,20 +50,19 @@ export default function ShiftModal({ open, date, employees, existing, onClose, o
   const handleSave = async () => {
     try {
       const values = await form.validateFields()
-      const [start, end] = values.time as [dayjs.Dayjs, dayjs.Dayjs]
       if (existing) {
         await updateShift(existing.id, {
-          start_time: start.format(FMT),
-          end_time: end.format(FMT),
-          notes: values.notes ?? '',
+          start_time: values.start_time as string,
+          end_time:   values.end_time   as string,
+          notes:      values.notes ?? '',
         })
       } else {
         await createShift({
-          employee_id: values.employee_id,
-          date: date!,
-          start_time: start.format(FMT),
-          end_time: end.format(FMT),
-          notes: values.notes ?? '',
+          employee_id: values.employee_id as number,
+          date:        date!,
+          start_time:  values.start_time as string,
+          end_time:    values.end_time   as string,
+          notes:       values.notes ?? '',
         })
       }
       msgApi.success('Shift saved')
@@ -116,13 +125,48 @@ export default function ShiftModal({ open, date, employees, existing, onClose, o
               }))}
             />
           </Form.Item>
-          <Form.Item
-            name="time"
-            label="Shift hours"
-            rules={[{ required: true, message: 'Please set a time range' }]}
-          >
-            <TimePicker.RangePicker format={FMT} minuteStep={15} style={{ width: '100%' }} />
-          </Form.Item>
+
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item
+                name="start_time"
+                label="Start time"
+                rules={[{ required: true, message: 'Required' }]}
+              >
+                <Select
+                  showSearch
+                  placeholder="09:00"
+                  options={TIME_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="end_time"
+                label="End time"
+                dependencies={['start_time']}
+                rules={[
+                  { required: true, message: 'Required' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (!value || !getFieldValue('start_time')) return Promise.resolve()
+                      if (value > getFieldValue('start_time')) return Promise.resolve()
+                      return Promise.reject(new Error('Must be after start'))
+                    },
+                  }),
+                ]}
+              >
+                <Select
+                  showSearch
+                  placeholder="17:00"
+                  options={TIME_OPTIONS}
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+
           <Form.Item name="notes" label="Notes (optional)">
             <Input.TextArea rows={2} />
           </Form.Item>
