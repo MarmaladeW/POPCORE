@@ -1,5 +1,6 @@
 import { Tabs } from 'antd'
 import ManagerCalendar from './ManagerCalendar'
+import EmployeeView from './EmployeeView'
 import MonthlyReport from './MonthlyReport'
 
 export default function ManagerView() {
@@ -9,8 +10,13 @@ export default function ManagerView() {
       items={[
         {
           key: 'calendar',
-          label: 'Schedule',
+          label: 'Team Schedule',
           children: <ManagerCalendar />,
+        },
+        {
+          key: 'availability',
+          label: 'My Availability',
+          children: <EmployeeView />,
         },
         {
           key: 'report',

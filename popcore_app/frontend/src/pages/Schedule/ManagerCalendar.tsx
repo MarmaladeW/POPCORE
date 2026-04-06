@@ -42,10 +42,19 @@ export default function ManagerCalendar() {
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
 
   const shiftById = useRef<Record<number, Shift>>({})
+  const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
 
   useEffect(() => {
     getEmployees().then(setEmployees).catch(() => {})
   }, [])
+
+  // Re-load events once employees arrive (fixes race with initial datesSet)
+  useEffect(() => {
+    if (employees.length > 0 && currentRange) {
+      loadEvents(currentRange.start, currentRange.end)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employees])
 
   // Rebuild visible events whenever filter or allEvents changes
   useEffect(() => {
@@ -115,6 +124,7 @@ export default function ManagerCalendar() {
     (arg: DatesSetArg) => {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
+      setCurrentRange({ start, end })
       loadEvents(start, end)
     },
     [loadEvents]
