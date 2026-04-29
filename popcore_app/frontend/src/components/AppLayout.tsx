@@ -345,7 +345,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Page content */}
         <Content style={{
           padding:       isMobile ? 12 : 24,
-          paddingBottom: isMobile ? 72 : 24,
+          paddingBottom: isMobile ? 'calc(72px + env(safe-area-inset-bottom))' : 24,
         }}>
           {children}
         </Content>
