@@ -145,7 +145,20 @@ export default function ProductsPage() {
       dataIndex: 'name_cn_en',
       ellipsis: true,
       sorter: (a, b) => (a.name_cn_en ?? '').localeCompare(b.name_cn_en ?? ''),
-      render: v => <Text style={{ fontSize: 13 }}>{v || '—'}</Text>,
+      render: (v, r) => (
+        <button
+          onClick={e => { e.stopPropagation(); setDetailId(r.id) }}
+          style={{
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+            fontSize: 13, color: '#6366F1', textAlign: 'left',
+            textDecoration: 'none', fontFamily: 'inherit',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+          onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+        >
+          {v || '—'}
+        </button>
+      ),
     },
     {
       title: 'Series',
