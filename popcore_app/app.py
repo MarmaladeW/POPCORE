@@ -80,6 +80,7 @@ def migrate_db():
     existing = {r['name'] for r in cur.fetchall()}
 
     new_cols = [
+        ('notes',             "TEXT    NOT NULL DEFAULT ''"),
         ('boxes_per_dan',     'INTEGER'),
         ('hidden_count',      "TEXT    NOT NULL DEFAULT '0'"),
         ('hidden_has_small',  'INTEGER NOT NULL DEFAULT 0'),
