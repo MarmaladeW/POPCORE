@@ -2861,11 +2861,26 @@ def history_inventory_check():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _get_or_create_employee(con, auth0_id: str, name: str = '', email: str = '') -> dict:
-    """Return the employees row for auth0_id, creating it if absent."""
+    """Return the employees row for auth0_id, creating it if absent.
+    Also backfills name/email into existing rows that have empty values."""
     cur = con.cursor()
     cur.execute('SELECT * FROM employees WHERE auth0_id = ?', (auth0_id,))
     row = cur.fetchone()
     if row:
+        updates = {}
+        if name and not row['name']:
+            updates['name'] = name
+        if email and not row['email']:
+            updates['email'] = email
+        if updates:
+            set_clause = ', '.join(f'{k} = ?' for k in updates)
+            cur.execute(
+                f'UPDATE employees SET {set_clause} WHERE auth0_id = ?',
+                (*updates.values(), auth0_id)
+            )
+            con.commit()
+            cur.execute('SELECT * FROM employees WHERE auth0_id = ?', (auth0_id,))
+            return dict(cur.fetchone())
         return dict(row)
     cur.execute(
         'INSERT INTO employees (auth0_id, name, email) VALUES (?, ?, ?)',
@@ -2933,8 +2948,34 @@ def schedule_employees():
     rows = con.execute(
         'SELECT * FROM employees WHERE is_active = 1 ORDER BY name'
     ).fetchall()
+    employees = [dict(r) for r in rows]
+
+    # Backfill names from Auth0 for any employee still missing one
+    missing = [e for e in employees if not e.get('name')]
+    if missing and AUTH0_MGMT_CLIENT_ID:
+        try:
+            cur = con.cursor()
+            for emp in missing:
+                resp = _mgmt_get(f'users/{emp["auth0_id"]}',
+                                 params={'fields': 'name,email'})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    fetched_name  = data.get('name', '')
+                    fetched_email = data.get('email', '')
+                    if fetched_name or fetched_email:
+                        cur.execute(
+                            'UPDATE employees SET name = ?, email = ? WHERE id = ?',
+                            (fetched_name, fetched_email, emp['id'])
+                        )
+                        emp['name']  = fetched_name
+                        emp['email'] = fetched_email
+            con.commit()
+        except Exception:
+            pass  # non-fatal: return whatever names we have
+
     con.close()
-    return jsonify([dict(r) for r in rows])
+    employees.sort(key=lambda e: e.get('name') or e.get('email') or '')
+    return jsonify(employees)
 
 
 # ── Availability ──────────────────────────────────────────────────────────────
