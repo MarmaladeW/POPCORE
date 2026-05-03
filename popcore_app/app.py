@@ -3240,16 +3240,41 @@ def not_found(e):
 
 if __name__ == '__main__':
     if not os.path.exists(DB_PATH):
-        print('Database not found. Run init_db.py first.')
-    else:
-        import socket
-        hostname = socket.gethostname()
-        try:
-            local_ip = socket.gethostbyname(hostname)
-        except Exception:
-            local_ip = '查询失败'
-        print(f'Starting POPCORE Inventory System')
-        print(f'  本机访问:  http://localhost:5000')
-        print(f'  手机访问:  http://{local_ip}:5000')
-        print(f'  (手机需连接同一WiFi)')
-        app.run(debug=False, host='0.0.0.0', port=5000)
+        print('Database not found — creating empty schema. Re-import products via the UI.')
+        con = sqlite3.connect(DB_PATH)
+        con.execute('PRAGMA journal_mode=WAL')
+        con.executescript('''
+            CREATE TABLE IF NOT EXISTS products (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku          TEXT UNIQUE,
+                name_cn_en   TEXT,
+                jizhanming   TEXT,
+                price        REAL,
+                ip_series    TEXT,
+                product_type TEXT,
+                brand        TEXT,
+                release_date TEXT,
+                edition_size TEXT,
+                channel      TEXT,
+                hidden       TEXT,
+                style_notes  TEXT,
+                notes        TEXT DEFAULT '',
+                search_blob  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+        ''')
+        con.commit()
+        con.close()
+        migrate_db()
+        print('Empty database initialised successfully.')
+    import socket
+    hostname = socket.gethostname()
+    try:
+        local_ip = socket.gethostbyname(hostname)
+    except Exception:
+        local_ip = '查询失败'
+    print(f'Starting POPCORE Inventory System')
+    print(f'  本机访问:  http://localhost:5000')
+    print(f'  手机访问:  http://{local_ip}:5000')
+    print(f'  (手机需连接同一WiFi)')
+    app.run(debug=False, host='0.0.0.0', port=5000)
