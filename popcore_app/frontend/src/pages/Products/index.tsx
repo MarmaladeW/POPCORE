@@ -64,6 +64,7 @@ export default function ProductsPage() {
   const [searchType,   setSearchType]   = useState('')
   const [selected,  setSelected]  = useState<number[]>([])
 
+  const [exporting,      setExporting]      = useState(false)
   const [editProduct,    setEditProduct]    = useState<Product | null>(null)
   const [modalOpen,      setModalOpen]      = useState(false)
   const [imagesProduct,  setImagesProduct]  = useState<Product | null>(null)
@@ -109,11 +110,26 @@ export default function ProductsPage() {
     }
   }
 
-  function handleExport() {
-    const params = new URLSearchParams()
-    if (searchSeries) params.set('series', searchSeries)
-    if (searchQ)      params.set('q', searchQ)
-    window.location.href = `/api/products/export?${params}`
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams()
+      if (searchSeries) params.set('series', searchSeries)
+      if (searchQ)      params.set('q', searchQ)
+      const res = await client.get(`/products/export?${params}`, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([res.data]))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `products_${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch {
+      message.error('Export failed — please try again')
+    } finally {
+      setExporting(false)
+    }
   }
 
   const columns: ColumnsType<Product> = [
@@ -278,7 +294,7 @@ export default function ProductsPage() {
             <RoleGuard minRole="manager">
               <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto', flexWrap: 'wrap' }}>
                 <Button onClick={() => setPasteOpen(true)}>Import</Button>
-                <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
+                <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>
                 {selected.length > 0 && (
                   <Popconfirm
                     title={`Delete ${selected.length} products? This cannot be undone.`}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Modal, Tabs, Spin, Tag } from 'antd'
-import { InboxOutlined, CheckSquareOutlined } from '@ant-design/icons'
+import { Modal, Tabs, Spin, Tag, Steps } from 'antd'
+import { InboxOutlined, CheckSquareOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import client from '../../api/client'
 import type { RestockSession } from './index'
@@ -84,6 +84,9 @@ export default function SessionModal({ sessionId, onClose }: Props) {
       </>
     : '补货单'
 
+  const stepIndex = status === 'pending' ? 0 : status === 'completed' ? 2 : 1
+  const stepStatus = status === 'completed' ? 'finish' : 'process'
+
   return (
     <Modal
       open={!!sessionId}
@@ -97,13 +100,27 @@ export default function SessionModal({ sessionId, onClose }: Props) {
       {loading && !session ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
       ) : (
-        <Tabs
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          items={tabItems}
-          size="middle"
-          style={{ padding: '0 16px' }}
-        />
+        <>
+          <div style={{ padding: '12px 24px 4px', borderBottom: '1px solid #f0f0f0' }}>
+            <Steps
+              size="small"
+              current={stepIndex}
+              status={stepStatus}
+              items={[
+                { title: '录入补货', icon: <InboxOutlined />, description: '填写补货数量' },
+                { title: '仓库拣货', icon: <CheckSquareOutlined />, description: '上楼清点实数' },
+                { title: '完成', icon: <CheckCircleOutlined />, description: '库存已更新' },
+              ]}
+            />
+          </div>
+          <Tabs
+            activeKey={activeTab}
+            onChange={setActiveTab}
+            items={tabItems}
+            size="middle"
+            style={{ padding: '0 16px' }}
+          />
+        </>
       )}
     </Modal>
   )

@@ -6,21 +6,24 @@ import { ConfigProvider } from 'antd'
 import ProtectedRoute from './auth/ProtectedRoute'
 import { useHasRole, type Role } from './auth/useRole'
 import AppLayout from './components/AppLayout'
+import ErrorBoundary from './components/ErrorBoundary'
 import { setTokenGetter } from './api/client'
 import { useAppStore } from './store'
 import client from './api/client'
 
-import DashboardPage  from './pages/Dashboard'
-import ProductsPage   from './pages/Products'
-import StockPage      from './pages/Stock'
-import RestockPage    from './pages/Restock'
-import SalesPage      from './pages/Sales'
-import DayDetailPage  from './pages/Sales/DayDetail'
-import UsersPage      from './pages/Users'
-import SchedulePage   from './pages/Schedule'
+import DashboardPage   from './pages/Dashboard'
+import ProductsPage    from './pages/Products'
+import StockPage       from './pages/Stock'
+import RestockPage     from './pages/Restock'
+import SalesPage       from './pages/Sales'
+import DayDetailPage   from './pages/Sales/DayDetail'
+import UsersPage       from './pages/Users'
+import SchedulePage    from './pages/Schedule'
+import NotFound        from './pages/NotFound'
+import Unauthorized    from './pages/Unauthorized'
 
 function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
-  return useHasRole(minRole) ? <>{element}</> : <Navigate to="/products" replace />
+  return useHasRole(minRole) ? <>{element}</> : <Unauthorized />
 }
 
 function AppInner() {
@@ -41,17 +44,19 @@ function AppInner() {
 
   return (
     <AppLayout>
-      <Routes>
-        <Route path="/"              element={<RoleRoute minRole="staff"   element={<DashboardPage />} />} />
-        <Route path="/products"      element={<ProductsPage />} />
-        <Route path="/stock"         element={<RoleRoute minRole="staff"   element={<StockPage />} />} />
-        <Route path="/restock"       element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
-        <Route path="/sales"          element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
-        <Route path="/sales/day/:date" element={<RoleRoute minRole="manager" element={<DayDetailPage />} />} />
-        <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
-        <Route path="/schedule"      element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
-        <Route path="*"              element={<Navigate to="/" replace />} />
-      </Routes>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/"               element={<RoleRoute minRole="staff"   element={<DashboardPage />} />} />
+          <Route path="/products"       element={<ProductsPage />} />
+          <Route path="/stock"          element={<RoleRoute minRole="staff"   element={<StockPage />} />} />
+          <Route path="/restock"        element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
+          <Route path="/sales"          element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
+          <Route path="/sales/day/:date" element={<RoleRoute minRole="manager" element={<DayDetailPage />} />} />
+          <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
+          <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
+          <Route path="*"               element={<NotFound />} />
+        </Routes>
+      </ErrorBoundary>
     </AppLayout>
   )
 }

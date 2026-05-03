@@ -6,9 +6,9 @@ import App from './App'
 import 'antd/dist/reset.css'
 import './index.css'
 
-const AUTH0_DOMAIN   = 'dev-n0833ddaix42sr23.us.auth0.com'
-const AUTH0_CLIENT_ID = 'LA11pKQ6PFceQOm3dzB9M5iFkbLUFrVB'
-const AUTH0_AUDIENCE  = 'https://popcore/api'
+const AUTH0_DOMAIN    = import.meta.env.VITE_AUTH0_DOMAIN    as string
+const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID as string
+const AUTH0_AUDIENCE  = import.meta.env.VITE_AUTH0_AUDIENCE  as string
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -117,6 +117,7 @@ export default function StockPage() {
   const [quickProduct, setQuickProduct] = useState<StockRow | null>(null)
   const [editingNotes, setEditingNotes] = useState<{ id: number; value: string } | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'history'>('overview')
+  const [exporting, setExporting] = useState(false)
 
   const loadStock = useCallback(() => {
     setLoading(true)
@@ -150,11 +151,26 @@ export default function StockPage() {
     }
   }
 
-  function handleExport() {
-    const params = new URLSearchParams()
-    if (filterSeries) params.set('series', filterSeries)
-    if (q) params.set('q', q)
-    window.location.href = `/api/stock/export?${params}`
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const params = new URLSearchParams()
+      if (filterSeries) params.set('series', filterSeries)
+      if (q) params.set('q', q)
+      const res = await client.get(`/stock/export?${params}`, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([res.data]))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `stock_${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch {
+      message.error('Export failed — please try again')
+    } finally {
+      setExporting(false)
+    }
   }
 
   async function saveNotes(productId: number, notes: string) {
@@ -402,7 +418,7 @@ export default function StockPage() {
                     <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
                   </RoleGuard>
                   <RoleGuard minRole="manager">
-                    <Button icon={<ExportOutlined />} onClick={handleExport}>Export</Button>
+                    <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>
                     {selected.length > 0 && (
                       <Popconfirm
                         title={`Remove ${selected.length} stock records?`}
