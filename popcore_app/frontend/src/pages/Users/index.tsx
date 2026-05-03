@@ -46,7 +46,12 @@ export default function UsersPage() {
   function load() {
     if (!isAdmin) return
     setLoading(true)
-    client.get('/users').then(r => setUsers(r.data)).finally(() => setLoading(false))
+    client.get('/users')
+      .then(r => setUsers(r.data))
+      .catch((err: any) => {
+        message.error(err?.response?.data?.error ?? '加载用户列表失败')
+      })
+      .finally(() => setLoading(false))
   }
 
   useEffect(() => { load() }, [isAdmin])

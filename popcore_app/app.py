@@ -546,13 +546,18 @@ def _highest_role(user_roles: list, id_to_name: dict) -> str:
 @app.route('/api/users')
 @role_required('admin')
 def list_users():
-    resp = _mgmt_get('users', params={
-        'q': f'identities.connection:"{AUTH0_CONNECTION}"',
-        'search_engine': 'v3',
-        'fields': 'user_id,username,nickname,blocked,created_at,last_login',
-        'include_fields': 'true',
-        'per_page': 100,
-    })
+    if not AUTH0_MGMT_CLIENT_ID or not AUTH0_MGMT_CLIENT_SECRET:
+        return jsonify({'error': 'Auth0 Management API not configured on this server'}), 503
+    try:
+        resp = _mgmt_get('users', params={
+            'q': f'identities.connection:"{AUTH0_CONNECTION}"',
+            'search_engine': 'v3',
+            'fields': 'user_id,username,nickname,blocked,created_at,last_login',
+            'include_fields': 'true',
+            'per_page': 100,
+        })
+    except http_req.exceptions.RequestException as exc:
+        return jsonify({'error': f'Auth0 Management API request failed: {exc}'}), 502
     if not resp.ok:
         return jsonify({'error': 'Failed to fetch users from Auth0'}), 502
     users = resp.json()
@@ -580,6 +585,8 @@ def list_users():
 @app.route('/api/users', methods=['POST'])
 @role_required('admin')
 def create_user():
+    if not AUTH0_MGMT_CLIENT_ID or not AUTH0_MGMT_CLIENT_SECRET:
+        return jsonify({'error': 'Auth0 Management API not configured on this server'}), 503
     data     = request.get_json() or {}
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
@@ -591,19 +598,27 @@ def create_user():
     if role not in ROLE_HIERARCHY:
         return jsonify({'error': '无效角色'}), 400
 
-    create_resp = _mgmt_post('users', json={
-        'connection':     AUTH0_CONNECTION,
-        'username':       username,
-        'email':          f'{username}@popcore.internal',
-        'password':       password,
-        'email_verified': True,
-    })
+    try:
+        create_resp = _mgmt_post('users', json={
+            'connection':     AUTH0_CONNECTION,
+            'username':       username,
+            'email':          f'{username}@popcore.internal',
+            'password':       password,
+            'email_verified': True,
+        })
+    except http_req.exceptions.RequestException as exc:
+        return jsonify({'error': f'Auth0 Management API request failed: {exc}'}), 502
     if not create_resp.ok:
         err = create_resp.json().get('message', 'Create failed')
         code = 409 if ('already exists' in err.lower() or create_resp.status_code == 409) else 502
         return jsonify({'error': f'用户名 {username} 已存在' if code == 409 else err}), code
 
     user_id = create_resp.json()['user_id']
+
+    con = get_db()
+    _get_or_create_employee(con, user_id, name=username, email=f'{username}@popcore.internal')
+    con.close()
+
     role_map = _get_role_map()
     role_id  = role_map.get(role)
     if role_id:
@@ -2958,12 +2973,12 @@ def schedule_employees():
             for emp in missing:
                 uid_enc = urllib.parse.quote(emp['auth0_id'], safe='')
                 resp = _mgmt_get(f'users/{uid_enc}',
-                                 params={'fields': 'name,nickname,email',
+                                 params={'fields': 'name,nickname,username,email',
                                          'include_fields': 'true'})
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Auth0 username-password users store display name as 'nickname'
-                    fetched_name  = (data.get('name') or data.get('nickname') or '').strip()
+                    # Auth0 username-password users store display name as 'username'
+                    fetched_name  = (data.get('name') or data.get('nickname') or data.get('username') or '').strip()
                     fetched_email = data.get('email', '').strip()
                     # Avoid storing the raw auth0_id as the name (Auth0 sometimes returns it)
                     if fetched_name and fetched_name == emp['auth0_id']:
