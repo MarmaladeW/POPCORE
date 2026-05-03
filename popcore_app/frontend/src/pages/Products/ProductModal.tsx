@@ -201,7 +201,18 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
           <Form.Item name="brand" label="Brand">
             <Input />
           </Form.Item>
-          <Form.Item name="release_date" label="Release Date">
+          <Form.Item
+            name="release_date"
+            label="Release Date"
+            rules={[{
+              validator: (_, v) => {
+                if (!v) return Promise.resolve()
+                return /^\d{4}-\d{2}-\d{2}$/.test(v)
+                  ? Promise.resolve()
+                  : Promise.reject(new Error('Format must be YYYY-MM-DD'))
+              },
+            }]}
+          >
             <Input placeholder="YYYY-MM-DD" />
           </Form.Item>
         </div>
