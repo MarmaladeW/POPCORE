@@ -2956,12 +2956,18 @@ def schedule_employees():
         try:
             cur = con.cursor()
             for emp in missing:
-                resp = _mgmt_get(f'users/{emp["auth0_id"]}',
-                                 params={'fields': 'name,email'})
+                uid_enc = urllib.parse.quote(emp['auth0_id'], safe='')
+                resp = _mgmt_get(f'users/{uid_enc}',
+                                 params={'fields': 'name,nickname,email',
+                                         'include_fields': 'true'})
                 if resp.status_code == 200:
                     data = resp.json()
-                    fetched_name  = data.get('name', '')
-                    fetched_email = data.get('email', '')
+                    # Auth0 username-password users store display name as 'nickname'
+                    fetched_name  = (data.get('name') or data.get('nickname') or '').strip()
+                    fetched_email = data.get('email', '').strip()
+                    # Avoid storing the raw auth0_id as the name (Auth0 sometimes returns it)
+                    if fetched_name and fetched_name == emp['auth0_id']:
+                        fetched_name = ''
                     if fetched_name or fetched_email:
                         cur.execute(
                             'UPDATE employees SET name = ?, email = ? WHERE id = ?',
