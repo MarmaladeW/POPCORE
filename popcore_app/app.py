@@ -74,9 +74,30 @@ def get_db():
 
 
 def migrate_db():
-    """Add new columns / tables if they don't exist yet (safe to re-run)."""
+    """Create tables and add new columns if they don't exist yet (safe to re-run)."""
     con = get_db()
     cur = con.cursor()
+
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS products (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku          TEXT UNIQUE,
+            name_cn_en   TEXT,
+            jizhanming   TEXT,
+            price        REAL,
+            ip_series    TEXT,
+            product_type TEXT,
+            brand        TEXT,
+            release_date TEXT,
+            edition_size TEXT,
+            channel      TEXT,
+            hidden       TEXT,
+            style_notes  TEXT,
+            notes        TEXT DEFAULT '',
+            search_blob  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+    ''')
 
     cur.execute("PRAGMA table_info(products)")
     existing = {r['name'] for r in cur.fetchall()}
@@ -391,8 +412,7 @@ def migrate_db():
     con.close()
 
 
-if os.path.exists(DB_PATH):
-    migrate_db()
+migrate_db()
 
 
 # ─── Auth0 JWT helpers ────────────────────────────────────────────────────────
@@ -3301,34 +3321,6 @@ def not_found(e):
 
 
 if __name__ == '__main__':
-    if not os.path.exists(DB_PATH):
-        print('Database not found — creating empty schema. Re-import products via the UI.')
-        con = sqlite3.connect(DB_PATH)
-        con.execute('PRAGMA journal_mode=WAL')
-        con.executescript('''
-            CREATE TABLE IF NOT EXISTS products (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                sku          TEXT UNIQUE,
-                name_cn_en   TEXT,
-                jizhanming   TEXT,
-                price        REAL,
-                ip_series    TEXT,
-                product_type TEXT,
-                brand        TEXT,
-                release_date TEXT,
-                edition_size TEXT,
-                channel      TEXT,
-                hidden       TEXT,
-                style_notes  TEXT,
-                notes        TEXT DEFAULT '',
-                search_blob  TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
-        ''')
-        con.commit()
-        con.close()
-        migrate_db()
-        print('Empty database initialised successfully.')
     import socket
     hostname = socket.gethostname()
     try:
