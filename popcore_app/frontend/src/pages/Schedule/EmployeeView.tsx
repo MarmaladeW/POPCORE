@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
@@ -7,7 +7,7 @@ import type { DateClickArg } from '@fullcalendar/interaction'
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
 import { Typography, Tooltip } from 'antd'
 import dayjs from 'dayjs'
-import { getMyAvailability, getShifts, type Availability, type Shift } from './scheduleApi'
+import { getMe, getMyAvailability, getShifts, type Availability, type Shift } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
 
 const { Title } = Typography
@@ -18,14 +18,19 @@ export default function EmployeeView() {
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedAvail, setSelectedAvail] = useState<Availability | null>(null)
+  const myEmployeeId = useRef<number | null>(null)
 
   // Cache availability by date for quick lookup on click
   const availByDate = useRef<Record<string, Availability>>({})
 
+  useEffect(() => {
+    getMe().then((me) => { myEmployeeId.current = me.id }).catch(() => {})
+  }, [])
+
   const loadEvents = useCallback(async (start: string, end: string) => {
     const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
       getMyAvailability(start, end),
-      getShifts({ start, end }),
+      getShifts({ start, end, ...(myEmployeeId.current != null ? { employee_id: myEmployeeId.current } : {}) }),
     ])
 
     availByDate.current = {}
