@@ -3237,6 +3237,31 @@ def schedule_shifts_get():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route('/api/schedule/shifts/me', methods=['GET'])
+@login_required
+def schedule_shifts_me():
+    """Return only the authenticated user's own shifts, regardless of role."""
+    auth0_id = request.jwt_payload.get('sub', '')
+    start    = request.args.get('start', '')
+    end      = request.args.get('end', '')
+    con      = get_db()
+    emp      = _get_or_create_employee(con, auth0_id)
+    query    = '''
+        SELECT s.*, e.name AS employee_name, e.auth0_id
+        FROM shifts s JOIN employees e ON e.id = s.employee_id
+        WHERE s.employee_id = ?
+    '''
+    params: list = [emp['id']]
+    if start:
+        query += ' AND s.date >= ?'; params.append(start)
+    if end:
+        query += ' AND s.date <= ?'; params.append(end)
+    query += ' ORDER BY s.date'
+    rows = con.execute(query, params).fetchall()
+    con.close()
+    return jsonify([dict(r) for r in rows])
+
+
 @app.route('/api/schedule/shifts', methods=['POST'])
 @role_required('manager')
 def schedule_shifts_create():

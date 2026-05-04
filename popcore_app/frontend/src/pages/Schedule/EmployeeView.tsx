@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
@@ -7,7 +7,7 @@ import type { DateClickArg } from '@fullcalendar/interaction'
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
 import { Typography, Tooltip } from 'antd'
 import dayjs from 'dayjs'
-import { getMe, getMyAvailability, getShifts, type Availability, type Shift } from './scheduleApi'
+import { getMyAvailability, getMyShifts, type Availability, type Shift } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
 
 const { Title } = Typography
@@ -18,19 +18,14 @@ export default function EmployeeView() {
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedAvail, setSelectedAvail] = useState<Availability | null>(null)
-  const [myEmployeeId, setMyEmployeeId] = useState<number | null>(null)
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
 
   const availByDate = useRef<Record<string, Availability>>({})
 
-  useEffect(() => {
-    getMe().then((me) => setMyEmployeeId(me.id)).catch(() => {})
-  }, [])
-
-  const loadEvents = useCallback(async (start: string, end: string, empId: number | null) => {
+  const loadEvents = useCallback(async (start: string, end: string) => {
     const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
       getMyAvailability(start, end),
-      getShifts({ start, end, ...(empId != null ? { employee_id: empId } : {}) }),
+      getMyShifts({ start, end }),
     ])
 
     availByDate.current = {}
@@ -66,26 +61,14 @@ export default function EmployeeView() {
     setEvents(evts)
   }, [])
 
-  // Re-load once getMe() resolves and we already have a calendar range
-  useEffect(() => {
-    if (myEmployeeId != null && currentRange) {
-      loadEvents(currentRange.start, currentRange.end, myEmployeeId)
-    }
-  }, [myEmployeeId]) // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       setCurrentRange({ start, end })
-      // Don't fetch until getMe() has resolved — without employee_id the
-      // backend returns all shifts for admin/manager roles. The useEffect
-      // watching myEmployeeId will trigger the load once it is available.
-      if (myEmployeeId != null) {
-        loadEvents(start, end, myEmployeeId)
-      }
+      loadEvents(start, end)
     },
-    [loadEvents, myEmployeeId]
+    [loadEvents]
   )
 
   const handleDateClick = useCallback((arg: DateClickArg) => {
@@ -108,9 +91,9 @@ export default function EmployeeView() {
 
   const handleSaved = useCallback(() => {
     if (currentRange) {
-      loadEvents(currentRange.start, currentRange.end, myEmployeeId)
+      loadEvents(currentRange.start, currentRange.end)
     }
-  }, [loadEvents, currentRange, myEmployeeId])
+  }, [loadEvents, currentRange])
 
   return (
     <div style={{ padding: '0 4px' }}>

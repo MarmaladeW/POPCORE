@@ -103,6 +103,9 @@ export const getShifts = (params?: {
   employee_id?: number
 }) => client.get<Shift[]>('/schedule/shifts', { params }).then((r) => r.data)
 
+export const getMyShifts = (params?: { start?: string; end?: string }) =>
+  client.get<Shift[]>('/schedule/shifts/me', { params }).then((r) => r.data)
+
 export const createShift = (data: {
   employee_id: number
   date: string
