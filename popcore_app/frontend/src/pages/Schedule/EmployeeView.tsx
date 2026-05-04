@@ -78,7 +78,12 @@ export default function EmployeeView() {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       setCurrentRange({ start, end })
-      loadEvents(start, end, myEmployeeId)
+      // Don't fetch until getMe() has resolved — without employee_id the
+      // backend returns all shifts for admin/manager roles. The useEffect
+      // watching myEmployeeId will trigger the load once it is available.
+      if (myEmployeeId != null) {
+        loadEvents(start, end, myEmployeeId)
+      }
     },
     [loadEvents, myEmployeeId]
   )
