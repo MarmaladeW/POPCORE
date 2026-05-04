@@ -5,7 +5,8 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
-import { Select, Typography, Tooltip } from 'antd'
+import { Select, Typography, Tooltip, Button } from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
   getAllAvailability,
@@ -185,6 +186,11 @@ export default function ManagerCalendar() {
             value: e.id,
             label: e.name || e.email || e.auth0_id,
           }))}
+        />
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end)}
+          title="Refresh"
         />
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {employees.map((e, i) => (
