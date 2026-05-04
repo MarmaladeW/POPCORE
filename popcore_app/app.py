@@ -697,7 +697,33 @@ def delete_user(uid):
     resp    = _mgmt_delete(f'users/{uid_enc}')
     if not resp.ok and resp.status_code != 404:
         return jsonify({'error': 'Delete failed'}), 502
+    con = get_db()
+    con.execute('UPDATE employees SET is_active = 0 WHERE auth0_id = ?', (uid,))
+    con.commit()
+    con.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/admin/cleanup-employees', methods=['POST'])
+@role_required('admin')
+def cleanup_employees():
+    """Deactivate local employee records whose Auth0 account no longer exists."""
+    try:
+        resp = _mgmt_get('users', params={'per_page': 100, 'fields': 'user_id', 'include_fields': 'true'})
+        resp.raise_for_status()
+        live_ids = {u['user_id'] for u in resp.json()}
+    except Exception as exc:
+        return jsonify({'error': f'Auth0 lookup failed: {exc}'}), 502
+    con = get_db()
+    rows = con.execute('SELECT id, auth0_id FROM employees WHERE is_active = 1').fetchall()
+    deactivated = []
+    for row in rows:
+        if row['auth0_id'] not in live_ids:
+            con.execute('UPDATE employees SET is_active = 0 WHERE id = ?', (row['id'],))
+            deactivated.append(row['auth0_id'])
+    con.commit()
+    con.close()
+    return jsonify({'ok': True, 'deactivated': deactivated, 'count': len(deactivated)})
 
 
 # ─── Products API ─────────────────────────────────────────────────────────────
