@@ -11,7 +11,7 @@ import time
 import urllib.parse
 from datetime import date, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, g, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from jose import jwt as jose_jwt
@@ -74,16 +74,31 @@ def esc_csv(v):
 
 
 def get_db():
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    con.execute('PRAGMA journal_mode=WAL')
-    con.execute('PRAGMA foreign_keys = ON')
-    return con
+    if 'db' not in g:
+        con = sqlite3.connect(DB_PATH)
+        con.row_factory = sqlite3.Row
+        con.execute('PRAGMA journal_mode=WAL')
+        con.execute('PRAGMA foreign_keys = ON')
+        g.db = con
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(error):
+    db = g.pop('db', None)
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def migrate_db():
     """Create tables and add new columns if they don't exist yet (safe to re-run)."""
-    con = get_db()
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    con.execute('PRAGMA journal_mode=WAL')
+    con.execute('PRAGMA foreign_keys = ON')
     cur = con.cursor()
 
     cur.executescript('''
@@ -826,8 +841,11 @@ def batch_match_products():
     status ∈ matched | fuzzy | unmatched | skipped
     """
     data = request.get_json(silent=True) or {}
-    queries   = data.get('queries', [])
-    threshold = int(data.get('threshold', 75))
+    queries = data.get('queries', [])
+    try:
+        threshold = int(data.get('threshold', 75))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'threshold must be an integer'}), 400
     if not queries:
         return jsonify({'results': []})
 
@@ -1585,8 +1603,11 @@ def adjust_stock():
 def get_transactions():
     """Recent transactions for a product or all products."""
     pid   = request.args.get('product_id')
-    limit = int(request.args.get('limit', 50))
     d     = request.args.get('date')
+    try:
+        limit = int(request.args.get('limit', 50))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'limit must be an integer'}), 400
 
     con = get_db()
     cur = con.cursor()
@@ -1594,8 +1615,12 @@ def get_transactions():
     conditions = []
     params = []
     if pid:
+        try:
+            pid_int = int(pid)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'product_id must be an integer'}), 400
         conditions.append('t.product_id = ?')
-        params.append(int(pid))
+        params.append(pid_int)
     if d:
         conditions.append('t.date = ?')
         params.append(d)
@@ -1675,15 +1700,20 @@ def get_sales():
 @role_required('staff')
 def upsert_sale():
     """Upsert a single product's sales qty for a date."""
-    data     = request.get_json()
-    pid      = int(data['product_id'])
+    data  = request.get_json()
+    if not data or 'product_id' not in data:
+        return jsonify({'error': 'product_id is required'}), 400
+    try:
+        pid      = int(data['product_id'])
+        qty_pos  = int(data.get('qty_pos',  0) or 0)
+        qty_cash = int(data.get('qty_cash', 0) or 0)
+        if 'qty_pos' not in data and 'qty_cash' not in data:
+            qty_cash = int(data.get('qty_sold', 0) or 0)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'product_id and qty fields must be integers'}), 400
     d        = data.get('date', str(date.today()))
     notes    = data.get('notes', '')
-    qty_pos  = int(data.get('qty_pos',  0) or 0)
-    qty_cash = int(data.get('qty_cash', 0) or 0)
     # Backward compat: if caller only sends qty_sold, treat as qty_cash
-    if 'qty_pos' not in data and 'qty_cash' not in data:
-        qty_cash = int(data.get('qty_sold', 0) or 0)
     qty_sold = qty_pos + qty_cash
 
     con = get_db()
@@ -1707,8 +1737,13 @@ def upsert_sale():
 def add_product_to_sales():
     """Add a product to a date's sales list with 0 qty (idempotent)."""
     data = request.get_json()
-    pid  = int(data['product_id'])
-    d    = data.get('date', str(date.today()))
+    if not data or 'product_id' not in data:
+        return jsonify({'error': 'product_id is required'}), 400
+    try:
+        pid = int(data['product_id'])
+    except (ValueError, TypeError):
+        return jsonify({'error': 'product_id must be an integer'}), 400
+    d = data.get('date', str(date.today()))
 
     con = get_db()
     cur = con.cursor()
@@ -1782,8 +1817,11 @@ def batch_stock_operation():
     results = []
 
     for item in items:
-        pid   = int(item['product_id'])
-        qty   = int(item.get('qty', 0))
+        try:
+            pid = int(item['product_id'])
+            qty = int(item.get('qty', 0))
+        except (KeyError, ValueError, TypeError):
+            return jsonify({'error': f'Each item must have an integer product_id and qty'}), 400
         notes = item.get('notes', '')
         if qty <= 0:
             continue
@@ -1865,10 +1903,13 @@ def batch_upsert_sales():
     con = get_db()
     cur = con.cursor()
     for item in items:
-        pid      = int(item['product_id'])
+        try:
+            pid      = int(item['product_id'])
+            qty_pos  = int(item.get('qty_pos',  0) or 0)
+            qty_cash = int(item.get('qty_cash', 0) or 0)
+        except (KeyError, ValueError, TypeError):
+            return jsonify({'error': 'Each item must have an integer product_id, qty_pos, and qty_cash'}), 400
         d        = item.get('date', str(date.today()))
-        qty_pos  = int(item.get('qty_pos',  0) or 0)
-        qty_cash = int(item.get('qty_cash', 0) or 0)
         qty_sold = qty_pos + qty_cash
         notes    = item.get('notes', '')
         cur.execute('''
@@ -2850,8 +2891,11 @@ def history_restock():
     """
     date_from = request.args.get('date_from', '')
     date_to   = request.args.get('date_to',   '')
-    page      = max(1, int(request.args.get('page', 1)))
-    page_size = min(100, max(1, int(request.args.get('page_size', 20))))
+    try:
+        page      = max(1, int(request.args.get('page', 1)))
+        page_size = min(100, max(1, int(request.args.get('page_size', 20))))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'page and page_size must be integers'}), 400
     offset    = (page - 1) * page_size
 
     filters = []
