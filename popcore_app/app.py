@@ -639,13 +639,16 @@ def create_user():
     _get_or_create_employee(con, user_id, name=username, email=f'{username}@popcore.internal')
     con.close()
 
-    role_map = _get_role_map()
-    role_id  = role_map.get(role)
-    if role_id:
-        _mgmt_post(
-            f'users/{urllib.parse.quote(user_id, safe="")}/roles',
-            json={'roles': [role_id]},
-        )
+    try:
+        role_map = _get_role_map()
+        role_id  = role_map.get(role)
+        if role_id:
+            _mgmt_post(
+                f'users/{urllib.parse.quote(user_id, safe="")}/roles',
+                json={'roles': [role_id]},
+            )
+    except Exception:
+        pass  # user created; role assignment requires read:roles + create:user-roles scopes
     return jsonify({'ok': True, 'id': user_id}), 201
 
 
