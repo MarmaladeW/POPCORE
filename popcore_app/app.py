@@ -1349,12 +1349,24 @@ def _ensure_stock_row(cur, product_id):
 @login_required
 def get_all_stock():
     """
-    Return all products that have a stock row (or all products if include_all=1),
-    joined with their stock quantities and product info.
+    Return products with stock, joined with product info.
+    When the 'page' param is provided, returns {items, total, page, page_size}.
+    Without 'page', returns a plain array (backward-compatible).
+    include_all=1 returns all products even those without a stock row.
     """
     include_all = request.args.get('include_all', '0') == '1'
     series = request.args.get('series', '').strip()
     q = request.args.get('q', '').strip().lower()
+
+    page_param = request.args.get('page')
+    paginated = page_param is not None
+    if paginated:
+        try:
+            page      = max(1, int(page_param))
+            page_size = min(500, max(1, int(request.args.get('page_size', 100))))
+        except (ValueError, TypeError):
+            return jsonify({'error': 'page and page_size must be integers'}), 400
+        offset = (page - 1) * page_size
 
     con = get_db()
     cur = con.cursor()
@@ -1373,7 +1385,11 @@ def get_all_stock():
     where = ('AND ' + ' AND '.join(filters)) if filters else ''
 
     if include_all:
-        # Return every product, LEFT JOIN stock so zeros show for new products
+        if paginated:
+            cur.execute(
+                f'SELECT COUNT(*) FROM products p LEFT JOIN stock s ON s.product_id = p.id WHERE 1=1 {where}',
+                params)
+            total = cur.fetchone()[0]
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
@@ -1385,9 +1401,14 @@ def get_all_stock():
             LEFT JOIN stock s ON s.product_id = p.id
             WHERE 1=1 {where}
             ORDER BY p.ip_series, p.sku DESC
-        ''', params)
+            {'LIMIT ? OFFSET ?' if paginated else ''}
+        ''', params + ([page_size, offset] if paginated else []))
     else:
-        # Only products with a stock row
+        if paginated:
+            cur.execute(
+                f'SELECT COUNT(*) FROM stock s JOIN products p ON p.id = s.product_id WHERE 1=1 {where}',
+                params)
+            total = cur.fetchone()[0]
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
@@ -1397,11 +1418,14 @@ def get_all_stock():
             JOIN products p ON p.id = s.product_id
             WHERE 1=1 {where}
             ORDER BY p.ip_series, p.sku DESC
-        ''', params)
+            {'LIMIT ? OFFSET ?' if paginated else ''}
+        ''', params + ([page_size, offset] if paginated else []))
 
-    rows = [dict(r) for r in cur.fetchall()]
+    items = [dict(r) for r in cur.fetchall()]
     con.close()
-    return jsonify(rows)
+    if paginated:
+        return jsonify({'items': items, 'total': total, 'page': page, 'page_size': page_size})
+    return jsonify(items)
 
 
 @app.route('/api/stock/<int:product_id>')
@@ -1558,6 +1582,8 @@ def adjust_stock():
         new_qty = int(data.get('new_qty') if data.get('new_qty') is not None else data.get('new_dan', 0))
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
+    if new_qty < 0:
+        return jsonify({'error': '库存不能为负数'}), 400
     location = data.get('location', 'upstairs')  # 'upstairs' or 'instore'
     d        = data.get('date', str(date.today()))
     notes    = data.get('notes', '')
@@ -1609,16 +1635,19 @@ def get_transactions():
     except (ValueError, TypeError):
         return jsonify({'error': 'limit must be an integer'}), 400
 
-    con = get_db()
-    cur = con.cursor()
-
-    conditions = []
-    params = []
+    pid_int = None
     if pid:
         try:
             pid_int = int(pid)
         except (ValueError, TypeError):
             return jsonify({'error': 'product_id must be an integer'}), 400
+
+    con = get_db()
+    cur = con.cursor()
+
+    conditions = []
+    params = []
+    if pid_int is not None:
         conditions.append('t.product_id = ?')
         params.append(pid_int)
     if d:
@@ -1669,6 +1698,15 @@ def stock_summary():
     # Out of stock: both 0
     cur.execute('SELECT COUNT(*) FROM stock WHERE upstairs_qty = 0 AND instore_qty = 0')
     row['out_of_stock_count'] = cur.fetchone()[0]
+
+    # Total stock value: price × (upstairs + instore) across all products with a price
+    cur.execute('''
+        SELECT COALESCE(SUM(p.price * (s.upstairs_qty + s.instore_qty)), 0)
+        FROM stock s
+        JOIN products p ON p.id = s.product_id
+        WHERE p.price IS NOT NULL
+    ''')
+    row['total_stock_value'] = cur.fetchone()[0]
 
     con.close()
     return jsonify(row)
@@ -1821,6 +1859,7 @@ def batch_stock_operation():
             pid = int(item['product_id'])
             qty = int(item.get('qty', 0))
         except (KeyError, ValueError, TypeError):
+            con.close()
             return jsonify({'error': f'Each item must have an integer product_id and qty'}), 400
         notes = item.get('notes', '')
         if qty <= 0:
@@ -1900,8 +1939,7 @@ def batch_upsert_sales():
     if not isinstance(items, list):
         return jsonify({'error': 'Expected a list'}), 400
 
-    con = get_db()
-    cur = con.cursor()
+    rows = []
     for item in items:
         try:
             pid      = int(item['product_id'])
@@ -1909,21 +1947,23 @@ def batch_upsert_sales():
             qty_cash = int(item.get('qty_cash', 0) or 0)
         except (KeyError, ValueError, TypeError):
             return jsonify({'error': 'Each item must have an integer product_id, qty_pos, and qty_cash'}), 400
-        d        = item.get('date', str(date.today()))
-        qty_sold = qty_pos + qty_cash
-        notes    = item.get('notes', '')
-        cur.execute('''
-            INSERT INTO daily_sales (product_id, date, qty_pos, qty_cash, qty_sold, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(product_id, date) DO UPDATE SET
-                qty_pos  = excluded.qty_pos,
-                qty_cash = excluded.qty_cash,
-                qty_sold = excluded.qty_sold,
-                notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
-        ''', (pid, d, qty_pos, qty_cash, qty_sold, notes))
+        rows.append((pid, item.get('date', str(date.today())),
+                     qty_pos, qty_cash, qty_pos + qty_cash, item.get('notes', '')))
+
+    con = get_db()
+    cur = con.cursor()
+    cur.executemany('''
+        INSERT INTO daily_sales (product_id, date, qty_pos, qty_cash, qty_sold, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(product_id, date) DO UPDATE SET
+            qty_pos  = excluded.qty_pos,
+            qty_cash = excluded.qty_cash,
+            qty_sold = excluded.qty_sold,
+            notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
+    ''', rows)
     con.commit()
     con.close()
-    return jsonify({'ok': True, 'count': len(items)})
+    return jsonify({'ok': True, 'count': len(rows)})
 
 
 @app.route('/api/sales/submit_daily_report', methods=['POST'])

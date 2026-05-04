@@ -54,6 +54,7 @@ interface Summary {
   total_instore_qty:   number
   low_stock_count:     number
   out_of_stock_count:  number
+  total_stock_value:   number
 }
 
 const TXN_LABELS: Record<string, string> = {
@@ -111,6 +112,9 @@ export default function StockPage() {
   const [loading,  setLoading] = useState(false)
   const [q,        setQ]       = useState('')
   const [filterSeries, setFilterSeries] = useState('')
+  const [page,     setPage]    = useState(1)
+  const [total,    setTotal]   = useState(0)
+  const PAGE_SIZE = 100
   const [selected, setSelected] = useState<React.Key[]>([])
   const [restockOpen, setRestockOpen] = useState(false)
   const [batchOpen,   setBatchOpen]   = useState(false)
@@ -121,23 +125,25 @@ export default function StockPage() {
 
   const loadStock = useCallback(() => {
     setLoading(true)
-    const params: Record<string, string> = {}
+    const params: Record<string, string | number> = { page, page_size: PAGE_SIZE }
     if (q) params.q = q
     if (filterSeries) params.series = filterSeries
     Promise.all([
       client.get('/stock', { params }),
       client.get('/stock/summary'),
     ]).then(([sResp, sumResp]) => {
-      setStock(sResp.data)
+      setStock(sResp.data.items)
+      setTotal(sResp.data.total)
       setSummary(sumResp.data)
     }).finally(() => setLoading(false))
-  }, [q, filterSeries])
+  }, [q, filterSeries, page])
 
   const loadTxns = useCallback(() => {
     client.get('/stock/transactions', { params: { limit: 100 } })
       .then(r => setTxns(r.data))
   }, [])
 
+  useEffect(() => { setPage(1) }, [q, filterSeries])
   useEffect(() => { loadStock() }, [loadStock])
 
   async function handleDeleteRows() {
@@ -292,9 +298,7 @@ export default function StockPage() {
   const summaryCards = summary ? [
     { label: 'Upstairs Total', value: summary.total_upstairs_qty, color: '#6366F1',  icon: <ArrowUpOutlined /> },
     { label: 'In-Store Total', value: summary.total_instore_qty,  color: '#10B981',  icon: <InboxOutlined /> },
-    { label: 'Total Stock Value', value: `CA$ ${(
-        stock.reduce((acc, r) => acc + (r.price ?? 0) * (r.upstairs_qty + r.instore_qty), 0)
-      ).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    { label: 'Total Stock Value', value: `CA$ ${(summary.total_stock_value ?? 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       color: '#6366F1', icon: null },
     { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count, color: '#ef4444', icon: <WarningOutlined /> },
   ] : []
@@ -494,7 +498,11 @@ export default function StockPage() {
                   dataSource={stock}
                   columns={stockColumns}
                   rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
-                  pagination={{ pageSize: 50, showTotal: t => `${t} products` }}
+                  pagination={{
+                    current: page, pageSize: PAGE_SIZE, total,
+                    onChange: (p) => setPage(p),
+                    showTotal: t => `${t} products`,
+                  }}
                   scroll={{ x: 1000 }}
                 />
               )}
