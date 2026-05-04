@@ -45,7 +45,7 @@ _cors_origins = [o.strip() for o in _cors_env.split(',') if o.strip()]
 CORS(app, origins=_cors_origins, supports_credentials=False)
 
 # ─── Auth0 configuration ──────────────────────────────────────────────────────
-AUTH0_DOMAIN             = os.environ.get('AUTH0_DOMAIN',   'dev-n0833ddaix42sr23.us.auth0.com')
+AUTH0_DOMAIN             = os.environ.get('AUTH0_DOMAIN', '')
 AUTH0_AUDIENCE           = os.environ.get('AUTH0_AUDIENCE', 'https://popcore/api')
 AUTH0_MGMT_CLIENT_ID     = os.environ.get('AUTH0_MGMT_CLIENT_ID', '')
 AUTH0_MGMT_CLIENT_SECRET = os.environ.get('AUTH0_MGMT_CLIENT_SECRET', '')
@@ -53,6 +53,14 @@ AUTH0_MGMT_AUDIENCE      = f'https://{AUTH0_DOMAIN}/api/v2/'
 AUTH0_CONNECTION         = 'Username-Password-Authentication'
 ROLE_CLAIM               = 'https://popcore/role'
 ALGORITHMS               = ['RS256']
+
+# Fail loudly at startup if required Auth0 config is absent rather than silently
+# falling back to a dev tenant and accepting wrong-tenant tokens in production.
+if not AUTH0_DOMAIN:
+    raise RuntimeError(
+        "AUTH0_DOMAIN environment variable is not set. "
+        "Set it to your Auth0 tenant domain before starting the server."
+    )
 
 os.makedirs(HIDDEN_IMG_DIR, exist_ok=True)
 
@@ -547,6 +555,7 @@ def _get_role_map() -> dict:
 # ─── Serve hidden images (stored outside static/) ────────────────────────────
 
 @app.route('/hidden_imgs/<path:filename>')
+@login_required
 def serve_hidden_img(filename):
     safe = os.path.normpath(filename).lstrip(os.sep)
     return send_from_directory(HIDDEN_IMG_DIR, safe)
