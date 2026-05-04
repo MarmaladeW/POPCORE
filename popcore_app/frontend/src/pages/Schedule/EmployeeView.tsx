@@ -18,19 +18,19 @@ export default function EmployeeView() {
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedAvail, setSelectedAvail] = useState<Availability | null>(null)
-  const myEmployeeId = useRef<number | null>(null)
+  const [myEmployeeId, setMyEmployeeId] = useState<number | null>(null)
+  const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
 
-  // Cache availability by date for quick lookup on click
   const availByDate = useRef<Record<string, Availability>>({})
 
   useEffect(() => {
-    getMe().then((me) => { myEmployeeId.current = me.id }).catch(() => {})
+    getMe().then((me) => setMyEmployeeId(me.id)).catch(() => {})
   }, [])
 
-  const loadEvents = useCallback(async (start: string, end: string) => {
+  const loadEvents = useCallback(async (start: string, end: string, empId: number | null) => {
     const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
       getMyAvailability(start, end),
-      getShifts({ start, end, ...(myEmployeeId.current != null ? { employee_id: myEmployeeId.current } : {}) }),
+      getShifts({ start, end, ...(empId != null ? { employee_id: empId } : {}) }),
     ])
 
     availByDate.current = {}
@@ -66,13 +66,21 @@ export default function EmployeeView() {
     setEvents(evts)
   }, [])
 
+  // Re-load once getMe() resolves and we already have a calendar range
+  useEffect(() => {
+    if (myEmployeeId != null && currentRange) {
+      loadEvents(currentRange.start, currentRange.end, myEmployeeId)
+    }
+  }, [myEmployeeId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
-      loadEvents(start, end)
+      setCurrentRange({ start, end })
+      loadEvents(start, end, myEmployeeId)
     },
-    [loadEvents]
+    [loadEvents, myEmployeeId]
   )
 
   const handleDateClick = useCallback((arg: DateClickArg) => {
@@ -94,14 +102,10 @@ export default function EmployeeView() {
   }, [])
 
   const handleSaved = useCallback(() => {
-    const api = calRef.current?.getApi()
-    if (api) {
-      const view = api.view
-      const start = dayjs(view.activeStart).format('YYYY-MM-DD')
-      const end   = dayjs(view.activeEnd).format('YYYY-MM-DD')
-      loadEvents(start, end)
+    if (currentRange) {
+      loadEvents(currentRange.start, currentRange.end, myEmployeeId)
     }
-  }, [loadEvents])
+  }, [loadEvents, currentRange, myEmployeeId])
 
   return (
     <div style={{ padding: '0 4px' }}>
