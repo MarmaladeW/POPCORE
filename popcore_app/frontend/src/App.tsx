@@ -75,6 +75,8 @@ export default function App() {
           fontFamily:       '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
           colorBgContainer: '#ffffff',
           colorBgLayout:    '#f0f2f5',
+          /* Nav bar is z-1000; all antd popups must sit above it */
+          zIndexPopupBase:  1010,
         },
         components: {
           Menu: {
