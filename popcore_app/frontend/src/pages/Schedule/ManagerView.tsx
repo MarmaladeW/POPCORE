@@ -6,10 +6,10 @@ import MonthlyReport from './MonthlyReport'
 export default function ManagerView() {
   return (
     <Tabs defaultValue="calendar">
-      <TabsList className="mb-4">
-        <TabsTrigger value="calendar">Team Schedule</TabsTrigger>
-        <TabsTrigger value="availability">My Availability</TabsTrigger>
-        <TabsTrigger value="report">Monthly Report</TabsTrigger>
+      <TabsList className="mb-4 w-full">
+        <TabsTrigger value="calendar" className="flex-1">Team Schedule</TabsTrigger>
+        <TabsTrigger value="availability" className="flex-1">My Availability</TabsTrigger>
+        <TabsTrigger value="report" className="flex-1">Monthly Report</TabsTrigger>
       </TabsList>
       <TabsContent value="calendar">
         <ManagerCalendar />
