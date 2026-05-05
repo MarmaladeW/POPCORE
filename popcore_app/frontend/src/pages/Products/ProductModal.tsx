@@ -3,6 +3,41 @@ import { Modal, Form, Input, InputNumber, Select, Divider, Radio, message } from
 import { useIsMobile } from '../../hooks/useIsMobile'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
+import {
+  Select as ShadcnSelect,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+
+/** Bridges antd Form.Item (onChange) ↔ shadcn Select (onValueChange). */
+function SeriesSelect({
+  value,
+  onChange,
+  options,
+}: {
+  value?: string
+  onChange?: (v: string) => void
+  options: { value: string; label: string }[]
+}) {
+  return (
+    <ShadcnSelect
+      value={value || '__none__'}
+      onValueChange={v => onChange?.(v === '__none__' ? '' : v)}
+    >
+      <SelectTrigger className="w-full">
+        <SelectValue placeholder="Select or leave blank" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none__">—</SelectItem>
+        {options.map(o => (
+          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </ShadcnSelect>
+  )
+}
 
 interface Product {
   id?: number
@@ -147,23 +182,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
 
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0 16px' }}>
           <Form.Item name="ip_series" label="Series">
-            <Select
-              showSearch
-              allowClear
-              options={seriesOptions}
-              optionFilterProp="label"
-              placeholder="Select or type..."
-              getPopupContainer={trigger => trigger.parentElement!}
-              dropdownRender={menu => (
-                <>
-                  {menu}
-                  <div style={{ padding: '4px 8px', borderTop: '1px solid #f0f0f0', fontSize: 11, color: '#9ca3af' }}>
-                    Type to add new series
-                  </div>
-                </>
-              )}
-              onSearch={v => form.setFieldValue('ip_series', v)}
-            />
+            <SeriesSelect options={seriesOptions} />
           </Form.Item>
           {/* For non-blind box: free text subtype. For blind box: locked to '盲盒'. */}
           {isBlindBox ? (
