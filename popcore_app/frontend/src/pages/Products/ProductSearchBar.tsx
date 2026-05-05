@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Input, Select, Grid } from 'antd'
-import { SearchOutlined } from '@ant-design/icons'
-
-const { useBreakpoint } = Grid
+import { Search, X } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 function useDebounce<T>(value: T, delay: number): T {
   const [dv, setDv] = useState<T>(value)
@@ -20,12 +22,11 @@ interface Props {
 }
 
 export default function ProductSearchBar({ series, productTypes, onChange }: Props) {
-  const [inputQ,      setInputQ]      = useState('')
-  const debouncedQ                    = useDebounce(inputQ, 300)
+  const [inputQ,       setInputQ]       = useState('')
+  const debouncedQ                      = useDebounce(inputQ, 300)
   const [filterSeries, setFilterSeries] = useState('')
   const [filterType,   setFilterType]   = useState('')
-  const screens  = useBreakpoint()
-  const isMobile = !screens.md
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     onChange(debouncedQ, filterSeries, filterType)
@@ -34,34 +35,58 @@ export default function ProductSearchBar({ series, productTypes, onChange }: Pro
 
   return (
     <>
-      <Input
-        prefix={<SearchOutlined style={{ color: '#9ca3af' }} />}
-        placeholder="Search name, SKU, 记账名..."
-        allowClear
-        value={inputQ}
-        onChange={e => setInputQ(e.target.value)}
-        style={{ width: isMobile ? '100%' : 260 }}
-      />
+      {/* Search input with prefix icon + clear button */}
+      <div className="relative" style={{ width: isMobile ? '100%' : 260 }}>
+        <Search
+          className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none"
+        />
+        <Input
+          className="pl-9 pr-8"
+          placeholder="Search name, SKU, 记账名..."
+          value={inputQ}
+          onChange={e => setInputQ(e.target.value)}
+        />
+        {inputQ && (
+          <button
+            onClick={() => setInputQ('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Series filter */}
       <Select
-        placeholder="All Series"
-        allowClear
-        value={filterSeries || undefined}
-        style={{ width: isMobile ? '100%' : 140 }}
-        options={series.map(s => ({ value: s, label: s }))}
-        onChange={v => setFilterSeries(v ?? '')}
-        onClear={() => setFilterSeries('')}
-        dropdownStyle={{ overscrollBehavior: 'contain' }}
-      />
+        value={filterSeries || '__all__'}
+        onValueChange={v => setFilterSeries(v === '__all__' ? '' : v)}
+      >
+        <SelectTrigger style={{ width: isMobile ? '100%' : 140 }}>
+          <SelectValue placeholder="All Series" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__all__">All Series</SelectItem>
+          {series.map(s => (
+            <SelectItem key={s} value={s}>{s}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {/* Type filter */}
       <Select
-        placeholder="All Types"
-        allowClear
-        value={filterType || undefined}
-        style={{ width: isMobile ? '100%' : 120 }}
-        options={productTypes.map(t => ({ value: t, label: t }))}
-        onChange={v => setFilterType(v ?? '')}
-        onClear={() => setFilterType('')}
-        dropdownStyle={{ overscrollBehavior: 'contain' }}
-      />
+        value={filterType || '__all__'}
+        onValueChange={v => setFilterType(v === '__all__' ? '' : v)}
+      >
+        <SelectTrigger style={{ width: isMobile ? '100%' : 120 }}>
+          <SelectValue placeholder="All Types" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__all__">All Types</SelectItem>
+          {productTypes.map(t => (
+            <SelectItem key={t} value={t}>{t}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </>
   )
 }

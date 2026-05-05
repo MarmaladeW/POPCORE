@@ -1,5 +1,7 @@
 import { useAuth0 } from '@auth0/auth0-react'
-import { Spin, Result, Button } from 'antd'
+import { Result } from 'antd'
+import { Button } from '@/components/ui/button'
+import { Spinner } from '../components/Spinner'
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isLoading, isAuthenticated, loginWithRedirect, error } = useAuth0()
@@ -7,7 +9,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   if (isLoading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-        <Spin size="large" />
+        <Spinner />
       </div>
     )
   }
@@ -18,7 +20,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
         status="error"
         title="登录失败"
         subTitle={error.message}
-        extra={<Button type="primary" onClick={() => loginWithRedirect()}>重试</Button>}
+        extra={<Button onClick={() => loginWithRedirect()}>重试</Button>}
       />
     )
   }
