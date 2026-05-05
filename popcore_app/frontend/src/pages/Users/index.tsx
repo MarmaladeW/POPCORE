@@ -39,6 +39,13 @@ const ROLE_BADGE_STYLE: Record<string, React.CSSProperties> = {
   viewer:  { background: '#f3f4f6', color: '#374151', borderColor: '#d1d5db' },
 }
 
+const ROLE_AVATAR: Record<string, { bg: string; fg: string }> = {
+  admin:   { bg: '#fee2e2', fg: '#991b1b' },
+  manager: { bg: '#ffedd5', fg: '#9a3412' },
+  staff:   { bg: '#dbeafe', fg: '#1e40af' },
+  viewer:  { bg: '#f3f4f6', fg: '#6b7280' },
+}
+
 const ME_BADGE_STYLE: React.CSSProperties = {
   background: '#dcfce7', color: '#166534', borderColor: '#86efac',
 }
@@ -196,51 +203,64 @@ export default function UsersPage() {
             <span style={{ color: '#9ca3af', fontSize: 14 }}>加载中…</span>
           ) : users.length === 0 ? (
             <span style={{ color: '#9ca3af', fontSize: 14 }}>暂无用户</span>
-          ) : users.map(u => (
-            <Card key={u.id}>
-              <CardContent style={{ padding: '12px 16px' }}>
-                {/* Header row: username + role badge */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontWeight: u.is_active === 1 ? 600 : 400, fontSize: 15 }}>{u.username}</span>
-                    {me?.sub === u.id && <Badge variant="outline" style={ME_BADGE_STYLE}>我</Badge>}
+          ) : users.map(u => {
+            const av = ROLE_AVATAR[u.role] ?? ROLE_AVATAR.viewer
+            return (
+              <Card key={u.id}>
+                <CardContent style={{ padding: '12px 14px' }}>
+                  {/* Row 1: avatar initials + username + role badge */}
+                  <div className="flex items-center gap-2">
+                    <div style={{
+                      width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                      background: av.bg, color: av.fg,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontWeight: 700, fontSize: 13,
+                    }}>
+                      {u.username.slice(0, 2).toUpperCase()}
+                    </div>
+                    <span className="font-medium text-sm flex-1 min-w-0 truncate">
+                      {u.username}
+                      {me?.sub === u.id && (
+                        <Badge variant="outline" style={ME_BADGE_STYLE} className="ml-1.5 align-middle">我</Badge>
+                      )}
+                    </span>
+                    <Badge variant="outline" style={ROLE_BADGE_STYLE[u.role] ?? ROLE_BADGE_STYLE.viewer}>
+                      {ROLE_OPTIONS.find(o => o.value === u.role)?.label ?? u.role}
+                    </Badge>
                   </div>
-                  <Badge variant="outline" style={ROLE_BADGE_STYLE[u.role] ?? ROLE_BADGE_STYLE.viewer}>
-                    {ROLE_OPTIONS.find(o => o.value === u.role)?.label ?? u.role}
-                  </Badge>
-                </div>
 
-                {/* Meta row: last login + status toggle */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, fontSize: 13, color: '#6b7280' }}>
-                  <span>
-                    最后登录：{u.last_login ? u.last_login.slice(0, 16) : <span style={{ color: '#9ca3af' }}>从未</span>}
-                  </span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span>{u.is_active === 1 ? '启用' : '禁用'}</span>
-                    <Switch
-                      checked={u.is_active === 1}
-                      size="small"
-                      disabled={me?.sub === u.id}
-                      onChange={() => toggleActive(u)}
-                    />
+                  {/* Row 2: last login */}
+                  <div className="text-xs text-muted-foreground mt-1 pl-11">
+                    最后登录：{u.last_login ? u.last_login.slice(0, 16) : '从未'}
                   </div>
-                </div>
 
-                {/* Action buttons */}
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <Button size="sm" variant="outline" onClick={() => openEdit(u)}>编辑</Button>
-                  <Popconfirm
-                    title={`删除用户 ${u.username}？`}
-                    disabled={me?.sub === u.id}
-                    onConfirm={() => deleteUser(u)}
-                    okButtonProps={{ danger: true }}
-                  >
-                    <Button size="sm" variant="destructive" disabled={me?.sub === u.id}>删除</Button>
-                  </Popconfirm>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                  {/* Row 3: status toggle (left) + actions (right) */}
+                  <div className="flex items-center mt-2 pl-11">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Switch
+                        checked={u.is_active === 1}
+                        size="small"
+                        disabled={me?.sub === u.id}
+                        onChange={() => toggleActive(u)}
+                      />
+                      <span>{u.is_active === 1 ? '启用' : '禁用'}</span>
+                    </div>
+                    <div className="ml-auto flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => openEdit(u)}>编辑</Button>
+                      <Popconfirm
+                        title={`删除用户 ${u.username}？`}
+                        disabled={me?.sub === u.id}
+                        onConfirm={() => deleteUser(u)}
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Button size="sm" variant="destructive" disabled={me?.sub === u.id}>删除</Button>
+                      </Popconfirm>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })}
         </div>
       ) : (
         <Table

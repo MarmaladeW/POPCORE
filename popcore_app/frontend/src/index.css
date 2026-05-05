@@ -87,7 +87,10 @@ a,
 .ant-menu-item,
 .ant-tabs-tab,
 .ant-select-selector,
-.ant-picker {
+.ant-picker,
+[data-slot="button"],
+[data-slot="select-trigger"],
+[data-slot="tabs-trigger"] {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
@@ -139,5 +142,15 @@ a,
     min-height: 44px !important;
     display: flex !important;
     align-items: center !important;
+  }
+  /* shadcn/ui tap targets — 44px minimum on mobile */
+  [data-slot="button"] {
+    min-height: 44px;
+  }
+  [data-slot="select-trigger"] {
+    min-height: 44px;
+  }
+  [data-slot="tabs-trigger"] {
+    min-height: 44px;
   }
 }

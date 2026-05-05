@@ -5,8 +5,9 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 import dayjs from 'dayjs'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -31,12 +32,16 @@ function colorForEmployee(idx: number) {
   return EMPLOYEE_COLORS[idx % EMPLOYEE_COLORS.length]
 }
 
+type ViewType = 'dayGridMonth' | 'timeGridWeek'
+
 export default function ManagerCalendar() {
   const calRef = useRef<FullCalendar>(null)
   const [employees, setEmployees] = useState<Employee[]>([])
   const [filterEmpId, setFilterEmpId] = useState<number | null>(null)
   const [allEvents, setAllEvents] = useState<EventInput[]>([])
   const [visibleEvents, setVisibleEvents] = useState<EventInput[]>([])
+  const [viewTitle, setViewTitle] = useState('')
+  const [viewType, setViewType] = useState<ViewType>('dayGridMonth')
 
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -127,6 +132,8 @@ export default function ManagerCalendar() {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       setCurrentRange({ start, end })
+      setViewTitle(arg.view.title)
+      setViewType(arg.view.type as ViewType)
       loadEvents(start, end)
     },
     [loadEvents]
@@ -165,16 +172,18 @@ export default function ManagerCalendar() {
     }
   }, [loadEvents])
 
+  const cal = () => calRef.current?.getApi()
+
   return (
     <div>
-      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 14, color: '#374151' }}>Filter by employee:</span>
-
+      {/* Row A: employee filter + refresh */}
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <span style={{ fontSize: 13, color: '#6b7280' }}>Filter:</span>
         <Select
           value={filterEmpId !== null ? String(filterEmpId) : '__all__'}
           onValueChange={(v) => setFilterEmpId(v === '__all__' ? null : Number(v))}
         >
-          <SelectTrigger style={{ width: 200 }}>
+          <SelectTrigger style={{ width: 180 }}>
             <SelectValue placeholder="All employees" />
           </SelectTrigger>
           <SelectContent>
@@ -195,37 +204,64 @@ export default function ManagerCalendar() {
         >
           <RefreshCw className="h-4 w-4" />
         </Button>
+      </div>
 
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+      {/* Row B: calendar navigation */}
+      <div className="flex items-center gap-1 mb-2">
+        <Button variant="ghost" size="icon" onClick={() => cal()?.prev()}>
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <span className="flex-1 text-center text-sm font-medium">{viewTitle}</span>
+        <Button variant="ghost" size="icon" onClick={() => cal()?.next()}>
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => cal()?.today()}>Today</Button>
+        <div className="flex rounded-md border overflow-hidden text-sm">
+          <button
+            className={cn(
+              'px-3 py-1 transition-colors',
+              viewType === 'dayGridMonth'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background text-foreground hover:bg-muted',
+            )}
+            onClick={() => cal()?.changeView('dayGridMonth')}
+          >
+            Month
+          </button>
+          <button
+            className={cn(
+              'px-3 py-1 border-l transition-colors',
+              viewType === 'timeGridWeek'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background text-foreground hover:bg-muted',
+            )}
+            onClick={() => cal()?.changeView('timeGridWeek')}
+          >
+            Week
+          </button>
+        </div>
+      </div>
+
+      {/* Employee legend: 2-column grid */}
+      {employees.length > 0 && (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
           {employees.map((e, i) => (
-            <span
-              key={e.id}
-              title={e.name || e.email}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}
-            >
+            <span key={e.id} className="flex items-center gap-2 text-xs text-muted-foreground">
               <span
-                style={{
-                  display: 'inline-block',
-                  width: 10, height: 10,
-                  borderRadius: 2,
-                  background: colorForEmployee(i),
-                }}
+                className="w-2 h-2 rounded-sm flex-shrink-0"
+                style={{ background: colorForEmployee(i) }}
               />
               {e.name || e.email || `Employee ${e.id}`}
             </span>
           ))}
         </div>
-      </div>
+      )}
 
       <FullCalendar
         ref={calRef}
         plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
         initialView="dayGridMonth"
-        headerToolbar={{
-          left:   'prev,next today',
-          center: 'title',
-          right:  'dayGridMonth,timeGridWeek',
-        }}
+        headerToolbar={false}
         height="auto"
         timeZone="local"
         events={visibleEvents}
