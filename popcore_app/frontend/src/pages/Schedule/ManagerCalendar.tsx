@@ -5,9 +5,12 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
-import { Select, Typography, Tooltip, Button } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
+import { RefreshCw } from 'lucide-react'
 import dayjs from 'dayjs'
+import { Button } from '@/components/ui/button'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import {
   getAllAvailability,
   getShifts,
@@ -18,9 +21,6 @@ import {
 } from './scheduleApi'
 import ShiftModal from './ShiftModal'
 
-const { Text } = Typography
-
-// A small palette of distinct colours for up to 15 employees
 const EMPLOYEE_COLORS = [
   '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6',
   '#F97316', '#06B6D4', '#84CC16', '#A855F7', '#F43F5E',
@@ -44,7 +44,6 @@ export default function ManagerCalendar() {
   const [availForDate, setAvailForDate] = useState<Availability[]>([])
 
   const shiftById = useRef<Record<number, Shift>>({})
-  // Per-date map of raw availability objects — used to pass context to ShiftModal
   const availsByDate = useRef<Record<string, Availability[]>>({})
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
 
@@ -52,7 +51,6 @@ export default function ManagerCalendar() {
     getEmployees().then(setEmployees).catch(() => {})
   }, [])
 
-  // Re-load events once employees arrive (fixes race with initial datesSet)
   useEffect(() => {
     if (employees.length > 0 && currentRange) {
       loadEvents(currentRange.start, currentRange.end)
@@ -60,15 +58,12 @@ export default function ManagerCalendar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees])
 
-  // Rebuild visible events whenever filter or allEvents changes
   useEffect(() => {
     if (filterEmpId === null) {
       setVisibleEvents(allEvents)
     } else {
       setVisibleEvents(
-        allEvents.filter(
-          (e) => e.extendedProps?.employee_id === filterEmpId
-        )
+        allEvents.filter((e) => e.extendedProps?.employee_id === filterEmpId)
       )
     }
   }, [allEvents, filterEmpId])
@@ -80,16 +75,14 @@ export default function ManagerCalendar() {
         getShifts({ start, end }),
       ])
 
-      // Build a stable colour map keyed by employee_id
       const empIdToIdx: Record<number, number> = {}
       employees.forEach((e, i) => { empIdToIdx[e.id] = i })
 
       shiftById.current = {}
-      availsByDate.current = {}  // Reset per-date availability map
+      availsByDate.current = {}
       const evts: EventInput[] = []
 
       for (const a of avails) {
-        // Populate the per-date lookup
         if (!availsByDate.current[a.date]) availsByDate.current[a.date] = []
         availsByDate.current[a.date].push(a)
 
@@ -100,7 +93,7 @@ export default function ManagerCalendar() {
           title: `${a.employee_name ?? 'Employee'} available`,
           start: `${a.date}T${a.start_time}`,
           end: `${a.date}T${a.end_time}`,
-          backgroundColor: color + '33',  // 20% opacity
+          backgroundColor: color + '33',
           borderColor: color,
           textColor: '#374151',
           display: 'background',
@@ -175,39 +168,51 @@ export default function ManagerCalendar() {
   return (
     <div>
       <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <Text>Filter by employee:</Text>
+        <span style={{ fontSize: 14, color: '#374151' }}>Filter by employee:</span>
+
         <Select
-          allowClear
-          placeholder="All employees"
-          style={{ width: 200 }}
-          value={filterEmpId}
-          onChange={(v) => setFilterEmpId(v ?? null)}
-          options={employees.map((e) => ({
-            value: e.id,
-            label: e.name || e.email || e.auth0_id,
-          }))}
-        />
+          value={filterEmpId !== null ? String(filterEmpId) : '__all__'}
+          onValueChange={(v) => setFilterEmpId(v === '__all__' ? null : Number(v))}
+        >
+          <SelectTrigger style={{ width: 200 }}>
+            <SelectValue placeholder="All employees" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All employees</SelectItem>
+            {employees.map((e) => (
+              <SelectItem key={e.id} value={String(e.id)}>
+                {e.name || e.email || e.auth0_id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         <Button
-          icon={<ReloadOutlined />}
-          onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end)}
+          variant="outline"
+          size="icon"
           title="Refresh"
-        />
+          onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end)}
+        >
+          <RefreshCw className="h-4 w-4" />
+        </Button>
+
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {employees.map((e, i) => (
-            <Tooltip key={e.id} title={e.name || e.email}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2,
-                    background: colorForEmployee(i),
-                  }}
-                />
-                {e.name || e.email || `Employee ${e.id}`}
-              </span>
-            </Tooltip>
+            <span
+              key={e.id}
+              title={e.name || e.email}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 10, height: 10,
+                  borderRadius: 2,
+                  background: colorForEmployee(i),
+                }}
+              />
+              {e.name || e.email || `Employee ${e.id}`}
+            </span>
           ))}
         </div>
       </div>

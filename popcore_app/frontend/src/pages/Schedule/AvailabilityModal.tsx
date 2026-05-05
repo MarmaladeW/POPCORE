@@ -1,6 +1,10 @@
 import { useEffect } from 'react'
-import { Modal, Form, Select, Row, Col, Input, Button, message } from 'antd'
+import { Form, Select, Input, message } from 'antd'
 import { upsertAvailability, deleteAvailability, type Availability } from './scheduleApi'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from '@/components/ui/dialog'
 
 interface Props {
   open: boolean
@@ -72,42 +76,22 @@ export default function AvailabilityModal({ open, date, existing, onClose, onSav
   return (
     <>
       {ctxHolder}
-      <Modal
-        title={`Set availability — ${date ?? ''}`}
-        open={open}
-        onCancel={onClose}
-        footer={[
-          existing && (
-            <Button key="del" danger onClick={handleDelete}>
-              Remove
-            </Button>
-          ),
-          <Button key="cancel" onClick={onClose}>
-            Cancel
-          </Button>,
-          <Button key="save" type="primary" onClick={handleSave}>
-            Save
-          </Button>,
-        ]}
-        destroyOnClose
-      >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Row gutter={12}>
-            <Col span={12}>
+      <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+        <DialogContent style={{ maxWidth: 440 }}>
+          <DialogHeader>
+            <DialogTitle>Set availability — {date ?? ''}</DialogTitle>
+          </DialogHeader>
+
+          <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Form.Item
                 name="start_time"
                 label="Start time"
                 rules={[{ required: true, message: 'Required' }]}
+                style={{ marginBottom: 0 }}
               >
-                <Select
-                  showSearch
-                  placeholder="06:00"
-                  options={TIME_OPTIONS}
-                  style={{ width: '100%' }}
-                />
+                <Select showSearch placeholder="06:00" options={TIME_OPTIONS} style={{ width: '100%' }} />
               </Form.Item>
-            </Col>
-            <Col span={12}>
               <Form.Item
                 name="end_time"
                 label="End time"
@@ -122,21 +106,25 @@ export default function AvailabilityModal({ open, date, existing, onClose, onSav
                     },
                   }),
                 ]}
+                style={{ marginBottom: 0 }}
               >
-                <Select
-                  showSearch
-                  placeholder="17:00"
-                  options={TIME_OPTIONS}
-                  style={{ width: '100%' }}
-                />
+                <Select showSearch placeholder="17:00" options={TIME_OPTIONS} style={{ width: '100%' }} />
               </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="notes" label="Notes (optional)">
-            <Input.TextArea rows={2} />
-          </Form.Item>
-        </Form>
-      </Modal>
+            </div>
+            <Form.Item name="notes" label="Notes (optional)" style={{ marginTop: 12, marginBottom: 0 }}>
+              <Input.TextArea rows={2} />
+            </Form.Item>
+          </Form>
+
+          <DialogFooter>
+            {existing && (
+              <Button variant="destructive" onClick={handleDelete}>Remove</Button>
+            )}
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button onClick={handleSave}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

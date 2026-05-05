@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react'
 import {
-  Table, Button, Space, Tag, Popconfirm, Modal, Form, Input, Select,
-  Switch, message, Typography, Badge,
+  Table, Space, Popconfirm, Form, Input, Select,
+  Switch, message,
 } from 'antd'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { Plus, RefreshCw } from 'lucide-react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
-
-const { Text } = Typography
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from '@/components/ui/dialog'
 
 interface User {
   id: string
@@ -27,17 +30,17 @@ const ROLE_OPTIONS = [
   { value: 'admin',   label: '管理员' },
 ]
 
-const ROLE_COLORS: Record<string, string> = {
-  admin:   'red',
-  manager: 'orange',
-  staff:   'blue',
-  viewer:  'default',
+const ROLE_BADGE_STYLE: Record<string, React.CSSProperties> = {
+  admin:   { background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' },
+  manager: { background: '#ffedd5', color: '#9a3412', borderColor: '#fdba74' },
+  staff:   { background: '#dbeafe', color: '#1e40af', borderColor: '#93c5fd' },
+  viewer:  { background: '#f3f4f6', color: '#374151', borderColor: '#d1d5db' },
 }
 
 export default function UsersPage() {
   const isAdmin = useHasRole('admin')
   const { user: me } = useAuth0()
-  const [users, setUsers]   = useState<User[]>([])
+  const [users, setUsers]     = useState<User[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editUser, setEditUser]   = useState<User | null>(null)
@@ -56,7 +59,7 @@ export default function UsersPage() {
 
   useEffect(() => { load() }, [isAdmin])
 
-  function openNew()  { setEditUser(null); form.resetFields(); setModalOpen(true) }
+  function openNew() { setEditUser(null); form.resetFields(); setModalOpen(true) }
   function openEdit(u: User) {
     setEditUser(u)
     form.setFieldsValue({ username: u.username, role: u.role })
@@ -108,8 +111,12 @@ export default function UsersPage() {
       dataIndex: 'username',
       render: (v, r) => (
         <Space>
-          <Text strong={r.is_active === 1}>{v}</Text>
-          {me?.sub === r.id && <Tag color="green">我</Tag>}
+          <span style={{ fontWeight: r.is_active === 1 ? 600 : 400 }}>{v}</span>
+          {me?.sub === r.id && (
+            <Badge variant="outline" style={{ background: '#dcfce7', color: '#166534', borderColor: '#86efac' }}>
+              我
+            </Badge>
+          )}
         </Space>
       ),
     },
@@ -117,7 +124,11 @@ export default function UsersPage() {
       title: '角色',
       dataIndex: 'role',
       width: 100,
-      render: v => <Tag color={ROLE_COLORS[v] ?? 'default'}>{ROLE_OPTIONS.find(o => o.value === v)?.label ?? v}</Tag>,
+      render: v => (
+        <Badge variant="outline" style={ROLE_BADGE_STYLE[v] ?? ROLE_BADGE_STYLE.viewer}>
+          {ROLE_OPTIONS.find(o => o.value === v)?.label ?? v}
+        </Badge>
+      ),
     },
     {
       title: '状态',
@@ -143,7 +154,7 @@ export default function UsersPage() {
       title: '最后登录',
       dataIndex: 'last_login',
       width: 160,
-      render: v => v ? v.slice(0, 16) : <Text type="secondary">从未</Text>,
+      render: v => v ? v.slice(0, 16) : <span style={{ color: '#9ca3af' }}>从未</span>,
     },
     {
       title: '操作',
@@ -151,14 +162,14 @@ export default function UsersPage() {
       width: 140,
       render: (_, r) => (
         <Space>
-          <Button size="small" onClick={() => openEdit(r)}>编辑</Button>
+          <Button size="sm" variant="outline" onClick={() => openEdit(r)}>编辑</Button>
           <Popconfirm
             title={`删除用户 ${r.username}？`}
             disabled={me?.sub === r.id}
             onConfirm={() => deleteUser(r)}
             okButtonProps={{ danger: true }}
           >
-            <Button size="small" danger disabled={me?.sub === r.id}>删除</Button>
+            <Button size="sm" variant="destructive" disabled={me?.sub === r.id}>删除</Button>
           </Popconfirm>
         </Space>
       ),
@@ -166,15 +177,15 @@ export default function UsersPage() {
   ]
 
   if (!isAdmin) {
-    return <Text type="secondary">仅管理员可访问此页面</Text>
+    return <span style={{ color: '#6b7280' }}>仅管理员可访问此页面</span>
   }
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openNew}>新建用户</Button>
-        <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
-      </Space>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <Button onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户</Button>
+        <Button variant="outline" onClick={load}><RefreshCw className="h-4 w-4 mr-1" />刷新</Button>
+      </div>
 
       <Table
         rowKey="id"
@@ -185,38 +196,43 @@ export default function UsersPage() {
         pagination={false}
       />
 
-      <Modal
-        title={editUser ? '编辑用户' : '新建用户'}
-        open={modalOpen}
-        onOk={handleOk}
-        onCancel={() => setModalOpen(false)}
-        okText={editUser ? '保存' : '创建'}
-        width={Math.min(400, window.innerWidth - 32)}
-      >
-        <Form form={form} layout="vertical" size="small">
-          <Form.Item
-            name="username"
-            label="用户名"
-            rules={[{ required: !editUser, message: '请输入用户名' }]}
-          >
-            <Input disabled={!!editUser} placeholder="登录用户名" />
-          </Form.Item>
-          <Form.Item
-            name="role"
-            label="角色"
-            rules={[{ required: true, message: '请选择角色' }]}
-          >
-            <Select options={ROLE_OPTIONS} />
-          </Form.Item>
-          <Form.Item
-            name="password"
-            label={editUser ? '新密码（留空则不修改）' : '密码'}
-            rules={editUser ? [] : [{ required: true, message: '请设置密码' }, { min: 8, message: '密码至少8位' }]}
-          >
-            <Input.Password placeholder={editUser ? '留空则不修改' : '至少8位'} />
-          </Form.Item>
-        </Form>
-      </Modal>
+      <Dialog open={modalOpen} onOpenChange={(o) => !o && setModalOpen(false)}>
+        <DialogContent style={{ maxWidth: 400 }}>
+          <DialogHeader>
+            <DialogTitle>{editUser ? '编辑用户' : '新建用户'}</DialogTitle>
+          </DialogHeader>
+
+          <Form form={form} layout="vertical" size="small">
+            <Form.Item
+              name="username"
+              label="用户名"
+              rules={[{ required: !editUser, message: '请输入用户名' }]}
+            >
+              <Input disabled={!!editUser} placeholder="登录用户名" />
+            </Form.Item>
+            <Form.Item
+              name="role"
+              label="角色"
+              rules={[{ required: true, message: '请选择角色' }]}
+            >
+              <Select options={ROLE_OPTIONS} />
+            </Form.Item>
+            <Form.Item
+              name="password"
+              label={editUser ? '新密码（留空则不修改）' : '密码'}
+              rules={editUser ? [] : [{ required: true, message: '请设置密码' }, { min: 8, message: '密码至少8位' }]}
+              style={{ marginBottom: 0 }}
+            >
+              <Input.Password placeholder={editUser ? '留空则不修改' : '至少8位'} />
+            </Form.Item>
+          </Form>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
+            <Button onClick={handleOk}>{editUser ? '保存' : '创建'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
