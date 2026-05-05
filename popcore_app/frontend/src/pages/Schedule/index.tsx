@@ -1,11 +1,8 @@
 import { useEffect } from 'react'
-import { Typography } from 'antd'
 import { useHasRole } from '../../auth/useRole'
 import EmployeeView from './EmployeeView'
 import ManagerView from './ManagerView'
 import { getMe } from './scheduleApi'
-
-const { Title } = Typography
 
 export default function SchedulePage() {
   const isManager = useHasRole('manager')
@@ -17,11 +14,10 @@ export default function SchedulePage() {
 
   return (
     <div style={{ padding: '0 8px' }}>
-      <Title level={3} style={{ marginBottom: 16 }}>
+      <h3 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>
         {isManager ? 'Shift Scheduling' : 'My Schedule'}
-      </Title>
+      </h3>
       {isManager ? <ManagerView /> : <EmployeeView />}
     </div>
   )
 }
-

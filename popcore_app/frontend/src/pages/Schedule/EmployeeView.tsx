@@ -5,12 +5,9 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
-import { Typography, Tooltip } from 'antd'
 import dayjs from 'dayjs'
 import { getMyAvailability, getMyShifts, type Availability, type Shift } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
-
-const { Title } = Typography
 
 export default function EmployeeView() {
   const calRef = useRef<FullCalendar>(null)
@@ -97,39 +94,33 @@ export default function EmployeeView() {
 
   return (
     <div style={{ padding: '0 4px' }}>
-      <Title level={4} style={{ marginBottom: 12 }}>My Schedule</Title>
+      <h4 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 12px' }}>My Schedule</h4>
 
       <div style={{ marginBottom: 8, display: 'flex', gap: 16, fontSize: 13 }}>
-        <Tooltip title="Days you marked as available">
-          <span>
-            <span
-              style={{
-                display: 'inline-block',
-                width: 12,
-                height: 12,
-                background: '#10B981',
-                borderRadius: 2,
-                marginRight: 4,
-              }}
-            />
-            Availability
-          </span>
-        </Tooltip>
-        <Tooltip title="Shifts assigned by a manager">
-          <span>
-            <span
-              style={{
-                display: 'inline-block',
-                width: 12,
-                height: 12,
-                background: '#6366F1',
-                borderRadius: 2,
-                marginRight: 4,
-              }}
-            />
-            Assigned shift
-          </span>
-        </Tooltip>
+        <span title="Days you marked as available">
+          <span
+            style={{
+              display: 'inline-block',
+              width: 12, height: 12,
+              background: '#10B981',
+              borderRadius: 2,
+              marginRight: 4,
+            }}
+          />
+          Availability
+        </span>
+        <span title="Shifts assigned by a manager">
+          <span
+            style={{
+              display: 'inline-block',
+              width: 12, height: 12,
+              background: '#6366F1',
+              borderRadius: 2,
+              marginRight: 4,
+            }}
+          />
+          Assigned shift
+        </span>
       </div>
 
       <FullCalendar

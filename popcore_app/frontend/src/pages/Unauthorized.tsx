@@ -1,5 +1,6 @@
-import { Button, Result } from 'antd'
+import { Result } from 'antd'
 import { useNavigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
 
 export default function Unauthorized() {
   const navigate = useNavigate()
@@ -10,9 +11,7 @@ export default function Unauthorized() {
         title="Access Denied"
         subTitle="You don't have permission to view this page. Contact your admin if you need access."
         extra={
-          <Button type="primary" onClick={() => navigate(-1 as any)}>
-            Go Back
-          </Button>
+          <Button onClick={() => navigate(-1 as any)}>Go Back</Button>
         }
       />
     </div>

@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import { Button, Result } from 'antd'
+import { Result } from 'antd'
+import { Button } from '@/components/ui/button'
 
 interface Props {
   children: ReactNode
@@ -29,10 +30,10 @@ export default class ErrorBoundary extends Component<Props, State> {
             title="页面出现错误"
             subTitle="Something went wrong. Reload the page or contact your admin."
             extra={[
-              <Button key="reload" type="primary" onClick={() => window.location.reload()}>
+              <Button key="reload" onClick={() => window.location.reload()}>
                 Reload Page
               </Button>,
-              <Button key="home" onClick={() => { this.setState({ error: null }); window.location.href = '/' }}>
+              <Button key="home" variant="outline" onClick={() => { this.setState({ error: null }); window.location.href = '/' }}>
                 Go Home
               </Button>,
             ]}
