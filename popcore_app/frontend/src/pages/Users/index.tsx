@@ -7,9 +7,11 @@ import type { ColumnsType } from 'antd/es/table'
 import { Plus, RefreshCw } from 'lucide-react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import client from '../../api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
@@ -37,9 +39,14 @@ const ROLE_BADGE_STYLE: Record<string, React.CSSProperties> = {
   viewer:  { background: '#f3f4f6', color: '#374151', borderColor: '#d1d5db' },
 }
 
+const ME_BADGE_STYLE: React.CSSProperties = {
+  background: '#dcfce7', color: '#166534', borderColor: '#86efac',
+}
+
 export default function UsersPage() {
-  const isAdmin = useHasRole('admin')
+  const isAdmin  = useHasRole('admin')
   const { user: me } = useAuth0()
+  const isMobile = useIsMobile()
   const [users, setUsers]     = useState<User[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
@@ -112,11 +119,7 @@ export default function UsersPage() {
       render: (v, r) => (
         <Space>
           <span style={{ fontWeight: r.is_active === 1 ? 600 : 400 }}>{v}</span>
-          {me?.sub === r.id && (
-            <Badge variant="outline" style={{ background: '#dcfce7', color: '#166534', borderColor: '#86efac' }}>
-              我
-            </Badge>
-          )}
+          {me?.sub === r.id && <Badge variant="outline" style={ME_BADGE_STYLE}>我</Badge>}
         </Space>
       ),
     },
@@ -187,14 +190,68 @@ export default function UsersPage() {
         <Button variant="outline" onClick={load}><RefreshCw className="h-4 w-4 mr-1" />刷新</Button>
       </div>
 
-      <Table
-        rowKey="id"
-        size="small"
-        loading={loading}
-        dataSource={users}
-        columns={columns}
-        pagination={false}
-      />
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {loading ? (
+            <span style={{ color: '#9ca3af', fontSize: 14 }}>加载中…</span>
+          ) : users.length === 0 ? (
+            <span style={{ color: '#9ca3af', fontSize: 14 }}>暂无用户</span>
+          ) : users.map(u => (
+            <Card key={u.id}>
+              <CardContent style={{ padding: '12px 16px' }}>
+                {/* Header row: username + role badge */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontWeight: u.is_active === 1 ? 600 : 400, fontSize: 15 }}>{u.username}</span>
+                    {me?.sub === u.id && <Badge variant="outline" style={ME_BADGE_STYLE}>我</Badge>}
+                  </div>
+                  <Badge variant="outline" style={ROLE_BADGE_STYLE[u.role] ?? ROLE_BADGE_STYLE.viewer}>
+                    {ROLE_OPTIONS.find(o => o.value === u.role)?.label ?? u.role}
+                  </Badge>
+                </div>
+
+                {/* Meta row: last login + status toggle */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, fontSize: 13, color: '#6b7280' }}>
+                  <span>
+                    最后登录：{u.last_login ? u.last_login.slice(0, 16) : <span style={{ color: '#9ca3af' }}>从未</span>}
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>{u.is_active === 1 ? '启用' : '禁用'}</span>
+                    <Switch
+                      checked={u.is_active === 1}
+                      size="small"
+                      disabled={me?.sub === u.id}
+                      onChange={() => toggleActive(u)}
+                    />
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button size="sm" variant="outline" onClick={() => openEdit(u)}>编辑</Button>
+                  <Popconfirm
+                    title={`删除用户 ${u.username}？`}
+                    disabled={me?.sub === u.id}
+                    onConfirm={() => deleteUser(u)}
+                    okButtonProps={{ danger: true }}
+                  >
+                    <Button size="sm" variant="destructive" disabled={me?.sub === u.id}>删除</Button>
+                  </Popconfirm>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <Table
+          rowKey="id"
+          size="small"
+          loading={loading}
+          dataSource={users}
+          columns={columns}
+          pagination={false}
+        />
+      )}
 
       <Dialog open={modalOpen} onOpenChange={(o) => !o && setModalOpen(false)}>
         <DialogContent style={{ maxWidth: 400 }}>
