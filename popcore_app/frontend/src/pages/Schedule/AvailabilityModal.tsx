@@ -90,7 +90,7 @@ export default function AvailabilityModal({ open, date, existing, onClose, onSav
                 rules={[{ required: true, message: 'Required' }]}
                 style={{ marginBottom: 0 }}
               >
-                <Select showSearch placeholder="06:00" options={TIME_OPTIONS} style={{ width: '100%' }} />
+                <Select showSearch placeholder="06:00" options={TIME_OPTIONS} style={{ width: '100%' }} getPopupContainer={(trigger) => trigger.parentElement!} />
               </Form.Item>
               <Form.Item
                 name="end_time"
@@ -108,7 +108,7 @@ export default function AvailabilityModal({ open, date, existing, onClose, onSav
                 ]}
                 style={{ marginBottom: 0 }}
               >
-                <Select showSearch placeholder="17:00" options={TIME_OPTIONS} style={{ width: '100%' }} />
+                <Select showSearch placeholder="17:00" options={TIME_OPTIONS} style={{ width: '100%' }} getPopupContainer={(trigger) => trigger.parentElement!} />
               </Form.Item>
             </div>
             <Form.Item name="notes" label="Notes (optional)" style={{ marginTop: 12, marginBottom: 0 }}>
