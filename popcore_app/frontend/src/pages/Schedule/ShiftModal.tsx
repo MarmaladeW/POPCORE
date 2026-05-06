@@ -162,6 +162,7 @@ export default function ShiftModal({
                 optionFilterProp="label"
                 disabled={!!existing}
                 onChange={handleEmployeeChange}
+                getPopupContainer={(trigger) => trigger.parentElement!}
                 options={sortedEmployees.map((e) => {
                   const avail    = availByEmpId[e.id]
                   const baseName = e.name || e.email || e.auth0_id
@@ -182,7 +183,7 @@ export default function ShiftModal({
                   label="Start time"
                   rules={[{ required: true, message: 'Required' }]}
                 >
-                  <Select showSearch placeholder="09:00" options={TIME_OPTIONS} style={{ width: '100%' }} />
+                  <Select showSearch placeholder="09:00" options={TIME_OPTIONS} style={{ width: '100%' }} getPopupContainer={(trigger) => trigger.parentElement!} />
                 </Form.Item>
               </Col>
               <Col span={12}>
@@ -201,7 +202,7 @@ export default function ShiftModal({
                     }),
                   ]}
                 >
-                  <Select showSearch placeholder="17:00" options={TIME_OPTIONS} style={{ width: '100%' }} />
+                  <Select showSearch placeholder="17:00" options={TIME_OPTIONS} style={{ width: '100%' }} getPopupContainer={(trigger) => trigger.parentElement!} />
                 </Form.Item>
               </Col>
             </Row>
