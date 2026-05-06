@@ -37,19 +37,19 @@
     --card-foreground:      oklch(0.141 0.005 285.823);
     --popover:              oklch(1 0 0);
     --popover-foreground:   oklch(0.141 0.005 285.823);
-    /* POPCORE brand: Monza red #D1001F */
-    --primary:              oklch(0.542 0.220 25);
-    --primary-foreground:   oklch(1 0 0);
+    /* POPCORE primary: Indigo #6366F1 */
+    --primary:              #6366F1;
+    --primary-foreground:   #ffffff;
     --secondary:            oklch(0.967 0.001 286.375);
     --secondary-foreground: oklch(0.21 0.006 285.885);
     --muted:                oklch(0.967 0.001 286.375);
     --muted-foreground:     oklch(0.552 0.016 285.938);
     --accent:               oklch(0.967 0.001 286.375);
     --accent-foreground:    oklch(0.21 0.006 285.885);
-    --destructive:          oklch(0.577 0.245 27.325);
+    --destructive:          #EF4444;
     --border:               oklch(0.92 0.004 286.286);
     --input:                oklch(0.92 0.004 286.286);
-    --ring:                 oklch(0.705 0.015 286.067);
+    --ring:                 #6366F1;
     --radius:               0.625rem;
   }
 }
