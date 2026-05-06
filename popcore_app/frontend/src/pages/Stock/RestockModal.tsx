@@ -49,7 +49,10 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
 
   // Total qty in base unit (盒 for blind box, units for non-blind box)
   const totalQty = useMemo(() => {
-    if (op === 'adjust') return newQty
+    if (op === 'adjust') {
+      if (isBlindBox) return qDan * bpd + qHe
+      return newQty
+    }
     if (!isBlindBox) return qDan  // non-blind box: just a plain integer
     return qXiang * dpx * bpd + qDan * bpd + qHe
   }, [op, isBlindBox, qXiang, qDan, qHe, bpd, dpx, newQty])
@@ -89,7 +92,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
       let resp
       if (op === 'adjust') {
         resp = await client.post('/stock/adjust', {
-          product_id: product.id, location, new_qty: newQty, date: dateStr, notes,
+          product_id: product.id, location, new_qty: totalQty, date: dateStr, notes,
         })
       } else if (op === 'ru_dian') {
         resp = await client.post('/stock/ru_dian', {
@@ -129,13 +132,38 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
             ]}
             style={{ width: '100%' }}
           />
-          <InputNumber
-            value={newQty}
-            onChange={v => setNewQty(v ?? 0)}
-            addonBefore={isBlindBox ? '新数量(盒)' : '新数量(件)'}
-            style={{ width: '100%' }}
-            min={0}
-          />
+          {isBlindBox ? (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <InputNumber
+                  value={qDan}
+                  onChange={v => setQDan(v ?? 0)}
+                  addonBefore="端数"
+                  style={{ width: '100%' }}
+                  min={0}
+                />
+                <InputNumber
+                  value={qHe}
+                  onChange={v => setQHe(v ?? 0)}
+                  addonBefore="散盒"
+                  style={{ width: '100%' }}
+                  min={0}
+                  max={bpd - 1}
+                />
+              </div>
+              <div style={{ fontSize: 12, color: '#6366F1', background: '#f0f0ff', borderRadius: 6, padding: '4px 10px' }}>
+                {qDan}端 × {bpd}盒/端 + {qHe}盒 = <strong>{totalQty}盒</strong>
+              </div>
+            </>
+          ) : (
+            <InputNumber
+              value={newQty}
+              onChange={v => setNewQty(v ?? 0)}
+              addonBefore="新数量(件)"
+              style={{ width: '100%' }}
+              min={0}
+            />
+          )}
         </>
       )
     }
