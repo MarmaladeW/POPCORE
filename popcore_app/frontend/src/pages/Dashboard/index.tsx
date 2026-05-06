@@ -159,7 +159,7 @@ export default function DashboardPage() {
       value: `CA$${todayRevenue.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       sub: `${todayUnitsSold} units sold`,
       icon: <DollarSign size={18} />,
-      accentColor: '#F59E0B',
+      accentColor: '#6366F1',
     },
   ]
 
