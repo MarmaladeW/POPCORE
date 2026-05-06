@@ -159,6 +159,14 @@ export default function ManagerCalendar() {
         setAvailForDate(availsByDate.current[shift.date] ?? [])
         setModalOpen(true)
       }
+    } else if (type === 'availability') {
+      // Fallback: some FC versions fire eventClick for background events
+      // even though dateClick should fire instead (after the CSS fix).
+      const dateStr = dayjs(arg.event.start!).format('YYYY-MM-DD')
+      setSelectedDate(dateStr)
+      setSelectedShift(null)
+      setAvailForDate(availsByDate.current[dateStr] ?? [])
+      setModalOpen(true)
     }
   }, [])
 

@@ -54,6 +54,14 @@
   }
 }
 
+/* ── FullCalendar: background availability events must not swallow clicks ── */
+/* FC v6 renders display:'background' events as .fc-bg-event with no        */
+/* pointer-events:none, so they intercept dateClick and the modal never      */
+/* opens on days that have availability set. Pass clicks through to the cell. */
+.fc-bg-event {
+  pointer-events: none;
+}
+
 /* ── Box-sizing reset (Tailwind preflight disabled — do it manually) ── */
 *, *::before, *::after {
   box-sizing: border-box;
