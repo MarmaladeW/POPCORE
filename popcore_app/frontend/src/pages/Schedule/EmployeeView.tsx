@@ -93,53 +93,39 @@ export default function EmployeeView() {
   }, [loadEvents, currentRange])
 
   return (
-    <div style={{ padding: '0 4px' }}>
-      <h4 style={{ fontSize: 16, fontWeight: 600, margin: '0 0 12px' }}>My Schedule</h4>
-
-      <div style={{ marginBottom: 8, display: 'flex', gap: 16, fontSize: 13 }}>
-        <span title="Days you marked as available">
-          <span
-            style={{
-              display: 'inline-block',
-              width: 12, height: 12,
-              background: '#10B981',
-              borderRadius: 2,
-              marginRight: 4,
-            }}
-          />
+    <div className="space-y-3">
+      {/* Legend */}
+      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5" title="Days you marked as available">
+          <span className="size-3 rounded-sm shrink-0 bg-emerald-500" />
           Availability
         </span>
-        <span title="Shifts assigned by a manager">
-          <span
-            style={{
-              display: 'inline-block',
-              width: 12, height: 12,
-              background: '#6366F1',
-              borderRadius: 2,
-              marginRight: 4,
-            }}
-          />
+        <span className="flex items-center gap-1.5" title="Shifts assigned by a manager">
+          <span className="size-3 rounded-sm shrink-0 bg-primary" />
           Assigned shift
         </span>
       </div>
 
-      <FullCalendar
-        ref={calRef}
-        plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-        initialView="dayGridMonth"
-        headerToolbar={{
-          left:   'prev,next today',
-          center: 'title',
-          right:  'dayGridMonth,timeGridWeek',
-        }}
-        height="auto"
-        timeZone="local"
-        events={events}
-        datesSet={handleDatesSet}
-        dateClick={handleDateClick}
-        eventClick={handleEventClick}
-        eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-      />
+      {/* Calendar card */}
+      <div className="rounded-xl border border-border overflow-hidden">
+        <FullCalendar
+          ref={calRef}
+          plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+          initialView="dayGridMonth"
+          headerToolbar={{
+            left:   'prev,next today',
+            center: 'title',
+            right:  'dayGridMonth,timeGridWeek',
+          }}
+          height="auto"
+          timeZone="local"
+          events={events}
+          datesSet={handleDatesSet}
+          dateClick={handleDateClick}
+          eventClick={handleEventClick}
+          eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+        />
+      </div>
 
       <AvailabilityModal
         open={modalOpen}

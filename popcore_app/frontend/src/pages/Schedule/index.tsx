@@ -13,8 +13,8 @@ export default function SchedulePage() {
   }, [])
 
   return (
-    <div style={{ padding: '0 8px' }}>
-      <h3 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>
+    <div className="px-2">
+      <h3 className="text-xl font-semibold mb-4">
         {isManager ? 'Shift Scheduling' : 'My Schedule'}
       </h3>
       {isManager ? <ManagerView /> : <EmployeeView />}

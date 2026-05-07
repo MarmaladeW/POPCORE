@@ -183,15 +183,51 @@ export default function ManagerCalendar() {
   const cal = () => calRef.current?.getApi()
 
   return (
-    <div>
-      {/* Row A: employee filter + refresh */}
-      <div className="flex items-center gap-2 flex-wrap mb-2">
-        <span style={{ fontSize: 13, color: '#6b7280' }}>Filter:</span>
+    <div className="space-y-3">
+
+      {/* Row 1: navigation ←→ + Today + Month|Week toggle */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-0.5">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => cal()?.prev()}>
+            <ChevronLeft className="size-4" />
+          </Button>
+          <span className="text-sm font-semibold min-w-24 text-center px-1">{viewTitle}</span>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => cal()?.next()}>
+            <ChevronRight className="size-4" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="h-8" onClick={() => cal()?.today()}>Today</Button>
+          <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
+            <button
+              className={cn(
+                'px-3 h-8 transition-colors',
+                viewType === 'dayGridMonth'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-background text-foreground hover:bg-muted',
+              )}
+              onClick={() => cal()?.changeView('dayGridMonth')}
+            >Month</button>
+            <button
+              className={cn(
+                'px-3 h-8 border-l border-border transition-colors',
+                viewType === 'timeGridWeek'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-background text-foreground hover:bg-muted',
+              )}
+              onClick={() => cal()?.changeView('timeGridWeek')}
+            >Week</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Row 2: employee filter + refresh */}
+      <div className="flex items-center gap-2">
         <Select
           value={filterEmpId !== null ? String(filterEmpId) : '__all__'}
           onValueChange={(v) => setFilterEmpId(v === '__all__' ? null : Number(v))}
         >
-          <SelectTrigger style={{ width: 180 }}>
+          <SelectTrigger className="h-8 text-sm w-44">
             <SelectValue placeholder="All employees" />
           </SelectTrigger>
           <SelectContent>
@@ -203,60 +239,27 @@ export default function ManagerCalendar() {
             ))}
           </SelectContent>
         </Select>
-
         <Button
-          variant="outline"
+          variant="ghost"
           size="icon"
+          className="h-8 w-8"
           title="Refresh"
           onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end)}
         >
-          <RefreshCw className="h-4 w-4" />
+          <RefreshCw className="size-3.5" />
         </Button>
       </div>
 
-      {/* Row B: calendar navigation */}
-      <div className="flex items-center gap-1 mb-2">
-        <Button variant="ghost" size="icon" onClick={() => cal()?.prev()}>
-          <ChevronLeft className="h-4 w-4" />
-        </Button>
-        <span className="flex-1 text-center text-sm font-medium">{viewTitle}</span>
-        <Button variant="ghost" size="icon" onClick={() => cal()?.next()}>
-          <ChevronRight className="h-4 w-4" />
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => cal()?.today()}>Today</Button>
-        <div className="flex rounded-md border overflow-hidden text-sm">
-          <button
-            className={cn(
-              'px-3 py-1 transition-colors',
-              viewType === 'dayGridMonth'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-background text-foreground hover:bg-muted',
-            )}
-            onClick={() => cal()?.changeView('dayGridMonth')}
-          >
-            Month
-          </button>
-          <button
-            className={cn(
-              'px-3 py-1 border-l transition-colors',
-              viewType === 'timeGridWeek'
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-background text-foreground hover:bg-muted',
-            )}
-            onClick={() => cal()?.changeView('timeGridWeek')}
-          >
-            Week
-          </button>
-        </div>
-      </div>
-
-      {/* Employee legend: 2-column grid */}
+      {/* Employee legend: horizontal pill chips */}
       {employees.length > 0 && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
+        <div className="flex flex-wrap gap-1.5">
           {employees.map((e, i) => (
-            <span key={e.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span
+              key={e.id}
+              className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+            >
               <span
-                className="w-2 h-2 rounded-sm flex-shrink-0"
+                className="size-2 rounded-full shrink-0"
                 style={{ background: colorForEmployee(i) }}
               />
               {e.name || e.email || `Employee ${e.id}`}
@@ -265,19 +268,22 @@ export default function ManagerCalendar() {
         </div>
       )}
 
-      <FullCalendar
-        ref={calRef}
-        plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-        initialView="dayGridMonth"
-        headerToolbar={false}
-        height="auto"
-        timeZone="local"
-        events={visibleEvents}
-        datesSet={handleDatesSet}
-        dateClick={handleDateClick}
-        eventClick={handleEventClick}
-        eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-      />
+      {/* Calendar card */}
+      <div className="rounded-xl border border-border overflow-hidden">
+        <FullCalendar
+          ref={calRef}
+          plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+          initialView="dayGridMonth"
+          headerToolbar={false}
+          height="auto"
+          timeZone="local"
+          events={visibleEvents}
+          datesSet={handleDatesSet}
+          dateClick={handleDateClick}
+          eventClick={handleEventClick}
+          eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+        />
+      </div>
 
       <ShiftModal
         open={modalOpen}
