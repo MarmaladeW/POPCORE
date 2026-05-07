@@ -122,26 +122,18 @@ export default function ShiftModal({
 
           {/* Availability summary */}
           {availForDate.length > 0 && (
-            <div
-              style={{
-                background: '#f0fdf4',
-                border: '1px solid #86efac',
-                borderRadius: 8,
-                padding: '8px 12px',
-                fontSize: 13,
-              }}
-            >
-              <div style={{ fontWeight: 600, color: '#166534', marginBottom: 4 }}>
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm">
+              <div className="font-semibold text-emerald-800 mb-1">
                 Available on {date}:
               </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <div className="flex flex-wrap gap-1.5">
                 {availForDate.map((a) => {
                   const emp  = employees.find((e) => e.id === a.employee_id)
                   const name = emp
                     ? (emp.name || emp.email || `ID ${emp.id}`)
                     : (a.employee_name || `ID ${a.employee_id}`)
                   return (
-                    <Badge key={a.id} variant="outline" style={{ color: '#166534', borderColor: '#86efac' }}>
+                    <Badge key={a.id} variant="outline" className="text-emerald-700 border-emerald-300 bg-white">
                       {name} {a.start_time}–{a.end_time}
                     </Badge>
                   )

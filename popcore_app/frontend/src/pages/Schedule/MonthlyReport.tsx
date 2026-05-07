@@ -6,7 +6,7 @@ import { getMonthlyReport, type EmployeeMonthlyHours } from './scheduleApi'
 
 dayjs.extend(isoWeek)
 
-const { Title, Text } = Typography
+const { Text } = Typography
 
 function weeksInMonth(year: number, month: number): string[] {
   // Return ISO week keys that contain days in this month (YYYY-Www)
@@ -83,8 +83,8 @@ export default function MonthlyReport() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <Title level={5} style={{ margin: 0 }}>Monthly hours report</Title>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <h2 className="text-sm font-semibold m-0">Monthly hours report</h2>
         <DatePicker
           picker="month"
           value={month}
