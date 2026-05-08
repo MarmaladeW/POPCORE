@@ -6,11 +6,12 @@ from flask import Blueprint, request, jsonify
 
 from db import get_db, _ensure_stock_row
 from auth import login_required, role_required
+from blueprints.stores import _resolve_store
 
 bp = Blueprint('restock', __name__)
 
 
-def _restock_session_items(cur, sid):
+def _restock_session_items(cur, sid, store_id):
     """Return items for a session, joined with product and live stock info."""
     cur.execute('''
         SELECT ri.id, ri.product_id, ri.requested_qty, ri.warehouse_stock_snapshot,
@@ -21,10 +22,10 @@ def _restock_session_items(cur, sid):
                COALESCE(s.instore_qty,  0) AS instore_qty
         FROM restock_items ri
         JOIN products p ON p.id = ri.product_id
-        LEFT JOIN stock s ON s.product_id = ri.product_id
+        LEFT JOIN stock s ON s.product_id = ri.product_id AND s.store_id = ?
         WHERE ri.session_id = ?
         ORDER BY ri.id
-    ''', (sid,))
+    ''', (store_id, sid))
     return [dict(r) for r in cur.fetchall()]
 
 
@@ -33,19 +34,29 @@ def _restock_session_items(cur, sid):
 def restock_sessions_today():
     today = date.today().isoformat()
     con = get_db()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
     cur = con.cursor()
     cur.execute('''
         SELECT rs.id, rs.date, rs.status, rs.created_at, rs.submitted_at, rs.completed_at,
+               rs.store_id,
                COUNT(ri.id)                                                          AS item_count,
                COALESCE(SUM(ri.requested_qty), 0)                                   AS total_requested,
                COALESCE(SUM(CASE WHEN ri.pick_status='found' THEN ri.found_qty ELSE 0 END), 0)
                                                                                     AS total_found
         FROM restock_sessions rs
         LEFT JOIN restock_items ri ON ri.session_id = rs.id
-        WHERE rs.date = ?
+        WHERE rs.date = ? AND rs.store_id = ?
         GROUP BY rs.id
         ORDER BY rs.created_at DESC
-    ''', (today,))
+    ''', (today, store_id))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
@@ -55,11 +66,21 @@ def restock_sessions_today():
 @role_required('staff')
 def create_restock_session():
     today = date.today().isoformat()
-    con = get_db()
+    data  = request.get_json(silent=True) or {}
+    con   = get_db()
+    store_code = (data.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
     cur = con.cursor()
     cur.execute(
-        "INSERT INTO restock_sessions (date, status) VALUES (?, 'pending')",
-        (today,),
+        "INSERT INTO restock_sessions (date, status, store_id) VALUES (?, 'pending', ?)",
+        (today, store_id),
     )
     con.commit()
     sid = cur.lastrowid
@@ -79,13 +100,14 @@ def delete_restock_session(sid):
     """
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
+    cur.execute('SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
 
-    status = sess['status']
+    status   = sess['status']
+    store_id = sess['store_id']
     reversed_count = 0
 
     if status == 'completed':
@@ -103,8 +125,8 @@ def delete_restock_session(sid):
                 SET instore_qty  = MAX(0, instore_qty  - ?),
                     upstairs_qty = upstairs_qty + ?,
                     last_updated = datetime('now')
-                WHERE product_id = ?
-            ''', (qty, qty, pid))
+                WHERE product_id = ? AND store_id = ?
+            ''', (qty, qty, pid, store_id))
             reversed_count += 1
         cur.execute('DELETE FROM stock_movements WHERE session_id = ?', (sid,))
         cur.execute(
@@ -122,13 +144,24 @@ def delete_restock_session(sid):
 @bp.route('/api/restock/session/today')
 @login_required
 def restock_session_today():
-    """Legacy: return the most recent pending session today, or 404."""
+    """Legacy: return the most recent pending session today for a given store, or 404."""
     today = date.today().isoformat()
-    con = get_db()
+    con   = get_db()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
     cur = con.cursor()
     cur.execute(
-        "SELECT * FROM restock_sessions WHERE date = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
-        (today,),
+        "SELECT * FROM restock_sessions"
+        " WHERE date = ? AND status = 'pending' AND store_id = ?"
+        " ORDER BY created_at DESC LIMIT 1",
+        (today, store_id),
     )
     row = cur.fetchone()
     con.close()
@@ -147,8 +180,9 @@ def get_restock_session(sid):
     if not row:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
-    session = dict(row)
-    session['items'] = _restock_session_items(cur, sid)
+    session  = dict(row)
+    store_id = session['store_id']
+    session['items'] = _restock_session_items(cur, sid, store_id)
     con.close()
     return jsonify(session)
 
@@ -215,7 +249,7 @@ def submit_restock_session(sid):
     """pending → submitted. Snapshots current warehouse stock into each item."""
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
+    cur.execute('SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
@@ -223,15 +257,17 @@ def submit_restock_session(sid):
     if sess['status'] != 'pending':
         con.close()
         return jsonify({'error': f'当前状态 {sess["status"]} 不可提交'}), 400
+    store_id = sess['store_id']
 
     cur.execute('''
         UPDATE restock_items
         SET warehouse_stock_snapshot = COALESCE(
-            (SELECT s.upstairs_qty FROM stock s WHERE s.product_id = restock_items.product_id),
+            (SELECT s.upstairs_qty FROM stock s
+             WHERE s.product_id = restock_items.product_id AND s.store_id = ?),
             0
         )
         WHERE session_id = ?
-    ''', (sid,))
+    ''', (store_id, sid))
     cur.execute(
         "UPDATE restock_sessions SET status='submitted', submitted_at=datetime('now') WHERE id=?",
         (sid,),
@@ -246,12 +282,13 @@ def submit_restock_session(sid):
 def restock_picking_list(sid):
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
+    cur.execute('SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
-    items = _restock_session_items(cur, sid)
+    store_id = sess['store_id']
+    items = _restock_session_items(cur, sid, store_id)
     con.close()
     return jsonify({'session_status': sess['status'], 'items': items})
 
@@ -316,7 +353,7 @@ def complete_restock_session(sid):
     """
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
+    cur.execute('SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
@@ -324,6 +361,7 @@ def complete_restock_session(sid):
     if sess['status'] not in ('submitted', 'picking'):
         con.close()
         return jsonify({'error': f'当前状态 {sess["status"]} 不可完成'}), 400
+    store_id = sess['store_id']
 
     cur.execute(
         "SELECT COUNT(*) FROM restock_items WHERE session_id=? AND pick_status='pending'",
@@ -351,8 +389,9 @@ def complete_restock_session(sid):
     for item in found_items:
         pid = item['product_id']
         requested_found = item['found_qty']
-        _ensure_stock_row(cur, pid)
-        cur.execute('SELECT upstairs_qty FROM stock WHERE product_id=?', (pid,))
+        _ensure_stock_row(cur, pid, store_id)
+        cur.execute('SELECT upstairs_qty FROM stock WHERE product_id=? AND store_id=?',
+                    (pid, store_id))
         stock_row = cur.fetchone()
         actual_warehouse = stock_row['upstairs_qty'] if stock_row else 0
         effective_qty = min(requested_found, actual_warehouse)
@@ -366,8 +405,8 @@ def complete_restock_session(sid):
             SET upstairs_qty = upstairs_qty - ?,
                 instore_qty  = instore_qty  + ?,
                 last_updated = datetime('now')
-            WHERE product_id = ?
-        ''', (effective_qty, effective_qty, pid))
+            WHERE product_id = ? AND store_id = ?
+        ''', (effective_qty, effective_qty, pid, store_id))
         cur.execute('''
             INSERT INTO stock_movements (product_id, session_id, movement_type, qty_change, location)
             VALUES (?, ?, 'restock_out', ?, 'warehouse')
@@ -377,9 +416,9 @@ def complete_restock_session(sid):
             VALUES (?, ?, 'restock_in', ?, 'store')
         ''', (pid, sid, effective_qty))
         cur.execute('''
-            INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
-            VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?)
-        ''', (pid, effective_qty, today, f'补货入店 session#{sid}'))
+            INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
+            VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?, ?)
+        ''', (pid, effective_qty, today, f'补货入店 session#{sid}', store_id))
         synced_details.append({'product_id': pid, 'requested': requested_found,
                                'found': requested_found, 'effective': effective_qty})
 

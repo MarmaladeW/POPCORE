@@ -6,8 +6,33 @@ from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
+from blueprints.stores import _resolve_store
 
 bp = Blueprint('stock', __name__)
+
+
+def _require_store_param(con):
+    """Read store_code from GET query params, validate, return (store_id, code) or error tuple."""
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        return None, None, (jsonify({'error': 'Invalid store code'}), 400)
+    store_id, store_code = resolved
+    return store_id, store_code, None
+
+
+def _require_store_body(con, data):
+    """Read store_code from POST/PATCH body dict, validate, return (store_id, code) or error tuple."""
+    store_code = (data.get('store_code') or '').strip().upper()
+    if not store_code:
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        return None, None, (jsonify({'error': 'Invalid store code'}), 400)
+    store_id, store_code = resolved
+    return store_id, store_code, None
 
 
 @bp.route('/api/stock')
@@ -34,6 +59,11 @@ def get_all_stock():
         offset = (page - 1) * page_size
 
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
+
     cur = con.cursor()
 
     filters = []
@@ -51,8 +81,10 @@ def get_all_stock():
     if include_all:
         if paginated:
             cur.execute(
-                f'SELECT COUNT(*) FROM products p LEFT JOIN stock s ON s.product_id = p.id WHERE 1=1 {where}',
-                params)
+                f'SELECT COUNT(*) FROM products p'
+                f' LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?'
+                f' WHERE 1=1 {where}',
+                [store_id] + params)
             total = cur.fetchone()[0]
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
@@ -62,16 +94,17 @@ def get_all_stock():
                    COALESCE(s.last_updated, '') AS last_updated,
                    COALESCE(s.notes, '')        AS stock_notes
             FROM products p
-            LEFT JOIN stock s ON s.product_id = p.id
+            LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?
             WHERE 1=1 {where}
             ORDER BY p.ip_series, p.sku DESC
             {'LIMIT ? OFFSET ?' if paginated else ''}
-        ''', params + ([page_size, offset] if paginated else []))
+        ''', [store_id] + params + ([page_size, offset] if paginated else []))
     else:
         if paginated:
             cur.execute(
-                f'SELECT COUNT(*) FROM stock s JOIN products p ON p.id = s.product_id WHERE 1=1 {where}',
-                params)
+                f'SELECT COUNT(*) FROM stock s JOIN products p ON p.id = s.product_id'
+                f' WHERE s.store_id = ? {where}',
+                [store_id] + params)
             total = cur.fetchone()[0]
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
@@ -80,10 +113,10 @@ def get_all_stock():
                    s.last_updated, COALESCE(s.notes, '') AS stock_notes
             FROM stock s
             JOIN products p ON p.id = s.product_id
-            WHERE 1=1 {where}
+            WHERE s.store_id = ? {where}
             ORDER BY p.ip_series, p.sku DESC
             {'LIMIT ? OFFSET ?' if paginated else ''}
-        ''', params + ([page_size, offset] if paginated else []))
+        ''', [store_id] + params + ([page_size, offset] if paginated else []))
 
     items = [dict(r) for r in cur.fetchall()]
     con.close()
@@ -96,6 +129,10 @@ def get_all_stock():
 @login_required
 def get_stock(product_id):
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
@@ -105,9 +142,9 @@ def get_stock(product_id):
                COALESCE(s.last_updated, '') AS last_updated,
                COALESCE(s.notes, '') AS stock_notes
         FROM products p
-        LEFT JOIN stock s ON s.product_id = p.id
+        LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?
         WHERE p.id = ?
-    ''', (product_id,))
+    ''', (store_id, product_id))
     row = cur.fetchone()
     con.close()
     if not row:
@@ -121,7 +158,12 @@ def patch_stock(product_id):
     data = request.get_json() or {}
     notes = data.get('notes', '')
     con = get_db()
-    con.execute('UPDATE stock SET notes=? WHERE product_id=?', (notes, product_id))
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
+    con.execute('UPDATE stock SET notes=? WHERE product_id=? AND store_id=?',
+                (notes, product_id, store_id))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -144,10 +186,15 @@ def ru_dian():
         return jsonify({'error': '入店数量必须大于0'}), 400
 
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
-    _ensure_stock_row(cur, pid)
+    _ensure_stock_row(cur, pid, store_id)
 
-    cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                (pid, store_id))
     row = cur.fetchone()
     upstairs = row['upstairs_qty'] if row else 0
     if qty > upstairs:
@@ -159,15 +206,16 @@ def ru_dian():
         SET upstairs_qty = upstairs_qty - ?,
             instore_qty  = instore_qty  + ?,
             last_updated = ?
-        WHERE product_id = ?
-    ''', (qty, qty, d, pid))
+        WHERE product_id = ? AND store_id = ?
+    ''', (qty, qty, d, pid, store_id))
     cur.execute('''
-        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
-        VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?)
-    ''', (pid, qty, d, notes))
+        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
+        VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?, ?)
+    ''', (pid, qty, d, notes, store_id))
     con.commit()
 
-    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                (pid, store_id))
     _row = cur.fetchone()
     s = dict(_row) if _row else {'upstairs_qty': 0, 'instore_qty': 0}
     con.close()
@@ -191,22 +239,27 @@ def restock_upstairs():
         return jsonify({'error': '入库数量必须大于0'}), 400
 
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
-    _ensure_stock_row(cur, pid)
+    _ensure_stock_row(cur, pid, store_id)
 
     cur.execute('''
         UPDATE stock
         SET upstairs_qty = upstairs_qty + ?,
             last_updated = ?
-        WHERE product_id = ?
-    ''', (qty, d, pid))
+        WHERE product_id = ? AND store_id = ?
+    ''', (qty, d, pid, store_id))
     cur.execute('''
-        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
-        VALUES (?, 'restock_upstairs', ?, 'upstairs', ?, ?)
-    ''', (pid, qty, d, notes))
+        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
+        VALUES (?, 'restock_upstairs', ?, 'upstairs', ?, ?, ?)
+    ''', (pid, qty, d, notes, store_id))
     con.commit()
 
-    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                (pid, store_id))
     _row = cur.fetchone()
     s = dict(_row) if _row else {'upstairs_qty': 0, 'instore_qty': 0}
     con.close()
@@ -233,10 +286,15 @@ def adjust_stock():
         return jsonify({'error': 'location must be upstairs or instore'}), 400
 
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
-    _ensure_stock_row(cur, pid)
+    _ensure_stock_row(cur, pid, store_id)
 
-    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                (pid, store_id))
     _row = cur.fetchone()
     if _row is None:
         con.close()
@@ -246,19 +304,20 @@ def adjust_stock():
     delta   = new_qty - old_val
 
     if location == 'upstairs':
-        cur.execute('UPDATE stock SET upstairs_qty = ?, last_updated = ? WHERE product_id = ?',
-                    (new_qty, d, pid))
+        cur.execute('UPDATE stock SET upstairs_qty = ?, last_updated = ? WHERE product_id = ? AND store_id = ?',
+                    (new_qty, d, pid, store_id))
     else:
-        cur.execute('UPDATE stock SET instore_qty = ?, last_updated = ? WHERE product_id = ?',
-                    (new_qty, d, pid))
+        cur.execute('UPDATE stock SET instore_qty = ?, last_updated = ? WHERE product_id = ? AND store_id = ?',
+                    (new_qty, d, pid, store_id))
 
     cur.execute('''
-        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
-        VALUES (?, 'adjust', ?, ?, ?, ?)
-    ''', (pid, delta, location, d, notes or f'手动调整: {old_val}→{new_qty}'))
+        INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
+        VALUES (?, 'adjust', ?, ?, ?, ?, ?)
+    ''', (pid, delta, location, d, notes or f'手动调整: {old_val}→{new_qty}', store_id))
 
     con.commit()
-    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ?', (pid,))
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                (pid, store_id))
     _row2 = cur.fetchone()
     s2 = dict(_row2) if _row2 else {'upstairs_qty': 0, 'instore_qty': 0}
     con.close()
@@ -283,10 +342,14 @@ def get_transactions():
             return jsonify({'error': 'product_id must be an integer'}), 400
 
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
 
-    conditions = []
-    params = []
+    conditions = ['t.store_id = ?']
+    params = [store_id]
     if pid_int is not None:
         conditions.append('t.product_id = ?')
         params.append(pid_int)
@@ -294,12 +357,12 @@ def get_transactions():
         conditions.append('t.date = ?')
         params.append(d)
 
-    where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+    where = 'WHERE ' + ' AND '.join(conditions)
     params.append(limit)
 
     cur.execute(f'''
         SELECT t.id, t.product_id, t.txn_type, t.qty, t.location,
-               t.date, t.notes, t.created_at,
+               t.date, t.notes, t.created_at, t.store_id,
                p.jizhanming, p.sku, p.name_cn_en, p.boxes_per_dan, p.dan_per_xiang, p.product_type
         FROM stock_transactions t
         JOIN products p ON p.id = t.product_id
@@ -317,6 +380,10 @@ def get_transactions():
 @login_required
 def stock_summary():
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         SELECT
@@ -324,24 +391,26 @@ def stock_summary():
             SUM(upstairs_qty) AS total_upstairs_qty,
             SUM(instore_qty)  AS total_instore_qty
         FROM stock
-    ''')
+        WHERE store_id = ?
+    ''', (store_id,))
     row = dict(cur.fetchone())
 
     cur.execute('''
         SELECT COUNT(*) FROM stock
-        WHERE upstairs_qty = 0 AND instore_qty > 0
-    ''')
+        WHERE store_id = ? AND upstairs_qty = 0 AND instore_qty > 0
+    ''', (store_id,))
     row['low_stock_count'] = cur.fetchone()[0]
 
-    cur.execute('SELECT COUNT(*) FROM stock WHERE upstairs_qty = 0 AND instore_qty = 0')
+    cur.execute('SELECT COUNT(*) FROM stock WHERE store_id = ? AND upstairs_qty = 0 AND instore_qty = 0',
+                (store_id,))
     row['out_of_stock_count'] = cur.fetchone()[0]
 
     cur.execute('''
         SELECT COALESCE(SUM(p.price * (s.upstairs_qty + s.instore_qty)), 0)
         FROM stock s
         JOIN products p ON p.id = s.product_id
-        WHERE p.price IS NOT NULL
-    ''')
+        WHERE s.store_id = ? AND p.price IS NOT NULL
+    ''', (store_id,))
     row['total_stock_value'] = cur.fetchone()[0]
 
     con.close()
@@ -355,10 +424,14 @@ def export_stock():
     q      = request.args.get('q', '').strip().lower()
 
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
 
     filters = []
-    params  = []
+    params  = [store_id]
     if series:
         filters.append("p.ip_series = ?")
         params.append(series)
@@ -378,7 +451,7 @@ def export_stock():
                COALESCE(s.notes, '') AS stock_notes
         FROM stock s
         JOIN products p ON p.id = s.product_id
-        WHERE 1=1 {where}
+        WHERE s.store_id = ? {where}
         ORDER BY p.ip_series, p.sku DESC
     ''', params)
     rows = cur.fetchall()
@@ -393,7 +466,7 @@ def export_stock():
             r['upstairs_qty'], r['instore_qty'], r['last_updated'], r['stock_notes']
         ]))
 
-    fname = f'stock_{date.today()}.csv'
+    fname = f'stock_{store_code}_{date.today()}.csv'
     return Response(
         '\n'.join(lines),
         mimetype='text/csv; charset=utf-8',
@@ -404,13 +477,26 @@ def export_stock():
 @bp.route('/api/stock/rows', methods=['DELETE'])
 @role_required('manager')
 def delete_stock_rows():
-    pids = request.get_json()
+    body = request.get_json()
+    if isinstance(body, dict):
+        store_code_raw = (body.get('store_code') or '').strip().upper()
+        pids = body.get('product_ids', [])
+    else:
+        return jsonify({'error': 'Expected {"store_code": ..., "product_ids": [...]}'}), 400
+    if not store_code_raw:
+        return jsonify({'error': 'store_code is required'}), 400
     if not isinstance(pids, list) or not pids:
-        return jsonify({'error': 'Expected a list of product_ids'}), 400
+        return jsonify({'error': 'product_ids must be a non-empty list'}), 400
     con = get_db()
+    resolved = _resolve_store(con, store_code_raw)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, _ = resolved
     cur = con.cursor()
     ph  = ','.join('?' * len(pids))
-    cur.execute(f'DELETE FROM stock WHERE product_id IN ({ph})', pids)
+    cur.execute(f'DELETE FROM stock WHERE store_id = ? AND product_id IN ({ph})',
+                [store_id] + pids)
     deleted = cur.rowcount
     con.commit()
     con.close()

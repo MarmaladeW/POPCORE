@@ -6,8 +6,31 @@ from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
+from blueprints.stores import _resolve_store
 
 bp = Blueprint('sales', __name__)
+
+
+def _require_store_param(con):
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        return None, None, (jsonify({'error': 'Invalid store code'}), 400)
+    store_id, store_code = resolved
+    return store_id, store_code, None
+
+
+def _require_store_body(con, data):
+    store_code = (data.get('store_code') or '').strip().upper()
+    if not store_code:
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        return None, None, (jsonify({'error': 'Invalid store code'}), 400)
+    store_id, store_code = resolved
+    return store_id, store_code, None
 
 
 @bp.route('/api/sales')
@@ -15,15 +38,19 @@ bp = Blueprint('sales', __name__)
 def get_sales():
     d = request.args.get('date', str(date.today()))
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.qty_pos, ds.qty_cash, ds.notes,
                p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
         FROM daily_sales ds
         JOIN products p ON p.id = ds.product_id
-        WHERE ds.date = ?
+        WHERE ds.date = ? AND ds.store = ?
         ORDER BY p.ip_series, p.jizhanming
-    ''', (d,))
+    ''', (d, store_code))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
@@ -45,10 +72,13 @@ def upsert_sale():
         return jsonify({'error': 'product_id and qty fields must be integers'}), 400
     d        = data.get('date', str(date.today()))
     notes    = data.get('notes', '')
-    store    = (data.get('store') or 'DT').strip()
     qty_sold = qty_pos + qty_cash
 
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
@@ -58,7 +88,7 @@ def upsert_sale():
             qty_cash = excluded.qty_cash,
             qty_sold = excluded.qty_sold,
             notes    = excluded.notes
-    ''', (pid, d, store, qty_pos, qty_cash, qty_sold, notes))
+    ''', (pid, d, store_code, qty_pos, qty_cash, qty_sold, notes))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -74,15 +104,18 @@ def add_product_to_sales():
         pid = int(data['product_id'])
     except (ValueError, TypeError):
         return jsonify({'error': 'product_id must be an integer'}), 400
-    d     = data.get('date', str(date.today()))
-    store = (data.get('store') or 'DT').strip()
+    d = data.get('date', str(date.today()))
 
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         INSERT OR IGNORE INTO daily_sales (product_id, date, store, qty_sold)
         VALUES (?, ?, ?, 0)
-    ''', (pid, d, store))
+    ''', (pid, d, store_code))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -92,6 +125,10 @@ def add_product_to_sales():
 @login_required
 def sales_summary():
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         SELECT date,
@@ -100,10 +137,11 @@ def sales_summary():
                SUM(qty_pos)  AS total_pos,
                SUM(qty_cash) AS total_cash
         FROM daily_sales
+        WHERE store = ?
         GROUP BY date
         ORDER BY date DESC
         LIMIT 60
-    ''')
+    ''', (store_code,))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
@@ -125,7 +163,7 @@ def delete_sales_record(record_id):
 def batch_stock_operation():
     """
     Batch stock operation (paste import).
-    Body: { operation: 'ru_dian'|'restock_upstairs'|'out_dian'|'ru_dian_claw',
+    Body: { store_code: '...', operation: 'ru_dian'|'restock_upstairs'|'out_dian'|'ru_dian_claw',
             date: '...', items: [{product_id, qty, notes}] }
     """
     data      = request.get_json()
@@ -137,6 +175,10 @@ def batch_stock_operation():
         return jsonify({'error': 'Invalid operation'}), 400
 
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     results = []
 
@@ -151,10 +193,11 @@ def batch_stock_operation():
         if qty <= 0:
             continue
 
-        _ensure_stock_row(cur, pid)
+        _ensure_stock_row(cur, pid, store_id)
 
         if operation == 'ru_dian':
-            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ?', (pid,))
+            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                        (pid, store_id))
             row = cur.fetchone()
             upstairs = row['upstairs_qty'] if row else 0
             if qty > upstairs:
@@ -165,11 +208,12 @@ def batch_stock_operation():
                 UPDATE stock SET upstairs_qty = upstairs_qty - ?,
                                  instore_qty  = instore_qty  + ?,
                                  last_updated = ?
-                WHERE product_id = ?
-            ''', (qty, qty, d, pid))
+                WHERE product_id = ? AND store_id = ?
+            ''', (qty, qty, d, pid, store_id))
             loc = 'upstairs->instore'
         elif operation == 'out_dian':
-            cur.execute('SELECT instore_qty FROM stock WHERE product_id = ?', (pid,))
+            cur.execute('SELECT instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                        (pid, store_id))
             row = cur.fetchone()
             instore = row['instore_qty'] if row else 0
             if qty > instore:
@@ -179,11 +223,12 @@ def batch_stock_operation():
             cur.execute('''
                 UPDATE stock SET instore_qty = instore_qty - ?,
                                  last_updated = ?
-                WHERE product_id = ?
-            ''', (qty, d, pid))
+                WHERE product_id = ? AND store_id = ?
+            ''', (qty, d, pid, store_id))
             loc = 'instore_out'
         elif operation == 'ru_dian_claw':
-            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ?', (pid,))
+            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ? AND store_id = ?',
+                        (pid, store_id))
             row = cur.fetchone()
             upstairs = row['upstairs_qty'] if row else 0
             if qty > upstairs:
@@ -195,21 +240,21 @@ def batch_stock_operation():
                                  instore_qty  = instore_qty  + ?,
                                  claw_qty     = claw_qty     + ?,
                                  last_updated = ?
-                WHERE product_id = ?
-            ''', (qty, qty, qty, d, pid))
+                WHERE product_id = ? AND store_id = ?
+            ''', (qty, qty, qty, d, pid, store_id))
             loc = 'upstairs->claw'
         else:  # restock_upstairs
             cur.execute('''
                 UPDATE stock SET upstairs_qty = upstairs_qty + ?,
                                  last_updated = ?
-                WHERE product_id = ?
-            ''', (qty, d, pid))
+                WHERE product_id = ? AND store_id = ?
+            ''', (qty, d, pid, store_id))
             loc = 'upstairs'
 
         cur.execute('''
-            INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (pid, operation, qty, loc, d, notes))
+            INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (pid, operation, qty, loc, d, notes, store_id))
         results.append({'pid': pid, 'ok': True})
 
     con.commit()
@@ -220,9 +265,20 @@ def batch_stock_operation():
 @bp.route('/api/sales/batch_upsert', methods=['POST'])
 @role_required('staff')
 def batch_upsert_sales():
-    items = request.get_json()
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object with store_code and items'}), 400
+
+    con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
+
+    items = data.get('items', [])
     if not isinstance(items, list):
-        return jsonify({'error': 'Expected a list'}), 400
+        con.close()
+        return jsonify({'error': 'items must be a list'}), 400
 
     rows = []
     for item in items:
@@ -231,12 +287,11 @@ def batch_upsert_sales():
             qty_pos  = int(item.get('qty_pos',  0) or 0)
             qty_cash = int(item.get('qty_cash', 0) or 0)
         except (KeyError, ValueError, TypeError):
+            con.close()
             return jsonify({'error': 'Each item must have an integer product_id, qty_pos, and qty_cash'}), 400
-        store = (item.get('store') or 'DT').strip()
-        rows.append((pid, item.get('date', str(date.today())), store,
+        rows.append((pid, item.get('date', str(date.today())), store_code,
                      qty_pos, qty_cash, qty_pos + qty_cash, item.get('notes', '')))
 
-    con = get_db()
     cur = con.cursor()
     cur.executemany('''
         INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
@@ -260,8 +315,8 @@ def submit_daily_report():
 
     Body:
     {
-      "date":  "2026-04-01",
-      "store": "DT",
+      "date":       "2026-04-01",
+      "store_code": "DT",
       "items": [
         { "product_id": <int>, "section": "pos"|"cash"|"claw"|"sell_display"
                                |"employee_discount"|"break_display"|"stock_in",
@@ -272,15 +327,19 @@ def submit_daily_report():
     """
     data  = request.get_json(silent=True) or {}
     d     = (data.get('date') or '').strip()
-    store = (data.get('store') or 'DT').strip()
     items = data.get('items')
 
     if not d or not isinstance(items, list):
         return jsonify({'error': 'date and items required'}), 400
 
+    con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
+
     SALES_SECTIONS = {'pos', 'cash', 'claw', 'sell_display', 'employee_discount'}
 
-    con = get_db()
     cur = con.cursor()
     sales_count = 0
     txn_count   = 0
@@ -319,21 +378,21 @@ def submit_daily_report():
                             WHEN excluded.notes = '' THEN notes
                             ELSE notes || '; ' || excluded.notes
                         END
-                ''', (pid, d, store, qty_pos, qty_cash, qty_sold, tag))
+                ''', (pid, d, store_code, qty_pos, qty_cash, qty_sold, tag))
                 sales_count += 1
 
             elif section == 'break_display':
                 qty = int(item.get('qty', 1) or 1)
                 cur.execute('''
                     INSERT INTO stock_transactions
-                        (product_id, txn_type, qty, location, date, notes)
-                    VALUES (?, 'display_open', ?, 'instore', ?, ?)
-                ''', (pid, -qty, d, notes or 'display opened'))
+                        (product_id, txn_type, qty, location, date, notes, store_id)
+                    VALUES (?, 'display_open', ?, 'instore', ?, ?, ?)
+                ''', (pid, -qty, d, notes or 'display opened', store_id))
                 cur.execute('''
                     UPDATE stock SET instore_qty = MAX(0, instore_qty - ?),
                                      last_updated = datetime('now')
-                    WHERE product_id = ?
-                ''', (qty, pid))
+                    WHERE product_id = ? AND store_id = ?
+                ''', (qty, pid, store_id))
                 txn_count += 1
 
             elif section == 'stock_in':
@@ -346,17 +405,17 @@ def submit_daily_report():
                 total_units = total_dan * bpd
                 cur.execute('''
                     INSERT INTO stock_transactions
-                        (product_id, txn_type, qty, location, date, notes)
-                    VALUES (?, 'report_stock_in', ?, 'upstairs→instore', ?, ?)
-                ''', (pid, total_units, d, notes or f'{num_boxes}箱×{box_size}端'))
+                        (product_id, txn_type, qty, location, date, notes, store_id)
+                    VALUES (?, 'report_stock_in', ?, 'upstairs→instore', ?, ?, ?)
+                ''', (pid, total_units, d, notes or f'{num_boxes}箱×{box_size}端', store_id))
                 cur.execute('''
-                    INSERT INTO stock (product_id, upstairs_qty, instore_qty)
-                    VALUES (?, 0, ?)
-                    ON CONFLICT(product_id) DO UPDATE SET
+                    INSERT INTO stock (product_id, store_id, upstairs_qty, instore_qty)
+                    VALUES (?, ?, 0, ?)
+                    ON CONFLICT(product_id, store_id) DO UPDATE SET
                         upstairs_qty = MAX(0, upstairs_qty - ?),
                         instore_qty  = instore_qty + ?,
                         last_updated = datetime('now')
-                ''', (pid, total_units, total_units, total_units))
+                ''', (pid, store_id, total_units, total_units, total_units))
                 txn_count += 1
 
         con.commit()
@@ -378,15 +437,19 @@ def export_sales():
         from_date = str(date.today() - timedelta(days=30))
 
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
     cur.execute('''
         SELECT ds.date, p.jizhanming, p.sku, p.ip_series, p.product_type,
                p.price, ds.qty_pos, ds.qty_cash, ds.qty_sold, ds.notes
         FROM daily_sales ds
         JOIN products p ON p.id = ds.product_id
-        WHERE ds.date BETWEEN ? AND ?
+        WHERE ds.date BETWEEN ? AND ? AND ds.store = ?
         ORDER BY ds.date DESC, p.ip_series, p.jizhanming
-    ''', (from_date, to_date))
+    ''', (from_date, to_date, store_code))
     rows = cur.fetchall()
     con.close()
 
@@ -399,7 +462,7 @@ def export_sales():
         ]))
 
     csv_content = '\n'.join(lines)
-    fname = f'sales_{from_date}_{to_date}.csv'
+    fname = f'sales_{store_code}_{from_date}_{to_date}.csv'
     return Response(
         csv_content,
         mimetype='text/csv; charset=utf-8',
@@ -414,8 +477,12 @@ def clear_sales_day():
     if not d:
         return jsonify({'error': 'date param required'}), 400
     con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     cur = con.cursor()
-    cur.execute('DELETE FROM daily_sales WHERE date = ?', (d,))
+    cur.execute('DELETE FROM daily_sales WHERE date = ? AND store = ?', (d, store_code))
     deleted = cur.rowcount
     con.commit()
     con.close()

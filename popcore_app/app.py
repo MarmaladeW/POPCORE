@@ -54,6 +54,7 @@ migrate_db()
 # ─── Blueprints ───────────────────────────────────────────────────────────────
 from blueprints.users     import bp as users_bp
 from blueprints.products  import bp as products_bp
+from blueprints.stores    import bp as stores_bp
 from blueprints.stock     import bp as stock_bp
 from blueprints.sales     import bp as sales_bp
 from blueprints.restock   import bp as restock_bp
@@ -62,6 +63,7 @@ from blueprints.schedule  import bp as schedule_bp
 
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
+app.register_blueprint(stores_bp)
 app.register_blueprint(stock_bp)
 app.register_blueprint(sales_bp)
 app.register_blueprint(restock_bp)
