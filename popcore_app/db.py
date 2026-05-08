@@ -209,6 +209,36 @@ def migrate_db():
         ''')
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('blind_box_stock_to_he')")
 
+    # ── daily_sales: widen UNIQUE to (product_id, date, store) ────────────
+    cur.execute("SELECT 1 FROM _migrations WHERE name='daily_sales_unique_add_store'")
+    if not cur.fetchone():
+        cur.execute('PRAGMA foreign_keys = OFF')
+        cur.execute('DROP TABLE IF EXISTS daily_sales_new')
+        cur.execute('''
+            CREATE TABLE daily_sales_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL REFERENCES products(id),
+                date       TEXT    NOT NULL,
+                qty_sold   INTEGER NOT NULL DEFAULT 0,
+                notes      TEXT    DEFAULT '',
+                created_at TEXT    DEFAULT (datetime('now')),
+                qty_pos    INTEGER NOT NULL DEFAULT 0,
+                qty_cash   INTEGER NOT NULL DEFAULT 0,
+                store      TEXT    NOT NULL DEFAULT 'DT',
+                UNIQUE(product_id, date, store)
+            )
+        ''')
+        cur.execute('INSERT INTO daily_sales_new SELECT * FROM daily_sales')
+        cur.execute('DROP TABLE daily_sales')
+        cur.execute('ALTER TABLE daily_sales_new RENAME TO daily_sales')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sales(date)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_daily_sales_pid  ON daily_sales(product_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_ds_store ON daily_sales(store)')
+        con.commit()
+        cur.execute('PRAGMA foreign_keys = ON')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('daily_sales_unique_add_store')")
+        con.commit()
+
     # ── Market price tables ─────────────────────────────────────────────────
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS market_prices (

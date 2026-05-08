@@ -45,19 +45,20 @@ def upsert_sale():
         return jsonify({'error': 'product_id and qty fields must be integers'}), 400
     d        = data.get('date', str(date.today()))
     notes    = data.get('notes', '')
+    store    = (data.get('store') or 'DT').strip()
     qty_sold = qty_pos + qty_cash
 
     con = get_db()
     cur = con.cursor()
     cur.execute('''
-        INSERT INTO daily_sales (product_id, date, qty_pos, qty_cash, qty_sold, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(product_id, date) DO UPDATE SET
+        INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(product_id, date, store) DO UPDATE SET
             qty_pos  = excluded.qty_pos,
             qty_cash = excluded.qty_cash,
             qty_sold = excluded.qty_sold,
             notes    = excluded.notes
-    ''', (pid, d, qty_pos, qty_cash, qty_sold, notes))
+    ''', (pid, d, store, qty_pos, qty_cash, qty_sold, notes))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -73,14 +74,15 @@ def add_product_to_sales():
         pid = int(data['product_id'])
     except (ValueError, TypeError):
         return jsonify({'error': 'product_id must be an integer'}), 400
-    d = data.get('date', str(date.today()))
+    d     = data.get('date', str(date.today()))
+    store = (data.get('store') or 'DT').strip()
 
     con = get_db()
     cur = con.cursor()
     cur.execute('''
-        INSERT OR IGNORE INTO daily_sales (product_id, date, qty_sold)
-        VALUES (?, ?, 0)
-    ''', (pid, d))
+        INSERT OR IGNORE INTO daily_sales (product_id, date, store, qty_sold)
+        VALUES (?, ?, ?, 0)
+    ''', (pid, d, store))
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -230,15 +232,16 @@ def batch_upsert_sales():
             qty_cash = int(item.get('qty_cash', 0) or 0)
         except (KeyError, ValueError, TypeError):
             return jsonify({'error': 'Each item must have an integer product_id, qty_pos, and qty_cash'}), 400
-        rows.append((pid, item.get('date', str(date.today())),
+        store = (item.get('store') or 'DT').strip()
+        rows.append((pid, item.get('date', str(date.today())), store,
                      qty_pos, qty_cash, qty_pos + qty_cash, item.get('notes', '')))
 
     con = get_db()
     cur = con.cursor()
     cur.executemany('''
-        INSERT INTO daily_sales (product_id, date, qty_pos, qty_cash, qty_sold, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(product_id, date) DO UPDATE SET
+        INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(product_id, date, store) DO UPDATE SET
             qty_pos  = excluded.qty_pos,
             qty_cash = excluded.qty_cash,
             qty_sold = excluded.qty_sold,
@@ -307,7 +310,7 @@ def submit_daily_report():
                     INSERT INTO daily_sales
                         (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(product_id, date) DO UPDATE SET
+                    ON CONFLICT(product_id, date, store) DO UPDATE SET
                         qty_pos  = qty_pos  + excluded.qty_pos,
                         qty_cash = qty_cash + excluded.qty_cash,
                         qty_sold = qty_sold + excluded.qty_sold,
