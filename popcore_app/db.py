@@ -38,12 +38,199 @@ def close_db(error):
             pass
 
 
-def _ensure_stock_row(cur, product_id):
-    """Insert a stock row for product if it doesn't exist yet."""
+def _ensure_stock_row(cur, product_id, store_id=1):
+    """Insert a stock row for (product, store) if it doesn't exist yet."""
     cur.execute('''
-        INSERT OR IGNORE INTO stock (product_id, upstairs_qty, instore_qty)
-        VALUES (?, 0, 0)
-    ''', (product_id,))
+        INSERT OR IGNORE INTO stock (product_id, store_id, upstairs_qty, instore_qty, claw_qty)
+        VALUES (?, ?, 0, 0, 0)
+    ''', (product_id, store_id))
+
+
+# ---------------------------------------------------------------------------
+# Registered migrations (run once, guarded by _migrations table)
+# ---------------------------------------------------------------------------
+
+def _migration_create_stores_table(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            CREATE TABLE stores (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                code      TEXT NOT NULL UNIQUE,
+                name      TEXT NOT NULL,
+                address   TEXT DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+        ''')
+        cur.execute("INSERT INTO stores (code, name, address) VALUES ('DT', 'Downtown Toronto', '')")
+        cur.execute("INSERT INTO stores (code, name, address) VALUES ('MK', 'Markham', '')")
+        cur.execute("INSERT INTO stores (code, name, address) VALUES ('MT', 'Midtown', '')")
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_stores_table')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
+def _migration_create_employee_stores_table(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            CREATE TABLE employee_stores (
+                employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+                store_id    INTEGER NOT NULL REFERENCES stores(id)    ON DELETE CASCADE,
+                PRIMARY KEY (employee_id, store_id)
+            )
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_employee_stores_table')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
+def _migration_migrate_stock_to_per_store(con, cur):
+    con.commit()
+    con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
+    try:
+        cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS stock_new')
+        cur.execute('''
+            CREATE TABLE stock_new (
+                product_id   INTEGER NOT NULL REFERENCES products(id),
+                store_id     INTEGER NOT NULL REFERENCES stores(id),
+                upstairs_qty INTEGER NOT NULL DEFAULT 0,
+                instore_qty  INTEGER NOT NULL DEFAULT 0,
+                claw_qty     INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT,
+                notes        TEXT DEFAULT '',
+                PRIMARY KEY (product_id, store_id)
+            )
+        ''')
+        cur.execute('''
+            INSERT INTO stock_new
+                (product_id, store_id, upstairs_qty, instore_qty, claw_qty, last_updated, notes)
+            SELECT s.product_id,
+                   (SELECT st.id FROM stores st WHERE st.code = 'DT'),
+                   s.upstairs_qty, s.instore_qty, s.claw_qty, s.last_updated, s.notes
+            FROM stock s
+        ''')
+        cur.execute('DROP TABLE stock')
+        cur.execute('ALTER TABLE stock_new RENAME TO stock')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('migrate_stock_to_per_store')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        cur.execute('PRAGMA foreign_keys = ON')
+        con.isolation_level = ''
+
+
+def _migration_add_store_id_to_inventory_checks(con, cur):
+    con.commit()
+    con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
+    try:
+        cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS inventory_checks_new')
+        cur.execute('''
+            CREATE TABLE inventory_checks_new (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                date            TEXT    NOT NULL,
+                product_id      INTEGER NOT NULL REFERENCES products(id),
+                theoretical_qty INTEGER NOT NULL,
+                actual_qty      INTEGER NOT NULL,
+                discrepancy     INTEGER NOT NULL,
+                base_check_date TEXT    NOT NULL,
+                created_by      INTEGER,
+                created_at      TEXT    DEFAULT (datetime('now')),
+                store_id        INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id),
+                UNIQUE(date, product_id, store_id)
+            )
+        ''')
+        cur.execute('''
+            INSERT INTO inventory_checks_new
+                (id, date, product_id, theoretical_qty, actual_qty, discrepancy,
+                 base_check_date, created_by, created_at, store_id)
+            SELECT id, date, product_id, theoretical_qty, actual_qty, discrepancy,
+                   base_check_date, created_by, created_at, 1
+            FROM inventory_checks
+        ''')
+        cur.execute('DROP TABLE inventory_checks')
+        cur.execute('ALTER TABLE inventory_checks_new RENAME TO inventory_checks')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_inventory_checks')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        cur.execute('PRAGMA foreign_keys = ON')
+        con.isolation_level = ''
+
+
+def _migration_add_store_id_to_restock_sessions(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            ALTER TABLE restock_sessions
+            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_restock_sessions')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
+def _migration_add_store_id_to_stock_transactions(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            ALTER TABLE stock_transactions
+            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_stock_transactions')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
+def _get_migrations():
+    return [
+        ('create_stores_table',               _migration_create_stores_table),
+        ('create_employee_stores_table',       _migration_create_employee_stores_table),
+        ('migrate_stock_to_per_store',         _migration_migrate_stock_to_per_store),
+        ('add_store_id_to_inventory_checks',   _migration_add_store_id_to_inventory_checks),
+        ('add_store_id_to_restock_sessions',   _migration_add_store_id_to_restock_sessions),
+        ('add_store_id_to_stock_transactions', _migration_add_store_id_to_stock_transactions),
+    ]
+
+
+def _run_migrations(con, cur):
+    for name, fn in _get_migrations():
+        cur.execute('SELECT 1 FROM _migrations WHERE name = ?', (name,))
+        if cur.fetchone():
+            continue
+        fn(con, cur)
 
 
 def migrate_db():
@@ -401,6 +588,8 @@ def migrate_db():
         CREATE INDEX IF NOT EXISTS idx_shifts_date     ON shifts(date);
         CREATE INDEX IF NOT EXISTS idx_shifts_employee ON shifts(employee_id);
     ''')
+
+    _run_migrations(con, cur)
 
     con.commit()
     con.close()
