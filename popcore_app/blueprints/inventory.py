@@ -25,8 +25,6 @@ def _calc_theoretical_qty(cur, product_id: int, today: str,
                     + SUM(restock_in movements since base.date)
       - is_base_abnormal = base exists but base.date != yesterday.
 
-    Note: stock_movements has no store_id column; restock_in counts are unfiltered
-    by store and will include movements from all stores until that column is added.
     """
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
 
@@ -57,13 +55,12 @@ def _calc_theoretical_qty(cur, product_id: int, today: str,
     ''', (product_id, base_date, store_code))
     sales_since = cur.fetchone()[0] or 0
 
-    # stock_movements has no store_id column — counts movements across all stores
     cur.execute('''
         SELECT COALESCE(SUM(qty_change), 0)
         FROM stock_movements
         WHERE product_id = ? AND movement_type = 'restock_in'
-          AND location = 'store' AND date(created_at) > ?
-    ''', (product_id, base_date))
+          AND location = 'store' AND store_id = ? AND date(created_at) > ?
+    ''', (product_id, store_id, base_date))
     restock_since = cur.fetchone()[0] or 0
 
     theoretical = theoretical - sales_since + restock_since

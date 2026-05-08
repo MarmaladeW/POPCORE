@@ -9,6 +9,7 @@ from auth import (
     ROLE_HIERARCHY, ROLE_CLAIM,
     AUTH0_MGMT_CLIENT_ID, _mgmt_get,
 )
+from blueprints.stores import _resolve_store
 import urllib.parse
 
 bp = Blueprint('schedule', __name__)
@@ -56,6 +57,28 @@ def _hours_between(start_time: str, end_time: str) -> float:
         return max(0.0, diff / 60.0)
     except Exception:
         return 0.0
+
+
+def _require_store_param(con):
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        return None, None, (jsonify({'error': 'Invalid store code'}), 400)
+    store_id, store_code = resolved
+    return store_id, store_code, None
+
+
+def _require_store_body(con, data):
+    store_code = (data.get('store_code') or '').strip().upper()
+    if not store_code:
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        return None, None, (jsonify({'error': 'Invalid store code'}), 400)
+    store_id, store_code = resolved
+    return store_id, store_code, None
 
 
 # ─── Employee profile ──────────────────────────────────────────────────────────
@@ -120,7 +143,6 @@ def schedule_employees():
                     fetched_name  = (data.get('name') or data.get('nickname') or
                                      data.get('username') or '').strip()
                     fetched_email = data.get('email', '').strip()
-                    # Avoid storing the raw auth0_id as the name
                     if fetched_name and fetched_name == emp['auth0_id']:
                         fetched_name = ''
                     if fetched_name or fetched_email:
@@ -148,9 +170,13 @@ def schedule_avail_me():
     start    = request.args.get('start', '')
     end      = request.args.get('end', '')
     con      = get_db()
-    emp      = _get_or_create_employee(con, auth0_id)
-    query    = 'SELECT * FROM availability WHERE employee_id = ?'
-    params: list = [emp['id']]
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
+    emp   = _get_or_create_employee(con, auth0_id)
+    query = 'SELECT * FROM availability WHERE employee_id = ? AND store_id = ?'
+    params: list = [emp['id'], store_id]
     if start:
         query  += ' AND date >= ?'; params.append(start)
     if end:
@@ -166,13 +192,17 @@ def schedule_avail_all():
     start = request.args.get('start', '')
     end   = request.args.get('end', '')
     con   = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
     query = '''
         SELECT a.*, e.name AS employee_name, e.auth0_id
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
-        WHERE e.is_active = 1
+        WHERE e.is_active = 1 AND a.store_id = ?
     '''
-    params: list = []
+    params: list = [store_id]
     if start:
         query  += ' AND a.date >= ?'; params.append(start)
     if end:
@@ -195,16 +225,22 @@ def schedule_avail_upsert():
     if not avail_date or not start_time or not end_time:
         return jsonify({'error': 'date, start_time, end_time required'}), 400
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     emp = _get_or_create_employee(con, auth0_id)
     con.execute('''
-        INSERT INTO availability (employee_id, date, start_time, end_time, notes, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO availability
+            (employee_id, date, start_time, end_time, notes, store_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(employee_id, date) DO UPDATE SET
             start_time = excluded.start_time,
             end_time   = excluded.end_time,
             notes      = excluded.notes,
+            store_id   = excluded.store_id,
             updated_at = datetime('now')
-    ''', (emp['id'], avail_date, start_time, end_time, notes))
+    ''', (emp['id'], avail_date, start_time, end_time, notes, store_id))
     con.commit()
     row = con.execute(
         'SELECT * FROM availability WHERE employee_id = ? AND date = ?',
@@ -244,14 +280,18 @@ def schedule_shifts_get():
     end         = request.args.get('end', '')
     employee_id = request.args.get('employee_id', '')
     con         = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
 
     if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
             SELECT s.*, e.name AS employee_name, e.auth0_id
             FROM shifts s JOIN employees e ON e.id = s.employee_id
-            WHERE 1=1
+            WHERE s.store_id = ?
         '''
-        params: list = []
+        params: list = [store_id]
         if employee_id:
             query += ' AND s.employee_id = ?'; params.append(int(employee_id))
     else:
@@ -259,9 +299,9 @@ def schedule_shifts_get():
         query  = '''
             SELECT s.*, e.name AS employee_name, e.auth0_id
             FROM shifts s JOIN employees e ON e.id = s.employee_id
-            WHERE s.employee_id = ?
+            WHERE s.employee_id = ? AND s.store_id = ?
         '''
-        params = [emp['id']]
+        params = [emp['id'], store_id]
 
     if start:
         query += ' AND s.date >= ?'; params.append(start)
@@ -280,13 +320,17 @@ def schedule_shifts_me():
     start    = request.args.get('start', '')
     end      = request.args.get('end', '')
     con      = get_db()
-    emp      = _get_or_create_employee(con, auth0_id)
-    query    = '''
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
+    emp    = _get_or_create_employee(con, auth0_id)
+    query  = '''
         SELECT s.*, e.name AS employee_name, e.auth0_id
         FROM shifts s JOIN employees e ON e.id = s.employee_id
-        WHERE s.employee_id = ?
+        WHERE s.employee_id = ? AND s.store_id = ?
     '''
-    params: list = [emp['id']]
+    params: list = [emp['id'], store_id]
     if start:
         query += ' AND s.date >= ?'; params.append(start)
     if end:
@@ -310,20 +354,26 @@ def schedule_shifts_create():
     if not employee_id or not shift_date or not start_time or not end_time:
         return jsonify({'error': 'employee_id, date, start_time, end_time required'}), 400
     con = get_db()
+    store_id, store_code, err = _require_store_body(con, data)
+    if err:
+        con.close()
+        return err
     emp = con.execute('SELECT id FROM employees WHERE id = ?', (employee_id,)).fetchone()
     if not emp:
         con.close()
         return jsonify({'error': 'Employee not found'}), 404
     con.execute('''
-        INSERT INTO shifts (employee_id, date, start_time, end_time, assigned_by, notes, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO shifts
+            (employee_id, date, start_time, end_time, assigned_by, notes, store_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(employee_id, date) DO UPDATE SET
             start_time  = excluded.start_time,
             end_time    = excluded.end_time,
             assigned_by = excluded.assigned_by,
             notes       = excluded.notes,
+            store_id    = excluded.store_id,
             updated_at  = datetime('now')
-    ''', (employee_id, shift_date, start_time, end_time, assigned_by, notes))
+    ''', (employee_id, shift_date, start_time, end_time, assigned_by, notes, store_id))
     con.commit()
     row = con.execute(
         'SELECT * FROM shifts WHERE employee_id = ? AND date = ?',
@@ -346,6 +396,12 @@ def schedule_shifts_update(shift_id):
     for field in ('start_time', 'end_time', 'notes'):
         if field in data:
             updates[field] = data[field]
+    if 'store_code' in data:
+        store_id, store_code, err = _require_store_body(con, data)
+        if err:
+            con.close()
+            return err
+        updates['store_id'] = store_id
     if updates:
         set_parts = []
         vals: list = []
@@ -397,8 +453,13 @@ def schedule_report_monthly():
     else:
         last_day = dt.date(year, month + 1, 1) - dt.timedelta(days=1)
 
-    con   = get_db()
-    emps  = con.execute('SELECT * FROM employees WHERE is_active = 1 ORDER BY name').fetchall()
+    con = get_db()
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
+
+    emps = con.execute('SELECT * FROM employees WHERE is_active = 1 ORDER BY name').fetchall()
     emp_ids = [e['id'] for e in emps]
 
     if not emp_ids:
@@ -409,9 +470,10 @@ def schedule_report_monthly():
     shifts = con.execute(
         f'''SELECT * FROM shifts
             WHERE employee_id IN ({placeholders})
+              AND store_id = ?
               AND date >= ? AND date <= ?
             ORDER BY date''',
-        emp_ids + [str(first_day), str(last_day)]
+        emp_ids + [store_id, str(first_day), str(last_day)]
     ).fetchall()
     con.close()
 

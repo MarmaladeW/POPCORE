@@ -214,14 +214,71 @@ def _migration_add_store_id_to_stock_transactions(con, cur):
         con.isolation_level = ''
 
 
+def _migration_add_store_id_to_shifts(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            ALTER TABLE shifts
+            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_shifts')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
+def _migration_add_store_id_to_availability(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            ALTER TABLE availability
+            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_availability')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
+def _migration_add_store_id_to_stock_movements(con, cur):
+    con.commit()
+    con.isolation_level = None
+    try:
+        cur.execute('BEGIN')
+        cur.execute('''
+            ALTER TABLE stock_movements
+            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+        ''')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_stock_movements')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        con.isolation_level = ''
+
+
 def _get_migrations():
     return [
-        ('create_stores_table',               _migration_create_stores_table),
-        ('create_employee_stores_table',       _migration_create_employee_stores_table),
-        ('migrate_stock_to_per_store',         _migration_migrate_stock_to_per_store),
-        ('add_store_id_to_inventory_checks',   _migration_add_store_id_to_inventory_checks),
-        ('add_store_id_to_restock_sessions',   _migration_add_store_id_to_restock_sessions),
-        ('add_store_id_to_stock_transactions', _migration_add_store_id_to_stock_transactions),
+        ('create_stores_table',                 _migration_create_stores_table),
+        ('create_employee_stores_table',         _migration_create_employee_stores_table),
+        ('migrate_stock_to_per_store',           _migration_migrate_stock_to_per_store),
+        ('add_store_id_to_inventory_checks',     _migration_add_store_id_to_inventory_checks),
+        ('add_store_id_to_restock_sessions',     _migration_add_store_id_to_restock_sessions),
+        ('add_store_id_to_stock_transactions',   _migration_add_store_id_to_stock_transactions),
+        ('add_store_id_to_shifts',               _migration_add_store_id_to_shifts),
+        ('add_store_id_to_availability',         _migration_add_store_id_to_availability),
+        ('add_store_id_to_stock_movements',      _migration_add_store_id_to_stock_movements),
     ]
 
 
