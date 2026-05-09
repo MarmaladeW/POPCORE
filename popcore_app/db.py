@@ -181,90 +181,200 @@ def _migration_add_store_id_to_inventory_checks(con, cur):
 def _migration_add_store_id_to_restock_sessions(con, cur):
     con.commit()
     con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
     try:
         cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS restock_sessions_new')
         cur.execute('''
-            ALTER TABLE restock_sessions
-            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            CREATE TABLE restock_sessions_new (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                date         TEXT    NOT NULL,
+                status       TEXT    NOT NULL DEFAULT 'pending',
+                created_at   TEXT    DEFAULT (datetime('now')),
+                submitted_at TEXT,
+                completed_at TEXT,
+                store_id     INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            )
         ''')
+        cur.execute('''
+            INSERT INTO restock_sessions_new
+                (id, date, status, created_at, submitted_at, completed_at, store_id)
+            SELECT id, date, status, created_at, submitted_at, completed_at, 1
+            FROM restock_sessions
+        ''')
+        cur.execute('DROP TABLE restock_sessions')
+        cur.execute('ALTER TABLE restock_sessions_new RENAME TO restock_sessions')
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_restock_sessions')")
         cur.execute('COMMIT')
     except Exception:
         cur.execute('ROLLBACK')
         raise
     finally:
+        cur.execute('PRAGMA foreign_keys = ON')
         con.isolation_level = ''
 
 
 def _migration_add_store_id_to_stock_transactions(con, cur):
     con.commit()
     con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
     try:
         cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS stock_transactions_new')
         cur.execute('''
-            ALTER TABLE stock_transactions
-            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            CREATE TABLE stock_transactions_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL REFERENCES products(id),
+                txn_type   TEXT    NOT NULL,
+                qty        INTEGER NOT NULL,
+                location   TEXT,
+                date       TEXT    NOT NULL,
+                notes      TEXT    DEFAULT '',
+                created_at TEXT    DEFAULT (datetime('now')),
+                store_id   INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            )
         ''')
+        cur.execute('''
+            INSERT INTO stock_transactions_new
+                (id, product_id, txn_type, qty, location, date, notes, created_at, store_id)
+            SELECT id, product_id, txn_type, qty, location, date, notes, created_at, 1
+            FROM stock_transactions
+        ''')
+        cur.execute('DROP TABLE stock_transactions')
+        cur.execute('ALTER TABLE stock_transactions_new RENAME TO stock_transactions')
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_stock_transactions')")
         cur.execute('COMMIT')
     except Exception:
         cur.execute('ROLLBACK')
         raise
     finally:
+        cur.execute('PRAGMA foreign_keys = ON')
         con.isolation_level = ''
 
 
 def _migration_add_store_id_to_shifts(con, cur):
     con.commit()
     con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
     try:
         cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS shifts_new')
         cur.execute('''
-            ALTER TABLE shifts
-            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            CREATE TABLE shifts_new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+                date        TEXT    NOT NULL,
+                start_time  TEXT    NOT NULL,
+                end_time    TEXT    NOT NULL,
+                assigned_by TEXT    NOT NULL,
+                notes       TEXT    DEFAULT '',
+                created_at  TEXT    DEFAULT (datetime('now')),
+                updated_at  TEXT    DEFAULT (datetime('now')),
+                store_id    INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id),
+                UNIQUE(employee_id, date)
+            )
         ''')
+        cur.execute('''
+            INSERT INTO shifts_new
+                (id, employee_id, date, start_time, end_time, assigned_by,
+                 notes, created_at, updated_at, store_id)
+            SELECT id, employee_id, date, start_time, end_time, assigned_by,
+                   notes, created_at, updated_at, 1
+            FROM shifts
+        ''')
+        cur.execute('DROP TABLE shifts')
+        cur.execute('ALTER TABLE shifts_new RENAME TO shifts')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_shifts_date     ON shifts(date)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_shifts_employee ON shifts(employee_id)')
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_shifts')")
         cur.execute('COMMIT')
     except Exception:
         cur.execute('ROLLBACK')
         raise
     finally:
+        cur.execute('PRAGMA foreign_keys = ON')
         con.isolation_level = ''
 
 
 def _migration_add_store_id_to_availability(con, cur):
     con.commit()
     con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
     try:
         cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS availability_new')
         cur.execute('''
-            ALTER TABLE availability
-            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            CREATE TABLE availability_new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+                date        TEXT    NOT NULL,
+                start_time  TEXT    NOT NULL,
+                end_time    TEXT    NOT NULL,
+                notes       TEXT    DEFAULT '',
+                created_at  TEXT    DEFAULT (datetime('now')),
+                updated_at  TEXT    DEFAULT (datetime('now')),
+                store_id    INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id),
+                UNIQUE(employee_id, date)
+            )
         ''')
+        cur.execute('''
+            INSERT INTO availability_new
+                (id, employee_id, date, start_time, end_time,
+                 notes, created_at, updated_at, store_id)
+            SELECT id, employee_id, date, start_time, end_time,
+                   notes, created_at, updated_at, 1
+            FROM availability
+        ''')
+        cur.execute('DROP TABLE availability')
+        cur.execute('ALTER TABLE availability_new RENAME TO availability')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_availability_date ON availability(date)')
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_availability')")
         cur.execute('COMMIT')
     except Exception:
         cur.execute('ROLLBACK')
         raise
     finally:
+        cur.execute('PRAGMA foreign_keys = ON')
         con.isolation_level = ''
 
 
 def _migration_add_store_id_to_stock_movements(con, cur):
     con.commit()
     con.isolation_level = None
+    cur.execute('PRAGMA foreign_keys = OFF')
     try:
         cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS stock_movements_new')
         cur.execute('''
-            ALTER TABLE stock_movements
-            ADD COLUMN store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            CREATE TABLE stock_movements_new (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id    INTEGER NOT NULL REFERENCES products(id),
+                session_id    INTEGER REFERENCES restock_sessions(id),
+                movement_type TEXT    NOT NULL,
+                qty_change    INTEGER NOT NULL,
+                location      TEXT    NOT NULL,
+                created_at    TEXT    DEFAULT (datetime('now')),
+                store_id      INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id)
+            )
         ''')
+        cur.execute('''
+            INSERT INTO stock_movements_new
+                (id, product_id, session_id, movement_type,
+                 qty_change, location, created_at, store_id)
+            SELECT id, product_id, session_id, movement_type,
+                   qty_change, location, created_at, 1
+            FROM stock_movements
+        ''')
+        cur.execute('DROP TABLE stock_movements')
+        cur.execute('ALTER TABLE stock_movements_new RENAME TO stock_movements')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_sm_product ON stock_movements(product_id)')
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_store_id_to_stock_movements')")
         cur.execute('COMMIT')
     except Exception:
         cur.execute('ROLLBACK')
         raise
     finally:
+        cur.execute('PRAGMA foreign_keys = ON')
         con.isolation_level = ''
 
 
