@@ -115,22 +115,7 @@ def init_db():
             search_blob TEXT   -- lowercase concat for fuzzy search
         );
 
-        CREATE TABLE IF NOT EXISTS inventory (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id  INTEGER NOT NULL REFERENCES products(id),
-            date        TEXT NOT NULL,          -- YYYY-MM-DD
-            opening_qty INTEGER NOT NULL DEFAULT 0,
-            restock_qty INTEGER NOT NULL DEFAULT 0,
-            sold_qty    INTEGER NOT NULL DEFAULT 0,
-            closing_qty INTEGER,               -- actual physical count
-            expected_qty INTEGER,              -- opening + restock - sold
-            discrepancy INTEGER,               -- closing - expected
-            notes       TEXT DEFAULT '',
-            UNIQUE(product_id, date)
-        );
-
         CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
-        CREATE INDEX IF NOT EXISTS idx_inventory_date ON inventory(date);
     ''')
 
     master = parse_master(MASTER_FILE)

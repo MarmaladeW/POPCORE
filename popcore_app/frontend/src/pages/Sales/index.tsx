@@ -184,7 +184,7 @@ export default function SalesPage() {
   // Weekly bar chart data (last 7 days from summary)
   const weeklyData = summary.slice(0, 7).reverse().map(r => ({
     date: dayjs(r.date).format('ddd MM/DD'),
-    Revenue: r.total_sold, // proxy — no revenue in summary, use qty
+    UnitsSold: r.total_sold,
   }))
 
   // Top products for today
@@ -417,14 +417,14 @@ export default function SalesPage() {
       {/* Charts */}
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         <Col xs={24} lg={12}>
-          <Card title="Weekly Revenue (Last 7 Days)" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
+          <Card title="Weekly Units Sold (Last 7 Days)" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} />
                 <RechartTooltip />
-                <Bar dataKey="Revenue" fill="#6366F1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="UnitsSold" fill="#6366F1" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </Card>

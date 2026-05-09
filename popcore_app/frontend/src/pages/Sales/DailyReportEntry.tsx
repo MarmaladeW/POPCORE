@@ -463,7 +463,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
               <Tag style={{ fontSize: 11 }}>{r.box_size}盒/端</Tag>
               <span style={{ color: '#9ca3af' }}>×</span>
               <Tag style={{ fontSize: 11 }}>{r.num_boxes}端</Tag>
-              <span style={{ fontWeight: 600, color: '#6366F1' }}>={r.num_boxes}端入店</span>
+              <span style={{ fontWeight: 600, color: '#6366F1' }}>={r.num_boxes * r.box_size}盒入店</span>
             </Space>
           )
           if (section === 'break_display') return (

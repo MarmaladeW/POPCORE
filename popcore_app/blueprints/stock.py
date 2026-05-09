@@ -176,7 +176,7 @@ def ru_dian():
     data = request.get_json()
     try:
         pid = int(data['product_id'])
-        qty = int(data.get('qty') or data.get('dan_qty', 0))
+        qty = int(data['qty'])
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
     d     = data.get('date', str(date.today()))
@@ -229,7 +229,7 @@ def restock_upstairs():
     data  = request.get_json()
     try:
         pid = int(data['product_id'])
-        qty = int(data.get('qty') or data.get('dan_qty', 0))
+        qty = int(data['qty'])
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
     d     = data.get('date', str(date.today()))
@@ -273,7 +273,7 @@ def adjust_stock():
     data     = request.get_json()
     try:
         pid     = int(data['product_id'])
-        new_qty = int(data.get('new_qty') if data.get('new_qty') is not None else data.get('new_dan', 0))
+        new_qty = int(data['new_qty'])
     except (KeyError, TypeError, ValueError) as e:
         return jsonify({'error': f'Invalid input: {e}'}), 400
     if new_qty < 0:

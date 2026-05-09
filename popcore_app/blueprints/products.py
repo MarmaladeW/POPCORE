@@ -497,7 +497,11 @@ def create_product():
         cur.execute("SELECT sku FROM products WHERE sku LIKE 'SP%' ORDER BY sku DESC LIMIT 1")
         row = cur.fetchone()
         if row:
-            last_num = int(row[0].replace('SP', '').lstrip('0') or '0')
+            try:
+                last_num = int(row[0].replace('SP', '').lstrip('0') or '0')
+            except ValueError:
+                con.close()
+                return jsonify({'error': 'Could not auto-generate SKU: existing SKU format is non-numeric. Please provide a SKU manually.'}), 400
             sku = f'SP{last_num + 1:05d}'
         else:
             sku = 'SP00001'
