@@ -378,6 +378,22 @@ def _migration_add_store_id_to_stock_movements(con, cur):
         con.isolation_level = ''
 
 
+def _migration_add_color_to_stores(con, cur):
+    cur.execute("PRAGMA table_info(stores)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'color' not in cols:
+        cur.execute("ALTER TABLE stores ADD COLUMN color TEXT NOT NULL DEFAULT '#6366f1'")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_color_to_stores')")
+
+
+def _migration_add_color_to_employees(con, cur):
+    cur.execute("PRAGMA table_info(employees)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'color' not in cols:
+        cur.execute("ALTER TABLE employees ADD COLUMN color TEXT NOT NULL DEFAULT '#6366f1'")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_color_to_employees')")
+
+
 def _migration_drop_dan_per_xiang_column(con, cur):
     """Remove dan_per_xiang from products — carton (箱) level removed, hierarchy is now 盒/端 only."""
     cur.execute("PRAGMA table_info(products)")
@@ -449,6 +465,8 @@ def _get_migrations():
         ('add_store_id_to_availability',         _migration_add_store_id_to_availability),
         ('add_store_id_to_stock_movements',      _migration_add_store_id_to_stock_movements),
         ('drop_dan_per_xiang_column',            _migration_drop_dan_per_xiang_column),
+        ('add_color_to_stores',                  _migration_add_color_to_stores),
+        ('add_color_to_employees',               _migration_add_color_to_employees),
     ]
 
 

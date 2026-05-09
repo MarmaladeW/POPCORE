@@ -63,6 +63,7 @@ export interface EmployeeStoreAssignment {
   employee_id: number
   auth0_id:    string
   name:        string
+  color:       string
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
 

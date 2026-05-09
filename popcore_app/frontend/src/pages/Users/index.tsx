@@ -62,6 +62,7 @@ const STORE_TAG_COLORS: Record<string, string> = {
 interface EmpStoreEntry {
   empId:  number
   stores: string[]
+  color:  string
 }
 
 export default function UsersPage() {
@@ -96,7 +97,7 @@ export default function UsersPage() {
       .then(data => {
         const m: Record<string, EmpStoreEntry> = {}
         data.forEach(e => {
-          m[e.auth0_id] = { empId: e.employee_id, stores: e.stores }
+          m[e.auth0_id] = { empId: e.employee_id, stores: e.stores, color: e.color || '#6366f1' }
         })
         setEmpStoreMap(m)
       })
@@ -169,6 +170,20 @@ export default function UsersPage() {
     }
   }
 
+  async function handleEmpColorChange(auth0Id: string, color: string) {
+    const entry = empStoreMap[auth0Id]
+    if (!entry) return
+    setEmpStoreMap(prev => ({
+      ...prev,
+      [auth0Id]: { ...prev[auth0Id], color },
+    }))
+    try {
+      await client.patch(`/employees/${entry.empId}/color`, { color })
+    } catch {
+      message.error('颜色更新失败')
+    }
+  }
+
   /** Render store badges (read-only) */
   function StoreBadges({ auth0Id }: { auth0Id: string }) {
     const codes = empStoreMap[auth0Id]?.stores ?? []
@@ -235,6 +250,30 @@ export default function UsersPage() {
       render: (_, r) => isManager
         ? <StoreSelect auth0Id={r.id} />
         : <StoreBadges auth0Id={r.id} />,
+    },
+    {
+      title: '颜色',
+      key: 'color',
+      width: 70,
+      align: 'center' as const,
+      render: (_: unknown, r: User) => {
+        const entry = empStoreMap[r.id]
+        if (!entry) return null
+        const color = entry.color || '#6366f1'
+        return isManager ? (
+          <label style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }} title="更改员工颜色">
+            <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb', flexShrink: 0 }} />
+            <input
+              type="color"
+              value={color}
+              onChange={e => handleEmpColorChange(r.id, e.target.value)}
+              style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute' }}
+            />
+          </label>
+        ) : (
+          <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb' }} />
+        )
+      },
     },
     {
       title: '状态',
@@ -335,7 +374,27 @@ export default function UsersPage() {
                     }
                   </div>
 
-                  {/* Row 3: last login */}
+                  {/* Row 3: employee color (managers only) */}
+                  {isManager && empStoreMap[u.id] && (
+                    <div className="flex items-center gap-1.5 mt-1 pl-11">
+                      <label className="flex items-center gap-1.5 cursor-pointer" title="更改员工颜色">
+                        <span style={{
+                          width: 14, height: 14, borderRadius: '50%',
+                          background: empStoreMap[u.id].color || '#6366f1',
+                          display: 'inline-block', border: '1px solid #e5e7eb', flexShrink: 0,
+                        }} />
+                        <input
+                          type="color"
+                          value={empStoreMap[u.id].color || '#6366f1'}
+                          onChange={e => handleEmpColorChange(u.id, e.target.value)}
+                          style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute' }}
+                        />
+                        <span className="text-xs text-muted-foreground">员工颜色</span>
+                      </label>
+                    </div>
+                  )}
+
+                  {/* Row 4: last login */}
                   <div className="text-xs text-muted-foreground mt-1 pl-11">
                     最后登录：{u.last_login ? u.last_login.slice(0, 16) : '从未'}
                   </div>

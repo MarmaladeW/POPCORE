@@ -4,10 +4,11 @@ export interface Store {
   id: number
   code: string
   name: string
+  color: string
 }
 
 /** Sentinel representing "all stores combined" — read-only, never written to. */
-export const ALL_STORES: Store = { id: 0, code: 'ALL', name: 'All Stores' }
+export const ALL_STORES: Store = { id: 0, code: 'ALL', name: 'All Stores', color: '#6366f1' }
 
 const STORE_KEY = 'popcore_selected_store'
 
