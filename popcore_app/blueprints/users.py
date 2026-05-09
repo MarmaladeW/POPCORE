@@ -2,8 +2,15 @@
 blueprints/users.py — user management (Auth0 Management API) + hidden image serving.
 """
 import os
+import re
 import urllib.parse
 from flask import Blueprint, request, jsonify, send_from_directory
+
+_HEX_RE = re.compile(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
+
+
+def _is_valid_hex(color: str) -> bool:
+    return bool(_HEX_RE.match(color))
 
 from db import get_db, HIDDEN_IMG_DIR
 from auth import (
@@ -182,16 +189,17 @@ def delete_user(uid):
 @bp.route('/api/employees/stores')
 @role_required('manager')
 def get_employee_stores():
-    """Return all active employees with their assigned store codes."""
+    """Return all active employees with their assigned store codes and color."""
     con = get_db()
     rows = con.execute('''
         SELECT e.id AS employee_id, e.auth0_id, e.name,
+               COALESCE(e.color, '#6366f1') AS color,
                GROUP_CONCAT(s.code) AS store_codes
         FROM employees e
         LEFT JOIN employee_stores es ON es.employee_id = e.id
         LEFT JOIN stores s ON s.id = es.store_id AND s.is_active = 1
         WHERE e.is_active = 1
-        GROUP BY e.id, e.auth0_id, e.name
+        GROUP BY e.id, e.auth0_id, e.name, e.color
         ORDER BY e.name
     ''').fetchall()
     con.close()
@@ -202,9 +210,31 @@ def get_employee_stores():
             'employee_id': r['employee_id'],
             'auth0_id':    r['auth0_id'],
             'name':        r['name'],
+            'color':       r['color'],
             'stores':      codes,
         })
     return jsonify(result)
+
+
+@bp.route('/api/employees/<int:employee_id>/color', methods=['PATCH'])
+@role_required('manager')
+def patch_employee_color(employee_id):
+    data  = request.get_json() or {}
+    color = (data.get('color') or '').strip()
+    if not _is_valid_hex(color):
+        return jsonify({'error': 'color must be a valid hex color (#RGB or #RRGGBB)'}), 400
+    con = get_db()
+    row = con.execute(
+        'SELECT id FROM employees WHERE id = ? AND is_active = 1', (employee_id,)
+    ).fetchone()
+    if not row:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+    con.execute('UPDATE employees SET color = ? WHERE id = ?', (color, employee_id))
+    con.commit()
+    updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
+    con.close()
+    return jsonify(dict(updated))
 
 
 @bp.route('/api/employees/<int:employee_id>/stores', methods=['PUT'])

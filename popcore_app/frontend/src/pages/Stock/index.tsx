@@ -94,6 +94,7 @@ export default function StockPage() {
   const isMobile = useIsMobile()
   const { series, selectedStore } = useAppStore()
   const sc = selectedStore?.code
+  const isAll = sc === 'ALL'
   const [stock,    setStock]   = useState<StockRow[]>([])
   const [txns,     setTxns]    = useState<Transaction[]>([])
   const [summary,  setSummary] = useState<Summary | null>(null)
@@ -256,7 +257,7 @@ export default function StockPage() {
     {
       title: 'Actions',
       key: 'action', width: 90, align: 'center',
-      render: (_, r) => (
+      render: (_, r) => isAll ? null : (
         <RoleGuard minRole="staff">
           <Button
             size="small"
@@ -302,12 +303,23 @@ export default function StockPage() {
           <Title level={3} style={{ margin: 0 }}>Stock Management</Title>
           <Text style={{ color: '#6b7280' }}>Manage upstairs warehouse and in-store inventory</Text>
         </div>
-        <RoleGuard minRole="staff">
-          <Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
-            Adjust Stock
-          </Button>
-        </RoleGuard>
+        {!isAll && (
+          <RoleGuard minRole="staff">
+            <Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
+              Adjust Stock
+            </Button>
+          </RoleGuard>
+        )}
       </div>
+
+      {isAll && (
+        <div style={{
+          background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 16, color: '#92400e', fontSize: 13,
+        }}>
+          Viewing all stores combined. Please select a specific store to make changes.
+        </div>
+      )}
 
       {/* Summary cards */}
       {summary && (
@@ -409,12 +421,14 @@ export default function StockPage() {
                   onChange={v => setFilterSeries(v ?? '')}
                 />
                 <div style={{ marginLeft: isMobile ? 0 : 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <RoleGuard minRole="staff">
-                    <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
-                  </RoleGuard>
+                  {!isAll && (
+                    <RoleGuard minRole="staff">
+                      <Button onClick={() => setBatchOpen(true)}>Batch Import</Button>
+                    </RoleGuard>
+                  )}
                   <RoleGuard minRole="manager">
-                    <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>
-                    {selected.length > 0 && (
+                    {!isAll && <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>}
+                    {!isAll && selected.length > 0 && (
                       <Popconfirm
                         title={`Remove ${selected.length} stock records?`}
                         onConfirm={handleDeleteRows}
@@ -466,16 +480,18 @@ export default function StockPage() {
                               </div>
                             )}
                           </div>
-                          <RoleGuard minRole="staff">
-                            <Button
-                              size="small"
-                              icon={<EditOutlined />}
-                              onClick={() => { setQuickProduct(row); setRestockOpen(true) }}
-                              style={{ marginLeft: 'auto' }}
-                            >
-                              Adjust
-                            </Button>
-                          </RoleGuard>
+                          {!isAll && (
+                            <RoleGuard minRole="staff">
+                              <Button
+                                size="small"
+                                icon={<EditOutlined />}
+                                onClick={() => { setQuickProduct(row); setRestockOpen(true) }}
+                                style={{ marginLeft: 'auto' }}
+                              >
+                                Adjust
+                              </Button>
+                            </RoleGuard>
+                          )}
                         </div>
                       </div>
                     )

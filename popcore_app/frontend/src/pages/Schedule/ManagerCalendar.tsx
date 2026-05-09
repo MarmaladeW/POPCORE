@@ -23,52 +23,65 @@ import {
 } from './scheduleApi'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
+import { useHasRole } from '../../auth/useRole'
+import client from '../../api/client'
 
-const STORE_CHIP_COLOR: Record<string, string> = {
-  DT: '#3b82f6',
-  MK: '#22c55e',
-  MT: '#f97316',
-}
-
-const EMPLOYEE_COLORS = [
+/** Fallback palette used when DB color is not yet loaded */
+const FALLBACK_COLORS = [
   '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6',
   '#F97316', '#06B6D4', '#84CC16', '#A855F7', '#F43F5E',
   '#0EA5E9', '#22C55E', '#FB923C', '#E879F9', '#64748B',
 ]
 
-function colorForEmployee(idx: number) {
-  return EMPLOYEE_COLORS[idx % EMPLOYEE_COLORS.length]
-}
-
 type ViewType = 'dayGridMonth' | 'timeGridWeek'
 
 export default function ManagerCalendar() {
-  const calRef = useRef<FullCalendar>(null)
-  const { selectedStore } = useAppStore()
-  const [employees, setEmployees] = useState<Employee[]>([])
-  const [empStores, setEmpStores] = useState<Record<number, string[]>>({})
-  const [filterEmpId, setFilterEmpId] = useState<number | null>(null)
-  const [allEvents, setAllEvents] = useState<EventInput[]>([])
-  const [visibleEvents, setVisibleEvents] = useState<EventInput[]>([])
-  const [viewTitle, setViewTitle] = useState('')
-  const [viewType, setViewType] = useState<ViewType>('dayGridMonth')
+  const calRef  = useRef<FullCalendar>(null)
+  const isManager = useHasRole('manager')
+  const { selectedStore, stores, setStores } = useAppStore()
+  const isAll = selectedStore?.code === 'ALL'
 
-  const [modalOpen, setModalOpen] = useState(false)
+  const [employees,    setEmployees]    = useState<Employee[]>([])
+  const [empStores,    setEmpStores]    = useState<Record<number, string[]>>({})
+  const [filterEmpId,  setFilterEmpId]  = useState<number | null>(null)
+  const [allEvents,    setAllEvents]    = useState<EventInput[]>([])
+  const [visibleEvents, setVisibleEvents] = useState<EventInput[]>([])
+  const [viewTitle,    setViewTitle]    = useState('')
+  const [viewType,     setViewType]     = useState<ViewType>('dayGridMonth')
+
+  const [modalOpen,    setModalOpen]    = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
   const [availForDate, setAvailForDate] = useState<Availability[]>([])
 
-  const shiftById = useRef<Record<number, Shift>>({})
+  const shiftById    = useRef<Record<number, Shift>>({})
   const availsByDate = useRef<Record<string, Availability[]>>({})
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
+
+  // Color maps kept in refs so loadEvents always reads current values
+  // without needing to be in useCallback deps
+  const empColorRef   = useRef<Record<number, string>>({})
+  const storeColorRef = useRef<Record<string, string>>({})
+
+  // Keep storeColorRef in sync with global stores (updated on mount + color PATCH)
+  useEffect(() => {
+    const m: Record<string, string> = {}
+    stores.forEach(s => { m[s.code] = s.color || '#6366f1' })
+    storeColorRef.current = m
+  }, [stores])
 
   useEffect(() => {
     getEmployees().then(setEmployees).catch(() => {})
     getEmployeeStores()
       .then(data => {
-        const m: Record<number, string[]> = {}
-        data.forEach(e => { m[e.employee_id] = e.stores })
-        setEmpStores(m)
+        const storeM: Record<number, string[]> = {}
+        const colorM: Record<number, string>   = {}
+        data.forEach(e => {
+          storeM[e.employee_id] = e.stores
+          colorM[e.employee_id] = e.color || FALLBACK_COLORS[0]
+        })
+        setEmpStores(storeM)
+        empColorRef.current = colorM
       })
       .catch(() => {})
   }, [])
@@ -79,6 +92,14 @@ export default function ManagerCalendar() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees])
+
+  // Reload when selected store changes
+  useEffect(() => {
+    if (currentRange) {
+      loadEvents(currentRange.start, currentRange.end)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStore])
 
   useEffect(() => {
     if (filterEmpId === null) {
@@ -92,16 +113,19 @@ export default function ManagerCalendar() {
 
   const loadEvents = useCallback(
     async (start: string, end: string) => {
-      const sc = selectedStore?.code
+      const sc    = selectedStore?.code
+      const isAllMode = sc === 'ALL'
+
+      // Skip availability fetch for ALL — the backend requires a specific store
       const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-        getAllAvailability(start, end, sc),
+        isAllMode ? Promise.resolve([]) : getAllAvailability(start, end, sc),
         getShifts({ start, end, store_code: sc }),
       ])
 
       const empIdToIdx: Record<number, number> = {}
       employees.forEach((e, i) => { empIdToIdx[e.id] = i })
 
-      shiftById.current = {}
+      shiftById.current    = {}
       availsByDate.current = {}
       const evts: EventInput[] = []
 
@@ -109,40 +133,58 @@ export default function ManagerCalendar() {
         if (!availsByDate.current[a.date]) availsByDate.current[a.date] = []
         availsByDate.current[a.date].push(a)
 
-        const idx   = empIdToIdx[a.employee_id] ?? 0
-        const color = colorForEmployee(idx)
+        const empColor = empColorRef.current[a.employee_id]
+          ?? FALLBACK_COLORS[empIdToIdx[a.employee_id] ?? 0]
         evts.push({
           id: `avail-${a.id}`,
           title: `${a.employee_name ?? 'Employee'} available`,
           start: `${a.date}T${a.start_time}`,
-          end: `${a.date}T${a.end_time}`,
-          backgroundColor: color + '33',
-          borderColor: color,
-          textColor: '#374151',
-          display: 'background',
-          extendedProps: { type: 'availability', employee_id: a.employee_id },
+          end:   `${a.date}T${a.end_time}`,
+          backgroundColor: empColor + '33',
+          borderColor:     empColor,
+          textColor:       '#374151',
+          display:         'background',
+          extendedProps:   { type: 'availability', employee_id: a.employee_id },
         })
       }
 
       for (const s of shifts) {
         shiftById.current[s.id] = s
-        const idx   = empIdToIdx[s.employee_id] ?? 0
-        const color = colorForEmployee(idx)
+        const empColor = empColorRef.current[s.employee_id]
+          ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
+        const storePrefix = isAllMode && s.store_code ? `[${s.store_code}] ` : ''
+
+        let bgColor: string
+        let borderColor: string
+        let textColor: string
+
+        if (isAllMode && s.store_code) {
+          // Tint with store color; use employee color for border so employees remain distinct
+          const storeColor = storeColorRef.current[s.store_code] || '#6366f1'
+          bgColor     = storeColor + '33'  // ~20% opacity tint
+          borderColor = empColor
+          textColor   = '#1f2937'
+        } else {
+          bgColor     = empColor
+          borderColor = empColor
+          textColor   = '#fff'
+        }
+
         evts.push({
-          id: `shift-${s.id}`,
-          title: `${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
-          start: `${s.date}T${s.start_time}`,
-          end: `${s.date}T${s.end_time}`,
-          backgroundColor: color,
-          borderColor: color,
-          textColor: '#fff',
-          extendedProps: { type: 'shift', shift_id: s.id, employee_id: s.employee_id },
+          id:              `shift-${s.id}`,
+          title:           `${storePrefix}${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
+          start:           `${s.date}T${s.start_time}`,
+          end:             `${s.date}T${s.end_time}`,
+          backgroundColor: bgColor,
+          borderColor:     borderColor,
+          textColor:       textColor,
+          extendedProps:   { type: 'shift', shift_id: s.id, employee_id: s.employee_id },
         })
       }
 
       setAllEvents(evts)
     },
-    [employees]
+    [employees, selectedStore]
   )
 
   const handleDatesSet = useCallback(
@@ -158,17 +200,16 @@ export default function ManagerCalendar() {
   )
 
   const handleDateClick = useCallback((arg: DateClickArg) => {
+    if (selectedStore?.code === 'ALL') return
     setSelectedDate(arg.dateStr)
     setSelectedShift(null)
     setAvailForDate(availsByDate.current[arg.dateStr] ?? [])
     setModalOpen(true)
-  }, [])
+  }, [selectedStore])
 
   const handleEventClick = useCallback((arg: EventClickArg) => {
-    const { type, shift_id } = arg.event.extendedProps as {
-      type: string
-      shift_id?: number
-    }
+    if (selectedStore?.code === 'ALL') return
+    const { type, shift_id } = arg.event.extendedProps as { type: string; shift_id?: number }
     if (type === 'shift' && shift_id != null) {
       const shift = shiftById.current[shift_id]
       if (shift) {
@@ -178,15 +219,13 @@ export default function ManagerCalendar() {
         setModalOpen(true)
       }
     } else if (type === 'availability') {
-      // Fallback: some FC versions fire eventClick for background events
-      // even though dateClick should fire instead (after the CSS fix).
       const dateStr = dayjs(arg.event.start!).format('YYYY-MM-DD')
       setSelectedDate(dateStr)
       setSelectedShift(null)
       setAvailForDate(availsByDate.current[dateStr] ?? [])
       setModalOpen(true)
     }
-  }, [])
+  }, [selectedStore])
 
   const handleSaved = useCallback(() => {
     const api = calRef.current?.getApi()
@@ -197,6 +236,20 @@ export default function ManagerCalendar() {
       loadEvents(start, end)
     }
   }, [loadEvents])
+
+  async function handleStoreColorChange(storeId: number, storeCode: string, color: string) {
+    // Optimistically update global store list so picker reflects new color immediately
+    setStores(stores.map(s => s.id === storeId ? { ...s, color } : s))
+    storeColorRef.current = { ...storeColorRef.current, [storeCode]: color }
+    try {
+      await client.patch(`/stores/${storeId}/color`, { color })
+    } catch {
+      // On failure revert: refetch stores is not straightforward here;
+      // the optimistic update stays until page refresh. Non-critical.
+    }
+    // Rebuild events with new store tint
+    if (currentRange) loadEvents(currentRange.start, currentRange.end)
+  }
 
   const cal = () => calRef.current?.getApi()
 
@@ -268,35 +321,64 @@ export default function ManagerCalendar() {
         </Button>
       </div>
 
-      {/* Employee legend: horizontal pill chips */}
+      {/* Store Colors panel — managers only, visible in ALL mode */}
+      {isAll && isManager && stores.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 px-3 py-2 rounded-lg border border-border bg-muted/30">
+          <span className="text-xs font-medium text-muted-foreground">Store Colors:</span>
+          {stores.map(st => (
+            <label
+              key={st.id}
+              className="flex items-center gap-1.5 cursor-pointer"
+              title={`Change color for ${st.name || st.code}`}
+            >
+              <input
+                type="color"
+                value={st.color || '#6366f1'}
+                onChange={e => handleStoreColorChange(st.id, st.code, e.target.value)}
+                style={{
+                  width: 22, height: 22, padding: 1,
+                  borderRadius: 4, border: '1px solid #e5e7eb',
+                  cursor: 'pointer', background: 'none',
+                }}
+              />
+              <span className="text-xs text-muted-foreground">{st.name || st.code}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {/* Employee legend: horizontal pill chips using DB colors */}
       {employees.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {employees.map((e, i) => (
-            <span
-              key={e.id}
-              className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
-            >
+          {employees.map((e) => {
+            const empColor = empColorRef.current[e.id] ?? FALLBACK_COLORS[0]
+            return (
               <span
-                className="size-2 rounded-full shrink-0"
-                style={{ background: colorForEmployee(i) }}
-              />
-              {e.name || e.email || `Employee ${e.id}`}
-              {(empStores[e.id] ?? []).map(code => (
+                key={e.id}
+                className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+              >
                 <span
-                  key={code}
-                  style={{
-                    background: STORE_CHIP_COLOR[code] ?? '#9ca3af',
-                    color: '#fff',
-                    fontSize: 9,
-                    borderRadius: 3,
-                    padding: '1px 4px',
-                    lineHeight: 1.4,
-                    fontWeight: 600,
-                  }}
-                >{code}</span>
-              ))}
-            </span>
-          ))}
+                  className="size-2 rounded-full shrink-0"
+                  style={{ background: empColor }}
+                />
+                {e.name || e.email || `Employee ${e.id}`}
+                {(empStores[e.id] ?? []).map(code => (
+                  <span
+                    key={code}
+                    style={{
+                      background: storeColorRef.current[code] ?? '#9ca3af',
+                      color:      '#fff',
+                      fontSize:   9,
+                      borderRadius: 3,
+                      padding:    '1px 4px',
+                      lineHeight: 1.4,
+                      fontWeight: 600,
+                    }}
+                  >{code}</span>
+                ))}
+              </span>
+            )
+          })}
         </div>
       )}
 

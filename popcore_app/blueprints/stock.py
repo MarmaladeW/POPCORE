@@ -16,6 +16,8 @@ def _require_store_param(con):
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    if store_code == 'ALL':
+        return None, 'ALL', None
     resolved = _resolve_store(con, store_code)
     if resolved is None:
         return None, None, (jsonify({'error': 'Invalid store code'}), 400)
@@ -28,6 +30,8 @@ def _require_store_body(con, data):
     store_code = (data.get('store_code') or '').strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    if store_code == 'ALL':
+        return None, None, (jsonify({'error': 'Cannot write with store_code ALL. Select a specific store.'}), 400)
     resolved = _resolve_store(con, store_code)
     if resolved is None:
         return None, None, (jsonify({'error': 'Invalid store code'}), 400)
@@ -78,7 +82,28 @@ def get_all_stock():
 
     where = ('AND ' + ' AND '.join(filters)) if filters else ''
 
-    if include_all:
+    if store_code == 'ALL':
+        if paginated:
+            cur.execute(
+                f'SELECT COUNT(*) FROM products p WHERE 1=1 {where}',
+                params)
+            total = cur.fetchone()[0]
+        cur.execute(f'''
+            SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
+                   p.ip_series, p.product_type, p.boxes_per_dan,
+                   COALESCE(SUM(s.upstairs_qty), 0) AS upstairs_qty,
+                   COALESCE(SUM(s.instore_qty),  0) AS instore_qty,
+                   COALESCE(MAX(s.last_updated), '') AS last_updated,
+                   '' AS stock_notes
+            FROM products p
+            LEFT JOIN stock s ON s.product_id = p.id
+            WHERE 1=1 {where}
+            GROUP BY p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
+                     p.ip_series, p.product_type, p.boxes_per_dan
+            ORDER BY p.ip_series, p.sku DESC
+            {'LIMIT ? OFFSET ?' if paginated else ''}
+        ''', params + ([page_size, offset] if paginated else []))
+    elif include_all:
         if paginated:
             cur.execute(
                 f'SELECT COUNT(*) FROM products p'
@@ -348,8 +373,12 @@ def get_transactions():
         return err
     cur = con.cursor()
 
-    conditions = ['t.store_id = ?']
-    params = [store_id]
+    if store_code == 'ALL':
+        conditions = []
+        params = []
+    else:
+        conditions = ['t.store_id = ?']
+        params = [store_id]
     if pid_int is not None:
         conditions.append('t.product_id = ?')
         params.append(pid_int)
@@ -357,15 +386,17 @@ def get_transactions():
         conditions.append('t.date = ?')
         params.append(d)
 
-    where = 'WHERE ' + ' AND '.join(conditions)
+    where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
     params.append(limit)
 
     cur.execute(f'''
         SELECT t.id, t.product_id, t.txn_type, t.qty, t.location,
                t.date, t.notes, t.created_at, t.store_id,
+               COALESCE(st.code, '') AS store_code,
                p.jizhanming, p.sku, p.name_cn_en, p.boxes_per_dan, p.product_type
         FROM stock_transactions t
         JOIN products p ON p.id = t.product_id
+        LEFT JOIN stores st ON st.id = t.store_id
         {where}
         ORDER BY t.id DESC
         LIMIT ?
@@ -385,33 +416,58 @@ def stock_summary():
         con.close()
         return err
     cur = con.cursor()
-    cur.execute('''
-        SELECT
-            COUNT(*) AS products_tracked,
-            SUM(upstairs_qty) AS total_upstairs_qty,
-            SUM(instore_qty)  AS total_instore_qty
-        FROM stock
-        WHERE store_id = ?
-    ''', (store_id,))
-    row = dict(cur.fetchone())
 
-    cur.execute('''
-        SELECT COUNT(*) FROM stock
-        WHERE store_id = ? AND upstairs_qty = 0 AND instore_qty > 0
-    ''', (store_id,))
-    row['low_stock_count'] = cur.fetchone()[0]
-
-    cur.execute('SELECT COUNT(*) FROM stock WHERE store_id = ? AND upstairs_qty = 0 AND instore_qty = 0',
-                (store_id,))
-    row['out_of_stock_count'] = cur.fetchone()[0]
-
-    cur.execute('''
-        SELECT COALESCE(SUM(p.price * (s.upstairs_qty + s.instore_qty)), 0)
-        FROM stock s
-        JOIN products p ON p.id = s.product_id
-        WHERE s.store_id = ? AND p.price IS NOT NULL
-    ''', (store_id,))
-    row['total_stock_value'] = cur.fetchone()[0]
+    if store_code == 'ALL':
+        cur.execute('''
+            SELECT
+                COUNT(DISTINCT product_id) AS products_tracked,
+                SUM(upstairs_qty) AS total_upstairs_qty,
+                SUM(instore_qty)  AS total_instore_qty
+            FROM stock
+        ''')
+        row = dict(cur.fetchone())
+        cur.execute('''
+            SELECT COUNT(DISTINCT product_id) FROM stock
+            WHERE upstairs_qty = 0 AND instore_qty > 0
+        ''')
+        row['low_stock_count'] = cur.fetchone()[0]
+        cur.execute('''
+            SELECT COUNT(DISTINCT product_id) FROM stock
+            WHERE upstairs_qty = 0 AND instore_qty = 0
+        ''')
+        row['out_of_stock_count'] = cur.fetchone()[0]
+        cur.execute('''
+            SELECT COALESCE(SUM(p.price * (s.upstairs_qty + s.instore_qty)), 0)
+            FROM stock s
+            JOIN products p ON p.id = s.product_id
+            WHERE p.price IS NOT NULL
+        ''')
+        row['total_stock_value'] = cur.fetchone()[0]
+    else:
+        cur.execute('''
+            SELECT
+                COUNT(*) AS products_tracked,
+                SUM(upstairs_qty) AS total_upstairs_qty,
+                SUM(instore_qty)  AS total_instore_qty
+            FROM stock
+            WHERE store_id = ?
+        ''', (store_id,))
+        row = dict(cur.fetchone())
+        cur.execute('''
+            SELECT COUNT(*) FROM stock
+            WHERE store_id = ? AND upstairs_qty = 0 AND instore_qty > 0
+        ''', (store_id,))
+        row['low_stock_count'] = cur.fetchone()[0]
+        cur.execute('SELECT COUNT(*) FROM stock WHERE store_id = ? AND upstairs_qty = 0 AND instore_qty = 0',
+                    (store_id,))
+        row['out_of_stock_count'] = cur.fetchone()[0]
+        cur.execute('''
+            SELECT COALESCE(SUM(p.price * (s.upstairs_qty + s.instore_qty)), 0)
+            FROM stock s
+            JOIN products p ON p.id = s.product_id
+            WHERE s.store_id = ? AND p.price IS NOT NULL
+        ''', (store_id,))
+        row['total_stock_value'] = cur.fetchone()[0]
 
     con.close()
     return jsonify(row)
@@ -485,6 +541,8 @@ def delete_stock_rows():
         return jsonify({'error': 'Expected {"store_code": ..., "product_ids": [...]}'}), 400
     if not store_code_raw:
         return jsonify({'error': 'store_code is required'}), 400
+    if store_code_raw == 'ALL':
+        return jsonify({'error': 'Cannot write with store_code ALL. Select a specific store.'}), 400
     if not isinstance(pids, list) or not pids:
         return jsonify({'error': 'product_ids must be a non-empty list'}), 400
     con = get_db()

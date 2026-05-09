@@ -63,6 +63,8 @@ def _require_store_param(con):
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    if store_code == 'ALL':
+        return None, 'ALL', None
     resolved = _resolve_store(con, store_code)
     if resolved is None:
         return None, None, (jsonify({'error': 'Invalid store code'}), 400)
@@ -74,6 +76,8 @@ def _require_store_body(con, data):
     store_code = (data.get('store_code') or '').strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    if store_code == 'ALL':
+        return None, None, (jsonify({'error': 'Cannot write with store_code ALL. Select a specific store.'}), 400)
     resolved = _resolve_store(con, store_code)
     if resolved is None:
         return None, None, (jsonify({'error': 'Invalid store code'}), 400)
@@ -285,28 +289,65 @@ def schedule_shifts_get():
         con.close()
         return err
 
-    if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
+    if store_code == 'ALL':
+        if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
+            query  = '''
+                SELECT s.*, e.name AS employee_name, e.auth0_id,
+                       COALESCE(st.code, '') AS store_code
+                FROM shifts s
+                JOIN employees e ON e.id = s.employee_id
+                LEFT JOIN stores st ON st.id = s.store_id
+            '''
+            params: list = []
+            if employee_id:
+                query += ' WHERE s.employee_id = ?'; params.append(int(employee_id))
+        else:
+            emp = _get_or_create_employee(con, auth0_id)
+            query  = '''
+                SELECT s.*, e.name AS employee_name, e.auth0_id,
+                       COALESCE(st.code, '') AS store_code
+                FROM shifts s
+                JOIN employees e ON e.id = s.employee_id
+                LEFT JOIN stores st ON st.id = s.store_id
+                WHERE s.employee_id = ?
+            '''
+            params = [emp['id']]
+        if start:
+            query += (' AND' if params else ' WHERE') + ' s.date >= ?'; params.append(start)
+        if end:
+            query += ' AND s.date <= ?'; params.append(end)
+    elif ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id
-            FROM shifts s JOIN employees e ON e.id = s.employee_id
+            SELECT s.*, e.name AS employee_name, e.auth0_id,
+                   COALESCE(st.code, '') AS store_code
+            FROM shifts s
+            JOIN employees e ON e.id = s.employee_id
+            LEFT JOIN stores st ON st.id = s.store_id
             WHERE s.store_id = ?
         '''
-        params: list = [store_id]
+        params = [store_id]
         if employee_id:
             query += ' AND s.employee_id = ?'; params.append(int(employee_id))
+        if start:
+            query += ' AND s.date >= ?'; params.append(start)
+        if end:
+            query += ' AND s.date <= ?'; params.append(end)
     else:
         emp = _get_or_create_employee(con, auth0_id)
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id
-            FROM shifts s JOIN employees e ON e.id = s.employee_id
+            SELECT s.*, e.name AS employee_name, e.auth0_id,
+                   COALESCE(st.code, '') AS store_code
+            FROM shifts s
+            JOIN employees e ON e.id = s.employee_id
+            LEFT JOIN stores st ON st.id = s.store_id
             WHERE s.employee_id = ? AND s.store_id = ?
         '''
         params = [emp['id'], store_id]
+        if start:
+            query += ' AND s.date >= ?'; params.append(start)
+        if end:
+            query += ' AND s.date <= ?'; params.append(end)
 
-    if start:
-        query += ' AND s.date >= ?'; params.append(start)
-    if end:
-        query += ' AND s.date <= ?'; params.append(end)
     query += ' ORDER BY s.date, e.name'
     rows = con.execute(query, params).fetchall()
     con.close()

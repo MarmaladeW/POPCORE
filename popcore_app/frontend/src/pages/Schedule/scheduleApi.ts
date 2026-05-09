@@ -38,6 +38,7 @@ export interface Shift {
   // joined fields
   employee_name?: string
   auth0_id?: string
+  store_code?: string
 }
 
 export interface WeekBreakdown {
@@ -62,6 +63,7 @@ export interface EmployeeStoreAssignment {
   employee_id: number
   auth0_id:    string
   name:        string
+  color:       string
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
 
