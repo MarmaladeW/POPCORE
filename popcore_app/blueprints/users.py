@@ -179,7 +179,80 @@ def delete_user(uid):
     return jsonify({'ok': True})
 
 
-@bp.route('/api/admin/cleanup-employees', methods=['POST'])
+@bp.route('/api/employees/stores')
+@role_required('manager')
+def get_employee_stores():
+    """Return all active employees with their assigned store codes."""
+    con = get_db()
+    rows = con.execute('''
+        SELECT e.id AS employee_id, e.auth0_id, e.name,
+               GROUP_CONCAT(s.code) AS store_codes
+        FROM employees e
+        LEFT JOIN employee_stores es ON es.employee_id = e.id
+        LEFT JOIN stores s ON s.id = es.store_id AND s.is_active = 1
+        WHERE e.is_active = 1
+        GROUP BY e.id, e.auth0_id, e.name
+        ORDER BY e.name
+    ''').fetchall()
+    con.close()
+    result = []
+    for r in rows:
+        codes = sorted(r['store_codes'].split(',')) if r['store_codes'] else []
+        result.append({
+            'employee_id': r['employee_id'],
+            'auth0_id':    r['auth0_id'],
+            'name':        r['name'],
+            'stores':      codes,
+        })
+    return jsonify(result)
+
+
+@bp.route('/api/employees/<int:employee_id>/stores', methods=['PUT'])
+@role_required('manager')
+def put_employee_stores(employee_id):
+    """Replace all store assignments for an employee."""
+    data        = request.get_json() or {}
+    store_codes = data.get('store_codes', [])
+    if not isinstance(store_codes, list):
+        return jsonify({'error': 'store_codes must be an array'}), 400
+
+    con = get_db()
+    emp = con.execute(
+        'SELECT id FROM employees WHERE id = ? AND is_active = 1', (employee_id,)
+    ).fetchone()
+    if not emp:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+
+    store_ids = []
+    for code in store_codes:
+        row = con.execute(
+            'SELECT id FROM stores WHERE code = ? AND is_active = 1', (code,)
+        ).fetchone()
+        if not row:
+            con.close()
+            return jsonify({'error': f'Invalid store code: {code}'}), 400
+        store_ids.append(row['id'])
+
+    con.execute('DELETE FROM employee_stores WHERE employee_id = ?', (employee_id,))
+    for sid in store_ids:
+        con.execute(
+            'INSERT INTO employee_stores (employee_id, store_id) VALUES (?, ?)',
+            (employee_id, sid)
+        )
+    con.commit()
+
+    rows = con.execute('''
+        SELECT s.code FROM employee_stores es
+        JOIN stores s ON s.id = es.store_id
+        WHERE es.employee_id = ?
+        ORDER BY s.code
+    ''', (employee_id,)).fetchall()
+    con.close()
+    return jsonify({'employee_id': employee_id, 'stores': [r['code'] for r in rows]})
+
+
+
 @role_required('admin')
 def cleanup_employees():
     """Deactivate local employee records whose Auth0 account no longer exists."""

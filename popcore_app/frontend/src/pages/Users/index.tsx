@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Table, Space, Popconfirm, Form, Input, Select,
-  Switch, message,
+  Switch, message, Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Plus, RefreshCw } from 'lucide-react'
@@ -9,6 +9,8 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
+import { getEmployeeStores, setEmployeeStores } from '../Schedule/scheduleApi'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -50,15 +52,33 @@ const ME_BADGE_STYLE: React.CSSProperties = {
   background: '#dcfce7', color: '#166534', borderColor: '#86efac',
 }
 
+// Store badge colours consistent with task spec
+const STORE_TAG_COLORS: Record<string, string> = {
+  DT: 'blue',
+  MK: 'green',
+  MT: 'orange',
+}
+
+interface EmpStoreEntry {
+  empId:  number
+  stores: string[]
+}
+
 export default function UsersPage() {
-  const isAdmin  = useHasRole('admin')
+  const isAdmin   = useHasRole('admin')
+  const isManager = useHasRole('manager')
   const { user: me } = useAuth0()
-  const isMobile = useIsMobile()
+  const isMobile  = useIsMobile()
+  const { stores: allStores } = useAppStore()
+
   const [users, setUsers]     = useState<User[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editUser, setEditUser]   = useState<User | null>(null)
   const [form] = Form.useForm()
+
+  // Map: auth0_id → { empId, stores[] }
+  const [empStoreMap, setEmpStoreMap] = useState<Record<string, EmpStoreEntry>>({})
 
   function load() {
     if (!isAdmin) return
@@ -71,7 +91,23 @@ export default function UsersPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [isAdmin])
+  function loadStores() {
+    getEmployeeStores()
+      .then(data => {
+        const m: Record<string, EmpStoreEntry> = {}
+        data.forEach(e => {
+          m[e.auth0_id] = { empId: e.employee_id, stores: e.stores }
+        })
+        setEmpStoreMap(m)
+      })
+      .catch(() => {}) // non-fatal
+  }
+
+  useEffect(() => {
+    load()
+    loadStores()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin])
 
   function openNew() { setEditUser(null); form.resetFields(); setModalOpen(true) }
   function openEdit(u: User) {
@@ -119,6 +155,58 @@ export default function UsersPage() {
     }
   }
 
+  async function handleStoreChange(auth0Id: string, newCodes: string[]) {
+    const entry = empStoreMap[auth0Id]
+    if (!entry) return
+    try {
+      await setEmployeeStores(entry.empId, newCodes)
+      setEmpStoreMap(prev => ({
+        ...prev,
+        [auth0Id]: { ...prev[auth0Id], stores: newCodes },
+      }))
+    } catch {
+      message.error('门店分配失败')
+    }
+  }
+
+  /** Render store badges (read-only) */
+  function StoreBadges({ auth0Id }: { auth0Id: string }) {
+    const codes = empStoreMap[auth0Id]?.stores ?? []
+    if (codes.length === 0) {
+      return <span style={{ fontSize: 11, color: '#9ca3af' }}>未分配</span>
+    }
+    return (
+      <>
+        {codes.map(code => (
+          <Tag key={code} color={STORE_TAG_COLORS[code] ?? 'default'} style={{ fontSize: 11, marginRight: 2 }}>
+            {code}
+          </Tag>
+        ))}
+      </>
+    )
+  }
+
+  /** Render store edit control (manager+) */
+  function StoreSelect({ auth0Id }: { auth0Id: string }) {
+    const entry  = empStoreMap[auth0Id]
+    const current = entry?.stores ?? []
+    if (!entry) {
+      return <span style={{ fontSize: 11, color: '#9ca3af' }}>—</span>
+    }
+    return (
+      <Select
+        mode="multiple"
+        size="small"
+        style={{ minWidth: 120 }}
+        value={current}
+        onChange={(vals) => handleStoreChange(auth0Id, vals)}
+        options={allStores.map(s => ({ value: s.code, label: s.code }))}
+        placeholder="未分配"
+        maxTagCount={3}
+      />
+    )
+  }
+
   const columns: ColumnsType<User> = [
     {
       title: '用户名',
@@ -139,6 +227,14 @@ export default function UsersPage() {
           {ROLE_OPTIONS.find(o => o.value === v)?.label ?? v}
         </Badge>
       ),
+    },
+    {
+      title: '门店',
+      key: 'stores',
+      width: 180,
+      render: (_, r) => isManager
+        ? <StoreSelect auth0Id={r.id} />
+        : <StoreBadges auth0Id={r.id} />,
     },
     {
       title: '状态',
@@ -194,7 +290,9 @@ export default function UsersPage() {
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <Button onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户</Button>
-        <Button variant="outline" onClick={load}><RefreshCw className="h-4 w-4 mr-1" />刷新</Button>
+        <Button variant="outline" onClick={() => { load(); loadStores() }}>
+          <RefreshCw className="h-4 w-4 mr-1" />刷新
+        </Button>
       </div>
 
       {isMobile ? (
@@ -229,12 +327,20 @@ export default function UsersPage() {
                     </Badge>
                   </div>
 
-                  {/* Row 2: last login */}
+                  {/* Row 2: store badges */}
+                  <div className="flex items-center gap-1 mt-1 pl-11 flex-wrap">
+                    {isManager
+                      ? <StoreSelect auth0Id={u.id} />
+                      : <StoreBadges auth0Id={u.id} />
+                    }
+                  </div>
+
+                  {/* Row 3: last login */}
                   <div className="text-xs text-muted-foreground mt-1 pl-11">
                     最后登录：{u.last_login ? u.last_login.slice(0, 16) : '从未'}
                   </div>
 
-                  {/* Row 3: status toggle (left) + actions (right) */}
+                  {/* Row 4: status toggle (left) + actions (right) */}
                   <div className="flex items-center mt-2 pl-11">
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <Switch

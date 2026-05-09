@@ -16,12 +16,19 @@ import {
   getAllAvailability,
   getShifts,
   getEmployees,
+  getEmployeeStores,
   type Availability,
   type Employee,
   type Shift,
 } from './scheduleApi'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
+
+const STORE_CHIP_COLOR: Record<string, string> = {
+  DT: '#3b82f6',
+  MK: '#22c55e',
+  MT: '#f97316',
+}
 
 const EMPLOYEE_COLORS = [
   '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6',
@@ -39,6 +46,7 @@ export default function ManagerCalendar() {
   const calRef = useRef<FullCalendar>(null)
   const { selectedStore } = useAppStore()
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [empStores, setEmpStores] = useState<Record<number, string[]>>({})
   const [filterEmpId, setFilterEmpId] = useState<number | null>(null)
   const [allEvents, setAllEvents] = useState<EventInput[]>([])
   const [visibleEvents, setVisibleEvents] = useState<EventInput[]>([])
@@ -56,6 +64,13 @@ export default function ManagerCalendar() {
 
   useEffect(() => {
     getEmployees().then(setEmployees).catch(() => {})
+    getEmployeeStores()
+      .then(data => {
+        const m: Record<number, string[]> = {}
+        data.forEach(e => { m[e.employee_id] = e.stores })
+        setEmpStores(m)
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -266,6 +281,20 @@ export default function ManagerCalendar() {
                 style={{ background: colorForEmployee(i) }}
               />
               {e.name || e.email || `Employee ${e.id}`}
+              {(empStores[e.id] ?? []).map(code => (
+                <span
+                  key={code}
+                  style={{
+                    background: STORE_CHIP_COLOR[code] ?? '#9ca3af',
+                    color: '#fff',
+                    fontSize: 9,
+                    borderRadius: 3,
+                    padding: '1px 4px',
+                    lineHeight: 1.4,
+                    fontWeight: 600,
+                  }}
+                >{code}</span>
+              ))}
             </span>
           ))}
         </div>
