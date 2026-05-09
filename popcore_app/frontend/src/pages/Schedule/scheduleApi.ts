@@ -41,6 +41,19 @@ export interface Shift {
   store_code?: string
 }
 
+export interface ConflictInfo {
+  shift_id:   number
+  store_code: string
+  store_name: string
+  start_time: string  // ISO datetime e.g. "2026-05-09T12:00"
+  end_time:   string
+}
+
+export interface ConflictResult {
+  has_conflict: boolean
+  conflicts:    ConflictInfo[]
+}
+
 export interface WeekBreakdown {
   total: number
   days: Record<string, number>
@@ -144,6 +157,12 @@ export const updateShift = (
 
 export const deleteShift = (id: number) =>
   client.delete(`/schedule/shifts/${id}`).then((r) => r.data)
+
+export const checkConflicts = (params: {
+  employee_id: number
+  date: string
+  store_code: string
+}) => client.get<ConflictResult>('/schedule/conflicts', { params }).then((r) => r.data)
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 
