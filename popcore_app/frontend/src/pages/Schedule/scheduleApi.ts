@@ -58,6 +58,13 @@ export interface MonthlyReport {
   employees: EmployeeMonthlyHours[]
 }
 
+export interface EmployeeStoreAssignment {
+  employee_id: number
+  auth0_id:    string
+  name:        string
+  stores:      string[]   // store codes, e.g. ['DT', 'MK']
+}
+
 // ── Employee profile ──────────────────────────────────────────────────────────
 
 export const getMe = () =>
@@ -68,6 +75,15 @@ export const patchMe = (data: { name?: string; email?: string }) =>
 
 export const getEmployees = () =>
   client.get<Employee[]>('/schedule/employees').then((r) => r.data)
+
+export const getEmployeeStores = () =>
+  client.get<EmployeeStoreAssignment[]>('/employees/stores').then((r) => r.data)
+
+export const setEmployeeStores = (employeeId: number, storeCodes: string[]) =>
+  client.put<{ employee_id: number; stores: string[] }>(
+    `/employees/${employeeId}/stores`,
+    { store_codes: storeCodes }
+  ).then((r) => r.data)
 
 // ── Availability ──────────────────────────────────────────────────────────────
 

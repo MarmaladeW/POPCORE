@@ -120,7 +120,14 @@ export default function ShiftModal({
       <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
         <DialogContent style={{ maxWidth: 480 }}>
           <DialogHeader>
-            <DialogTitle>Assign shift — {date ?? ''}</DialogTitle>
+            <DialogTitle>
+              Assign shift — {date ?? ''}
+              {selectedStore && (
+                <span className="ml-2 text-sm font-normal text-muted-foreground">
+                  @ {selectedStore.name || selectedStore.code}
+                </span>
+              )}
+            </DialogTitle>
           </DialogHeader>
 
           {/* Availability summary */}
