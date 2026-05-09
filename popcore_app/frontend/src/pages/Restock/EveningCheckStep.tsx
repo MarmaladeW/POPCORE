@@ -6,6 +6,7 @@ import {
 import { AuditOutlined, WarningOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -34,6 +35,7 @@ interface TodayData {
 export default function EveningCheckStep() {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
+  const { selectedStore } = useAppStore()
 
   const [data,      setData]      = useState<TodayData | null>(null)
   const [loading,   setLoading]   = useState(true)
@@ -41,9 +43,11 @@ export default function EveningCheckStep() {
   const [saving,    setSaving]    = useState(false)
 
   const load = useCallback(async () => {
+    const sc = selectedStore?.code
+    if (!sc) return
     setLoading(true)
     try {
-      const { data: d } = await client.get<TodayData>('/inventory-check/today')
+      const { data: d } = await client.get<TodayData>('/inventory-check/today', { params: { store_code: sc } })
       setData(d)
       // Pre-fill saved actual_qty (don't override user's in-progress edits)
       setActualQty(prev => {
@@ -58,7 +62,7 @@ export default function EveningCheckStep() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedStore?.code])
 
   useEffect(() => { load() }, [load])
 
@@ -86,6 +90,7 @@ export default function EveningCheckStep() {
     setSaving(true)
     try {
       const { data: res } = await client.post('/inventory-check/submit', {
+        store_code: selectedStore?.code,
         checks: toSave.map(item => ({
           product_id: item.product_id,
           actual_qty: actualQty[item.product_id],

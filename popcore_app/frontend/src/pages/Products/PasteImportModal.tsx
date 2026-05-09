@@ -11,6 +11,7 @@ import {
 import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
 import { isHeaderLine } from '../../api/matcher'
+import { useAppStore } from '../../store'
 
 const { Text } = Typography
 
@@ -103,6 +104,7 @@ const OPERATION_OPTIONS = [
 ]
 
 export default function PasteImportModal({ open, onClose, onDone }: Props) {
+  const { selectedStore } = useAppStore()
   const [step,      setStep]     = useState(0)
   const [operation, setOp]       = useState<'ru_dian' | 'restock_upstairs'>('restock_upstairs')
   const [date,      setDate]     = useState<Dayjs>(dayjs())
@@ -161,6 +163,7 @@ export default function PasteImportModal({ open, onClose, onDone }: Props) {
       const resp = await client.post('/stock/batch_operation', {
         operation,
         date: date.format('YYYY-MM-DD'),
+        store_code: selectedStore?.code,
         items: toSubmit.map(i => ({ product_id: i.product_id, qty: i.qty, notes: i.notes })),
       })
       setResults(resp.data.results || [])

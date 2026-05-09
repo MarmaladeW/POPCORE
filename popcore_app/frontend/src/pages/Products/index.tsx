@@ -55,7 +55,7 @@ function stockBadge(total: number) {
 
 export default function ProductsPage() {
   const isMobile = useIsMobile()
-  const { series, productTypes } = useAppStore()
+  const { series, productTypes, selectedStore } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
   const [stockMap,  setStockMap]  = useState<Map<number, number>>(new Map())
   const [loading,   setLoading]   = useState(false)
@@ -73,14 +73,16 @@ export default function ProductsPage() {
   const [filtersVisible, setFiltersVisible] = useState(false)
 
   const load = useCallback(() => {
+    const sc = selectedStore?.code
     setLoading(true)
     const params: Record<string, string> = {}
     if (searchQ)      params.q = searchQ
     if (searchSeries) params.series = searchSeries
     if (searchType)   params.product_type = searchType
+    const stockParams = sc ? { store_code: sc } : {}
     Promise.all([
       client.get('/products/search', { params }),
-      client.get('/stock'),
+      client.get('/stock', { params: stockParams }),
     ]).then(([prodR, stockR]) => {
       setProducts(prodR.data)
       const m = new Map<number, number>()
@@ -91,7 +93,7 @@ export default function ProductsPage() {
     }).catch(() => {
       message.error('加载失败，请刷新页面')
     }).finally(() => setLoading(false))
-  }, [searchQ, searchSeries, searchType])
+  }, [searchQ, searchSeries, searchType, selectedStore?.code])
 
   useEffect(() => { load() }, [load])
 

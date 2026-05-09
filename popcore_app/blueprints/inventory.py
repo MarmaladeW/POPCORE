@@ -7,35 +7,41 @@ from flask import Blueprint, request, jsonify
 
 from db import get_db
 from auth import login_required, role_required
+from blueprints.stores import _resolve_store
 
 bp = Blueprint('inventory', __name__)
 
 
-def _calc_theoretical_qty(cur, product_id: int, today: str) -> tuple[int, str, bool]:
+def _calc_theoretical_qty(cur, product_id: int, today: str,
+                           store_id: int, store_code: str) -> tuple[int, str, bool]:
     """
     Calculate theoretical store stock for a bestseller product.
     Returns (theoretical_qty, base_check_date, is_base_abnormal).
 
     Logic:
-      - Find most recent inventory_checks record (base).
-      - If no base: use current instore_qty, base_check_date = today.
-      - theoretical = base.actual_qty - SUM(sales since base.date)
+      - Find most recent inventory_checks record for this product + store (base).
+      - If no base: use current instore_qty for this store, base_check_date = today.
+      - theoretical = base.actual_qty - SUM(sales since base.date for this store)
                     + SUM(restock_in movements since base.date)
       - is_base_abnormal = base exists but base.date != yesterday.
+
     """
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
 
     cur.execute('''
         SELECT actual_qty, date AS check_date
         FROM inventory_checks
-        WHERE product_id = ?
+        WHERE product_id = ? AND store_id = ?
         ORDER BY date DESC
         LIMIT 1
-    ''', (product_id,))
+    ''', (product_id, store_id))
     base = cur.fetchone()
 
     if not base:
-        cur.execute('SELECT COALESCE(instore_qty, 0) FROM stock WHERE product_id = ?', (product_id,))
+        cur.execute(
+            'SELECT COALESCE(instore_qty, 0) FROM stock WHERE product_id = ? AND store_id = ?',
+            (product_id, store_id),
+        )
         row = cur.fetchone()
         return (row[0] if row else 0), today, False
 
@@ -45,16 +51,16 @@ def _calc_theoretical_qty(cur, product_id: int, today: str) -> tuple[int, str, b
     cur.execute('''
         SELECT COALESCE(SUM(qty_pos + qty_cash), 0)
         FROM daily_sales
-        WHERE product_id = ? AND date > ?
-    ''', (product_id, base_date))
+        WHERE product_id = ? AND date > ? AND store = ?
+    ''', (product_id, base_date, store_code))
     sales_since = cur.fetchone()[0] or 0
 
     cur.execute('''
         SELECT COALESCE(SUM(qty_change), 0)
         FROM stock_movements
         WHERE product_id = ? AND movement_type = 'restock_in'
-          AND location = 'store' AND date(created_at) > ?
-    ''', (product_id, base_date))
+          AND location = 'store' AND store_id = ? AND date(created_at) > ?
+    ''', (product_id, store_id, base_date))
     restock_since = cur.fetchone()[0] or 0
 
     theoretical = theoretical - sales_since + restock_since
@@ -68,7 +74,16 @@ def _calc_theoretical_qty(cur, product_id: int, today: str) -> tuple[int, str, b
 @login_required
 def inventory_check_today():
     today = date.today().isoformat()
-    con = get_db()
+    con   = get_db()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
     cur = con.cursor()
 
     cur.execute('''
@@ -78,17 +93,20 @@ def inventory_check_today():
                ic.id AS check_id, ic.actual_qty, ic.discrepancy,
                ic.base_check_date AS saved_base_check_date
         FROM products p
-        LEFT JOIN stock s ON s.product_id = p.id
-        LEFT JOIN inventory_checks ic ON ic.product_id = p.id AND ic.date = ?
+        LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?
+        LEFT JOIN inventory_checks ic
+               ON ic.product_id = p.id AND ic.date = ? AND ic.store_id = ?
         WHERE p.is_bestseller = 1
         ORDER BY p.ip_series, p.sku DESC
-    ''', (today,))
+    ''', (store_id, today, store_id))
     rows = [dict(r) for r in cur.fetchall()]
 
     result = []
     for row in rows:
         pid = row['product_id']
-        theoretical_qty, base_check_date, is_base_abnormal = _calc_theoretical_qty(cur, pid, today)
+        theoretical_qty, base_check_date, is_base_abnormal = _calc_theoretical_qty(
+            cur, pid, today, store_id, store_code
+        )
         result.append({
             **row,
             'theoretical_qty':  theoretical_qty,
@@ -105,17 +123,27 @@ def inventory_check_today():
 def submit_inventory_check():
     """
     Batch-submit inventory check records.
-    Body: { checks: [{ product_id, actual_qty }] }
-    (date, product_id) conflict returns 409 — no overwrite.
+    Body: { store_code: '...', checks: [{ product_id, actual_qty }] }
+    (date, product_id, store_id) conflict returns 409 — no overwrite.
     """
     data   = request.get_json() or {}
     checks = data.get('checks', [])
     if not checks:
         return jsonify({'error': 'checks 不能为空'}), 400
 
+    con        = get_db()
+    store_code = (data.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
+
     today      = date.today().isoformat()
     created_by = request.jwt_payload.get('sub')
-    con = get_db()
     cur = con.cursor()
 
     saved     = 0
@@ -128,17 +156,19 @@ def submit_inventory_check():
         if pid is None or actual_qty is None:
             continue
 
-        theoretical_qty, base_check_date, _ = _calc_theoretical_qty(cur, int(pid), today)
+        theoretical_qty, base_check_date, _ = _calc_theoretical_qty(
+            cur, int(pid), today, store_id, store_code
+        )
         discrepancy = int(actual_qty) - theoretical_qty
 
         try:
             cur.execute('''
                 INSERT INTO inventory_checks
                     (date, product_id, theoretical_qty, actual_qty, discrepancy,
-                     base_check_date, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     base_check_date, created_by, store_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (today, int(pid), theoretical_qty, int(actual_qty),
-                  discrepancy, base_check_date, created_by))
+                  discrepancy, base_check_date, created_by, store_id))
             saved += 1
             results.append({'product_id': pid, 'discrepancy': discrepancy})
         except sqlite3.IntegrityError:
@@ -161,15 +191,24 @@ def submit_inventory_check():
 @login_required
 def get_bestsellers():
     con = get_db()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
     cur = con.cursor()
     cur.execute('''
         SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
                COALESCE(s.instore_qty, 0) AS instore_qty
         FROM products p
-        LEFT JOIN stock s ON s.product_id = p.id
+        LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?
         WHERE p.is_bestseller = 1
         ORDER BY p.ip_series, p.sku DESC
-    ''')
+    ''', (store_id,))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
@@ -207,15 +246,25 @@ def history_restock():
         return jsonify({'error': 'page and page_size must be integers'}), 400
     offset = (page - 1) * page_size
 
-    filters = []
-    params  = []
+    con = get_db()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
+
+    filters = ['rs.store_id = ?']
+    params  = [store_id]
     if date_from:
         filters.append('rs.date >= ?'); params.append(date_from)
     if date_to:
         filters.append('rs.date <= ?'); params.append(date_to)
-    where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
+    where = 'WHERE ' + ' AND '.join(filters)
 
-    con = get_db()
     cur = con.cursor()
     cur.execute(f'SELECT COUNT(*) FROM restock_sessions rs {where}', params)
     total = cur.fetchone()[0]
@@ -246,8 +295,19 @@ def history_inventory_check():
     product_id       = request.args.get('product_id', type=int)
     only_discrepancy = request.args.get('only_discrepancy', '0') == '1'
 
-    filters = []
-    params  = []
+    con = get_db()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not store_code:
+        con.close()
+        return jsonify({'error': 'store_code is required'}), 400
+    resolved = _resolve_store(con, store_code)
+    if resolved is None:
+        con.close()
+        return jsonify({'error': 'Invalid store code'}), 400
+    store_id, store_code = resolved
+
+    filters = ['ic.store_id = ?']
+    params  = [store_id]
     if date_from:
         filters.append('ic.date >= ?'); params.append(date_from)
     if date_to:
@@ -256,9 +316,8 @@ def history_inventory_check():
         filters.append('ic.product_id = ?'); params.append(product_id)
     if only_discrepancy:
         filters.append('ic.discrepancy != 0')
-    where = ('WHERE ' + ' AND '.join(filters)) if filters else ''
+    where = 'WHERE ' + ' AND '.join(filters)
 
-    con = get_db()
     cur = con.cursor()
     cur.execute(f'''
         SELECT ic.id, ic.date, ic.product_id,

@@ -27,7 +27,6 @@ interface StockRow {
   ip_series: string
   product_type: string
   boxes_per_dan: number | null
-  dan_per_xiang: number | null
   upstairs_qty: number
   instore_qty: number
   last_updated: string
@@ -69,24 +68,12 @@ const TXN_COLORS: Record<string, string> = {
   adjust:           'orange',
 }
 
-/** Format a raw qty number into a human-readable breakdown based on product type. */
-function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan' | 'dan_per_xiang'>): string {
+/** Format a raw qty number into 端/盒 breakdown for blind boxes, or plain 件 for others. */
+function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan'>): string {
   if (row.product_type !== '盲盒' || !row.boxes_per_dan) {
     return `${qty} 件`
   }
-  const bpd = row.boxes_per_dan
-  const dpx = row.dan_per_xiang
-  if (dpx) {
-    const xiang = Math.floor(qty / (bpd * dpx))
-    const drem  = Math.floor((qty % (bpd * dpx)) / bpd)
-    const he    = qty % bpd
-    return [
-      xiang > 0 ? `${xiang}箱` : '',
-      drem  > 0 ? `${drem}端`  : '',
-      he    > 0 ? `${he}盒`    : '',
-      xiang === 0 && drem === 0 && he === 0 ? '0盒' : '',
-    ].filter(Boolean).join(' ')
-  }
+  const bpd  = row.boxes_per_dan
   const duan = Math.floor(qty / bpd)
   const he   = qty % bpd
   return [
@@ -105,7 +92,8 @@ function stockStatus(total: number) {
 
 export default function StockPage() {
   const isMobile = useIsMobile()
-  const { series } = useAppStore()
+  const { series, selectedStore } = useAppStore()
+  const sc = selectedStore?.code
   const [stock,    setStock]   = useState<StockRow[]>([])
   const [txns,     setTxns]    = useState<Transaction[]>([])
   const [summary,  setSummary] = useState<Summary | null>(null)
@@ -124,31 +112,33 @@ export default function StockPage() {
   const [exporting, setExporting] = useState(false)
 
   const loadStock = useCallback(() => {
+    if (!sc) return
     setLoading(true)
-    const params: Record<string, string | number> = { page, page_size: PAGE_SIZE }
+    const params: Record<string, string | number> = { page, page_size: PAGE_SIZE, store_code: sc }
     if (q) params.q = q
     if (filterSeries) params.series = filterSeries
     Promise.all([
       client.get('/stock', { params }),
-      client.get('/stock/summary'),
+      client.get('/stock/summary', { params: { store_code: sc } }),
     ]).then(([sResp, sumResp]) => {
       setStock(sResp.data.items)
       setTotal(sResp.data.total)
       setSummary(sumResp.data)
     }).finally(() => setLoading(false))
-  }, [q, filterSeries, page])
+  }, [q, filterSeries, page, sc])
 
   const loadTxns = useCallback(() => {
-    client.get('/stock/transactions', { params: { limit: 100 } })
+    if (!sc) return
+    client.get('/stock/transactions', { params: { limit: 100, store_code: sc } })
       .then(r => setTxns(r.data))
-  }, [])
+  }, [sc])
 
   useEffect(() => { setPage(1) }, [q, filterSeries])
   useEffect(() => { loadStock() }, [loadStock])
 
   async function handleDeleteRows() {
     try {
-      await client.delete('/stock/rows', { data: selected })
+      await client.delete('/stock/rows', { data: { store_code: sc, product_ids: selected } })
       message.success(`Removed ${selected.length} stock records`)
       setSelected([])
       loadStock()
@@ -163,6 +153,7 @@ export default function StockPage() {
       const params = new URLSearchParams()
       if (filterSeries) params.set('series', filterSeries)
       if (q) params.set('q', q)
+      if (sc) params.set('store_code', sc)
       const res = await client.get(`/stock/export?${params}`, { responseType: 'blob' })
       const url = window.URL.createObjectURL(new Blob([res.data]))
       const a = document.createElement('a')
@@ -181,7 +172,7 @@ export default function StockPage() {
 
   async function saveNotes(productId: number, notes: string) {
     try {
-      await client.patch(`/stock/${productId}`, { notes })
+      await client.patch(`/stock/${productId}`, { notes, store_code: sc })
       setEditingNotes(null)
       setStock(prev => prev.map(r => r.id === productId ? { ...r, stock_notes: notes } : r))
     } catch {
@@ -552,7 +543,7 @@ export default function StockPage() {
 
       <RestockModal
         open={restockOpen}
-        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku, product_type: quickProduct.product_type, boxes_per_dan: quickProduct.boxes_per_dan, dan_per_xiang: quickProduct.dan_per_xiang } : undefined}
+        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku, product_type: quickProduct.product_type, boxes_per_dan: quickProduct.boxes_per_dan } : undefined}
         onClose={() => { setRestockOpen(false); setQuickProduct(null) }}
         onDone={() => { setRestockOpen(false); setQuickProduct(null); loadStock() }}
       />

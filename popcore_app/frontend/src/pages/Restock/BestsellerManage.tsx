@@ -6,6 +6,7 @@ import {
 import { StarOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -25,6 +26,7 @@ interface Product {
 export default function BestsellerManage() {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
+  const { selectedStore } = useAppStore()
 
   const [products,      setProducts]      = useState<Product[]>([])
   const [loading,       setLoading]       = useState(false)
@@ -35,14 +37,16 @@ export default function BestsellerManage() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fetchBestsellers = useCallback(async () => {
+    const sc = selectedStore?.code
+    if (!sc) return
     setLoading(true)
     try {
-      const { data } = await client.get<Product[]>('/bestsellers')
+      const { data } = await client.get<Product[]>('/bestsellers', { params: { store_code: sc } })
       setProducts(data)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedStore?.code])
 
   const fetchSearch = useCallback(async (q: string) => {
     setLoading(true)

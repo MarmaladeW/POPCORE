@@ -21,6 +21,7 @@ import {
   type Shift,
 } from './scheduleApi'
 import ShiftModal from './ShiftModal'
+import { useAppStore } from '../../store'
 
 const EMPLOYEE_COLORS = [
   '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6',
@@ -36,6 +37,7 @@ type ViewType = 'dayGridMonth' | 'timeGridWeek'
 
 export default function ManagerCalendar() {
   const calRef = useRef<FullCalendar>(null)
+  const { selectedStore } = useAppStore()
   const [employees, setEmployees] = useState<Employee[]>([])
   const [filterEmpId, setFilterEmpId] = useState<number | null>(null)
   const [allEvents, setAllEvents] = useState<EventInput[]>([])
@@ -75,9 +77,10 @@ export default function ManagerCalendar() {
 
   const loadEvents = useCallback(
     async (start: string, end: string) => {
+      const sc = selectedStore?.code
       const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-        getAllAvailability(start, end),
-        getShifts({ start, end }),
+        getAllAvailability(start, end, sc),
+        getShifts({ start, end, store_code: sc }),
       ])
 
       const empIdToIdx: Record<number, number> = {}

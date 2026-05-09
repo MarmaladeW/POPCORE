@@ -46,7 +46,6 @@ def export():
             p.hidden,
             p.style_notes,
             p.boxes_per_dan,
-            p.dan_per_xiang,
             COALESCE(s.upstairs_qty, 0)  AS upstairs_qty,
             COALESCE(s.instore_qty, 0)   AS instore_qty,
             (COALESCE(s.upstairs_qty, 0) + COALESCE(s.instore_qty, 0)) AS total_qty,
@@ -88,7 +87,6 @@ def export():
         ('隐藏款',        8),
         ('款式特点',     20),
         ('每端盒数',      8),
-        ('每箱端数',      8),
         ('楼上(盒/件)',   10),
         ('店内(盒/件)',   10),
         ('合计(盒/件)',   10),
@@ -124,7 +122,6 @@ def export():
             row['hidden'],
             row['style_notes'],
             row['boxes_per_dan'],
-            row['dan_per_xiang'],
             row['upstairs_qty'],
             row['instore_qty'],
             row['total_qty'],
@@ -141,7 +138,7 @@ def export():
             # Number formatting
             if col_idx == 7 and value is not None:   # price
                 cell.number_format = price_fmt
-            elif col_idx in (13, 14, 15, 16, 17) and value is not None:  # qty/ratio columns
+            elif col_idx in (13, 14, 15, 16) and value is not None:  # qty columns (每端盒数, 楼上, 店内, 合计)
                 cell.number_format = int_fmt
 
         ws.row_dimensions[row_idx].height = 18

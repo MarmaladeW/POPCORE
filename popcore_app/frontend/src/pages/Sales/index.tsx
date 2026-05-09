@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
+import { useAppStore } from '../../store'
 import DailyReportEntry from './DailyReportEntry'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
@@ -49,6 +50,8 @@ interface SummaryRow {
 export default function SalesPage() {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
+  const { selectedStore } = useAppStore()
+  const sc = selectedStore?.code
 
   const [date,    setDate]    = useState<Dayjs>(dayjs())
   const [sales,   setSales]   = useState<SaleRow[]>([])
@@ -67,15 +70,17 @@ export default function SalesPage() {
   const dateStr = date.format('YYYY-MM-DD')
 
   const loadSales = useCallback(() => {
+    if (!sc) return
     setLoading(true)
-    client.get('/sales', { params: { date: dateStr } })
+    client.get('/sales', { params: { date: dateStr, store_code: sc } })
       .then(r => setSales(r.data))
       .finally(() => setLoading(false))
-  }, [dateStr])
+  }, [dateStr, sc])
 
   const loadSummary = useCallback(() => {
-    client.get('/sales/summary').then(r => setSummary(r.data))
-  }, [])
+    if (!sc) return
+    client.get('/sales/summary', { params: { store_code: sc } }).then(r => setSummary(r.data))
+  }, [sc])
 
   useEffect(() => { loadSales(); loadSummary() }, [loadSales, loadSummary])
 
@@ -91,7 +96,7 @@ export default function SalesPage() {
 
   async function addProduct(pid: number) {
     try {
-      await client.post('/sales/add_product', { product_id: pid, date: dateStr })
+      await client.post('/sales/add_product', { product_id: pid, date: dateStr, store_code: sc })
       setAddSearch(''); setAddOptions([])
       loadSales()
     } catch { message.error('Failed to add product') }
@@ -106,6 +111,7 @@ export default function SalesPage() {
         qty_pos: pendingPos,
         qty_cash: pendingCash,
         notes: '',
+        store_code: sc,
       })
       setPendingAdd(null); setAddSearch(''); setAddOptions([])
       setPendingPos(0); setPendingCash(0)
@@ -116,7 +122,7 @@ export default function SalesPage() {
   async function doExport() {
     try {
       const res = await client.get('/sales/export', {
-        params: { from: exportFrom.format('YYYY-MM-DD'), to: exportTo.format('YYYY-MM-DD') },
+        params: { from: exportFrom.format('YYYY-MM-DD'), to: exportTo.format('YYYY-MM-DD'), store_code: sc },
         responseType: 'blob',
       })
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
@@ -150,7 +156,7 @@ export default function SalesPage() {
     ))
     setLocalEdits(prev => { const n = { ...prev }; delete n[row.id]; return n })
     try {
-      await client.post('/sales/upsert', { product_id: row.product_id, date: dateStr, qty_pos: newPos, qty_cash: newCash, notes: row.notes })
+      await client.post('/sales/upsert', { product_id: row.product_id, date: dateStr, qty_pos: newPos, qty_cash: newCash, notes: row.notes, store_code: sc })
     } catch { message.error('Update failed'); loadSales() }
   }
 
@@ -164,7 +170,7 @@ export default function SalesPage() {
 
   async function clearDay() {
     try {
-      await client.delete('/sales/clear_day', { params: { date: dateStr } })
+      await client.delete('/sales/clear_day', { params: { date: dateStr, store_code: sc } })
       message.success('Cleared')
       loadSales()
     } catch { message.error('Failed') }
@@ -178,7 +184,7 @@ export default function SalesPage() {
   // Weekly bar chart data (last 7 days from summary)
   const weeklyData = summary.slice(0, 7).reverse().map(r => ({
     date: dayjs(r.date).format('ddd MM/DD'),
-    Revenue: r.total_sold, // proxy — no revenue in summary, use qty
+    UnitsSold: r.total_sold,
   }))
 
   // Top products for today
@@ -411,14 +417,14 @@ export default function SalesPage() {
       {/* Charts */}
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         <Col xs={24} lg={12}>
-          <Card title="Weekly Revenue (Last 7 Days)" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
+          <Card title="Weekly Units Sold (Last 7 Days)" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} />
                 <RechartTooltip />
-                <Bar dataKey="Revenue" fill="#6366F1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="UnitsSold" fill="#6366F1" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </Card>

@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 
 type Op = 'restock_upstairs' | 'ru_dian' | 'adjust'
 
@@ -14,7 +15,6 @@ interface InitialProduct {
   sku: string
   product_type?: string
   boxes_per_dan?: number | null
-  dan_per_xiang?: number | null
 }
 
 interface Props {
@@ -25,6 +25,7 @@ interface Props {
 }
 
 export default function RestockModal({ open, onClose, onDone, initialProduct }: Props) {
+  const { selectedStore } = useAppStore()
   const [step, setStep]       = useState(0)
   const [op, setOp]           = useState<Op>('restock_upstairs')
   const [date, setDate]       = useState(dayjs())
@@ -35,8 +36,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
   const [result, setResult]   = useState<any>(null)
   const [loading, setLoading] = useState(false)
 
-  // Multi-unit inputs: 箱, 端, 盒
-  const [qXiang, setQXiang] = useState<number>(0)
+  // Multi-unit inputs: 端, 盒
   const [qDan,   setQDan]   = useState<number>(0)
   const [qHe,    setQHe]    = useState<number>(0)
   // Adjust: new absolute qty (in 盒/units)
@@ -45,7 +45,6 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
 
   const isBlindBox = product?.product_type === '盲盒'
   const bpd: number = (isBlindBox && product?.boxes_per_dan) ? product.boxes_per_dan : 1
-  const dpx: number = (isBlindBox && product?.dan_per_xiang) ? product.dan_per_xiang : 0
 
   // Total qty in base unit (盒 for blind box, units for non-blind box)
   const totalQty = useMemo(() => {
@@ -54,8 +53,8 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
       return newQty
     }
     if (!isBlindBox) return qDan  // non-blind box: just a plain integer
-    return qXiang * dpx * bpd + qDan * bpd + qHe
-  }, [op, isBlindBox, qXiang, qDan, qHe, bpd, dpx, newQty])
+    return qDan * bpd + qHe
+  }, [op, isBlindBox, qDan, qHe, bpd, newQty])
 
   // Pre-seed product when opened from a row's quick-adjust button
   useEffect(() => {
@@ -69,7 +68,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
 
   function reset() {
     setStep(0); setProduct(null); setSearch(''); setNotes(''); setResult(null)
-    setDate(dayjs()); setQXiang(0); setQDan(0); setQHe(0); setNewQty(0)
+    setDate(dayjs()); setQDan(0); setQHe(0); setNewQty(0)
   }
 
   async function searchProducts(v: string) {
@@ -88,19 +87,20 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
     if (op !== 'adjust' && totalQty <= 0) { message.warning('数量必须大于0'); return }
     setLoading(true)
     const dateStr = date.format('YYYY-MM-DD')
+    const sc = selectedStore?.code
     try {
       let resp
       if (op === 'adjust') {
         resp = await client.post('/stock/adjust', {
-          product_id: product.id, location, new_qty: totalQty, date: dateStr, notes,
+          product_id: product.id, location, new_qty: totalQty, date: dateStr, notes, store_code: sc,
         })
       } else if (op === 'ru_dian') {
         resp = await client.post('/stock/ru_dian', {
-          product_id: product.id, qty: totalQty, date: dateStr, notes,
+          product_id: product.id, qty: totalQty, date: dateStr, notes, store_code: sc,
         })
       } else {
         resp = await client.post('/stock/restock_upstairs', {
-          product_id: product.id, qty: totalQty, date: dateStr, notes,
+          product_id: product.id, qty: totalQty, date: dateStr, notes, store_code: sc,
         })
       }
       setResult(resp.data)
@@ -184,16 +184,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
     // Blind box: multi-unit input
     return (
       <div>
-        <div style={{ display: 'grid', gridTemplateColumns: dpx > 0 ? '1fr 1fr 1fr' : '1fr 1fr', gap: 8, marginBottom: 8 }}>
-          {dpx > 0 && (
-            <InputNumber
-              value={qXiang}
-              onChange={v => setQXiang(v ?? 0)}
-              addonBefore="箱"
-              style={{ width: '100%' }}
-              min={0}
-            />
-          )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
           <InputNumber
             value={qDan}
             onChange={v => setQDan(v ?? 0)}
@@ -260,7 +251,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
           {product && (
             <div style={{ fontSize: 11, color: '#9ca3af', background: '#f9fafb', borderRadius: 6, padding: '4px 10px' }}>
               {product.product_type === '盲盒'
-                ? `盲盒 · ${product.boxes_per_dan ?? '?'}盒/端${product.dan_per_xiang ? ` · ${product.dan_per_xiang}端/箱` : ''}`
+                ? `盲盒 · ${product.boxes_per_dan ?? '?'}盒/端`
                 : `非盲盒 · ${product.product_type || '—'}`}
             </div>
           )}

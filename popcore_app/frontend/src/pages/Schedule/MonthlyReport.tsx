@@ -3,6 +3,7 @@ import { DatePicker, Table, Typography, Tooltip, Spin, Alert } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { getMonthlyReport, type EmployeeMonthlyHours } from './scheduleApi'
+import { useAppStore } from '../../store'
 
 dayjs.extend(isoWeek)
 
@@ -26,14 +27,15 @@ export default function MonthlyReport() {
   const [data, setData] = useState<EmployeeMonthlyHours[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { selectedStore } = useAppStore()
 
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getMonthlyReport(month.year(), month.month() + 1)
+    getMonthlyReport(month.year(), month.month() + 1, selectedStore?.code)
       .then((r) => { setData(r.employees); setLoading(false) })
       .catch(() => { setError('Failed to load report'); setLoading(false) })
-  }, [month])
+  }, [month, selectedStore?.code])
 
   const weeks = weeksInMonth(month.year(), month.month() + 1)
 

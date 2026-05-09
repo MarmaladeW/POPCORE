@@ -8,6 +8,7 @@ import {
   type Employee,
   type Shift,
 } from './scheduleApi'
+import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -41,6 +42,7 @@ export default function ShiftModal({
 }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
+  const { selectedStore } = useAppStore()
 
   const availByEmpId: Record<number, Availability> = {}
   for (const a of availForDate) availByEmpId[a.employee_id] = a
@@ -88,6 +90,7 @@ export default function ShiftModal({
           start_time:  values.start_time as string,
           end_time:    values.end_time   as string,
           notes:       values.notes ?? '',
+          store_code:  selectedStore?.code,
         })
       }
       msgApi.success('Shift saved')

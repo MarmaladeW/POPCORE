@@ -423,7 +423,7 @@ def update_product(pid):
     data = request.get_json()
     allowed = {'jizhanming', 'price', 'notes', 'name_cn_en', 'product_type',
                'brand', 'release_date', 'edition_size', 'channel', 'hidden',
-               'style_notes', 'boxes_per_dan', 'dan_per_xiang', 'ip_series',
+               'style_notes', 'boxes_per_dan', 'ip_series',
                'hidden_count', 'hidden_has_small', 'hidden_has_large',
                'hidden_prob_small', 'hidden_prob_large', 'is_bestseller'}
     updates = {k: v for k, v in data.items() if k in allowed}
@@ -476,7 +476,6 @@ def create_product():
     style_notes  = (data.get('style_notes') or '').strip()
     notes        = (data.get('notes') or '').strip()
     boxes_per_dan_raw = data.get('boxes_per_dan')
-    dan_per_xiang_raw = data.get('dan_per_xiang')
 
     if not sku and not jizhanming and not name_cn_en:
         return jsonify({'error': '至少填写SKU、记账名或产品名称'}), 400
@@ -498,7 +497,11 @@ def create_product():
         cur.execute("SELECT sku FROM products WHERE sku LIKE 'SP%' ORDER BY sku DESC LIMIT 1")
         row = cur.fetchone()
         if row:
-            last_num = int(row[0].replace('SP', '').lstrip('0') or '0')
+            try:
+                last_num = int(row[0].replace('SP', '').lstrip('0') or '0')
+            except ValueError:
+                con.close()
+                return jsonify({'error': 'Could not auto-generate SKU: existing SKU format is non-numeric. Please provide a SKU manually.'}), 400
             sku = f'SP{last_num + 1:05d}'
         else:
             sku = 'SP00001'
@@ -507,20 +510,16 @@ def create_product():
         boxes_per_dan = int(boxes_per_dan_raw) if boxes_per_dan_raw not in (None, '', 'null') else None
     except (TypeError, ValueError):
         boxes_per_dan = None
-    try:
-        dan_per_xiang = int(dan_per_xiang_raw) if dan_per_xiang_raw not in (None, '', 'null') else None
-    except (TypeError, ValueError):
-        dan_per_xiang = None
 
     try:
         cur.execute('''
             INSERT INTO products (sku, name_cn_en, jizhanming, price, ip_series, product_type,
                                   brand, release_date, edition_size, channel, hidden,
-                                  style_notes, notes, boxes_per_dan, dan_per_xiang, search_blob)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  style_notes, notes, boxes_per_dan, search_blob)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (sku, name_cn_en, jizhanming, price, ip_series, product_type,
               brand, release_date, edition_size, channel, hidden, style_notes, notes,
-              boxes_per_dan, dan_per_xiang, search_blob))
+              boxes_per_dan, search_blob))
         new_id = cur.lastrowid
         con.commit()
     except sqlite3.IntegrityError:
