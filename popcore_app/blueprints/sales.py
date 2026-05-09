@@ -396,18 +396,18 @@ def submit_daily_report():
                 txn_count += 1
 
             elif section == 'stock_in':
-                box_size  = int(item.get('box_size',  1) or 1)
-                num_boxes = int(item.get('num_boxes', 1) or 1)
-                total_dan = box_size * num_boxes
+                box_size   = int(item.get('box_size',  1) or 1)
+                num_boxes  = int(item.get('num_boxes', 1) or 1)
+                total_duan = box_size * num_boxes
                 cur.execute('SELECT product_type, boxes_per_dan FROM products WHERE id=?', (pid,))
                 prow = cur.fetchone()
                 bpd  = (prow['boxes_per_dan'] or 1) if (prow and prow['product_type'] == '盲盒') else 1
-                total_units = total_dan * bpd
+                total_units = total_duan * bpd
                 cur.execute('''
                     INSERT INTO stock_transactions
                         (product_id, txn_type, qty, location, date, notes, store_id)
                     VALUES (?, 'report_stock_in', ?, 'upstairs→instore', ?, ?, ?)
-                ''', (pid, total_units, d, notes or f'{num_boxes}箱×{box_size}端', store_id))
+                ''', (pid, total_units, d, notes or f'{num_boxes}端', store_id))
                 cur.execute('''
                     INSERT INTO stock (product_id, store_id, upstairs_qty, instore_qty)
                     VALUES (?, ?, 0, ?)

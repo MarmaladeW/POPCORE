@@ -27,7 +27,6 @@ interface StockRow {
   ip_series: string
   product_type: string
   boxes_per_dan: number | null
-  dan_per_xiang: number | null
   upstairs_qty: number
   instore_qty: number
   last_updated: string
@@ -69,24 +68,12 @@ const TXN_COLORS: Record<string, string> = {
   adjust:           'orange',
 }
 
-/** Format a raw qty number into a human-readable breakdown based on product type. */
-function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan' | 'dan_per_xiang'>): string {
+/** Format a raw qty number into 端/盒 breakdown for blind boxes, or plain 件 for others. */
+function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan'>): string {
   if (row.product_type !== '盲盒' || !row.boxes_per_dan) {
     return `${qty} 件`
   }
-  const bpd = row.boxes_per_dan
-  const dpx = row.dan_per_xiang
-  if (dpx) {
-    const xiang = Math.floor(qty / (bpd * dpx))
-    const drem  = Math.floor((qty % (bpd * dpx)) / bpd)
-    const he    = qty % bpd
-    return [
-      xiang > 0 ? `${xiang}箱` : '',
-      drem  > 0 ? `${drem}端`  : '',
-      he    > 0 ? `${he}盒`    : '',
-      xiang === 0 && drem === 0 && he === 0 ? '0盒' : '',
-    ].filter(Boolean).join(' ')
-  }
+  const bpd  = row.boxes_per_dan
   const duan = Math.floor(qty / bpd)
   const he   = qty % bpd
   return [
@@ -556,7 +543,7 @@ export default function StockPage() {
 
       <RestockModal
         open={restockOpen}
-        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku, product_type: quickProduct.product_type, boxes_per_dan: quickProduct.boxes_per_dan, dan_per_xiang: quickProduct.dan_per_xiang } : undefined}
+        initialProduct={quickProduct ? { id: quickProduct.id, jizhanming: quickProduct.jizhanming, sku: quickProduct.sku, product_type: quickProduct.product_type, boxes_per_dan: quickProduct.boxes_per_dan } : undefined}
         onClose={() => { setRestockOpen(false); setQuickProduct(null) }}
         onDone={() => { setRestockOpen(false); setQuickProduct(null); loadStock() }}
       />

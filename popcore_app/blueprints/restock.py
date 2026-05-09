@@ -17,7 +17,7 @@ def _restock_session_items(cur, sid, store_id):
         SELECT ri.id, ri.product_id, ri.requested_qty, ri.warehouse_stock_snapshot,
                ri.found_qty, ri.pick_status,
                p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               p.boxes_per_dan, p.dan_per_xiang,
+               p.boxes_per_dan,
                COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                COALESCE(s.instore_qty,  0) AS instore_qty
         FROM restock_items ri

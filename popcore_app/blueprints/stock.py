@@ -88,7 +88,7 @@ def get_all_stock():
             total = cur.fetchone()[0]
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
-                   p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
+                   p.ip_series, p.product_type, p.boxes_per_dan,
                    COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                    COALESCE(s.instore_qty,  0) AS instore_qty,
                    COALESCE(s.last_updated, '') AS last_updated,
@@ -108,7 +108,7 @@ def get_all_stock():
             total = cur.fetchone()[0]
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
-                   p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
+                   p.ip_series, p.product_type, p.boxes_per_dan,
                    s.upstairs_qty, s.instore_qty,
                    s.last_updated, COALESCE(s.notes, '') AS stock_notes
             FROM stock s
@@ -136,7 +136,7 @@ def get_stock(product_id):
     cur = con.cursor()
     cur.execute('''
         SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
-               p.ip_series, p.product_type, p.boxes_per_dan, p.dan_per_xiang,
+               p.ip_series, p.product_type, p.boxes_per_dan,
                COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                COALESCE(s.instore_qty,  0) AS instore_qty,
                COALESCE(s.last_updated, '') AS last_updated,
@@ -363,7 +363,7 @@ def get_transactions():
     cur.execute(f'''
         SELECT t.id, t.product_id, t.txn_type, t.qty, t.location,
                t.date, t.notes, t.created_at, t.store_id,
-               p.jizhanming, p.sku, p.name_cn_en, p.boxes_per_dan, p.dan_per_xiang, p.product_type
+               p.jizhanming, p.sku, p.name_cn_en, p.boxes_per_dan, p.product_type
         FROM stock_transactions t
         JOIN products p ON p.id = t.product_id
         {where}
@@ -444,7 +444,7 @@ def export_stock():
 
     cur.execute(f'''
         SELECT p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               p.price, p.boxes_per_dan, p.dan_per_xiang,
+               p.price, p.boxes_per_dan,
                COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                COALESCE(s.instore_qty,  0) AS instore_qty,
                COALESCE(s.last_updated, '') AS last_updated,
@@ -457,12 +457,12 @@ def export_stock():
     rows = cur.fetchall()
     con.close()
 
-    header = 'SKU,记账名,产品名称,系列,类型,单价,每端盒数,每箱端数,楼上(盒/件),店内(盒/件),更新时间,备注'
+    header = 'SKU,记账名,产品名称,系列,类型,单价,每端盒数,楼上(盒/件),店内(盒/件),更新时间,备注'
     lines  = ['﻿' + header]
     for r in rows:
         lines.append(','.join(esc_csv(v) for v in [
             r['sku'], r['jizhanming'], r['name_cn_en'], r['ip_series'],
-            r['product_type'], r['price'], r['boxes_per_dan'], r['dan_per_xiang'],
+            r['product_type'], r['price'], r['boxes_per_dan'],
             r['upstairs_qty'], r['instore_qty'], r['last_updated'], r['stock_notes']
         ]))
 

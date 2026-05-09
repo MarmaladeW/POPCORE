@@ -51,7 +51,6 @@ interface Product {
   release_date?: string
   notes?: string
   boxes_per_dan?: number | null
-  dan_per_xiang?: number | null
   hidden_count?: string
   hidden_has_small?: number
   hidden_has_large?: number
@@ -106,7 +105,6 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       } else {
         // For non-blind box, clear hierarchy fields so they don't pollute the record
         payload.boxes_per_dan = null
-        payload.dan_per_xiang = null
       }
       if (isEdit) {
         await client.patch(`/products/${product!.id}`, payload)
@@ -242,27 +240,16 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
             <Divider style={{ margin: '4px 0 12px', borderColor: '#e0e7ff' }}>
               <span style={{ fontSize: 12, color: '#6366F1', fontWeight: 600 }}>盲盒规格 Blind Box Ratios</span>
             </Divider>
-            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0 16px' }}>
-              <Form.Item name="boxes_per_dan" label="盒/端 (Boxes per Display)">
-                <InputNumber
-                  style={{ width: '100%', minHeight: 36 }}
-                  min={1}
-                  placeholder="e.g. 12"
-                />
-              </Form.Item>
-              <Form.Item name="dan_per_xiang" label="端/箱 (Displays per Carton)">
-                <InputNumber
-                  style={{ width: '100%', minHeight: 36 }}
-                  min={1}
-                  placeholder="e.g. 4"
-                />
-              </Form.Item>
-            </div>
+            <Form.Item name="boxes_per_dan" label="盒/端 (Boxes per Display)">
+              <InputNumber
+                style={{ width: '100%', minHeight: 36 }}
+                min={1}
+                placeholder="e.g. 12"
+              />
+            </Form.Item>
             <div style={{ background: '#f0f0ff', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#4338ca' }}>
               {(() => {
                 const bpd = form.getFieldValue('boxes_per_dan')
-                const dpx = form.getFieldValue('dan_per_xiang')
-                if (bpd && dpx) return `1箱 = ${dpx}端 = ${dpx * bpd}盒`
                 if (bpd) return `1端 = ${bpd}盒`
                 return '填写后将显示换算关系'
               })()}

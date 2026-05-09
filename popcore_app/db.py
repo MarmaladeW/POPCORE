@@ -268,6 +268,65 @@ def _migration_add_store_id_to_stock_movements(con, cur):
         con.isolation_level = ''
 
 
+def _migration_drop_dan_per_xiang_column(con, cur):
+    """Remove dan_per_xiang from products — carton (箱) level removed, hierarchy is now 盒/端 only."""
+    cur.execute("PRAGMA table_info(products)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'dan_per_xiang' not in cols:
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('drop_dan_per_xiang_column')")
+        return
+    con.isolation_level = None
+    try:
+        cur.execute('PRAGMA foreign_keys = OFF')
+        cur.execute('BEGIN')
+        cur.execute('DROP TABLE IF EXISTS products_new')
+        cur.execute('''
+            CREATE TABLE products_new (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku               TEXT UNIQUE,
+                name_cn_en        TEXT,
+                jizhanming        TEXT,
+                price             REAL,
+                ip_series         TEXT,
+                product_type      TEXT,
+                brand             TEXT,
+                release_date      TEXT,
+                edition_size      TEXT,
+                channel           TEXT,
+                hidden            TEXT,
+                style_notes       TEXT,
+                notes             TEXT DEFAULT '',
+                search_blob       TEXT,
+                boxes_per_dan     INTEGER,
+                hidden_count      TEXT    NOT NULL DEFAULT '0',
+                hidden_has_small  INTEGER NOT NULL DEFAULT 0,
+                hidden_has_large  INTEGER NOT NULL DEFAULT 0,
+                hidden_prob_small TEXT    NOT NULL DEFAULT '',
+                hidden_prob_large TEXT    NOT NULL DEFAULT '',
+                is_bestseller     INTEGER NOT NULL DEFAULT 0
+            )
+        ''')
+        cur.execute('''
+            INSERT INTO products_new
+            SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
+                   brand, release_date, edition_size, channel, hidden, style_notes, notes,
+                   search_blob, boxes_per_dan, hidden_count, hidden_has_small, hidden_has_large,
+                   hidden_prob_small, hidden_prob_large, is_bestseller
+            FROM products
+        ''')
+        cur.execute('DROP TABLE products')
+        cur.execute('ALTER TABLE products_new RENAME TO products')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)')
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('drop_dan_per_xiang_column')")
+        cur.execute('COMMIT')
+    except Exception:
+        cur.execute('ROLLBACK')
+        raise
+    finally:
+        cur.execute('PRAGMA foreign_keys = ON')
+        con.isolation_level = ''
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -279,6 +338,7 @@ def _get_migrations():
         ('add_store_id_to_shifts',               _migration_add_store_id_to_shifts),
         ('add_store_id_to_availability',         _migration_add_store_id_to_availability),
         ('add_store_id_to_stock_movements',      _migration_add_store_id_to_stock_movements),
+        ('drop_dan_per_xiang_column',            _migration_drop_dan_per_xiang_column),
     ]
 
 
@@ -400,12 +460,6 @@ def migrate_db():
 
     # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒'
     cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
-
-    # ── Product-type schema: add dan_per_xiang ─────────────────────────────
-    cur.execute("PRAGMA table_info(products)")
-    existing = {r['name'] for r in cur.fetchall()}
-    if 'dan_per_xiang' not in existing:
-        cur.execute('ALTER TABLE products ADD COLUMN dan_per_xiang INTEGER')
 
     # ── Stock column renames: *_dan → *_qty ────────────────────────────────
     cur.execute("PRAGMA table_info(stock)")
