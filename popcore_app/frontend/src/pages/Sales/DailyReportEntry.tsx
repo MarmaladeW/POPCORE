@@ -132,10 +132,6 @@ function parseLine(raw: string, section: ActiveSection): ParsedLine {
     const qty     = parseInt(t.slice(starIdx + 1).trim(), 10) || 0
     if (rawName && qty > 0) {
       if (section === 'cash') return { ...base, rawName, qty, qty_cash: qty }
-      if (section === 'stock_in') {
-        // Simple *N format for stock_in means num_boxes=qty, box_size=1
-        return { ...base, rawName, qty, qty_pos: qty, box_size: 1, num_boxes: qty }
-      }
       return { ...base, rawName, qty, qty_pos: qty }
     }
   }
