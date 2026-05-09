@@ -457,7 +457,7 @@ export default function UsersPage() {
               label="角色"
               rules={[{ required: true, message: '请选择角色' }]}
             >
-              <Select options={ROLE_OPTIONS} />
+              <Select options={ROLE_OPTIONS} getPopupContainer={(trigger) => trigger.parentElement!} />
             </Form.Item>
             <Form.Item
               name="password"
