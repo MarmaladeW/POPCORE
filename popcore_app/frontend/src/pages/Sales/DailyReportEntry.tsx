@@ -100,24 +100,29 @@ function parseLine(raw: string, section: ActiveSection): ParsedLine {
     return { ...base, rawName: t, qty: 0, flagged: true }
   }
 
-  // ── stock_in: try "NAME BOX_SIZE*NUM_BOXES" first ─────────────────────────
+  // ── stock_in: {name}[optional box_size]*{num_boxes} ──────────────────────
+  // e.g. "星星人擦手巾6*1" → name="星星人擦手巾", box_size=6, num_boxes=1
+  //      "baby molly喵趣横生 耳机包*3" → name="baby molly喵趣横生 耳机包", box_size=undefined, num_boxes=3
   if (section === 'stock_in') {
-    // e.g. "dimoo奇遇小夜灯 6*2" → name=dimoo奇遇小夜灯, box_size=6, num_boxes=2
-    const stockM = t.match(/^(.+?)\s+(\d+)[\*＊](\d+)\s*$/)
-    if (stockM) {
-      const box_size  = parseInt(stockM[2], 10)
-      const num_boxes = parseInt(stockM[3], 10)
-      const qty       = box_size * num_boxes
-      return { ...base, rawName: stockM[1].trim(), qty, qty_pos: qty, box_size, num_boxes }
+    const starIdx = t.lastIndexOf('*')
+    if (starIdx === -1) return { ...base, rawName: t, qty: 0, flagged: true }
+
+    const num_boxes = parseInt(t.slice(starIdx + 1).trim(), 10) || 0
+    const left      = t.slice(0, starIdx).trim()
+
+    const trailingDigits = left.match(/^(.*?)\s*(\d+)$/)
+    let rawName: string
+    let box_size: number | undefined
+    if (trailingDigits && trailingDigits[1].trim()) {
+      rawName  = trailingDigits[1].trim()
+      box_size = parseInt(trailingDigits[2], 10)
+    } else {
+      rawName  = left
+      box_size = undefined
     }
-    // e.g. "马卡龙 6" or "星星人擦手巾6" → name=..., box_size=6, num_boxes=1
-    // [^*＊]+ excludes asterisk so "item*3" still reaches the standard *qty parser below
-    const trailM = t.match(/^([^*＊]+)\s*(\d+)$/)
-    if (trailM) {
-      const box_size = parseInt(trailM[2], 10)
-      return { ...base, rawName: trailM[1].trim(), qty: box_size, qty_pos: box_size, box_size, num_boxes: 1 }
-    }
-    // Fall through to standard *qty parse
+
+    const qty = box_size != null ? box_size * num_boxes : num_boxes
+    return { ...base, rawName, qty, qty_pos: qty, box_size, num_boxes }
   }
 
   // ── Standard: NAME*QTY ────────────────────────────────────────────────────
