@@ -474,6 +474,53 @@ def schedule_shifts_delete(shift_id):
     return jsonify({'ok': True})
 
 
+# ─── Conflict check ────────────────────────────────────────────────────────────
+
+@bp.route('/api/schedule/conflicts', methods=['GET'])
+@login_required
+def schedule_conflicts():
+    try:
+        employee_id = int(request.args.get('employee_id', ''))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'employee_id must be an integer'}), 400
+    shift_date = (request.args.get('date') or '').strip()
+    store_code = (request.args.get('store_code') or '').strip().upper()
+    if not shift_date or not store_code:
+        return jsonify({'error': 'employee_id, date, and store_code are required'}), 400
+
+    con = get_db()
+    store_row = con.execute(
+        'SELECT id FROM stores WHERE code = ? AND is_active = 1', (store_code,)
+    ).fetchone()
+    if not store_row:
+        con.close()
+        return jsonify({'error': 'Invalid store_code'}), 400
+
+    store_id = store_row['id']
+    rows = con.execute('''
+        SELECT s.id AS shift_id, st.code AS store_code, st.name AS store_name,
+               s.date, s.start_time, s.end_time
+        FROM shifts s
+        JOIN stores st ON st.id = s.store_id
+        WHERE s.employee_id = ?
+          AND s.date = ?
+          AND s.store_id != ?
+    ''', (employee_id, shift_date, store_id)).fetchall()
+    con.close()
+
+    conflicts = [
+        {
+            'shift_id':   r['shift_id'],
+            'store_code': r['store_code'],
+            'store_name': r['store_name'],
+            'start_time': f"{r['date']}T{r['start_time']}",
+            'end_time':   f"{r['date']}T{r['end_time']}",
+        }
+        for r in rows
+    ]
+    return jsonify({'has_conflict': len(conflicts) > 0, 'conflicts': conflicts})
+
+
 # ─── Monthly hours report ──────────────────────────────────────────────────────
 
 @bp.route('/api/schedule/reports/monthly', methods=['GET'])
