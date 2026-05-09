@@ -267,7 +267,7 @@ export default function UsersPage() {
               type="color"
               value={color}
               onChange={e => handleEmpColorChange(r.id, e.target.value)}
-              style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute' }}
+              style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute', pointerEvents: 'none' }}
             />
           </label>
         ) : (
@@ -387,7 +387,7 @@ export default function UsersPage() {
                           type="color"
                           value={empStoreMap[u.id].color || '#6366f1'}
                           onChange={e => handleEmpColorChange(u.id, e.target.value)}
-                          style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute' }}
+                          style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute', pointerEvents: 'none' }}
                         />
                         <span className="text-xs text-muted-foreground">员工颜色</span>
                       </label>
