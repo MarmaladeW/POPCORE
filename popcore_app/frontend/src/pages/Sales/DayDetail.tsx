@@ -8,6 +8,7 @@ import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import client from '../../api/client'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useAppStore } from '../../store'
 
 // Chart.js is loaded from CDN — declare as ambient global
 declare const Chart: any
@@ -35,6 +36,7 @@ export default function DayDetailPage() {
   const { date }  = useParams<{ date: string }>()
   const navigate  = useNavigate()
   const isMobile  = useIsMobile()
+  const { selectedStore } = useAppStore()
 
   const [rows,    setRows]    = useState<SaleRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -44,9 +46,9 @@ export default function DayDetailPage() {
 
   // Fetch sales for this date
   useEffect(() => {
-    if (!date) return
+    if (!date || !selectedStore?.code) return
     setLoading(true)
-    client.get('/sales', { params: { date } })
+    client.get('/sales', { params: { date, store_code: selectedStore.code } })
       .then(r => setRows(r.data))
       .finally(() => setLoading(false))
   }, [date])

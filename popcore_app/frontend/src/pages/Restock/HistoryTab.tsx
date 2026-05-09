@@ -7,6 +7,7 @@ import { HistoryOutlined, AuditOutlined, ReloadOutlined } from '@ant-design/icon
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 
 const { RangePicker } = DatePicker
 const { Text } = Typography
@@ -92,13 +93,16 @@ function RestockHistory() {
   const [detail, setDetail]         = useState<RestockSessionRow | null>(null)
   const [items, setItems]           = useState<RestockItemRow[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
+  const { selectedStore } = useAppStore()
 
   const PAGE_SIZE = 20
 
   const load = useCallback(async (p = page, dr = dateRange) => {
+    const sc = selectedStore?.code
+    if (!sc) return
     setLoading(true)
     try {
-      const params: Record<string, string | number> = { page: p, page_size: PAGE_SIZE }
+      const params: Record<string, string | number> = { page: p, page_size: PAGE_SIZE, store_code: sc }
       if (dr) { params.date_from = dr[0]; params.date_to = dr[1] }
       const { data } = await client.get('/history/restock', { params })
       setSessions(data.sessions)
@@ -106,7 +110,7 @@ function RestockHistory() {
     } finally {
       setLoading(false)
     }
-  }, [page, dateRange])
+  }, [page, dateRange, selectedStore?.code])
 
   useEffect(() => { load() }, [load])
 
@@ -251,11 +255,14 @@ function InventoryCheckHistory() {
   const [loading, setLoading]     = useState(false)
   const [dateRange, setDateRange] = useState<[string, string] | null>(null)
   const [onlyDiff, setOnlyDiff]   = useState(false)
+  const { selectedStore } = useAppStore()
 
   const load = useCallback(async (dr = dateRange, od = onlyDiff) => {
+    const sc = selectedStore?.code
+    if (!sc) return
     setLoading(true)
     try {
-      const params: Record<string, string | number> = {}
+      const params: Record<string, string | number> = { store_code: sc }
       if (dr) { params.date_from = dr[0]; params.date_to = dr[1] }
       if (od) params.only_discrepancy = 1
       const { data } = await client.get('/history/inventory-check', { params })
@@ -263,7 +270,7 @@ function InventoryCheckHistory() {
     } finally {
       setLoading(false)
     }
-  }, [dateRange, onlyDiff])
+  }, [dateRange, onlyDiff, selectedStore?.code])
 
   useEffect(() => { load() }, [load])
 

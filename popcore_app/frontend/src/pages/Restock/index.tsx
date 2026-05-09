@@ -11,6 +11,7 @@ import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import client from '../../api/client'
 import { useHasRole } from '../../auth/useRole'
+import { useAppStore } from '../../store'
 import EveningCheckStep from './EveningCheckStep'
 import BestsellerManage from './BestsellerManage'
 import HistoryTab from './HistoryTab'
@@ -84,23 +85,28 @@ function TodaySessions() {
   const [creating, setCreating]   = useState(false)
   const [openId, setOpenId]       = useState<number | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const { selectedStore } = useAppStore()
 
   const load = useCallback(async () => {
+    const sc = selectedStore?.code
+    if (!sc) return
     setLoading(true)
     try {
-      const { data } = await client.get<SessionSummary[]>('/restock/sessions/today')
+      const { data } = await client.get<SessionSummary[]>('/restock/sessions/today', { params: { store_code: sc } })
       setSessions(data)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedStore?.code])
 
   useEffect(() => { load() }, [load])
 
   async function handleCreate() {
+    const sc = selectedStore?.code
+    if (!sc) return
     setCreating(true)
     try {
-      const { data } = await client.post('/restock/sessions')
+      const { data } = await client.post('/restock/sessions', { store_code: sc })
       await load()
       setOpenId(data.id)
     } catch {

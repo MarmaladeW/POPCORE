@@ -71,17 +71,19 @@ export const getEmployees = () =>
 
 // ── Availability ──────────────────────────────────────────────────────────────
 
-export const getMyAvailability = (start?: string, end?: string) => {
+export const getMyAvailability = (start?: string, end?: string, storeCode?: string) => {
   const params: Record<string, string> = {}
   if (start) params.start = start
   if (end) params.end = end
+  if (storeCode) params.store_code = storeCode
   return client.get<Availability[]>('/schedule/availability/me', { params }).then((r) => r.data)
 }
 
-export const getAllAvailability = (start?: string, end?: string) => {
+export const getAllAvailability = (start?: string, end?: string, storeCode?: string) => {
   const params: Record<string, string> = {}
   if (start) params.start = start
   if (end) params.end = end
+  if (storeCode) params.store_code = storeCode
   return client.get<Availability[]>('/schedule/availability', { params }).then((r) => r.data)
 }
 
@@ -90,6 +92,7 @@ export const upsertAvailability = (data: {
   start_time: string
   end_time: string
   notes?: string
+  store_code?: string
 }) => client.post<Availability>('/schedule/availability', data).then((r) => r.data)
 
 export const deleteAvailability = (id: number) =>
@@ -101,9 +104,10 @@ export const getShifts = (params?: {
   start?: string
   end?: string
   employee_id?: number
+  store_code?: string
 }) => client.get<Shift[]>('/schedule/shifts', { params }).then((r) => r.data)
 
-export const getMyShifts = (params?: { start?: string; end?: string }) =>
+export const getMyShifts = (params?: { start?: string; end?: string; store_code?: string }) =>
   client.get<Shift[]>('/schedule/shifts/me', { params }).then((r) => r.data)
 
 export const createShift = (data: {
@@ -112,6 +116,7 @@ export const createShift = (data: {
   start_time: string
   end_time: string
   notes?: string
+  store_code?: string
 }) => client.post<Shift>('/schedule/shifts', data).then((r) => r.data)
 
 export const updateShift = (
@@ -124,7 +129,7 @@ export const deleteShift = (id: number) =>
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 
-export const getMonthlyReport = (year: number, month: number) =>
+export const getMonthlyReport = (year: number, month: number, storeCode?: string) =>
   client
-    .get<MonthlyReport>('/schedule/reports/monthly', { params: { year, month } })
+    .get<MonthlyReport>('/schedule/reports/monthly', { params: { year, month, store_code: storeCode } })
     .then((r) => r.data)

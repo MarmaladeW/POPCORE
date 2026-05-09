@@ -7,6 +7,7 @@ import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-desig
 import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
 import { batchMatch, saveAlias, cleanName, isHeaderLine } from '../../api/matcher'
+import { useAppStore } from '../../store'
 
 interface Props {
   open: boolean
@@ -92,6 +93,7 @@ function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
 }
 
 export default function BatchStockModal({ open, onClose, onDone }: Props) {
+  const { selectedStore } = useAppStore()
   const [step, setStep]       = useState(0)
   const [op, setOp]           = useState<'ru_dian' | 'restock_upstairs'>('restock_upstairs')
   const [date, setDate]       = useState<Dayjs>(dayjs())
@@ -167,6 +169,7 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
       const r = await client.post('/stock/batch_operation', {
         operation: op,
         date: date.format('YYYY-MM-DD'),
+        store_code: selectedStore?.code,
         items: toSub.map(i => ({ product_id: i.product_id, qty: i.qty, notes: i.notes })),
       })
       setResults(r.data.results || [])

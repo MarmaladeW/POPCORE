@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 
 type Op = 'restock_upstairs' | 'ru_dian' | 'adjust'
 
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export default function RestockModal({ open, onClose, onDone, initialProduct }: Props) {
+  const { selectedStore } = useAppStore()
   const [step, setStep]       = useState(0)
   const [op, setOp]           = useState<Op>('restock_upstairs')
   const [date, setDate]       = useState(dayjs())
@@ -88,19 +90,20 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
     if (op !== 'adjust' && totalQty <= 0) { message.warning('数量必须大于0'); return }
     setLoading(true)
     const dateStr = date.format('YYYY-MM-DD')
+    const sc = selectedStore?.code
     try {
       let resp
       if (op === 'adjust') {
         resp = await client.post('/stock/adjust', {
-          product_id: product.id, location, new_qty: totalQty, date: dateStr, notes,
+          product_id: product.id, location, new_qty: totalQty, date: dateStr, notes, store_code: sc,
         })
       } else if (op === 'ru_dian') {
         resp = await client.post('/stock/ru_dian', {
-          product_id: product.id, qty: totalQty, date: dateStr, notes,
+          product_id: product.id, qty: totalQty, date: dateStr, notes, store_code: sc,
         })
       } else {
         resp = await client.post('/stock/restock_upstairs', {
-          product_id: product.id, qty: totalQty, date: dateStr, notes,
+          product_id: product.id, qty: totalQty, date: dateStr, notes, store_code: sc,
         })
       }
       setResult(resp.data)

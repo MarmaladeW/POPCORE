@@ -9,6 +9,7 @@ import AppLayout from './components/AppLayout'
 import ErrorBoundary from './components/ErrorBoundary'
 import { setTokenGetter } from './api/client'
 import { useAppStore } from './store'
+import type { Store } from './store'
 import client from './api/client'
 
 import DashboardPage   from './pages/Dashboard'
@@ -28,7 +29,7 @@ function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNo
 
 function AppInner() {
   const { getAccessTokenSilently, isAuthenticated } = useAuth0()
-  const { setSeries, setProductTypes } = useAppStore()
+  const { setSeries, setProductTypes, setStores, setSelectedStore, selectedStore } = useAppStore()
 
   useEffect(() => {
     setTokenGetter(() =>
@@ -40,7 +41,15 @@ function AppInner() {
     if (!isAuthenticated) return
     client.get('/series').then(r => setSeries(r.data))
     client.get('/product_types').then(r => setProductTypes(r.data))
-  }, [isAuthenticated, setSeries, setProductTypes])
+    client.get('/stores').then(r => {
+      const stores: Store[] = r.data
+      setStores(stores)
+      if (stores.length === 0) return
+      // Keep persisted selection if still valid, else pick first store
+      const valid = selectedStore && stores.find(s => s.code === selectedStore.code)
+      if (!valid) setSelectedStore(stores[0])
+    })
+  }, [isAuthenticated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <AppLayout>

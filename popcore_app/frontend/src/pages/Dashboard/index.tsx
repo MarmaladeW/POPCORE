@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import client from '../../api/client'
 import dayjs from 'dayjs'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useAppStore } from '../../store'
 
 interface StockSummary {
   products_tracked:   number
@@ -82,6 +83,7 @@ function StatCard({
 
 export default function DashboardPage() {
   const isMobile = useIsMobile()
+  const { selectedStore } = useAppStore()
   const [stockSummary, setStockSummary] = useState<StockSummary | null>(null)
   const [salesSummary, setSalesSummary] = useState<SalesSummaryRow[]>([])
   const [todaySales,   setTodaySales]   = useState<SalesRow[]>([])
@@ -91,11 +93,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const today = dayjs().format('YYYY-MM-DD')
+    const sc = selectedStore?.code
+    if (!sc) return
     Promise.all([
-      client.get('/stock/summary'),
-      client.get('/sales/summary'),
-      client.get('/sales', { params: { date: today } }),
-      client.get('/stock'),
+      client.get('/stock/summary', { params: { store_code: sc } }),
+      client.get('/sales/summary', { params: { store_code: sc } }),
+      client.get('/sales', { params: { date: today, store_code: sc } }),
+      client.get('/stock', { params: { store_code: sc } }),
       client.get('/products/count'),
     ]).then(([ss, summary, ts, stock, countRes]) => {
       setStockSummary(ss.data)
@@ -109,7 +113,7 @@ export default function DashboardPage() {
       )
       setProductCount(countRes.data.count)
     }).finally(() => setLoading(false))
-  }, [])
+  }, [selectedStore?.code])
 
   const totalUnits = stockSummary
     ? (stockSummary.total_upstairs_qty ?? 0) + (stockSummary.total_instore_qty ?? 0)

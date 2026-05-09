@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Form, Select, Input, message } from 'antd'
 import { upsertAvailability, deleteAvailability, type Availability } from './scheduleApi'
+import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -29,6 +30,7 @@ const TIME_OPTIONS = buildTimeOptions()
 export default function AvailabilityModal({ open, date, existing, onClose, onSaved }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
+  const { selectedStore } = useAppStore()
 
   useEffect(() => {
     if (!open) return
@@ -51,6 +53,7 @@ export default function AvailabilityModal({ open, date, existing, onClose, onSav
         start_time: values.start_time as string,
         end_time:   values.end_time   as string,
         notes:      values.notes ?? '',
+        store_code: selectedStore?.code,
       })
       msgApi.success('Availability saved')
       onSaved()

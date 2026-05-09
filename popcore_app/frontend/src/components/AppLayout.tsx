@@ -16,6 +16,7 @@ import {
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useRole, useHasRole } from '../auth/useRole'
+import { useAppStore } from '../store'
 import dayjs from 'dayjs'
 
 const { Sider, Header, Content } = Layout
@@ -137,6 +138,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const isAdmin   = useHasRole('admin')
   const isManager = useHasRole('manager')
   const isStaff   = useHasRole('staff')
+  const { stores, selectedStore, setSelectedStore } = useAppStore()
 
   const selectedKey = location.pathname === '/' ? '/' : '/' + location.pathname.split('/')[1]
 
@@ -246,8 +248,33 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <div style={{ color: '#fff', fontWeight: 700, fontSize: 15 }}>POPCORE</div>
             </div>
 
-            {/* Right: avatar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {/* Right: store selector + avatar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {stores.length > 1 && selectedStore && (
+                <select
+                  value={selectedStore.code}
+                  onChange={e => {
+                    const s = stores.find(x => x.code === e.target.value)
+                    if (s) setSelectedStore(s)
+                  }}
+                  style={{
+                    background:  'rgba(255,255,255,0.12)',
+                    color:        '#fff',
+                    border:       '1px solid rgba(255,255,255,0.25)',
+                    borderRadius: 6,
+                    padding:      '3px 6px',
+                    fontSize:     13,
+                    cursor:       'pointer',
+                    outline:      'none',
+                  }}
+                >
+                  {stores.map(s => (
+                    <option key={s.code} value={s.code} style={{ background: '#0D1B2A' }}>
+                      {s.code}
+                    </option>
+                  ))}
+                </select>
+              )}
               <Dropdown
                 menu={{
                   items: [{
@@ -291,6 +318,30 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              {/* Store selector */}
+              {stores.length > 1 && selectedStore && (
+                <select
+                  value={selectedStore.code}
+                  onChange={e => {
+                    const s = stores.find(x => x.code === e.target.value)
+                    if (s) setSelectedStore(s)
+                  }}
+                  style={{
+                    border:       '1px solid #e5e7eb',
+                    borderRadius: 6,
+                    padding:      '4px 8px',
+                    fontSize:     13,
+                    color:        '#374151',
+                    cursor:       'pointer',
+                    outline:      'none',
+                    background:   '#fff',
+                  }}
+                >
+                  {stores.map(s => (
+                    <option key={s.code} value={s.code}>{s.name || s.code}</option>
+                  ))}
+                </select>
+              )}
               {/* Role badge */}
               <Tag
                 style={{

@@ -7,6 +7,7 @@ import {
   CheckCircleOutlined, WarningOutlined, DeleteOutlined, QuestionCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 import {
   batchMatch, saveAlias, saveSectionAlias, getSectionAliases,
   detectSectionHeader, cleanName, isHeaderLine,
@@ -62,12 +63,12 @@ const SECTION_OPTIONS = (Object.keys(SECTION_LABELS) as ActiveSection[]).map(k =
 const _DATE_RE   = /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/
 const _STORE_RE  = /\b([A-Za-z\u4e00-\u9fa5]{1,6})(?:店|汇总|DT|dt)/i
 
-function extractDateStore(firstLine: string): { date: string | null; store: string } {
+function extractDateStore(firstLine: string, fallback: string): { date: string | null; store: string } {
   const dm = firstLine.match(_DATE_RE)
   const date = dm ? `${dm[1]}-${dm[2].padStart(2,'0')}-${dm[3].padStart(2,'0')}` : null
   // e.g. "2026.04.01 DT汇总" → store="DT"
   const storeMatch = firstLine.match(/([A-Za-z\u4e00-\u9fff]+)(?:店|汇总)/)
-  const store = storeMatch ? storeMatch[1].toUpperCase() : 'DT'
+  const store = storeMatch ? storeMatch[1].toUpperCase() : fallback
   return { date, store }
 }
 
@@ -144,11 +145,12 @@ function parseLine(raw: string, section: ActiveSection): ParsedLine {
 function parseReport(
   text: string,
   savedAliases: SectionAlias[],
+  defaultStore: string,
 ): { detectedDate: string | null; store: string; parsed: ParsedLine[]; unknownSections: UnknownSectionInfo[] } {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-  if (!lines.length) return { detectedDate: null, store: 'DT', parsed: [], unknownSections: [] }
+  if (!lines.length) return { detectedDate: null, store: defaultStore, parsed: [], unknownSections: [] }
 
-  const { date: detectedDate, store } = extractDateStore(lines[0])
+  const { date: detectedDate, store } = extractDateStore(lines[0], defaultStore)
 
   // Scan section boundaries
   type Boundary = { idx: number; section: SectionType; headerText: string }
@@ -237,10 +239,12 @@ interface Props {
 }
 
 export default function DailyReportEntry({ date, onComplete }: Props) {
+  const { selectedStore } = useAppStore()
+  const defaultStoreCode  = selectedStore?.code ?? 'DT'
   const [step,        setStep]        = useState<'input' | 'review' | 'done'>('input')
   const [rawText,     setRawText]     = useState('')
   const [parsedDate,  setParsedDate]  = useState<string | null>(null)
-  const [parsedStore, setParsedStore] = useState('DT')
+  const [parsedStore, setParsedStore] = useState(defaultStoreCode)
   const [items,       setItems]       = useState<MatchedItem[]>([])
   const [unknowns,    setUnknowns]    = useState<UnknownSectionInfo[]>([])
   const [savedAliases, setSavedAliases] = useState<SectionAlias[]>([])
@@ -268,7 +272,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     if (!rawText.trim()) { message.warning('请粘贴日报内容'); return }
     setMatching(true)
 
-    const { detectedDate, store, parsed, unknownSections } = parseReport(rawText, savedAliases)
+    const { detectedDate, store, parsed, unknownSections } = parseReport(rawText, savedAliases, defaultStoreCode)
     setParsedDate(detectedDate)
     setParsedStore(store)
     setUnknowns(unknownSections)
@@ -364,7 +368,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
     try {
       await client.post('/sales/submit_daily_report', {
-        date: submitDate, store: submitStore, items: payload,
+        date: submitDate, store_code: submitStore, items: payload,
       })
       setStep('done')
     } catch (err: any) {

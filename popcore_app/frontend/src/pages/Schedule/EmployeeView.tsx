@@ -8,8 +8,10 @@ import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
 import dayjs from 'dayjs'
 import { getMyAvailability, getMyShifts, type Availability, type Shift } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
+import { useAppStore } from '../../store'
 
 export default function EmployeeView() {
+  const { selectedStore } = useAppStore()
   const calRef = useRef<FullCalendar>(null)
   const [events, setEvents] = useState<EventInput[]>([])
   const [modalOpen, setModalOpen] = useState(false)
@@ -20,9 +22,10 @@ export default function EmployeeView() {
   const availByDate = useRef<Record<string, Availability>>({})
 
   const loadEvents = useCallback(async (start: string, end: string) => {
+    const sc = selectedStore?.code
     const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-      getMyAvailability(start, end),
-      getMyShifts({ start, end }),
+      getMyAvailability(start, end, sc),
+      getMyShifts({ start, end, store_code: sc }),
     ])
 
     availByDate.current = {}

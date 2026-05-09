@@ -105,7 +105,8 @@ function stockStatus(total: number) {
 
 export default function StockPage() {
   const isMobile = useIsMobile()
-  const { series } = useAppStore()
+  const { series, selectedStore } = useAppStore()
+  const sc = selectedStore?.code
   const [stock,    setStock]   = useState<StockRow[]>([])
   const [txns,     setTxns]    = useState<Transaction[]>([])
   const [summary,  setSummary] = useState<Summary | null>(null)
@@ -124,31 +125,33 @@ export default function StockPage() {
   const [exporting, setExporting] = useState(false)
 
   const loadStock = useCallback(() => {
+    if (!sc) return
     setLoading(true)
-    const params: Record<string, string | number> = { page, page_size: PAGE_SIZE }
+    const params: Record<string, string | number> = { page, page_size: PAGE_SIZE, store_code: sc }
     if (q) params.q = q
     if (filterSeries) params.series = filterSeries
     Promise.all([
       client.get('/stock', { params }),
-      client.get('/stock/summary'),
+      client.get('/stock/summary', { params: { store_code: sc } }),
     ]).then(([sResp, sumResp]) => {
       setStock(sResp.data.items)
       setTotal(sResp.data.total)
       setSummary(sumResp.data)
     }).finally(() => setLoading(false))
-  }, [q, filterSeries, page])
+  }, [q, filterSeries, page, sc])
 
   const loadTxns = useCallback(() => {
-    client.get('/stock/transactions', { params: { limit: 100 } })
+    if (!sc) return
+    client.get('/stock/transactions', { params: { limit: 100, store_code: sc } })
       .then(r => setTxns(r.data))
-  }, [])
+  }, [sc])
 
   useEffect(() => { setPage(1) }, [q, filterSeries])
   useEffect(() => { loadStock() }, [loadStock])
 
   async function handleDeleteRows() {
     try {
-      await client.delete('/stock/rows', { data: selected })
+      await client.delete('/stock/rows', { data: { store_code: sc, product_ids: selected } })
       message.success(`Removed ${selected.length} stock records`)
       setSelected([])
       loadStock()
@@ -163,6 +166,7 @@ export default function StockPage() {
       const params = new URLSearchParams()
       if (filterSeries) params.set('series', filterSeries)
       if (q) params.set('q', q)
+      if (sc) params.set('store_code', sc)
       const res = await client.get(`/stock/export?${params}`, { responseType: 'blob' })
       const url = window.URL.createObjectURL(new Blob([res.data]))
       const a = document.createElement('a')
@@ -181,7 +185,7 @@ export default function StockPage() {
 
   async function saveNotes(productId: number, notes: string) {
     try {
-      await client.patch(`/stock/${productId}`, { notes })
+      await client.patch(`/stock/${productId}`, { notes, store_code: sc })
       setEditingNotes(null)
       setStock(prev => prev.map(r => r.id === productId ? { ...r, stock_notes: notes } : r))
     } catch {
