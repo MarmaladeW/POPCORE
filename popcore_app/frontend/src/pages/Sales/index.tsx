@@ -52,6 +52,7 @@ export default function SalesPage() {
   const navigate = useNavigate()
   const { selectedStore } = useAppStore()
   const sc = selectedStore?.code
+  const isAll = sc === 'ALL'
 
   const [date,    setDate]    = useState<Dayjs>(dayjs())
   const [sales,   setSales]   = useState<SaleRow[]>([])
@@ -95,6 +96,7 @@ export default function SalesPage() {
   }
 
   async function addProduct(pid: number) {
+    if (isAll) return
     try {
       await client.post('/sales/add_product', { product_id: pid, date: dateStr, store_code: sc })
       setAddSearch(''); setAddOptions([])
@@ -103,7 +105,7 @@ export default function SalesPage() {
   }
 
   async function confirmAdd() {
-    if (!pendingAdd) return
+    if (!pendingAdd || isAll) return
     try {
       await client.post('/sales/upsert', {
         product_id: pendingAdd.id,
@@ -148,6 +150,7 @@ export default function SalesPage() {
   }
 
   async function upsert(row: SaleRow, field: 'qty_pos' | 'qty_cash', val: number) {
+    if (isAll) return
     const local   = localEdits[row.id]
     const newPos  = field === 'qty_pos'  ? val : (local?.pos  ?? row.qty_pos)
     const newCash = field === 'qty_cash' ? val : (local?.cash ?? row.qty_cash)
@@ -161,6 +164,7 @@ export default function SalesPage() {
   }
 
   async function deleteRecord(id: number) {
+    if (isAll) return
     try {
       await client.delete(`/sales/record/${id}`)
       message.success('Deleted')
@@ -169,6 +173,7 @@ export default function SalesPage() {
   }
 
   async function clearDay() {
+    if (isAll) return
     try {
       await client.delete('/sales/clear_day', { params: { date: dateStr, store_code: sc } })
       message.success('Cleared')
@@ -216,10 +221,11 @@ export default function SalesPage() {
       render: (v, r) => (
         <InputNumber
           size="small" min={0}
+          disabled={isAll}
           value={localEdits[r.id]?.pos ?? v}
-          onChange={val => setLocalQty(r.id, 'pos', val ?? 0)}
-          onBlur={() => upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v)}
-          onPressEnter={() => upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v)}
+          onChange={val => { if (!isAll) setLocalQty(r.id, 'pos', val ?? 0) }}
+          onBlur={() => { if (!isAll) upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v) }}
+          onPressEnter={() => { if (!isAll) upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v) }}
           style={{ width: 65 }}
         />
       ),
@@ -229,10 +235,11 @@ export default function SalesPage() {
       render: (v, r) => (
         <InputNumber
           size="small" min={0}
+          disabled={isAll}
           value={localEdits[r.id]?.cash ?? v}
-          onChange={val => setLocalQty(r.id, 'cash', val ?? 0)}
-          onBlur={() => upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v)}
-          onPressEnter={() => upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v)}
+          onChange={val => { if (!isAll) setLocalQty(r.id, 'cash', val ?? 0) }}
+          onBlur={() => { if (!isAll) upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v) }}
+          onPressEnter={() => { if (!isAll) upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v) }}
           style={{ width: 65 }}
         />
       ),
@@ -250,7 +257,7 @@ export default function SalesPage() {
     },
     {
       title: '', key: 'del', width: 50,
-      render: (_, r) => (
+      render: (_, r) => isAll ? null : (
         <RoleGuard minRole="manager">
           <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(r.id)}>
             <Button size="small" danger type="text" icon={<DeleteOutlined />} />
@@ -294,24 +301,26 @@ export default function SalesPage() {
                 style={{ color: '#374151', padding: '0 8px' }}
               />
             </div>
-            <RoleGuard minRole="staff">
-              <AutoComplete
-                placeholder="Add product..."
-                value={addSearch}
-                options={addOptions}
-                onSearch={searchToAdd}
-                onSelect={(val, opt) => {
-                  setPendingAdd({ id: Number(val), label: opt.label as string })
-                  setPendingPos(0); setPendingCash(0)
-                  setAddSearch(opt.label as string); setAddOptions([])
-                }}
-                onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
-                allowClear
-                style={{ width: 150 }}
-              />
-            </RoleGuard>
+            {!isAll && (
+              <RoleGuard minRole="staff">
+                <AutoComplete
+                  placeholder="Add product..."
+                  value={addSearch}
+                  options={addOptions}
+                  onSearch={searchToAdd}
+                  onSelect={(val, opt) => {
+                    setPendingAdd({ id: Number(val), label: opt.label as string })
+                    setPendingPos(0); setPendingCash(0)
+                    setAddSearch(opt.label as string); setAddOptions([])
+                  }}
+                  onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
+                  allowClear
+                  style={{ width: 150 }}
+                />
+              </RoleGuard>
+            )}
           </div>
-          {pendingAdd && (
+          {!isAll && pendingAdd && (
             <div style={{
               display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6,
               background: '#f0f4ff', borderRadius: 6, padding: '8px 10px',
@@ -343,7 +352,8 @@ export default function SalesPage() {
               allowClear={false}
               style={{ width: 140 }}
             />
-            <RoleGuard minRole="staff">
+            {!isAll && (
+              <RoleGuard minRole="staff">
               <AutoComplete
                 placeholder="Search & add product..."
                 value={addSearch}
@@ -372,7 +382,17 @@ export default function SalesPage() {
                 </Space>
               )}
             </RoleGuard>
+            )}
           </Space>
+        </div>
+      )}
+
+      {isAll && (
+        <div style={{
+          background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 16, color: '#92400e', fontSize: 13,
+        }}>
+          Viewing all stores combined. Select a store to add or edit sales.
         </div>
       )}
 
@@ -445,8 +465,8 @@ export default function SalesPage() {
         </Col>
       </Row>
 
-      {/* Daily Report Entry — shown when no sales yet OR user clicks Import */}
-      {(importMode || (!loading && sales.length === 0)) && (
+      {/* Daily Report Entry — shown when no sales yet OR user clicks Import; hidden in ALL mode */}
+      {!isAll && (importMode || (!loading && sales.length === 0)) && (
         <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px 20px', marginBottom: 20 }}>
           {importMode && sales.length > 0 && (
             <div style={{ marginBottom: 12 }}>
@@ -475,13 +495,17 @@ export default function SalesPage() {
             </Text>
           </div>
           <Space size={8}>
-            <Button size="small" icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
-              Re-import
-            </Button>
+            {!isAll && (
+              <Button size="small" icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
+                Re-import
+              </Button>
+            )}
             <RoleGuard minRole="manager">
-              <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
-                <Button danger size="small">Clear Day</Button>
-              </Popconfirm>
+              {!isAll && (
+                <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
+                  <Button danger size="small">Clear Day</Button>
+                </Popconfirm>
+              )}
               <Button
                 size="small"
                 icon={<ExportOutlined />}
@@ -512,11 +536,13 @@ export default function SalesPage() {
                     <Text style={{ fontWeight: 700, fontSize: 18, color: row.qty_sold > 0 ? '#10B981' : '#d1d5db' }}>
                       {row.qty_sold}
                     </Text>
-                    <RoleGuard minRole="manager">
-                      <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(row.id)}>
-                        <Button size="small" danger type="text" icon={<DeleteOutlined />} />
-                      </Popconfirm>
-                    </RoleGuard>
+                    {!isAll && (
+                      <RoleGuard minRole="manager">
+                        <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(row.id)}>
+                          <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+                        </Popconfirm>
+                      </RoleGuard>
+                    )}
                   </div>
                 </div>
                 {/* Qty inputs row */}
@@ -525,10 +551,11 @@ export default function SalesPage() {
                     <span style={{ fontSize: 11, color: '#6b7280', width: 28 }}>POS</span>
                     <InputNumber
                       size="small" min={0}
+                      disabled={isAll}
                       value={localEdits[row.id]?.pos ?? row.qty_pos}
-                      onChange={val => setLocalQty(row.id, 'pos', val ?? 0)}
-                      onBlur={() => upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos)}
-                      onPressEnter={() => upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos)}
+                      onChange={val => { if (!isAll) setLocalQty(row.id, 'pos', val ?? 0) }}
+                      onBlur={() => { if (!isAll) upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos) }}
+                      onPressEnter={() => { if (!isAll) upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos) }}
                       style={{ width: 65 }}
                     />
                   </div>
@@ -536,10 +563,11 @@ export default function SalesPage() {
                     <span style={{ fontSize: 11, color: '#6b7280', width: 34 }}>Cash</span>
                     <InputNumber
                       size="small" min={0}
+                      disabled={isAll}
                       value={localEdits[row.id]?.cash ?? row.qty_cash}
-                      onChange={val => setLocalQty(row.id, 'cash', val ?? 0)}
-                      onBlur={() => upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash)}
-                      onPressEnter={() => upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash)}
+                      onChange={val => { if (!isAll) setLocalQty(row.id, 'cash', val ?? 0) }}
+                      onBlur={() => { if (!isAll) upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash) }}
+                      onPressEnter={() => { if (!isAll) upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash) }}
                       style={{ width: 65 }}
                     />
                   </div>

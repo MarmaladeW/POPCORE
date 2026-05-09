@@ -16,7 +16,7 @@ import {
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useRole, useHasRole } from '../auth/useRole'
-import { useAppStore } from '../store'
+import { useAppStore, ALL_STORES } from '../store'
 import dayjs from 'dayjs'
 
 const { Sider, Header, Content } = Layout
@@ -250,10 +250,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
             {/* Right: store selector + avatar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              {stores.length > 1 && selectedStore && (
+              {stores.length > 0 && selectedStore && (
                 <select
                   value={selectedStore.code}
                   onChange={e => {
+                    if (e.target.value === 'ALL') { setSelectedStore(ALL_STORES); return }
                     const s = stores.find(x => x.code === e.target.value)
                     if (s) setSelectedStore(s)
                   }}
@@ -268,6 +269,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     outline:      'none',
                   }}
                 >
+                  <option key="ALL" value="ALL" style={{ background: '#0D1B2A' }}>All Stores</option>
                   {stores.map(s => (
                     <option key={s.code} value={s.code} style={{ background: '#0D1B2A' }}>
                       {s.code}
@@ -319,10 +321,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               {/* Store selector */}
-              {stores.length > 1 && selectedStore && (
+              {stores.length > 0 && selectedStore && (
                 <select
                   value={selectedStore.code}
                   onChange={e => {
+                    if (e.target.value === 'ALL') { setSelectedStore(ALL_STORES); return }
                     const s = stores.find(x => x.code === e.target.value)
                     if (s) setSelectedStore(s)
                   }}
@@ -337,6 +340,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     background:   '#fff',
                   }}
                 >
+                  <option key="ALL" value="ALL">All Stores</option>
                   {stores.map(s => (
                     <option key={s.code} value={s.code}>{s.name || s.code}</option>
                   ))}

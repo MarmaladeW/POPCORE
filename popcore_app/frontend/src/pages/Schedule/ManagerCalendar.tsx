@@ -80,6 +80,14 @@ export default function ManagerCalendar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees])
 
+  // Reload when selected store changes
+  useEffect(() => {
+    if (currentRange) {
+      loadEvents(currentRange.start, currentRange.end)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStore])
+
   useEffect(() => {
     if (filterEmpId === null) {
       setVisibleEvents(allEvents)
@@ -93,8 +101,11 @@ export default function ManagerCalendar() {
   const loadEvents = useCallback(
     async (start: string, end: string) => {
       const sc = selectedStore?.code
+      const isAll = sc === 'ALL'
+
+      // Skip availability fetch for ALL — the backend requires a specific store
       const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-        getAllAvailability(start, end, sc),
+        isAll ? Promise.resolve([]) : getAllAvailability(start, end, sc),
         getShifts({ start, end, store_code: sc }),
       ])
 
@@ -128,9 +139,10 @@ export default function ManagerCalendar() {
         shiftById.current[s.id] = s
         const idx   = empIdToIdx[s.employee_id] ?? 0
         const color = colorForEmployee(idx)
+        const storePrefix = isAll && s.store_code ? `[${s.store_code}] ` : ''
         evts.push({
           id: `shift-${s.id}`,
-          title: `${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
+          title: `${storePrefix}${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
           start: `${s.date}T${s.start_time}`,
           end: `${s.date}T${s.end_time}`,
           backgroundColor: color,
@@ -142,7 +154,7 @@ export default function ManagerCalendar() {
 
       setAllEvents(evts)
     },
-    [employees]
+    [employees, selectedStore]
   )
 
   const handleDatesSet = useCallback(
@@ -158,13 +170,15 @@ export default function ManagerCalendar() {
   )
 
   const handleDateClick = useCallback((arg: DateClickArg) => {
+    if (selectedStore?.code === 'ALL') return
     setSelectedDate(arg.dateStr)
     setSelectedShift(null)
     setAvailForDate(availsByDate.current[arg.dateStr] ?? [])
     setModalOpen(true)
-  }, [])
+  }, [selectedStore])
 
   const handleEventClick = useCallback((arg: EventClickArg) => {
+    if (selectedStore?.code === 'ALL') return
     const { type, shift_id } = arg.event.extendedProps as {
       type: string
       shift_id?: number
@@ -186,7 +200,7 @@ export default function ManagerCalendar() {
       setAvailForDate(availsByDate.current[dateStr] ?? [])
       setModalOpen(true)
     }
-  }, [])
+  }, [selectedStore])
 
   const handleSaved = useCallback(() => {
     const api = calRef.current?.getApi()

@@ -15,6 +15,8 @@ def _require_store_param(con):
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    if store_code == 'ALL':
+        return None, 'ALL', None
     resolved = _resolve_store(con, store_code)
     if resolved is None:
         return None, None, (jsonify({'error': 'Invalid store code'}), 400)
@@ -26,6 +28,8 @@ def _require_store_body(con, data):
     store_code = (data.get('store_code') or '').strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    if store_code == 'ALL':
+        return None, None, (jsonify({'error': 'Cannot write with store_code ALL. Select a specific store.'}), 400)
     resolved = _resolve_store(con, store_code)
     if resolved is None:
         return None, None, (jsonify({'error': 'Invalid store code'}), 400)
@@ -43,14 +47,26 @@ def get_sales():
         con.close()
         return err
     cur = con.cursor()
-    cur.execute('''
-        SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.qty_pos, ds.qty_cash, ds.notes,
-               p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
-        FROM daily_sales ds
-        JOIN products p ON p.id = ds.product_id
-        WHERE ds.date = ? AND ds.store = ?
-        ORDER BY p.ip_series, p.jizhanming
-    ''', (d, store_code))
+    if store_code == 'ALL':
+        cur.execute('''
+            SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.qty_pos, ds.qty_cash, ds.notes,
+                   ds.store,
+                   p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
+            FROM daily_sales ds
+            JOIN products p ON p.id = ds.product_id
+            WHERE ds.date = ?
+            ORDER BY p.ip_series, p.jizhanming
+        ''', (d,))
+    else:
+        cur.execute('''
+            SELECT ds.id, ds.product_id, ds.date, ds.qty_sold, ds.qty_pos, ds.qty_cash, ds.notes,
+                   ds.store,
+                   p.sku, p.name_cn_en, p.jizhanming, p.price, p.ip_series
+            FROM daily_sales ds
+            JOIN products p ON p.id = ds.product_id
+            WHERE ds.date = ? AND ds.store = ?
+            ORDER BY p.ip_series, p.jizhanming
+        ''', (d, store_code))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
@@ -130,18 +146,31 @@ def sales_summary():
         con.close()
         return err
     cur = con.cursor()
-    cur.execute('''
-        SELECT date,
-               COUNT(*)      AS product_count,
-               SUM(qty_sold) AS total_sold,
-               SUM(qty_pos)  AS total_pos,
-               SUM(qty_cash) AS total_cash
-        FROM daily_sales
-        WHERE store = ?
-        GROUP BY date
-        ORDER BY date DESC
-        LIMIT 60
-    ''', (store_code,))
+    if store_code == 'ALL':
+        cur.execute('''
+            SELECT date,
+                   COUNT(*)      AS product_count,
+                   SUM(qty_sold) AS total_sold,
+                   SUM(qty_pos)  AS total_pos,
+                   SUM(qty_cash) AS total_cash
+            FROM daily_sales
+            GROUP BY date
+            ORDER BY date DESC
+            LIMIT 60
+        ''')
+    else:
+        cur.execute('''
+            SELECT date,
+                   COUNT(*)      AS product_count,
+                   SUM(qty_sold) AS total_sold,
+                   SUM(qty_pos)  AS total_pos,
+                   SUM(qty_cash) AS total_cash
+            FROM daily_sales
+            WHERE store = ?
+            GROUP BY date
+            ORDER BY date DESC
+            LIMIT 60
+        ''', (store_code,))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
@@ -476,6 +505,9 @@ def clear_sales_day():
     d = request.args.get('date', '')
     if not d:
         return jsonify({'error': 'date param required'}), 400
+    store_code_raw = (request.args.get('store_code') or '').strip().upper()
+    if store_code_raw == 'ALL':
+        return jsonify({'error': 'Cannot write with store_code ALL. Select a specific store.'}), 400
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
     if err:

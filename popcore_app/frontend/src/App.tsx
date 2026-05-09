@@ -8,7 +8,7 @@ import { useHasRole, type Role } from './auth/useRole'
 import AppLayout from './components/AppLayout'
 import ErrorBoundary from './components/ErrorBoundary'
 import { setTokenGetter } from './api/client'
-import { useAppStore } from './store'
+import { useAppStore, ALL_STORES } from './store'
 import type { Store } from './store'
 import client from './api/client'
 
@@ -45,9 +45,12 @@ function AppInner() {
       const stores: Store[] = r.data
       setStores(stores)
       if (stores.length === 0) return
-      // Keep persisted selection if still valid, else pick first store
-      const valid = selectedStore && stores.find(s => s.code === selectedStore.code)
-      if (!valid) setSelectedStore(stores[0])
+      // Keep persisted selection if still valid (including ALL), else default to ALL
+      const valid = selectedStore && (
+        selectedStore.code === 'ALL' ||
+        stores.find(s => s.code === selectedStore.code)
+      )
+      if (!valid) setSelectedStore(ALL_STORES)
     })
   }, [isAuthenticated]) // eslint-disable-line react-hooks/exhaustive-deps
 

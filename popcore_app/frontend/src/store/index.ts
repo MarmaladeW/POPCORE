@@ -6,6 +6,9 @@ export interface Store {
   name: string
 }
 
+/** Sentinel representing "all stores combined" — read-only, never written to. */
+export const ALL_STORES: Store = { id: 0, code: 'ALL', name: 'All Stores' }
+
 const STORE_KEY = 'popcore_selected_store'
 
 function loadPersistedStore(): Store | null {
