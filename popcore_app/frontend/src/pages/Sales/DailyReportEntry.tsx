@@ -110,6 +110,13 @@ function parseLine(raw: string, section: ActiveSection): ParsedLine {
       const qty       = box_size * num_boxes
       return { ...base, rawName: stockM[1].trim(), qty, qty_pos: qty, box_size, num_boxes }
     }
+    // e.g. "马卡龙 6" or "星星人擦手巾6" → name=..., box_size=6, num_boxes=1
+    // [^*＊]+ excludes asterisk so "item*3" still reaches the standard *qty parser below
+    const trailM = t.match(/^([^*＊]+)\s*(\d+)$/)
+    if (trailM) {
+      const box_size = parseInt(trailM[2], 10)
+      return { ...base, rawName: trailM[1].trim(), qty: box_size, qty_pos: box_size, box_size, num_boxes: 1 }
+    }
     // Fall through to standard *qty parse
   }
 
