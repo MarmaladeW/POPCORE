@@ -16,6 +16,61 @@ export interface MatchResult {
   candidates: MatchCandidate[]
 }
 
+// ─── Parse-report backend types ───────────────────────────────────────────────
+
+export interface BackendProduct {
+  id: number
+  sku: string
+  jizhanming: string
+  name_cn_en: string
+  price: number
+  ip_series: string
+  product_type: string
+}
+
+export interface BackendCandidate extends BackendProduct {
+  score: number
+}
+
+export interface BackendBaseItem {
+  raw_name: string
+  section: string
+  qty: number
+  qty_pos: number
+  qty_cash: number
+  box_size: number | null
+  flagged: boolean
+  unknown_header: string | null
+}
+
+export interface BackendConfirmedItem extends BackendBaseItem {
+  score: number
+  product: BackendProduct
+  warn_blank_jzm: boolean
+}
+
+export interface BackendReviewItem extends BackendBaseItem {
+  score: number
+  product: BackendProduct
+  candidates: BackendCandidate[]
+  warn_blank_jzm: boolean
+}
+
+export interface BackendFailedItem extends BackendBaseItem {
+  score: number
+  reason: 'no_match' | 'empty_name' | 'low_score' | 'unknown_section'
+  candidates: BackendCandidate[]
+}
+
+export interface ParseReportResponse {
+  detected_date: string | null
+  store: string
+  confirmed: BackendConfirmedItem[]
+  review: BackendReviewItem[]
+  failed: BackendFailedItem[]
+  unknown_sections: string[]
+}
+
 export interface SectionAlias {
   id: number
   alias_norm: string
@@ -131,6 +186,14 @@ export async function batchMatch(
 ): Promise<MatchResult[]> {
   const r = await client.post('/products/match', { queries, threshold })
   return r.data.results as MatchResult[]
+}
+
+export async function parseReportBackend(
+  text: string,
+  storeCode: string,
+): Promise<ParseReportResponse> {
+  const r = await client.post('/sales/parse_report', { text, store_code: storeCode })
+  return r.data as ParseReportResponse
 }
 
 export async function saveAlias(productId: number, alias: string): Promise<void> {

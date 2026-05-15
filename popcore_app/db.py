@@ -386,6 +386,63 @@ def _migration_add_color_to_stores(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_color_to_stores')")
 
 
+def _migration_add_created_by_to_aliases(con, cur):
+    """Add created_by column to product_aliases for auditing."""
+    cur.execute("PRAGMA table_info(product_aliases)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'created_by' not in cols:
+        cur.execute("ALTER TABLE product_aliases ADD COLUMN created_by TEXT")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_created_by_to_aliases')")
+
+
+def _migration_seed_product_aliases(con, cur):
+    """
+    Seed known product aliases from production logs.
+    Only runs once; only inserts if the matching product exists and alias is not duplicate.
+    """
+    from matcher import normalize as _norm  # local import — only used here
+
+    # (alias_raw, jizhanming) — jizhanming must match products.jizhanming exactly (case-insensitive)
+    seeds = [
+        # Spec-provided seeds
+        ('sa hipper',         'SA Original Hipper'),
+        ('smiski hipper',     'Smiski Hipper'),
+        ('smiski hippers',    'Smiski Hipper'),
+        ('三丽鸥hippers',    '三丽鸥Hipper'),
+        ('smiski cheers',     'Smiski Cheer'),
+        ('随心配蓝',         '星星人随心配蓝'),
+        ('随心配粉',         '星星人随心配粉'),
+        ('crybaby度假',      '哭娃度假'),
+        ('sa tatto stick',    'SA Tattoo Sticker'),
+        # Additional aliases from common shorthand patterns
+        ('sa original',       'SA Original Hipper'),
+        ('smiski原版',        'Smiski Hipper'),
+        ('smiski cheer',      'Smiski Cheer'),
+        ('crybaby假期',      '哭娃度假'),
+        ('随心配',           '星星人随心配蓝'),   # ambiguous — prefer blue variant
+        ('sa tattoo',         'SA Tattoo Sticker'),
+        ('sa sticker',        'SA Tattoo Sticker'),
+    ]
+
+    for alias_raw, jizhanming in seeds:
+        alias_norm = _norm(alias_raw)
+        if not alias_norm:
+            continue
+        cur.execute(
+            'SELECT id FROM products WHERE LOWER(jizhanming) = LOWER(?)',
+            (jizhanming,)
+        )
+        row = cur.fetchone()
+        if not row:
+            continue
+        cur.execute('''
+            INSERT OR IGNORE INTO product_aliases (product_id, alias, alias_norm, created_by)
+            VALUES (?, ?, ?, 'system_seed')
+        ''', (row['id'], alias_raw, alias_norm))
+
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('seed_product_aliases')")
+
+
 def _migration_add_color_to_employees(con, cur):
     cur.execute("PRAGMA table_info(employees)")
     cols = {r['name'] for r in cur.fetchall()}
@@ -467,6 +524,8 @@ def _get_migrations():
         ('drop_dan_per_xiang_column',            _migration_drop_dan_per_xiang_column),
         ('add_color_to_stores',                  _migration_add_color_to_stores),
         ('add_color_to_employees',               _migration_add_color_to_employees),
+        ('add_created_by_to_aliases',            _migration_add_created_by_to_aliases),
+        ('seed_product_aliases',                 _migration_seed_product_aliases),
     ]
 
 

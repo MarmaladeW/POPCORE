@@ -270,6 +270,24 @@ def get_product(pid):
 
 # ─── Aliases ──────────────────────────────────────────────────────────────────
 
+@bp.route('/api/products/aliases', methods=['GET'])
+@login_required
+def list_all_aliases():
+    """Return all product aliases joined with product info, for the alias management UI."""
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('''
+        SELECT pa.id, pa.alias, pa.alias_norm, pa.created_by, pa.created_at,
+               p.id AS product_id, p.jizhanming, p.sku
+        FROM product_aliases pa
+        JOIN products p ON p.id = pa.product_id
+        ORDER BY pa.created_at DESC
+    ''')
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    return jsonify(rows)
+
+
 @bp.route('/api/products/aliases', methods=['POST'])
 @login_required
 def save_alias():

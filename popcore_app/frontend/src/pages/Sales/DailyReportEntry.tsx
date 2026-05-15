@@ -1,227 +1,84 @@
 import { useState, useEffect } from 'react'
 import {
-  Input, Button, Tabs, Table, Tag, Select, Space,
-  Alert, message, AutoComplete, InputNumber, Tooltip, Spin, Badge,
+  Input, Button, Table, Tag, Select, Space,
+  Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge,
 } from 'antd'
 import {
-  CheckCircleOutlined, WarningOutlined, DeleteOutlined, QuestionCircleOutlined,
+  CheckCircleOutlined, WarningOutlined, DeleteOutlined,
+  QuestionCircleOutlined, CloseCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import {
-  batchMatch, saveAlias, saveSectionAlias, getSectionAliases,
-  detectSectionHeader, cleanName, isHeaderLine,
-  type MatchResult, type MatchCandidate, type SectionType, type SectionAlias,
+  parseReportBackend, saveAlias, saveSectionAlias, getSectionAliases,
+  type BackendProduct, type BackendCandidate,
+  type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem,
+  type SectionAlias,
 } from '../../api/matcher'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Section display metadata ─────────────────────────────────────────────────
 
-type ActiveSection = Exclude<SectionType, 'ignore' | 'unknown'>
+const SECTION_META: Record<string, { label: string; color: string }> = {
+  pos:               { label: '卡机',      color: 'blue'    },
+  cash:              { label: '随手记',    color: 'green'   },
+  stock_in:          { label: '入店',      color: 'purple'  },
+  stock_out:         { label: '出店',      color: 'orange'  },
+  claw:              { label: '娃娃机',    color: 'gold'    },
+  sell_display:      { label: '卖Display', color: 'cyan'    },
+  break_display:     { label: '拆Display', color: 'red'     },
+  employee_discount: { label: '员工折扣',  color: 'magenta' },
+}
 
-interface MatchedItem {
+function SectionTag({ section }: { section: string }) {
+  const m = SECTION_META[section]
+  return m
+    ? <Tag color={m.color} style={{ fontSize: 11, margin: 0 }}>{m.label}</Tag>
+    : <Tag style={{ fontSize: 11, margin: 0 }}>{section}</Tag>
+}
+
+// ─── Extended item types (frontend state adds _key, accepted, overrides) ──────
+
+type ActiveSection = keyof typeof SECTION_META
+
+interface ConfirmedRow extends BackendConfirmedItem {
   _key: string
-  rawName: string
-  section: ActiveSection
-  unknownHeader?: string    // which unknown header this came from (before classification)
-  qty_pos: number
-  qty_cash: number
-  qty: number               // break_display / stock ops
-  box_size?: number         // stock_in: units per box
-  num_boxes?: number        // stock_in: number of boxes
-  notes: string
-  product_id?: number
-  sku?: string
-  jizhanming?: string
-  candidates?: MatchCandidate[]
-  status: 'matched' | 'fuzzy' | 'unmatched' | 'skipped'
-  flagged?: boolean
-}
-
-interface UnknownSectionInfo {
-  headerText: string
-  pendingType: ActiveSection | 'skip' | null
-}
-
-const SECTION_LABELS: Record<ActiveSection, { label: string; color: string }> = {
-  pos:               { label: '卡机',     color: 'blue'    },
-  cash:              { label: '随手记',   color: 'green'   },
-  stock_in:          { label: '入店',     color: 'purple'  },
-  stock_out:         { label: '出店',     color: 'orange'  },
-  claw:              { label: '娃娃机',   color: 'gold'    },
-  sell_display:      { label: '卖Display', color: 'cyan'   },
-  break_display:     { label: '拆Display', color: 'red'    },
-  employee_discount: { label: '员工折扣', color: 'magenta' },
-}
-
-const SECTION_OPTIONS = (Object.keys(SECTION_LABELS) as ActiveSection[]).map(k => ({
-  value: k,
-  label: SECTION_LABELS[k].label,
-}))
-
-// ─── Parsing helpers ──────────────────────────────────────────────────────────
-
-const _DATE_RE   = /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/
-const _STORE_RE  = /\b([A-Za-z\u4e00-\u9fa5]{1,6})(?:店|汇总|DT|dt)/i
-
-function extractDateStore(firstLine: string, fallback: string): { date: string | null; store: string } {
-  const dm = firstLine.match(_DATE_RE)
-  const date = dm ? `${dm[1]}-${dm[2].padStart(2,'0')}-${dm[3].padStart(2,'0')}` : null
-  // e.g. "2026.04.01 DT汇总" → store="DT"
-  const storeMatch = firstLine.match(/([A-Za-z\u4e00-\u9fff]+)(?:店|汇总)/)
-  const store = storeMatch ? storeMatch[1].toUpperCase() : fallback
-  return { date, store }
-}
-
-interface ParsedLine {
-  rawName: string
-  section: ActiveSection
-  unknownHeader?: string
   qty_pos: number
   qty_cash: number
   qty: number
-  box_size?: number
-  num_boxes?: number
   notes: string
-  flagged: boolean
+  removed?: boolean
 }
 
-function parseLine(raw: string, section: ActiveSection): ParsedLine {
-  const t   = raw.trim()
-  const base = { section, notes: '', qty_pos: 0, qty_cash: 0, qty: 0, flagged: false }
-
-  // ── employee_discount: extract "购入 NAME*QTY" ─────────────────────────────
-  if (section === 'employee_discount') {
-    const m = t.match(/购入\s*(.+?)[\*＊]\s*(\d+)/)
-    if (m) {
-      const qty = parseInt(m[2], 10) || 1
-      return { ...base, rawName: m[1].trim(), qty, qty_pos: qty, notes: 'employee_discount' }
-    }
-    // No "购入" pattern — skip line
-    return { ...base, rawName: t, qty: 0, flagged: true }
-  }
-
-  // ── stock_in: {name}[optional box_size]*{num_boxes} ──────────────────────
-  // e.g. "星星人擦手巾6*1" → name="星星人擦手巾", box_size=6, num_boxes=1
-  //      "baby molly喵趣横生 耳机包*3" → name="baby molly喵趣横生 耳机包", box_size=undefined, num_boxes=3
-  if (section === 'stock_in') {
-    const starIdx = t.lastIndexOf('*')
-    if (starIdx === -1) return { ...base, rawName: t, qty: 0, flagged: true }
-
-    const num_boxes = parseInt(t.slice(starIdx + 1).trim(), 10) || 0
-    const left      = t.slice(0, starIdx).trim()
-
-    const trailingDigits = left.match(/^(.*?)\s*(\d+)$/)
-    let rawName: string
-    let box_size: number | undefined
-    if (trailingDigits && trailingDigits[1].trim()) {
-      rawName  = trailingDigits[1].trim()
-      box_size = parseInt(trailingDigits[2], 10)
-    } else {
-      rawName  = left
-      box_size = undefined
-    }
-
-    const qty = box_size != null ? box_size * num_boxes : num_boxes
-    return { ...base, rawName, qty, qty_pos: qty, box_size, num_boxes }
-  }
-
-  // ── Standard: NAME*QTY ────────────────────────────────────────────────────
-  const starIdx = t.lastIndexOf('*')
-  if (starIdx > 0) {
-    const rawName = t.slice(0, starIdx).trim()
-    const qty     = parseInt(t.slice(starIdx + 1).trim(), 10) || 0
-    if (rawName && qty > 0) {
-      if (section === 'cash') return { ...base, rawName, qty, qty_cash: qty }
-      return { ...base, rawName, qty, qty_pos: qty }
-    }
-  }
-
-  // ── Tab-separated (Excel paste fallback) ─────────────────────────────────
-  if (t.includes('\t')) {
-    const parts  = t.split('\t').map(s => s.trim())
-    const qty_pos  = parseInt(parts[1] || '0', 10) || 0
-    const qty_cash = parseInt(parts[2] || '0', 10) || 0
-    if (parts[0]) {
-      return { ...base, rawName: parts[0], qty: qty_pos + qty_cash, qty_pos, qty_cash }
-    }
-  }
-
-  // ── Flag: quantity unknown ────────────────────────────────────────────────
-  return { ...base, rawName: t, qty: 0, flagged: true }
+interface ReviewRow extends BackendReviewItem {
+  _key: string
+  qty_pos: number
+  qty_cash: number
+  qty: number
+  notes: string
+  accepted: boolean          // user explicitly accepted this match
+  product: BackendProduct    // may be overridden by user
+  removed?: boolean
 }
 
-function parseReport(
-  text: string,
-  savedAliases: SectionAlias[],
-  defaultStore: string,
-): { detectedDate: string | null; store: string; parsed: ParsedLine[]; unknownSections: UnknownSectionInfo[] } {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-  if (!lines.length) return { detectedDate: null, store: defaultStore, parsed: [], unknownSections: [] }
-
-  const { date: detectedDate, store } = extractDateStore(lines[0], defaultStore)
-
-  // Scan section boundaries
-  type Boundary = { idx: number; section: SectionType; headerText: string }
-  const boundaries: Boundary[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const sec = detectSectionHeader(lines[i], savedAliases)
-    if (sec !== null) boundaries.push({ idx: i, section: sec, headerText: lines[i] })
-  }
-
-  function sectionAt(lineIdx: number): { section: SectionType; headerText: string } {
-    let cur: SectionType = 'pos'
-    let hdr = ''
-    for (const b of boundaries) {
-      if (b.idx <= lineIdx) { cur = b.section; hdr = b.headerText }
-      else break
-    }
-    return { section: cur, headerText: hdr }
-  }
-
-  const parsed: ParsedLine[]             = []
-  const unknownSet: Map<string, boolean> = new Map()
-
-  for (let i = 0; i < lines.length; i++) {
-    if (isHeaderLine(lines[i], savedAliases)) continue
-    const { section, headerText } = sectionAt(i)
-    if (section === 'ignore') continue
-
-    if (section === 'unknown') {
-      // Collect as unknown — product names queued under this header
-      const line = parseLine(lines[i], 'pos') // parse as pos temporarily
-      parsed.push({ ...line, section: 'pos', unknownHeader: headerText })
-      unknownSet.set(headerText, true)
-      continue
-    }
-
-    if (section === 'stock_out') continue  // not yet implemented
-
-    // For employee_discount, don't comma-split the line
-    if (section === 'employee_discount') {
-      const p = parseLine(lines[i], 'employee_discount')
-      if (!p.flagged) parsed.push(p)
-      continue
-    }
-
-    // For other sections, comma-split lines (handles "item1, item2" patterns)
-    const subLines = lines[i].split(/[,，]/).map(s => s.trim()).filter(Boolean)
-    for (const sub of subLines) {
-      if (!sub || isHeaderLine(sub, savedAliases)) continue
-      parsed.push(parseLine(sub, section as ActiveSection))
-    }
-  }
-
-  const unknownSections: UnknownSectionInfo[] = Array.from(unknownSet.keys()).map(h => ({
-    headerText: h,
-    pendingType: null,
-  }))
-
-  return { detectedDate, store, parsed, unknownSections }
+interface FailedRow extends BackendFailedItem {
+  _key: string
+  qty_pos: number
+  qty_cash: number
+  qty: number
+  notes: string
+  assigned_product?: BackendProduct  // manually assigned
+  section: string
+  removed?: boolean
 }
 
-// ─── ProductPicker ────────────────────────────────────────────────────────────
+interface UnknownSectionState {
+  headerText: string
+  resolvedSection: ActiveSection | 'skip' | null
+}
 
-function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
+// ─── Product picker ───────────────────────────────────────────────────────────
+
+function ProductPicker({ onSelect, placeholder }: { onSelect: (p: BackendProduct) => void; placeholder?: string }) {
   const [opts, setOpts] = useState<any[]>([])
   async function search(q: string) {
     if (!q) { setOpts([]); return }
@@ -233,279 +90,460 @@ function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
     })))
   }
   return (
-    <AutoComplete size="small" style={{ width: 190 }} placeholder="搜索产品..."
-      options={opts} onSearch={search}
-      onSelect={(_: any, opt: any) => onSelect(opt.product)} />
+    <AutoComplete
+      size="small"
+      style={{ width: 200 }}
+      placeholder={placeholder ?? '搜索产品...'}
+      options={opts}
+      onSearch={search}
+      onSelect={(_: any, opt: any) => onSelect(opt.product)}
+    />
   )
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   date: string
   onComplete: (date: string, store: string) => void
 }
 
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export default function DailyReportEntry({ date, onComplete }: Props) {
   const { selectedStore } = useAppStore()
-  const defaultStoreCode  = selectedStore?.code ?? 'DT'
-  const [step,        setStep]        = useState<'input' | 'review' | 'done'>('input')
-  const [rawText,     setRawText]     = useState('')
-  const [parsedDate,  setParsedDate]  = useState<string | null>(null)
-  const [parsedStore, setParsedStore] = useState(defaultStoreCode)
-  const [items,       setItems]       = useState<MatchedItem[]>([])
-  const [unknowns,    setUnknowns]    = useState<UnknownSectionInfo[]>([])
-  const [savedAliases, setSavedAliases] = useState<SectionAlias[]>([])
-  const [matching,    setMatching]    = useState(false)
-  const [submitting,  setSubmitting]  = useState(false)
-  const [activeTab,   setActiveTab]   = useState<string>('')
+  const defaultStore = selectedStore?.code ?? 'DT'
+
+  const [step,          setStep]         = useState<'input' | 'review' | 'done'>('input')
+  const [rawText,       setRawText]       = useState('')
+  const [parsing,       setParsing]       = useState(false)
+  const [submitting,    setSubmitting]    = useState(false)
+
+  // Parsed data
+  const [parsedDate,    setParsedDate]    = useState<string | null>(null)
+  const [parsedStore,   setParsedStore]   = useState(defaultStore)
+  const [confirmed,     setConfirmed]     = useState<ConfirmedRow[]>([])
+  const [review,        setReview]        = useState<ReviewRow[]>([])
+  const [failed,        setFailed]        = useState<FailedRow[]>([])
+  const [unknowns,      setUnknowns]      = useState<UnknownSectionState[]>([])
+  const [savedAliases,  setSavedAliases]  = useState<SectionAlias[]>([])
 
   useEffect(() => {
     getSectionAliases().then(setSavedAliases).catch(() => {})
   }, [])
 
-  function updateItem(key: string, patch: Partial<MatchedItem>) {
-    setItems(prev => prev.map(it => it._key === key ? { ...it, ...patch } : it))
-  }
-  function removeItem(key: string) {
-    setItems(prev => prev.filter(it => it._key !== key))
-  }
-
-  async function handleManualSelect(key: string, rawName: string, p: any) {
-    updateItem(key, { product_id: p.id, sku: p.sku, jizhanming: p.jizhanming, status: 'matched', candidates: undefined })
-    try { await saveAlias(p.id, rawName) } catch { /* ignore */ }
-  }
+  // ── Parse (call backend) ──────────────────────────────────────────────────
 
   async function handleParse() {
     if (!rawText.trim()) { message.warning('请粘贴日报内容'); return }
-    setMatching(true)
-
-    const { detectedDate, store, parsed, unknownSections } = parseReport(rawText, savedAliases, defaultStoreCode)
-    setParsedDate(detectedDate)
-    setParsedStore(store)
-    setUnknowns(unknownSections)
-
-    if (!parsed.length) {
-      message.warning('未找到可解析的产品行')
-      setMatching(false)
-      return
-    }
-
-    let matchResults: MatchResult[]
+    setParsing(true)
     try {
-      matchResults = await batchMatch(parsed.map(p => p.rawName))
-    } catch {
-      message.error('匹配失败，请重试')
-      setMatching(false)
-      return
+      const res = await parseReportBackend(rawText, defaultStore)
+
+      setParsedDate(res.detected_date)
+      setParsedStore(res.store)
+
+      const mk = (prefix: string, i: number, name: string) => `${prefix}-${i}-${name}`
+
+      setConfirmed(res.confirmed.map((it, i) => ({
+        ...it,
+        _key:     mk('c', i, it.raw_name),
+        qty:      it.qty,
+        qty_pos:  it.qty_pos,
+        qty_cash: it.qty_cash,
+        notes:    '',
+      })))
+
+      setReview(res.review.map((it, i) => ({
+        ...it,
+        _key:     mk('r', i, it.raw_name),
+        qty:      it.qty,
+        qty_pos:  it.qty_pos,
+        qty_cash: it.qty_cash,
+        notes:    '',
+        accepted: false,
+      })))
+
+      setFailed(res.failed.map((it, i) => ({
+        ...it,
+        _key:     mk('f', i, it.raw_name),
+        qty:      it.qty,
+        qty_pos:  it.qty_pos,
+        qty_cash: it.qty_cash,
+        notes:    '',
+        section:  it.section ?? 'pos',
+      })))
+
+      setUnknowns(
+        res.unknown_sections.map(h => ({ headerText: h, resolvedSection: null }))
+      )
+
+      if (res.confirmed.length + res.review.length + res.failed.length === 0) {
+        message.warning('未找到可解析的产品行')
+        return
+      }
+      setStep('review')
+    } catch (err: any) {
+      message.error(err?._serverMessage ?? err?.message ?? '解析失败，请重试')
+    } finally {
+      setParsing(false)
     }
-
-    const out: MatchedItem[] = matchResults.map((r, i) => {
-      if (r.status === 'skipped') return null
-      const top = r.candidates[0]
-      return {
-        ...parsed[i],
-        _key: `${i}-${r.query}`,
-        product_id:  top?.id,
-        sku:         top?.sku,
-        jizhanming:  top?.jizhanming,
-        candidates:  r.candidates.length > 1 ? r.candidates : undefined,
-        status:      r.status,
-      } as MatchedItem
-    }).filter(Boolean) as MatchedItem[]
-
-    setItems(out)
-    setMatching(false)
-
-    // Set default tab to first non-unknown section with items
-    const firstSec = out.find(i => i.section !== ('unknown' as any))?.section ?? out[0]?.section
-    if (firstSec) setActiveTab(firstSec)
-
-    setStep('review')
   }
 
-  async function classifyUnknown(headerText: string, newSection: ActiveSection | 'skip') {
-    // Update unknown section state
-    setUnknowns(prev => prev.map(u =>
-      u.headerText === headerText ? { ...u, pendingType: newSection } : u
-    ))
-    // Reclassify items belonging to this unknown section
-    if (newSection !== 'skip') {
-      setItems(prev => prev.map(it =>
-        it.unknownHeader === headerText ? { ...it, section: newSection } : it
-      ))
+  // ── Unknown section classification ─────────────────────────────────────────
+
+  async function classifyUnknown(headerText: string, resolved: ActiveSection | 'skip') {
+    setUnknowns(prev =>
+      prev.map(u => u.headerText === headerText ? { ...u, resolvedSection: resolved } : u)
+    )
+    if (resolved === 'skip') {
+      setFailed(prev => prev.filter(f => f.unknown_header !== headerText))
     } else {
-      // Skip: remove those items
-      setItems(prev => prev.filter(it => it.unknownHeader !== headerText))
+      // Move unknown-header items from failed into confirmed/review based on their existing score
+      const toReclassify = failed.filter(f => f.unknown_header === headerText)
+      if (toReclassify.length) {
+        setFailed(prev => prev.filter(f => f.unknown_header !== headerText))
+        // Re-queue them as review items (user still needs to confirm)
+        setReview(prev => [
+          ...prev,
+          ...toReclassify.map(f => ({
+            ...f,
+            _key:      f._key + '-reclassified',
+            section:   resolved,
+            score:     f.score,
+            accepted:  false,
+            product:   (f.candidates[0] ?? null) as unknown as BackendProduct,
+            candidates: f.candidates as BackendCandidate[],
+            warn_blank_jzm: false,
+          } as ReviewRow)),
+        ])
+      }
     }
-    // Save alias so it's auto-resolved next time
     try {
-      await saveSectionAlias(headerText, newSection === 'skip' ? 'ignore' : newSection)
+      await saveSectionAlias(headerText, resolved === 'skip' ? 'ignore' : resolved)
       setSavedAliases(await getSectionAliases())
     } catch { /* ignore */ }
   }
 
+  // ── Item update helpers ───────────────────────────────────────────────────
+
+  function patchConfirmed(key: string, patch: Partial<ConfirmedRow>) {
+    setConfirmed(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r))
+  }
+  function patchReview(key: string, patch: Partial<ReviewRow>) {
+    setReview(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r))
+  }
+  function patchFailed(key: string, patch: Partial<FailedRow>) {
+    setFailed(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r))
+  }
+
+  async function handleManualSelectReview(row: ReviewRow, p: BackendProduct) {
+    patchReview(row._key, { product: p, accepted: true })
+    try { await saveAlias(p.id, row.raw_name) } catch { /* ignore */ }
+  }
+
+  async function handleManualSelectFailed(row: FailedRow, p: BackendProduct) {
+    patchFailed(row._key, { assigned_product: p })
+    try { await saveAlias(p.id, row.raw_name) } catch { /* ignore */ }
+  }
+
+  // ── Submit ────────────────────────────────────────────────────────────────
+
   async function handleSubmit() {
-    const unresolved = unknowns.filter(u => u.pendingType === null)
-    if (unresolved.length) {
-      message.warning(`请先处理 ${unresolved.length} 个未识别的章节`)
+    const unresolvedUnknowns = unknowns.filter(u => u.resolvedSection === null)
+    if (unresolvedUnknowns.length) {
+      message.warning(`请先处理 ${unresolvedUnknowns.length} 个未识别的章节`)
       return
     }
 
-    const toSubmit = items.filter(i => i.product_id && !i.flagged && i.section !== ('unknown' as any))
-    if (!toSubmit.length) { message.warning('没有可提交的条目'); return }
-
-    setSub(true)
     const submitDate  = parsedDate ?? date
     const submitStore = parsedStore
 
-    const payload = toSubmit.map(i => {
-      const base: any = { product_id: i.product_id, section: i.section, notes: i.notes }
-      if (i.section === 'pos' || i.section === 'sell_display' || i.section === 'claw' || i.section === 'employee_discount') {
-        base.qty_pos = i.qty_pos
-      } else if (i.section === 'cash') {
-        base.qty_cash = i.qty_cash
-      } else if (i.section === 'break_display') {
-        base.qty = i.qty
-      } else if (i.section === 'stock_in') {
-        base.box_size  = i.box_size  ?? 1
-        base.num_boxes = i.num_boxes ?? i.qty
-      }
-      return base
-    })
+    const payload: any[] = []
 
+    // CONFIRMED items (auto-accepted, not removed, qty known)
+    for (const r of confirmed) {
+      if (r.removed || r.flagged || !r.product?.id) continue
+      payload.push(buildPayloadItem(r, r.product))
+    }
+
+    // REVIEW items (user must have explicitly accepted)
+    for (const r of review) {
+      if (r.removed || !r.accepted || r.flagged || !r.product?.id) continue
+      payload.push(buildPayloadItem(r, r.product))
+    }
+
+    // FAILED items where user manually assigned a product
+    for (const r of failed) {
+      if (r.removed || r.flagged || !r.assigned_product?.id) continue
+      payload.push(buildPayloadItem(r, r.assigned_product))
+    }
+
+    if (!payload.length) { message.warning('没有可提交的条目'); return }
+
+    setSubmitting(true)
     try {
       await client.post('/sales/submit_daily_report', {
-        date: submitDate, store_code: submitStore, items: payload,
+        date: submitDate,
+        store_code: submitStore,
+        items: payload,
       })
       setStep('done')
     } catch (err: any) {
-      message.error(err?.response?.data?.error ?? '提交失败')
+      message.error(err?._serverMessage ?? err?.message ?? '提交失败')
     } finally {
-      setSub(false)
+      setSubmitting(false)
     }
   }
 
-  // setSub helper (avoids extra state)
-  function setSub(v: boolean) { setSubmitting(v) }
-
-  // ── Derived counts ───────────────────────────────────────────────────────
-  const unresolvedUnknowns = unknowns.filter(u => u.pendingType === null).length
-  const unresolvedItems    = items.filter(i => i.status === 'unmatched' || i.flagged).length
-  const totalReady         = items.filter(i => i.product_id && !i.flagged && i.section !== ('unknown' as any)).length
-
-  // ── Section tabs ─────────────────────────────────────────────────────────
-  const sectionOrder: Array<ActiveSection | 'unknown'> = [
-    'pos','cash','claw','sell_display','employee_discount','break_display','stock_in',
-  ]
-
-  const itemsBySection = (sec: string) => items.filter(i =>
-    sec === 'unknown' ? i.section === ('unknown' as any) : i.section === sec
-  )
-
-  const unknownHeaders = [...new Set(
-    items.filter(i => i.unknownHeader).map(i => i.unknownHeader!)
-  )]
-
-  // Build tabs
-  const tabSections = [
-    ...sectionOrder.filter(s => itemsBySection(s).length > 0 && s !== 'unknown'),
-    ...unknownHeaders,
-  ]
-
-  // ── Review table columns ─────────────────────────────────────────────────
-  function reviewColumns(section: ActiveSection) {
-    const isStock = section === 'stock_in' || section === 'break_display'
-    const isCash  = section === 'cash'
-    return [
-      {
-        title: '输入名称', dataIndex: 'rawName', width: 140,
-        render: (v: string, r: MatchedItem) => (
-          <span style={{ color: r.status === 'unmatched' ? '#cf1322' : undefined, fontSize: 13 }}>{v}</span>
-        ),
-      },
-      {
-        title: '匹配产品', key: 'm', width: 220,
-        render: (_: any, r: MatchedItem) => {
-          if (r.status === 'unmatched') return (
-            <Space size={4}>
-              <Tag color="red">未匹配</Tag>
-              <ProductPicker onSelect={p => handleManualSelect(r._key, r.rawName, p)} />
-            </Space>
-          )
-          if (r.candidates && r.candidates.length > 1) return (
-            <Select size="small" value={r.product_id} style={{ width: 200 }}
-              onChange={v => {
-                const c = r.candidates!.find(x => x.id === v)
-                if (c) handleManualSelect(r._key, r.rawName, c)
-              }}
-              options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming || c.name_cn_en || c.sku} (${c.sku})` }))}
-            />
-          )
-          return (
-            <Space size={4}>
-              <Tag color="green"><CheckCircleOutlined /></Tag>
-              <span style={{ fontSize: 13 }}>{r.jizhanming}</span>
-              <Tag style={{ fontSize: 11 }}>{r.sku}</Tag>
-            </Space>
-          )
-        },
-      },
-      {
-        title: isStock ? '数量' : (isCash ? '现金/转账' : '数量'), key: 'qty', width: 130,
-        render: (_: any, r: MatchedItem) => {
-          if (r.flagged) return (
-            <Space size={4}>
-              <Tag color="red" icon={<WarningOutlined />}>无数量</Tag>
-              <InputNumber size="small" min={0} value={0} style={{ width: 55 }}
-                onChange={v => {
-                  const q = v ?? 0
-                  updateItem(r._key, {
-                    qty: q, qty_pos: isCash ? 0 : q, qty_cash: isCash ? q : 0, flagged: false,
-                  })
-                }} />
-            </Space>
-          )
-          if (section === 'stock_in' && r.box_size != null && r.num_boxes != null) return (
-            <Space size={4}>
-              <Tag style={{ fontSize: 11 }}>{r.box_size}盒/端</Tag>
-              <span style={{ color: '#9ca3af' }}>×</span>
-              <Tag style={{ fontSize: 11 }}>{r.num_boxes}端</Tag>
-              <span style={{ fontWeight: 600, color: '#6366F1' }}>={r.num_boxes * r.box_size}盒入店</span>
-            </Space>
-          )
-          if (section === 'break_display') return (
-            <InputNumber size="small" min={1} value={r.qty || 1} style={{ width: 65 }}
-              onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
-          )
-          if (isCash) return (
-            <InputNumber size="small" min={0} value={r.qty_cash} style={{ width: 65 }}
-              onChange={v => updateItem(r._key, { qty_cash: v ?? 0, qty: v ?? 0 })} />
-          )
-          return (
-            <InputNumber size="small" min={0} value={r.qty_pos} style={{ width: 65 }}
-              onChange={v => updateItem(r._key, { qty_pos: v ?? 0, qty: v ?? 0 })} />
-          )
-        },
-      },
-      {
-        title: '备注', dataIndex: 'notes', width: 90,
-        render: (v: string, r: MatchedItem) => (
-          <Input size="small" value={v}
-            onChange={e => updateItem(r._key, { notes: e.target.value })} />
-        ),
-      },
-      {
-        title: '', key: 'del', width: 40,
-        render: (_: any, r: MatchedItem) => (
-          <Tooltip title="移除">
-            <Button size="small" type="text" danger icon={<DeleteOutlined />}
-              onClick={() => removeItem(r._key)} />
-          </Tooltip>
-        ),
-      },
-    ]
+  function buildPayloadItem(
+    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null },
+    product: BackendProduct,
+  ) {
+    const base: any = { product_id: product.id, section: row.section, notes: row.notes }
+    if (row.section === 'cash') {
+      base.qty_cash = row.qty_cash || row.qty
+    } else if (row.section === 'stock_in') {
+      base.box_size  = row.box_size ?? 1
+      base.num_boxes = row.qty
+    } else if (row.section === 'break_display') {
+      base.qty = row.qty
+    } else {
+      base.qty_pos = row.qty_pos || row.qty
+    }
+    return base
   }
+
+  // ── Derived counts ────────────────────────────────────────────────────────
+
+  const confirmedReady  = confirmed.filter(r => !r.removed && !r.flagged && r.product?.id).length
+  const reviewAccepted  = review.filter(r => r.accepted && !r.removed && !r.flagged && r.product?.id).length
+  const failedAssigned  = failed.filter(r => r.assigned_product && !r.removed && !r.flagged).length
+  const totalReady      = confirmedReady + reviewAccepted + failedAssigned
+
+  const pendingReview   = review.filter(r => !r.accepted && !r.removed).length
+  const unresolvedUnknowns = unknowns.filter(u => u.resolvedSection === null).length
+
+  const canSubmit = unresolvedUnknowns === 0 && totalReady > 0
+
+  // ── Columns ───────────────────────────────────────────────────────────────
+
+  const qtyCell = (
+    row: ConfirmedRow | ReviewRow | FailedRow,
+    patchFn: (key: string, p: any) => void,
+  ) => {
+    const isCash = row.section === 'cash'
+    if (row.flagged) return (
+      <Space size={4}>
+        <Tag color="red" icon={<WarningOutlined />}>无数量</Tag>
+        <InputNumber size="small" min={0} value={0} style={{ width: 55 }}
+          onChange={v => {
+            const q = v ?? 0
+            patchFn(row._key, {
+              qty: q,
+              qty_pos:  isCash ? 0 : q,
+              qty_cash: isCash ? q : 0,
+              flagged: false,
+            })
+          }} />
+      </Space>
+    )
+    if (row.section === 'stock_in' && row.box_size != null) return (
+      <Space size={4}>
+        <Tag style={{ fontSize: 11 }}>{row.box_size}盒/端</Tag>
+        <span style={{ color: '#9ca3af' }}>×</span>
+        <Tag style={{ fontSize: 11 }}>{row.qty}端</Tag>
+        <span style={{ fontWeight: 600, color: '#6366F1' }}>={row.qty * row.box_size}盒</span>
+      </Space>
+    )
+    return (
+      <InputNumber size="small" min={0}
+        value={isCash ? (row.qty_cash || row.qty) : (row.qty_pos || row.qty)}
+        style={{ width: 65 }}
+        onChange={v => {
+          const q = v ?? 0
+          patchFn(row._key, { qty: q, qty_pos: isCash ? 0 : q, qty_cash: isCash ? q : 0 })
+        }} />
+    )
+  }
+
+  const confirmedColumns = [
+    {
+      title: '产品', key: 'product', width: 220,
+      render: (_: any, r: ConfirmedRow) => (
+        <Space direction="vertical" size={0}>
+          <Space size={4}>
+            <Tag color="green" style={{ margin: 0 }}><CheckCircleOutlined /></Tag>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{r.product.jizhanming}</span>
+          </Space>
+          <Space size={4}>
+            <Tag style={{ fontSize: 11, margin: 0 }}>{r.product.sku}</Tag>
+            {r.warn_blank_jzm && <Tag color="orange" style={{ fontSize: 11 }}>⚠ 记账名为空</Tag>}
+          </Space>
+        </Space>
+      ),
+    },
+    {
+      title: '输入', dataIndex: 'raw_name', width: 130,
+      render: (v: string) => <span style={{ fontSize: 12, color: '#6b7280' }}>{v}</span>,
+    },
+    {
+      title: '分区', key: 'sec', width: 80,
+      render: (_: any, r: ConfirmedRow) => <SectionTag section={r.section} />,
+    },
+    {
+      title: '数量', key: 'qty', width: 140,
+      render: (_: any, r: ConfirmedRow) => qtyCell(r, patchConfirmed),
+    },
+    {
+      title: '备注', key: 'notes', width: 100,
+      render: (_: any, r: ConfirmedRow) => (
+        <Input size="small" value={r.notes}
+          onChange={e => patchConfirmed(r._key, { notes: e.target.value })} />
+      ),
+    },
+    {
+      title: '', key: 'del', width: 40,
+      render: (_: any, r: ConfirmedRow) => (
+        <Tooltip title="移除">
+          <Button size="small" type="text" danger icon={<DeleteOutlined />}
+            onClick={() => patchConfirmed(r._key, { removed: true })} />
+        </Tooltip>
+      ),
+    },
+  ]
+
+  const reviewColumns = [
+    {
+      title: '输入', dataIndex: 'raw_name', width: 130,
+      render: (v: string) => <span style={{ fontSize: 13 }}>{v}</span>,
+    },
+    {
+      title: '候选匹配', key: 'match', width: 250,
+      render: (_: any, r: ReviewRow) => {
+        if (r.accepted) return (
+          <Space size={4}>
+            <Tag color="green"><CheckCircleOutlined /></Tag>
+            <span style={{ fontSize: 13 }}>{r.product?.jizhanming}</span>
+            <Tag style={{ fontSize: 11 }}>{r.product?.sku}</Tag>
+          </Space>
+        )
+        return (
+          <Space size={4} direction="vertical" style={{ width: '100%' }}>
+            <Select
+              size="small" value={r.product?.id} style={{ width: 220 }}
+              onChange={v => {
+                const c = r.candidates?.find((x: BackendCandidate) => x.id === v)
+                if (c) patchReview(r._key, { product: c as BackendProduct })
+              }}
+              options={(r.candidates || []).map((c: BackendCandidate) => ({
+                value: c.id,
+                label: `${c.jizhanming || c.sku} (${c.score}%)`,
+              }))}
+            />
+            <ProductPicker placeholder="或搜索其他产品..."
+              onSelect={p => handleManualSelectReview(r, p)} />
+          </Space>
+        )
+      },
+    },
+    {
+      title: '分值', dataIndex: 'score', width: 70,
+      render: (v: number, r: ReviewRow) => {
+        const color = r.accepted ? '#10B981' : v >= 70 ? '#f59e0b' : '#ef4444'
+        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{v}%</span>
+      },
+    },
+    {
+      title: '分区', key: 'sec', width: 80,
+      render: (_: any, r: ReviewRow) => <SectionTag section={r.section} />,
+    },
+    {
+      title: '数量', key: 'qty', width: 140,
+      render: (_: any, r: ReviewRow) => qtyCell(r, patchReview),
+    },
+    {
+      title: '操作', key: 'action', width: 120,
+      render: (_: any, r: ReviewRow) => r.accepted ? (
+        <Button size="small" onClick={() => patchReview(r._key, { accepted: false })}>
+          撤销
+        </Button>
+      ) : (
+        <Space size={4}>
+          <Button size="small" type="primary"
+            disabled={!r.product?.id}
+            onClick={() => patchReview(r._key, { accepted: true })}>
+            接受
+          </Button>
+          <Tooltip title="移除此行">
+            <Button size="small" danger type="text" icon={<DeleteOutlined />}
+              onClick={() => patchReview(r._key, { removed: true })} />
+          </Tooltip>
+        </Space>
+      ),
+    },
+  ]
+
+  const failedColumns = [
+    {
+      title: '输入', dataIndex: 'raw_name', width: 130,
+      render: (v: string, r: FailedRow) => (
+        <Space direction="vertical" size={0}>
+          <span style={{ color: '#cf1322', fontSize: 13 }}>{v}</span>
+          {r.unknown_header && (
+            <span style={{ fontSize: 11, color: '#9ca3af' }}>章节: {r.unknown_header}</span>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: '原因', key: 'reason', width: 90,
+      render: (_: any, r: FailedRow) => {
+        const labels: Record<string, string> = {
+          no_match:        '未匹配',
+          empty_name:      '名称为空',
+          low_score:       '分值过低',
+          unknown_section: '未知章节',
+        }
+        return <Tag color="red">{labels[r.reason] ?? r.reason}</Tag>
+      },
+    },
+    {
+      title: '手动指定', key: 'assign', width: 240,
+      render: (_: any, r: FailedRow) => r.assigned_product ? (
+        <Space size={4}>
+          <Tag color="green"><CheckCircleOutlined /></Tag>
+          <span style={{ fontSize: 13 }}>{r.assigned_product.jizhanming}</span>
+          <Tag style={{ fontSize: 11 }}>{r.assigned_product.sku}</Tag>
+          <Button size="small" type="text" icon={<CloseCircleOutlined />}
+            onClick={() => patchFailed(r._key, { assigned_product: undefined })} />
+        </Space>
+      ) : (
+        <ProductPicker onSelect={p => handleManualSelectFailed(r, p)} />
+      ),
+    },
+    {
+      title: '分区', key: 'sec', width: 80,
+      render: (_: any, r: FailedRow) => (
+        <Select size="small" value={r.section} style={{ width: 80 }}
+          options={Object.entries(SECTION_META).map(([k, v]) => ({ value: k, label: v.label }))}
+          onChange={v => patchFailed(r._key, { section: v })} />
+      ),
+    },
+    {
+      title: '数量', key: 'qty', width: 100,
+      render: (_: any, r: FailedRow) => qtyCell(r, patchFailed),
+    },
+    {
+      title: '', key: 'del', width: 40,
+      render: (_: any, r: FailedRow) => (
+        <Tooltip title="丢弃此行">
+          <Button size="small" type="text" danger icon={<DeleteOutlined />}
+            onClick={() => patchFailed(r._key, { removed: true })} />
+        </Tooltip>
+      ),
+    },
+  ]
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -517,7 +555,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
             Import Daily Report
           </div>
           <div style={{ fontSize: 13, color: '#6b7280' }}>
-            Paste the full end-of-day report. Date and store will be detected automatically.
+            Paste the full end-of-day report. Date and store are detected automatically.
           </div>
         </div>
         <Input.TextArea
@@ -527,7 +565,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           placeholder={`2026.04.01 DT汇总\n卡机汇总：\nchiikawa hipper*1\nsmiski hipper*2\n\n随手记汇总：\n星星人点亮场景*9\n\n入店：\ndimoo奇遇小夜灯 6*2\nsmiski cheer 12*1`}
           style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 12 }}
         />
-        <Button type="primary" size="large" loading={matching} onClick={handleParse}>
+        <Button type="primary" size="large" loading={parsing} onClick={handleParse}>
           Parse Report
         </Button>
       </div>
@@ -554,7 +592,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
   // ── Review step ───────────────────────────────────────────────────────────
 
-  const canSubmit = unresolvedUnknowns === 0 && totalReady > 0
+  const visibleConfirmed = confirmed.filter(r => !r.removed)
+  const visibleReview    = review.filter(r => !r.removed)
+  const visibleFailed    = failed.filter(r => !r.removed)
 
   return (
     <div>
@@ -563,8 +603,13 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         {parsedDate && (
           <Tag color="blue" style={{ fontSize: 13 }}>{parsedDate} · {parsedStore}</Tag>
         )}
-        <Tag color="green">{totalReady} ready</Tag>
-        {unresolvedItems > 0 && <Tag color="orange">{unresolvedItems} need attention</Tag>}
+        <Tag color="green" icon={<CheckCircleOutlined />}>{confirmedReady} confirmed</Tag>
+        {pendingReview > 0 && (
+          <Tag color="orange" icon={<WarningOutlined />}>{pendingReview} need review</Tag>
+        )}
+        {visibleFailed.length > 0 && (
+          <Tag color="red" icon={<CloseCircleOutlined />}>{visibleFailed.length} failed</Tag>
+        )}
         {unresolvedUnknowns > 0 && (
           <Tag color="red" icon={<QuestionCircleOutlined />}>{unresolvedUnknowns} unknown sections</Tag>
         )}
@@ -572,14 +617,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           <Space>
             <Button onClick={() => setStep('input')}>← Back</Button>
             <Button type="primary" loading={submitting} disabled={!canSubmit} onClick={handleSubmit}>
-              Confirm & Save {totalReady} items
+              Confirm & Log {totalReady} items
             </Button>
           </Space>
         </div>
       </div>
 
-      {/* Unknown section alerts */}
-      {unknowns.filter(u => u.pendingType === null).map(u => (
+      {/* Unknown section classification alerts */}
+      {unknowns.filter(u => u.resolvedSection === null).map(u => (
         <Alert
           key={u.headerText}
           type="warning"
@@ -587,12 +632,15 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           style={{ marginBottom: 8, borderRadius: 8 }}
           message={
             <Space>
-              <span>Unknown section: <strong>{u.headerText}</strong> — what type is this?</span>
+              <span>Unknown section: <strong>{u.headerText}</strong> — what type?</span>
               <Select
                 size="small"
-                style={{ width: 120 }}
+                style={{ width: 130 }}
                 placeholder="Classify..."
-                options={[...SECTION_OPTIONS, { value: 'skip', label: '跳过/忽略' }]}
+                options={[
+                  ...Object.entries(SECTION_META).map(([k, v]) => ({ value: k, label: v.label })),
+                  { value: 'skip', label: '跳过/忽略' },
+                ]}
                 onChange={(v: ActiveSection | 'skip') => classifyUnknown(u.headerText, v)}
               />
             </Space>
@@ -600,44 +648,123 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         />
       ))}
 
-      <Spin spinning={false}>
-        <Tabs
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          items={tabSections.map(sectionKey => {
-            const isUnknownHeader = !Object.keys(SECTION_LABELS).includes(sectionKey)
-            const sectionItems = isUnknownHeader
-              ? items.filter(i => i.unknownHeader === sectionKey)
-              : items.filter(i => i.section === sectionKey)
-
-            const issueCount = sectionItems.filter(i => i.status === 'unmatched' || i.flagged).length
-            const sec        = isUnknownHeader ? null : SECTION_LABELS[sectionKey as ActiveSection]
-
-            const label = isUnknownHeader
-              ? <span style={{ color: '#f59e0b' }}>❓ {sectionKey}</span>
-              : <Badge count={issueCount} size="small" offset={[4, -2]}>
-                  <Tag color={sec!.color} style={{ margin: 0 }}>{sec!.label}</Tag>
-                </Badge>
-
-            return {
-              key:   sectionKey,
-              label,
-              children: (
-                <Table
-                  size="small"
-                  rowKey="_key"
-                  dataSource={sectionItems}
-                  columns={reviewColumns(
-                    isUnknownHeader ? 'pos' : sectionKey as ActiveSection
-                  )}
-                  pagination={false}
-                  scroll={{ y: 400 }}
-                />
-              ),
-            }
-          })}
-        />
-      </Spin>
+      {/* Three-bucket tabs */}
+      <Tabs
+        defaultActiveKey="confirmed"
+        items={[
+          {
+            key: 'confirmed',
+            label: (
+              <Badge count={visibleFailed.length === 0 && pendingReview === 0 ? 0 : undefined}
+                style={{ backgroundColor: '#10B981' }}>
+                <Space size={4}>
+                  <CheckCircleOutlined style={{ color: '#10B981' }} />
+                  <span>Confirmed</span>
+                  <Tag color="green" style={{ margin: 0 }}>{visibleConfirmed.length}</Tag>
+                </Space>
+              </Badge>
+            ),
+            children: (
+              <>
+                {visibleConfirmed.length === 0 ? (
+                  <Alert type="info" message="No confirmed items" style={{ borderRadius: 8 }} />
+                ) : (
+                  <Table
+                    size="small"
+                    rowKey="_key"
+                    dataSource={visibleConfirmed}
+                    columns={confirmedColumns}
+                    pagination={false}
+                    scroll={{ y: 420 }}
+                  />
+                )}
+              </>
+            ),
+          },
+          {
+            key: 'review',
+            label: (
+              <Space size={4}>
+                <WarningOutlined style={{ color: pendingReview > 0 ? '#f59e0b' : '#10B981' }} />
+                <span>Review</span>
+                <Tag color={pendingReview > 0 ? 'orange' : 'green'} style={{ margin: 0 }}>
+                  {visibleReview.length}
+                </Tag>
+              </Space>
+            ),
+            children: (
+              <>
+                {visibleReview.length === 0 ? (
+                  <Alert type="success" message="No items need review" style={{ borderRadius: 8 }} />
+                ) : (
+                  <>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 8, borderRadius: 8 }}
+                      message={`${pendingReview} items need your confirmation. Accept or reject each match below.`}
+                    />
+                    <Table
+                      size="small"
+                      rowKey="_key"
+                      dataSource={visibleReview}
+                      columns={reviewColumns}
+                      pagination={false}
+                      scroll={{ y: 400 }}
+                    />
+                    {pendingReview > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <Button
+                          onClick={() => setReview(prev =>
+                            prev.map(r => (!r.removed && r.product?.id) ? { ...r, accepted: true } : r)
+                          )}>
+                          Accept all with match
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            ),
+          },
+          {
+            key: 'failed',
+            label: (
+              <Space size={4}>
+                <CloseCircleOutlined style={{ color: visibleFailed.length > 0 ? '#ef4444' : '#10B981' }} />
+                <span>Failed</span>
+                <Tag color={visibleFailed.length > 0 ? 'red' : 'green'} style={{ margin: 0 }}>
+                  {visibleFailed.length}
+                </Tag>
+              </Space>
+            ),
+            children: (
+              <>
+                {visibleFailed.length === 0 ? (
+                  <Alert type="success" message="No failed items" style={{ borderRadius: 8 }} />
+                ) : (
+                  <>
+                    <Alert
+                      type="error"
+                      showIcon
+                      style={{ marginBottom: 8, borderRadius: 8 }}
+                      message="These items could not be matched. Assign a product manually or discard."
+                    />
+                    <Table
+                      size="small"
+                      rowKey="_key"
+                      dataSource={visibleFailed}
+                      columns={failedColumns}
+                      pagination={false}
+                      scroll={{ y: 400 }}
+                    />
+                  </>
+                )}
+              </>
+            ),
+          },
+        ]}
+      />
     </div>
   )
 }

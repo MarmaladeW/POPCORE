@@ -1,12 +1,15 @@
 """
 blueprints/sales.py — daily sales records, batch import, daily report, export.
 """
+import re
+import unicodedata
 from datetime import date, timedelta
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
 from blueprints.stores import _resolve_store
+from matcher import match_jzm
 
 bp = Blueprint('sales', __name__)
 
@@ -519,3 +522,290 @@ def clear_sales_day():
     con.commit()
     con.close()
     return jsonify({'ok': True, 'deleted': deleted})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMPORT PIPELINE  (Layers 1 – 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Layer 2 — section keyword map (longer/more-specific strings first)
+_SECTION_MAP = [
+    ('卡机汇总',   'pos'),
+    ('随手记汇总', 'cash'),
+    ('随手记',     'cash'),
+    ('卡机',       'pos'),
+    ('入店',       'stock_in'),
+    ('出店',       'stock_out'),
+    ('卖display',  'sell_display'),
+    ('卖Display',  'sell_display'),
+    ('拆display',  'break_display'),
+    ('拆Display',  'break_display'),
+    ('娃娃机',     'skip'),        # CLAW_MACHINE — skip
+    ('员工折扣',   'employee_discount'),
+    ('晚盘',       'skip'),        # EVENING_CHECK — skip
+    ('博主探店',   'skip'),        # INFLUENCER — skip
+    ('现金',       'skip'),        # CASH_TOTAL — skip
+]
+
+# Layers 5 — score thresholds
+_SCORE_CONFIRMED = 80
+_SCORE_REVIEW    = 50
+
+_DATE_RE = re.compile(r'(\d{4})[.\-\/年](\d{1,2})[.\-\/月](\d{1,2})')
+
+
+def _preprocess_text(text: str) -> str:
+    """Layer 1 — apply in strict order before any line splitting or parsing."""
+    # 1. NFKC normalize (converts ＊→*, fullwidth chars, etc.)
+    text = unicodedata.normalize('NFKC', text)
+    # 2. Strip parentheticals — staff notes, never product data
+    text = re.sub(r'（[^）]*）', '', text)
+    text = re.sub(r'\([^)]*\)', '', text)
+    # 3. Normalize star separator: ∗ (U+2217) not handled by NFKC, strip spaces
+    text = text.replace('∗', '*')
+    text = re.sub(r'\s*\*\s*', '*', text)
+    # 4. Per-line: strip leading/trailing whitespace, collapse internal spaces
+    lines = [re.sub(r'  +', ' ', ln.strip()) for ln in text.split('\n')]
+    text = '\n'.join(lines)
+    # 5. Remove double commas
+    text = text.replace(',,', ',').replace('，，', '，')
+    return text
+
+
+def _detect_section_type(line: str, section_aliases: dict) -> str | None:
+    """
+    Return section-type string if line is a section header, None if it's a product line.
+    'skip'    → known section to ignore entirely.
+    'unknown' → looks like a header but no keyword matched.
+    """
+    lower = line.lower()
+    for keyword, section in _SECTION_MAP:
+        if keyword.lower() in lower:
+            return section
+    # User-saved section aliases (alias_norm → section_type)
+    line_norm = re.sub(r'\s+', '', lower)
+    for alias_norm, stype in section_aliases.items():
+        if alias_norm in line_norm:
+            return stype
+    # Ends with colon → treat as unknown header
+    stripped = line.rstrip()
+    if stripped.endswith(':') or stripped.endswith('：'):
+        return 'unknown'
+    return None
+
+
+def _extract_date_store(first_line: str, fallback_store: str):
+    """Parse date and store code from a report header line (best-effort)."""
+    dm = _DATE_RE.search(first_line)
+    detected_date = (
+        f"{dm.group(1)}-{int(dm.group(2)):02d}-{int(dm.group(3)):02d}" if dm else None
+    )
+    sm = re.search(r'([A-Za-z]{2,6})(?:汇总|店)', first_line)
+    store = sm.group(1).upper() if sm else fallback_store
+    return detected_date, store
+
+
+def _parse_token(token: str, section: str) -> dict | None:
+    """
+    Layer 3 — parse a single comma-split token.
+
+    Returns None for empty tokens; always returns a dict for non-empty input.
+    flagged=True means no quantity was found (requires user input before commit).
+    """
+    t = token.strip()
+    if not t:
+        return None
+
+    # Step 2: lastIndexOf('*') → quantity
+    star_idx = t.rfind('*')
+    if star_idx > 0:
+        raw_name = t[:star_idx].strip()
+        qty_str  = t[star_idx + 1:].strip()
+        try:
+            qty = max(1, int(qty_str))
+        except (ValueError, TypeError):
+            qty = 1
+        flagged = False
+    else:
+        raw_name = t
+        qty      = 1
+        flagged  = True  # no * found — no explicit quantity
+
+    # Step 3: STOCK_IN trailing-number → box_size
+    box_size = None
+    if section == 'stock_in' and raw_name:
+        m = re.match(r'^(.*\D)\s*(\d+)$', raw_name)
+        if m and m.group(1).strip():
+            box_size = int(m.group(2))
+            raw_name = m.group(1).strip()
+
+    qty_pos  = qty if section != 'cash' else 0
+    qty_cash = qty if section == 'cash' else 0
+
+    return {
+        'raw_name':     raw_name,
+        'qty':          qty,
+        'qty_pos':      qty_pos,
+        'qty_cash':     qty_cash,
+        'box_size':     box_size,
+        'section':      section,
+        'flagged':      flagged,
+        'unknown_header': None,
+    }
+
+
+@bp.route('/api/sales/parse_report', methods=['POST'])
+@role_required('staff')
+def parse_daily_report():
+    """
+    Full five-layer daily report import pipeline.
+
+    Body:  { text: <raw pasted text>, store_code: <str> }
+    Returns three buckets — confirmed (score≥80), review (50–79), failed (<50 or no match) —
+    plus detected_date, store, and any unknown section headers that need user classification.
+    Nothing is written to daily_sales until the caller POSTs to /api/sales/submit_daily_report.
+    """
+    data       = request.get_json(silent=True) or {}
+    raw_text   = data.get('text', '')
+    store_code = (data.get('store_code') or 'DT').strip().upper()
+
+    if not raw_text.strip():
+        return jsonify({'error': 'text is required'}), 400
+
+    # ── Layer 1: Pre-process ─────────────────────────────────────────────────
+    text = _preprocess_text(raw_text)
+
+    # ── Load products + aliases ──────────────────────────────────────────────
+    con = get_db()
+    cur = con.cursor()
+    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
+    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
+    cur.execute('SELECT alias_norm, section_type FROM section_aliases')
+    section_aliases = {r['alias_norm']: r['section_type'] for r in cur.fetchall()}
+    cur.execute('''
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
+        FROM products WHERE jizhanming IS NOT NULL AND jizhanming != ''
+    ''')
+    all_products = [dict(r) for r in cur.fetchall()]
+    con.close()
+
+    lines = text.split('\n')
+
+    # Extract date/store from first non-empty line
+    detected_date = None
+    first_line    = next((ln.strip() for ln in lines if ln.strip()), '')
+    if first_line:
+        detected_date, store_code = _extract_date_store(first_line, store_code)
+
+    # ── Layer 2: Scan section boundaries ────────────────────────────────────
+    # Boundary = (line_index, section_type, header_text)
+    boundaries: list[tuple[int, str, str]] = []
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            continue
+        sec = _detect_section_type(s, section_aliases)
+        if sec is not None:
+            boundaries.append((i, sec, s))
+
+    boundary_line_idxs = {bi for bi, _, _ in boundaries}
+
+    def section_at(idx: int) -> tuple[str, str]:
+        # Default before first detected header → CASH_SALES (spec §Layer 2)
+        cur_sec, cur_hdr = 'cash', ''
+        for bi, bsec, bhdr in boundaries:
+            if bi <= idx:
+                cur_sec, cur_hdr = bsec, bhdr
+            else:
+                break
+        return cur_sec, cur_hdr
+
+    # ── Layer 3: Parse lines ──────────────────────────────────────────────────
+    raw_items:        list[dict] = []
+    unknown_sections: list[str] = []
+
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            continue
+        if i in boundary_line_idxs:
+            sec = _detect_section_type(s, section_aliases)
+            if sec == 'unknown' and s not in unknown_sections:
+                unknown_sections.append(s)
+            continue
+
+        sec, hdr = section_at(i)
+
+        if sec == 'skip':
+            continue
+
+        if sec == 'unknown':
+            # Parse tentatively; mark as unknown_header so frontend can reclassify
+            sub_tokens = re.split(r'[,，]', s)
+            for token in sub_tokens:
+                item = _parse_token(token, 'pos')
+                if item:
+                    item['unknown_header'] = hdr
+                    raw_items.append(item)
+            continue
+
+        # Normal section: split on comma, parse each token individually
+        sub_tokens = re.split(r'[,，]', s)
+        for token in sub_tokens:
+            item = _parse_token(token, sec)
+            if item:
+                raw_items.append(item)
+
+    # ── Layers 4+5: Alias lookup + fuzzy match + bucket ──────────────────────
+    confirmed: list[dict] = []
+    review:    list[dict] = []
+    failed:    list[dict] = []
+
+    for item in raw_items:
+        raw_name = item.get('raw_name', '')
+
+        # Items from unknown sections go directly to failed — user must classify section first
+        if item.get('unknown_header'):
+            failed.append({**item, 'reason': 'unknown_section', 'score': 0, 'candidates': []})
+            continue
+
+        if not raw_name:
+            failed.append({**item, 'reason': 'empty_name', 'score': 0, 'candidates': []})
+            continue
+
+        # Step 4: normalize → match_jzm (alias table consulted inside match_jzm, score=100)
+        # threshold=_SCORE_REVIEW so we get all candidates worth surfacing
+        hits = match_jzm(raw_name, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+
+        if not hits:
+            failed.append({**item, 'reason': 'no_match', 'score': 0, 'candidates': []})
+            continue
+
+        top_score, top_product = hits[0]
+        warn_blank = not (top_product.get('jizhanming') or '').strip()
+
+        if top_score >= _SCORE_CONFIRMED:
+            confirmed.append({
+                **item,
+                'score':          top_score,
+                'product':        top_product,
+                'warn_blank_jzm': warn_blank,
+            })
+        else:
+            # REVIEW: score in [_SCORE_REVIEW, _SCORE_CONFIRMED)
+            review.append({
+                **item,
+                'score':          top_score,
+                'product':        top_product,
+                'candidates':     [{'score': s, **p} for s, p in hits],
+                'warn_blank_jzm': warn_blank,
+            })
+
+    return jsonify({
+        'detected_date':    detected_date,
+        'store':            store_code,
+        'confirmed':        confirmed,
+        'review':           review,
+        'failed':           failed,
+        'unknown_sections': unknown_sections,
+    })
