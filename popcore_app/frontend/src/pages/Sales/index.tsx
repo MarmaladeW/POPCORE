@@ -20,6 +20,7 @@ import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import { useAppStore } from '../../store'
 import DailyReportEntry from './DailyReportEntry'
+import AliasManager from './AliasManager'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
 const { Text, Title } = Typography
@@ -64,6 +65,7 @@ export default function SalesPage() {
   const [pendingPos,   setPendingPos]   = useState(0)
   const [pendingCash,  setPendingCash]  = useState(0)
   const [importMode,   setImportMode]   = useState(false)
+  const [aliasMode,    setAliasMode]    = useState(false)
   const [exportFrom,   setExportFrom]   = useState<Dayjs>(dayjs().subtract(30, 'day'))
   const [exportTo,    setExportTo]    = useState<Dayjs>(dayjs())
   const [localEdits,  setLocalEdits]  = useState<Record<number, { pos: number; cash: number }>>({})
@@ -484,6 +486,13 @@ export default function SalesPage() {
         </div>
       )}
 
+      {/* Alias Manager panel */}
+      {aliasMode && (
+        <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px', marginBottom: 20 }}>
+          <AliasManager />
+        </div>
+      )}
+
       {/* Sales table + log */}
       {(sales.length > 0 || loading) && !importMode && (
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
@@ -500,6 +509,11 @@ export default function SalesPage() {
                 Re-import
               </Button>
             )}
+            <RoleGuard minRole="manager">
+              <Button size="small" onClick={() => setAliasMode(m => !m)}>
+                {aliasMode ? 'Hide Aliases' : 'Manage Aliases'}
+              </Button>
+            </RoleGuard>
             <RoleGuard minRole="manager">
               {!isAll && (
                 <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
