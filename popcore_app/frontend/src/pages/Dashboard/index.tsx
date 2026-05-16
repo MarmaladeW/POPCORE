@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { LayoutGrid, Package, DollarSign, AlertTriangle } from 'lucide-react'
+import InsightFeed from './InsightFeed'
 import { Spinner } from '../../components/Spinner'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -195,6 +196,9 @@ export default function DashboardPage() {
           <StatCard key={c.title} {...c} />
         ))}
       </div>
+
+      {/* Insight feed — hides itself when empty */}
+      <InsightFeed />
 
       {/* Charts + Low Stock */}
       <div className="grid grid-cols-1 lg:grid-cols-7" style={{ gap: 16 }}>

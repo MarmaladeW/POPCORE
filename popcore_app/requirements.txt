@@ -8,3 +8,4 @@ rapidfuzz==3.14.3
 xlrd==2.0.2
 sentry-sdk[flask]==2.54.0
 gunicorn==23.0.0
+APScheduler>=3.10.0

@@ -60,6 +60,7 @@ from blueprints.sales     import bp as sales_bp
 from blueprints.restock   import bp as restock_bp
 from blueprints.inventory import bp as inventory_bp
 from blueprints.schedule  import bp as schedule_bp
+from blueprints.insights  import bp as insights_bp
 
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
@@ -69,6 +70,20 @@ app.register_blueprint(sales_bp)
 app.register_blueprint(restock_bp)
 app.register_blueprint(inventory_bp)
 app.register_blueprint(schedule_bp)
+app.register_blueprint(insights_bp)
+
+# ─── Nightly insight scheduler ────────────────────────────────────────────────
+# Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.
+# With gunicorn preload_app=True this module runs once in the master process,
+# so the scheduler thread is not duplicated across workers.
+if not os.environ.get('DISABLE_SCHEDULER'):
+    import atexit
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from insights import generate_daily_insights as _gen_insights
+    _scheduler = BackgroundScheduler(daemon=True)
+    _scheduler.add_job(_gen_insights, 'cron', hour=2, minute=0, id='nightly_insights')
+    _scheduler.start()
+    atexit.register(lambda: _scheduler.shutdown(wait=False))
 
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
 @app.errorhandler(404)

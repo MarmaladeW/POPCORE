@@ -443,6 +443,52 @@ def _migration_seed_product_aliases(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('seed_product_aliases')")
 
 
+def _migration_create_insights_tables(con, cur):
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS insights (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            store        TEXT    NOT NULL,
+            check_type   TEXT    NOT NULL,
+            severity     TEXT    NOT NULL,
+            title        TEXT    NOT NULL,
+            body         TEXT    NOT NULL,
+            product_id   INTEGER REFERENCES products(id),
+            meta         TEXT    DEFAULT '{}',
+            generated_at TEXT    DEFAULT (datetime('now')),
+            dismissed_at TEXT,
+            dismissed_by TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_insights_store   ON insights(store);
+        CREATE INDEX IF NOT EXISTS idx_insights_type    ON insights(check_type);
+        CREATE INDEX IF NOT EXISTS idx_insights_product ON insights(product_id);
+
+        CREATE TABLE IF NOT EXISTS insight_thresholds (
+            key         TEXT PRIMARY KEY,
+            value       REAL NOT NULL,
+            description TEXT,
+            updated_at  TEXT DEFAULT (datetime('now'))
+        );
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_insights_tables')")
+
+
+def _migration_seed_insight_thresholds(con, cur):
+    defaults = [
+        ('velocity_spike_ratio', 2.0,  'Flag if last 7d sales / prior 7d >= this (adapted by 2σ when ≥10 data points)'),
+        ('velocity_drop_ratio',  0.3,  'Flag if last 7d sales / prior 7d <= this (adapted by 2σ when ≥10 data points)'),
+        ('dead_stock_days',      14.0, 'Flag products in stock with no sales for this many days (adapted per-product when ≥5 sale events)'),
+        ('stockout_days_runway', 7.0,  'Flag if estimated days of stock remaining < this'),
+        ('revenue_gap_pct',      20.0, 'Flag if today revenue is this % below 7d rolling avg'),
+        ('data_quality_days',    14.0, 'Flag stock records not updated in this many days'),
+    ]
+    for key, value, desc in defaults:
+        cur.execute(
+            'INSERT OR IGNORE INTO insight_thresholds (key, value, description) VALUES (?, ?, ?)',
+            (key, value, desc),
+        )
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('seed_insight_thresholds')")
+
+
 def _migration_add_color_to_employees(con, cur):
     cur.execute("PRAGMA table_info(employees)")
     cols = {r['name'] for r in cur.fetchall()}
@@ -526,6 +572,8 @@ def _get_migrations():
         ('add_color_to_employees',               _migration_add_color_to_employees),
         ('add_created_by_to_aliases',            _migration_add_created_by_to_aliases),
         ('seed_product_aliases',                 _migration_seed_product_aliases),
+        ('create_insights_tables',               _migration_create_insights_tables),
+        ('seed_insight_thresholds',              _migration_seed_insight_thresholds),
     ]
 
 

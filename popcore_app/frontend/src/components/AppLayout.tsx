@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Layout, Menu, Avatar, Dropdown, Tag, Drawer, Grid, Button } from 'antd'
 import {
   DashboardOutlined,
@@ -17,6 +17,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useRole, useHasRole } from '../auth/useRole'
 import { useAppStore, ALL_STORES } from '../store'
+import { fetchInsightCount } from '../pages/Dashboard/InsightFeed'
 import dayjs from 'dayjs'
 
 const { Sider, Header, Content } = Layout
@@ -125,9 +126,32 @@ function SidebarContent({
   )
 }
 
+function InsightBadge({ count }: { count: number }) {
+  if (count === 0) return null
+  return (
+    <span style={{
+      display:      'inline-flex',
+      alignItems:   'center',
+      justifyContent: 'center',
+      background:   '#EF4444',
+      color:        '#fff',
+      borderRadius: 999,
+      fontSize:     10,
+      fontWeight:   700,
+      padding:      '0 5px',
+      minWidth:     16,
+      height:       16,
+      marginLeft:   6,
+    }}>
+      {count > 9 ? '9+' : count}
+    </span>
+  )
+}
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [collapsed,      setCollapsed]      = useState(false)
   const [moreDrawerOpen, setMoreDrawerOpen] = useState(false)
+  const [insightCount,   setInsightCount]   = useState(0)
   const screens    = useBreakpoint()
   const isMobile   = !screens.md          // < 768px
 
@@ -142,9 +166,28 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const selectedKey = location.pathname === '/' ? '/' : '/' + location.pathname.split('/')[1]
 
+  useEffect(() => {
+    if (!isStaff) return
+    const refresh = () => {
+      fetchInsightCount(
+        selectedStore?.code !== 'ALL' ? selectedStore?.code : undefined
+      ).then(setInsightCount)
+    }
+    refresh()
+    const t = setInterval(refresh, 5 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [isStaff, selectedStore?.code])
+
+  const dashLabel = (
+    <span style={{ display: 'flex', alignItems: 'center' }}>
+      Dashboard
+      <InsightBadge count={insightCount} />
+    </span>
+  )
+
   // All nav items (for desktop sidebar)
   const navItems = [
-    ...(isStaff   ? [{ key: '/',              icon: <DashboardOutlined />, label: 'Dashboard'     }] : []),
+    ...(isStaff   ? [{ key: '/',              icon: <DashboardOutlined />, label: dashLabel       }] : []),
     { key: '/products',      icon: <AppstoreOutlined />,  label: 'Products'      },
     ...(isStaff   ? [{ key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         }] : []),
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       }] : []),
@@ -153,9 +196,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,      label: 'Users'         }] : []),
   ]
 
+  const dashIconMobile = (
+    <div style={{ position: 'relative', display: 'inline-flex' }}>
+      <DashboardOutlined />
+      {insightCount > 0 && (
+        <span style={{
+          position:     'absolute',
+          top:          -4,
+          right:        -6,
+          width:        8,
+          height:       8,
+          borderRadius: '50%',
+          background:   '#EF4444',
+        }} />
+      )}
+    </div>
+  )
+
   // Mobile bottom tab bar: the 4 most-used pages (role-gated)
   const bottomTabs = [
-    ...(isStaff   ? [{ key: '/',        icon: <DashboardOutlined />, label: 'Dashboard' }] : []),
+    ...(isStaff   ? [{ key: '/',        icon: dashIconMobile, label: 'Dashboard' }] : []),
     { key: '/products',  icon: <AppstoreOutlined />,  label: 'Products'  },
     ...(isStaff   ? [{ key: '/stock',   icon: <InboxOutlined />,     label: 'Stock'     }] : []),
     { key: '/schedule',  icon: <CalendarOutlined />,  label: 'Schedule'  },
