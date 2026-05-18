@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
@@ -69,6 +69,9 @@ export default function SalesPage() {
   const [exportFrom,   setExportFrom]   = useState<Dayjs>(dayjs().subtract(30, 'day'))
   const [exportTo,    setExportTo]    = useState<Dayjs>(dayjs())
   const [localEdits,  setLocalEdits]  = useState<Record<number, { pos: number; cash: number }>>({})
+  // Dates that have sales records, keyed by "YYYY-MM" month
+  const [recordedDates, setRecordedDates] = useState<Set<string>>(new Set())
+  const recordedFetchRef = useRef<string>('')
 
   const dateStr = date.format('YYYY-MM-DD')
 
@@ -85,7 +88,22 @@ export default function SalesPage() {
     client.get('/sales/summary', { params: { store_code: sc } }).then(r => setSummary(r.data))
   }, [sc])
 
+  const fetchRecordedDates = useCallback((month: string) => {
+    if (!sc || !month) return
+    const key = `${sc}:${month}`
+    if (recordedFetchRef.current === key) return
+    recordedFetchRef.current = key
+    client.get('/sales/recorded-dates', { params: { store: sc, month } })
+      .then(r => setRecordedDates(new Set(r.data as string[])))
+      .catch(() => {})
+  }, [sc])
+
   useEffect(() => { loadSales(); loadSummary() }, [loadSales, loadSummary])
+
+  // Load recorded dates whenever the visible month changes
+  useEffect(() => {
+    fetchRecordedDates(date.format('YYYY-MM'))
+  }, [date, fetchRecordedDates])
 
   async function searchToAdd(v: string) {
     setAddSearch(v)
@@ -292,9 +310,30 @@ export default function SalesPage() {
                 onClick={() => setDate(d => d.subtract(1, 'day'))}
                 style={{ color: '#374151', padding: '0 8px' }}
               />
-              <span style={{ fontWeight: 600, fontSize: 15, color: '#111827', minWidth: 110, textAlign: 'center' }}>
-                {date.format('ddd, MMM D')}
-              </span>
+              <DatePicker
+                value={date}
+                onChange={d => setDate(d ?? dayjs())}
+                allowClear={false}
+                style={{ width: 128, fontWeight: 600, fontSize: 14 }}
+                format="ddd, MMM D"
+                onPanelChange={(val) => fetchRecordedDates(val.format('YYYY-MM'))}
+                cellRender={(current, info) => {
+                  if (info.type !== 'date') return info.originNode
+                  const ds = (current as Dayjs).format('YYYY-MM-DD')
+                  const hasData = recordedDates.has(ds)
+                  return (
+                    <div className="ant-picker-cell-inner" style={{ position: 'relative' }}>
+                      {(current as Dayjs).date()}
+                      {hasData && (
+                        <span style={{
+                          position: 'absolute', bottom: 2, left: '50%', transform: 'translateX(-50%)',
+                          width: 5, height: 5, borderRadius: '50%', background: '#10B981', display: 'block',
+                        }} />
+                      )}
+                    </div>
+                  )
+                }}
+              />
               <Button
                 type="text"
                 icon={<RightOutlined />}
@@ -353,6 +392,23 @@ export default function SalesPage() {
               onChange={d => setDate(d ?? dayjs())}
               allowClear={false}
               style={{ width: 140 }}
+              onPanelChange={(val) => fetchRecordedDates(val.format('YYYY-MM'))}
+              cellRender={(current, info) => {
+                if (info.type !== 'date') return info.originNode
+                const ds = (current as Dayjs).format('YYYY-MM-DD')
+                const hasData = recordedDates.has(ds)
+                return (
+                  <div className="ant-picker-cell-inner" style={{ position: 'relative' }}>
+                    {(current as Dayjs).date()}
+                    {hasData && (
+                      <span style={{
+                        position: 'absolute', bottom: 2, left: '50%', transform: 'translateX(-50%)',
+                        width: 5, height: 5, borderRadius: '50%', background: '#10B981', display: 'block',
+                      }} />
+                    )}
+                  </div>
+                )
+              }}
             />
             {!isAll && (
               <RoleGuard minRole="staff">
@@ -602,6 +658,7 @@ export default function SalesPage() {
             dataSource={sales}
             columns={entryColumns}
             pagination={false}
+            virtual
             scroll={{ x: 800, y: 500 }}
           />
         )}

@@ -9,7 +9,7 @@ from flask import Blueprint, request, jsonify, Response
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
 from blueprints.stores import _resolve_store
-from matcher import match_jzm
+from matcher import match_jzm, normalize as _norm_jzm, clean_name as _clean_jzm
 
 bp = Blueprint('sales', __name__)
 
@@ -59,6 +59,7 @@ def get_sales():
             JOIN products p ON p.id = ds.product_id
             WHERE ds.date = ?
             ORDER BY p.ip_series, p.jizhanming
+            LIMIT 500
         ''', (d,))
     else:
         cur.execute('''
@@ -69,6 +70,7 @@ def get_sales():
             JOIN products p ON p.id = ds.product_id
             WHERE ds.date = ? AND ds.store = ?
             ORDER BY p.ip_series, p.jizhanming
+            LIMIT 500
         ''', (d, store_code))
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
@@ -524,6 +526,32 @@ def clear_sales_day():
     return jsonify({'ok': True, 'deleted': deleted})
 
 
+@bp.route('/api/sales/recorded-dates')
+@login_required
+def recorded_dates():
+    """Return dates in a given month that have at least one daily_sales row."""
+    month      = (request.args.get('month') or '').strip()      # YYYY-MM
+    store_code = (request.args.get('store') or '').strip().upper()
+    if not month or not store_code:
+        return jsonify({'error': 'month and store are required'}), 400
+    prefix = month + '-'   # match YYYY-MM-* date strings
+    con = get_db()
+    cur = con.cursor()
+    if store_code == 'ALL':
+        cur.execute(
+            "SELECT DISTINCT date FROM daily_sales WHERE date LIKE ? ORDER BY date",
+            (prefix + '%',),
+        )
+    else:
+        cur.execute(
+            "SELECT DISTINCT date FROM daily_sales WHERE date LIKE ? AND store = ? ORDER BY date",
+            (prefix + '%', store_code),
+        )
+    dates = [r['date'] for r in cur.fetchall()]
+    con.close()
+    return jsonify(dates)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IMPORT PIPELINE  (Layers 1 – 5)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -773,9 +801,15 @@ def parse_daily_report():
             failed.append({**item, 'reason': 'empty_name', 'score': 0, 'candidates': []})
             continue
 
-        # Step 4: normalize → match_jzm (alias table consulted inside match_jzm, score=100)
-        # threshold=_SCORE_REVIEW so we get all candidates worth surfacing
-        hits = match_jzm(raw_name, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+        # Step 4: alias exact lookup FIRST (before fuzzy matching) so a saved alias
+        # always wins even when a low-score jizhanming hit would otherwise shadow it.
+        qn_alias = _norm_jzm(_clean_jzm(raw_name))
+        if qn_alias and qn_alias in aliases:
+            pid = aliases[qn_alias]
+            alias_product = next((p for p in all_products if p['id'] == pid), None)
+            hits = [(100, alias_product)] if alias_product else []
+        else:
+            hits = match_jzm(raw_name, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
 
         if not hits:
             failed.append({**item, 'reason': 'no_match', 'score': 0, 'candidates': []})

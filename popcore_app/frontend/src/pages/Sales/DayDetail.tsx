@@ -302,7 +302,8 @@ export default function DayDetailPage() {
                 dataSource={rows}
                 columns={columns}
                 pagination={false}
-                scroll={{ x: 800 }}
+                virtual
+                scroll={{ x: 800, y: 520 }}
               />
             )}
           </div>
