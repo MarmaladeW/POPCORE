@@ -377,6 +377,7 @@ def submit_daily_report():
     cur = con.cursor()
     sales_count = 0
     txn_count   = 0
+    corrections = []
 
     try:
         for item in items:
@@ -452,11 +453,40 @@ def submit_daily_report():
                 ''', (pid, store_id, total_units, total_units, total_units))
                 txn_count += 1
 
+        # Record match corrections for manually-reviewed items (Issue 3)
+        for item in items:
+            bucket = (item.get('source_bucket') or '').strip()
+            if bucket not in ('review', 'failed'):
+                continue
+            raw_name_c = (item.get('raw_name') or '').strip()
+            pid_c = item.get('product_id')
+            if not raw_name_c or not pid_c:
+                continue
+            norm_name_c = _norm_jzm(_clean_jzm(raw_name_c))
+            fuzzy_score_c = int(item.get('fuzzy_score', 0) or 0)
+            top_score_c   = int(item.get('top_score',   0) or 0)
+            was_top_c     = 1 if item.get('was_top') else 0
+            corrections.append((raw_name_c, norm_name_c, pid_c,
+                                 fuzzy_score_c, top_score_c, was_top_c, store_code))
+        if corrections:
+            cur.executemany('''
+                INSERT INTO match_corrections
+                    (raw_name, norm_name, product_id, fuzzy_score, top_score, was_top, store)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', corrections)
+
         con.commit()
     except Exception as e:
         con.rollback()
         con.close()
         return jsonify({'error': str(e)}), 500
+
+    if corrections:
+        try:
+            import ranker as _ranker
+            _ranker.invalidate_cache()
+        except Exception:
+            pass
 
     con.close()
     return jsonify({'ok': True, 'sales_upserted': sales_count, 'stock_transactions': txn_count})
@@ -645,14 +675,21 @@ def _parse_token(token: str, section: str) -> dict | None:
         return None
 
     # Step 2: lastIndexOf('*') → quantity
+    inferred_split_name = None
     star_idx = t.rfind('*')
     if star_idx > 0:
         raw_name = t[:star_idx].strip()
         qty_str  = t[star_idx + 1:].strip()
-        try:
-            qty = max(1, int(qty_str))
-        except (ValueError, TypeError):
-            qty = 1
+        # Check for trailing non-digit text after leading digits (e.g. "1星星人随心配粉")
+        m = re.match(r'^(\d+)(.+)$', qty_str)
+        if m:
+            qty = max(1, int(m.group(1)))
+            inferred_split_name = m.group(2).strip() or None
+        else:
+            try:
+                qty = max(1, int(qty_str))
+            except (ValueError, TypeError):
+                qty = 1
         flagged = False
     else:
         raw_name = t
@@ -671,14 +708,15 @@ def _parse_token(token: str, section: str) -> dict | None:
     qty_cash = qty if section == 'cash' else 0
 
     return {
-        'raw_name':     raw_name,
-        'qty':          qty,
-        'qty_pos':      qty_pos,
-        'qty_cash':     qty_cash,
-        'box_size':     box_size,
-        'section':      section,
-        'flagged':      flagged,
-        'unknown_header': None,
+        'raw_name':            raw_name,
+        'qty':                 qty,
+        'qty_pos':             qty_pos,
+        'qty_cash':            qty_cash,
+        'box_size':            box_size,
+        'section':             section,
+        'flagged':             flagged,
+        'unknown_header':      None,
+        'inferred_split_name': inferred_split_name,
     }
 
 
@@ -789,6 +827,46 @@ def parse_daily_report():
     review:    list[dict] = []
     failed:    list[dict] = []
 
+    def _resolve_hits(name: str, raw: str) -> list:
+        """Alias lookup then fuzzy match; applies re-ranker when model is ready."""
+        qn = _norm_jzm(_clean_jzm(name))
+        if qn and qn in aliases:
+            pid = aliases[qn]
+            p = next((x for x in all_products if x['id'] == pid), None)
+            return [(100, p)] if p else []
+        fuzz_hits = match_jzm(raw, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+        if fuzz_hits:
+            try:
+                import ranker as _ranker
+                fuzz_hits = _ranker.rerank(fuzz_hits, qn, store_code)
+            except Exception:
+                pass
+        return fuzz_hits
+
+    def _bucket(item: dict, hits: list) -> None:
+        """Place a resolved item into the correct bucket."""
+        if not hits:
+            failed.append({**item, 'reason': 'no_match', 'score': 0, 'candidates': []})
+            return
+        top_score, top_product = hits[0]
+        warn_blank = not (top_product.get('jizhanming') or '').strip()
+        is_inferred = item.get('reason') == 'inferred_split'
+        if top_score >= _SCORE_CONFIRMED and not is_inferred:
+            confirmed.append({
+                **item,
+                'score':          top_score,
+                'product':        top_product,
+                'warn_blank_jzm': warn_blank,
+            })
+        else:
+            review.append({
+                **item,
+                'score':          top_score,
+                'product':        top_product,
+                'candidates':     [{'score': s, **p} for s, p in hits],
+                'warn_blank_jzm': warn_blank,
+            })
+
     for item in raw_items:
         raw_name = item.get('raw_name', '')
 
@@ -801,39 +879,27 @@ def parse_daily_report():
             failed.append({**item, 'reason': 'empty_name', 'score': 0, 'candidates': []})
             continue
 
-        # Step 4: alias exact lookup FIRST (before fuzzy matching) so a saved alias
-        # always wins even when a low-score jizhanming hit would otherwise shadow it.
-        qn_alias = _norm_jzm(_clean_jzm(raw_name))
-        if qn_alias and qn_alias in aliases:
-            pid = aliases[qn_alias]
-            alias_product = next((p for p in all_products if p['id'] == pid), None)
-            hits = [(100, alias_product)] if alias_product else []
-        else:
-            hits = match_jzm(raw_name, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+        hits = _resolve_hits(raw_name, raw_name)
+        _bucket(item, hits)
 
-        if not hits:
-            failed.append({**item, 'reason': 'no_match', 'score': 0, 'candidates': []})
-            continue
-
-        top_score, top_product = hits[0]
-        warn_blank = not (top_product.get('jizhanming') or '').strip()
-
-        if top_score >= _SCORE_CONFIRMED:
-            confirmed.append({
-                **item,
-                'score':          top_score,
-                'product':        top_product,
-                'warn_blank_jzm': warn_blank,
-            })
-        else:
-            # REVIEW: score in [_SCORE_REVIEW, _SCORE_CONFIRMED)
-            review.append({
-                **item,
-                'score':          top_score,
-                'product':        top_product,
-                'candidates':     [{'score': s, **p} for s, p in hits],
-                'warn_blank_jzm': warn_blank,
-            })
+        # Issue 2: inferred split — trailing text after qty digits
+        split_name = item.get('inferred_split_name')
+        if split_name:
+            split_hits = _resolve_hits(split_name, split_name)
+            if split_hits and split_hits[0][0] >= 60:
+                split_item = {
+                    'raw_name':            split_name,
+                    'qty':                 1,
+                    'qty_pos':             0 if item.get('section') == 'cash' else 1,
+                    'qty_cash':            1 if item.get('section') == 'cash' else 0,
+                    'box_size':            None,
+                    'section':             item.get('section'),
+                    'flagged':             True,
+                    'unknown_header':      None,
+                    'inferred_split_name': None,
+                    'reason':              'inferred_split',
+                }
+                _bucket(split_item, split_hits)
 
     return jsonify({
         'detected_date':    detected_date,
