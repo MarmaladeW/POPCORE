@@ -61,6 +61,7 @@ from blueprints.restock   import bp as restock_bp
 from blueprints.inventory import bp as inventory_bp
 from blueprints.schedule  import bp as schedule_bp
 from blueprints.insights  import bp as insights_bp
+from blueprints.settings  import bp as settings_bp
 
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
@@ -71,6 +72,7 @@ app.register_blueprint(restock_bp)
 app.register_blueprint(inventory_bp)
 app.register_blueprint(schedule_bp)
 app.register_blueprint(insights_bp)
+app.register_blueprint(settings_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.
@@ -78,10 +80,39 @@ app.register_blueprint(insights_bp)
 # so the scheduler thread is not duplicated across workers.
 if not os.environ.get('DISABLE_SCHEDULER'):
     import atexit
+    import sqlite3 as _sqlite3
+    from datetime import datetime as _dt
     from apscheduler.schedulers.background import BackgroundScheduler
     from insights import generate_daily_insights as _gen_insights
+    from db import DB_PATH as _DB_PATH
+
+    _insights_last_run: dict = {'date': None}
+
+    def _insights_job():
+        """Run nightly insights at the time stored in app_settings.insight_generate_time."""
+        now   = _dt.utcnow()
+        today = now.date().isoformat()
+        if _insights_last_run['date'] == today:
+            return
+        try:
+            _con = _sqlite3.connect(_DB_PATH)
+            _row = _con.execute(
+                "SELECT value FROM app_settings WHERE key = 'insight_generate_time'"
+            ).fetchone()
+            _con.close()
+            time_str = _row[0] if _row else '02:00'
+        except Exception:
+            time_str = '02:00'
+        try:
+            sched_h, sched_m = int(time_str.split(':')[0]), int(time_str.split(':')[1])
+        except Exception:
+            sched_h, sched_m = 2, 0
+        if now.hour == sched_h and now.minute == sched_m:
+            _gen_insights()
+            _insights_last_run['date'] = today
+
     _scheduler = BackgroundScheduler(daemon=True)
-    _scheduler.add_job(_gen_insights, 'cron', hour=2, minute=0, id='nightly_insights')
+    _scheduler.add_job(_insights_job, 'interval', minutes=1, id='nightly_insights')
     _scheduler.start()
     atexit.register(lambda: _scheduler.shutdown(wait=False))
 

@@ -34,6 +34,25 @@ def _get_thresholds(cur) -> dict:
     return {r['key']: r['value'] for r in cur.fetchall()}
 
 
+def _get_app_settings(cur) -> dict:
+    """Read insight-related keys from app_settings; return defaults when missing."""
+    defaults = {
+        'insight_generate_time':        '02:00',
+        'insight_high_price_threshold': '100',
+        'insight_dead_stock_days':      '14',
+        'insight_stockout_days':        '7',
+        'insight_velocity_ratio':       '2.0',
+    }
+    try:
+        cur.execute("SELECT key, value FROM app_settings WHERE key LIKE 'insight_%'")
+        for row in cur.fetchall():
+            if row['key'] in defaults:
+                defaults[row['key']] = row['value']
+    except Exception:
+        pass
+    return defaults
+
+
 def _has_min_history(cur, store: str, days: int = 7) -> bool:
     cur.execute(
         'SELECT COUNT(DISTINCT date) AS cnt FROM daily_sales WHERE store = ?',
@@ -107,8 +126,9 @@ def _median_inter_sale_interval(cur, product_id: int, store: str):
 # ─── Check functions ──────────────────────────────────────────────────────────
 
 def _check_velocity_spike(cur, store: str, thresholds: dict) -> list:
-    cfg_spike = float(thresholds.get('velocity_spike_ratio', 2.0))
-    cfg_drop  = float(thresholds.get('velocity_drop_ratio',  0.3))
+    cfg_spike        = float(thresholds.get('velocity_spike_ratio', 2.0))
+    cfg_drop         = float(thresholds.get('velocity_drop_ratio',  0.3))
+    high_price_limit = float(thresholds.get('high_price_threshold', 0))
     eff_spike, eff_drop = _compute_velocity_thresholds(cur, store, cfg_spike, cfg_drop)
 
     today    = datetime.utcnow().date()
@@ -135,7 +155,8 @@ def _check_velocity_spike(cur, store: str, thresholds: dict) -> list:
         JOIN products p ON p.id = r.product_id
         LEFT JOIN prior pr ON pr.product_id = r.product_id
         WHERE r.qty7 > 0 AND COALESCE(pr.qty14, 0) > 0
-    ''', (store, d7_s, today_s, store, d14_s, d7_s))
+          AND (? <= 0 OR p.price IS NULL OR p.price <= ?)
+    ''', (store, d7_s, today_s, store, d14_s, d7_s, high_price_limit, high_price_limit))
 
     insights = []
     for row in cur.fetchall():
@@ -169,7 +190,8 @@ def _check_velocity_spike(cur, store: str, thresholds: dict) -> list:
 
 
 def _check_dead_stock(cur, store: str, thresholds: dict) -> list:
-    cfg_days = int(thresholds.get('dead_stock_days', 14))
+    cfg_days         = int(thresholds.get('dead_stock_days', 14))
+    high_price_limit = float(thresholds.get('high_price_threshold', 0))
     today    = datetime.utcnow().date()
     cutoff_s = (today - timedelta(days=cfg_days)).isoformat()
 
@@ -183,9 +205,10 @@ def _check_dead_stock(cur, store: str, thresholds: dict) -> list:
         LEFT JOIN daily_sales ds
             ON ds.product_id = s.product_id AND ds.store = ? AND ds.qty_sold > 0
         WHERE (s.upstairs_qty + s.instore_qty) > 0
+          AND (? <= 0 OR p.price IS NULL OR p.price <= ?)
         GROUP BY s.product_id
         HAVING last_sale_date IS NULL OR last_sale_date < ?
-    ''', (store, store, cutoff_s))
+    ''', (store, store, high_price_limit, high_price_limit, cutoff_s))
 
     insights = []
     for row in cur.fetchall():
@@ -262,9 +285,10 @@ def _check_revenue_gap(cur, store: str, thresholds: dict) -> list:
 
 
 def _check_stockout_risk(cur, store: str, thresholds: dict) -> list:
-    days_runway = float(thresholds.get('stockout_days_runway', 7.0))
-    today_s     = datetime.utcnow().date().isoformat()
-    d30_s       = (datetime.utcnow().date() - timedelta(days=30)).isoformat()
+    days_runway      = float(thresholds.get('stockout_days_runway', 7.0))
+    high_price_limit = float(thresholds.get('high_price_threshold', 0))
+    today_s          = datetime.utcnow().date().isoformat()
+    d30_s            = (datetime.utcnow().date() - timedelta(days=30)).isoformat()
 
     cur.execute('''
         SELECT s.product_id, p.jizhanming, p.sku,
@@ -277,9 +301,10 @@ def _check_stockout_risk(cur, store: str, thresholds: dict) -> list:
             ON ds.product_id = s.product_id AND ds.store = ?
            AND ds.date > ? AND ds.date <= ?
         WHERE (s.upstairs_qty + s.instore_qty) > 0
+          AND (? <= 0 OR p.price IS NULL OR p.price <= ?)
         GROUP BY s.product_id
         HAVING avg_daily > 0
-    ''', (store, store, d30_s, today_s))
+    ''', (store, store, d30_s, today_s, high_price_limit, high_price_limit))
 
     insights = []
     for row in cur.fetchall():
@@ -350,7 +375,13 @@ def generate_daily_insights() -> int:
               AND generated_at < datetime('now', '-48 hours')
         ''')
 
-        thresholds = _get_thresholds(cur)
+        thresholds  = _get_thresholds(cur)
+        app_cfg     = _get_app_settings(cur)
+        # App settings override insight_thresholds table values
+        thresholds['velocity_spike_ratio'] = float(app_cfg.get('insight_velocity_ratio',   thresholds.get('velocity_spike_ratio', 2.0)))
+        thresholds['dead_stock_days']      = float(app_cfg.get('insight_dead_stock_days',  thresholds.get('dead_stock_days', 14)))
+        thresholds['stockout_days_runway'] = float(app_cfg.get('insight_stockout_days',    thresholds.get('stockout_days_runway', 7)))
+        thresholds['high_price_threshold'] = float(app_cfg.get('insight_high_price_threshold', 0))
         stores     = _get_active_stores(cur)
         now        = datetime.utcnow().isoformat()
         all_ins    = []
