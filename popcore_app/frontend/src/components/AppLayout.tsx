@@ -194,7 +194,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       }] : []),
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         }] : []),
     { key: '/schedule',      icon: <CalendarOutlined />,  label: 'Schedule'      },
-    ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,      label: 'Users'         }] : []),
     ...(isAdmin   ? [{ key: '/settings',     icon: <SettingOutlined />,   label: 'Settings'      }] : []),
   ]
 
@@ -227,7 +226,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const moreNavItems = [
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,   label: 'Restock'       }] : []),
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />, label: 'Sales'         }] : []),
-    ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,   label: 'Users'         }] : []),
     ...(isAdmin   ? [{ key: '/settings',     icon: <SettingOutlined />, label: 'Settings'      }] : []),
   ]
 

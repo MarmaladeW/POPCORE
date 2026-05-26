@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, TimePicker, InputNumber, Select, Input, Button,
-  message, Typography, Space,
+  Card, Tabs, TimePicker, InputNumber, Select, Input, Button,
+  message, Typography, Space, Table, Popconfirm,
 } from 'antd'
+import type { TabsProps } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
+import UsersPage from '../Users'
 
 const { Text } = Typography
 
@@ -31,62 +34,105 @@ interface RawSettings {
   report_monthly_day:           string
   report_monthly_time:          string
   report_quarterly_time:        string
-  store_dt_name:                string
-  store_mk_name:                string
 }
 
-const ROW = { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 } as const
+interface StoreRow {
+  id:    number
+  code:  string
+  name:  string
+  color: string
+}
+
+const ROW   = { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 } as const
 const LABEL: React.CSSProperties = { minWidth: 240, color: '#374151', fontSize: 14, flexShrink: 0 }
-const CARD: React.CSSProperties  = { marginBottom: 24 }
+const INNER = { maxWidth: 680 } as const
 
 export default function SettingsPage() {
   const isAdmin  = useHasRole('admin')
   const navigate = useNavigate()
 
-  const [pageLoading, setPageLoading] = useState(true)
+  // ── Settings load ────────────────────────────────────────────────────────
+  const [settingsLoading, setSettingsLoading] = useState(true)
   const [saving1, setSaving1] = useState(false)
   const [saving2, setSaving2] = useState(false)
-  const [saving3, setSaving3] = useState(false)
 
   // ── Card 1: Insight settings ─────────────────────────────────────────────
-  const [insightTime,      setInsightTime]      = useState<dayjs.Dayjs>(dayjs('02:00', 'HH:mm'))
-  const [highPrice,        setHighPrice]        = useState<number>(100)
-  const [deadStockDays,    setDeadStockDays]    = useState<number>(14)
-  const [stockoutDays,     setStockoutDays]     = useState<number>(7)
-  const [velocityRatio,    setVelocityRatio]    = useState<number>(2.0)
+  const [insightTime,   setInsightTime]   = useState<dayjs.Dayjs>(dayjs('02:00', 'HH:mm'))
+  const [highPrice,     setHighPrice]     = useState<number>(100)
+  const [deadStockDays, setDeadStockDays] = useState<number>(14)
+  const [stockoutDays,  setStockoutDays]  = useState<number>(7)
+  const [velocityRatio, setVelocityRatio] = useState<number>(2.0)
 
   // ── Card 2: Report schedule ───────────────────────────────────────────────
-  const [weeklyDay,      setWeeklyDay]      = useState<string>('Monday')
-  const [weeklyTime,     setWeeklyTime]     = useState<dayjs.Dayjs>(dayjs('08:00', 'HH:mm'))
-  const [monthlyDay,     setMonthlyDay]     = useState<number>(1)
-  const [monthlyTime,    setMonthlyTime]    = useState<dayjs.Dayjs>(dayjs('08:00', 'HH:mm'))
-  const [quarterlyTime,  setQuarterlyTime]  = useState<dayjs.Dayjs>(dayjs('08:00', 'HH:mm'))
+  const [weeklyDay,     setWeeklyDay]     = useState<string>('Monday')
+  const [weeklyTime,    setWeeklyTime]    = useState<dayjs.Dayjs>(dayjs('08:00', 'HH:mm'))
+  const [monthlyDay,    setMonthlyDay]    = useState<number>(1)
+  const [monthlyTime,   setMonthlyTime]   = useState<dayjs.Dayjs>(dayjs('08:00', 'HH:mm'))
+  const [quarterlyTime, setQuarterlyTime] = useState<dayjs.Dayjs>(dayjs('08:00', 'HH:mm'))
 
-  // ── Card 3: Store names ───────────────────────────────────────────────────
-  const [dtName, setDtName] = useState<string>('DT')
-  const [mkName, setMkName] = useState<string>('MK')
+  // ── Stores tab ────────────────────────────────────────────────────────────
+  const [stores,        setStores]        = useState<StoreRow[]>([])
+  const [storesLoading, setStoresLoading] = useState(false)
+  const [newCode,       setNewCode]       = useState('')
+  const [newName,       setNewName]       = useState('')
+  const [adding,        setAdding]        = useState(false)
 
   useEffect(() => {
     if (!isAdmin) { navigate('/'); return }
     client.get<RawSettings>('/settings')
       .then(r => {
         const s = r.data
-        setInsightTime(dayjs(s.insight_generate_time || '02:00',   'HH:mm'))
+        setInsightTime(dayjs(s.insight_generate_time || '02:00', 'HH:mm'))
         setHighPrice(Number(s.insight_high_price_threshold) || 100)
         setDeadStockDays(Number(s.insight_dead_stock_days)  || 14)
         setStockoutDays(Number(s.insight_stockout_days)     || 7)
         setVelocityRatio(Number(s.insight_velocity_ratio)   || 2.0)
         setWeeklyDay(s.report_weekly_day || 'Monday')
-        setWeeklyTime(dayjs(s.report_weekly_time || '08:00',  'HH:mm'))
+        setWeeklyTime(dayjs(s.report_weekly_time     || '08:00', 'HH:mm'))
         setMonthlyDay(Number(s.report_monthly_day)   || 1)
-        setMonthlyTime(dayjs(s.report_monthly_time || '08:00', 'HH:mm'))
+        setMonthlyTime(dayjs(s.report_monthly_time   || '08:00', 'HH:mm'))
         setQuarterlyTime(dayjs(s.report_quarterly_time || '08:00', 'HH:mm'))
-        setDtName(s.store_dt_name || 'DT')
-        setMkName(s.store_mk_name || 'MK')
       })
       .catch(() => message.error('加载设置失败 / Failed to load settings'))
-      .finally(() => setPageLoading(false))
+      .finally(() => setSettingsLoading(false))
+    loadStores()
   }, [isAdmin, navigate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function loadStores() {
+    setStoresLoading(true)
+    client.get<StoreRow[]>('/stores')
+      .then(r => setStores(r.data))
+      .catch(() => message.error('加载门店失败 / Failed to load stores'))
+      .finally(() => setStoresLoading(false))
+  }
+
+  async function addStore() {
+    const code = newCode.trim().toUpperCase()
+    const name = newName.trim()
+    if (!code || !name) { message.warning('请填写门店代码和名称 / Enter code and name'); return }
+    setAdding(true)
+    try {
+      await client.post('/stores', { code, name })
+      setNewCode('')
+      setNewName('')
+      loadStores()
+      message.success('门店已添加 / Store added')
+    } catch (err: any) {
+      message.error(err?._serverMessage ?? '添加失败 / Add failed')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function deleteStore(storeId: number) {
+    try {
+      await client.delete(`/stores/${storeId}`)
+      loadStores()
+      message.success('门店已删除 / Store deleted')
+    } catch (err: any) {
+      message.error(err?._serverMessage ?? '删除失败 / Delete failed')
+    }
+  }
 
   async function saveInsight() {
     setSaving1(true)
@@ -110,10 +156,10 @@ export default function SettingsPage() {
     setSaving2(true)
     try {
       await client.put('/settings', {
-        report_weekly_day:    weeklyDay,
-        report_weekly_time:   weeklyTime.format('HH:mm'),
-        report_monthly_day:   String(monthlyDay),
-        report_monthly_time:  monthlyTime.format('HH:mm'),
+        report_weekly_day:     weeklyDay,
+        report_weekly_time:    weeklyTime.format('HH:mm'),
+        report_monthly_day:    String(monthlyDay),
+        report_monthly_time:   monthlyTime.format('HH:mm'),
         report_quarterly_time: quarterlyTime.format('HH:mm'),
       })
       message.success('设置已保存 / Settings saved')
@@ -124,33 +170,45 @@ export default function SettingsPage() {
     }
   }
 
-  async function saveStore() {
-    setSaving3(true)
-    try {
-      await client.put('/settings', {
-        store_dt_name: dtName,
-        store_mk_name: mkName,
-      })
-      message.success('设置已保存 / Settings saved')
-    } catch {
-      message.error('保存失败 / Save failed')
-    } finally {
-      setSaving3(false)
-    }
-  }
-
   if (!isAdmin) return null
 
-  return (
-    <div style={{ maxWidth: 680 }}>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: '#111827' }}>
-          系统设置 / Settings
-        </h2>
-      </div>
+  // ── Store table columns ───────────────────────────────────────────────────
+  const storeCols: ColumnsType<StoreRow> = [
+    {
+      title: '代码 / Code',
+      dataIndex: 'code',
+      width: 100,
+      render: (v: string) => (
+        <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: 13 }}>{v}</span>
+      ),
+    },
+    {
+      title: '名称 / Name',
+      dataIndex: 'name',
+    },
+    {
+      title: '操作 / Actions',
+      key: 'actions',
+      width: 100,
+      render: (_: unknown, row: StoreRow) => (
+        <Popconfirm
+          title={`删除门店 ${row.code}？/ Delete store ${row.code}?`}
+          description="此操作无法撤销。/ This cannot be undone."
+          onConfirm={() => deleteStore(row.id)}
+          okText="删除 / Delete"
+          okButtonProps={{ danger: true }}
+          cancelText="取消 / Cancel"
+        >
+          <Button size="small" danger>删除 / Delete</Button>
+        </Popconfirm>
+      ),
+    },
+  ]
 
-      {/* ── Card 1: Daily Insight Settings ── */}
-      <Card title="每日洞察设置 / Daily Insight Settings" style={CARD} loading={pageLoading}>
+  // ── Tab content ───────────────────────────────────────────────────────────
+  const insightTab = (
+    <div style={INNER}>
+      <Card loading={settingsLoading}>
         <div style={ROW}>
           <span style={LABEL}>生成时间 / Generate Time</span>
           <TimePicker
@@ -162,16 +220,21 @@ export default function SettingsPage() {
           />
         </div>
 
+        {/* FIX 1: narrow InputNumber + suffix as plain text */}
         <div style={ROW}>
           <span style={LABEL}>高价商品排除阈值 / High-price Threshold</span>
-          <InputNumber
-            value={highPrice}
-            onChange={v => setHighPrice(v ?? 100)}
-            min={0}
-            prefix="CA$"
-            addonAfter="以上商品不纳入洞察 / and above excluded"
-            style={{ width: 340 }}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <InputNumber
+              value={highPrice}
+              onChange={v => setHighPrice(v ?? 100)}
+              min={0}
+              prefix="CA$"
+              style={{ width: 120 }}
+            />
+            <Text style={{ color: '#6b7280', fontSize: 13 }}>
+              以上商品不纳入洞察 / and above excluded
+            </Text>
+          </div>
         </div>
 
         <div style={ROW}>
@@ -210,9 +273,12 @@ export default function SettingsPage() {
           保存 / Save
         </Button>
       </Card>
+    </div>
+  )
 
-      {/* ── Card 2: Report Schedule ── */}
-      <Card title="报表计划 / Report Schedule" style={CARD} loading={pageLoading}>
+  const reportTab = (
+    <div style={INNER}>
+      <Card loading={settingsLoading}>
         <div style={ROW}>
           <span style={LABEL}>周报生成日 / Weekly Report Day</span>
           <Select
@@ -277,33 +343,72 @@ export default function SettingsPage() {
           </Text>
         </Space>
       </Card>
+    </div>
+  )
 
-      {/* ── Card 3: Store Names ── */}
-      <Card title="门店名称 / Store Names" style={CARD} loading={pageLoading}>
-        <div style={ROW}>
-          <span style={LABEL}>DT 门店名称 / DT Store Name</span>
-          <Input
-            value={dtName}
-            onChange={e => setDtName(e.target.value)}
-            style={{ width: 200 }}
-            maxLength={32}
-          />
+  const storesTab = (
+    <div style={INNER}>
+      <Card>
+        <Table<StoreRow>
+          rowKey="id"
+          size="small"
+          loading={storesLoading}
+          dataSource={stores}
+          columns={storeCols}
+          pagination={false}
+          style={{ marginBottom: 24 }}
+        />
+
+        {/* Add store form */}
+        <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12, color: '#374151' }}>
+            添加门店 / Add Store
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Input
+              placeholder="代码 / Code (e.g. MK)"
+              value={newCode}
+              onChange={e => setNewCode(e.target.value.toUpperCase())}
+              style={{ width: 160 }}
+              maxLength={10}
+              onPressEnter={addStore}
+            />
+            <Input
+              placeholder="名称 / Name (e.g. Markham)"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              style={{ width: 220 }}
+              maxLength={64}
+              onPressEnter={addStore}
+            />
+            <Button
+              type="primary"
+              onClick={addStore}
+              loading={adding}
+            >
+              添加 / Add
+            </Button>
+          </div>
         </div>
-
-        <div style={{ ...ROW, marginBottom: 20 }}>
-          <span style={LABEL}>MK 门店名称 / MK Store Name</span>
-          <Input
-            value={mkName}
-            onChange={e => setMkName(e.target.value)}
-            style={{ width: 200 }}
-            maxLength={32}
-          />
-        </div>
-
-        <Button type="primary" onClick={saveStore} loading={saving3}>
-          保存 / Save
-        </Button>
       </Card>
+    </div>
+  )
+
+  const tabs: TabsProps['items'] = [
+    { key: 'insights', label: '洞察设置 / Insights', children: insightTab  },
+    { key: 'reports',  label: '报表计划 / Reports',  children: reportTab   },
+    { key: 'stores',   label: '门店管理 / Stores',   children: storesTab   },
+    { key: 'users',    label: '用户管理 / Users',    children: <UsersPage /> },
+  ]
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: '#111827' }}>
+          系统设置 / Settings
+        </h2>
+      </div>
+      <Tabs items={tabs} />
     </div>
   )
 }
