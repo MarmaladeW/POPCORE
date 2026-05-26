@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Button, Space, Tag, Popconfirm,
-  message, Typography, Table, Badge, Spin,
+  message, Typography, Table, Badge, Spin, Modal,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
   EditOutlined, PictureOutlined, FilterOutlined,
+  SyncOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -41,6 +42,24 @@ interface StockRow {
   instore_qty:  number
 }
 
+interface SyncChange {
+  sku: string
+  product_id: number
+  old_jizhanming: string
+  new_jizhanming: string
+}
+
+interface SyncDiff {
+  changed:   SyncChange[]
+  unchanged: { sku: string; product_id: number; jizhanming: string }[]
+  not_found: { sku: string }[]
+}
+
+interface LastSync {
+  last_sync_at:    string | null
+  last_sync_count: string | null
+}
+
 const TYPE_COLORS: Record<string, string> = {
   'Blind Box': 'purple',
   'MEGA':      'orange',
@@ -72,6 +91,12 @@ export default function ProductsPage() {
   const [detailId,       setDetailId]       = useState<number | null>(null)
   const [filtersVisible, setFiltersVisible] = useState(false)
 
+  const [syncLoading,    setSyncLoading]    = useState(false)
+  const [syncModalOpen,  setSyncModalOpen]  = useState(false)
+  const [syncDiff,       setSyncDiff]       = useState<SyncDiff | null>(null)
+  const [confirmLoading, setConfirmLoading] = useState(false)
+  const [lastSync,       setLastSync]       = useState<LastSync>({ last_sync_at: null, last_sync_count: null })
+
   const load = useCallback(() => {
     const sc = selectedStore?.code
     setLoading(true)
@@ -96,6 +121,43 @@ export default function ProductsPage() {
   }, [searchQ, searchSeries, searchType, selectedStore?.code])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    client.get('/products/sync-sheet/last-sync')
+      .then(r => setLastSync(r.data))
+      .catch(() => {/* non-admin users get 403 — silently ignore */})
+  }, [])
+
+  async function handleSyncSheet() {
+    setSyncLoading(true)
+    try {
+      const r = await client.post('/products/sync-sheet')
+      setSyncDiff(r.data)
+      setSyncModalOpen(true)
+    } catch (err: any) {
+      message.error(err._serverMessage || '同步失败，请重试 / Sync failed, please retry')
+    } finally {
+      setSyncLoading(false)
+    }
+  }
+
+  async function handleConfirmSync() {
+    if (!syncDiff) return
+    setConfirmLoading(true)
+    try {
+      const r = await client.post('/products/sync-sheet/confirm', { changes: syncDiff.changed })
+      message.success(`已更新 ${r.data.updated} 条记录 / Updated ${r.data.updated} records`)
+      setSyncModalOpen(false)
+      setSyncDiff(null)
+      const ls = await client.get('/products/sync-sheet/last-sync')
+      setLastSync(ls.data)
+      load()
+    } catch (err: any) {
+      message.error(err._serverMessage || '确认失败，请重试 / Confirm failed, please retry')
+    } finally {
+      setConfirmLoading(false)
+    }
+  }
 
   function openNew()         { setEditProduct(null); setModalOpen(true) }
   function openEdit(p: Product) { setEditProduct(p); setModalOpen(true) }
@@ -270,6 +332,19 @@ export default function ProductsPage() {
               style={{ minWidth: 40 }}
             />
           )}
+          <RoleGuard minRole="admin">
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+              <Button icon={<SyncOutlined />} onClick={handleSyncSheet} loading={syncLoading}>
+                {isMobile ? '' : '从表格同步 / Sync from Sheet'}
+              </Button>
+              {lastSync.last_sync_at && (
+                <Text style={{ color: '#9ca3af', fontSize: 11 }}>
+                  上次同步 / Last synced: {lastSync.last_sync_at}
+                  {lastSync.last_sync_count != null && ` (${lastSync.last_sync_count} 条更新 / updated)`}
+                </Text>
+              )}
+            </div>
+          </RoleGuard>
           <RoleGuard minRole="manager">
             <Button type="primary" icon={<PlusOutlined />} onClick={openNew}>
               {isMobile ? '' : 'Add Product'}
@@ -393,6 +468,84 @@ export default function ProductsPage() {
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
         onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
       />
+
+      {/* Sheet Sync Modal */}
+      <Modal
+        title="从表格同步记账名 / Sync Jizhanming from Sheet"
+        open={syncModalOpen}
+        onCancel={() => { setSyncModalOpen(false); setSyncDiff(null) }}
+        footer={null}
+        width={700}
+      >
+        {syncDiff && (
+          <>
+            {syncDiff.changed.length === 0 && syncDiff.not_found.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 0', color: '#10B981', fontSize: 15 }}>
+                所有记账名已是最新 / All jizhanming up to date
+              </div>
+            ) : (
+              <>
+                {syncDiff.changed.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <Text strong style={{ color: '#F59E0B' }}>
+                      待更新 / To Update ({syncDiff.changed.length} 条)
+                    </Text>
+                    <Table<SyncChange>
+                      size="small"
+                      dataSource={syncDiff.changed}
+                      rowKey="sku"
+                      pagination={false}
+                      style={{ marginTop: 8 }}
+                      scroll={{ y: 300 }}
+                      columns={[
+                        { title: 'SKU', dataIndex: 'sku', width: 120,
+                          render: v => <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{v}</Text> },
+                        { title: '当前记账名 / Current', dataIndex: 'old_jizhanming',
+                          render: v => <Text type="secondary">{v || '—'}</Text> },
+                        { title: '新记账名 / New', dataIndex: 'new_jizhanming',
+                          render: v => <Text style={{ color: '#F59E0B', fontWeight: 500 }}>{v}</Text> },
+                      ] as ColumnsType<SyncChange>}
+                    />
+                  </div>
+                )}
+
+                {syncDiff.not_found.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <Text strong style={{ color: '#EF4444' }}>
+                      未找到 / Not Found ({syncDiff.not_found.length})
+                    </Text>
+                    <div style={{ marginTop: 8, padding: '8px 12px', background: '#FEF2F2', borderRadius: 6, maxHeight: 160, overflowY: 'auto' }}>
+                      {syncDiff.not_found.map(r => (
+                        <div key={r.sku} style={{ marginBottom: 2 }}>
+                          <ExclamationCircleOutlined style={{ color: '#EF4444', marginRight: 6 }} />
+                          <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{r.sku}</Text>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {syncDiff.unchanged.length > 0 && (
+                  <div style={{ color: '#9ca3af', fontSize: 13, marginBottom: 12 }}>
+                    无变化 / Unchanged: {syncDiff.unchanged.length} 条
+                  </div>
+                )}
+              </>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <Button onClick={() => { setSyncModalOpen(false); setSyncDiff(null) }}>
+                取消 / Cancel
+              </Button>
+              {syncDiff.changed.length > 0 && (
+                <Button type="primary" loading={confirmLoading} onClick={handleConfirmSync}>
+                  确认更新 {syncDiff.changed.length} 条记录 / Confirm Update {syncDiff.changed.length} records
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+      </Modal>
     </div>
   )
 }

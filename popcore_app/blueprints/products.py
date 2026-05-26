@@ -5,7 +5,7 @@ import os
 import re
 import uuid
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from flask import Blueprint, request, jsonify, Response
 from werkzeug.utils import secure_filename
 
@@ -618,6 +618,157 @@ def export_products():
         mimetype='text/csv; charset=utf-8',
         headers={'Content-Disposition': f'attachment; filename="{fname}"'}
     )
+
+
+# ─── Google Sheet Sync ────────────────────────────────────────────────────────
+
+_SHEET_ID = '1bUXTNiFH0iGd4YLrhQ1KJjeGTsbtAyDwp7hVEGFWFwM'
+
+
+def _get_sheet_token():
+    """Return a short-lived Bearer token from the service account credentials."""
+    sa_path = os.environ.get('GOOGLE_SERVICE_ACCOUNT_PATH', '')
+    if not sa_path or not os.path.exists(sa_path):
+        raise RuntimeError('GOOGLE_SERVICE_ACCOUNT_PATH is not set or file does not exist')
+    from google.oauth2.service_account import Credentials
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    creds = Credentials.from_service_account_file(
+        sa_path,
+        scopes=['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    )
+    creds.refresh(GoogleAuthRequest())
+    return creds.token
+
+
+@bp.route('/api/products/sync-sheet', methods=['POST'])
+@role_required('admin')
+def sync_sheet_preview():
+    import requests as http_req
+    try:
+        token = _get_sheet_token()
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 500
+
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{_SHEET_ID}/values/A:D'
+    resp = http_req.get(url, headers={'Authorization': f'Bearer {token}'}, timeout=30)
+    if not resp.ok:
+        return jsonify({'error': f'Sheets API error: {resp.status_code}'}), 502
+    rows = resp.json().get('values', [])
+
+    sheet_items = []
+    for row in rows[1:]:  # skip header
+        sku       = (row[0] if len(row) > 0 else '').strip()
+        jzm_b     = (row[1] if len(row) > 1 else '').strip()
+        name_c    = (row[2] if len(row) > 2 else '').strip()
+        if not sku:
+            continue
+        effective_jzm = jzm_b if jzm_b else name_c
+        sheet_items.append({'sku': sku, 'jizhanming': effective_jzm})
+
+    if not sheet_items:
+        return jsonify({'changed': [], 'unchanged': [], 'not_found': []})
+
+    con = get_db()
+    cur = con.cursor()
+    ph  = ','.join('?' * len(sheet_items))
+    cur.execute(
+        f'SELECT id, sku, jizhanming FROM products WHERE sku IN ({ph})',
+        [item['sku'] for item in sheet_items],
+    )
+    db_map = {r['sku']: {'id': r['id'], 'jizhanming': r['jizhanming'] or ''} for r in cur.fetchall()}
+    con.close()
+
+    changed   = []
+    unchanged = []
+    not_found = []
+    for item in sheet_items:
+        sku     = item['sku']
+        new_jzm = item['jizhanming']
+        if sku not in db_map:
+            not_found.append({'sku': sku})
+        elif db_map[sku]['jizhanming'] != new_jzm:
+            changed.append({
+                'sku':           sku,
+                'product_id':    db_map[sku]['id'],
+                'old_jizhanming': db_map[sku]['jizhanming'],
+                'new_jizhanming': new_jzm,
+            })
+        else:
+            unchanged.append({'sku': sku, 'product_id': db_map[sku]['id'], 'jizhanming': new_jzm})
+
+    return jsonify({'changed': changed, 'unchanged': unchanged, 'not_found': not_found})
+
+
+@bp.route('/api/products/sync-sheet/confirm', methods=['POST'])
+@role_required('admin')
+def sync_sheet_confirm():
+    data    = request.get_json(silent=True) or {}
+    changes = data.get('changes', [])
+    if not changes:
+        return jsonify({'updated': 0})
+
+    con   = get_db()
+    count = 0
+    for change in changes:
+        product_id = change.get('product_id')
+        new_jzm    = change.get('new_jizhanming', '')
+        if not product_id:
+            continue
+        cur = con.cursor()
+        cur.execute('SELECT * FROM products WHERE id = ?', (product_id,))
+        row = cur.fetchone()
+        if not row:
+            continue
+        product = dict(row)
+        search_blob = ' '.join([
+            (product.get('sku')          or '').lower(),
+            (new_jzm                     or '').lower(),
+            (product.get('name_cn_en')   or '').lower(),
+            (product.get('brand')        or '').lower(),
+            (product.get('product_type') or '').lower(),
+            (product.get('ip_series')    or '').lower(),
+        ])
+        con.execute(
+            'UPDATE products SET jizhanming = ?, search_blob = ? WHERE id = ?',
+            (new_jzm, search_blob, product_id),
+        )
+        count += 1
+
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    con.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('last_sheet_sync_at', ?)",
+        (now_str,),
+    )
+    con.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('last_sheet_sync_count', ?)",
+        (str(count),),
+    )
+    con.commit()
+    con.close()
+
+    try:
+        import ranker
+        ranker.invalidate_cache()
+    except Exception:
+        pass
+
+    return jsonify({'updated': count})
+
+
+@bp.route('/api/products/sync-sheet/last-sync')
+@role_required('admin')
+def sync_sheet_last_sync():
+    con = get_db()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT key, value FROM app_settings WHERE key IN ('last_sheet_sync_at', 'last_sheet_sync_count')"
+    )
+    rows = {r['key']: r['value'] for r in cur.fetchall()}
+    con.close()
+    return jsonify({
+        'last_sync_at':    rows.get('last_sheet_sync_at'),
+        'last_sync_count': rows.get('last_sheet_sync_count'),
+    })
 
 
 @bp.route('/api/products/bulk_delete', methods=['POST'])
