@@ -264,19 +264,29 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     // CONFIRMED items (auto-accepted, not removed, qty known)
     for (const r of confirmed) {
       if (r.removed || r.flagged || !r.product?.id) continue
-      payload.push(buildPayloadItem(r, r.product))
+      payload.push(buildPayloadItem(r, r.product, 'confirmed'))
     }
 
     // REVIEW items (user must have explicitly accepted)
     for (const r of review) {
       if (r.removed || !r.accepted || r.flagged || !r.product?.id) continue
-      payload.push(buildPayloadItem(r, r.product))
+      const item = buildPayloadItem(r, r.product, 'review')
+      item.raw_name    = r.raw_name
+      item.fuzzy_score = r.score
+      item.top_score   = r.score
+      item.was_top     = true
+      payload.push(item)
     }
 
     // FAILED items where user manually assigned a product
     for (const r of failed) {
       if (r.removed || r.flagged || !r.assigned_product?.id) continue
-      payload.push(buildPayloadItem(r, r.assigned_product))
+      const item = buildPayloadItem(r, r.assigned_product, 'failed')
+      item.raw_name    = r.raw_name
+      item.fuzzy_score = 0
+      item.top_score   = 0
+      item.was_top     = false
+      payload.push(item)
     }
 
     if (!payload.length) { message.warning('没有可提交的条目'); return }
@@ -299,8 +309,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   function buildPayloadItem(
     row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null },
     product: BackendProduct,
+    source_bucket: string,
   ) {
-    const base: any = { product_id: product.id, section: row.section, notes: row.notes }
+    const base: any = { product_id: product.id, section: row.section, notes: row.notes, source_bucket }
     if (row.section === 'cash') {
       base.qty_cash = row.qty_cash || row.qty
     } else if (row.section === 'stock_in') {
