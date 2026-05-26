@@ -20,6 +20,7 @@ import SalesPage       from './pages/Sales'
 import DayDetailPage   from './pages/Sales/DayDetail'
 import UsersPage       from './pages/Users'
 import SchedulePage    from './pages/Schedule'
+import SettingsPage    from './pages/Settings'
 import NotFound        from './pages/NotFound'
 import Unauthorized    from './pages/Unauthorized'
 
@@ -65,6 +66,7 @@ function AppInner() {
           <Route path="/sales"          element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
           <Route path="/sales/day/:date" element={<RoleRoute minRole="manager" element={<DayDetailPage />} />} />
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
+          <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />
           <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
           <Route path="*"               element={<NotFound />} />
         </Routes>

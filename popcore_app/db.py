@@ -575,6 +575,16 @@ def _migration_create_match_corrections(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_match_corrections')")
 
 
+def _migration_create_app_settings_table(con, cur):
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_app_settings_table')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -594,6 +604,7 @@ def _get_migrations():
         ('create_insights_tables',               _migration_create_insights_tables),
         ('seed_insight_thresholds',              _migration_seed_insight_thresholds),
         ('create_match_corrections',             _migration_create_match_corrections),
+        ('create_app_settings_table',            _migration_create_app_settings_table),
     ]
 
 

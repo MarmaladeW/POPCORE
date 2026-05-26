@@ -12,6 +12,7 @@ import {
   ShopOutlined,
   EllipsisOutlined,
   CalendarOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
@@ -194,6 +195,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         }] : []),
     { key: '/schedule',      icon: <CalendarOutlined />,  label: 'Schedule'      },
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,      label: 'Users'         }] : []),
+    ...(isAdmin   ? [{ key: '/settings',     icon: <SettingOutlined />,   label: 'Settings'      }] : []),
   ]
 
   const dashIconMobile = (
@@ -226,6 +228,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,   label: 'Restock'       }] : []),
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />, label: 'Sales'         }] : []),
     ...(isAdmin   ? [{ key: '/users',         icon: <UserOutlined />,   label: 'Users'         }] : []),
+    ...(isAdmin   ? [{ key: '/settings',     icon: <SettingOutlined />, label: 'Settings'      }] : []),
   ]
 
   function handleNavigate(key: string) {
