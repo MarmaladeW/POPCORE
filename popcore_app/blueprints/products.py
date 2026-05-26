@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
-from matcher import match_jzm, batch_match_jzm, normalize as norm_jzm, clean_name as _clean_jzm
+from matcher import match_jzm, batch_match_jzm, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
 
 bp = Blueprint('products', __name__)
 
@@ -640,76 +640,155 @@ def _get_sheet_token():
     return creds.token
 
 
+def _run_duplicate_scan(all_products):
+    """
+    Scan all_products for near-duplicate jizhanming entries.
+
+    ≤500 products: O(n²) pairwise with _score_pair_jzm on normalised strings.
+    >500 products: query-per-product via match_jzm to avoid comparing all pairs.
+
+    Returns [{product_a, product_b, score, severity}] sorted by score desc.
+    """
+    jzm_products = [p for p in all_products if (p.get('jizhanming') or '').strip()]
+    if len(jzm_products) < 2:
+        return []
+
+    dup_pairs = []
+
+    if len(jzm_products) <= 500:
+        norms = [(norm_jzm(p['jizhanming']), p) for p in jzm_products]
+        for i in range(len(norms)):
+            qn_i, p_i = norms[i]
+            for j in range(i + 1, len(norms)):
+                qn_j, p_j = norms[j]
+                score = _score_pair_jzm(qn_i, qn_j)
+                if score >= 70:
+                    dup_pairs.append({
+                        'product_a': {'id': p_i['id'], 'sku': p_i['sku'], 'jizhanming': p_i['jizhanming']},
+                        'product_b': {'id': p_j['id'], 'sku': p_j['sku'], 'jizhanming': p_j['jizhanming']},
+                        'score':     score,
+                        'severity':  'likely' if score >= 85 else 'possible',
+                    })
+    else:
+        seen = set()
+        for p_i in jzm_products:
+            hits = match_jzm(p_i['jizhanming'], jzm_products, threshold=70, limit=10)
+            for score, candidate in hits:
+                if candidate['id'] == p_i['id']:
+                    continue
+                pair_key = (min(p_i['id'], candidate['id']), max(p_i['id'], candidate['id']))
+                if pair_key in seen:
+                    continue
+                seen.add(pair_key)
+                dup_pairs.append({
+                    'product_a': {'id': p_i['id'], 'sku': p_i['sku'], 'jizhanming': p_i['jizhanming']},
+                    'product_b': {'id': candidate['id'], 'sku': candidate['sku'], 'jizhanming': candidate.get('jizhanming', '')},
+                    'score':     score,
+                    'severity':  'likely' if score >= 85 else 'possible',
+                })
+
+    dup_pairs.sort(key=lambda x: -x['score'])
+    return dup_pairs
+
+
 @bp.route('/api/products/sync-sheet', methods=['POST'])
 @role_required('admin')
 def sync_sheet_preview():
     import requests as http_req
-    try:
-        token = _get_sheet_token()
-    except RuntimeError as e:
-        return jsonify({'error': str(e)}), 500
 
-    url = f'https://sheets.googleapis.com/v4/spreadsheets/{_SHEET_ID}/values/A:D'
-    resp = http_req.get(url, headers={'Authorization': f'Bearer {token}'}, timeout=30)
-    if not resp.ok:
-        return jsonify({'error': f'Sheets API error: {resp.status_code}'}), 502
-    rows = resp.json().get('values', [])
-
-    sheet_items = []
-    for row in rows[1:]:  # skip header
-        sku       = (row[0] if len(row) > 0 else '').strip()
-        jzm_b     = (row[1] if len(row) > 1 else '').strip()
-        name_c    = (row[2] if len(row) > 2 else '').strip()
-        if not sku:
-            continue
-        effective_jzm = jzm_b if jzm_b else name_c
-        sheet_items.append({'sku': sku, 'jizhanming': effective_jzm})
-
-    if not sheet_items:
-        return jsonify({'changed': [], 'unchanged': [], 'not_found': []})
-
+    # Load all products once — used by both the duplicate scan and fuzzy matching
     con = get_db()
     cur = con.cursor()
-    ph  = ','.join('?' * len(sheet_items))
-    cur.execute(
-        f'SELECT id, sku, jizhanming FROM products WHERE sku IN ({ph})',
-        [item['sku'] for item in sheet_items],
-    )
-    db_map = {r['sku']: {'id': r['id'], 'jizhanming': r['jizhanming'] or ''} for r in cur.fetchall()}
+    cur.execute('SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type FROM products')
+    all_products = [dict(r) for r in cur.fetchall()]
+    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
+    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
     con.close()
 
-    changed   = []
-    unchanged = []
-    not_found = []
-    for item in sheet_items:
-        sku     = item['sku']
-        new_jzm = item['jizhanming']
-        if sku not in db_map:
-            not_found.append({'sku': sku})
-        elif db_map[sku]['jizhanming'] != new_jzm:
-            changed.append({
-                'sku':           sku,
-                'product_id':    db_map[sku]['id'],
-                'old_jizhanming': db_map[sku]['jizhanming'],
-                'new_jizhanming': new_jzm,
-            })
-        else:
-            unchanged.append({'sku': sku, 'product_id': db_map[sku]['id'], 'jizhanming': new_jzm})
+    # Job 2: duplicate scan — always runs regardless of sheet availability
+    duplicates = _run_duplicate_scan(all_products)
 
-    return jsonify({'changed': changed, 'unchanged': unchanged, 'not_found': not_found})
+    # Job 1: sheet fetch + fuzzy matching
+    try:
+        token = _get_sheet_token()
+    except RuntimeError:
+        return jsonify({
+            'changed': [], 'review': [], 'unchanged': 0,
+            'not_found': [], 'duplicates': duplicates,
+        })
+
+    url  = f'https://sheets.googleapis.com/v4/spreadsheets/{_SHEET_ID}/values/A:D'
+    resp = http_req.get(url, headers={'Authorization': f'Bearer {token}'}, timeout=30)
+    if not resp.ok:
+        return jsonify({
+            'changed': [], 'review': [], 'unchanged': 0,
+            'not_found': [], 'duplicates': duplicates,
+        })
+
+    rows      = resp.json().get('values', [])
+    changed   = []
+    review    = []
+    unchanged = 0
+    not_found = []
+
+    for row in rows[1:]:  # skip header
+        jzm_b  = (row[1] if len(row) > 1 else '').strip()
+        name_c = (row[2] if len(row) > 2 else '').strip()
+        if not jzm_b and not name_c:
+            continue
+        jzm_sheet = jzm_b if jzm_b else name_c
+
+        hits = match_jzm(jzm_sheet, all_products, aliases=aliases, threshold=50, limit=1)
+        if not hits:
+            not_found.append(jzm_sheet)
+            continue
+
+        top_score, top_product = hits[0]
+        old_jzm = (top_product.get('jizhanming') or '').strip()
+
+        if top_score >= 80:
+            if old_jzm != jzm_sheet:
+                changed.append({
+                    'sheet_jizhanming': jzm_sheet,
+                    'product_id':       top_product['id'],
+                    'sku':              top_product['sku'],
+                    'old_jizhanming':   old_jzm,
+                    'new_jizhanming':   jzm_sheet,
+                })
+            else:
+                unchanged += 1
+        else:
+            review.append({
+                'sheet_jizhanming':   jzm_sheet,
+                'product_id':         top_product['id'],
+                'sku':                top_product['sku'],
+                'current_jizhanming': old_jzm,
+                'score':              top_score,
+            })
+
+    return jsonify({
+        'changed':    changed,
+        'review':     review,
+        'unchanged':  unchanged,
+        'not_found':  not_found,
+        'duplicates': duplicates,
+    })
 
 
 @bp.route('/api/products/sync-sheet/confirm', methods=['POST'])
 @role_required('admin')
 def sync_sheet_confirm():
-    data    = request.get_json(silent=True) or {}
-    changes = data.get('changes', [])
-    if not changes:
-        return jsonify({'updated': 0})
+    data            = request.get_json(silent=True) or {}
+    changes         = data.get('changes', [])
+    review_accepted = data.get('review_accepted', [])
+    all_changes     = changes + review_accepted
+
+    if not all_changes:
+        return jsonify({'ok': True, 'updated': 0})
 
     con   = get_db()
     count = 0
-    for change in changes:
+    for change in all_changes:
         product_id = change.get('product_id')
         new_jzm    = change.get('new_jizhanming', '')
         if not product_id:
@@ -752,7 +831,7 @@ def sync_sheet_confirm():
     except Exception:
         pass
 
-    return jsonify({'updated': count})
+    return jsonify({'ok': True, 'updated': count})
 
 
 @bp.route('/api/products/sync-sheet/last-sync')
