@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
-from matcher import match_jzm, batch_match_jzm, normalize as norm_jzm
+from matcher import match_jzm, batch_match_jzm, normalize as norm_jzm, clean_name as _clean_jzm
 
 bp = Blueprint('products', __name__)
 
@@ -296,7 +296,7 @@ def save_alias():
     alias = (data.get('alias') or '').strip()
     if not pid or not alias:
         return jsonify({'error': 'product_id and alias required'}), 400
-    alias_norm = norm_jzm(alias)
+    alias_norm = norm_jzm(_clean_jzm(alias))
     if not alias_norm:
         return jsonify({'error': 'alias normalises to empty'}), 400
     con = get_db()

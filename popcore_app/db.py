@@ -556,6 +556,25 @@ def _migration_drop_dan_per_xiang_column(con, cur):
         con.isolation_level = ''
 
 
+def _migration_create_match_corrections(con, cur):
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS match_corrections (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_name     TEXT NOT NULL,
+            norm_name    TEXT NOT NULL,
+            product_id   INTEGER NOT NULL,
+            fuzzy_score  INTEGER,
+            top_score    INTEGER,
+            was_top      INTEGER DEFAULT 0,
+            store        TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_mc_norm ON match_corrections(norm_name);
+        CREATE INDEX IF NOT EXISTS idx_mc_pid  ON match_corrections(product_id);
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_match_corrections')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -574,6 +593,7 @@ def _get_migrations():
         ('seed_product_aliases',                 _migration_seed_product_aliases),
         ('create_insights_tables',               _migration_create_insights_tables),
         ('seed_insight_thresholds',              _migration_seed_insight_thresholds),
+        ('create_match_corrections',             _migration_create_match_corrections),
     ]
 
 
