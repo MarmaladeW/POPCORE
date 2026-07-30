@@ -268,6 +268,42 @@ def match_jzm(
     return []
 
 
+def match_name(
+    query: str,
+    products: list,
+    threshold: int = 60,
+    limit: int = 3,
+) -> list:
+    """
+    Match a full product name against products.name_cn_en ONLY.
+
+    Used by the sheet sync to anchor row identity on the sheet's product-name
+    column: full names compare against full names, so exact rows score 100 and
+    the jizhanming waterfall in match_jzm can't hijack the match with a
+    shorthand hit on a different product.
+
+    Returns [(score, product), ...] sorted by score desc; [] when nothing
+    meets the threshold.
+    """
+    cleaned = clean_name(query)
+    if not cleaned:
+        return []
+    qn = normalize(cleaned)
+    if not qn:
+        return []
+
+    hits = []
+    for p in products:
+        name_n = normalize(p.get('name_cn_en') or '')
+        if not name_n:
+            continue
+        s = _score_pair_jzm(qn, name_n)
+        if s >= threshold:
+            hits.append((s, p))
+    hits.sort(key=lambda x: -x[0])
+    return hits[:limit]
+
+
 def batch_match_jzm(
     queries: list,
     products: list,

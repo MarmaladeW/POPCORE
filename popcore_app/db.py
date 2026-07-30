@@ -996,5 +996,16 @@ def migrate_db():
 
     _run_migrations(con, cur)
 
+    # ── products.sheet_ref: learned stable key to the Google Sheet's 编号 ────
+    # Added after _run_migrations so the legacy products-table rebuild
+    # (drop_dan_per_xiang_column) can never drop it.
+    cur.execute("PRAGMA table_info(products)")
+    if 'sheet_ref' not in {r['name'] for r in cur.fetchall()}:
+        cur.execute("ALTER TABLE products ADD COLUMN sheet_ref TEXT")
+    cur.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sheet_ref
+        ON products(sheet_ref) WHERE sheet_ref IS NOT NULL AND sheet_ref != ''
+    ''')
+
     con.commit()
     con.close()

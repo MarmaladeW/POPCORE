@@ -43,19 +43,42 @@ interface StockRow {
 }
 
 interface SyncChangedItem {
+  key:              number
+  ref:              string
   sheet_jizhanming: string
+  sheet_name:       string
   product_id:       number
   sku:              string
   old_jizhanming:   string
   new_jizhanming:   string
+  match_via:        'ref' | 'name' | 'jzm_b'
+  score:            number
+  prechecked:       boolean
+  sheet_ref:        string
 }
 
-interface SyncReviewItem {
-  sheet_jizhanming:   string
+interface SyncConflict {
+  key:                string
+  reason:             'multi_row' | 'ref_mismatch'
   product_id:         number
   sku:                string
-  current_jizhanming: string
-  score:              number
+  product_jizhanming: string
+  stored_ref?:        string
+  rows: { key: number; ref: string; sheet_jizhanming: string; sheet_name: string; match_via: string; score: number }[]
+}
+
+interface SyncNewProduct {
+  key:        number
+  ref:        string
+  jizhanming: string
+  name:       string
+}
+
+interface SyncRefLearn {
+  product_id: number
+  sku:        string
+  jizhanming: string
+  sheet_ref:  string
 }
 
 interface SyncDuplicatePair {
@@ -66,11 +89,20 @@ interface SyncDuplicatePair {
 }
 
 interface SyncResult {
-  changed:    SyncChangedItem[]
-  review:     SyncReviewItem[]
-  unchanged:  number
-  not_found:  string[]
-  duplicates: SyncDuplicatePair[]
+  sheet_status: 'ok' | 'unavailable' | 'error'
+  changed:      SyncChangedItem[]
+  review:       SyncChangedItem[]
+  conflicts:    SyncConflict[]
+  new_products: SyncNewProduct[]
+  ref_learns:   SyncRefLearn[]
+  unchanged:    number
+  duplicates:   SyncDuplicatePair[]
+}
+
+const MATCH_VIA_META: Record<string, { label: string; color: string }> = {
+  ref:   { label: '编号',   color: 'green'  },
+  name:  { label: '产品名', color: 'blue'   },
+  jzm_b: { label: '记账名', color: 'orange' },
 }
 
 interface LastSync {
@@ -112,8 +144,9 @@ export default function ProductsPage() {
   const [syncLoading,        setSyncLoading]        = useState(false)
   const [syncModalOpen,      setSyncModalOpen]      = useState(false)
   const [syncResult,         setSyncResult]         = useState<SyncResult | null>(null)
-  const [checkedChangedKeys, setCheckedChangedKeys] = useState<string[]>([])
-  const [checkedReviewKeys,  setCheckedReviewKeys]  = useState<string[]>([])
+  const [checkedChangedKeys, setCheckedChangedKeys] = useState<number[]>([])
+  const [checkedReviewKeys,  setCheckedReviewKeys]  = useState<number[]>([])
+  const [checkedNewKeys,     setCheckedNewKeys]     = useState<number[]>([])
   const [syncActiveTab,      setSyncActiveTab]      = useState('changed')
   const [confirmLoading,     setConfirmLoading]     = useState(false)
   const [lastSync,           setLastSync]           = useState<LastSync>({ last_sync_at: null, last_sync_count: null })
@@ -155,12 +188,15 @@ export default function ProductsPage() {
       const r = await client.post('/products/sync-sheet')
       const data = r.data as SyncResult
       setSyncResult(data)
-      setCheckedChangedKeys(data.changed.map(c => c.sheet_jizhanming))
+      // Only high-confidence rows (ref join / ≥95 name match) are pre-checked
+      setCheckedChangedKeys(data.changed.filter(c => c.prechecked).map(c => c.key))
       setCheckedReviewKeys([])
-      if (data.changed.length > 0)        setSyncActiveTab('changed')
-      else if (data.review.length > 0)    setSyncActiveTab('review')
-      else if (data.not_found.length > 0) setSyncActiveTab('not_found')
-      else                                setSyncActiveTab('duplicates')
+      setCheckedNewKeys([])
+      if (data.changed.length > 0)           setSyncActiveTab('changed')
+      else if (data.review.length > 0)       setSyncActiveTab('review')
+      else if (data.new_products.length > 0) setSyncActiveTab('new_products')
+      else if (data.conflicts.length > 0)    setSyncActiveTab('conflicts')
+      else                                   setSyncActiveTab('duplicates')
       setSyncModalOpen(true)
     } catch (err: any) {
       message.error(err._serverMessage || '同步失败，请重试 / Sync failed, please retry')
@@ -173,14 +209,22 @@ export default function ProductsPage() {
     if (!syncResult) return
     setConfirmLoading(true)
     try {
+      const pick = (c: SyncChangedItem) =>
+        ({ product_id: c.product_id, new_jizhanming: c.new_jizhanming, sheet_ref: c.sheet_ref })
       const changes = syncResult.changed
-        .filter(c => checkedChangedKeys.includes(c.sheet_jizhanming))
-        .map(c => ({ product_id: c.product_id, new_jizhanming: c.new_jizhanming }))
+        .filter(c => checkedChangedKeys.includes(c.key)).map(pick)
       const review_accepted = syncResult.review
-        .filter(rv => checkedReviewKeys.includes(rv.sheet_jizhanming))
-        .map(rv => ({ product_id: rv.product_id, new_jizhanming: rv.sheet_jizhanming }))
-      const r = await client.post('/products/sync-sheet/confirm', { changes, review_accepted })
-      message.success(`已更新 ${r.data.updated} 条记录 / Updated ${r.data.updated} records`)
+        .filter(rv => checkedReviewKeys.includes(rv.key)).map(pick)
+      const create_products = syncResult.new_products
+        .filter(n => checkedNewKeys.includes(n.key))
+        .map(n => ({ sheet_ref: n.ref, jizhanming: n.jizhanming, name_cn_en: n.name }))
+      const r = await client.post('/products/sync-sheet/confirm', {
+        changes, review_accepted, create_products,
+        ref_learns: syncResult.ref_learns,
+      })
+      message.success(
+        `已更新 ${r.data.updated} · 新建 ${r.data.created} · 记住编号 ${r.data.refs_learned}`
+        + ` / Updated ${r.data.updated}, created ${r.data.created}, refs learned ${r.data.refs_learned}`)
       setSyncModalOpen(false)
       setSyncResult(null)
       const ls = await client.get('/products/sync-sheet/last-sync')
@@ -512,22 +556,69 @@ export default function ProductsPage() {
         width={780}
       >
         {syncResult && (() => {
+          const sheetDown  = syncResult.sheet_status !== 'ok'
           const hasContent = syncResult.changed.length > 0 || syncResult.review.length > 0
-            || syncResult.not_found.length > 0 || syncResult.duplicates.length > 0
+            || syncResult.new_products.length > 0 || syncResult.conflicts.length > 0
+            || syncResult.duplicates.length > 0 || syncResult.ref_learns.length > 0
           const willUpdate = checkedChangedKeys.length + checkedReviewKeys.length
+          const willCreate = checkedNewKeys.length
+          const willLearn  = syncResult.ref_learns.length
+          const canConfirm = !sheetDown && (willUpdate + willCreate + willLearn > 0)
+
+          const sheetDownAlert = sheetDown && (
+            <div style={{
+              background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8,
+              padding: '10px 14px', marginBottom: 12, color: '#B91C1C', fontSize: 13,
+            }}>
+              <ExclamationCircleOutlined style={{ marginRight: 8 }} />
+              {syncResult.sheet_status === 'unavailable'
+                ? '无法访问 Google 表格：服务账号凭证未配置。 / Sheet unreachable: service-account credentials are not configured.'
+                : '无法访问 Google 表格：请求失败，请稍后重试。 / Sheet unreachable: the API request failed — try again later.'}
+              <span style={{ display: 'block', marginTop: 2, color: '#991B1B' }}>
+                本次结果不代表记账名已是最新。 / This is NOT an "all up to date" result.
+              </span>
+            </div>
+          )
 
           if (!hasContent) {
             return (
               <>
-                <div style={{ textAlign: 'center', padding: '24px 0', color: '#10B981', fontSize: 15 }}>
-                  所有记账名已是最新，未发现重复商品 / All up to date, no duplicates found
-                </div>
+                {sheetDownAlert}
+                {!sheetDown && (
+                  <div style={{ textAlign: 'center', padding: '24px 0', color: '#10B981', fontSize: 15 }}>
+                    所有记账名已是最新，未发现重复商品 / All up to date, no duplicates found
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
                   <Button onClick={() => { setSyncModalOpen(false); setSyncResult(null) }}>关闭 / Close</Button>
                 </div>
               </>
             )
           }
+
+          const viaTag = (r: SyncChangedItem) => {
+            const m = MATCH_VIA_META[r.match_via] ?? { label: r.match_via, color: 'default' }
+            return <Tag color={m.color}>{m.label} {r.score}%</Tag>
+          }
+          const renameColumns: ColumnsType<SyncChangedItem> = [
+            {
+              title: '编号', dataIndex: 'ref', width: 64,
+              render: v => <Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>{v || '—'}</Text>,
+            },
+            {
+              title: '产品名 / Sheet Name', dataIndex: 'sheet_name', ellipsis: true,
+              render: v => <Text type="secondary" style={{ fontSize: 12 }}>{v || '—'}</Text>,
+            },
+            {
+              title: '当前记账名 / Current', dataIndex: 'old_jizhanming',
+              render: v => <Text type="secondary">{v || '—'}</Text>,
+            },
+            {
+              title: '新记账名 / New', dataIndex: 'new_jizhanming',
+              render: v => <Text style={{ color: '#F59E0B', fontWeight: 500 }}>{v}</Text>,
+            },
+            { title: '匹配 / Match', key: 'via', width: 110, render: (_, r) => viaTag(r) },
+          ]
 
           const tabItems = [
             {
@@ -548,25 +639,14 @@ export default function ProductsPage() {
                 <Table<SyncChangedItem>
                   size="small"
                   dataSource={syncResult.changed}
-                  rowKey="sheet_jizhanming"
+                  rowKey="key"
                   pagination={false}
                   scroll={{ y: 280 }}
                   rowSelection={{
                     selectedRowKeys: checkedChangedKeys,
-                    onChange: keys => setCheckedChangedKeys(keys as string[]),
+                    onChange: keys => setCheckedChangedKeys(keys as number[]),
                   }}
-                  columns={[
-                    {
-                      title: '当前记账名 / Current',
-                      dataIndex: 'old_jizhanming',
-                      render: v => <Text type="secondary">{v || '—'}</Text>,
-                    },
-                    {
-                      title: '新记账名 / New',
-                      dataIndex: 'new_jizhanming',
-                      render: v => <Text style={{ color: '#F59E0B', fontWeight: 500 }}>{v}</Text>,
-                    },
-                  ] as ColumnsType<SyncChangedItem>}
+                  columns={renameColumns}
                 />
               ),
             },
@@ -585,61 +665,115 @@ export default function ProductsPage() {
                   无需确认记录 / No items to review
                 </div>
               ) : (
-                <Table<SyncReviewItem>
-                  size="small"
-                  dataSource={syncResult.review}
-                  rowKey="sheet_jizhanming"
-                  pagination={false}
-                  scroll={{ y: 280 }}
-                  rowSelection={{
-                    selectedRowKeys: checkedReviewKeys,
-                    onChange: keys => setCheckedReviewKeys(keys as string[]),
-                  }}
-                  columns={[
-                    {
-                      title: 'Sheet记账名 / Sheet Name',
-                      dataIndex: 'sheet_jizhanming',
-                    },
-                    {
-                      title: '最接近匹配 / Best Match',
-                      dataIndex: 'current_jizhanming',
-                      render: v => <Text type="secondary">{v || '—'}</Text>,
-                    },
-                    {
-                      title: '匹配度 / Score',
-                      dataIndex: 'score',
-                      width: 120,
-                      render: (v: number) => (
-                        <Tag color={v >= 70 ? 'green' : 'orange'}>{v}%</Tag>
-                      ),
-                    },
-                  ] as ColumnsType<SyncReviewItem>}
-                />
+                <>
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>
+                    低置信度匹配，默认不勾选 — 请人工核对后勾选。 / Low-confidence matches are unchecked by default.
+                  </div>
+                  <Table<SyncChangedItem>
+                    size="small"
+                    dataSource={syncResult.review}
+                    rowKey="key"
+                    pagination={false}
+                    scroll={{ y: 260 }}
+                    rowSelection={{
+                      selectedRowKeys: checkedReviewKeys,
+                      onChange: keys => setCheckedReviewKeys(keys as number[]),
+                    }}
+                    columns={renameColumns}
+                  />
+                </>
               ),
             },
             {
-              key: 'not_found',
+              key: 'new_products',
               label: (
                 <span>
-                  未找到 / Not Found
-                  {syncResult.not_found.length > 0 && (
-                    <Badge count={syncResult.not_found.length} size="small" color="red" style={{ marginLeft: 6 }} />
+                  新产品 / New
+                  {syncResult.new_products.length > 0 && (
+                    <Badge count={syncResult.new_products.length} size="small" color="red" style={{ marginLeft: 6 }} />
                   )}
                 </span>
               ),
-              children: syncResult.not_found.length === 0 ? (
+              children: syncResult.new_products.length === 0 ? (
                 <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 0', fontSize: 13 }}>
-                  无未找到记录 / Nothing unmatched
+                  表格中没有目录外的产品 / No sheet rows without a catalogue match
                 </div>
               ) : (
-                <div style={{ maxHeight: 300, overflowY: 'auto', padding: '8px 0' }}>
-                  {syncResult.not_found.map((jzm, idx) => (
-                    <div key={idx} style={{ padding: '4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <ExclamationCircleOutlined style={{ color: '#EF4444', flexShrink: 0 }} />
-                      <Text style={{ fontSize: 13 }}>{jzm}</Text>
-                    </div>
-                  ))}
+                <>
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>
+                    这些表格行没有匹配到任何产品。勾选后将创建新产品（自动生成 SKU，并记住编号）。
+                    / Checked rows are created as new products with auto-generated SKUs.
+                  </div>
+                  <Table<SyncNewProduct>
+                    size="small"
+                    dataSource={syncResult.new_products}
+                    rowKey="key"
+                    pagination={false}
+                    scroll={{ y: 260 }}
+                    rowSelection={{
+                      selectedRowKeys: checkedNewKeys,
+                      onChange: keys => setCheckedNewKeys(keys as number[]),
+                    }}
+                    columns={[
+                      {
+                        title: '编号', dataIndex: 'ref', width: 64,
+                        render: v => <Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>{v || '—'}</Text>,
+                      },
+                      { title: '记账名 / Jizhanming', dataIndex: 'jizhanming' },
+                      {
+                        title: '产品名称 / Name', dataIndex: 'name', ellipsis: true,
+                        render: v => <Text type="secondary" style={{ fontSize: 12 }}>{v || '—'}</Text>,
+                      },
+                    ] as ColumnsType<SyncNewProduct>}
+                  />
+                </>
+              ),
+            },
+            {
+              key: 'conflicts',
+              label: (
+                <span>
+                  冲突 / Conflicts
+                  {syncResult.conflicts.length > 0 && (
+                    <Badge count={syncResult.conflicts.length} size="small" color="volcano" style={{ marginLeft: 6 }} />
+                  )}
+                </span>
+              ),
+              children: syncResult.conflicts.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 0', fontSize: 13 }}>
+                  无冲突 / No conflicts
                 </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>
+                    以下产品被多行认领或编号不一致，需先在表格中修正后重新同步。
+                    / Fix these rows in the sheet, then sync again.
+                  </div>
+                  <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                    {syncResult.conflicts.map(c => (
+                      <div key={c.key} style={{
+                        border: '1px solid #FDE68A', background: '#FFFBEB',
+                        borderRadius: 8, padding: '8px 12px', marginBottom: 8,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                          <Tag color={c.reason === 'multi_row' ? 'volcano' : 'red'}>
+                            {c.reason === 'multi_row' ? '多行认领同一产品' : '编号不一致'}
+                          </Tag>
+                          <Text style={{ fontWeight: 500 }}>{c.product_jizhanming || '—'}</Text>
+                          <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>{c.sku}</Text>
+                          {c.reason === 'ref_mismatch' && (
+                            <Text type="secondary" style={{ fontSize: 11 }}>已记录编号: {c.stored_ref}</Text>
+                          )}
+                        </div>
+                        {c.rows.map(r => (
+                          <div key={r.key} style={{ fontSize: 12, color: '#92400E', paddingLeft: 4 }}>
+                            行{r.key} · 编号 {r.ref || '—'} · 记账名 “{r.sheet_jizhanming}” · 产品名 “{r.sheet_name || '—'}” · {r.match_via} {r.score}%
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </>
               ),
             },
             {
@@ -699,6 +833,7 @@ export default function ProductsPage() {
 
           return (
             <>
+              {sheetDownAlert}
               <Tabs
                 activeKey={syncActiveTab}
                 onChange={setSyncActiveTab}
@@ -714,16 +849,17 @@ export default function ProductsPage() {
                 borderTop: '1px solid #f0f0f0',
               }}>
                 <Text type="secondary" style={{ fontSize: 13 }}>
-                  将更新 {willUpdate} 条记录 / Will update {willUpdate} records
-                  {syncResult.unchanged > 0 && ` · 无变化 / Unchanged: ${syncResult.unchanged}`}
+                  更新 {willUpdate} · 新建 {willCreate}
+                  {willLearn > 0 && ` · 将记住 ${willLearn} 个编号`}
+                  {syncResult.unchanged > 0 && ` · 无变化 ${syncResult.unchanged}`}
                 </Text>
                 <Space>
                   <Button onClick={() => { setSyncModalOpen(false); setSyncResult(null) }}>
                     取消 / Cancel
                   </Button>
-                  {willUpdate > 0 && (
+                  {canConfirm && (
                     <Button type="primary" loading={confirmLoading} onClick={handleConfirmSync}>
-                      确认更新 {willUpdate} 条记录 / Confirm {willUpdate} records
+                      确认 / Confirm{willUpdate + willCreate > 0 ? ` (${willUpdate + willCreate})` : ''}
                     </Button>
                   )}
                 </Space>
