@@ -97,6 +97,64 @@ one preview and counting the buckets before investing further.]**
 
 ---
 
+### Addendum — the sheet as *the* 记账名 mapping table
+
+After this review was first written, the owner clarified the intent: the sheet is not a
+rename feed — it is **the key mapping table** that connects the daily-report shorthand
+(记账名, col B) to the actual product name (col C). Under that intent the assessment
+sharpens in two ways, both verified empirically.
+
+**1. The mapping is more load-bearing than the sync treats it.** A product whose
+`jizhanming` is empty is *completely unreachable* in the daily report import — verified:
+`parse_report` builds its match pool with `WHERE jizhanming IS NOT NULL AND jizhanming
+!= ''` (`sales.py:751-754`), and the alias path resolves the alias's `product_id`
+against that same filtered pool (`sales.py:833-836`). Tested both escape routes for a
+product with a full `name_cn_en` but blank `jizhanming`: a **valid alias** pointing at
+it → `failed/no_match`; staff typing the **exact full product name** → `failed/no_match`.
+Until the sheet mapping lands in `jizhanming`, the product does not exist as far as
+sales logging is concerned. The sync is the gate to the entire pipeline.
+
+**2. The current sync implements the mapping backwards.** A mapping row is a *pair*
+(B = shorthand, C = actual name). The code uses **only B** — C is consulted solely as a
+fallback when B is empty (`products.py:735-739`) — and fuzzy-matches B against the
+catalogue. That is circular: for exactly the products that need a mapping (blank
+`jizhanming`), stage 1 of `match_jzm` skips them, so the shorthand must fuzzy-hit the
+*full name* to connect at all. The half of the pair that carries the identity signal
+(C, which should match `name_cn_en` nearly exactly) is thrown away.
+
+Verified with three unmapped products and their sheet rows:
+
+| Sheet row (B → C) | Current sync (matches B) | C-anchored (match C, write B) |
+|---|---|---|
+| `sa草莓` → `SA草莓蛋糕大套装挂件` | score 62 → review, unchecked | C scores **100** → write `jizhanming='sa草莓'` |
+| `cb假期` → `CRYBABY奇遇假日系列挂件` | **not_found — mapping dies** | C scores **100** → write `jizhanming='cb假期'` |
+| `小怪兽` → `Zimomo致魔小怪兽坐坐款` | **not_found — mapping dies** | C scores **100** → write `jizhanming='小怪兽'` |
+
+The pattern: the current sync can only establish mappings whose shorthand is already a
+near-substring of a DB name — the cases that barely need a mapping table. The divergent
+shorthands that are the *reason* a mapping table exists die silently in `not_found`, and
+the product stays invisible to sales logging forever. (Scores are from the synthetic
+catalogue; the structural argument — B-only matching vs. discarding C — is code fact.)
+
+**Corrected recommendation.** The earlier verdict ("learn a stable key") stands but the
+priority order changes. To make the sync do its actual job:
+
+1. **Anchor identity on col C**: match C against `products.name_cn_en`
+   (space-preserving normalisation à la `match_title`); full names should identify the
+   product at or near exact.
+2. **Write col B into `jizhanming`** for the identified product — and optionally also
+   into `product_aliases`, so historical shorthand variants accumulate instead of
+   overwrite.
+3. **Learn 编号 (col A) → `product_id`** on first confirmed match; subsequent syncs
+   become exact joins, and B can then be freely revised in the sheet.
+4. **Treat C-matches-nothing as "new product?"** — under the mapping intent, a row whose
+   actual name is absent from the catalogue is a product waiting to be created, not
+   noise for an informational list.
+
+Everything else in the review above (silent failure = "all up to date", pre-checked
+changes, no collision detection, `init_db.py` clobbering synced values) still applies
+unchanged.
+
 ## Part 2 — Sales logging
 
 ### What's genuinely smart
