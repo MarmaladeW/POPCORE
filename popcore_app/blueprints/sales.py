@@ -931,6 +931,57 @@ def parse_daily_report():
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
 
+    # ── Engine selection: LLM front-end when configured, rules otherwise ─────
+    # The LLM only reads the report (sections, names verbatim, quantities,
+    # notes); product resolution below is identical for both engines. Any
+    # LLM failure silently falls back to the rule parser.
+    engine_req    = (data.get('engine') or '').strip().lower()
+    parser_engine = 'rules'
+    multi_day     = False
+    llm_result    = None
+    if engine_req != 'rules':
+        try:
+            import llm_parser
+            if llm_parser.available():
+                llm_result = llm_parser.parse_report_llm(raw_text)
+        except Exception:
+            llm_result = None
+
+    if llm_result:
+        parser_engine       = 'llm'
+        detected_date       = llm_result.get('date')
+        store_code          = (llm_result.get('store') or store_code).upper()
+        cash_total_reported = llm_result.get('cash_total')
+        multi_day           = bool(llm_result.get('extra_dates'))
+
+        raw_items:        list[dict] = []
+        unknown_sections: list[str] = []
+        for li in llm_result['items']:
+            sec = li['section']
+            if sec == 'skip':
+                continue
+            hdr = li.get('header_text') or ''
+            if sec == 'unknown' and hdr and hdr not in unknown_sections:
+                unknown_sections.append(hdr)
+            q       = li.get('qty')
+            flagged = q is None
+            qty     = q if q else 1
+            raw_items.append({
+                'raw_name':            li['name'],
+                'qty':                 qty,
+                'qty_pos':             qty if sec != 'cash' else 0,
+                'qty_cash':            qty if sec == 'cash' else 0,
+                'box_size':            li.get('box_size'),
+                'section':             'pos' if sec == 'unknown' else sec,
+                'flagged':             flagged,
+                'note':                li.get('note') or '',
+                'unknown_header':      hdr if sec == 'unknown' else None,
+                'inferred_split_name': None,
+            })
+        return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
+                             cash_total_reported, parser_engine, multi_day,
+                             aliases, all_products)
+
     lines = text.split('\n')
 
     # Extract date/store from first non-empty line
@@ -945,6 +996,13 @@ def parse_daily_report():
         i for i, line in enumerate(lines)
         if line.strip() and _DATE_RE.search(line) and '*' not in line
     }
+    # Multiple distinct dates in one paste → warn (submission records ONE date)
+    distinct_dates = {
+        f'{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}'
+        for i in skipped_lines
+        for m in [_DATE_RE.search(lines[i])] if m
+    }
+    multi_day = len(distinct_dates) > 1
 
     # ── Layer 2: Scan section boundaries ────────────────────────────────────
     # Boundary = (line_index, section_type, header_text, inline_content)
@@ -1022,7 +1080,16 @@ def parse_daily_report():
         # Normal section: split on comma, parse each token individually
         _parse_content(s, sec)
 
-    # ── Layers 4+5: Alias lookup + fuzzy match + bucket ──────────────────────
+    return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
+                         cash_total_reported, parser_engine, multi_day,
+                         aliases, all_products)
+
+
+def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
+                  cash_total_reported, parser_engine, multi_day,
+                  aliases, all_products):
+    """Layers 4+5 — shared by both engines: alias lookup + fuzzy match +
+    bucketing, stock plausibility flags, and the response payload."""
     confirmed: list[dict] = []
     review:    list[dict] = []
     failed:    list[dict] = []
@@ -1133,4 +1200,6 @@ def parse_daily_report():
         'failed':              failed,
         'unknown_sections':    unknown_sections,
         'cash_total_reported': cash_total_reported,
+        'parser_engine':       parser_engine,
+        'multi_day':           multi_day,
     })
