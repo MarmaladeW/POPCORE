@@ -358,6 +358,100 @@ def _check_data_quality(cur, store: str, thresholds: dict) -> list:
     ]
 
 
+def _check_sales_swap(cur, store: str, thresholds: dict) -> list:
+    """
+    Detect likely wrong-记账名 entries by pairing evening-count discrepancies.
+
+    When a report logs product A but product B was actually sold:
+      A: sales recorded, unit still on shelf → discrepancy = actual − theoretical = +N
+      B: sold, no sales recorded             → discrepancy = −N
+    An opposite-sign, equal-magnitude pair on the same date+store is the
+    signature. Corroboration: A actually has ≥N units recorded sold that day.
+    """
+    cur.execute('''
+        SELECT MAX(ic.date) AS d
+        FROM inventory_checks ic
+        JOIN stores st ON st.id = ic.store_id
+        WHERE st.code = ? AND ic.date >= date('now', '-3 days')
+    ''', (store,))
+    row = cur.fetchone()
+    check_date = row['d'] if row else None
+    if not check_date:
+        return []
+
+    cur.execute('''
+        SELECT ic.product_id, ic.discrepancy, p.jizhanming, p.sku
+        FROM inventory_checks ic
+        JOIN stores st  ON st.id = ic.store_id
+        JOIN products p ON p.id = ic.product_id
+        WHERE st.code = ? AND ic.date = ? AND ic.discrepancy != 0
+    ''', (store, check_date))
+    rows = cur.fetchall()
+
+    by_mag: dict = {}
+    for r in rows:
+        m = abs(r['discrepancy'])
+        side = 'pos' if r['discrepancy'] > 0 else 'neg'
+        by_mag.setdefault(m, {'pos': [], 'neg': []})[side].append(r)
+
+    def _sold_that_day(pid: int) -> int:
+        cur.execute(
+            'SELECT COALESCE(qty_sold, 0) AS q FROM daily_sales'
+            ' WHERE product_id = ? AND date = ? AND store = ?',
+            (pid, check_date, store))
+        sr = cur.fetchone()
+        return sr['q'] if sr else 0
+
+    def _name(r) -> str:
+        return r['jizhanming'] or r['sku']
+
+    insights = []
+    for m, sides in sorted(by_mag.items(), reverse=True):
+        if not sides['pos'] or not sides['neg']:
+            continue
+        if len(sides['pos']) == 1 and len(sides['neg']) == 1:
+            a, b = sides['pos'][0], sides['neg'][0]
+            sold_a = _sold_that_day(a['product_id'])
+            corroborated = sold_a >= m
+            insights.append({
+                'store':      store,
+                'check_type': 'SALES_SWAP_SUSPECT',
+                'severity':   'warning' if corroborated else 'info',
+                'title':      f"记账名疑似写错 — {_name(a)} ↔ {_name(b)}",
+                'body':       (f"{check_date} 晚盘：{_name(a)} 多出 {m} 个，{_name(b)} 少 {m} 个。"
+                               + (f"当天报告记录了 {_name(a)} ×{sold_a}。" if sold_a else '')
+                               + f"可能实际卖出的是 {_name(b)} 却记成了 {_name(a)}。"
+                               f"请核对后重新导入当日报告（重复导入会自动替换当天记录）。"),
+                'product_id': a['product_id'],
+                'meta':       json.dumps({
+                    'check_date':      check_date,
+                    'qty':             m,
+                    'surplus_product': {'id': a['product_id'], 'name': _name(a)},
+                    'missing_product': {'id': b['product_id'], 'name': _name(b)},
+                    'surplus_sold_that_day': sold_a,
+                }, ensure_ascii=False),
+            })
+        else:
+            pos_names = '、'.join(_name(r) for r in sides['pos'])
+            neg_names = '、'.join(_name(r) for r in sides['neg'])
+            insights.append({
+                'store':      store,
+                'check_type': 'SALES_SWAP_SUSPECT',
+                'severity':   'info',
+                'title':      f"晚盘差异成对出现（±{m}）— 可能记错记账名",
+                'body':       (f"{check_date} 晚盘：多出 {m} 个：{pos_names}；"
+                               f"少 {m} 个：{neg_names}。可能存在记账名写错，请核对当日报告。"),
+                'product_id': sides['pos'][0]['product_id'],
+                'meta':       json.dumps({
+                    'check_date': check_date,
+                    'qty':        m,
+                    'surplus':    [{'id': r['product_id'], 'name': _name(r)} for r in sides['pos']],
+                    'missing':    [{'id': r['product_id'], 'name': _name(r)} for r in sides['neg']],
+                }, ensure_ascii=False),
+            })
+    return insights
+
+
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 def generate_daily_insights() -> int:
@@ -394,6 +488,7 @@ def generate_daily_insights() -> int:
                 all_ins.extend(_check_revenue_gap(cur, store, thresholds))
             all_ins.extend(_check_stockout_risk(cur, store, thresholds))
             all_ins.extend(_check_data_quality(cur, store, thresholds))
+            all_ins.extend(_check_sales_swap(cur, store, thresholds))
 
         for ins in all_ins:
             cur.execute('''
