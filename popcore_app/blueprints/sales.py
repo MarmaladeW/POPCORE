@@ -723,6 +723,10 @@ _SECTION_MAP = [
 # Layers 5 — score thresholds
 _SCORE_CONFIRMED = 80
 _SCORE_REVIEW    = 50
+# Auto-confirm additionally requires the top hit to beat the runner-up by
+# this margin (exact/alias hits at 100 are exempt) — near-twin names like
+# "smiski sunday"/"smiski sundae" must go to review, not silently pick one.
+_MARGIN_CONFIRM  = 10
 
 _DATE_RE = re.compile(r'(\d{4})[.\-\/年](\d{1,2})[.\-\/月](\d{1,2})')
 
@@ -1116,9 +1120,11 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
             failed.append({**item, 'reason': 'no_match', 'score': 0, 'candidates': []})
             return
         top_score, top_product = hits[0]
+        runner_up  = hits[1][0] if len(hits) > 1 else 0
+        dominant   = top_score == 100 or (top_score - runner_up) >= _MARGIN_CONFIRM
         warn_blank = not (top_product.get('jizhanming') or '').strip()
         is_inferred = item.get('reason') == 'inferred_split'
-        if top_score >= _SCORE_CONFIRMED and not is_inferred:
+        if top_score >= _SCORE_CONFIRMED and dominant and not is_inferred:
             confirmed.append({
                 **item,
                 'score':          top_score,

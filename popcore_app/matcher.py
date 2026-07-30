@@ -120,6 +120,16 @@ def _raw_sim(a: str, b: str) -> int:
         return _bigram_jaccard(a, b)
 
 
+_DIGIT_RE = re.compile(r'\d+')
+_GEN_RE   = re.compile(r'[一二三四五六七八九十]+代')
+
+
+def _variant_tokens(s: str) -> tuple:
+    """Numeric / generation tokens that distinguish product variants
+    ("cons12" vs "cons", "二代" vs "三代")."""
+    return (tuple(sorted(_DIGIT_RE.findall(s))), tuple(sorted(_GEN_RE.findall(s))))
+
+
 def _score_pair_jzm(qn: str, cn: str) -> int:
     """
     Similarity between two normalize()-d (no-spaces) strings, returns 0-100.
@@ -131,6 +141,9 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
     · CJK coverage: query's Chinese chars must appear in candidate.
         "sa草莓" vs "sa宇航员" → coverage=0 → score=0
         "dimoo花花" vs "dimoo花园" → coverage=0.5 → heavy penalty (花花 needs two 花)
+    · Variant guard: mismatched numeric/generation tokens cap the score at 75
+      — "smiski cons12" can look like "smiski cons" but is likely a different
+      product, so it must go through human review, never auto-confirm.
     """
     if not qn or not cn:
         return 0
@@ -162,6 +175,12 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
         coverage = matched / len(q_cjk)
         if coverage < 1.0:
             s = int(s * coverage)
+
+    # Variant guard: differing digit/generation tokens → likely a different
+    # product variant. Cap below every auto-accept threshold (80 confirm,
+    # 95 sync-precheck) so a human always decides.
+    if _variant_tokens(qn) != _variant_tokens(cn):
+        s = min(s, 75)
 
     return min(s, 99)   # 100 is reserved for exact match only
 
