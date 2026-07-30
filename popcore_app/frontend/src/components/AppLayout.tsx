@@ -53,7 +53,7 @@ function SidebarContent({
 }: {
   collapsed: boolean
   selectedKey: string
-  navItems: { key: string; icon: React.ReactNode; label: string }[]
+  navItems: { key: string; icon: React.ReactNode; label: React.ReactNode }[]
   onNavigate: (key: string) => void
   onCollapse?: () => void
   showCollapse: boolean

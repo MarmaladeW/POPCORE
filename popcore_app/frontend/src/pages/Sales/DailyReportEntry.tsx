@@ -38,7 +38,9 @@ function SectionTag({ section }: { section: string }) {
 
 // ─── Extended item types (frontend state adds _key, accepted, overrides) ──────
 
-type ActiveSection = keyof typeof SECTION_META
+type ActiveSection =
+  | 'pos' | 'cash' | 'stock_in' | 'stock_out' | 'claw'
+  | 'sell_display' | 'break_display' | 'employee_discount'
 
 interface ConfirmedRow extends BackendConfirmedItem {
   _key: string
