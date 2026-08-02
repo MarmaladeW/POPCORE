@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import {
   TrendingUp, TrendingDown, PackageX, DollarSign,
-  AlertTriangle, Database, RefreshCw, X,
+  AlertTriangle, Database, RefreshCw, X, ArrowLeftRight,
 } from 'lucide-react'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -22,11 +22,12 @@ interface Insight {
 }
 
 const TYPE_CONFIG: Record<string, { icon: React.ReactNode }> = {
-  VELOCITY_SPIKE: { icon: <TrendingUp  size={14} /> },
-  DEAD_STOCK:     { icon: <PackageX    size={14} /> },
-  REVENUE_GAP:    { icon: <DollarSign  size={14} /> },
-  STOCKOUT_RISK:  { icon: <AlertTriangle size={14} /> },
-  DATA_QUALITY:   { icon: <Database    size={14} /> },
+  VELOCITY_SPIKE:     { icon: <TrendingUp  size={14} /> },
+  DEAD_STOCK:         { icon: <PackageX    size={14} /> },
+  REVENUE_GAP:        { icon: <DollarSign  size={14} /> },
+  STOCKOUT_RISK:      { icon: <AlertTriangle size={14} /> },
+  DATA_QUALITY:       { icon: <Database    size={14} /> },
+  SALES_SWAP_SUSPECT: { icon: <ArrowLeftRight size={14} /> },
 }
 
 const SEVERITY_COLOR: Record<string, string> = {

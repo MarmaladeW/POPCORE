@@ -40,6 +40,8 @@ export interface BackendBaseItem {
   qty_cash: number
   box_size: number | null
   flagged: boolean
+  note?: string
+  warn_stock?: { instore: number } | null
   unknown_header: string | null
 }
 
@@ -69,6 +71,9 @@ export interface ParseReportResponse {
   review: BackendReviewItem[]
   failed: BackendFailedItem[]
   unknown_sections: string[]
+  cash_total_reported?: number | null
+  parser_engine?: 'llm' | 'rules'
+  multi_day?: boolean
 }
 
 export interface SectionAlias {

@@ -120,6 +120,16 @@ def _raw_sim(a: str, b: str) -> int:
         return _bigram_jaccard(a, b)
 
 
+_DIGIT_RE = re.compile(r'\d+')
+_GEN_RE   = re.compile(r'[一二三四五六七八九十]+代')
+
+
+def _variant_tokens(s: str) -> tuple:
+    """Numeric / generation tokens that distinguish product variants
+    ("cons12" vs "cons", "二代" vs "三代")."""
+    return (tuple(sorted(_DIGIT_RE.findall(s))), tuple(sorted(_GEN_RE.findall(s))))
+
+
 def _score_pair_jzm(qn: str, cn: str) -> int:
     """
     Similarity between two normalize()-d (no-spaces) strings, returns 0-100.
@@ -131,6 +141,9 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
     · CJK coverage: query's Chinese chars must appear in candidate.
         "sa草莓" vs "sa宇航员" → coverage=0 → score=0
         "dimoo花花" vs "dimoo花园" → coverage=0.5 → heavy penalty (花花 needs two 花)
+    · Variant guard: mismatched numeric/generation tokens cap the score at 75
+      — "smiski cons12" can look like "smiski cons" but is likely a different
+      product, so it must go through human review, never auto-confirm.
     """
     if not qn or not cn:
         return 0
@@ -162,6 +175,12 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
         coverage = matched / len(q_cjk)
         if coverage < 1.0:
             s = int(s * coverage)
+
+    # Variant guard: differing digit/generation tokens → likely a different
+    # product variant. Cap below every auto-accept threshold (80 confirm,
+    # 95 sync-precheck) so a human always decides.
+    if _variant_tokens(qn) != _variant_tokens(cn):
+        s = min(s, 75)
 
     return min(s, 99)   # 100 is reserved for exact match only
 
@@ -266,6 +285,42 @@ def match_jzm(
 
     # Stage 4 — Not found
     return []
+
+
+def match_name(
+    query: str,
+    products: list,
+    threshold: int = 60,
+    limit: int = 3,
+) -> list:
+    """
+    Match a full product name against products.name_cn_en ONLY.
+
+    Used by the sheet sync to anchor row identity on the sheet's product-name
+    column: full names compare against full names, so exact rows score 100 and
+    the jizhanming waterfall in match_jzm can't hijack the match with a
+    shorthand hit on a different product.
+
+    Returns [(score, product), ...] sorted by score desc; [] when nothing
+    meets the threshold.
+    """
+    cleaned = clean_name(query)
+    if not cleaned:
+        return []
+    qn = normalize(cleaned)
+    if not qn:
+        return []
+
+    hits = []
+    for p in products:
+        name_n = normalize(p.get('name_cn_en') or '')
+        if not name_n:
+            continue
+        s = _score_pair_jzm(qn, name_n)
+        if s >= threshold:
+            hits.append((s, p))
+    hits.sort(key=lambda x: -x[0])
+    return hits[:limit]
 
 
 def batch_match_jzm(

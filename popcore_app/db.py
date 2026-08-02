@@ -803,6 +803,34 @@ def migrate_db():
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('daily_sales_unique_add_store')")
         con.commit()
 
+    # ── daily_sales: per-channel quantities, price snapshot, raw input ──────
+    # (added AFTER the unique-key rebuild so fresh-DB SELECT * copies line up)
+    cur.execute("PRAGMA table_info(daily_sales)")
+    ds_cols_v2 = {r['name'] for r in cur.fetchall()}
+    for col, defn in (
+        ('qty_claw',     "INTEGER NOT NULL DEFAULT 0"),
+        ('qty_display',  "INTEGER NOT NULL DEFAULT 0"),
+        ('qty_employee', "INTEGER NOT NULL DEFAULT 0"),
+        ('unit_price',   "REAL"),
+        ('raw_name',     "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if col not in ds_cols_v2:
+            cur.execute(f'ALTER TABLE daily_sales ADD COLUMN {col} {defn}')
+
+    # One-time backfill: rows whose notes are exactly the old channel tag were
+    # display/claw/employee sales stored in qty_pos — move them to their column.
+    cur.execute("SELECT 1 FROM _migrations WHERE name='split_channel_columns_backfill'")
+    if not cur.fetchone():
+        for tag, col in (('display_sold', 'qty_display'),
+                         ('claw_machine', 'qty_claw'),
+                         ('employee_discount', 'qty_employee')):
+            cur.execute(f'''
+                UPDATE daily_sales
+                SET {col} = qty_pos, qty_pos = 0
+                WHERE notes = ? AND qty_pos > 0 AND {col} = 0
+            ''', (tag,))
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('split_channel_columns_backfill')")
+
     # ── Market price tables ─────────────────────────────────────────────────
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS market_prices (
@@ -967,6 +995,17 @@ def migrate_db():
     ''')
 
     _run_migrations(con, cur)
+
+    # ── products.sheet_ref: learned stable key to the Google Sheet's 编号 ────
+    # Added after _run_migrations so the legacy products-table rebuild
+    # (drop_dan_per_xiang_column) can never drop it.
+    cur.execute("PRAGMA table_info(products)")
+    if 'sheet_ref' not in {r['name'] for r in cur.fetchall()}:
+        cur.execute("ALTER TABLE products ADD COLUMN sheet_ref TEXT")
+    cur.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sheet_ref
+        ON products(sheet_ref) WHERE sheet_ref IS NOT NULL AND sheet_ref != ''
+    ''')
 
     con.commit()
     con.close()

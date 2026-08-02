@@ -38,7 +38,9 @@ function SectionTag({ section }: { section: string }) {
 
 // ─── Extended item types (frontend state adds _key, accepted, overrides) ──────
 
-type ActiveSection = keyof typeof SECTION_META
+type ActiveSection =
+  | 'pos' | 'cash' | 'stock_in' | 'stock_out' | 'claw'
+  | 'sell_display' | 'break_display' | 'employee_discount'
 
 interface ConfirmedRow extends BackendConfirmedItem {
   _key: string
@@ -127,6 +129,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [failed,        setFailed]        = useState<FailedRow[]>([])
   const [unknowns,      setUnknowns]      = useState<UnknownSectionState[]>([])
   const [savedAliases,  setSavedAliases]  = useState<SectionAlias[]>([])
+  const [cashTotalReported, setCashTotalReported] = useState<number | null>(null)
+  const [parserEngine,  setParserEngine]  = useState<'llm' | 'rules'>('rules')
+  const [multiDay,      setMultiDay]      = useState(false)
 
   useEffect(() => {
     getSectionAliases().then(setSavedAliases).catch(() => {})
@@ -151,7 +156,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty:      it.qty,
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
-        notes:    '',
+        notes:    it.note ?? '',
       })))
 
       setReview(res.review.map((it, i) => ({
@@ -160,7 +165,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty:      it.qty,
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
-        notes:    '',
+        notes:    it.note ?? '',
         accepted: false,
       })))
 
@@ -170,9 +175,13 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty:      it.qty,
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
-        notes:    '',
+        notes:    it.note ?? '',
         section:  it.section ?? 'pos',
       })))
+
+      setCashTotalReported(res.cash_total_reported ?? null)
+      setParserEngine(res.parser_engine ?? 'rules')
+      setMultiDay(res.multi_day ?? false)
 
       setUnknowns(
         res.unknown_sections.map(h => ({ headerText: h, resolvedSection: null }))
@@ -296,6 +305,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       await client.post('/sales/submit_daily_report', {
         date: submitDate,
         store_code: submitStore,
+        mode: 'replace',
         items: payload,
       })
       setStep('done')
@@ -307,18 +317,21 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   }
 
   function buildPayloadItem(
-    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null },
+    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; raw_name?: string },
     product: BackendProduct,
     source_bucket: string,
   ) {
-    const base: any = { product_id: product.id, section: row.section, notes: row.notes, source_bucket }
+    const base: any = {
+      product_id: product.id, section: row.section, notes: row.notes,
+      raw_name: row.raw_name ?? '', source_bucket,
+    }
     if (row.section === 'cash') {
       base.qty_cash = row.qty_cash || row.qty
     } else if (row.section === 'stock_in') {
       base.box_size  = row.box_size ?? 1
       base.num_boxes = row.qty
-    } else if (row.section === 'break_display') {
-      base.qty = row.qty
+    } else if (row.section === 'break_display' || row.section === 'stock_out') {
+      base.qty = row.qty || row.qty_pos
     } else {
       base.qty_pos = row.qty_pos || row.qty
     }
@@ -368,13 +381,20 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       </Space>
     )
     return (
-      <InputNumber size="small" min={0}
-        value={isCash ? (row.qty_cash || row.qty) : (row.qty_pos || row.qty)}
-        style={{ width: 65 }}
-        onChange={v => {
-          const q = v ?? 0
-          patchFn(row._key, { qty: q, qty_pos: isCash ? 0 : q, qty_cash: isCash ? q : 0 })
-        }} />
+      <Space size={4}>
+        <InputNumber size="small" min={0}
+          value={isCash ? (row.qty_cash || row.qty) : (row.qty_pos || row.qty)}
+          style={{ width: 65 }}
+          onChange={v => {
+            const q = v ?? 0
+            patchFn(row._key, { qty: q, qty_pos: isCash ? 0 : q, qty_cash: isCash ? q : 0 })
+          }} />
+        {row.warn_stock && (
+          <Tooltip title={`店内库存仅 ${row.warn_stock.instore}，超卖？可能记错记账名`}>
+            <Tag color="orange" style={{ fontSize: 11, margin: 0 }}>库存{row.warn_stock.instore}</Tag>
+          </Tooltip>
+        )}
+      </Space>
     )
   }
 
@@ -556,6 +576,27 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     },
   ]
 
+  // Cash checksum: reported 现金 total vs Σ(qty_cash × price) over ready items
+  const cashComputed = (() => {
+    let sum = 0
+    for (const r of confirmed) {
+      if (!r.removed && !r.flagged && r.section === 'cash' && r.product?.price != null)
+        sum += (r.qty_cash || r.qty) * r.product.price
+    }
+    for (const r of review) {
+      if (!r.removed && r.accepted && !r.flagged && r.section === 'cash' && r.product?.price != null)
+        sum += (r.qty_cash || r.qty) * r.product.price
+    }
+    for (const r of failed) {
+      if (!r.removed && !r.flagged && r.section === 'cash' && r.assigned_product?.price != null)
+        sum += (r.qty_cash || r.qty) * r.assigned_product.price
+    }
+    return Math.round(sum * 100) / 100
+  })()
+  const cashDelta = cashTotalReported != null
+    ? Math.round((cashTotalReported - cashComputed) * 100) / 100
+    : null
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (step === 'input') {
@@ -614,6 +655,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         {parsedDate && (
           <Tag color="blue" style={{ fontSize: 13 }}>{parsedDate} · {parsedStore}</Tag>
         )}
+        <Tag color={parserEngine === 'llm' ? 'geekblue' : 'default'} style={{ fontSize: 11 }}>
+          {parserEngine === 'llm' ? 'AI 解析' : '规则解析'}
+        </Tag>
         <Tag color="green" icon={<CheckCircleOutlined />}>{confirmedReady} confirmed</Tag>
         {pendingReview > 0 && (
           <Tag color="orange" icon={<WarningOutlined />}>{pendingReview} need review</Tag>
@@ -633,6 +677,38 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           </Space>
         </div>
       </div>
+
+      {/* Replace-semantics notice */}
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 8, borderRadius: 8 }}
+        message={`提交将替换 ${parsedDate ?? date} · ${parsedStore} 当天已有的销售记录（可安全重复导入）`}
+      />
+
+      {/* Multi-day paste warning */}
+      {multiDay && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8, borderRadius: 8 }}
+          message="检测到多个日期 — 本次提交只会记录到一个日期。请将报告按天分开导入。"
+        />
+      )}
+
+      {/* Cash checksum */}
+      {cashTotalReported != null && (
+        <Alert
+          type={cashDelta === 0 ? 'success' : 'warning'}
+          showIcon
+          style={{ marginBottom: 8, borderRadius: 8 }}
+          message={
+            cashDelta === 0
+              ? `现金对账 ✓ 报告 $${cashTotalReported} = 系统合计 $${cashComputed}`
+              : `现金对账: 报告 $${cashTotalReported} · 随手记合计 $${cashComputed} · 差额 $${cashDelta}（差额可能来自税/折扣/记错产品）`
+          }
+        />
+      )}
 
       {/* Unknown section classification alerts */}
       {unknowns.filter(u => u.resolvedSection === null).map(u => (
