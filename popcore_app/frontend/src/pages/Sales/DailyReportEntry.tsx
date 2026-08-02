@@ -248,12 +248,12 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
   async function handleManualSelectReview(row: ReviewRow, p: BackendProduct) {
     patchReview(row._key, { product: p, accepted: true })
-    try { await saveAlias(p.id, row.raw_name) } catch { /* ignore */ }
+    try { await saveAlias(p.id, row.raw_name) } catch (e) { console.error('alias save failed:', e) }
   }
 
   async function handleManualSelectFailed(row: FailedRow, p: BackendProduct) {
     patchFailed(row._key, { assigned_product: p })
-    try { await saveAlias(p.id, row.raw_name) } catch { /* ignore */ }
+    try { await saveAlias(p.id, row.raw_name) } catch (e) { console.error('alias save failed:', e) }
   }
 
   // ── Submit ────────────────────────────────────────────────────────────────
