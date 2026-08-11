@@ -4,7 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
-import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
+import type { CalendarApi, DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
 import { RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 import dayjs from 'dayjs'
 import { cn } from '@/lib/utils'
@@ -23,6 +23,7 @@ import {
   type EmployeeHours,
   type Shift,
 } from './scheduleApi'
+import { BUSINESS_HOURS, uncoveredIntervals } from './openHours'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
 import { useHasRole } from '../../auth/useRole'
@@ -35,27 +36,37 @@ const FALLBACK_COLORS = [
   '#0EA5E9', '#22C55E', '#FB923C', '#E879F9', '#64748B',
 ]
 
-type ViewType = 'dayGridMonth' | 'timeGridWeek'
+const UNCOVERED_COLOR = '#ef4444'
+
+type ViewType = 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay'
+
+const VIEW_OPTIONS: { value: ViewType; label: string }[] = [
+  { value: 'dayGridMonth', label: 'Month' },
+  { value: 'timeGridWeek', label: 'Week' },
+  { value: 'timeGridDay',  label: 'Day' },
+]
 
 export default function ManagerCalendar() {
-  const calRef  = useRef<FullCalendar>(null)
   const isManager = useHasRole('manager')
-  const { selectedStore, stores, setStores } = useAppStore()
-  const isAll = selectedStore?.code === 'ALL'
+  const { stores, setStores } = useAppStore()
+  const realStores = stores.filter((s) => s.code !== 'ALL')
+  const storesKey  = realStores.map((s) => s.code).join(',')
 
-  const [employees,    setEmployees]    = useState<Employee[]>([])
-  const [empStores,    setEmpStores]    = useState<Record<number, string[]>>({})
-  const [filterEmpId,  setFilterEmpId]  = useState<number | null>(null)
-  const [allEvents,    setAllEvents]    = useState<EventInput[]>([])
-  const [visibleEvents, setVisibleEvents] = useState<EventInput[]>([])
-  const [viewTitle,    setViewTitle]    = useState('')
-  const [viewType,     setViewType]     = useState<ViewType>('dayGridMonth')
+  const calRefs = useRef<Record<string, FullCalendar | null>>({})
 
-  const [modalOpen,    setModalOpen]    = useState(false)
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
-  const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
-  const [availForDate, setAvailForDate] = useState<Availability[]>([])
-  const [empHours,     setEmpHours]     = useState<EmployeeHours | null>(null)
+  const [employees,     setEmployees]     = useState<Employee[]>([])
+  const [empStores,     setEmpStores]     = useState<Record<number, string[]>>({})
+  const [filterEmpId,   setFilterEmpId]   = useState<number | null>(null)
+  const [eventsByStore, setEventsByStore] = useState<Record<string, EventInput[]>>({})
+  const [viewTitle,     setViewTitle]     = useState('')
+  const [viewType,      setViewType]      = useState<ViewType>('dayGridMonth')
+  const [empHours,      setEmpHours]      = useState<EmployeeHours | null>(null)
+
+  const [modalOpen,      setModalOpen]      = useState(false)
+  const [modalStoreCode, setModalStoreCode] = useState<string | null>(null)
+  const [selectedDate,   setSelectedDate]   = useState<string | null>(null)
+  const [selectedShift,  setSelectedShift]  = useState<Shift | null>(null)
+  const [availForDate,   setAvailForDate]   = useState<Availability[]>([])
 
   const shiftById    = useRef<Record<number, Shift>>({})
   const availsByDate = useRef<Record<string, Availability[]>>({})
@@ -89,52 +100,11 @@ export default function ManagerCalendar() {
       .catch(() => {})
   }, [])
 
-  useEffect(() => {
-    if (employees.length > 0 && currentRange) {
-      loadEvents(currentRange.start, currentRange.end)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees])
-
-  // Reload when selected store changes
-  useEffect(() => {
-    if (currentRange) {
-      loadEvents(currentRange.start, currentRange.end)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStore])
-
-  useEffect(() => {
-    if (filterEmpId === null) {
-      setVisibleEvents(allEvents)
-    } else {
-      setVisibleEvents(
-        allEvents.filter((e) => e.extendedProps?.employee_id === filterEmpId)
-      )
-    }
-  }, [allEvents, filterEmpId])
-
-  // Hours worked this wage month for the filtered employee
-  useEffect(() => {
-    if (filterEmpId === null) {
-      setEmpHours(null)
-      return
-    }
-    let cancelled = false
-    getEmployeeHours(filterEmpId)
-      .then((h) => { if (!cancelled) setEmpHours(h) })
-      .catch(() => { if (!cancelled) setEmpHours(null) })
-    return () => { cancelled = true }
-  }, [filterEmpId, allEvents])
-
   const loadEvents = useCallback(
-    async (start: string, end: string) => {
-      const sc    = selectedStore?.code
-      const isAllMode = sc === 'ALL'
-
+    async (start: string, end: string, vt: ViewType) => {
       const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-        getAllAvailability(start, end, sc),
-        getShifts({ start, end, store_code: sc }),
+        getAllAvailability(start, end, 'ALL'),
+        getShifts({ start, end, store_code: 'ALL' }),
       ])
 
       const empIdToIdx: Record<number, number> = {}
@@ -142,15 +112,20 @@ export default function ManagerCalendar() {
 
       shiftById.current    = {}
       availsByDate.current = {}
-      const evts: EventInput[] = []
+
+      const byStore: Record<string, EventInput[]> = {}
+      const codes = realStores.map((s) => s.code)
+      codes.forEach((c) => { byStore[c] = [] })
 
       for (const a of avails) {
         if (!availsByDate.current[a.date]) availsByDate.current[a.date] = []
         availsByDate.current[a.date].push(a)
 
+        const code = a.store_code || ''
+        if (!byStore[code]) continue
         const empColor = empColorRef.current[a.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[a.employee_id] ?? 0]
-        evts.push({
+        byStore[code].push({
           id: `avail-${a.id}`,
           title: `${a.employee_name ?? 'Employee'} available`,
           start: `${a.date}T${a.start_time}`,
@@ -163,92 +138,140 @@ export default function ManagerCalendar() {
         })
       }
 
+      // Shifts, plus per-store per-day index for coverage computation
+      const shiftsByStoreDate: Record<string, Record<string, Shift[]>> = {}
+      codes.forEach((c) => { shiftsByStoreDate[c] = {} })
+
       for (const s of shifts) {
         shiftById.current[s.id] = s
+        const code = s.store_code || ''
+        if (!byStore[code]) continue
+        if (!shiftsByStoreDate[code][s.date]) shiftsByStoreDate[code][s.date] = []
+        shiftsByStoreDate[code][s.date].push(s)
+
         const empColor = empColorRef.current[s.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
-        const storePrefix = isAllMode && s.store_code ? `[${s.store_code}] ` : ''
-
-        let bgColor: string
-        let borderColor: string
-        let textColor: string
-
-        if (isAllMode && s.store_code) {
-          // Tint with store color; use employee color for border so employees remain distinct
-          const storeColor = storeColorRef.current[s.store_code] || '#6366f1'
-          bgColor     = storeColor + '33'  // ~20% opacity tint
-          borderColor = empColor
-          textColor   = '#1f2937'
-        } else {
-          bgColor     = empColor
-          borderColor = empColor
-          textColor   = '#fff'
-        }
-
-        evts.push({
+        byStore[code].push({
           id:              `shift-${s.id}`,
-          title:           `${storePrefix}${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
+          title:           `${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
           start:           `${s.date}T${s.start_time}`,
           end:             `${s.date}T${s.end_time}`,
-          backgroundColor: bgColor,
-          borderColor:     borderColor,
-          textColor:       textColor,
+          backgroundColor: empColor,
+          borderColor:     empColor,
+          textColor:       '#fff',
           extendedProps:   { type: 'shift', shift_id: s.id, employee_id: s.employee_id },
         })
       }
 
-      setAllEvents(evts)
+      // Coverage overlays: opening hours (12–22 Mon–Fri, 11–22 Sat–Sun) with no
+      // shift scheduled show up red. Month view tints the whole day; week/day
+      // views mark the exact uncovered time range.
+      const last = dayjs(end)
+      for (const code of codes) {
+        for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
+          const dateStr = d.format('YYYY-MM-DD')
+          const gaps = uncoveredIntervals(dateStr, shiftsByStoreDate[code][dateStr] ?? [])
+          if (gaps.length === 0) continue
+          if (vt === 'dayGridMonth') {
+            byStore[code].push({
+              id:              `gap-${code}-${dateStr}`,
+              start:           dateStr,
+              allDay:          true,
+              display:         'background',
+              backgroundColor: UNCOVERED_COLOR,
+              extendedProps:   { type: 'coverage' },
+            })
+          } else {
+            gaps.forEach((g, i) => {
+              byStore[code].push({
+                id:              `gap-${code}-${dateStr}-${i}`,
+                start:           `${dateStr}T${g.start}`,
+                end:             `${dateStr}T${g.end}`,
+                display:         'background',
+                backgroundColor: UNCOVERED_COLOR,
+                extendedProps:   { type: 'coverage' },
+              })
+            })
+          }
+        }
+      }
+
+      setEventsByStore(byStore)
     },
-    [employees, selectedStore]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [employees, storesKey]
   )
 
+  useEffect(() => {
+    if (currentRange) {
+      loadEvents(currentRange.start, currentRange.end, viewType)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employees, storesKey])
+
+  // Hours worked this wage month for the filtered employee
+  useEffect(() => {
+    if (filterEmpId === null) {
+      setEmpHours(null)
+      return
+    }
+    let cancelled = false
+    getEmployeeHours(filterEmpId)
+      .then((h) => { if (!cancelled) setEmpHours(h) })
+      .catch(() => { if (!cancelled) setEmpHours(null) })
+    return () => { cancelled = true }
+  }, [filterEmpId, eventsByStore])
+
+  const eachCal = (fn: (api: CalendarApi) => void) => {
+    Object.values(calRefs.current).forEach((c) => {
+      const api = c?.getApi()
+      if (api) fn(api)
+    })
+  }
+
+  // Only the first store's calendar drives range/title state + data loading —
+  // all calendars are always navigated together so their ranges are identical.
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
+      const vt    = arg.view.type as ViewType
       setCurrentRange({ start, end })
       setViewTitle(arg.view.title)
-      setViewType(arg.view.type as ViewType)
-      loadEvents(start, end)
+      setViewType(vt)
+      loadEvents(start, end, vt)
     },
     [loadEvents]
   )
 
-  const handleDateClick = useCallback((arg: DateClickArg) => {
-    setSelectedDate(arg.dateStr)
+  const handleDateClickFor = (storeCode: string) => (arg: DateClickArg) => {
+    const dateStr = arg.dateStr.slice(0, 10)
+    setModalStoreCode(storeCode)
+    setSelectedDate(dateStr)
     setSelectedShift(null)
-    setAvailForDate(availsByDate.current[arg.dateStr] ?? [])
+    setAvailForDate(availsByDate.current[dateStr] ?? [])
     setModalOpen(true)
-  }, [])
+  }
 
   const handleEventClick = useCallback((arg: EventClickArg) => {
     const { type, shift_id } = arg.event.extendedProps as { type: string; shift_id?: number }
     if (type === 'shift' && shift_id != null) {
       const shift = shiftById.current[shift_id]
       if (shift) {
+        setModalStoreCode(shift.store_code ?? null)
         setSelectedDate(shift.date)
         setSelectedShift(shift)
         setAvailForDate(availsByDate.current[shift.date] ?? [])
         setModalOpen(true)
       }
-    } else if (type === 'availability') {
-      const dateStr = dayjs(arg.event.start!).format('YYYY-MM-DD')
-      setSelectedDate(dateStr)
-      setSelectedShift(null)
-      setAvailForDate(availsByDate.current[dateStr] ?? [])
-      setModalOpen(true)
     }
   }, [])
 
   const handleSaved = useCallback(() => {
-    const api = calRef.current?.getApi()
-    if (api) {
-      const view  = api.view
-      const start = dayjs(view.activeStart).format('YYYY-MM-DD')
-      const end   = dayjs(view.activeEnd).format('YYYY-MM-DD')
-      loadEvents(start, end)
+    if (currentRange) {
+      loadEvents(currentRange.start, currentRange.end, viewType)
     }
-  }, [loadEvents])
+  }, [loadEvents, currentRange, viewType])
 
   async function handleStoreColorChange(storeId: number, storeCode: string, color: string) {
     // Optimistically update global store list so picker reflects new color immediately
@@ -260,47 +283,48 @@ export default function ManagerCalendar() {
       // On failure revert: refetch stores is not straightforward here;
       // the optimistic update stays until page refresh. Non-critical.
     }
-    // Rebuild events with new store tint
-    if (currentRange) loadEvents(currentRange.start, currentRange.end)
   }
 
-  const cal = () => calRef.current?.getApi()
+  const visibleEvents = (evts: EventInput[]) =>
+    filterEmpId === null
+      ? evts
+      : evts.filter((e) => {
+          const p = e.extendedProps as { type?: string; employee_id?: number } | undefined
+          return p?.type === 'coverage' || p?.employee_id === filterEmpId
+        })
+
+  const isTimeGrid = viewType !== 'dayGridMonth'
 
   return (
     <div className="space-y-3">
 
-      {/* Row 1: navigation ←→ + Today + Month|Week toggle */}
+      {/* Row 1: navigation ←→ + Today + Month|Week|Day toggle */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => cal()?.prev()}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => eachCal((a) => a.prev())}>
             <ChevronLeft className="size-4" />
           </Button>
           <span className="text-sm font-semibold min-w-24 text-center px-1">{viewTitle}</span>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => cal()?.next()}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => eachCal((a) => a.next())}>
             <ChevronRight className="size-4" />
           </Button>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8" onClick={() => cal()?.today()}>Today</Button>
+          <Button variant="outline" size="sm" className="h-8" onClick={() => eachCal((a) => a.today())}>Today</Button>
           <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
-            <button
-              className={cn(
-                'px-3 h-8 transition-colors',
-                viewType === 'dayGridMonth'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background text-foreground hover:bg-muted',
-              )}
-              onClick={() => cal()?.changeView('dayGridMonth')}
-            >Month</button>
-            <button
-              className={cn(
-                'px-3 h-8 border-l border-border transition-colors',
-                viewType === 'timeGridWeek'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-background text-foreground hover:bg-muted',
-              )}
-              onClick={() => cal()?.changeView('timeGridWeek')}
-            >Week</button>
+            {VIEW_OPTIONS.map((v, i) => (
+              <button
+                key={v.value}
+                className={cn(
+                  'px-3 h-8 transition-colors',
+                  i > 0 && 'border-l border-border',
+                  viewType === v.value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-background text-foreground hover:bg-muted',
+                )}
+                onClick={() => eachCal((a) => a.changeView(v.value))}
+              >{v.label}</button>
+            ))}
           </div>
         </div>
       </div>
@@ -328,17 +352,24 @@ export default function ManagerCalendar() {
           size="icon"
           className="h-8 w-8"
           title="Refresh"
-          onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end)}
+          onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end, viewType)}
         >
           <RefreshCw className="size-3.5" />
         </Button>
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground ml-auto">
+          <span
+            className="size-3 rounded-sm shrink-0"
+            style={{ background: UNCOVERED_COLOR, opacity: 0.35 }}
+          />
+          Opening hours not covered (12–10 Mon–Fri, 11–10 Sat–Sun)
+        </span>
       </div>
 
-      {/* Store Colors panel — managers only, visible in ALL mode */}
-      {isAll && isManager && stores.length > 0 && (
+      {/* Store Colors panel — managers only */}
+      {isManager && realStores.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 px-3 py-2 rounded-lg border border-border bg-muted/30">
           <span className="text-xs font-medium text-muted-foreground">Store Colors:</span>
-          {stores.map(st => (
+          {realStores.map(st => (
             <label
               key={st.id}
               className="flex items-center gap-1.5 cursor-pointer"
@@ -444,22 +475,53 @@ export default function ManagerCalendar() {
         </div>
       )}
 
-      {/* Calendar card */}
-      <div className="rounded-xl border border-border overflow-hidden">
-        <FullCalendar
-          ref={calRef}
-          plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-          initialView="dayGridMonth"
-          headerToolbar={false}
-          height="auto"
-          timeZone="local"
-          events={visibleEvents}
-          datesSet={handleDatesSet}
-          dateClick={handleDateClick}
-          eventClick={handleEventClick}
-          eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-        />
-      </div>
+      {/* One calendar section per store, always navigated in sync */}
+      {realStores.length === 0 && (
+        <div className="text-sm text-muted-foreground px-1">Loading stores…</div>
+      )}
+      {realStores.map((st, i) => (
+        <section key={st.code} className="space-y-1.5">
+          <header className="flex items-center gap-2 pt-1">
+            <span
+              className="size-3 rounded-full shrink-0"
+              style={{ background: st.color || '#6366f1' }}
+            />
+            <h4 className="text-sm font-semibold m-0">{st.name || st.code}</h4>
+            <span className="text-xs text-muted-foreground">{st.code}</span>
+          </header>
+          <div
+            className="rounded-xl border overflow-hidden"
+            style={{ borderColor: (st.color || '#6366f1') + '66' }}
+          >
+            <FullCalendar
+              ref={(el) => { calRefs.current[st.code] = el }}
+              plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+              initialView={viewType}
+              headerToolbar={false}
+              height="auto"
+              timeZone="local"
+              events={visibleEvents(eventsByStore[st.code] ?? [])}
+              datesSet={i === 0 ? handleDatesSet : undefined}
+              dateClick={handleDateClickFor(st.code)}
+              eventClick={handleEventClick}
+              eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+              businessHours={BUSINESS_HOURS}
+              dayMaxEvents={4}
+              allDaySlot={false}
+              nowIndicator
+              slotMinTime="10:00"
+              slotMaxTime="23:00"
+              slotDuration="01:00"
+              slotLabelInterval="01:00"
+            />
+          </div>
+        </section>
+      ))}
+      {isTimeGrid && realStores.length > 0 && (
+        <p className="text-xs text-muted-foreground px-1">
+          Grey areas are outside opening hours. Red areas are opening hours with nobody scheduled — click one to assign a shift.
+        </p>
+      )}
 
       <ShiftModal
         open={modalOpen}
@@ -467,6 +529,7 @@ export default function ManagerCalendar() {
         employees={employees}
         existing={selectedShift}
         availForDate={availForDate}
+        defaultStoreCode={modalStoreCode}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />

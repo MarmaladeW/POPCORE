@@ -11,6 +11,7 @@ import {
   type Employee,
   type Shift,
 } from './scheduleApi'
+import { openHoursFor } from './openHours'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -24,6 +25,9 @@ interface Props {
   employees: Employee[]
   existing: Shift | null
   availForDate: Availability[]
+  /** Store preselected in the Location field for new shifts (e.g. the
+   *  calendar section the manager clicked in). */
+  defaultStoreCode?: string | null
   onClose: () => void
   onSaved: () => void
 }
@@ -51,15 +55,14 @@ function buildTimeOptions() {
 }
 const TIME_OPTIONS = buildTimeOptions()
 
-/** Default shift times: weekdays open at 12:00, weekends at 11:00; close 22:00. */
+/** Default shift times follow store opening hours (12:00 weekdays / 11:00
+ *  weekends until 22:00). */
 function presetTimes(date: string | null): Record<Exclude<Preset, 'custom'>, { start: string; end: string }> {
-  const dow = date ? dayjs(date).day() : 1
-  const weekend = dow === 0 || dow === 6
-  const open = weekend ? '11:00' : '12:00'
+  const { start: open, end: close } = openHoursFor(date ?? dayjs().format('YYYY-MM-DD'))
   return {
-    full:   { start: open,    end: '22:00' },
+    full:   { start: open,    end: close },
     first:  { start: open,    end: '17:00' },
-    second: { start: '17:00', end: '22:00' },
+    second: { start: '17:00', end: close },
   }
 }
 
@@ -73,7 +76,7 @@ function matchPreset(date: string | null, start?: string, end?: string): Preset 
 }
 
 export default function ShiftModal({
-  open, date, employees, existing, availForDate, onClose, onSaved,
+  open, date, employees, existing, availForDate, defaultStoreCode, onClose, onSaved,
 }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
@@ -118,9 +121,9 @@ export default function ShiftModal({
     } else {
       form.resetFields()
       form.setFieldsValue({
-        store_code: selectedStore && selectedStore.code !== 'ALL'
-          ? selectedStore.code
-          : (realStores.length === 1 ? realStores[0].code : undefined),
+        store_code: defaultStoreCode
+          || (selectedStore && selectedStore.code !== 'ALL' ? selectedStore.code : undefined)
+          || (realStores.length === 1 ? realStores[0].code : undefined),
       })
       setPreset('custom')
     }
