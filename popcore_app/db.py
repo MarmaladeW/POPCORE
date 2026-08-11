@@ -575,6 +575,18 @@ def _migration_create_match_corrections(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_match_corrections')")
 
 
+def _migration_add_ical_token_to_employees(con, cur):
+    cur.execute("PRAGMA table_info(employees)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'ical_token' not in cols:
+        cur.execute("ALTER TABLE employees ADD COLUMN ical_token TEXT")
+    cur.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_ical_token
+        ON employees(ical_token) WHERE ical_token IS NOT NULL
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_ical_token_to_employees')")
+
+
 def _migration_create_app_settings_table(con, cur):
     cur.execute('''
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -605,6 +617,7 @@ def _get_migrations():
         ('seed_insight_thresholds',              _migration_seed_insight_thresholds),
         ('create_match_corrections',             _migration_create_match_corrections),
         ('create_app_settings_table',            _migration_create_app_settings_table),
+        ('add_ical_token_to_employees',          _migration_add_ical_token_to_employees),
     ]
 
 

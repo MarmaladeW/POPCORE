@@ -20,6 +20,8 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     'report_quarterly_time':         '08:00',
     'store_dt_name':                 'DT',
     'store_mk_name':                 'MK',
+    # Day of month the wage period starts on (e.g. 4 → Aug 4 … Sep 3 is "August")
+    'schedule_month_start_day':      '4',
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())

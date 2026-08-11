@@ -17,8 +17,10 @@ import {
   getShifts,
   getEmployees,
   getEmployeeStores,
+  getEmployeeHours,
   type Availability,
   type Employee,
+  type EmployeeHours,
   type Shift,
 } from './scheduleApi'
 import ShiftModal from './ShiftModal'
@@ -53,6 +55,7 @@ export default function ManagerCalendar() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
   const [availForDate, setAvailForDate] = useState<Availability[]>([])
+  const [empHours,     setEmpHours]     = useState<EmployeeHours | null>(null)
 
   const shiftById    = useRef<Record<number, Shift>>({})
   const availsByDate = useRef<Record<string, Availability[]>>({})
@@ -111,14 +114,26 @@ export default function ManagerCalendar() {
     }
   }, [allEvents, filterEmpId])
 
+  // Hours worked this wage month for the filtered employee
+  useEffect(() => {
+    if (filterEmpId === null) {
+      setEmpHours(null)
+      return
+    }
+    let cancelled = false
+    getEmployeeHours(filterEmpId)
+      .then((h) => { if (!cancelled) setEmpHours(h) })
+      .catch(() => { if (!cancelled) setEmpHours(null) })
+    return () => { cancelled = true }
+  }, [filterEmpId, allEvents])
+
   const loadEvents = useCallback(
     async (start: string, end: string) => {
       const sc    = selectedStore?.code
       const isAllMode = sc === 'ALL'
 
-      // Skip availability fetch for ALL — the backend requires a specific store
       const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-        isAllMode ? Promise.resolve([]) : getAllAvailability(start, end, sc),
+        getAllAvailability(start, end, sc),
         getShifts({ start, end, store_code: sc }),
       ])
 
@@ -200,15 +215,13 @@ export default function ManagerCalendar() {
   )
 
   const handleDateClick = useCallback((arg: DateClickArg) => {
-    if (selectedStore?.code === 'ALL') return
     setSelectedDate(arg.dateStr)
     setSelectedShift(null)
     setAvailForDate(availsByDate.current[arg.dateStr] ?? [])
     setModalOpen(true)
-  }, [selectedStore])
+  }, [])
 
   const handleEventClick = useCallback((arg: EventClickArg) => {
-    if (selectedStore?.code === 'ALL') return
     const { type, shift_id } = arg.event.extendedProps as { type: string; shift_id?: number }
     if (type === 'shift' && shift_id != null) {
       const shift = shiftById.current[shift_id]
@@ -225,7 +238,7 @@ export default function ManagerCalendar() {
       setAvailForDate(availsByDate.current[dateStr] ?? [])
       setModalOpen(true)
     }
-  }, [selectedStore])
+  }, [])
 
   const handleSaved = useCallback(() => {
     const api = calRef.current?.getApi()
@@ -347,15 +360,26 @@ export default function ManagerCalendar() {
         </div>
       )}
 
-      {/* Employee legend: horizontal pill chips using DB colors */}
+      {/* Employee legend: clickable pill chips — click to filter + see hours */}
       {employees.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {employees.map((e) => {
             const empColor = empColorRef.current[e.id] ?? FALLBACK_COLORS[0]
+            const active   = filterEmpId === e.id
             return (
-              <span
+              <button
                 key={e.id}
-                className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+                type="button"
+                onClick={() => setFilterEmpId(active ? null : e.id)}
+                title={active
+                  ? 'Click to show everyone again'
+                  : `Show only ${e.name || e.email || `Employee ${e.id}`}'s shifts and their hours this month`}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs cursor-pointer transition-colors border',
+                  active
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'bg-muted text-muted-foreground border-transparent hover:border-border',
+                )}
               >
                 <span
                   className="size-2 rounded-full shrink-0"
@@ -376,9 +400,47 @@ export default function ManagerCalendar() {
                     }}
                   >{code}</span>
                 ))}
-              </span>
+              </button>
             )
           })}
+        </div>
+      )}
+
+      {/* Hours summary for the filtered employee (wage month, all stores) */}
+      {filterEmpId !== null && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+          {empHours ? (
+            <>
+              <span className="font-semibold">
+                {empHours.name || empHours.email || `Employee ${empHours.employee_id}`}
+              </span>
+              <span>
+                <span className="font-semibold">{empHours.total_hours}h</span>
+                <span className="text-muted-foreground"> · {empHours.shift_count} shift{empHours.shift_count === 1 ? '' : 's'}</span>
+              </span>
+              <span className="text-muted-foreground">
+                {dayjs(empHours.period_start).format('MMM D')} – {dayjs(empHours.period_end).format('MMM D, YYYY')}
+              </span>
+              {Object.entries(empHours.by_store).map(([code, h]) => (
+                <span key={code} className="text-xs text-muted-foreground">
+                  <span
+                    className="inline-block size-2 rounded-full mr-1"
+                    style={{ background: storeColorRef.current[code] ?? '#9ca3af' }}
+                  />
+                  {code}: {h}h
+                </span>
+              ))}
+              <button
+                type="button"
+                className="ml-auto text-xs text-muted-foreground underline hover:text-foreground"
+                onClick={() => setFilterEmpId(null)}
+              >
+                Show everyone
+              </button>
+            </>
+          ) : (
+            <span className="text-muted-foreground">Loading hours…</span>
+          )}
         </div>
       )}
 
