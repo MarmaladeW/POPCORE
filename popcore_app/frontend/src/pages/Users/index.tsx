@@ -65,6 +65,49 @@ interface EmpStoreEntry {
   color:  string
 }
 
+/** Store badges (read-only). Top-level component: defining these inside
+ *  UsersPage gave them a new identity every render, so React remounted the
+ *  select on each state change and the dropdown closed after every pick. */
+function StoreBadges({ codes }: { codes: string[] }) {
+  if (codes.length === 0) {
+    return <span style={{ fontSize: 11, color: '#9ca3af' }}>未分配</span>
+  }
+  return (
+    <>
+      {codes.map(code => (
+        <Tag key={code} color={STORE_TAG_COLORS[code] ?? 'default'} style={{ fontSize: 11, marginRight: 2 }}>
+          {code}
+        </Tag>
+      ))}
+    </>
+  )
+}
+
+/** Store edit control (manager+). */
+function StoreSelect({ entry, storeOptions, onChange }: {
+  entry?: EmpStoreEntry
+  storeOptions: { value: string; label: string }[]
+  onChange: (vals: string[]) => void
+}) {
+  if (!entry) {
+    return (
+      <span style={{ fontSize: 11, color: '#9ca3af' }} title="该用户首次登录后才能分配门店">—</span>
+    )
+  }
+  return (
+    <Select
+      mode="multiple"
+      size="small"
+      style={{ minWidth: 120 }}
+      value={entry.stores}
+      onChange={onChange}
+      options={storeOptions}
+      placeholder="未分配"
+      maxTagCount={3}
+    />
+  )
+}
+
 export default function UsersPage() {
   const isAdmin   = useHasRole('admin')
   const isManager = useHasRole('manager')
@@ -110,9 +153,14 @@ export default function UsersPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin])
 
+  const editingSelf = !!editUser && me?.sub === editUser.id
+
   function openNew() { setEditUser(null); form.resetFields(); setModalOpen(true) }
   function openEdit(u: User) {
     setEditUser(u)
+    // Reset first — otherwise a password typed for a previous user (or in the
+    // create dialog) lingers in the field and gets saved onto this user.
+    form.resetFields()
     form.setFieldsValue({ username: u.username, role: u.role })
     setModalOpen(true)
   }
@@ -121,13 +169,24 @@ export default function UsersPage() {
     try {
       const vals = await form.validateFields()
       if (editUser) {
-        const patch: any = { role: vals.role }
+        const patch: any = {}
+        // Changing your own role is blocked server-side (it would lock you
+        // out of this page) — only send it for other users.
+        if (me?.sub !== editUser.id) patch.role = vals.role
         if (vals.password) patch.password = vals.password
+        if (Object.keys(patch).length === 0) {
+          setModalOpen(false)
+          return
+        }
         await client.patch(`/users/${encodeURIComponent(editUser.id)}`, patch)
         message.success('更新成功')
       } else {
-        await client.post('/users', vals)
-        message.success('用户已创建')
+        const resp = await client.post('/users', vals)
+        if (resp.data?.warning) {
+          message.warning(resp.data.warning, 6)
+        } else {
+          message.success('用户已创建')
+        }
       }
       setModalOpen(false)
       load()
@@ -165,8 +224,8 @@ export default function UsersPage() {
         ...prev,
         [auth0Id]: { ...prev[auth0Id], stores: newCodes },
       }))
-    } catch {
-      message.error('门店分配失败')
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '门店分配失败')
     }
   }
 
@@ -184,43 +243,9 @@ export default function UsersPage() {
     }
   }
 
-  /** Render store badges (read-only) */
-  function StoreBadges({ auth0Id }: { auth0Id: string }) {
-    const codes = empStoreMap[auth0Id]?.stores ?? []
-    if (codes.length === 0) {
-      return <span style={{ fontSize: 11, color: '#9ca3af' }}>未分配</span>
-    }
-    return (
-      <>
-        {codes.map(code => (
-          <Tag key={code} color={STORE_TAG_COLORS[code] ?? 'default'} style={{ fontSize: 11, marginRight: 2 }}>
-            {code}
-          </Tag>
-        ))}
-      </>
-    )
-  }
-
-  /** Render store edit control (manager+) */
-  function StoreSelect({ auth0Id }: { auth0Id: string }) {
-    const entry  = empStoreMap[auth0Id]
-    const current = entry?.stores ?? []
-    if (!entry) {
-      return <span style={{ fontSize: 11, color: '#9ca3af' }}>—</span>
-    }
-    return (
-      <Select
-        mode="multiple"
-        size="small"
-        style={{ minWidth: 120 }}
-        value={current}
-        onChange={(vals) => handleStoreChange(auth0Id, vals)}
-        options={allStores.map(s => ({ value: s.code, label: s.code }))}
-        placeholder="未分配"
-        maxTagCount={3}
-      />
-    )
-  }
+  const storeOptions = allStores
+    .filter(s => s.code !== 'ALL')
+    .map(s => ({ value: s.code, label: s.code }))
 
   const columns: ColumnsType<User> = [
     {
@@ -248,8 +273,14 @@ export default function UsersPage() {
       key: 'stores',
       width: 180,
       render: (_, r) => isManager
-        ? <StoreSelect auth0Id={r.id} />
-        : <StoreBadges auth0Id={r.id} />,
+        ? (
+          <StoreSelect
+            entry={empStoreMap[r.id]}
+            storeOptions={storeOptions}
+            onChange={(vals) => handleStoreChange(r.id, vals)}
+          />
+        )
+        : <StoreBadges codes={empStoreMap[r.id]?.stores ?? []} />,
     },
     {
       title: '颜色',
@@ -369,8 +400,14 @@ export default function UsersPage() {
                   {/* Row 2: store badges */}
                   <div className="flex items-center gap-1 mt-1 pl-11 flex-wrap">
                     {isManager
-                      ? <StoreSelect auth0Id={u.id} />
-                      : <StoreBadges auth0Id={u.id} />
+                      ? (
+                        <StoreSelect
+                          entry={empStoreMap[u.id]}
+                          storeOptions={storeOptions}
+                          onChange={(vals) => handleStoreChange(u.id, vals)}
+                        />
+                      )
+                      : <StoreBadges codes={empStoreMap[u.id]?.stores ?? []} />
                     }
                   </div>
 
@@ -456,8 +493,13 @@ export default function UsersPage() {
               name="role"
               label="角色"
               rules={[{ required: true, message: '请选择角色' }]}
+              extra={editingSelf ? '不能修改自己的角色（防止失去管理员权限）' : undefined}
             >
-              <Select options={ROLE_OPTIONS} getPopupContainer={(trigger) => trigger.parentElement!} />
+              <Select
+                options={ROLE_OPTIONS}
+                disabled={editingSelf}
+                getPopupContainer={(trigger) => trigger.parentElement!}
+              />
             </Form.Item>
             <Form.Item
               name="password"
