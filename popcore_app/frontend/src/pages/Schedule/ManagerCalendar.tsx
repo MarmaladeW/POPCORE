@@ -26,15 +26,16 @@ import {
   type Shift,
 } from './scheduleApi'
 import {
-  DEFAULT_OPEN_HOURS,
   DEFAULT_STAFF_REQUIREMENTS,
+  DEFAULT_STORE_HOURS,
   businessHoursFrom,
   gridWindow,
-  parseOpenHours,
+  hoursForStore,
+  parseStoreOpenHours,
   parseStaffRequirements,
   understaffedIntervals,
-  type OpenHoursConfig,
   type StaffRequirements,
+  type StoreHoursMap,
 } from './openHours'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
@@ -74,7 +75,7 @@ export default function ManagerCalendar() {
   const [empHours,      setEmpHours]      = useState<EmployeeHours | null>(null)
 
   const [staffReqs,      setStaffReqs]      = useState<StaffRequirements>(DEFAULT_STAFF_REQUIREMENTS)
-  const [openHours,      setOpenHours]      = useState<OpenHoursConfig>(DEFAULT_OPEN_HOURS)
+  const [storeHours,     setStoreHours]     = useState<StoreHoursMap>(DEFAULT_STORE_HOURS)
 
   const [modalOpen,      setModalOpen]      = useState(false)
   const [modalStoreCode, setModalStoreCode] = useState<string | null>(null)
@@ -104,7 +105,7 @@ export default function ManagerCalendar() {
     getScheduleConfig()
       .then(cfg => {
         setStaffReqs(parseStaffRequirements(cfg.schedule_required_staff))
-        setOpenHours(parseOpenHours(cfg.schedule_open_hours))
+        setStoreHours(parseStoreOpenHours(cfg.schedule_open_hours))
       })
       .catch(() => {})   // keep defaults if config can't be loaded
     getEmployees().then(setEmployees).catch(() => {})
@@ -194,7 +195,7 @@ export default function ManagerCalendar() {
         for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
           const dateStr = d.format('YYYY-MM-DD')
           const gaps = understaffedIntervals(
-            code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs, openHours,
+            code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs, storeHours,
           )
           if (gaps.length === 0) continue
           if (vt === 'dayGridMonth') {
@@ -225,7 +226,7 @@ export default function ManagerCalendar() {
       setEventsByStore(byStore)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [employees, storesKey, staffReqs, openHours]
+    [employees, storesKey, staffReqs, storeHours]
   )
 
   useEffect(() => {
@@ -233,7 +234,7 @@ export default function ManagerCalendar() {
       loadEvents(currentRange.start, currentRange.end, viewType)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, storesKey, staffReqs, openHours])
+  }, [employees, storesKey, staffReqs, storeHours])
 
   // Hours worked this wage month for the filtered employee
   useEffect(() => {
@@ -377,7 +378,7 @@ export default function ManagerCalendar() {
             trigger="click"
             placement="bottomRight"
             content={
-              <div className="text-xs space-y-1.5" style={{ maxWidth: 250 }}>
+              <div className="text-xs space-y-1.5" style={{ maxWidth: 270 }}>
                 <p className="m-0">
                   <span
                     className="inline-block size-2.5 rounded-sm align-middle mr-1.5"
@@ -385,21 +386,18 @@ export default function ManagerCalendar() {
                   />
                   Red = fewer staff scheduled than required during opening hours.
                 </p>
-                <p className="m-0 font-medium">Required staff (weekday / weekend):</p>
-                <ul className="m-0 pl-4">
-                  {realStores.map(s => {
-                    const r = staffReqs[s.code]
-                    return (
-                      <li key={s.code}>
-                        {s.name || s.code}: {r?.weekday ?? 1} / {r?.weekend ?? 1}
-                      </li>
-                    )
-                  })}
-                </ul>
-                <p className="m-0">
-                  Hours: Mon–Fri {openHours.weekday.open}–{openHours.weekday.close},
-                  Sat–Sun {openHours.weekend.open}–{openHours.weekend.close}.
-                </p>
+                {realStores.map(s => {
+                  const r = staffReqs[s.code]
+                  const h = hoursForStore(s.code, storeHours)
+                  return (
+                    <p className="m-0" key={s.code}>
+                      <span className="font-medium">{s.name || s.code}:</span>{' '}
+                      Mon–Fri {h.weekday.open}–{h.weekday.close},
+                      Sat–Sun {h.weekend.open}–{h.weekend.close} ·
+                      needs {r?.weekday ?? 1}/{r?.weekend ?? 1} staff (wk/wknd)
+                    </p>
+                  )
+                })}
                 <p className="m-0 text-muted-foreground">Adjustable in Settings → Scheduling.</p>
               </div>
             }
@@ -615,12 +613,12 @@ export default function ManagerCalendar() {
               dateClick={handleDateClickFor(st.code)}
               eventClick={handleEventClick}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-              businessHours={businessHoursFrom(openHours)}
+              businessHours={businessHoursFrom(hoursForStore(st.code, storeHours))}
               dayMaxEvents={isMobile && viewType === 'dayGridMonth' ? 12 : 4}
               allDaySlot={false}
               nowIndicator
-              slotMinTime={gridWindow(openHours).slotMinTime}
-              slotMaxTime={gridWindow(openHours).slotMaxTime}
+              slotMinTime={gridWindow(hoursForStore(st.code, storeHours)).slotMinTime}
+              slotMaxTime={gridWindow(hoursForStore(st.code, storeHours)).slotMaxTime}
               slotDuration="01:00"
               slotLabelInterval="01:00"
             />
@@ -641,7 +639,7 @@ export default function ManagerCalendar() {
         existing={selectedShift}
         availForDate={availForDate}
         defaultStoreCode={modalStoreCode}
-        openHours={openHours}
+        storeHours={storeHours}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />

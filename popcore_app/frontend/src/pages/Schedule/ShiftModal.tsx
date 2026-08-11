@@ -11,7 +11,10 @@ import {
   type Employee,
   type Shift,
 } from './scheduleApi'
-import { DEFAULT_OPEN_HOURS, halfSplitFor, openHoursFor, type OpenHoursConfig } from './openHours'
+import {
+  DEFAULT_STORE_HOURS, halfSplitFor, hoursForStore, openHoursFor,
+  type OpenHoursConfig, type StoreHoursMap,
+} from './openHours'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -28,8 +31,9 @@ interface Props {
   /** Store preselected in the Location field for new shifts (e.g. the
    *  calendar section the manager clicked in). */
   defaultStoreCode?: string | null
-  /** Opening hours from the schedule config (drives the shift presets). */
-  openHours?: OpenHoursConfig
+  /** Per-store opening hours from the schedule config (drives the shift
+   *  presets for whichever store is selected in the Location field). */
+  storeHours?: StoreHoursMap
   onClose: () => void
   onSaved: () => void
 }
@@ -84,11 +88,17 @@ function matchPreset(date: string | null, hours: OpenHoursConfig, start?: string
 
 export default function ShiftModal({
   open, date, employees, existing, availForDate, defaultStoreCode,
-  openHours = DEFAULT_OPEN_HOURS, onClose, onSaved,
+  storeHours = DEFAULT_STORE_HOURS, onClose, onSaved,
 }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
   const { selectedStore, stores } = useAppStore()
+
+  // Presets follow the store chosen in the Location field
+  const watchedStore: string | undefined = Form.useWatch('store_code', form)
+  const openHours: OpenHoursConfig = hoursForStore(
+    watchedStore || existing?.store_code || defaultStoreCode || '', storeHours,
+  )
 
   const [savePhase,  setSavePhase]  = useState<SavePhase>('idle')
   const [conflicts,  setConflicts]  = useState<ConflictInfo[]>([])
@@ -137,6 +147,20 @@ export default function ShiftModal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, existing, form])
+
+  // When the Location changes, a selected preset re-applies with that store's
+  // hours (e.g. full day becomes 12:00–21:00 at MK); custom times just get
+  // re-checked against the new store's presets.
+  useEffect(() => {
+    if (!open) return
+    if (preset !== 'custom') {
+      const t = presetTimes(date, openHours)[preset]
+      form.setFieldsValue({ start_time: t.start, end_time: t.end })
+    } else {
+      syncPresetFromForm()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchedStore])
 
   const handleEmployeeChange = (empId: number) => {
     if (existing) return

@@ -2,35 +2,83 @@ import dayjs from 'dayjs'
 
 export interface DayHours { open: string; close: string }
 export interface OpenHoursConfig { weekday: DayHours; weekend: DayHours }
+/** Opening hours per store code. A '*' entry (from the legacy global format)
+ *  acts as the fallback for stores without their own entry. */
+export type StoreHoursMap = Record<string, OpenHoursConfig>
 
-/** Used until the schedule_open_hours setting is loaded (or if malformed):
- *  12:00–22:00 Mon–Fri, 11:00–22:00 Sat–Sun. */
+/** Fallback for stores with no configured hours. */
 export const DEFAULT_OPEN_HOURS: OpenHoursConfig = {
   weekday: { open: '12:00', close: '22:00' },
   weekend: { open: '11:00', close: '22:00' },
 }
 
+/** Used until the schedule_open_hours setting is loaded (or if malformed):
+ *  DT 12–22 / 11–22, MK closes at 21:00. */
+export const DEFAULT_STORE_HOURS: StoreHoursMap = {
+  DT: { weekday: { open: '12:00', close: '22:00' }, weekend: { open: '11:00', close: '22:00' } },
+  MK: { weekday: { open: '12:00', close: '21:00' }, weekend: { open: '11:00', close: '21:00' } },
+}
+
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
-/** Parse the schedule_open_hours app setting (JSON with weekday/weekend).
- *  Falls back to the defaults on missing/malformed input. */
-export function parseOpenHours(raw: string | null | undefined): OpenHoursConfig {
-  if (!raw) return DEFAULT_OPEN_HOURS
-  try {
-    const parsed = JSON.parse(raw) as Record<string, { open?: unknown; close?: unknown }>
-    const out: OpenHoursConfig = { ...DEFAULT_OPEN_HOURS }
-    for (const dayType of ['weekday', 'weekend'] as const) {
-      const block = parsed?.[dayType]
-      const open  = String(block?.open ?? '')
-      const close = String(block?.close ?? '')
-      if (TIME_RE.test(open) && TIME_RE.test(close) && open < close) {
-        out[dayType] = { open, close }
-      }
-    }
-    return out
-  } catch {
-    return DEFAULT_OPEN_HOURS
+function normalizeBlock(block: unknown): DayHours | null {
+  const b = block as { open?: unknown; close?: unknown } | undefined
+  const open  = String(b?.open ?? '')
+  const close = String(b?.close ?? '')
+  return TIME_RE.test(open) && TIME_RE.test(close) && open < close ? { open, close } : null
+}
+
+function normalizeConfig(cfg: unknown): OpenHoursConfig | null {
+  const c = cfg as { weekday?: unknown; weekend?: unknown } | undefined
+  const weekday = normalizeBlock(c?.weekday)
+  const weekend = normalizeBlock(c?.weekend)
+  if (!weekday && !weekend) return null
+  return {
+    weekday: weekday ?? DEFAULT_OPEN_HOURS.weekday,
+    weekend: weekend ?? DEFAULT_OPEN_HOURS.weekend,
   }
+}
+
+/** Parse the schedule_open_hours app setting. Accepts the per-store format
+ *  ({"DT": {weekday, weekend}, ...}) and the legacy global format
+ *  ({weekday, weekend} — stored under '*' as the all-stores fallback).
+ *  Falls back to the defaults on missing/malformed input. */
+export function parseStoreOpenHours(raw: string | null | undefined): StoreHoursMap {
+  if (!raw) return DEFAULT_STORE_HOURS
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (!parsed || typeof parsed !== 'object') return DEFAULT_STORE_HOURS
+    if ('weekday' in parsed || 'weekend' in parsed) {
+      const cfg = normalizeConfig(parsed)
+      return cfg ? { '*': cfg } : DEFAULT_STORE_HOURS
+    }
+    const out: StoreHoursMap = {}
+    for (const [code, cfg] of Object.entries(parsed)) {
+      const n = normalizeConfig(cfg)
+      if (n) out[code] = n
+    }
+    return Object.keys(out).length > 0 ? out : DEFAULT_STORE_HOURS
+  } catch {
+    return DEFAULT_STORE_HOURS
+  }
+}
+
+/** Opening hours for one store, with '*' (legacy global) then default fallback. */
+export function hoursForStore(storeCode: string, map: StoreHoursMap = DEFAULT_STORE_HOURS): OpenHoursConfig {
+  return map[storeCode] ?? map['*'] ?? DEFAULT_STORE_HOURS[storeCode] ?? DEFAULT_OPEN_HOURS
+}
+
+/** Earliest open / latest close across all stores — for calendars that mix
+ *  stores (e.g. an employee's own schedule). */
+export function unionHours(map: StoreHoursMap = DEFAULT_STORE_HOURS): OpenHoursConfig {
+  const cfgs = Object.values(map)
+  if (cfgs.length === 0) return DEFAULT_OPEN_HOURS
+  const union = (sel: (c: OpenHoursConfig) => DayHours): DayHours => {
+    const opens  = cfgs.map(c => sel(c).open).sort()
+    const closes = cfgs.map(c => sel(c).close).sort()
+    return { open: opens[0], close: closes[closes.length - 1] }
+  }
+  return { weekday: union(c => c.weekday), weekend: union(c => c.weekend) }
 }
 
 /** Opening hours applying to `date`. */
@@ -133,9 +181,9 @@ export function understaffedIntervals(
   date: string,
   shifts: Array<{ start_time: string; end_time: string }>,
   reqs: StaffRequirements = DEFAULT_STAFF_REQUIREMENTS,
-  hours: OpenHoursConfig = DEFAULT_OPEN_HOURS,
+  storeHours: StoreHoursMap = DEFAULT_STORE_HOURS,
 ): StaffGap[] {
-  const { start, end } = openHoursFor(date, hours)
+  const { start, end } = openHoursFor(date, hoursForStore(storeCode, storeHours))
   const open  = toMin(start)
   const close = toMin(end)
   const need  = requiredStaff(storeCode, date, reqs)

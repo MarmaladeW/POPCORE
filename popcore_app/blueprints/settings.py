@@ -29,10 +29,13 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # Stores not listed default to 1/1.
     'schedule_required_staff':
         '{"DT": {"weekday": 3, "weekend": 3}, "MK": {"weekday": 1, "weekend": 2}}',
-    # Store opening hours (all stores share these), JSON with weekday/weekend.
+    # Store opening hours, JSON keyed by store code with weekday/weekend
+    # blocks. Stores not listed fall back to 12-22 / 11-22.
     'schedule_open_hours':
-        '{"weekday": {"open": "12:00", "close": "22:00"},'
-        ' "weekend": {"open": "11:00", "close": "22:00"}}',
+        '{"DT": {"weekday": {"open": "12:00", "close": "22:00"},'
+        '        "weekend": {"open": "11:00", "close": "22:00"}},'
+        ' "MK": {"weekday": {"open": "12:00", "close": "21:00"},'
+        '        "weekend": {"open": "11:00", "close": "21:00"}}}',
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -73,25 +76,42 @@ def _validate_required_staff(value: str):
 _TIME_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
 
 
+def _validate_day_block(block, path: str):
+    if not isinstance(block, dict):
+        return f'{path} must be an object'
+    open_t  = block.get('open')
+    close_t = block.get('close')
+    for label, v in (('open', open_t), ('close', close_t)):
+        if not isinstance(v, str) or not _TIME_RE.match(v):
+            return f'{path}.{label} must be HH:MM'
+    if open_t >= close_t:
+        return f'{path}: open must be before close'
+    return None
+
+
 def _validate_open_hours(value: str):
-    """Return an error string if the opening-hours JSON is malformed, else None."""
+    """Return an error string if the opening-hours JSON is malformed, else None.
+    Accepts the per-store format ({"DT": {"weekday": {...}, "weekend": {...}}})
+    and the legacy global format ({"weekday": {...}, "weekend": {...}})."""
     try:
         parsed = json.loads(value)
     except Exception:
         return 'schedule_open_hours must be valid JSON'
-    if not isinstance(parsed, dict):
-        return 'schedule_open_hours must be a JSON object'
-    for day_type in ('weekday', 'weekend'):
-        block = parsed.get(day_type)
-        if not isinstance(block, dict):
-            return f'schedule_open_hours.{day_type} must be an object'
-        open_t  = block.get('open')
-        close_t = block.get('close')
-        for label, v in (('open', open_t), ('close', close_t)):
-            if not isinstance(v, str) or not _TIME_RE.match(v):
-                return f'schedule_open_hours.{day_type}.{label} must be HH:MM'
-        if open_t >= close_t:
-            return f'schedule_open_hours.{day_type}: open must be before close'
+    if not isinstance(parsed, dict) or not parsed:
+        return 'schedule_open_hours must be a non-empty JSON object'
+    if 'weekday' in parsed or 'weekend' in parsed:
+        for day_type in ('weekday', 'weekend'):
+            err = _validate_day_block(parsed.get(day_type), f'schedule_open_hours.{day_type}')
+            if err:
+                return err
+        return None
+    for code, cfg in parsed.items():
+        if not isinstance(cfg, dict):
+            return f'schedule_open_hours["{code}"] must be an object'
+        for day_type in ('weekday', 'weekend'):
+            err = _validate_day_block(cfg.get(day_type), f'schedule_open_hours["{code}"].{day_type}')
+            if err:
+                return err
     return None
 
 
