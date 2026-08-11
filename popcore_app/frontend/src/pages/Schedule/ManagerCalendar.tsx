@@ -23,7 +23,13 @@ import {
   type EmployeeHours,
   type Shift,
 } from './scheduleApi'
-import { BUSINESS_HOURS, understaffedIntervals } from './openHours'
+import {
+  BUSINESS_HOURS,
+  DEFAULT_STAFF_REQUIREMENTS,
+  parseStaffRequirements,
+  understaffedIntervals,
+  type StaffRequirements,
+} from './openHours'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
 import { useHasRole } from '../../auth/useRole'
@@ -62,6 +68,8 @@ export default function ManagerCalendar() {
   const [viewType,      setViewType]      = useState<ViewType>('dayGridMonth')
   const [empHours,      setEmpHours]      = useState<EmployeeHours | null>(null)
 
+  const [staffReqs,      setStaffReqs]      = useState<StaffRequirements>(DEFAULT_STAFF_REQUIREMENTS)
+
   const [modalOpen,      setModalOpen]      = useState(false)
   const [modalStoreCode, setModalStoreCode] = useState<string | null>(null)
   const [selectedDate,   setSelectedDate]   = useState<string | null>(null)
@@ -85,6 +93,10 @@ export default function ManagerCalendar() {
   }, [stores])
 
   useEffect(() => {
+    // Staffing requirements are admin-configurable in Settings → Scheduling
+    client.get<{ schedule_required_staff?: string }>('/settings')
+      .then(r => setStaffReqs(parseStaffRequirements(r.data.schedule_required_staff)))
+      .catch(() => {})   // keep defaults if settings can't be loaded
     getEmployees().then(setEmployees).catch(() => {})
     getEmployeeStores()
       .then(data => {
@@ -164,14 +176,14 @@ export default function ManagerCalendar() {
       }
 
       // Staffing overlays: opening hours (12–22 Mon–Fri, 11–22 Sat–Sun) with
-      // fewer staff scheduled than the store requires (DT: 3 at all times,
-      // MK: 1 weekday / 2 weekend) show up red. Month view tints the whole
-      // day; week/day views mark the exact time range, labelled "have/need".
+      // fewer staff scheduled than the store requires (Settings → Scheduling)
+      // show up red. Month view tints the whole day; week/day views mark the
+      // exact time range, labelled "have/need".
       const last = dayjs(end)
       for (const code of codes) {
         for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
           const dateStr = d.format('YYYY-MM-DD')
-          const gaps = understaffedIntervals(code, dateStr, shiftsByStoreDate[code][dateStr] ?? [])
+          const gaps = understaffedIntervals(code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs)
           if (gaps.length === 0) continue
           if (vt === 'dayGridMonth') {
             byStore[code].push({
@@ -201,7 +213,7 @@ export default function ManagerCalendar() {
       setEventsByStore(byStore)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [employees, storesKey]
+    [employees, storesKey, staffReqs]
   )
 
   useEffect(() => {
@@ -209,7 +221,7 @@ export default function ManagerCalendar() {
       loadEvents(currentRange.start, currentRange.end, viewType)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, storesKey])
+  }, [employees, storesKey, staffReqs])
 
   // Hours worked this wage month for the filtered employee
   useEffect(() => {
@@ -363,7 +375,10 @@ export default function ManagerCalendar() {
             className="size-3 rounded-sm shrink-0"
             style={{ background: UNCOVERED_COLOR, opacity: 0.35 }}
           />
-          Understaffed opening hours — DT needs 3 at all times · MK needs 1 weekday / 2 weekend
+          Understaffed — needs {realStores.map(s => {
+            const r = staffReqs[s.code]
+            return `${s.code} ${r?.weekday ?? 1}/${r?.weekend ?? 1}`
+          }).join(' · ')} (weekday/weekend)
         </span>
       </div>
 

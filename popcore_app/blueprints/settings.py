@@ -1,6 +1,8 @@
 """
 blueprints/settings.py — App-wide settings (admin/manager only).
 """
+import json
+
 from flask import Blueprint, request, jsonify
 from db import get_db
 from auth import role_required
@@ -22,6 +24,10 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     'store_mk_name':                 'MK',
     # Day of month the wage period starts on (e.g. 4 → Aug 4 … Sep 3 is "August")
     'schedule_month_start_day':      '4',
+    # Minimum staff per store during opening hours, JSON keyed by store code.
+    # Stores not listed default to 1/1.
+    'schedule_required_staff':
+        '{"DT": {"weekday": 3, "weekend": 3}, "MK": {"weekday": 1, "weekend": 2}}',
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -41,6 +47,24 @@ def get_settings():
     return jsonify(_load_settings(get_db()))
 
 
+def _validate_required_staff(value: str):
+    """Return an error string if the staffing JSON is malformed, else None."""
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return 'schedule_required_staff must be valid JSON'
+    if not isinstance(parsed, dict):
+        return 'schedule_required_staff must be a JSON object keyed by store code'
+    for code, req in parsed.items():
+        if not isinstance(req, dict):
+            return f'schedule_required_staff["{code}"] must be an object'
+        for field in ('weekday', 'weekend'):
+            v = req.get(field)
+            if isinstance(v, bool) or not isinstance(v, int) or not (0 <= v <= 20):
+                return f'schedule_required_staff["{code}"].{field} must be an integer 0–20'
+    return None
+
+
 @bp.route('/api/settings', methods=['PUT'])
 @role_required('admin')
 def put_settings():
@@ -48,6 +72,10 @@ def put_settings():
     unknown = [k for k in data if k not in SETTINGS_WHITELIST]
     if unknown:
         return jsonify({'error': f'Unknown settings keys: {", ".join(sorted(unknown))}'}), 400
+    if 'schedule_required_staff' in data:
+        err = _validate_required_staff(str(data['schedule_required_staff']))
+        if err:
+            return jsonify({'error': err}), 400
     db = get_db()
     updated = []
     for key, value in data.items():

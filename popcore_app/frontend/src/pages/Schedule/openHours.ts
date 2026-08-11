@@ -20,17 +20,48 @@ export function halfSplitFor(date: string): string {
   return (dow === 0 || dow === 6) ? '16:30' : '17:00'
 }
 
-/** Minimum staff required on the floor during opening hours.
- *  DT needs 3 at all times; MK needs 1 on weekdays and 2 on weekends;
- *  any other store defaults to 1. */
-export function requiredStaff(storeCode: string, date: string): number {
-  const dow = dayjs(date).day()
-  const weekend = dow === 0 || dow === 6
-  switch (storeCode) {
-    case 'DT': return 3
-    case 'MK': return weekend ? 2 : 1
-    default:   return 1
+export interface StaffRequirement { weekday: number; weekend: number }
+export type StaffRequirements = Record<string, StaffRequirement>
+
+/** Used until the schedule_required_staff setting is loaded (or if it is
+ *  malformed): DT needs 3 at all times, MK 1 weekday / 2 weekend. */
+export const DEFAULT_STAFF_REQUIREMENTS: StaffRequirements = {
+  DT: { weekday: 3, weekend: 3 },
+  MK: { weekday: 1, weekend: 2 },
+}
+
+/** Parse the schedule_required_staff app setting (JSON keyed by store code).
+ *  Falls back to the defaults on missing/malformed input. */
+export function parseStaffRequirements(raw: string | null | undefined): StaffRequirements {
+  if (!raw) return DEFAULT_STAFF_REQUIREMENTS
+  try {
+    const parsed = JSON.parse(raw) as Record<string, { weekday?: unknown; weekend?: unknown }>
+    if (!parsed || typeof parsed !== 'object') return DEFAULT_STAFF_REQUIREMENTS
+    const out: StaffRequirements = {}
+    for (const [code, req] of Object.entries(parsed)) {
+      const weekday = Number(req?.weekday)
+      const weekend = Number(req?.weekend)
+      if (Number.isFinite(weekday) && Number.isFinite(weekend)) {
+        out[code] = { weekday, weekend }
+      }
+    }
+    return out
+  } catch {
+    return DEFAULT_STAFF_REQUIREMENTS
   }
+}
+
+/** Minimum staff required on the floor during opening hours.
+ *  Stores without a configured requirement default to 1. */
+export function requiredStaff(
+  storeCode: string,
+  date: string,
+  reqs: StaffRequirements = DEFAULT_STAFF_REQUIREMENTS,
+): number {
+  const req = reqs[storeCode]
+  if (!req) return 1
+  const dow = dayjs(date).day()
+  return (dow === 0 || dow === 6) ? req.weekend : req.weekday
 }
 
 const toMin  = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5))
@@ -51,11 +82,12 @@ export function understaffedIntervals(
   storeCode: string,
   date: string,
   shifts: Array<{ start_time: string; end_time: string }>,
+  reqs: StaffRequirements = DEFAULT_STAFF_REQUIREMENTS,
 ): StaffGap[] {
   const { start, end } = openHoursFor(date)
   const open  = toMin(start)
   const close = toMin(end)
-  const need  = requiredStaff(storeCode, date)
+  const need  = requiredStaff(storeCode, date, reqs)
 
   const ivs = shifts
     .map((s) => [Math.max(open, toMin(s.start_time)), Math.min(close, toMin(s.end_time))] as [number, number])
