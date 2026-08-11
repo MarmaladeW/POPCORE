@@ -17,6 +17,7 @@ import {
   type Availability, type Shift,
 } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
+import { BUSINESS_HOURS } from './openHours'
 import { useAppStore } from '../../store'
 
 export default function EmployeeView() {
@@ -172,7 +173,7 @@ export default function EmployeeView() {
           headerToolbar={{
             left:   'prev,next today',
             center: 'title',
-            right:  'dayGridMonth,timeGridWeek',
+            right:  'dayGridMonth,timeGridWeek,timeGridDay',
           }}
           height="auto"
           timeZone="local"
@@ -181,6 +182,13 @@ export default function EmployeeView() {
           dateClick={handleDateClick}
           eventClick={handleEventClick}
           eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+          businessHours={BUSINESS_HOURS}
+          allDaySlot={false}
+          nowIndicator
+          slotMinTime="10:00"
+          slotMaxTime="23:00"
+          slotDuration="01:00"
+          slotLabelInterval="01:00"
         />
       </div>
 
