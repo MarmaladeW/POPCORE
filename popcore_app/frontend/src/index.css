@@ -68,9 +68,16 @@
    mobile month view. Dot color comes from the event's borderColor
    (the employee color). Background events (red understaffing tint) are
    .fc-bg-event and stay untouched. */
+/* Day number centered above the dots, Google style
+   (FC right-aligns it via row-reverse on .fc-daygrid-day-top) */
+.popcore-dots .fc-daygrid-day-top {
+  flex-direction: row;
+  justify-content: center;
+}
 .popcore-dots .fc-daygrid-day-events {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 2px;
   padding: 1px 3px 3px;
   min-height: 0;
