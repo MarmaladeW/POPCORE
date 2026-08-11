@@ -93,6 +93,12 @@ export interface CalendarFeed {
   path: string
 }
 
+export interface ScheduleConfig {
+  schedule_month_start_day: string
+  schedule_required_staff: string
+  schedule_open_hours: string
+}
+
 export interface EmployeeStoreAssignment {
   employee_id: number
   auth0_id:    string
@@ -100,6 +106,11 @@ export interface EmployeeStoreAssignment {
   color:       string
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
+
+// ── Schedule config (any logged-in user) ──────────────────────────────────────
+
+export const getScheduleConfig = () =>
+  client.get<ScheduleConfig>('/schedule/config').then((r) => r.data)
 
 // ── Employee profile ──────────────────────────────────────────────────────────
 
