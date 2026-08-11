@@ -597,7 +597,10 @@ export default function ManagerCalendar() {
             <span className="text-xs text-muted-foreground">{st.code}</span>
           </header>
           <div
-            className="rounded-xl border overflow-hidden"
+            className={cn(
+              'rounded-xl border overflow-hidden',
+              isMobile && viewType === 'dayGridMonth' && 'popcore-dots',
+            )}
             style={{ borderColor: (st.color || '#6366f1') + '66' }}
           >
             <FullCalendar
@@ -613,7 +616,7 @@ export default function ManagerCalendar() {
               eventClick={handleEventClick}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
               businessHours={businessHoursFrom(openHours)}
-              dayMaxEvents={4}
+              dayMaxEvents={isMobile && viewType === 'dayGridMonth' ? 12 : 4}
               allDaySlot={false}
               nowIndicator
               slotMinTime={gridWindow(openHours).slotMinTime}

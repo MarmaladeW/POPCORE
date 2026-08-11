@@ -8,6 +8,7 @@ import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
 import dayjs from 'dayjs'
 import { CalendarPlus, Copy, RotateCw } from 'lucide-react'
 import { message } from 'antd'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -22,6 +23,7 @@ import {
   type OpenHoursConfig,
 } from './openHours'
 import { useAppStore } from '../../store'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 export default function EmployeeView() {
   const { selectedStore } = useAppStore()
@@ -34,6 +36,8 @@ export default function EmployeeView() {
   const [syncOpen, setSyncOpen] = useState(false)
   const [feedUrl, setFeedUrl] = useState<string | null>(null)
   const [openHours, setOpenHours] = useState<OpenHoursConfig>(DEFAULT_OPEN_HOURS)
+  const [viewType, setViewType] = useState('dayGridMonth')
+  const isMobile = useIsMobile()
   const [msgApi, msgCtx] = message.useMessage()
 
   useEffect(() => {
@@ -89,6 +93,7 @@ export default function EmployeeView() {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       setCurrentRange({ start, end })
+      setViewType(arg.view.type)
       loadEvents(start, end)
     },
     [loadEvents]
@@ -175,7 +180,12 @@ export default function EmployeeView() {
       </div>
 
       {/* Calendar card */}
-      <div className="rounded-xl border border-border overflow-hidden">
+      <div
+        className={cn(
+          'rounded-xl border border-border overflow-hidden',
+          isMobile && viewType === 'dayGridMonth' && 'popcore-dots',
+        )}
+      >
         <FullCalendar
           ref={calRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
