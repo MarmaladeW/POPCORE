@@ -13,6 +13,13 @@ export const BUSINESS_HOURS = [
   { daysOfWeek: [0, 6],          startTime: '11:00', endTime: '22:00' },
 ]
 
+/** Time where half-day shifts split: 17:00 on weekdays, 16:30 on weekends
+ *  (so weekend halves are 11:00–16:30 and 16:30–22:00). */
+export function halfSplitFor(date: string): string {
+  const dow = dayjs(date).day()
+  return (dow === 0 || dow === 6) ? '16:30' : '17:00'
+}
+
 /** Minimum staff required on the floor during opening hours.
  *  DT needs 3 at all times; MK needs 1 on weekdays and 2 on weekends;
  *  any other store defaults to 1. */

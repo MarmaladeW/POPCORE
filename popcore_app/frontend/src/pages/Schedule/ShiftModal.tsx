@@ -11,7 +11,7 @@ import {
   type Employee,
   type Shift,
 } from './scheduleApi'
-import { openHoursFor } from './openHours'
+import { halfSplitFor, openHoursFor } from './openHours'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -56,13 +56,15 @@ function buildTimeOptions() {
 const TIME_OPTIONS = buildTimeOptions()
 
 /** Default shift times follow store opening hours (12:00 weekdays / 11:00
- *  weekends until 22:00). */
+ *  weekends until 22:00); half shifts split at 17:00 weekdays, 16:30 weekends. */
 function presetTimes(date: string | null): Record<Exclude<Preset, 'custom'>, { start: string; end: string }> {
-  const { start: open, end: close } = openHoursFor(date ?? dayjs().format('YYYY-MM-DD'))
+  const d = date ?? dayjs().format('YYYY-MM-DD')
+  const { start: open, end: close } = openHoursFor(d)
+  const mid = halfSplitFor(d)
   return {
-    full:   { start: open,    end: close },
-    first:  { start: open,    end: '17:00' },
-    second: { start: '17:00', end: close },
+    full:   { start: open, end: close },
+    first:  { start: open, end: mid },
+    second: { start: mid,  end: close },
   }
 }
 
@@ -364,12 +366,14 @@ export default function ShiftModal({
                   onChange={(e) => handlePresetChange(e.target.value as Preset)}
                 >
                   <Radio.Button value="full">
-                    Full day ({presetTimes(date).full.start}–22:00)
+                    Full day ({presetTimes(date).full.start}–{presetTimes(date).full.end})
                   </Radio.Button>
                   <Radio.Button value="first">
-                    Half ({presetTimes(date).first.start}–17:00)
+                    Half ({presetTimes(date).first.start}–{presetTimes(date).first.end})
                   </Radio.Button>
-                  <Radio.Button value="second">Half (17:00–22:00)</Radio.Button>
+                  <Radio.Button value="second">
+                    Half ({presetTimes(date).second.start}–{presetTimes(date).second.end})
+                  </Radio.Button>
                   <Radio.Button value="custom">Custom</Radio.Button>
                 </Radio.Group>
               </Form.Item>
