@@ -5,7 +5,8 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import type { CalendarApi, DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
-import { RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight, Info } from 'lucide-react'
+import { Popover } from 'antd'
 import dayjs from 'dayjs'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -37,6 +38,7 @@ import {
 } from './openHours'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
+import { useIsMobile } from '../../hooks/useIsMobile'
 
 /** Fallback palette used when DB color is not yet loaded */
 const FALLBACK_COLORS = [
@@ -57,6 +59,7 @@ const VIEW_OPTIONS: { value: ViewType; label: string }[] = [
 
 export default function ManagerCalendar() {
   const { stores } = useAppStore()
+  const isMobile = useIsMobile()
   const realStores = stores.filter((s) => s.code !== 'ALL')
   const storesKey  = realStores.map((s) => s.code).join(',')
 
@@ -340,24 +343,26 @@ export default function ManagerCalendar() {
         </div>
       </div>
 
-      {/* Row 2: employee filter + refresh */}
+      {/* Row 2: employee filter (desktop) + refresh + staffing info */}
       <div className="flex items-center gap-2">
-        <Select
-          value={filterEmpId !== null ? String(filterEmpId) : '__all__'}
-          onValueChange={(v) => setFilterEmpId(v === '__all__' ? null : Number(v))}
-        >
-          <SelectTrigger className="h-8 text-sm w-44">
-            <SelectValue placeholder="All employees" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">All employees</SelectItem>
-            {employees.map((e) => (
-              <SelectItem key={e.id} value={String(e.id)}>
-                {e.name || e.email || e.auth0_id}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {!isMobile && (
+          <Select
+            value={filterEmpId !== null ? String(filterEmpId) : '__all__'}
+            onValueChange={(v) => setFilterEmpId(v === '__all__' ? null : Number(v))}
+          >
+            <SelectTrigger className="h-8 text-sm w-44">
+              <SelectValue placeholder="All employees" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All employees</SelectItem>
+              {employees.map((e) => (
+                <SelectItem key={e.id} value={String(e.id)}>
+                  {e.name || e.email || e.auth0_id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Button
           variant="ghost"
           size="icon"
@@ -367,20 +372,134 @@ export default function ManagerCalendar() {
         >
           <RefreshCw className="size-3.5" />
         </Button>
-        <span className="flex items-center gap-1.5 text-xs text-muted-foreground ml-auto">
-          <span
-            className="size-3 rounded-sm shrink-0"
-            style={{ background: UNCOVERED_COLOR, opacity: 0.35 }}
-          />
-          Understaffed — needs {realStores.map(s => {
-            const r = staffReqs[s.code]
-            return `${s.code} ${r?.weekday ?? 1}/${r?.weekend ?? 1}`
-          }).join(' · ')} (weekday/weekend)
-        </span>
+        {isMobile ? (
+          <Popover
+            trigger="click"
+            placement="bottomRight"
+            content={
+              <div className="text-xs space-y-1.5" style={{ maxWidth: 250 }}>
+                <p className="m-0">
+                  <span
+                    className="inline-block size-2.5 rounded-sm align-middle mr-1.5"
+                    style={{ background: UNCOVERED_COLOR, opacity: 0.35 }}
+                  />
+                  Red = fewer staff scheduled than required during opening hours.
+                </p>
+                <p className="m-0 font-medium">Required staff (weekday / weekend):</p>
+                <ul className="m-0 pl-4">
+                  {realStores.map(s => {
+                    const r = staffReqs[s.code]
+                    return (
+                      <li key={s.code}>
+                        {s.name || s.code}: {r?.weekday ?? 1} / {r?.weekend ?? 1}
+                      </li>
+                    )
+                  })}
+                </ul>
+                <p className="m-0">
+                  Hours: Mon–Fri {openHours.weekday.open}–{openHours.weekday.close},
+                  Sat–Sun {openHours.weekend.open}–{openHours.weekend.close}.
+                </p>
+                <p className="m-0 text-muted-foreground">Adjustable in Settings → Scheduling.</p>
+              </div>
+            }
+          >
+            <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto" title="Staffing rules">
+              <Info className="size-4" />
+            </Button>
+          </Popover>
+        ) : (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground ml-auto">
+            <span
+              className="size-3 rounded-sm shrink-0"
+              style={{ background: UNCOVERED_COLOR, opacity: 0.35 }}
+            />
+            Understaffed — needs {realStores.map(s => {
+              const r = staffReqs[s.code]
+              return `${s.code} ${r?.weekday ?? 1}/${r?.weekend ?? 1}`
+            }).join(' · ')} (weekday/weekend)
+          </span>
+        )}
       </div>
 
-      {/* Employee legend: clickable pill chips — click to filter + see hours */}
-      {employees.length > 0 && (
+      {/* Employee filter — avatar strip on mobile, pill chips on desktop.
+          Both: click to filter the calendars + show that person's hours. */}
+      {isMobile && employees.length > 0 && (
+        <div
+          className="flex gap-2.5 overflow-x-auto -mx-2 px-2 pb-1"
+          style={{ scrollbarWidth: 'none' }}
+        >
+          <button
+            type="button"
+            onClick={() => setFilterEmpId(null)}
+            className="flex flex-col items-center gap-1 shrink-0 w-12"
+          >
+            <span
+              className={cn(
+                'flex items-center justify-center rounded-full size-10 text-[10px] font-semibold border-2 border-dashed',
+                filterEmpId === null
+                  ? 'border-primary text-primary'
+                  : 'border-muted-foreground/40 text-muted-foreground',
+              )}
+            >
+              ALL
+            </span>
+            <span
+              className={cn(
+                'text-[10px] leading-tight',
+                filterEmpId === null ? 'text-foreground font-semibold' : 'text-muted-foreground',
+              )}
+            >
+              All
+            </span>
+          </button>
+          {employees.map((e) => {
+            const empColor = empColorRef.current[e.id] ?? FALLBACK_COLORS[0]
+            const name     = e.name || e.email || `E${e.id}`
+            const active   = filterEmpId === e.id
+            const dimmed   = filterEmpId !== null && !active
+            return (
+              <button
+                key={e.id}
+                type="button"
+                onClick={() => setFilterEmpId(active ? null : e.id)}
+                className={cn(
+                  'flex flex-col items-center gap-1 shrink-0 w-12 transition-opacity',
+                  dimmed && 'opacity-40',
+                )}
+              >
+                <span
+                  className={cn(
+                    'relative flex items-center justify-center rounded-full size-10 text-white text-sm font-semibold',
+                    active && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
+                  )}
+                  style={{ background: empColor }}
+                >
+                  {name.trim().slice(0, 2).toUpperCase()}
+                  <span className="absolute -bottom-0.5 -right-1 flex gap-0.5">
+                    {(empStores[e.id] ?? []).map(code => (
+                      <span
+                        key={code}
+                        className="size-2 rounded-full border border-background"
+                        style={{ background: storeColorRef.current[code] ?? '#9ca3af' }}
+                      />
+                    ))}
+                  </span>
+                </span>
+                <span
+                  className={cn(
+                    'text-[10px] leading-tight max-w-12 truncate',
+                    active ? 'text-foreground font-semibold' : 'text-muted-foreground',
+                  )}
+                >
+                  {name}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {!isMobile && employees.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {employees.map((e) => {
             const empColor = empColorRef.current[e.id] ?? FALLBACK_COLORS[0]
