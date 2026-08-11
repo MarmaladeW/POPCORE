@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Form, Select, Row, Col, Input, message } from 'antd'
+import { Form, Select, Row, Col, Input, Radio, message } from 'antd'
+import dayjs from 'dayjs'
 import {
   createShift,
   updateShift,
@@ -29,12 +30,14 @@ interface Props {
 
 interface ShiftFormValues {
   employee_id: number
+  store_code:  string
   start_time:  string
   end_time:    string
   notes?:      string
 }
 
 type SavePhase = 'idle' | 'checking' | 'conflict' | 'error'
+type Preset = 'full' | 'first' | 'second' | 'custom'
 
 function buildTimeOptions() {
   const opts: { value: string; label: string }[] = []
@@ -48,16 +51,40 @@ function buildTimeOptions() {
 }
 const TIME_OPTIONS = buildTimeOptions()
 
+/** Default shift times: weekdays open at 12:00, weekends at 11:00; close 22:00. */
+function presetTimes(date: string | null): Record<Exclude<Preset, 'custom'>, { start: string; end: string }> {
+  const dow = date ? dayjs(date).day() : 1
+  const weekend = dow === 0 || dow === 6
+  const open = weekend ? '11:00' : '12:00'
+  return {
+    full:   { start: open,    end: '22:00' },
+    first:  { start: open,    end: '17:00' },
+    second: { start: '17:00', end: '22:00' },
+  }
+}
+
+function matchPreset(date: string | null, start?: string, end?: string): Preset {
+  if (!start || !end) return 'custom'
+  const p = presetTimes(date)
+  for (const key of ['full', 'first', 'second'] as const) {
+    if (p[key].start === start && p[key].end === end) return key
+  }
+  return 'custom'
+}
+
 export default function ShiftModal({
   open, date, employees, existing, availForDate, onClose, onSaved,
 }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
-  const { selectedStore } = useAppStore()
+  const { selectedStore, stores } = useAppStore()
 
   const [savePhase,  setSavePhase]  = useState<SavePhase>('idle')
   const [conflicts,  setConflicts]  = useState<ConflictInfo[]>([])
+  const [preset,     setPreset]     = useState<Preset>('custom')
   const pendingValues = useRef<ShiftFormValues | null>(null)
+
+  const realStores = stores.filter((s) => s.code !== 'ALL')
 
   const availByEmpId: Record<number, Availability> = {}
   for (const a of availForDate) availByEmpId[a.employee_id] = a
@@ -66,6 +93,10 @@ export default function ShiftModal({
     ...employees.filter((e) => availByEmpId[e.id]),
     ...employees.filter((e) => !availByEmpId[e.id]),
   ]
+
+  const syncPresetFromForm = () => {
+    setPreset(matchPreset(date, form.getFieldValue('start_time'), form.getFieldValue('end_time')))
+  }
 
   useEffect(() => {
     if (!open) {
@@ -77,13 +108,23 @@ export default function ShiftModal({
     if (existing) {
       form.setFieldsValue({
         employee_id: existing.employee_id,
+        store_code:  existing.store_code
+          || (selectedStore && selectedStore.code !== 'ALL' ? selectedStore.code : undefined),
         start_time:  existing.start_time,
         end_time:    existing.end_time,
         notes:       existing.notes,
       })
+      setPreset(matchPreset(existing.date, existing.start_time, existing.end_time))
     } else {
       form.resetFields()
+      form.setFieldsValue({
+        store_code: selectedStore && selectedStore.code !== 'ALL'
+          ? selectedStore.code
+          : (realStores.length === 1 ? realStores[0].code : undefined),
+      })
+      setPreset('custom')
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, existing, form])
 
   const handleEmployeeChange = (empId: number) => {
@@ -91,7 +132,16 @@ export default function ShiftModal({
     const avail = availByEmpId[empId]
     if (avail) {
       form.setFieldsValue({ start_time: avail.start_time, end_time: avail.end_time })
+      syncPresetFromForm()
     }
+  }
+
+  const handlePresetChange = (value: Preset) => {
+    setPreset(value)
+    if (value === 'custom') return
+    const t = presetTimes(date)[value]
+    form.setFieldsValue({ start_time: t.start, end_time: t.end })
+    form.validateFields(['start_time', 'end_time']).catch(() => {})
   }
 
   const doCreateShift = async (values: ShiftFormValues) => {
@@ -101,7 +151,7 @@ export default function ShiftModal({
       start_time:  values.start_time,
       end_time:    values.end_time,
       notes:       values.notes ?? '',
-      store_code:  selectedStore?.code,
+      store_code:  values.store_code,
     })
     msgApi.success('Shift saved')
     setSavePhase('idle')
@@ -110,9 +160,6 @@ export default function ShiftModal({
   }
 
   const handleSave = async () => {
-    // ALL mode should never open this modal, but guard just in case
-    if (selectedStore?.code === 'ALL') return
-
     try {
       const values = await form.validateFields() as ShiftFormValues
 
@@ -122,6 +169,7 @@ export default function ShiftModal({
           start_time: values.start_time,
           end_time:   values.end_time,
           notes:      values.notes ?? '',
+          store_code: values.store_code,
         })
         msgApi.success('Shift saved')
         onSaved()
@@ -135,7 +183,7 @@ export default function ShiftModal({
         const result = await checkConflicts({
           employee_id: values.employee_id,
           date:        date!,
-          store_code:  selectedStore!.code,
+          store_code:  values.store_code,
         })
         if (result.has_conflict) {
           pendingValues.current = values
@@ -191,20 +239,17 @@ export default function ShiftModal({
         || `Employee ${pendingValues.current.employee_id}`)
     : ''
 
+  const conflictStore = pendingValues.current
+    ? realStores.find((s) => s.code === pendingValues.current!.store_code)
+    : null
+
   return (
     <>
       {ctxHolder}
       <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
         <DialogContent style={{ maxWidth: 480 }}>
           <DialogHeader>
-            <DialogTitle>
-              Assign shift — {date ?? ''}
-              {selectedStore && (
-                <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  @ {selectedStore.name || selectedStore.code}
-                </span>
-              )}
-            </DialogTitle>
+            <DialogTitle>Assign shift — {date ?? ''}</DialogTitle>
           </DialogHeader>
 
           {/* Conflict warning panel */}
@@ -223,7 +268,7 @@ export default function ShiftModal({
                 ))}
               </ul>
               <p className="text-sm text-amber-800">
-                Do you still want to assign this shift at {selectedStore?.name || selectedStore?.code}?
+                Do you still want to assign this shift at {conflictStore?.name || conflictStore?.code || 'this store'}?
               </p>
             </div>
           )}
@@ -262,29 +307,68 @@ export default function ShiftModal({
           {/* Form — kept mounted to preserve values; hidden during conflict/error */}
           <div style={showForm ? {} : { display: 'none' }}>
             <Form form={form} layout="vertical">
-              <Form.Item
-                name="employee_id"
-                label="Employee"
-                rules={[{ required: true, message: 'Select an employee' }]}
-              >
-                <Select
-                  showSearch
-                  placeholder="Select employee"
-                  optionFilterProp="label"
-                  disabled={!!existing}
-                  onChange={handleEmployeeChange}
-                  getPopupContainer={(trigger) => trigger.parentElement!}
-                  options={sortedEmployees.map((e) => {
-                    const avail    = availByEmpId[e.id]
-                    const baseName = e.name || e.email || e.auth0_id
-                    return {
-                      value: e.id,
-                      label: avail
-                        ? `${baseName}  ·  ${avail.start_time}–${avail.end_time}`
-                        : baseName,
-                    }
-                  })}
-                />
+              <Row gutter={12}>
+                <Col span={14}>
+                  <Form.Item
+                    name="employee_id"
+                    label="Employee"
+                    rules={[{ required: true, message: 'Select an employee' }]}
+                  >
+                    <Select
+                      showSearch
+                      placeholder="Select employee"
+                      optionFilterProp="label"
+                      disabled={!!existing}
+                      onChange={handleEmployeeChange}
+                      getPopupContainer={(trigger) => trigger.parentElement!}
+                      options={sortedEmployees.map((e) => {
+                        const avail    = availByEmpId[e.id]
+                        const baseName = e.name || e.email || e.auth0_id
+                        return {
+                          value: e.id,
+                          label: avail
+                            ? `${baseName}  ·  ${avail.start_time}–${avail.end_time}`
+                            : baseName,
+                        }
+                      })}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={10}>
+                  <Form.Item
+                    name="store_code"
+                    label="Location"
+                    rules={[{ required: true, message: 'Select a location' }]}
+                  >
+                    <Select
+                      placeholder="Store"
+                      getPopupContainer={(trigger) => trigger.parentElement!}
+                      options={realStores.map((s) => ({
+                        value: s.code,
+                        label: s.name || s.code,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              <Form.Item label="Shift type" style={{ marginBottom: 12 }}>
+                <Radio.Group
+                  optionType="button"
+                  buttonStyle="solid"
+                  size="small"
+                  value={preset}
+                  onChange={(e) => handlePresetChange(e.target.value as Preset)}
+                >
+                  <Radio.Button value="full">
+                    Full day ({presetTimes(date).full.start}–22:00)
+                  </Radio.Button>
+                  <Radio.Button value="first">
+                    Half ({presetTimes(date).first.start}–17:00)
+                  </Radio.Button>
+                  <Radio.Button value="second">Half (17:00–22:00)</Radio.Button>
+                  <Radio.Button value="custom">Custom</Radio.Button>
+                </Radio.Group>
               </Form.Item>
 
               <Row gutter={12}>
@@ -294,7 +378,14 @@ export default function ShiftModal({
                     label="Start time"
                     rules={[{ required: true, message: 'Required' }]}
                   >
-                    <Select showSearch placeholder="09:00" options={TIME_OPTIONS} style={{ width: '100%' }} getPopupContainer={(trigger) => trigger.parentElement!} />
+                    <Select
+                      showSearch
+                      placeholder="09:00"
+                      options={TIME_OPTIONS}
+                      style={{ width: '100%' }}
+                      onChange={syncPresetFromForm}
+                      getPopupContainer={(trigger) => trigger.parentElement!}
+                    />
                   </Form.Item>
                 </Col>
                 <Col span={12}>
@@ -313,7 +404,14 @@ export default function ShiftModal({
                       }),
                     ]}
                   >
-                    <Select showSearch placeholder="17:00" options={TIME_OPTIONS} style={{ width: '100%' }} getPopupContainer={(trigger) => trigger.parentElement!} />
+                    <Select
+                      showSearch
+                      placeholder="17:00"
+                      options={TIME_OPTIONS}
+                      style={{ width: '100%' }}
+                      onChange={syncPresetFromForm}
+                      getPopupContainer={(trigger) => trigger.parentElement!}
+                    />
                   </Form.Item>
                 </Col>
               </Row>

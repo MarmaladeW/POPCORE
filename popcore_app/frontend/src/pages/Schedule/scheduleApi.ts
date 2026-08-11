@@ -23,6 +23,7 @@ export interface Availability {
   // joined fields (all-avail endpoint)
   employee_name?: string
   auth0_id?: string
+  store_code?: string
 }
 
 export interface Shift {
@@ -70,6 +71,26 @@ export interface EmployeeMonthlyHours {
 export interface MonthlyReport {
   month: string
   employees: EmployeeMonthlyHours[]
+  period_start: string     // YYYY-MM-DD (wage period start, e.g. Aug 4)
+  period_end: string       // YYYY-MM-DD (wage period end,   e.g. Sep 3)
+  month_start_day: number  // configurable day the wage month starts on
+}
+
+export interface EmployeeHours {
+  employee_id: number
+  name: string
+  email: string
+  period_start: string
+  period_end: string
+  month_start_day: number
+  total_hours: number
+  shift_count: number
+  by_store: Record<string, number>
+}
+
+export interface CalendarFeed {
+  token: string
+  path: string
 }
 
 export interface EmployeeStoreAssignment {
@@ -152,7 +173,7 @@ export const createShift = (data: {
 
 export const updateShift = (
   id: number,
-  data: { start_time?: string; end_time?: string; notes?: string }
+  data: { start_time?: string; end_time?: string; notes?: string; store_code?: string }
 ) => client.patch<Shift>(`/schedule/shifts/${id}`, data).then((r) => r.data)
 
 export const deleteShift = (id: number) =>
@@ -170,3 +191,16 @@ export const getMonthlyReport = (year: number, month: number, storeCode?: string
   client
     .get<MonthlyReport>('/schedule/reports/monthly', { params: { year, month, store_code: storeCode } })
     .then((r) => r.data)
+
+export const getEmployeeHours = (employeeId: number, year?: number, month?: number) =>
+  client
+    .get<EmployeeHours>(`/schedule/employees/${employeeId}/hours`, { params: { year, month } })
+    .then((r) => r.data)
+
+// ── Calendar sync ─────────────────────────────────────────────────────────────
+
+export const getCalendarFeed = () =>
+  client.get<CalendarFeed>('/schedule/calendar-feed').then((r) => r.data)
+
+export const resetCalendarFeed = () =>
+  client.post<CalendarFeed>('/schedule/calendar-feed/reset').then((r) => r.data)

@@ -1,7 +1,10 @@
 """
 blueprints/schedule.py — employee profiles, availability, shifts, monthly hours report.
 """
-from flask import Blueprint, request, jsonify
+import datetime as _dt
+import secrets
+
+from flask import Blueprint, request, jsonify, Response
 
 from db import get_db
 from auth import (
@@ -57,6 +60,40 @@ def _hours_between(start_time: str, end_time: str) -> float:
         return max(0.0, diff / 60.0)
     except Exception:
         return 0.0
+
+
+def _month_start_day(con) -> int:
+    """Day of month the wage period starts on (app setting, default 4)."""
+    try:
+        row = con.execute(
+            "SELECT value FROM app_settings WHERE key = 'schedule_month_start_day'"
+        ).fetchone()
+        day = int(row['value']) if row else 4
+    except Exception:
+        day = 4
+    return min(max(day, 1), 28)
+
+
+def _wage_period(year: int, month: int, start_day: int):
+    """Return (first_day, last_day) of the wage period anchored at year-month.
+    With start_day=4, the 'August' period is Aug 4 … Sep 3."""
+    start = _dt.date(year, month, start_day)
+    if month == 12:
+        nxt = _dt.date(year + 1, 1, start_day)
+    else:
+        nxt = _dt.date(year, month + 1, start_day)
+    return start, nxt - _dt.timedelta(days=1)
+
+
+def _current_wage_anchor(start_day: int):
+    """Return (year, month) of the wage period containing today."""
+    today = _dt.date.today()
+    year, month = today.year, today.month
+    if today.day < start_day:
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    return year, month
 
 
 def _require_store_param(con):
@@ -179,8 +216,10 @@ def schedule_avail_me():
         con.close()
         return err
     emp   = _get_or_create_employee(con, auth0_id)
-    query = 'SELECT * FROM availability WHERE employee_id = ? AND store_id = ?'
-    params: list = [emp['id'], store_id]
+    query = 'SELECT * FROM availability WHERE employee_id = ?'
+    params: list = [emp['id']]
+    if store_code != 'ALL':
+        query  += ' AND store_id = ?'; params.append(store_id)
     if start:
         query  += ' AND date >= ?'; params.append(start)
     if end:
@@ -201,12 +240,16 @@ def schedule_avail_all():
         con.close()
         return err
     query = '''
-        SELECT a.*, e.name AS employee_name, e.auth0_id
+        SELECT a.*, e.name AS employee_name, e.auth0_id,
+               COALESCE(st.code, '') AS store_code
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
-        WHERE e.is_active = 1 AND a.store_id = ?
+        LEFT JOIN stores st ON st.id = a.store_id
+        WHERE e.is_active = 1
     '''
-    params: list = [store_id]
+    params: list = []
+    if store_code != 'ALL':
+        query  += ' AND a.store_id = ?'; params.append(store_id)
     if start:
         query  += ' AND a.date >= ?'; params.append(start)
     if end:
@@ -367,11 +410,16 @@ def schedule_shifts_me():
         return err
     emp    = _get_or_create_employee(con, auth0_id)
     query  = '''
-        SELECT s.*, e.name AS employee_name, e.auth0_id
-        FROM shifts s JOIN employees e ON e.id = s.employee_id
-        WHERE s.employee_id = ? AND s.store_id = ?
+        SELECT s.*, e.name AS employee_name, e.auth0_id,
+               COALESCE(st.code, '') AS store_code
+        FROM shifts s
+        JOIN employees e ON e.id = s.employee_id
+        LEFT JOIN stores st ON st.id = s.store_id
+        WHERE s.employee_id = ?
     '''
-    params: list = [emp['id'], store_id]
+    params: list = [emp['id']]
+    if store_code != 'ALL':
+        query += ' AND s.store_id = ?'; params.append(store_id)
     if start:
         query += ' AND s.date >= ?'; params.append(start)
     if end:
@@ -528,20 +576,20 @@ def schedule_conflicts():
 def schedule_report_monthly():
     import datetime as dt
     from collections import defaultdict
+
+    con = get_db()
+    start_day = _month_start_day(con)
+    def_year, def_month = _current_wage_anchor(start_day)
     try:
-        year  = int(request.args.get('year',  dt.date.today().year))
-        month = int(request.args.get('month', dt.date.today().month))
+        year  = int(request.args.get('year',  def_year))
+        month = int(request.args.get('month', def_month))
+        first_day, last_day = _wage_period(year, month, start_day)
     except ValueError:
+        con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
 
     month_str = f'{year}-{month:02d}'
-    first_day = dt.date(year, month, 1)
-    if month == 12:
-        last_day = dt.date(year + 1, 1, 1) - dt.timedelta(days=1)
-    else:
-        last_day = dt.date(year, month + 1, 1) - dt.timedelta(days=1)
 
-    con = get_db()
     store_id, store_code, err = _require_store_param(con)
     if err:
         con.close()
@@ -552,17 +600,22 @@ def schedule_report_monthly():
 
     if not emp_ids:
         con.close()
-        return jsonify({'month': month_str, 'employees': []})
+        return jsonify({
+            'month': month_str, 'employees': [],
+            'period_start': str(first_day), 'period_end': str(last_day),
+            'month_start_day': start_day,
+        })
 
     placeholders = ','.join('?' * len(emp_ids))
-    shifts = con.execute(
-        f'''SELECT * FROM shifts
-            WHERE employee_id IN ({placeholders})
-              AND store_id = ?
-              AND date >= ? AND date <= ?
-            ORDER BY date''',
-        emp_ids + [store_id, str(first_day), str(last_day)]
-    ).fetchall()
+    query = f'''SELECT * FROM shifts
+                WHERE employee_id IN ({placeholders})
+                  AND date >= ? AND date <= ?'''
+    params = emp_ids + [str(first_day), str(last_day)]
+    if store_code != 'ALL':
+        query += ' AND store_id = ?'
+        params.append(store_id)
+    query += ' ORDER BY date'
+    shifts = con.execute(query, params).fetchall()
     con.close()
 
     shifts_by_emp: dict = defaultdict(list)
@@ -593,4 +646,206 @@ def schedule_report_monthly():
             'weeks':       weeks,
         })
 
-    return jsonify({'month': month_str, 'employees': result})
+    return jsonify({
+        'month': month_str,
+        'employees': result,
+        'period_start': str(first_day),
+        'period_end': str(last_day),
+        'month_start_day': start_day,
+    })
+
+
+# ─── Per-employee hours (wage period) ─────────────────────────────────────────
+
+@bp.route('/api/schedule/employees/<int:emp_id>/hours', methods=['GET'])
+@role_required('manager')
+def schedule_employee_hours(emp_id):
+    """Hours worked by one employee in a wage period, across all stores.
+    Defaults to the period containing today when year/month are omitted."""
+    con = get_db()
+    start_day = _month_start_day(con)
+    def_year, def_month = _current_wage_anchor(start_day)
+    try:
+        year  = int(request.args.get('year',  def_year))
+        month = int(request.args.get('month', def_month))
+        first_day, last_day = _wage_period(year, month, start_day)
+    except ValueError:
+        con.close()
+        return jsonify({'error': 'year and month must be integers'}), 400
+
+    emp = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
+    if not emp:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+
+    rows = con.execute('''
+        SELECT s.*, COALESCE(st.code, '') AS store_code
+        FROM shifts s
+        LEFT JOIN stores st ON st.id = s.store_id
+        WHERE s.employee_id = ? AND s.date >= ? AND s.date <= ?
+        ORDER BY s.date
+    ''', (emp_id, str(first_day), str(last_day))).fetchall()
+    con.close()
+
+    total = 0.0
+    by_store: dict = {}
+    for r in rows:
+        h = _hours_between(r['start_time'], r['end_time'])
+        total += h
+        code = r['store_code'] or '?'
+        by_store[code] = round(by_store.get(code, 0.0) + h, 2)
+
+    return jsonify({
+        'employee_id':     emp_id,
+        'name':            emp['name'],
+        'email':           emp['email'],
+        'period_start':    str(first_day),
+        'period_end':      str(last_day),
+        'month_start_day': start_day,
+        'total_hours':     round(total, 2),
+        'shift_count':     len(rows),
+        'by_store':        by_store,
+    })
+
+
+# ─── Calendar sync (iCalendar subscription feed) ──────────────────────────────
+
+def _ics_escape(text: str) -> str:
+    return (str(text or '')
+            .replace('\\', '\\\\')
+            .replace(';', '\\;')
+            .replace(',', '\\,')
+            .replace('\r\n', '\\n')
+            .replace('\n', '\\n'))
+
+
+def _ics_fold(line: str) -> str:
+    """Fold content lines to ~74 chars per RFC 5545."""
+    out = []
+    while len(line) > 74:
+        out.append(line[:74])
+        line = ' ' + line[74:]
+    out.append(line)
+    return '\r\n'.join(out)
+
+
+@bp.route('/api/schedule/calendar-feed', methods=['GET'])
+@login_required
+def schedule_calendar_feed_url():
+    """Return (creating if needed) the current user's private iCal feed token."""
+    auth0_id = request.jwt_payload.get('sub', '')
+    con = get_db()
+    emp = _get_or_create_employee(con, auth0_id)
+    token = emp.get('ical_token')
+    if not token:
+        token = secrets.token_urlsafe(24)
+        con.execute('UPDATE employees SET ical_token = ? WHERE id = ?', (token, emp['id']))
+        con.commit()
+    con.close()
+    return jsonify({'token': token, 'path': f'/api/schedule/ical/{token}.ics'})
+
+
+@bp.route('/api/schedule/calendar-feed/reset', methods=['POST'])
+@login_required
+def schedule_calendar_feed_reset():
+    """Rotate the feed token (invalidates any previously shared URL)."""
+    auth0_id = request.jwt_payload.get('sub', '')
+    con = get_db()
+    emp = _get_or_create_employee(con, auth0_id)
+    token = secrets.token_urlsafe(24)
+    con.execute('UPDATE employees SET ical_token = ? WHERE id = ?', (token, emp['id']))
+    con.commit()
+    con.close()
+    return jsonify({'token': token, 'path': f'/api/schedule/ical/{token}.ics'})
+
+
+@bp.route('/api/schedule/ical/<token>.ics', methods=['GET'])
+def schedule_ical_feed(token):
+    """Public (token-authenticated) iCalendar feed of one employee's shifts.
+    Calendar apps subscribed to this URL re-fetch it periodically, so schedule
+    changes propagate without the employee doing anything."""
+    if not token or len(token) < 16:
+        return jsonify({'error': 'Not found'}), 404
+    con = get_db()
+    emp = con.execute(
+        'SELECT * FROM employees WHERE ical_token = ?', (token,)
+    ).fetchone()
+    if not emp:
+        con.close()
+        return jsonify({'error': 'Not found'}), 404
+
+    window_start = _dt.date.today() - _dt.timedelta(days=90)
+    rows = con.execute('''
+        SELECT s.*, COALESCE(st.code, '') AS store_code,
+               COALESCE(st.name, '') AS store_name,
+               COALESCE(st.address, '') AS store_address
+        FROM shifts s
+        LEFT JOIN stores st ON st.id = s.store_id
+        WHERE s.employee_id = ? AND s.date >= ?
+        ORDER BY s.date
+    ''', (emp['id'], str(window_start))).fetchall()
+    con.close()
+
+    now_utc  = _dt.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    cal_name = f"POPCORE Shifts — {emp['name'] or emp['email'] or 'Employee'}"
+
+    lines = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//POPCORE//Shift Schedule//EN',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        _ics_fold(f'X-WR-CALNAME:{_ics_escape(cal_name)}'),
+        'X-WR-TIMEZONE:America/Toronto',
+        'REFRESH-INTERVAL;VALUE=DURATION:PT1H',
+        'X-PUBLISHED-TTL:PT1H',
+        'BEGIN:VTIMEZONE',
+        'TZID:America/Toronto',
+        'BEGIN:STANDARD',
+        'DTSTART:19701101T020000',
+        'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU',
+        'TZOFFSETFROM:-0400',
+        'TZOFFSETTO:-0500',
+        'TZNAME:EST',
+        'END:STANDARD',
+        'BEGIN:DAYLIGHT',
+        'DTSTART:19700308T020000',
+        'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU',
+        'TZOFFSETFROM:-0500',
+        'TZOFFSETTO:-0400',
+        'TZNAME:EDT',
+        'END:DAYLIGHT',
+        'END:VTIMEZONE',
+    ]
+
+    for s in rows:
+        date_c  = s['date'].replace('-', '')
+        start_c = (s['start_time'] or '00:00').replace(':', '') + '00'
+        end_c   = (s['end_time'] or '00:00').replace(':', '') + '00'
+        store_label = s['store_name'] or s['store_code'] or 'POPCORE'
+        summary  = f'POPCORE shift — {store_label}'
+        location = ', '.join(p for p in (s['store_name'] or s['store_code'], s['store_address']) if p)
+        lines += [
+            'BEGIN:VEVENT',
+            f"UID:popcore-shift-{s['id']}@popcore",
+            f'DTSTAMP:{now_utc}',
+            f'DTSTART;TZID=America/Toronto:{date_c}T{start_c}',
+            f'DTEND;TZID=America/Toronto:{date_c}T{end_c}',
+            _ics_fold(f'SUMMARY:{_ics_escape(summary)}'),
+        ]
+        if location:
+            lines.append(_ics_fold(f'LOCATION:{_ics_escape(location)}'))
+        if s['notes']:
+            lines.append(_ics_fold(f'DESCRIPTION:{_ics_escape(s["notes"])}'))
+        lines.append('END:VEVENT')
+
+    lines.append('END:VCALENDAR')
+    body = '\r\n'.join(lines) + '\r\n'
+    return Response(
+        body,
+        mimetype='text/calendar',
+        headers={
+            'Content-Disposition': 'inline; filename="popcore-shifts.ics"',
+            'Cache-Control': 'no-cache',
+        },
+    )
