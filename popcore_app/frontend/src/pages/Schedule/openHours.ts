@@ -13,28 +13,70 @@ export const BUSINESS_HOURS = [
   { daysOfWeek: [0, 6],          startTime: '11:00', endTime: '22:00' },
 ]
 
+/** Minimum staff required on the floor during opening hours.
+ *  DT needs 3 at all times; MK needs 1 on weekdays and 2 on weekends;
+ *  any other store defaults to 1. */
+export function requiredStaff(storeCode: string, date: string): number {
+  const dow = dayjs(date).day()
+  const weekend = dow === 0 || dow === 6
+  switch (storeCode) {
+    case 'DT': return 3
+    case 'MK': return weekend ? 2 : 1
+    default:   return 1
+  }
+}
+
 const toMin  = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5))
 const toHHMM = (m: number) =>
   `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
 
-/** Opening-hour intervals of `date` not covered by any of `shifts`. */
-export function uncoveredIntervals(
+export interface StaffGap {
+  start: string  // HH:MM
+  end: string    // HH:MM
+  have: number   // staff actually scheduled in this interval
+  need: number   // staff required
+}
+
+/** Opening-hour intervals of `date` where fewer than the required number of
+ *  staff are scheduled at `storeCode`. Adjacent intervals with the same
+ *  headcount are merged so each gap can be labelled "have/need". */
+export function understaffedIntervals(
+  storeCode: string,
   date: string,
   shifts: Array<{ start_time: string; end_time: string }>,
-): Array<{ start: string; end: string }> {
+): StaffGap[] {
   const { start, end } = openHoursFor(date)
-  const open = toMin(start)
+  const open  = toMin(start)
   const close = toMin(end)
-  const covered = shifts
+  const need  = requiredStaff(storeCode, date)
+
+  const ivs = shifts
     .map((s) => [Math.max(open, toMin(s.start_time)), Math.min(close, toMin(s.end_time))] as [number, number])
     .filter(([a, b]) => b > a)
-    .sort((a, b) => a[0] - b[0])
-  const gaps: Array<{ start: string; end: string }> = []
-  let cursor = open
-  for (const [a, b] of covered) {
-    if (a > cursor) gaps.push({ start: toHHMM(cursor), end: toHHMM(a) })
-    cursor = Math.max(cursor, b)
+
+  const points = Array.from(new Set([open, close, ...ivs.flat()]))
+    .filter((p) => p >= open && p <= close)
+    .sort((a, b) => a - b)
+
+  // Segments between consecutive boundary points have a constant headcount
+  const segs: Array<{ a: number; b: number; have: number }> = []
+  for (let i = 0; i < points.length - 1; i++) {
+    const p = points[i]
+    const q = points[i + 1]
+    const have = ivs.filter(([a, b]) => a <= p && b >= q).length
+    if (have < need) segs.push({ a: p, b: q, have })
   }
-  if (cursor < close) gaps.push({ start: toHHMM(cursor), end: toHHMM(close) })
-  return gaps
+
+  // Merge touching segments with the same headcount
+  const merged: typeof segs = []
+  for (const s of segs) {
+    const last = merged[merged.length - 1]
+    if (last && last.b === s.a && last.have === s.have) {
+      last.b = s.b
+    } else {
+      merged.push({ ...s })
+    }
+  }
+
+  return merged.map((s) => ({ start: toHHMM(s.a), end: toHHMM(s.b), have: s.have, need }))
 }

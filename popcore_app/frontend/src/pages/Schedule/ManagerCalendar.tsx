@@ -23,7 +23,7 @@ import {
   type EmployeeHours,
   type Shift,
 } from './scheduleApi'
-import { BUSINESS_HOURS, uncoveredIntervals } from './openHours'
+import { BUSINESS_HOURS, understaffedIntervals } from './openHours'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
 import { useHasRole } from '../../auth/useRole'
@@ -163,14 +163,15 @@ export default function ManagerCalendar() {
         })
       }
 
-      // Coverage overlays: opening hours (12–22 Mon–Fri, 11–22 Sat–Sun) with no
-      // shift scheduled show up red. Month view tints the whole day; week/day
-      // views mark the exact uncovered time range.
+      // Staffing overlays: opening hours (12–22 Mon–Fri, 11–22 Sat–Sun) with
+      // fewer staff scheduled than the store requires (DT: 3 at all times,
+      // MK: 1 weekday / 2 weekend) show up red. Month view tints the whole
+      // day; week/day views mark the exact time range, labelled "have/need".
       const last = dayjs(end)
       for (const code of codes) {
         for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
           const dateStr = d.format('YYYY-MM-DD')
-          const gaps = uncoveredIntervals(dateStr, shiftsByStoreDate[code][dateStr] ?? [])
+          const gaps = understaffedIntervals(code, dateStr, shiftsByStoreDate[code][dateStr] ?? [])
           if (gaps.length === 0) continue
           if (vt === 'dayGridMonth') {
             byStore[code].push({
@@ -185,6 +186,7 @@ export default function ManagerCalendar() {
             gaps.forEach((g, i) => {
               byStore[code].push({
                 id:              `gap-${code}-${dateStr}-${i}`,
+                title:           `${g.have}/${g.need}`,
                 start:           `${dateStr}T${g.start}`,
                 end:             `${dateStr}T${g.end}`,
                 display:         'background',
@@ -361,7 +363,7 @@ export default function ManagerCalendar() {
             className="size-3 rounded-sm shrink-0"
             style={{ background: UNCOVERED_COLOR, opacity: 0.35 }}
           />
-          Opening hours not covered (12–10 Mon–Fri, 11–10 Sat–Sun)
+          Understaffed opening hours — DT needs 3 at all times · MK needs 1 weekday / 2 weekend
         </span>
       </div>
 
@@ -519,7 +521,8 @@ export default function ManagerCalendar() {
       ))}
       {isTimeGrid && realStores.length > 0 && (
         <p className="text-xs text-muted-foreground px-1">
-          Grey areas are outside opening hours. Red areas are opening hours with nobody scheduled — click one to assign a shift.
+          Grey areas are outside opening hours. Red areas have fewer staff scheduled than
+          the store needs (labelled scheduled/required) — click one to assign a shift.
         </p>
       )}
 
