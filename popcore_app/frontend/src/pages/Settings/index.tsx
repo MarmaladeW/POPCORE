@@ -10,7 +10,10 @@ import { useNavigate } from 'react-router-dom'
 import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
 import UsersPage from '../Users'
-import { parseStaffRequirements, type StaffRequirements } from '../Schedule/openHours'
+import {
+  DEFAULT_OPEN_HOURS, parseOpenHours, parseStaffRequirements,
+  type OpenHoursConfig, type StaffRequirements,
+} from '../Schedule/openHours'
 
 const { Text } = Typography
 
@@ -37,6 +40,7 @@ interface RawSettings {
   report_quarterly_time:        string
   schedule_month_start_day?:    string
   schedule_required_staff?:     string
+  schedule_open_hours?:         string
 }
 
 interface StoreRow {
@@ -75,6 +79,7 @@ export default function SettingsPage() {
 
   // ── Scheduling tab ────────────────────────────────────────────────────────
   const [staffReqs,     setStaffReqs]     = useState<StaffRequirements>({})
+  const [openHours,     setOpenHours]     = useState<OpenHoursConfig>(DEFAULT_OPEN_HOURS)
   const [monthStartDay, setMonthStartDay] = useState<number>(4)
   const [saving3,       setSaving3]       = useState(false)
 
@@ -101,6 +106,7 @@ export default function SettingsPage() {
         setMonthlyTime(dayjs(s.report_monthly_time   || '08:00', 'HH:mm'))
         setQuarterlyTime(dayjs(s.report_quarterly_time || '08:00', 'HH:mm'))
         setStaffReqs(parseStaffRequirements(s.schedule_required_staff))
+        setOpenHours(parseOpenHours(s.schedule_open_hours))
         setMonthStartDay(Number(s.schedule_month_start_day) || 4)
       })
       .catch(() => message.error('加载设置失败 / Failed to load settings'))
@@ -180,6 +186,24 @@ export default function SettingsPage() {
     }
   }
 
+  function setOpenHour(dayType: 'weekday' | 'weekend', field: 'open' | 'close', v: dayjs.Dayjs | null) {
+    if (!v) return
+    setOpenHours(prev => ({
+      ...prev,
+      [dayType]: { ...prev[dayType], [field]: v.format('HH:mm') },
+    }))
+  }
+
+  async function changeStoreColor(storeId: number, color: string) {
+    setStores(prev => prev.map(s => s.id === storeId ? { ...s, color } : s))
+    try {
+      await client.patch(`/stores/${storeId}/color`, { color })
+    } catch (err: any) {
+      message.error(err?._serverMessage ?? '颜色更新失败 / Color update failed')
+      loadStores()
+    }
+  }
+
   function setStaffReq(code: string, field: 'weekday' | 'weekend', v: number | null) {
     setStaffReqs(prev => ({
       ...prev,
@@ -203,6 +227,7 @@ export default function SettingsPage() {
       })
       await client.put('/settings', {
         schedule_required_staff:  JSON.stringify(payload),
+        schedule_open_hours:      JSON.stringify(openHours),
         schedule_month_start_day: String(monthStartDay),
       })
       message.success('设置已保存 / Settings saved')
@@ -228,6 +253,25 @@ export default function SettingsPage() {
     {
       title: '名称 / Name',
       dataIndex: 'name',
+    },
+    {
+      title: '颜色 / Color',
+      key: 'color',
+      width: 90,
+      align: 'center' as const,
+      render: (_: unknown, row: StoreRow) => (
+        <input
+          type="color"
+          value={row.color || '#6366f1'}
+          onChange={e => changeStoreColor(row.id, e.target.value)}
+          title={`更改 ${row.code} 的颜色 / Change color for ${row.code}`}
+          style={{
+            width: 26, height: 26, padding: 1,
+            borderRadius: 6, border: '1px solid #e5e7eb',
+            cursor: 'pointer', background: 'none',
+          }}
+        />
+      ),
     },
     {
       title: '操作 / Actions',
@@ -422,6 +466,47 @@ export default function SettingsPage() {
             </div>
           </div>
         ))}
+
+        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 24, marginBottom: 4, color: '#374151' }}>
+          营业时间 / Opening hours
+        </div>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
+          用于排班日历的灰色区域与班次预设 / Drives the calendar shading and shift presets
+        </Text>
+
+        <div style={ROW}>
+          <span style={LABEL}>周一至周五 / Monday–Friday</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <TimePicker
+              value={dayjs(openHours.weekday.open, 'HH:mm')}
+              onChange={v => setOpenHour('weekday', 'open', v)}
+              format="HH:mm" minuteStep={30} allowClear={false}
+            />
+            <span style={{ color: '#9ca3af' }}>–</span>
+            <TimePicker
+              value={dayjs(openHours.weekday.close, 'HH:mm')}
+              onChange={v => setOpenHour('weekday', 'close', v)}
+              format="HH:mm" minuteStep={30} allowClear={false}
+            />
+          </div>
+        </div>
+
+        <div style={ROW}>
+          <span style={LABEL}>周六周日 / Saturday–Sunday</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <TimePicker
+              value={dayjs(openHours.weekend.open, 'HH:mm')}
+              onChange={v => setOpenHour('weekend', 'open', v)}
+              format="HH:mm" minuteStep={30} allowClear={false}
+            />
+            <span style={{ color: '#9ca3af' }}>–</span>
+            <TimePicker
+              value={dayjs(openHours.weekend.close, 'HH:mm')}
+              onChange={v => setOpenHour('weekend', 'close', v)}
+              format="HH:mm" minuteStep={30} allowClear={false}
+            />
+          </div>
+        </div>
 
         <div style={{ ...ROW, marginTop: 24, marginBottom: 20 }}>
           <span style={LABEL}>工资月起始日 / Wage month starts on day</span>

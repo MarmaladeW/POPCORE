@@ -18,22 +18,25 @@ import {
   getEmployees,
   getEmployeeStores,
   getEmployeeHours,
+  getScheduleConfig,
   type Availability,
   type Employee,
   type EmployeeHours,
   type Shift,
 } from './scheduleApi'
 import {
-  BUSINESS_HOURS,
+  DEFAULT_OPEN_HOURS,
   DEFAULT_STAFF_REQUIREMENTS,
+  businessHoursFrom,
+  gridWindow,
+  parseOpenHours,
   parseStaffRequirements,
   understaffedIntervals,
+  type OpenHoursConfig,
   type StaffRequirements,
 } from './openHours'
 import ShiftModal from './ShiftModal'
 import { useAppStore } from '../../store'
-import { useHasRole } from '../../auth/useRole'
-import client from '../../api/client'
 
 /** Fallback palette used when DB color is not yet loaded */
 const FALLBACK_COLORS = [
@@ -53,8 +56,7 @@ const VIEW_OPTIONS: { value: ViewType; label: string }[] = [
 ]
 
 export default function ManagerCalendar() {
-  const isManager = useHasRole('manager')
-  const { stores, setStores } = useAppStore()
+  const { stores } = useAppStore()
   const realStores = stores.filter((s) => s.code !== 'ALL')
   const storesKey  = realStores.map((s) => s.code).join(',')
 
@@ -69,6 +71,7 @@ export default function ManagerCalendar() {
   const [empHours,      setEmpHours]      = useState<EmployeeHours | null>(null)
 
   const [staffReqs,      setStaffReqs]      = useState<StaffRequirements>(DEFAULT_STAFF_REQUIREMENTS)
+  const [openHours,      setOpenHours]      = useState<OpenHoursConfig>(DEFAULT_OPEN_HOURS)
 
   const [modalOpen,      setModalOpen]      = useState(false)
   const [modalStoreCode, setModalStoreCode] = useState<string | null>(null)
@@ -93,10 +96,14 @@ export default function ManagerCalendar() {
   }, [stores])
 
   useEffect(() => {
-    // Staffing requirements are admin-configurable in Settings → Scheduling
-    client.get<{ schedule_required_staff?: string }>('/settings')
-      .then(r => setStaffReqs(parseStaffRequirements(r.data.schedule_required_staff)))
-      .catch(() => {})   // keep defaults if settings can't be loaded
+    // Staffing requirements + opening hours are admin-configurable in
+    // Settings → Scheduling
+    getScheduleConfig()
+      .then(cfg => {
+        setStaffReqs(parseStaffRequirements(cfg.schedule_required_staff))
+        setOpenHours(parseOpenHours(cfg.schedule_open_hours))
+      })
+      .catch(() => {})   // keep defaults if config can't be loaded
     getEmployees().then(setEmployees).catch(() => {})
     getEmployeeStores()
       .then(data => {
@@ -183,7 +190,9 @@ export default function ManagerCalendar() {
       for (const code of codes) {
         for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
           const dateStr = d.format('YYYY-MM-DD')
-          const gaps = understaffedIntervals(code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs)
+          const gaps = understaffedIntervals(
+            code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs, openHours,
+          )
           if (gaps.length === 0) continue
           if (vt === 'dayGridMonth') {
             byStore[code].push({
@@ -213,7 +222,7 @@ export default function ManagerCalendar() {
       setEventsByStore(byStore)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [employees, storesKey, staffReqs]
+    [employees, storesKey, staffReqs, openHours]
   )
 
   useEffect(() => {
@@ -221,7 +230,7 @@ export default function ManagerCalendar() {
       loadEvents(currentRange.start, currentRange.end, viewType)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, storesKey, staffReqs])
+  }, [employees, storesKey, staffReqs, openHours])
 
   // Hours worked this wage month for the filtered employee
   useEffect(() => {
@@ -286,18 +295,6 @@ export default function ManagerCalendar() {
       loadEvents(currentRange.start, currentRange.end, viewType)
     }
   }, [loadEvents, currentRange, viewType])
-
-  async function handleStoreColorChange(storeId: number, storeCode: string, color: string) {
-    // Optimistically update global store list so picker reflects new color immediately
-    setStores(stores.map(s => s.id === storeId ? { ...s, color } : s))
-    storeColorRef.current = { ...storeColorRef.current, [storeCode]: color }
-    try {
-      await client.patch(`/stores/${storeId}/color`, { color })
-    } catch {
-      // On failure revert: refetch stores is not straightforward here;
-      // the optimistic update stays until page refresh. Non-critical.
-    }
-  }
 
   const visibleEvents = (evts: EventInput[]) =>
     filterEmpId === null
@@ -381,32 +378,6 @@ export default function ManagerCalendar() {
           }).join(' · ')} (weekday/weekend)
         </span>
       </div>
-
-      {/* Store Colors panel — managers only */}
-      {isManager && realStores.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3 px-3 py-2 rounded-lg border border-border bg-muted/30">
-          <span className="text-xs font-medium text-muted-foreground">Store Colors:</span>
-          {realStores.map(st => (
-            <label
-              key={st.id}
-              className="flex items-center gap-1.5 cursor-pointer"
-              title={`Change color for ${st.name || st.code}`}
-            >
-              <input
-                type="color"
-                value={st.color || '#6366f1'}
-                onChange={e => handleStoreColorChange(st.id, st.code, e.target.value)}
-                style={{
-                  width: 22, height: 22, padding: 1,
-                  borderRadius: 4, border: '1px solid #e5e7eb',
-                  cursor: 'pointer', background: 'none',
-                }}
-              />
-              <span className="text-xs text-muted-foreground">{st.name || st.code}</span>
-            </label>
-          ))}
-        </div>
-      )}
 
       {/* Employee legend: clickable pill chips — click to filter + see hours */}
       {employees.length > 0 && (
@@ -522,12 +493,12 @@ export default function ManagerCalendar() {
               dateClick={handleDateClickFor(st.code)}
               eventClick={handleEventClick}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-              businessHours={BUSINESS_HOURS}
+              businessHours={businessHoursFrom(openHours)}
               dayMaxEvents={4}
               allDaySlot={false}
               nowIndicator
-              slotMinTime="10:00"
-              slotMaxTime="23:00"
+              slotMinTime={gridWindow(openHours).slotMinTime}
+              slotMaxTime={gridWindow(openHours).slotMaxTime}
               slotDuration="01:00"
               slotLabelInterval="01:00"
             />
@@ -548,6 +519,7 @@ export default function ManagerCalendar() {
         existing={selectedShift}
         availForDate={availForDate}
         defaultStoreCode={modalStoreCode}
+        openHours={openHours}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />

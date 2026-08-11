@@ -122,6 +122,24 @@ def _require_store_body(con, data):
     return store_id, store_code, None
 
 
+# ─── Schedule config (readable by any logged-in user) ─────────────────────────
+
+@bp.route('/api/schedule/config', methods=['GET'])
+@login_required
+def schedule_config():
+    """Schedule-related settings for calendar rendering. /api/settings is
+    manager-only, but every employee's calendar needs opening hours etc."""
+    from blueprints.settings import SETTINGS_DEFAULTS
+    keys = ('schedule_month_start_day', 'schedule_required_staff', 'schedule_open_hours')
+    con = get_db()
+    result = {}
+    for key in keys:
+        row = con.execute('SELECT value FROM app_settings WHERE key = ?', (key,)).fetchone()
+        result[key] = row['value'] if row else SETTINGS_DEFAULTS.get(key, '')
+    con.close()
+    return jsonify(result)
+
+
 # ─── Employee profile ──────────────────────────────────────────────────────────
 
 @bp.route('/api/schedule/me', methods=['GET'])

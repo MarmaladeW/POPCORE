@@ -2,6 +2,7 @@
 blueprints/settings.py — App-wide settings (admin/manager only).
 """
 import json
+import re
 
 from flask import Blueprint, request, jsonify
 from db import get_db
@@ -28,6 +29,10 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # Stores not listed default to 1/1.
     'schedule_required_staff':
         '{"DT": {"weekday": 3, "weekend": 3}, "MK": {"weekday": 1, "weekend": 2}}',
+    # Store opening hours (all stores share these), JSON with weekday/weekend.
+    'schedule_open_hours':
+        '{"weekday": {"open": "12:00", "close": "22:00"},'
+        ' "weekend": {"open": "11:00", "close": "22:00"}}',
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -65,6 +70,31 @@ def _validate_required_staff(value: str):
     return None
 
 
+_TIME_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+
+
+def _validate_open_hours(value: str):
+    """Return an error string if the opening-hours JSON is malformed, else None."""
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return 'schedule_open_hours must be valid JSON'
+    if not isinstance(parsed, dict):
+        return 'schedule_open_hours must be a JSON object'
+    for day_type in ('weekday', 'weekend'):
+        block = parsed.get(day_type)
+        if not isinstance(block, dict):
+            return f'schedule_open_hours.{day_type} must be an object'
+        open_t  = block.get('open')
+        close_t = block.get('close')
+        for label, v in (('open', open_t), ('close', close_t)):
+            if not isinstance(v, str) or not _TIME_RE.match(v):
+                return f'schedule_open_hours.{day_type}.{label} must be HH:MM'
+        if open_t >= close_t:
+            return f'schedule_open_hours.{day_type}: open must be before close'
+    return None
+
+
 @bp.route('/api/settings', methods=['PUT'])
 @role_required('admin')
 def put_settings():
@@ -74,6 +104,10 @@ def put_settings():
         return jsonify({'error': f'Unknown settings keys: {", ".join(sorted(unknown))}'}), 400
     if 'schedule_required_staff' in data:
         err = _validate_required_staff(str(data['schedule_required_staff']))
+        if err:
+            return jsonify({'error': err}), 400
+    if 'schedule_open_hours' in data:
+        err = _validate_open_hours(str(data['schedule_open_hours']))
         if err:
             return jsonify({'error': err}), 400
     db = get_db()

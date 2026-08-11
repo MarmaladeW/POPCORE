@@ -11,7 +11,7 @@ import {
   type Employee,
   type Shift,
 } from './scheduleApi'
-import { halfSplitFor, openHoursFor } from './openHours'
+import { DEFAULT_OPEN_HOURS, halfSplitFor, openHoursFor, type OpenHoursConfig } from './openHours'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -28,6 +28,8 @@ interface Props {
   /** Store preselected in the Location field for new shifts (e.g. the
    *  calendar section the manager clicked in). */
   defaultStoreCode?: string | null
+  /** Opening hours from the schedule config (drives the shift presets). */
+  openHours?: OpenHoursConfig
   onClose: () => void
   onSaved: () => void
 }
@@ -55,11 +57,14 @@ function buildTimeOptions() {
 }
 const TIME_OPTIONS = buildTimeOptions()
 
-/** Default shift times follow store opening hours (12:00 weekdays / 11:00
- *  weekends until 22:00); half shifts split at 17:00 weekdays, 16:30 weekends. */
-function presetTimes(date: string | null): Record<Exclude<Preset, 'custom'>, { start: string; end: string }> {
+/** Default shift times follow store opening hours (from the schedule config);
+ *  half shifts split at 17:00 weekdays, 16:30 weekends. */
+function presetTimes(
+  date: string | null,
+  hours: OpenHoursConfig,
+): Record<Exclude<Preset, 'custom'>, { start: string; end: string }> {
   const d = date ?? dayjs().format('YYYY-MM-DD')
-  const { start: open, end: close } = openHoursFor(d)
+  const { start: open, end: close } = openHoursFor(d, hours)
   const mid = halfSplitFor(d)
   return {
     full:   { start: open, end: close },
@@ -68,9 +73,9 @@ function presetTimes(date: string | null): Record<Exclude<Preset, 'custom'>, { s
   }
 }
 
-function matchPreset(date: string | null, start?: string, end?: string): Preset {
+function matchPreset(date: string | null, hours: OpenHoursConfig, start?: string, end?: string): Preset {
   if (!start || !end) return 'custom'
-  const p = presetTimes(date)
+  const p = presetTimes(date, hours)
   for (const key of ['full', 'first', 'second'] as const) {
     if (p[key].start === start && p[key].end === end) return key
   }
@@ -78,7 +83,8 @@ function matchPreset(date: string | null, start?: string, end?: string): Preset 
 }
 
 export default function ShiftModal({
-  open, date, employees, existing, availForDate, defaultStoreCode, onClose, onSaved,
+  open, date, employees, existing, availForDate, defaultStoreCode,
+  openHours = DEFAULT_OPEN_HOURS, onClose, onSaved,
 }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
@@ -100,7 +106,7 @@ export default function ShiftModal({
   ]
 
   const syncPresetFromForm = () => {
-    setPreset(matchPreset(date, form.getFieldValue('start_time'), form.getFieldValue('end_time')))
+    setPreset(matchPreset(date, openHours, form.getFieldValue('start_time'), form.getFieldValue('end_time')))
   }
 
   useEffect(() => {
@@ -119,7 +125,7 @@ export default function ShiftModal({
         end_time:    existing.end_time,
         notes:       existing.notes,
       })
-      setPreset(matchPreset(existing.date, existing.start_time, existing.end_time))
+      setPreset(matchPreset(existing.date, openHours, existing.start_time, existing.end_time))
     } else {
       form.resetFields()
       form.setFieldsValue({
@@ -144,7 +150,7 @@ export default function ShiftModal({
   const handlePresetChange = (value: Preset) => {
     setPreset(value)
     if (value === 'custom') return
-    const t = presetTimes(date)[value]
+    const t = presetTimes(date, openHours)[value]
     form.setFieldsValue({ start_time: t.start, end_time: t.end })
     form.validateFields(['start_time', 'end_time']).catch(() => {})
   }
@@ -366,13 +372,13 @@ export default function ShiftModal({
                   onChange={(e) => handlePresetChange(e.target.value as Preset)}
                 >
                   <Radio.Button value="full">
-                    Full day ({presetTimes(date).full.start}–{presetTimes(date).full.end})
+                    Full day ({presetTimes(date, openHours).full.start}–{presetTimes(date, openHours).full.end})
                   </Radio.Button>
                   <Radio.Button value="first">
-                    Half ({presetTimes(date).first.start}–{presetTimes(date).first.end})
+                    Half ({presetTimes(date, openHours).first.start}–{presetTimes(date, openHours).first.end})
                   </Radio.Button>
                   <Radio.Button value="second">
-                    Half ({presetTimes(date).second.start}–{presetTimes(date).second.end})
+                    Half ({presetTimes(date, openHours).second.start}–{presetTimes(date, openHours).second.end})
                   </Radio.Button>
                   <Radio.Button value="custom">Custom</Radio.Button>
                 </Radio.Group>

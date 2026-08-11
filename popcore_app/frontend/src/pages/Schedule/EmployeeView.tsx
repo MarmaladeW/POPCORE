@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
@@ -13,11 +13,14 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import {
-  getMyAvailability, getMyShifts, getCalendarFeed, resetCalendarFeed,
+  getMyAvailability, getMyShifts, getCalendarFeed, getScheduleConfig, resetCalendarFeed,
   type Availability, type Shift,
 } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
-import { BUSINESS_HOURS } from './openHours'
+import {
+  DEFAULT_OPEN_HOURS, businessHoursFrom, gridWindow, parseOpenHours,
+  type OpenHoursConfig,
+} from './openHours'
 import { useAppStore } from '../../store'
 
 export default function EmployeeView() {
@@ -30,7 +33,14 @@ export default function EmployeeView() {
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
   const [syncOpen, setSyncOpen] = useState(false)
   const [feedUrl, setFeedUrl] = useState<string | null>(null)
+  const [openHours, setOpenHours] = useState<OpenHoursConfig>(DEFAULT_OPEN_HOURS)
   const [msgApi, msgCtx] = message.useMessage()
+
+  useEffect(() => {
+    getScheduleConfig()
+      .then(cfg => setOpenHours(parseOpenHours(cfg.schedule_open_hours)))
+      .catch(() => {})
+  }, [])
 
   const availByDate = useRef<Record<string, Availability>>({})
 
@@ -182,11 +192,11 @@ export default function EmployeeView() {
           dateClick={handleDateClick}
           eventClick={handleEventClick}
           eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-          businessHours={BUSINESS_HOURS}
+          businessHours={businessHoursFrom(openHours)}
           allDaySlot={false}
           nowIndicator
-          slotMinTime="10:00"
-          slotMaxTime="23:00"
+          slotMinTime={gridWindow(openHours).slotMinTime}
+          slotMaxTime={gridWindow(openHours).slotMaxTime}
           slotDuration="01:00"
           slotLabelInterval="01:00"
         />
