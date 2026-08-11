@@ -25,11 +25,16 @@ bp = Blueprint('users', __name__)
 _ORDER = ['admin', 'manager', 'staff', 'viewer']
 
 
-def _highest_role(user_roles: list, id_to_name: dict) -> str:
-    for r in _ORDER:
-        if any(id_to_name.get(ur['id']) == r for ur in user_roles):
-            return r
-    return 'viewer'
+def _fetch_role_member_ids(role_id: str):
+    """Return the user_ids holding role_id, or None if Auth0 could not be reached."""
+    for _ in range(2):
+        try:
+            resp = _mgmt_get(f'roles/{role_id}/users', params={'per_page': 100})
+            if resp.ok:
+                return [u['user_id'] for u in resp.json()]
+        except Exception:
+            pass
+    return None
 
 
 # ─── Serve hidden images (stored outside static/) ────────────────────────────
@@ -62,19 +67,32 @@ def list_users():
         return jsonify({'error': 'Failed to fetch users from Auth0'}), 502
     users = resp.json()
 
-    role_map   = _get_role_map()
-    id_to_name = {v: k for k, v in role_map.items()}
+    # Resolve each user's highest role with one query per role (4 total)
+    # instead of one query per user — the old N+1 pattern hit Auth0 rate
+    # limits and silently misreported affected users as viewer.
+    try:
+        role_map = _get_role_map()
+    except Exception as exc:
+        return jsonify({'error': f'Failed to fetch roles from Auth0: {exc}'}), 502
+
+    role_by_user: dict = {}
+    for role_name in reversed(_ORDER):          # lowest first, higher overwrites
+        role_id = role_map.get(role_name)
+        if not role_id:
+            continue
+        member_ids = _fetch_role_member_ids(role_id)
+        if member_ids is None:
+            return jsonify({'error': f'Failed to fetch {role_name} role members from Auth0'}), 502
+        for member_id in member_ids:
+            role_by_user[member_id] = role_name
 
     result = []
     for u in users:
         uid = u['user_id']
-        uid_enc = urllib.parse.quote(uid, safe='')
-        roles_resp = _mgmt_get(f'users/{uid_enc}/roles')
-        user_roles = roles_resp.json() if roles_resp.ok else []
         result.append({
             'id':         uid,
             'username':   u.get('username') or u.get('nickname') or uid,
-            'role':       _highest_role(user_roles, id_to_name),
+            'role':       role_by_user.get(uid, 'viewer'),
             'is_active':  0 if u.get('blocked') else 1,
             'created_at': u.get('created_at', ''),
             'last_login': u.get('last_login', ''),
@@ -121,17 +139,31 @@ def create_user():
     _get_or_create_employee(con, user_id, name=username, email=f'{username}@popcore.internal')
     con.close()
 
+    # Assign the requested role, verifying the Auth0 response — a swallowed
+    # failure here used to leave the account silently created as viewer.
+    assigned = False
     try:
         role_map = _get_role_map()
         role_id  = role_map.get(role)
-        if role_id:
-            _mgmt_post(
-                f'users/{urllib.parse.quote(user_id, safe="")}/roles',
-                json={'roles': [role_id]},
-            )
     except Exception:
-        pass
-    return jsonify({'ok': True, 'id': user_id}), 201
+        role_id = None
+    if role_id:
+        for _ in range(2):
+            try:
+                assign_resp = _mgmt_post(
+                    f'users/{urllib.parse.quote(user_id, safe="")}/roles',
+                    json={'roles': [role_id]},
+                )
+                if assign_resp.ok:
+                    assigned = True
+                    break
+            except Exception:
+                pass
+    warning = None
+    if not assigned and role != 'viewer':
+        warning = (f'用户已创建，但角色 {role} 分配失败，请在"编辑"中重新设置角色 / '
+                   f'User created, but assigning the {role} role failed — set it again via Edit.')
+    return jsonify({'ok': True, 'id': user_id, 'warning': warning}), 201
 
 
 @bp.route('/api/users/<string:uid>', methods=['PATCH'])
@@ -141,19 +173,34 @@ def update_user(uid):
     data    = request.get_json() or {}
 
     if 'role' in data:
+        if uid == request.jwt_payload.get('sub', ''):
+            return jsonify({'error': '不能修改当前登录账户的角色'}), 400
         new_role = data['role']
         if new_role not in ROLE_HIERARCHY:
             return jsonify({'error': '无效角色'}), 400
-        role_map    = _get_role_map()
-        new_role_id = role_map.get(new_role)
-        if not new_role_id:
-            return jsonify({'error': 'Role not found in Auth0'}), 500
-        cur_resp = _mgmt_get(f'users/{uid_enc}/roles')
-        if cur_resp.ok:
-            cur_ids = [r['id'] for r in cur_resp.json()]
-            if cur_ids:
-                _mgmt_delete(f'users/{uid_enc}/roles', json={'roles': cur_ids})
-        _mgmt_post(f'users/{uid_enc}/roles', json={'roles': [new_role_id]})
+        # Add the new role before removing old ones and verify every Auth0
+        # response — the old remove-then-add flow could strip all roles on a
+        # mid-way failure while still reporting success.
+        try:
+            role_map    = _get_role_map()
+            new_role_id = role_map.get(new_role)
+            if not new_role_id:
+                return jsonify({'error': 'Role not found in Auth0'}), 500
+            cur_resp = _mgmt_get(f'users/{uid_enc}/roles')
+            if not cur_resp.ok:
+                return jsonify({'error': '读取当前角色失败，请重试 / Failed to read current roles'}), 502
+            cur_ids  = [r['id'] for r in cur_resp.json()]
+            add_resp = _mgmt_post(f'users/{uid_enc}/roles', json={'roles': [new_role_id]})
+            if not add_resp.ok:
+                return jsonify({'error': '角色更新失败，请重试 / Role update failed'}), 502
+            old_ids = [i for i in cur_ids if i != new_role_id]
+            if old_ids:
+                del_resp = _mgmt_delete(f'users/{uid_enc}/roles', json={'roles': old_ids})
+                if not del_resp.ok:
+                    return jsonify({'error': '新角色已添加，但移除旧角色失败，请再保存一次 / '
+                                             'New role added but removing the old one failed — save again'}), 502
+        except Exception as exc:
+            return jsonify({'error': f'Auth0 request failed: {exc}'}), 502
 
     body = {}
     if 'is_active' in data:
