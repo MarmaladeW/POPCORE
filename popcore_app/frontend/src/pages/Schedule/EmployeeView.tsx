@@ -19,7 +19,7 @@ import {
 } from './scheduleApi'
 import AvailabilityModal from './AvailabilityModal'
 import {
-  DEFAULT_OPEN_HOURS, businessHoursFrom, gridWindow, parseOpenHours,
+  DEFAULT_STORE_HOURS, businessHoursFrom, gridWindow, parseStoreOpenHours, unionHours,
   type OpenHoursConfig,
 } from './openHours'
 import { useAppStore } from '../../store'
@@ -35,14 +35,15 @@ export default function EmployeeView() {
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
   const [syncOpen, setSyncOpen] = useState(false)
   const [feedUrl, setFeedUrl] = useState<string | null>(null)
-  const [openHours, setOpenHours] = useState<OpenHoursConfig>(DEFAULT_OPEN_HOURS)
+  // This calendar mixes stores, so shade with the widest hours across stores
+  const [openHours, setOpenHours] = useState<OpenHoursConfig>(unionHours(DEFAULT_STORE_HOURS))
   const [viewType, setViewType] = useState('dayGridMonth')
   const isMobile = useIsMobile()
   const [msgApi, msgCtx] = message.useMessage()
 
   useEffect(() => {
     getScheduleConfig()
-      .then(cfg => setOpenHours(parseOpenHours(cfg.schedule_open_hours)))
+      .then(cfg => setOpenHours(unionHours(parseStoreOpenHours(cfg.schedule_open_hours))))
       .catch(() => {})
   }, [])
 
