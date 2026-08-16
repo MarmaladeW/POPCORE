@@ -51,12 +51,10 @@ import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
+import { EMPLOYEE_PALETTE, textColorOn } from '../../lib/palette'
+
 /** Fallback palette used when DB color is not yet loaded */
-const FALLBACK_COLORS = [
-  '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6',
-  '#F97316', '#06B6D4', '#84CC16', '#A855F7', '#F43F5E',
-  '#0EA5E9', '#22C55E', '#FB923C', '#E879F9', '#64748B',
-]
+const FALLBACK_COLORS = EMPLOYEE_PALETTE
 
 const UNCOVERED_COLOR = '#ef4444'
 
@@ -104,6 +102,9 @@ export default function ManagerCalendar() {
   const shiftById    = useRef<Record<number, Shift>>({})
   const availsByDate = useRef<Record<string, Availability[]>>({})
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
+  // Real period bounds (end exclusive) — used to skip the red understaffing
+  // tint on a month grid's padding days from adjacent months
+  const periodRangeRef = useRef<{ start: string; end: string } | null>(null)
 
   // Color maps kept in refs so loadEvents always reads current values
   // without needing to be in useCallback deps
@@ -207,7 +208,7 @@ export default function ManagerCalendar() {
           end:             `${s.date}T${s.end_time}`,
           backgroundColor: isTrainee ? '#FEF3C7' : solid ? empColor : empColor + '26',
           borderColor:     isTrainee ? '#F59E0B' : empColor,
-          textColor:       isTrainee ? '#92400E' : solid ? '#fff' : '#1f2937',
+          textColor:       isTrainee ? '#92400E' : solid ? textColorOn(empColor) : '#1f2937',
           classNames:      ['pc-ev', `pc-ev-${kind}`, ...(isTrainee ? ['pc-ev-trainee'] : [])],
           extendedProps:   {
             type: 'shift', shift_id: s.id, employee_id: s.employee_id,
@@ -223,9 +224,13 @@ export default function ManagerCalendar() {
       // show up red. Month view tints the whole day; week/day views mark the
       // exact time range, labelled "have/need".
       const last = dayjs(end)
+      const period = periodRangeRef.current
       for (const code of codes) {
         for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
           const dateStr = d.format('YYYY-MM-DD')
+          // Month grid: don't flood padding days from adjacent months with red
+          if (vt === 'dayGridMonth' && period
+              && (dateStr < period.start || dateStr >= period.end)) continue
           const gaps = understaffedIntervals(
             code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs, storeHours,
           )
@@ -307,10 +312,12 @@ export default function ManagerCalendar() {
         : vt === 'timeGridWeek' ? `week:${cs.format('YYYY-MM-DD')}`
         : `day:${cs.format('YYYY-MM-DD')}`,
       )
-      setPeriodRange({
+      const pr = {
         start: cs.format('YYYY-MM-DD'),
         end:   dayjs(arg.view.currentEnd).format('YYYY-MM-DD'),
-      })
+      }
+      setPeriodRange(pr)
+      periodRangeRef.current = pr
       loadEvents(start, end, vt)
     },
     [loadEvents]
@@ -556,11 +563,12 @@ export default function ManagerCalendar() {
               >
                 <span
                   className={cn(
-                    'relative flex items-center justify-center rounded-full size-10 text-white text-sm font-semibold',
+                    'relative flex items-center justify-center rounded-full size-10 text-sm font-semibold',
                     active && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
                   )}
                   style={{
                     background: empColor,
+                    color: textColorOn(empColor),
                     ...(e.is_trainee ? { outline: '2px dashed #F59E0B', outlineOffset: 1 } : {}),
                   }}
                 >

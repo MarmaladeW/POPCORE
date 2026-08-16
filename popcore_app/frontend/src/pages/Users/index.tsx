@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import {
-  Table, Space, Popconfirm, Form, Input, Select,
+  Table, Space, Popconfirm, Popover, Form, Input, Select,
   Switch, message, Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -8,6 +8,7 @@ import { Plus, RefreshCw } from 'lucide-react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { EMPLOYEE_PALETTE } from '../../lib/palette'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import { getEmployeeStores, renameEmployee, setEmployeeStores } from '../Schedule/scheduleApi'
@@ -34,30 +35,74 @@ const ROLE_OPTIONS = [
   { value: 'admin',   label: '管理员' },
 ]
 
+// Role colors form one family (indigo → violet → sky → grey by rank) instead
+// of the old red/orange alarm palette
 const ROLE_BADGE_STYLE: Record<string, React.CSSProperties> = {
-  admin:   { background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' },
-  manager: { background: '#ffedd5', color: '#9a3412', borderColor: '#fdba74' },
-  staff:   { background: '#dbeafe', color: '#1e40af', borderColor: '#93c5fd' },
-  viewer:  { background: '#f3f4f6', color: '#374151', borderColor: '#d1d5db' },
+  admin:   { background: '#EEF2FF', color: '#3730A3', borderColor: '#C7D2FE' },
+  manager: { background: '#F5F3FF', color: '#5B21B6', borderColor: '#DDD6FE' },
+  staff:   { background: '#F0F9FF', color: '#075985', borderColor: '#BAE6FD' },
+  viewer:  { background: '#F4F4F5', color: '#52525B', borderColor: '#D4D4D8' },
 }
 
 const ROLE_AVATAR: Record<string, { bg: string; fg: string }> = {
-  admin:   { bg: '#fee2e2', fg: '#991b1b' },
-  manager: { bg: '#ffedd5', fg: '#9a3412' },
-  staff:   { bg: '#dbeafe', fg: '#1e40af' },
-  viewer:  { bg: '#f3f4f6', fg: '#6b7280' },
+  admin:   { bg: '#EEF2FF', fg: '#3730A3' },
+  manager: { bg: '#F5F3FF', fg: '#5B21B6' },
+  staff:   { bg: '#F0F9FF', fg: '#075985' },
+  viewer:  { bg: '#F4F4F5', fg: '#71717A' },
+}
+
+/** Pick from the curated palette (free color input allowed unreadable
+ *  neons / near-whites in the calendars). */
+function ColorSwatchPicker({ value, onChange, size = 16, label }: {
+  value: string
+  onChange: (color: string) => void
+  size?: number
+  label?: string
+}) {
+  return (
+    <Popover
+      trigger="click"
+      content={
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 24px)', gap: 6 }}>
+          {EMPLOYEE_PALETTE.map(c => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => onChange(c)}
+              title={c}
+              style={{
+                width: 24, height: 24, borderRadius: '50%', background: c,
+                border: value?.toLowerCase() === c.toLowerCase()
+                  ? '2px solid #111827' : '2px solid transparent',
+                cursor: 'pointer', padding: 0,
+              }}
+            />
+          ))}
+        </div>
+      }
+    >
+      <button
+        type="button"
+        title="更改员工颜色 / Change color"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+        }}
+      >
+        <span style={{
+          width: size, height: size, borderRadius: '50%', background: value || '#6366f1',
+          display: 'inline-block', border: '1px solid #e5e7eb', flexShrink: 0,
+        }} />
+        {label && <span className="text-xs text-muted-foreground">{label}</span>}
+      </button>
+    </Popover>
+  )
 }
 
 const ME_BADGE_STYLE: React.CSSProperties = {
   background: '#dcfce7', color: '#166534', borderColor: '#86efac',
 }
 
-// Store badge colours consistent with task spec
-const STORE_TAG_COLORS: Record<string, string> = {
-  DT: 'blue',
-  MK: 'green',
-  MT: 'orange',
-}
 
 interface EmpStoreEntry {
   empId:  number
@@ -69,14 +114,18 @@ interface EmpStoreEntry {
 /** Store badges (read-only). Top-level component: defining these inside
  *  UsersPage gave them a new identity every render, so React remounted the
  *  select on each state change and the dropdown closed after every pick. */
-function StoreBadges({ codes }: { codes: string[] }) {
+function StoreBadges({ codes, storeColors }: {
+  codes: string[]
+  storeColors: Record<string, string>
+}) {
   if (codes.length === 0) {
     return <span style={{ fontSize: 11, color: '#9ca3af' }}>未分配</span>
   }
   return (
     <>
       {codes.map(code => (
-        <Tag key={code} color={STORE_TAG_COLORS[code] ?? 'default'} style={{ fontSize: 11, marginRight: 2 }}>
+        // Same colors the schedule uses for each store, not a separate set
+        <Tag key={code} color={storeColors[code] || 'default'} style={{ fontSize: 11, marginRight: 2 }}>
           {code}
         </Tag>
       ))}
@@ -264,6 +313,9 @@ export default function UsersPage() {
     .filter(s => s.code !== 'ALL')
     .map(s => ({ value: s.code, label: s.code }))
 
+  const storeColorMap: Record<string, string> = {}
+  allStores.forEach(s => { if (s.code !== 'ALL') storeColorMap[s.code] = s.color || '#6366f1' })
+
   const columns: ColumnsType<User> = [
     {
       title: '用户名',
@@ -297,7 +349,7 @@ export default function UsersPage() {
             onChange={(vals) => handleStoreChange(r.id, vals)}
           />
         )
-        : <StoreBadges codes={empStoreMap[r.id]?.stores ?? []} />,
+        : <StoreBadges codes={empStoreMap[r.id]?.stores ?? []} storeColors={storeColorMap} />,
     },
     {
       title: '颜色',
@@ -309,15 +361,7 @@ export default function UsersPage() {
         if (!entry) return null
         const color = entry.color || '#6366f1'
         return isManager ? (
-          <label style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }} title="更改员工颜色">
-            <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb', flexShrink: 0 }} />
-            <input
-              type="color"
-              value={color}
-              onChange={e => handleEmpColorChange(r.id, e.target.value)}
-              style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute', pointerEvents: 'none' }}
-            />
-          </label>
+          <ColorSwatchPicker value={color} onChange={c => handleEmpColorChange(r.id, c)} />
         ) : (
           <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb' }} />
         )
@@ -362,7 +406,12 @@ export default function UsersPage() {
             onConfirm={() => deleteUser(r)}
             okButtonProps={{ danger: true }}
           >
-            <Button size="sm" variant="destructive" disabled={me?.sub === r.id}>删除</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+              disabled={me?.sub === r.id}
+            >删除</Button>
           </Popconfirm>
         </Space>
       ),
@@ -424,27 +473,19 @@ export default function UsersPage() {
                           onChange={(vals) => handleStoreChange(u.id, vals)}
                         />
                       )
-                      : <StoreBadges codes={empStoreMap[u.id]?.stores ?? []} />
+                      : <StoreBadges codes={empStoreMap[u.id]?.stores ?? []} storeColors={storeColorMap} />
                     }
                   </div>
 
                   {/* Row 3: employee color (managers only) */}
                   {isManager && empStoreMap[u.id] && (
                     <div className="flex items-center gap-1.5 mt-1 pl-11">
-                      <label className="flex items-center gap-1.5 cursor-pointer" title="更改员工颜色">
-                        <span style={{
-                          width: 14, height: 14, borderRadius: '50%',
-                          background: empStoreMap[u.id].color || '#6366f1',
-                          display: 'inline-block', border: '1px solid #e5e7eb', flexShrink: 0,
-                        }} />
-                        <input
-                          type="color"
-                          value={empStoreMap[u.id].color || '#6366f1'}
-                          onChange={e => handleEmpColorChange(u.id, e.target.value)}
-                          style={{ width: 0, height: 0, padding: 0, border: 'none', opacity: 0, position: 'absolute', pointerEvents: 'none' }}
-                        />
-                        <span className="text-xs text-muted-foreground">员工颜色</span>
-                      </label>
+                      <ColorSwatchPicker
+                        value={empStoreMap[u.id].color || '#6366f1'}
+                        onChange={c => handleEmpColorChange(u.id, c)}
+                        size={14}
+                        label="员工颜色"
+                      />
                     </div>
                   )}
 
@@ -472,7 +513,12 @@ export default function UsersPage() {
                         onConfirm={() => deleteUser(u)}
                         okButtonProps={{ danger: true }}
                       >
-                        <Button size="sm" variant="destructive" disabled={me?.sub === u.id}>删除</Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                          disabled={me?.sub === u.id}
+                        >删除</Button>
                       </Popconfirm>
                     </div>
                   </div>

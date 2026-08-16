@@ -547,7 +547,11 @@ export default function ShiftModal({
             {showForm && (
               <>
                 {existing && (
-                  <Button variant="destructive" onClick={handleDelete}>Delete</Button>
+                  <Button
+                    variant="outline"
+                    className="sm:mr-auto text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                    onClick={handleDelete}
+                  >Delete</Button>
                 )}
                 <Button variant="outline" onClick={onClose}>Cancel</Button>
                 <Button onClick={handleSave} disabled={savePhase === 'checking'}>
