@@ -648,6 +648,21 @@ def _migration_create_schedule_checklist_table(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_schedule_checklist_table')")
 
 
+def _migration_assign_curated_employee_colors(con, cur):
+    """One-time reset of employee colors onto the curated calendar palette
+    (replaces the old free-picked neons / near-whites that were unreadable).
+    Keep in sync with EMPLOYEE_PALETTE in frontend/src/lib/palette.ts."""
+    palette = [
+        '#3D74C4', '#2E7FA3', '#2C8A86', '#2E8A5B', '#5E8A32', '#8B7C2A',
+        '#C0762F', '#C75B54', '#B4508F', '#9455C8', '#5F63C2', '#8A5A3C',
+    ]
+    cur.execute('SELECT id FROM employees ORDER BY id')
+    for i, row in enumerate(cur.fetchall()):
+        cur.execute('UPDATE employees SET color = ? WHERE id = ?',
+                    (palette[i % len(palette)], row['id']))
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('assign_curated_employee_colors')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -673,6 +688,7 @@ def _get_migrations():
         ('add_is_trainee_to_employees',          _migration_add_is_trainee_to_employees),
         ('create_schedule_notes_table',          _migration_create_schedule_notes_table),
         ('create_schedule_checklist_table',      _migration_create_schedule_checklist_table),
+        ('assign_curated_employee_colors',       _migration_assign_curated_employee_colors),
     ]
 
 

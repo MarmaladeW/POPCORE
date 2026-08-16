@@ -199,9 +199,10 @@ export default function CoveragePanel({
                   key={p.id}
                   className={cn(
                     'flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm',
-                    state === 'scheduled'  && 'border-emerald-200 bg-emerald-50/60',
-                    state === 'considered' && 'border-sky-200 bg-sky-50/60',
-                    state === 'open'       && 'border-red-200 bg-red-50/60',
+                    // Only open items draw attention — settled rows stay quiet
+                    state === 'open'
+                      ? 'border-red-200 bg-red-50/50'
+                      : 'border-border bg-background',
                   )}
                 >
                   {state === 'scheduled' ? (
