@@ -76,7 +76,7 @@ export default function EmployeeView() {
     for (const s of shifts) {
       evts.push({
         id: `shift-${s.id}`,
-        title: `Shift ${s.start_time}–${s.end_time}`,
+        title: `Shift ${s.start_time}–${s.end_time}${s.position ? ` · ${s.position}` : ''}`,
         start: `${s.date}T${s.start_time}`,
         end: `${s.date}T${s.end_time}`,
         backgroundColor: '#6366F1',
@@ -198,6 +198,7 @@ export default function EmployeeView() {
           }}
           height="auto"
           timeZone="local"
+          firstDay={1}
           events={events}
           datesSet={handleDatesSet}
           dateClick={handleDateClick}

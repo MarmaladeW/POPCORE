@@ -8,6 +8,7 @@ export interface Employee {
   name: string
   email: string
   is_active: number
+  is_trainee?: number
   created_at: string
 }
 
@@ -34,11 +35,13 @@ export interface Shift {
   end_time: string    // HH:MM
   assigned_by: string
   notes: string
+  position?: string
   created_at: string
   updated_at: string
   // joined fields
   employee_name?: string
   auth0_id?: string
+  is_trainee?: number
   store_code?: string
 }
 
@@ -64,6 +67,7 @@ export interface EmployeeMonthlyHours {
   id: number
   name: string
   email: string
+  is_trainee?: number
   total_hours: number
   weeks: Record<string, WeekBreakdown>
 }
@@ -97,6 +101,25 @@ export interface ScheduleConfig {
   schedule_month_start_day: string
   schedule_required_staff: string
   schedule_open_hours: string
+  schedule_shift_presets: string
+  schedule_positions: string
+}
+
+export interface ScheduleNote {
+  period_key: string
+  content: string
+  updated_by: string
+  updated_at: string | null
+}
+
+export interface ChecklistEntry {
+  id?: number
+  period_key: string
+  employee_id: number
+  considered: number
+  note: string
+  updated_by?: string
+  updated_at?: string
 }
 
 export interface EmployeeStoreAssignment {
@@ -122,6 +145,38 @@ export const patchMe = (data: { name?: string; email?: string }) =>
 
 export const getEmployees = () =>
   client.get<Employee[]>('/schedule/employees').then((r) => r.data)
+
+export const renameEmployee = (employeeId: number, name: string) =>
+  client.patch<Employee>(`/schedule/employees/${employeeId}`, { name }).then((r) => r.data)
+
+// ── Trainees ──────────────────────────────────────────────────────────────────
+
+export const getTrainees = () =>
+  client.get<Employee[]>('/schedule/trainees').then((r) => r.data)
+
+export const createTrainee = (name: string) =>
+  client.post<Employee>('/schedule/trainees', { name }).then((r) => r.data)
+
+export const deleteTrainee = (traineeId: number) =>
+  client.delete(`/schedule/trainees/${traineeId}`).then((r) => r.data)
+
+// ── Period notes + coverage checklist ─────────────────────────────────────────
+
+export const getScheduleNote = (key: string) =>
+  client.get<ScheduleNote>('/schedule/notes', { params: { key } }).then((r) => r.data)
+
+export const saveScheduleNote = (periodKey: string, content: string) =>
+  client.put<ScheduleNote>('/schedule/notes', { period_key: periodKey, content }).then((r) => r.data)
+
+export const getChecklist = (key: string) =>
+  client.get<ChecklistEntry[]>('/schedule/checklist', { params: { key } }).then((r) => r.data)
+
+export const saveChecklistEntry = (entry: {
+  period_key: string
+  employee_id: number
+  considered: boolean
+  note?: string
+}) => client.put<ChecklistEntry>('/schedule/checklist', entry).then((r) => r.data)
 
 export const getEmployeeStores = () =>
   client.get<EmployeeStoreAssignment[]>('/employees/stores').then((r) => r.data)
@@ -179,12 +234,13 @@ export const createShift = (data: {
   start_time: string
   end_time: string
   notes?: string
+  position?: string
   store_code?: string
 }) => client.post<Shift>('/schedule/shifts', data).then((r) => r.data)
 
 export const updateShift = (
   id: number,
-  data: { start_time?: string; end_time?: string; notes?: string; store_code?: string }
+  data: { start_time?: string; end_time?: string; notes?: string; position?: string; store_code?: string }
 ) => client.patch<Shift>(`/schedule/shifts/${id}`, data).then((r) => r.data)
 
 export const deleteShift = (id: number) =>

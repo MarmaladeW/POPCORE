@@ -69,7 +69,22 @@ export default function MonthlyReport() {
       key: 'name',
       fixed: 'left' as const,
       width: 160,
-      render: (v: string, row: EmployeeMonthlyHours) => v || row.email || `ID ${row.id}`,
+      render: (v: string, row: EmployeeMonthlyHours) => (
+        <span>
+          {v || row.email || `ID ${row.id}`}
+          {!!row.is_trainee && (
+            <span
+              style={{
+                marginLeft: 6, fontSize: 9, fontWeight: 700, borderRadius: 3,
+                padding: '0 4px', background: '#FEF3C7', color: '#92400E',
+                border: '1px dashed #F59E0B', verticalAlign: 'middle',
+              }}
+            >
+              TRAINEE
+            </span>
+          )}
+        </span>
+      ),
     },
     ...weeks.map((wk) => ({
       title: (

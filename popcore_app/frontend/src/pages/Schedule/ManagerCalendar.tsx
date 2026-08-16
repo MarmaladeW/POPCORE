@@ -4,7 +4,9 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
-import type { CalendarApi, DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
+import type {
+  CalendarApi, DatesSetArg, EventClickArg, EventContentArg, EventInput,
+} from '@fullcalendar/core'
 import { RefreshCw, ChevronLeft, ChevronRight, Info } from 'lucide-react'
 import { Popover } from 'antd'
 import dayjs from 'dayjs'
@@ -29,15 +31,23 @@ import {
   DEFAULT_STAFF_REQUIREMENTS,
   DEFAULT_STORE_HOURS,
   businessHoursFrom,
+  compactRange,
   gridWindow,
   hoursForStore,
+  parseShiftPresets,
+  parsePositions,
   parseStoreOpenHours,
   parseStaffRequirements,
+  shiftKindFor,
   understaffedIntervals,
+  type PositionsMap,
+  type ShiftKind,
+  type ShiftPreset,
   type StaffRequirements,
   type StoreHoursMap,
 } from './openHours'
 import ShiftModal from './ShiftModal'
+import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
@@ -76,6 +86,14 @@ export default function ManagerCalendar() {
 
   const [staffReqs,      setStaffReqs]      = useState<StaffRequirements>(DEFAULT_STAFF_REQUIREMENTS)
   const [storeHours,     setStoreHours]     = useState<StoreHoursMap>(DEFAULT_STORE_HOURS)
+  const [shiftPresets,   setShiftPresets]   = useState<ShiftPreset[]>([])
+  const [positionsMap,   setPositionsMap]   = useState<PositionsMap>({})
+
+  // Coverage checklist + notes are keyed to the calendar's real period
+  // (month:YYYY-MM / week:YYYY-MM-DD / day:YYYY-MM-DD)
+  const [rangeShifts,  setRangeShifts]  = useState<Shift[]>([])
+  const [periodKey,    setPeriodKey]    = useState<string>('')
+  const [periodRange,  setPeriodRange]  = useState<{ start: string; end: string } | null>(null)
 
   const [modalOpen,      setModalOpen]      = useState(false)
   const [modalStoreCode, setModalStoreCode] = useState<string | null>(null)
@@ -106,6 +124,8 @@ export default function ManagerCalendar() {
       .then(cfg => {
         setStaffReqs(parseStaffRequirements(cfg.schedule_required_staff))
         setStoreHours(parseStoreOpenHours(cfg.schedule_open_hours))
+        setShiftPresets(parseShiftPresets(cfg.schedule_shift_presets))
+        setPositionsMap(parsePositions(cfg.schedule_positions))
       })
       .catch(() => {})   // keep defaults if config can't be loaded
     getEmployees().then(setEmployees).catch(() => {})
@@ -174,15 +194,27 @@ export default function ManagerCalendar() {
 
         const empColor = empColorRef.current[s.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
+        const kind      = shiftKindFor(s.date, hoursForStore(code, storeHours), s.start_time, s.end_time)
+        const isTrainee = !!s.is_trainee
+        // Full days: solid block in the employee color. Half days / custom
+        // slots: tinted block with a strong left border so the difference is
+        // obvious at a glance. Trainees: amber + dashed, unmistakable.
+        const solid = kind === 'full' && !isTrainee
         byStore[code].push({
           id:              `shift-${s.id}`,
           title:           `${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
           start:           `${s.date}T${s.start_time}`,
           end:             `${s.date}T${s.end_time}`,
-          backgroundColor: empColor,
-          borderColor:     empColor,
-          textColor:       '#fff',
-          extendedProps:   { type: 'shift', shift_id: s.id, employee_id: s.employee_id },
+          backgroundColor: isTrainee ? '#FEF3C7' : solid ? empColor : empColor + '26',
+          borderColor:     isTrainee ? '#F59E0B' : empColor,
+          textColor:       isTrainee ? '#92400E' : solid ? '#fff' : '#1f2937',
+          classNames:      ['pc-ev', `pc-ev-${kind}`, ...(isTrainee ? ['pc-ev-trainee'] : [])],
+          extendedProps:   {
+            type: 'shift', shift_id: s.id, employee_id: s.employee_id,
+            kind, is_trainee: isTrainee, position: s.position || '',
+            emp_name: s.employee_name ?? 'Employee', emp_color: empColor,
+            start_time: s.start_time, end_time: s.end_time,
+          },
         })
       }
 
@@ -224,6 +256,7 @@ export default function ManagerCalendar() {
       }
 
       setEventsByStore(byStore)
+      setRangeShifts(shifts)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [employees, storesKey, staffReqs, storeHours]
@@ -266,6 +299,18 @@ export default function ManagerCalendar() {
       setCurrentRange({ start, end })
       setViewTitle(arg.view.title)
       setViewType(vt)
+      // The "real" period (month/week/day) — excludes the padding days a
+      // month grid shows from adjacent months
+      const cs = dayjs(arg.view.currentStart)
+      setPeriodKey(
+        vt === 'dayGridMonth' ? `month:${cs.format('YYYY-MM')}`
+        : vt === 'timeGridWeek' ? `week:${cs.format('YYYY-MM-DD')}`
+        : `day:${cs.format('YYYY-MM-DD')}`,
+      )
+      setPeriodRange({
+        start: cs.format('YYYY-MM-DD'),
+        end:   dayjs(arg.view.currentEnd).format('YYYY-MM-DD'),
+      })
       loadEvents(start, end, vt)
     },
     [loadEvents]
@@ -307,6 +352,49 @@ export default function ManagerCalendar() {
           const p = e.extendedProps as { type?: string; employee_id?: number } | undefined
           return p?.type === 'coverage' || p?.employee_id === filterEmpId
         })
+
+  // Custom shift rendering: no more duplicated "12:00 name 12:00–22:00" —
+  // one bold name plus a compact, readable time chip (and position if set).
+  const renderEvent = (arg: EventContentArg) => {
+    const p = arg.event.extendedProps as {
+      type?: string; kind?: ShiftKind; is_trainee?: boolean; position?: string
+      emp_name?: string; start_time?: string; end_time?: string
+    }
+    if (p.type !== 'shift') return true   // default rendering for backgrounds
+    const kind    = p.kind ?? 'custom'
+    const halfTag = kind === 'first' ? 'AM' : kind === 'second' ? 'PM' : ''
+    const range   = compactRange(p.start_time ?? '', p.end_time ?? '')
+    const tip = [
+      p.emp_name,
+      `${p.start_time}–${p.end_time}`,
+      kind === 'full' ? 'Full day' : kind === 'custom' ? 'Custom slot' : `Half day (${halfTag})`,
+      p.position && `Position: ${p.position}`,
+      p.is_trainee && 'TRAINEE',
+    ].filter(Boolean).join(' · ')
+
+    if (arg.view.type === 'dayGridMonth') {
+      return (
+        <div className="pc-shift" title={tip}>
+          {p.is_trainee && <span className="pc-shift-t">T</span>}
+          {halfTag && <span className="pc-shift-half">{halfTag}</span>}
+          <span className="pc-shift-name">{p.emp_name}</span>
+          {p.position && <span className="pc-shift-pos">{p.position}</span>}
+          <span className="pc-shift-time">{range}</span>
+        </div>
+      )
+    }
+    return (
+      <div className="pc-shift pc-shift-grid" title={tip}>
+        <div className="pc-shift-time">
+          {p.start_time}–{p.end_time}
+          {halfTag && <span className="pc-shift-half">{halfTag}</span>}
+          {p.is_trainee && <span className="pc-shift-t">T</span>}
+        </div>
+        <div className="pc-shift-name">{p.emp_name}</div>
+        {p.position && <div className="pc-shift-pos">{p.position}</div>}
+      </div>
+    )
+  }
 
   const isTimeGrid = viewType !== 'dayGridMonth'
 
@@ -358,7 +446,7 @@ export default function ManagerCalendar() {
               <SelectItem value="__all__">All employees</SelectItem>
               {employees.map((e) => (
                 <SelectItem key={e.id} value={String(e.id)}>
-                  {e.name || e.email || e.auth0_id}
+                  {(e.name || e.email || e.auth0_id) + (e.is_trainee ? ' (Trainee)' : '')}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -471,7 +559,10 @@ export default function ManagerCalendar() {
                     'relative flex items-center justify-center rounded-full size-10 text-white text-sm font-semibold',
                     active && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
                   )}
-                  style={{ background: empColor }}
+                  style={{
+                    background: empColor,
+                    ...(e.is_trainee ? { outline: '2px dashed #F59E0B', outlineOffset: 1 } : {}),
+                  }}
                 >
                   {name.trim().slice(0, 2).toUpperCase()}
                   <span className="absolute -bottom-0.5 -right-1 flex gap-0.5">
@@ -522,6 +613,14 @@ export default function ManagerCalendar() {
                   style={{ background: empColor }}
                 />
                 {e.name || e.email || `Employee ${e.id}`}
+                {!!e.is_trainee && (
+                  <span
+                    style={{
+                      background: '#FEF3C7', color: '#92400E', border: '1px dashed #F59E0B',
+                      fontSize: 9, borderRadius: 3, padding: '0px 4px', lineHeight: 1.5, fontWeight: 700,
+                    }}
+                  >T</span>
+                )}
                 {(empStores[e.id] ?? []).map(code => (
                   <span
                     key={code}
@@ -580,6 +679,40 @@ export default function ManagerCalendar() {
         </div>
       )}
 
+      {/* Coverage checklist + period notes: proves everyone was assigned or
+          at least considered for the visible month/week/day */}
+      {periodKey && employees.length > 0 && (
+        <CoveragePanel
+          periodKey={periodKey}
+          periodLabel={viewTitle}
+          periodRange={periodRange}
+          employees={employees}
+          shifts={rangeShifts}
+        />
+      )}
+
+      {/* Legend: shift styles */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground px-1">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-6 h-3 rounded-sm" style={{ background: '#6366f1' }} />
+          Full day
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block w-6 h-3 rounded-sm"
+            style={{ background: '#6366f126', borderLeft: '3px solid #6366f1' }}
+          />
+          Half day / custom slot
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block w-6 h-3 rounded-sm"
+            style={{ background: '#FEF3C7', border: '1.5px dashed #F59E0B' }}
+          />
+          Trainee
+        </span>
+      </div>
+
       {/* One calendar section per store, always navigated in sync */}
       {realStores.length === 0 && (
         <div className="text-sm text-muted-foreground px-1">Loading stores…</div>
@@ -608,10 +741,12 @@ export default function ManagerCalendar() {
               headerToolbar={false}
               height="auto"
               timeZone="local"
+              firstDay={1}
               events={visibleEvents(eventsByStore[st.code] ?? [])}
               datesSet={i === 0 ? handleDatesSet : undefined}
               dateClick={handleDateClickFor(st.code)}
               eventClick={handleEventClick}
+              eventContent={renderEvent}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
               businessHours={businessHoursFrom(hoursForStore(st.code, storeHours))}
               dayMaxEvents={isMobile && viewType === 'dayGridMonth' ? 12 : 4}
@@ -640,6 +775,8 @@ export default function ManagerCalendar() {
         availForDate={availForDate}
         defaultStoreCode={modalStoreCode}
         storeHours={storeHours}
+        shiftPresets={shiftPresets}
+        positionsMap={positionsMap}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />

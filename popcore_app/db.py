@@ -597,6 +597,57 @@ def _migration_create_app_settings_table(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_app_settings_table')")
 
 
+def _migration_add_position_to_shifts(con, cur):
+    """Shifts can carry an in-store position (e.g. Front / Cashier / End)."""
+    cur.execute("PRAGMA table_info(shifts)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'position' not in cols:
+        cur.execute("ALTER TABLE shifts ADD COLUMN position TEXT NOT NULL DEFAULT ''")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_position_to_shifts')")
+
+
+def _migration_add_is_trainee_to_employees(con, cur):
+    """Trainees are employees rows without a real Auth0 login (synthetic
+    auth0_id) so they can be scheduled like everyone else."""
+    cur.execute("PRAGMA table_info(employees)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'is_trainee' not in cols:
+        cur.execute("ALTER TABLE employees ADD COLUMN is_trainee INTEGER NOT NULL DEFAULT 0")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_is_trainee_to_employees')")
+
+
+def _migration_create_schedule_notes_table(con, cur):
+    """Free-form manager notes attached to a schedule period (month/week/day)."""
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_notes (
+            period_key TEXT PRIMARY KEY,
+            content    TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_schedule_notes_table')")
+
+
+def _migration_create_schedule_checklist_table(con, cur):
+    """Per-period 'considered' marks for people intentionally left unscheduled,
+    so the coverage checklist can prove everyone was accounted for."""
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_checklist (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            period_key  TEXT    NOT NULL,
+            employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+            considered  INTEGER NOT NULL DEFAULT 0,
+            note        TEXT    NOT NULL DEFAULT '',
+            updated_by  TEXT    NOT NULL DEFAULT '',
+            updated_at  TEXT    DEFAULT (datetime('now')),
+            UNIQUE(period_key, employee_id)
+        )
+    ''')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_sched_checklist_key ON schedule_checklist(period_key)')
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('create_schedule_checklist_table')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -618,6 +669,10 @@ def _get_migrations():
         ('create_match_corrections',             _migration_create_match_corrections),
         ('create_app_settings_table',            _migration_create_app_settings_table),
         ('add_ical_token_to_employees',          _migration_add_ical_token_to_employees),
+        ('add_position_to_shifts',               _migration_add_position_to_shifts),
+        ('add_is_trainee_to_employees',          _migration_add_is_trainee_to_employees),
+        ('create_schedule_notes_table',          _migration_create_schedule_notes_table),
+        ('create_schedule_checklist_table',      _migration_create_schedule_checklist_table),
     ]
 
 

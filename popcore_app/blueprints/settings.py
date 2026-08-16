@@ -36,6 +36,12 @@ SETTINGS_DEFAULTS: dict[str, str] = {
         '        "weekend": {"open": "11:00", "close": "22:00"}},'
         ' "MK": {"weekday": {"open": "12:00", "close": "21:00"},'
         '        "weekend": {"open": "11:00", "close": "21:00"}}}',
+    # Extra fixed shift slots selectable in the shift dialog besides
+    # full day / half days, JSON array of {label, start, end}.
+    'schedule_shift_presets': '[]',
+    # In-store positions per store, JSON keyed by store code
+    # (e.g. Downtown has Front / Cashier / End).
+    'schedule_positions': '{"DT": ["Front", "Cashier", "End"]}',
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -115,6 +121,50 @@ def _validate_open_hours(value: str):
     return None
 
 
+def _validate_shift_presets(value: str):
+    """Return an error string if the custom shift presets JSON is malformed."""
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return 'schedule_shift_presets must be valid JSON'
+    if not isinstance(parsed, list):
+        return 'schedule_shift_presets must be a JSON array'
+    if len(parsed) > 20:
+        return 'schedule_shift_presets: at most 20 presets'
+    for i, p in enumerate(parsed):
+        if not isinstance(p, dict):
+            return f'schedule_shift_presets[{i}] must be an object'
+        label = p.get('label')
+        if not isinstance(label, str) or not label.strip() or len(label) > 40:
+            return f'schedule_shift_presets[{i}].label must be a non-empty string (max 40 chars)'
+        start, end = p.get('start'), p.get('end')
+        for name, v in (('start', start), ('end', end)):
+            if not isinstance(v, str) or not _TIME_RE.match(v):
+                return f'schedule_shift_presets[{i}].{name} must be HH:MM'
+        if start >= end:
+            return f'schedule_shift_presets[{i}]: start must be before end'
+    return None
+
+
+def _validate_positions(value: str):
+    """Return an error string if the per-store positions JSON is malformed."""
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return 'schedule_positions must be valid JSON'
+    if not isinstance(parsed, dict):
+        return 'schedule_positions must be a JSON object keyed by store code'
+    for code, positions in parsed.items():
+        if not isinstance(positions, list):
+            return f'schedule_positions["{code}"] must be an array of position names'
+        if len(positions) > 20:
+            return f'schedule_positions["{code}"]: at most 20 positions'
+        for p in positions:
+            if not isinstance(p, str) or not p.strip() or len(p) > 40:
+                return f'schedule_positions["{code}"] entries must be non-empty strings (max 40 chars)'
+    return None
+
+
 @bp.route('/api/settings', methods=['PUT'])
 @role_required('admin')
 def put_settings():
@@ -128,6 +178,14 @@ def put_settings():
             return jsonify({'error': err}), 400
     if 'schedule_open_hours' in data:
         err = _validate_open_hours(str(data['schedule_open_hours']))
+        if err:
+            return jsonify({'error': err}), 400
+    if 'schedule_shift_presets' in data:
+        err = _validate_shift_presets(str(data['schedule_shift_presets']))
+        if err:
+            return jsonify({'error': err}), 400
+    if 'schedule_positions' in data:
+        err = _validate_positions(str(data['schedule_positions']))
         if err:
             return jsonify({'error': err}), 400
     db = get_db()

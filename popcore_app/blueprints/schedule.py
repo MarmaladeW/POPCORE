@@ -130,7 +130,8 @@ def schedule_config():
     """Schedule-related settings for calendar rendering. /api/settings is
     manager-only, but every employee's calendar needs opening hours etc."""
     from blueprints.settings import SETTINGS_DEFAULTS
-    keys = ('schedule_month_start_day', 'schedule_required_staff', 'schedule_open_hours')
+    keys = ('schedule_month_start_day', 'schedule_required_staff', 'schedule_open_hours',
+            'schedule_shift_presets', 'schedule_positions')
     con = get_db()
     result = {}
     for key in keys:
@@ -188,7 +189,8 @@ def schedule_employees():
     employees = [dict(r) for r in rows]
 
     # Backfill names from Auth0 for any employee still missing one
-    missing = [e for e in employees if not e.get('name')]
+    # (trainees have no Auth0 account — skip them)
+    missing = [e for e in employees if not e.get('name') and not e.get('is_trainee')]
     if missing and AUTH0_MGMT_CLIENT_ID:
         try:
             cur = con.cursor()
@@ -216,8 +218,92 @@ def schedule_employees():
             pass  # non-fatal: return whatever names we have
 
     con.close()
-    employees.sort(key=lambda e: e.get('name') or e.get('email') or '')
+    employees.sort(key=lambda e: (e.get('is_trainee') or 0, e.get('name') or e.get('email') or ''))
     return jsonify(employees)
+
+
+@bp.route('/api/schedule/employees/<int:emp_id>', methods=['PATCH'])
+@role_required('manager')
+def schedule_employee_patch(emp_id):
+    """Rename an employee/trainee (display name shown across the schedule)."""
+    data = request.get_json(silent=True) or {}
+    con  = get_db()
+    row  = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
+    if not row:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+    updates = {}
+    if 'name' in data:
+        name = str(data['name']).strip()[:120]
+        if not name:
+            con.close()
+            return jsonify({'error': 'name cannot be empty'}), 400
+        updates['name'] = name
+    if 'email' in data:
+        updates['email'] = str(data['email']).strip()[:200]
+    if updates:
+        set_clause = ', '.join(f'{k} = ?' for k in updates)
+        con.execute(
+            f'UPDATE employees SET {set_clause} WHERE id = ?',
+            list(updates.values()) + [emp_id]
+        )
+        con.commit()
+    updated = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
+    con.close()
+    return jsonify(dict(updated))
+
+
+# ─── Trainees ──────────────────────────────────────────────────────────────────
+# Trainees don't get their own sign-in: they live in the employees table with a
+# synthetic auth0_id and is_trainee = 1, so they can be scheduled like anyone
+# else while never matching a real Auth0 login.
+
+@bp.route('/api/schedule/trainees', methods=['GET'])
+@role_required('manager')
+def schedule_trainees_list():
+    con  = get_db()
+    rows = con.execute(
+        'SELECT * FROM employees WHERE is_active = 1 AND is_trainee = 1 ORDER BY name'
+    ).fetchall()
+    con.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@bp.route('/api/schedule/trainees', methods=['POST'])
+@role_required('manager')
+def schedule_trainees_create():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name') or '').strip()[:120]
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    con = get_db()
+    con.execute(
+        'INSERT INTO employees (auth0_id, name, email, is_trainee) VALUES (?, ?, ?, 1)',
+        (f'trainee|{secrets.token_hex(12)}', name, '')
+    )
+    con.commit()
+    row = con.execute(
+        'SELECT * FROM employees WHERE id = last_insert_rowid()'
+    ).fetchone()
+    con.close()
+    return jsonify(dict(row)), 201
+
+
+@bp.route('/api/schedule/trainees/<int:trainee_id>', methods=['DELETE'])
+@role_required('manager')
+def schedule_trainees_delete(trainee_id):
+    """Deactivate a trainee (their past shifts stay on record)."""
+    con = get_db()
+    row = con.execute(
+        'SELECT id FROM employees WHERE id = ? AND is_trainee = 1', (trainee_id,)
+    ).fetchone()
+    if not row:
+        con.close()
+        return jsonify({'error': 'Trainee not found'}), 404
+    con.execute('UPDATE employees SET is_active = 0 WHERE id = ?', (trainee_id,))
+    con.commit()
+    con.close()
+    return jsonify({'ok': True})
 
 
 # ─── Availability ──────────────────────────────────────────────────────────────
@@ -258,7 +344,7 @@ def schedule_avail_all():
         con.close()
         return err
     query = '''
-        SELECT a.*, e.name AS employee_name, e.auth0_id,
+        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
                COALESCE(st.code, '') AS store_code
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
@@ -353,7 +439,7 @@ def schedule_shifts_get():
     if store_code == 'ALL':
         if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -365,7 +451,7 @@ def schedule_shifts_get():
         else:
             emp = _get_or_create_employee(con, auth0_id)
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -379,7 +465,7 @@ def schedule_shifts_get():
             query += ' AND s.date <= ?'; params.append(end)
     elif ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -396,7 +482,7 @@ def schedule_shifts_get():
     else:
         emp = _get_or_create_employee(con, auth0_id)
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -428,7 +514,7 @@ def schedule_shifts_me():
         return err
     emp    = _get_or_create_employee(con, auth0_id)
     query  = '''
-        SELECT s.*, e.name AS employee_name, e.auth0_id,
+        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
                COALESCE(st.code, '') AS store_code
         FROM shifts s
         JOIN employees e ON e.id = s.employee_id
@@ -458,6 +544,7 @@ def schedule_shifts_create():
     start_time  = data.get('start_time', '')
     end_time    = data.get('end_time', '')
     notes       = data.get('notes', '')
+    position    = str(data.get('position') or '').strip()[:40]
     if not employee_id or not shift_date or not start_time or not end_time:
         return jsonify({'error': 'employee_id, date, start_time, end_time required'}), 400
     con = get_db()
@@ -471,16 +558,17 @@ def schedule_shifts_create():
         return jsonify({'error': 'Employee not found'}), 404
     con.execute('''
         INSERT INTO shifts
-            (employee_id, date, start_time, end_time, assigned_by, notes, store_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            (employee_id, date, start_time, end_time, assigned_by, notes, store_id, position, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(employee_id, date) DO UPDATE SET
             start_time  = excluded.start_time,
             end_time    = excluded.end_time,
             assigned_by = excluded.assigned_by,
             notes       = excluded.notes,
             store_id    = excluded.store_id,
+            position    = excluded.position,
             updated_at  = datetime('now')
-    ''', (employee_id, shift_date, start_time, end_time, assigned_by, notes, store_id))
+    ''', (employee_id, shift_date, start_time, end_time, assigned_by, notes, store_id, position))
     con.commit()
     row = con.execute(
         'SELECT * FROM shifts WHERE employee_id = ? AND date = ?',
@@ -503,6 +591,8 @@ def schedule_shifts_update(shift_id):
     for field in ('start_time', 'end_time', 'notes'):
         if field in data:
             updates[field] = data[field]
+    if 'position' in data:
+        updates['position'] = str(data['position'] or '').strip()[:40]
     if 'store_code' in data:
         store_id, store_code, err = _require_store_body(con, data)
         if err:
@@ -587,6 +677,111 @@ def schedule_conflicts():
     return jsonify({'has_conflict': len(conflicts) > 0, 'conflicts': conflicts})
 
 
+# ─── Period notes + coverage checklist ────────────────────────────────────────
+# A "period" is what the manager calendar currently shows, keyed as
+# month:YYYY-MM, week:YYYY-MM-DD (week start) or day:YYYY-MM-DD.
+
+import re as _re
+_PERIOD_KEY_RE = _re.compile(r'^(month:\d{4}-\d{2}|(week|day):\d{4}-\d{2}-\d{2})$')
+
+
+def _require_period_key():
+    key = (request.args.get('key') or '').strip()
+    if not _PERIOD_KEY_RE.match(key):
+        return None, (jsonify({'error': 'key must be month:YYYY-MM, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400)
+    return key, None
+
+
+@bp.route('/api/schedule/notes', methods=['GET'])
+@role_required('manager')
+def schedule_notes_get():
+    key, err = _require_period_key()
+    if err:
+        return err
+    con = get_db()
+    row = con.execute('SELECT * FROM schedule_notes WHERE period_key = ?', (key,)).fetchone()
+    con.close()
+    if not row:
+        return jsonify({'period_key': key, 'content': '', 'updated_by': '', 'updated_at': None})
+    return jsonify(dict(row))
+
+
+@bp.route('/api/schedule/notes', methods=['PUT'])
+@role_required('manager')
+def schedule_notes_put():
+    data = request.get_json(silent=True) or {}
+    key  = str(data.get('period_key') or '').strip()
+    if not _PERIOD_KEY_RE.match(key):
+        return jsonify({'error': 'period_key must be month:YYYY-MM, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
+    content    = str(data.get('content') or '')[:5000]
+    updated_by = request.jwt_payload.get('sub', '')
+    con = get_db()
+    con.execute('''
+        INSERT INTO schedule_notes (period_key, content, updated_by, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(period_key) DO UPDATE SET
+            content    = excluded.content,
+            updated_by = excluded.updated_by,
+            updated_at = datetime('now')
+    ''', (key, content, updated_by))
+    con.commit()
+    row = con.execute('SELECT * FROM schedule_notes WHERE period_key = ?', (key,)).fetchone()
+    con.close()
+    return jsonify(dict(row))
+
+
+@bp.route('/api/schedule/checklist', methods=['GET'])
+@role_required('manager')
+def schedule_checklist_get():
+    key, err = _require_period_key()
+    if err:
+        return err
+    con  = get_db()
+    rows = con.execute(
+        'SELECT * FROM schedule_checklist WHERE period_key = ?', (key,)
+    ).fetchall()
+    con.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@bp.route('/api/schedule/checklist', methods=['PUT'])
+@role_required('manager')
+def schedule_checklist_put():
+    """Mark one person as considered (or not) for a period, with optional note."""
+    data = request.get_json(silent=True) or {}
+    key  = str(data.get('period_key') or '').strip()
+    if not _PERIOD_KEY_RE.match(key):
+        return jsonify({'error': 'period_key must be month:YYYY-MM, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
+    try:
+        employee_id = int(data.get('employee_id'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'employee_id must be an integer'}), 400
+    considered = 1 if data.get('considered') else 0
+    note       = str(data.get('note') or '')[:500]
+    updated_by = request.jwt_payload.get('sub', '')
+    con = get_db()
+    emp = con.execute('SELECT id FROM employees WHERE id = ?', (employee_id,)).fetchone()
+    if not emp:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+    con.execute('''
+        INSERT INTO schedule_checklist (period_key, employee_id, considered, note, updated_by, updated_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(period_key, employee_id) DO UPDATE SET
+            considered = excluded.considered,
+            note       = excluded.note,
+            updated_by = excluded.updated_by,
+            updated_at = datetime('now')
+    ''', (key, employee_id, considered, note, updated_by))
+    con.commit()
+    row = con.execute(
+        'SELECT * FROM schedule_checklist WHERE period_key = ? AND employee_id = ?',
+        (key, employee_id)
+    ).fetchone()
+    con.close()
+    return jsonify(dict(row))
+
+
 # ─── Monthly hours report ──────────────────────────────────────────────────────
 
 @bp.route('/api/schedule/reports/monthly', methods=['GET'])
@@ -660,6 +855,7 @@ def schedule_report_monthly():
             'id':          emp['id'],
             'name':        emp['name'],
             'email':       emp['email'],
+            'is_trainee':  emp['is_trainee'] if 'is_trainee' in emp.keys() else 0,
             'total_hours': round(total_hours, 2),
             'weeks':       weeks,
         })
@@ -841,7 +1037,10 @@ def schedule_ical_feed(token):
         start_c = (s['start_time'] or '00:00').replace(':', '') + '00'
         end_c   = (s['end_time'] or '00:00').replace(':', '') + '00'
         store_label = s['store_name'] or s['store_code'] or 'POPCORE'
+        position    = s['position'] if 'position' in s.keys() else ''
         summary  = f'POPCORE shift — {store_label}'
+        if position:
+            summary += f' ({position})'
         location = ', '.join(p for p in (s['store_name'] or s['store_code'], s['store_address']) if p)
         lines += [
             'BEGIN:VEVENT',

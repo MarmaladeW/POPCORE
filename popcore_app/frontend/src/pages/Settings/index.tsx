@@ -12,7 +12,8 @@ import client from '../../api/client'
 import UsersPage from '../Users'
 import {
   DEFAULT_STORE_HOURS, hoursForStore, parseStoreOpenHours, parseStaffRequirements,
-  type StaffRequirements, type StoreHoursMap,
+  parseShiftPresets, parsePositions,
+  type PositionsMap, type ShiftPreset, type StaffRequirements, type StoreHoursMap,
 } from '../Schedule/openHours'
 
 const { Text } = Typography
@@ -41,6 +42,8 @@ interface RawSettings {
   schedule_month_start_day?:    string
   schedule_required_staff?:     string
   schedule_open_hours?:         string
+  schedule_shift_presets?:      string
+  schedule_positions?:          string
 }
 
 interface StoreRow {
@@ -81,6 +84,8 @@ export default function SettingsPage() {
   const [staffReqs,     setStaffReqs]     = useState<StaffRequirements>({})
   const [storeHours,    setStoreHours]    = useState<StoreHoursMap>(DEFAULT_STORE_HOURS)
   const [monthStartDay, setMonthStartDay] = useState<number>(4)
+  const [shiftPresets,  setShiftPresets]  = useState<ShiftPreset[]>([])
+  const [positions,     setPositions]     = useState<PositionsMap>({})
   const [saving3,       setSaving3]       = useState(false)
 
   // ── Stores tab ────────────────────────────────────────────────────────────
@@ -108,6 +113,8 @@ export default function SettingsPage() {
         setStaffReqs(parseStaffRequirements(s.schedule_required_staff))
         setStoreHours(parseStoreOpenHours(s.schedule_open_hours))
         setMonthStartDay(Number(s.schedule_month_start_day) || 4)
+        setShiftPresets(parseShiftPresets(s.schedule_shift_presets))
+        setPositions(parsePositions(s.schedule_positions))
       })
       .catch(() => message.error('加载设置失败 / Failed to load settings'))
       .finally(() => setSettingsLoading(false))
@@ -225,24 +232,37 @@ export default function SettingsPage() {
     try {
       const payload: StaffRequirements = {}
       const hoursPayload: StoreHoursMap = {}
+      const positionsPayload: PositionsMap = {}
       stores.forEach(st => {
         payload[st.code] = {
           weekday: staffReqs[st.code]?.weekday ?? 1,
           weekend: staffReqs[st.code]?.weekend ?? 1,
         }
         hoursPayload[st.code] = hoursForStore(st.code, storeHours)
+        const pos = (positions[st.code] ?? []).map(p => p.trim()).filter(Boolean)
+        if (pos.length > 0) positionsPayload[st.code] = pos
       })
+      const validPresets = shiftPresets
+        .map(p => ({ ...p, label: p.label.trim() }))
+        .filter(p => p.label && p.start && p.end && p.start < p.end)
       await client.put('/settings', {
         schedule_required_staff:  JSON.stringify(payload),
         schedule_open_hours:      JSON.stringify(hoursPayload),
         schedule_month_start_day: String(monthStartDay),
+        schedule_shift_presets:   JSON.stringify(validPresets),
+        schedule_positions:       JSON.stringify(positionsPayload),
       })
+      setShiftPresets(validPresets)
       message.success('设置已保存 / Settings saved')
     } catch (err: any) {
       message.error(err?._serverMessage ?? '保存失败 / Save failed')
     } finally {
       setSaving3(false)
     }
+  }
+
+  function setPreset(idx: number, patch: Partial<ShiftPreset>) {
+    setShiftPresets(prev => prev.map((p, i) => i === idx ? { ...p, ...patch } : p))
   }
 
   if (!isAdmin) return null
@@ -520,6 +540,80 @@ export default function SettingsPage() {
             </div>
           )
         })}
+
+        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 24, marginBottom: 4, color: '#374151' }}>
+          自定义固定班次 / Custom fixed shift slots
+        </div>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
+          除全天/半天外，排班窗口中可一键选择的固定时段（如 3-8 = 15:00–20:00）/
+          Extra one-click slots in the shift dialog besides full/half days (e.g. "3-8" = 15:00–20:00)
+        </Text>
+
+        {shiftPresets.map((p, idx) => (
+          <div key={idx} style={{ ...ROW, marginBottom: 10 }}>
+            <Input
+              placeholder="名称 / Label (e.g. 3-8)"
+              value={p.label}
+              onChange={e => setPreset(idx, { label: e.target.value })}
+              style={{ width: 160 }}
+              maxLength={40}
+            />
+            <TimePicker
+              value={p.start ? dayjs(p.start, 'HH:mm') : null}
+              onChange={v => v && setPreset(idx, { start: v.format('HH:mm') })}
+              format="HH:mm" minuteStep={30} allowClear={false} style={{ width: 88 }}
+            />
+            <span style={{ color: '#9ca3af' }}>–</span>
+            <TimePicker
+              value={p.end ? dayjs(p.end, 'HH:mm') : null}
+              onChange={v => v && setPreset(idx, { end: v.format('HH:mm') })}
+              format="HH:mm" minuteStep={30} allowClear={false} style={{ width: 88 }}
+            />
+            <Button
+              danger
+              size="small"
+              onClick={() => setShiftPresets(prev => prev.filter((_, i) => i !== idx))}
+            >
+              删除 / Remove
+            </Button>
+          </div>
+        ))}
+        <Button
+          size="small"
+          onClick={() => setShiftPresets(prev => [...prev, { label: '', start: '15:00', end: '20:00' }])}
+          style={{ marginBottom: 8 }}
+        >
+          + 添加班次 / Add slot
+        </Button>
+
+        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 24, marginBottom: 4, color: '#374151' }}>
+          店内岗位 / In-store positions
+        </div>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 16 }}>
+          每家门店自定义岗位（如市中心店：Front、Cashier、End），排班时可为员工选择岗位 /
+          Per-store positions (e.g. Downtown: Front, Cashier, End) selectable when assigning a shift.
+          输入后按回车添加 / Type a name and press Enter to add
+        </Text>
+
+        {stores.map(st => (
+          <div key={st.id} style={ROW}>
+            <span style={LABEL}>{st.name || st.code}（{st.code}）</span>
+            <Select
+              mode="tags"
+              style={{ minWidth: 280, maxWidth: 420 }}
+              placeholder="添加岗位 / Add positions"
+              value={positions[st.code] ?? []}
+              onChange={(vals: string[]) =>
+                setPositions(prev => ({
+                  ...prev,
+                  [st.code]: vals.map(v => v.trim()).filter(Boolean).slice(0, 20),
+                }))
+              }
+              tokenSeparators={[',']}
+              getPopupContainer={t => t.parentElement!}
+            />
+          </div>
+        ))}
 
         <div style={{ ...ROW, marginTop: 24, marginBottom: 20 }}>
           <span style={LABEL}>工资月起始日 / Wage month starts on day</span>
