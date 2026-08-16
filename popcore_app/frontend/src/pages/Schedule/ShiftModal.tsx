@@ -12,8 +12,8 @@ import {
   type Shift,
 } from './scheduleApi'
 import {
-  DEFAULT_STORE_HOURS, halfSplitFor, hoursForStore, openHoursFor,
-  type OpenHoursConfig, type StoreHoursMap,
+  DEFAULT_STORE_HOURS, halfSplitFor, hoursForStore, openHoursFor, positionsForStore,
+  type OpenHoursConfig, type PositionsMap, type ShiftPreset, type StoreHoursMap,
 } from './openHours'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
@@ -34,6 +34,10 @@ interface Props {
   /** Per-store opening hours from the schedule config (drives the shift
    *  presets for whichever store is selected in the Location field). */
   storeHours?: StoreHoursMap
+  /** Custom fixed slots from Settings → Scheduling (e.g. "3-8" = 15:00–20:00). */
+  shiftPresets?: ShiftPreset[]
+  /** In-store positions per store from Settings → Scheduling. */
+  positionsMap?: PositionsMap
   onClose: () => void
   onSaved: () => void
 }
@@ -43,11 +47,13 @@ interface ShiftFormValues {
   store_code:  string
   start_time:  string
   end_time:    string
+  position?:   string
   notes?:      string
 }
 
 type SavePhase = 'idle' | 'checking' | 'conflict' | 'error'
-type Preset = 'full' | 'first' | 'second' | 'custom'
+/** Built-in presets, or `slot:<index>` for a custom fixed slot. */
+type Preset = 'full' | 'first' | 'second' | 'custom' | `slot:${number}`
 
 function buildTimeOptions() {
   const opts: { value: string; label: string }[] = []
@@ -77,18 +83,27 @@ function presetTimes(
   }
 }
 
-function matchPreset(date: string | null, hours: OpenHoursConfig, start?: string, end?: string): Preset {
+function matchPreset(
+  date: string | null,
+  hours: OpenHoursConfig,
+  slots: ShiftPreset[],
+  start?: string,
+  end?: string,
+): Preset {
   if (!start || !end) return 'custom'
   const p = presetTimes(date, hours)
   for (const key of ['full', 'first', 'second'] as const) {
     if (p[key].start === start && p[key].end === end) return key
   }
+  const slotIdx = slots.findIndex(s => s.start === start && s.end === end)
+  if (slotIdx >= 0) return `slot:${slotIdx}`
   return 'custom'
 }
 
 export default function ShiftModal({
   open, date, employees, existing, availForDate, defaultStoreCode,
-  storeHours = DEFAULT_STORE_HOURS, onClose, onSaved,
+  storeHours = DEFAULT_STORE_HOURS, shiftPresets = [], positionsMap = {},
+  onClose, onSaved,
 }: Props) {
   const [form] = Form.useForm()
   const [msgApi, ctxHolder] = message.useMessage()
@@ -110,13 +125,35 @@ export default function ShiftModal({
   const availByEmpId: Record<number, Availability> = {}
   for (const a of availForDate) availByEmpId[a.employee_id] = a
 
-  const sortedEmployees = [
-    ...employees.filter((e) => availByEmpId[e.id]),
-    ...employees.filter((e) => !availByEmpId[e.id]),
+  const staff    = employees.filter((e) => !e.is_trainee)
+  const trainees = employees.filter((e) => !!e.is_trainee)
+  const sortedStaff = [
+    ...staff.filter((e) => availByEmpId[e.id]),
+    ...staff.filter((e) => !availByEmpId[e.id]),
   ]
 
+  // Positions configured for the selected store (Settings → Scheduling)
+  const positionOptions = positionsForStore(
+    watchedStore || existing?.store_code || defaultStoreCode || '', positionsMap,
+  )
+  const positionSelectOptions = [
+    ...positionOptions,
+    // keep a saved position visible even if it was removed from settings
+    ...(existing?.position && !positionOptions.includes(existing.position)
+      ? [existing.position] : []),
+  ].map(p => ({ value: p, label: p }))
+
+  /** Times for a preset — custom slots are fixed, built-ins follow store hours. */
+  const timesForPreset = (p: Exclude<Preset, 'custom'>): { start: string; end: string } => {
+    if (p.startsWith('slot:')) {
+      const slot = shiftPresets[Number(p.slice(5))]
+      return slot ? { start: slot.start, end: slot.end } : presetTimes(date, openHours).full
+    }
+    return presetTimes(date, openHours)[p as 'full' | 'first' | 'second']
+  }
+
   const syncPresetFromForm = () => {
-    setPreset(matchPreset(date, openHours, form.getFieldValue('start_time'), form.getFieldValue('end_time')))
+    setPreset(matchPreset(date, openHours, shiftPresets, form.getFieldValue('start_time'), form.getFieldValue('end_time')))
   }
 
   useEffect(() => {
@@ -133,9 +170,10 @@ export default function ShiftModal({
           || (selectedStore && selectedStore.code !== 'ALL' ? selectedStore.code : undefined),
         start_time:  existing.start_time,
         end_time:    existing.end_time,
+        position:    existing.position || undefined,
         notes:       existing.notes,
       })
-      setPreset(matchPreset(existing.date, openHours, existing.start_time, existing.end_time))
+      setPreset(matchPreset(existing.date, openHours, shiftPresets, existing.start_time, existing.end_time))
     } else {
       form.resetFields()
       form.setFieldsValue({
@@ -154,7 +192,7 @@ export default function ShiftModal({
   useEffect(() => {
     if (!open) return
     if (preset !== 'custom') {
-      const t = presetTimes(date, openHours)[preset]
+      const t = timesForPreset(preset)
       form.setFieldsValue({ start_time: t.start, end_time: t.end })
     } else {
       syncPresetFromForm()
@@ -174,7 +212,7 @@ export default function ShiftModal({
   const handlePresetChange = (value: Preset) => {
     setPreset(value)
     if (value === 'custom') return
-    const t = presetTimes(date, openHours)[value]
+    const t = timesForPreset(value)
     form.setFieldsValue({ start_time: t.start, end_time: t.end })
     form.validateFields(['start_time', 'end_time']).catch(() => {})
   }
@@ -186,6 +224,7 @@ export default function ShiftModal({
       start_time:  values.start_time,
       end_time:    values.end_time,
       notes:       values.notes ?? '',
+      position:    values.position ?? '',
       store_code:  values.store_code,
     })
     msgApi.success('Shift saved')
@@ -204,6 +243,7 @@ export default function ShiftModal({
           start_time: values.start_time,
           end_time:   values.end_time,
           notes:      values.notes ?? '',
+          position:   values.position ?? '',
           store_code: values.store_code,
         })
         msgApi.success('Shift saved')
@@ -356,16 +396,28 @@ export default function ShiftModal({
                       disabled={!!existing}
                       onChange={handleEmployeeChange}
                       getPopupContainer={(trigger) => trigger.parentElement!}
-                      options={sortedEmployees.map((e) => {
-                        const avail    = availByEmpId[e.id]
-                        const baseName = e.name || e.email || e.auth0_id
-                        return {
-                          value: e.id,
-                          label: avail
-                            ? `${baseName}  ·  ${avail.start_time}–${avail.end_time}`
-                            : baseName,
-                        }
-                      })}
+                      options={[
+                        {
+                          label: 'Staff',
+                          options: sortedStaff.map((e) => {
+                            const avail    = availByEmpId[e.id]
+                            const baseName = e.name || e.email || e.auth0_id
+                            return {
+                              value: e.id,
+                              label: avail
+                                ? `${baseName}  ·  ${avail.start_time}–${avail.end_time}`
+                                : baseName,
+                            }
+                          }),
+                        },
+                        ...(trainees.length > 0 ? [{
+                          label: 'Trainees',
+                          options: trainees.map((e) => ({
+                            value: e.id,
+                            label: `${e.name || `Trainee ${e.id}`} (Trainee)`,
+                          })),
+                        }] : []),
+                      ]}
                     />
                   </Form.Item>
                 </Col>
@@ -404,6 +456,11 @@ export default function ShiftModal({
                   <Radio.Button value="second">
                     Half ({presetTimes(date, openHours).second.start}–{presetTimes(date, openHours).second.end})
                   </Radio.Button>
+                  {shiftPresets.map((s, i) => (
+                    <Radio.Button key={`slot:${i}`} value={`slot:${i}`}>
+                      {s.label} ({s.start}–{s.end})
+                    </Radio.Button>
+                  ))}
                   <Radio.Button value="custom">Custom</Radio.Button>
                 </Radio.Group>
               </Form.Item>
@@ -452,6 +509,21 @@ export default function ShiftModal({
                   </Form.Item>
                 </Col>
               </Row>
+
+              {(positionSelectOptions.length > 0) && (
+                <Form.Item
+                  name="position"
+                  label="Position in store (optional)"
+                  style={{ marginBottom: 12 }}
+                >
+                  <Select
+                    allowClear
+                    placeholder="e.g. Front / Cashier / End"
+                    options={positionSelectOptions}
+                    getPopupContainer={(trigger) => trigger.parentElement!}
+                  />
+                </Form.Item>
+              )}
 
               <Form.Item name="notes" label="Notes (optional)">
                 <Input.TextArea rows={2} />

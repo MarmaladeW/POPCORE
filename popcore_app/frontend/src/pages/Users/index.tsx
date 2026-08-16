@@ -10,7 +10,7 @@ import { useHasRole } from '../../auth/useRole'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
-import { getEmployeeStores, setEmployeeStores } from '../Schedule/scheduleApi'
+import { getEmployeeStores, renameEmployee, setEmployeeStores } from '../Schedule/scheduleApi'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -61,6 +61,7 @@ const STORE_TAG_COLORS: Record<string, string> = {
 
 interface EmpStoreEntry {
   empId:  number
+  name:   string
   stores: string[]
   color:  string
 }
@@ -140,7 +141,10 @@ export default function UsersPage() {
       .then(data => {
         const m: Record<string, EmpStoreEntry> = {}
         data.forEach(e => {
-          m[e.auth0_id] = { empId: e.employee_id, stores: e.stores, color: e.color || '#6366f1' }
+          m[e.auth0_id] = {
+            empId: e.employee_id, name: e.name || '',
+            stores: e.stores, color: e.color || '#6366f1',
+          }
         })
         setEmpStoreMap(m)
       })
@@ -161,7 +165,11 @@ export default function UsersPage() {
     // Reset first — otherwise a password typed for a previous user (or in the
     // create dialog) lingers in the field and gets saved onto this user.
     form.resetFields()
-    form.setFieldsValue({ username: u.username, role: u.role })
+    form.setFieldsValue({
+      username:     u.username,
+      role:         u.role,
+      display_name: empStoreMap[u.id]?.name ?? '',
+    })
     setModalOpen(true)
   }
 
@@ -169,6 +177,14 @@ export default function UsersPage() {
     try {
       const vals = await form.validateFields()
       if (editUser) {
+        // Display name lives in the local employees table (shown on the
+        // schedule), not in Auth0 — save it separately.
+        const entry = empStoreMap[editUser.id]
+        const newName = (vals.display_name ?? '').trim()
+        if (entry && newName && newName !== entry.name) {
+          await renameEmployee(entry.empId, newName)
+          loadStores()
+        }
         const patch: any = {}
         // Changing your own role is blocked server-side (it would lock you
         // out of this page) — only send it for other users.
@@ -176,6 +192,7 @@ export default function UsersPage() {
         if (vals.password) patch.password = vals.password
         if (Object.keys(patch).length === 0) {
           setModalOpen(false)
+          message.success('更新成功')
           return
         }
         await client.patch(`/users/${encodeURIComponent(editUser.id)}`, patch)
@@ -489,6 +506,15 @@ export default function UsersPage() {
             >
               <Input disabled={!!editUser} placeholder="登录用户名" />
             </Form.Item>
+            {editUser && empStoreMap[editUser.id] && (
+              <Form.Item
+                name="display_name"
+                label="显示名 / Display name"
+                extra="排班日历中显示的名字 / Name shown on the schedule"
+              >
+                <Input placeholder="e.g. Jessi" maxLength={120} />
+              </Form.Item>
+            )}
             <Form.Item
               name="role"
               label="角色"

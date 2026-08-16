@@ -118,6 +118,91 @@ export function halfSplitFor(date: string): string {
   return (dow === 0 || dow === 6) ? '16:30' : '17:00'
 }
 
+// ── Custom fixed shift slots (Settings → Scheduling) ─────────────────────────
+
+export interface ShiftPreset { label: string; start: string; end: string }
+
+/** Parse the schedule_shift_presets app setting (JSON array of
+ *  {label, start, end}). Malformed entries are dropped. */
+export function parseShiftPresets(raw: string | null | undefined): ShiftPreset[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const out: ShiftPreset[] = []
+    for (const p of parsed) {
+      const label = String((p as ShiftPreset)?.label ?? '').trim()
+      const start = String((p as ShiftPreset)?.start ?? '')
+      const end   = String((p as ShiftPreset)?.end ?? '')
+      if (label && TIME_RE.test(start) && TIME_RE.test(end) && start < end) {
+        out.push({ label, start, end })
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+// ── In-store positions per store (Settings → Scheduling) ─────────────────────
+
+export type PositionsMap = Record<string, string[]>
+
+/** Parse the schedule_positions app setting (JSON keyed by store code with an
+ *  array of position names, e.g. {"DT": ["Front", "Cashier", "End"]}). */
+export function parsePositions(raw: string | null | undefined): PositionsMap {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: PositionsMap = {}
+    for (const [code, list] of Object.entries(parsed)) {
+      if (!Array.isArray(list)) continue
+      const names = list.map(v => String(v).trim()).filter(Boolean)
+      if (names.length > 0) out[code] = names
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Positions configured for one store ('*' acts as an all-stores fallback). */
+export function positionsForStore(storeCode: string, map: PositionsMap): string[] {
+  return map[storeCode] ?? map['*'] ?? []
+}
+
+// ── Shift kind (full day / first half / second half / custom) ────────────────
+
+export type ShiftKind = 'full' | 'first' | 'second' | 'custom'
+
+/** Classify a shift against the store's opening hours for that date, so
+ *  full-day and half-day shifts can be told apart at a glance. */
+export function shiftKindFor(
+  date: string,
+  hours: OpenHoursConfig,
+  start: string,
+  end: string,
+): ShiftKind {
+  const { start: open, end: close } = openHoursFor(date, hours)
+  const mid = halfSplitFor(date)
+  if (start <= open && end >= close) return 'full'
+  if (start <= open && end < close)  return 'first'
+  if (start > open  && end >= close) return 'second'
+  return 'custom'
+}
+
+/** Compact time for calendar chips: "12:00" → "12", "16:30" → "16:30". */
+export function compactTime(t: string): string {
+  if (!t) return ''
+  return t.endsWith(':00') ? t.slice(0, 2).replace(/^0/, '') : t.replace(/^0/, '')
+}
+
+/** Compact range like "12–22" or "11–16:30". */
+export function compactRange(start: string, end: string): string {
+  return `${compactTime(start)}–${compactTime(end)}`
+}
+
 export interface StaffRequirement { weekday: number; weekend: number }
 export type StaffRequirements = Record<string, StaffRequirement>
 
