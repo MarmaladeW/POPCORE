@@ -204,8 +204,8 @@
 /* ── Schedule shift events (custom eventContent in the manager calendar) ──
    Month view: one row — [T][AM/PM] name ······ 12–22.
    Week/day view: stacked time / name / position.
-   Full days render solid; half days & custom slots are tinted with a strong
-   left border; trainee shifts are amber with a dashed border. */
+   Every shift keeps the employee's solid color. Half-day and trainee badges
+   communicate status without replacing that identity color. */
 .fc-event.pc-ev {
   font-size: 11px;
   line-height: 1.3;
@@ -290,18 +290,6 @@
   font-size: 12px;
 }
 
-/* Coverage is supporting information: keep three visual rows available and
-   scroll the remainder so the calendar stays near the top of the page. */
-.pc-coverage-list {
-  max-height: 104px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-.pc-coverage-list:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
 .pc-coverage-notes > summary {
   list-style-position: inside;
 }

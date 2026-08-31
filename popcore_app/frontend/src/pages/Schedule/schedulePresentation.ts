@@ -35,19 +35,16 @@ export function mobileMonthEventLimit(isMobile: boolean, viewType: string): numb
   return isMobile && viewType === 'dayGridMonth' ? 3 : 4
 }
 
-export function shiftColorPresentation(employeeColor: string, kind: string) {
+export function shiftColorPresentation(employeeColor: string, _kind: string) {
   return {
-    backgroundColor: kind === 'full' ? employeeColor : `${employeeColor}26`,
+    backgroundColor: employeeColor,
     borderColor: employeeColor,
+    display: 'block' as const,
   }
 }
 
-export function coverageRowPresentation(hasShifts: boolean, considered: boolean) {
-  if (hasShifts) {
-    return { state: 'scheduled' as const, showReasonInput: false, statusLabel: '' }
-  }
-  if (considered) {
-    return { state: 'considered' as const, showReasonInput: true, statusLabel: '' }
-  }
-  return { state: 'open' as const, showReasonInput: false, statusLabel: 'No shifts' }
+export function manualChecklistPresentation(checked: boolean) {
+  return checked
+    ? { state: 'checked' as const, statusLabel: 'Checked' }
+    : { state: 'unchecked' as const, statusLabel: 'Unchecked' }
 }
