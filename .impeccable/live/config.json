@@ -1,0 +1,6 @@
+{
+  "files": ["popcore_app/frontend/index.html"],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}
