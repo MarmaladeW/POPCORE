@@ -95,9 +95,7 @@ export default function ManagerCalendar() {
 
   // Coverage checklist + notes are keyed to the calendar's real period
   // (month:YYYY-MM / week:YYYY-MM-DD / day:YYYY-MM-DD)
-  const [rangeShifts,  setRangeShifts]  = useState<Shift[]>([])
   const [periodKey,    setPeriodKey]    = useState<string>('')
-  const [periodRange,  setPeriodRange]  = useState<{ start: string; end: string } | null>(null)
 
   const [modalOpen,      setModalOpen]      = useState(false)
   const [modalStoreCode, setModalStoreCode] = useState<string | null>(null)
@@ -203,10 +201,8 @@ export default function ManagerCalendar() {
           ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
         const kind      = shiftKindFor(s.date, hoursForStore(code, storeHours), s.start_time, s.end_time)
         const isTrainee = !!s.is_trainee
-        // Full days: solid block in the employee color. Half days / custom
-        // slots: tinted block with a strong left border. Trainees keep that
-        // same employee color and add an amber dashed outline as a status cue.
-        const solid = kind === 'full'
+        // Every shift keeps the employee's solid color. Time, AM/PM, position,
+        // and trainee markers carry the details without weakening that color.
         const shiftColors = shiftColorPresentation(empColor, kind)
         byStore[code].push({
           id:              `shift-${s.id}`,
@@ -215,7 +211,8 @@ export default function ManagerCalendar() {
           end:             `${s.date}T${s.end_time}`,
           backgroundColor: shiftColors.backgroundColor,
           borderColor:     shiftColors.borderColor,
-          textColor:       solid ? textColorOn(empColor) : '#1f2937',
+          textColor:       textColorOn(empColor),
+          display:         shiftColors.display,
           classNames:      ['pc-ev', `pc-ev-${kind}`, ...(isTrainee ? ['pc-ev-trainee'] : [])],
           extendedProps:   {
             type: 'shift', shift_id: s.id, employee_id: s.employee_id,
@@ -268,7 +265,6 @@ export default function ManagerCalendar() {
       }
 
       setEventsByStore(byStore)
-      setRangeShifts(shifts)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [employees, storesKey, staffReqs, storeHours, empColors]
@@ -323,7 +319,6 @@ export default function ManagerCalendar() {
         start: cs.format('YYYY-MM-DD'),
         end:   dayjs(arg.view.currentEnd).format('YYYY-MM-DD'),
       }
-      setPeriodRange(pr)
       periodRangeRef.current = pr
       loadEvents(start, end, vt)
     },
@@ -723,9 +718,7 @@ export default function ManagerCalendar() {
         <CoveragePanel
           periodKey={periodKey}
           periodLabel={viewTitle}
-          periodRange={periodRange}
           employees={employees}
-          shifts={rangeShifts}
         />
       )}
 
@@ -737,9 +730,9 @@ export default function ManagerCalendar() {
         </span>
         <span className="flex items-center gap-1.5">
           <span
-            className="inline-block w-6 h-3 rounded-sm"
-            style={{ background: '#6366f126', borderLeft: '3px solid #6366f1' }}
-          />
+            className="inline-flex w-6 h-3 items-center justify-center rounded-sm text-[7px] font-bold text-white"
+            style={{ background: '#6366f1' }}
+          >AM</span>
           Half day / custom slot
         </span>
         <span className="flex items-center gap-1.5">

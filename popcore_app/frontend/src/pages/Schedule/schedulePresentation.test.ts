@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import {
   compactEmployeeLabel,
-  coverageRowPresentation,
+  manualChecklistPresentation,
   mobileMonthEventLimit,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
@@ -46,21 +46,14 @@ test('mobile month view shows three assignments before using an overflow count',
   assert.equal(mobileMonthEventLimit(true, 'timeGridWeek'), 4)
 })
 
-test('coverage rows keep unresolved employees compact until they are considered', () => {
-  assert.deepEqual(coverageRowPresentation(false, false), {
-    state: 'open',
-    showReasonInput: false,
-    statusLabel: 'No shifts',
+test('checklist completion is controlled only by the saved manual tick', () => {
+  assert.deepEqual(manualChecklistPresentation(false), {
+    state: 'unchecked',
+    statusLabel: 'Unchecked',
   })
-  assert.deepEqual(coverageRowPresentation(false, true), {
-    state: 'considered',
-    showReasonInput: true,
-    statusLabel: '',
-  })
-  assert.deepEqual(coverageRowPresentation(true, false), {
-    state: 'scheduled',
-    showReasonInput: false,
-    statusLabel: '',
+  assert.deepEqual(manualChecklistPresentation(true), {
+    state: 'checked',
+    statusLabel: 'Checked',
   })
 })
 
@@ -68,9 +61,11 @@ test('trainee status never replaces the employee color', () => {
   assert.deepEqual(shiftColorPresentation('#3D74C4', 'full'), {
     backgroundColor: '#3D74C4',
     borderColor: '#3D74C4',
+    display: 'block',
   })
   assert.deepEqual(shiftColorPresentation('#3D74C4', 'custom'), {
-    backgroundColor: '#3D74C426',
+    backgroundColor: '#3D74C4',
     borderColor: '#3D74C4',
+    display: 'block',
   })
 })
