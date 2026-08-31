@@ -129,6 +129,78 @@
   padding: 0 2px;
 }
 
+/* Manager month view on phones: keep assignments identifiable instead of
+   collapsing them to anonymous dots. Three employee-colored labels fit in a
+   cell; FullCalendar turns any remainder into a compact +N link. */
+@media (max-width: 767px) {
+  .pc-mobile-month .fc-daygrid-day-frame {
+    min-height: 78px;
+  }
+  .pc-mobile-month .fc-daygrid-day-top {
+    flex-direction: row;
+    justify-content: center;
+    min-height: 20px;
+  }
+  .pc-mobile-month .fc-daygrid-day-number {
+    padding: 3px 2px 1px;
+    font-size: 11px;
+    font-weight: 650;
+  }
+  .pc-mobile-month .fc-daygrid-day-events {
+    margin: 0 2px;
+  }
+  .pc-mobile-month .fc-daygrid-event-harness {
+    margin-top: 2px !important;
+  }
+  .pc-mobile-month .fc-event.pc-ev {
+    min-height: 16px;
+    margin: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 4px;
+  }
+  .pc-mobile-month .fc-daygrid-more-link {
+    display: block;
+    margin-top: 1px;
+    text-align: center;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--primary);
+  }
+  .pc-mobile-month .fc-bg-event {
+    opacity: 0.12;
+  }
+  .pc-mobile-shift {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 0 2px;
+    overflow: hidden;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 16px;
+    letter-spacing: 0.015em;
+    white-space: nowrap;
+  }
+  .pc-mobile-shift-t {
+    display: inline-flex;
+    width: 10px;
+    height: 10px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    background: #F59E0B;
+    color: #ffffff;
+    font-size: 7px;
+    line-height: 1;
+  }
+}
+
 /* ── Schedule shift events (custom eventContent in the manager calendar) ──
    Month view: one row — [T][AM/PM] name ······ 12–22.
    Week/day view: stacked time / name / position.
@@ -147,7 +219,8 @@
   border-bottom-width: 0;
 }
 .fc-event.pc-ev-trainee {
-  border: 1.5px dashed #F59E0B !important;
+  outline: 1.5px dashed #F59E0B;
+  outline-offset: -1.5px;
 }
 .pc-shift {
   display: flex;
@@ -215,6 +288,22 @@
 .pc-shift-grid .pc-shift-name {
   white-space: normal;
   font-size: 12px;
+}
+
+/* Coverage is supporting information: keep three visual rows available and
+   scroll the remainder so the calendar stays near the top of the page. */
+.pc-coverage-list {
+  max-height: 104px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.pc-coverage-list:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.pc-coverage-notes > summary {
+  list-style-position: inside;
 }
 /* Mobile month "dots" mode collapses events to 8px dots — hide our custom
    content there just like the default title/time get hidden */

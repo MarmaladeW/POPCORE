@@ -50,6 +50,12 @@ import ShiftModal from './ShiftModal'
 import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import {
+  compactEmployeeLabel,
+  mobileMonthEventLimit,
+  mobileShiftAccessibleLabel,
+  shiftColorPresentation,
+} from './schedulePresentation'
 
 import { EMPLOYEE_PALETTE, textColorOn } from '../../lib/palette'
 
@@ -106,9 +112,9 @@ export default function ManagerCalendar() {
   // tint on a month grid's padding days from adjacent months
   const periodRangeRef = useRef<{ start: string; end: string } | null>(null)
 
-  // Color maps kept in refs so loadEvents always reads current values
-  // without needing to be in useCallback deps
-  const empColorRef   = useRef<Record<number, string>>({})
+  // Employee colors are state (rather than a ref) so events reload if the
+  // saved color map arrives after FullCalendar's first date-range request.
+  const [empColors, setEmpColors] = useState<Record<number, string>>({})
   const storeColorRef = useRef<Record<string, string>>({})
 
   // Keep storeColorRef in sync with global stores (updated on mount + color PATCH)
@@ -139,7 +145,7 @@ export default function ManagerCalendar() {
           colorM[e.employee_id] = e.color || FALLBACK_COLORS[0]
         })
         setEmpStores(storeM)
-        empColorRef.current = colorM
+        setEmpColors(colorM)
       })
       .catch(() => {})
   }, [])
@@ -167,7 +173,7 @@ export default function ManagerCalendar() {
 
         const code = a.store_code || ''
         if (!byStore[code]) continue
-        const empColor = empColorRef.current[a.employee_id]
+        const empColor = empColors[a.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[a.employee_id] ?? 0]
         byStore[code].push({
           id: `avail-${a.id}`,
@@ -193,22 +199,23 @@ export default function ManagerCalendar() {
         if (!shiftsByStoreDate[code][s.date]) shiftsByStoreDate[code][s.date] = []
         shiftsByStoreDate[code][s.date].push(s)
 
-        const empColor = empColorRef.current[s.employee_id]
+        const empColor = empColors[s.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
         const kind      = shiftKindFor(s.date, hoursForStore(code, storeHours), s.start_time, s.end_time)
         const isTrainee = !!s.is_trainee
         // Full days: solid block in the employee color. Half days / custom
-        // slots: tinted block with a strong left border so the difference is
-        // obvious at a glance. Trainees: amber + dashed, unmistakable.
-        const solid = kind === 'full' && !isTrainee
+        // slots: tinted block with a strong left border. Trainees keep that
+        // same employee color and add an amber dashed outline as a status cue.
+        const solid = kind === 'full'
+        const shiftColors = shiftColorPresentation(empColor, kind)
         byStore[code].push({
           id:              `shift-${s.id}`,
           title:           `${s.employee_name ?? 'Employee'} ${s.start_time}–${s.end_time}`,
           start:           `${s.date}T${s.start_time}`,
           end:             `${s.date}T${s.end_time}`,
-          backgroundColor: isTrainee ? '#FEF3C7' : solid ? empColor : empColor + '26',
-          borderColor:     isTrainee ? '#F59E0B' : empColor,
-          textColor:       isTrainee ? '#92400E' : solid ? textColorOn(empColor) : '#1f2937',
+          backgroundColor: shiftColors.backgroundColor,
+          borderColor:     shiftColors.borderColor,
+          textColor:       solid ? textColorOn(empColor) : '#1f2937',
           classNames:      ['pc-ev', `pc-ev-${kind}`, ...(isTrainee ? ['pc-ev-trainee'] : [])],
           extendedProps:   {
             type: 'shift', shift_id: s.id, employee_id: s.employee_id,
@@ -264,7 +271,7 @@ export default function ManagerCalendar() {
       setRangeShifts(shifts)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [employees, storesKey, staffReqs, storeHours]
+    [employees, storesKey, staffReqs, storeHours, empColors]
   )
 
   useEffect(() => {
@@ -272,7 +279,7 @@ export default function ManagerCalendar() {
       loadEvents(currentRange.start, currentRange.end, viewType)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, storesKey, staffReqs, storeHours])
+  }, [employees, storesKey, staffReqs, storeHours, empColors])
 
   // Hours worked this wage month for the filtered employee
   useEffect(() => {
@@ -365,7 +372,7 @@ export default function ManagerCalendar() {
   const renderEvent = (arg: EventContentArg) => {
     const p = arg.event.extendedProps as {
       type?: string; kind?: ShiftKind; is_trainee?: boolean; position?: string
-      emp_name?: string; start_time?: string; end_time?: string
+      emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
     }
     if (p.type !== 'shift') return true   // default rendering for backgrounds
     const kind    = p.kind ?? 'custom'
@@ -380,6 +387,28 @@ export default function ManagerCalendar() {
     ].filter(Boolean).join(' · ')
 
     if (arg.view.type === 'dayGridMonth') {
+      if (isMobile) {
+        const employeeName = p.emp_name ?? 'Employee'
+        const employeeColor = p.emp_color ?? '#6366F1'
+        const accessibleLabel = mobileShiftAccessibleLabel({
+          employeeName,
+          startTime: p.start_time ?? '',
+          endTime: p.end_time ?? '',
+          position: p.position ?? '',
+          isTrainee: !!p.is_trainee,
+        })
+        return (
+          <div
+            className="pc-mobile-shift"
+            aria-label={accessibleLabel}
+            title={accessibleLabel}
+            style={{ background: employeeColor, color: textColorOn(employeeColor) }}
+          >
+            <span>{compactEmployeeLabel(employeeName)}</span>
+            {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}
+          </div>
+        )
+      }
       return (
         <div className="pc-shift" title={tip}>
           {p.is_trainee && <span className="pc-shift-t">T</span>}
@@ -409,8 +438,8 @@ export default function ManagerCalendar() {
     <div className="space-y-3">
 
       {/* Row 1: navigation ←→ + Today + Month|Week|Day toggle */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-0.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center justify-between gap-0.5 sm:justify-start">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => eachCal((a) => a.prev())}>
             <ChevronLeft className="size-4" />
           </Button>
@@ -419,14 +448,15 @@ export default function ManagerCalendar() {
             <ChevronRight className="size-4" />
           </Button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="grid grid-cols-[auto_1fr] items-center gap-2 sm:flex">
           <Button variant="outline" size="sm" className="h-8" onClick={() => eachCal((a) => a.today())}>Today</Button>
-          <div className="flex rounded-lg border border-border overflow-hidden text-xs font-medium">
+          <div className="flex min-w-0 rounded-lg border border-border overflow-hidden text-xs font-medium">
             {VIEW_OPTIONS.map((v, i) => (
               <button
                 key={v.value}
+                aria-pressed={viewType === v.value}
                 className={cn(
-                  'px-3 h-8 transition-colors',
+                  'flex-1 px-2 h-8 transition-colors sm:flex-none sm:px-3',
                   i > 0 && 'border-l border-border',
                   viewType === v.value
                     ? 'bg-primary text-primary-foreground'
@@ -547,7 +577,7 @@ export default function ManagerCalendar() {
             </span>
           </button>
           {employees.map((e) => {
-            const empColor = empColorRef.current[e.id] ?? FALLBACK_COLORS[0]
+            const empColor = empColors[e.id] ?? FALLBACK_COLORS[0]
             const name     = e.name || e.email || `E${e.id}`
             const active   = filterEmpId === e.id
             const dimmed   = filterEmpId !== null && !active
@@ -599,7 +629,7 @@ export default function ManagerCalendar() {
       {!isMobile && employees.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {employees.map((e) => {
-            const empColor = empColorRef.current[e.id] ?? FALLBACK_COLORS[0]
+            const empColor = empColors[e.id] ?? FALLBACK_COLORS[0]
             const active   = filterEmpId === e.id
             return (
               <button
@@ -715,9 +745,9 @@ export default function ManagerCalendar() {
         <span className="flex items-center gap-1.5">
           <span
             className="inline-block w-6 h-3 rounded-sm"
-            style={{ background: '#FEF3C7', border: '1.5px dashed #F59E0B' }}
+            style={{ background: '#6366f1', outline: '1.5px dashed #F59E0B', outlineOffset: '-1.5px' }}
           />
-          Trainee
+          Trainee (keeps employee color)
         </span>
       </div>
 
@@ -738,7 +768,7 @@ export default function ManagerCalendar() {
           <div
             className={cn(
               'rounded-xl border overflow-hidden',
-              isMobile && viewType === 'dayGridMonth' && 'popcore-dots',
+              isMobile && viewType === 'dayGridMonth' && 'pc-mobile-month',
             )}
             style={{ borderColor: (st.color || '#6366f1') + '66' }}
           >
@@ -757,7 +787,8 @@ export default function ManagerCalendar() {
               eventContent={renderEvent}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
               businessHours={businessHoursFrom(hoursForStore(st.code, storeHours))}
-              dayMaxEvents={isMobile && viewType === 'dayGridMonth' ? 12 : 4}
+              dayMaxEvents={mobileMonthEventLimit(isMobile, viewType)}
+              moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
               allDaySlot={false}
               nowIndicator
               slotMinTime={gridWindow(hoursForStore(st.code, storeHours)).slotMinTime}

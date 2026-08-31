@@ -13,6 +13,7 @@ import {
   type Employee,
   type Shift,
 } from './scheduleApi'
+import { coverageRowPresentation } from './schedulePresentation'
 
 interface Props {
   /** month:YYYY-MM | week:YYYY-MM-DD | day:YYYY-MM-DD */
@@ -163,7 +164,7 @@ export default function CoveragePanel({
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-muted/40 text-left"
+        className="pc-coverage-header w-full flex items-center gap-2 px-3 py-2 bg-muted/40 text-left"
       >
         {allAccounted ? (
           <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
@@ -171,34 +172,38 @@ export default function CoveragePanel({
           <CircleAlert className="size-4 text-red-500 shrink-0" />
         )}
         <span className="text-sm font-semibold">
-          Coverage checklist — {periodLabel}
+          Coverage<span className="hidden sm:inline"> checklist</span> — {periodLabel}
         </span>
         <span className={cn('text-xs', allAccounted ? 'text-emerald-700' : 'text-red-600')}>
           {allAccounted
             ? 'Everyone assigned or considered'
-            : `${openCount} not yet assigned or considered`}
+            : <>{openCount}<span className="hidden sm:inline"> not yet assigned or considered</span><span className="sm:hidden"> open</span></>}
         </span>
-        <span className="ml-auto text-xs text-muted-foreground whitespace-nowrap">
+        <span className="ml-auto hidden text-xs text-muted-foreground whitespace-nowrap sm:inline">
           {scheduledCount} scheduled · {consideredCount} considered
-          {open ? <ChevronUp className="inline size-3.5 ml-1" /> : <ChevronDown className="inline size-3.5 ml-1" />}
         </span>
+        {open ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />}
       </button>
 
       {open && (
-        <div className="p-3 space-y-3">
+        <div className="p-2 space-y-2">
           {/* One row per person */}
-          <ul className="m-0 p-0 list-none grid gap-1 sm:grid-cols-2">
+          <ul
+            className="pc-coverage-list m-0 p-0 list-none grid gap-1 sm:grid-cols-2"
+            aria-label="Employee coverage checklist"
+            tabIndex={0}
+          >
             {people.map(p => {
               const st    = statsByEmp[p.id]
               const entry = entries[p.id]
               const name  = p.name || p.email || `Employee ${p.id}`
-              const state: 'scheduled' | 'considered' | 'open' =
-                st ? 'scheduled' : entry?.considered ? 'considered' : 'open'
+              const presentation = coverageRowPresentation(!!st, !!entry?.considered)
+              const { state } = presentation
               return (
                 <li
                   key={p.id}
                   className={cn(
-                    'flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm',
+                    'flex min-h-8 items-center gap-2 rounded-md border px-2 py-1 text-xs sm:text-sm',
                     // Only open items draw attention — settled rows stay quiet
                     state === 'open'
                       ? 'border-red-200 bg-red-50/50'
@@ -235,12 +240,12 @@ export default function CoveragePanel({
                       {st.count} shift{st.count === 1 ? '' : 's'} · {Math.round(st.hours * 10) / 10}h
                     </span>
                   )}
-                  {state !== 'scheduled' && (
+                  {presentation.showReasonInput && (
                     <Input
                       size="small"
                       className="ml-auto"
-                      style={{ maxWidth: 160, fontSize: 12 }}
-                      placeholder={entry?.considered ? 'Reason (optional)' : 'Not scheduled yet'}
+                      style={{ maxWidth: 150, fontSize: 12 }}
+                      placeholder="Reason (optional)"
                       defaultValue={entry?.note ?? ''}
                       onBlur={e => {
                         const v = e.target.value.trim()
@@ -249,36 +254,44 @@ export default function CoveragePanel({
                       onPressEnter={e => (e.target as HTMLInputElement).blur()}
                     />
                   )}
+                  {!!presentation.statusLabel && (
+                    <span className="ml-auto text-[11px] text-red-600/80 whitespace-nowrap">
+                      {presentation.statusLabel}
+                    </span>
+                  )}
                 </li>
               )
             })}
           </ul>
 
           {/* Notes for this period */}
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-sm font-semibold">Notes — {periodLabel}</span>
+          <details className="pc-coverage-notes rounded-md border border-border bg-muted/20">
+            <summary className="flex min-h-8 cursor-pointer items-center gap-2 px-2 text-xs font-medium">
+              <span>Period notes</span>
+              {noteContent && <span className="size-1.5 rounded-full bg-primary" aria-label="Has notes" />}
               {noteSavedAt && !noteDirty && (
-                <span className="text-xs text-muted-foreground">
+                <span className="ml-auto text-[11px] font-normal text-muted-foreground">
                   saved {dayjs(noteSavedAt + 'Z').isValid() ? dayjs(noteSavedAt + 'Z').format('MMM D, HH:mm') : noteSavedAt}
                 </span>
               )}
+            </summary>
+            <div className="border-t border-border p-2">
+              <Input.TextArea
+                rows={2}
+                autoSize={{ minRows: 2, maxRows: 5 }}
+                placeholder={`Notes for ${periodLabel} (visible to managers)…`}
+                value={noteContent}
+                onChange={e => { setNoteContent(e.target.value); setNoteDirty(true) }}
+              />
+              {noteDirty && (
+                <div className="mt-1.5">
+                  <Button size="sm" onClick={handleSaveNote} disabled={savingNote}>
+                    {savingNote ? 'Saving…' : 'Save notes'}
+                  </Button>
+                </div>
+              )}
             </div>
-            <Input.TextArea
-              rows={2}
-              autoSize={{ minRows: 2, maxRows: 6 }}
-              placeholder="Notes for this schedule period (visible to managers)…"
-              value={noteContent}
-              onChange={e => { setNoteContent(e.target.value); setNoteDirty(true) }}
-            />
-            {noteDirty && (
-              <div className="mt-1.5">
-                <Button size="sm" onClick={handleSaveNote} disabled={savingNote}>
-                  {savingNote ? 'Saving…' : 'Save notes'}
-                </Button>
-              </div>
-            )}
-          </div>
+          </details>
         </div>
       )}
     </div>
