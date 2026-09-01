@@ -6,6 +6,7 @@ import {
   normalizeEmployeeColor,
   shiftModalEmployees,
 } from './employeeScheduling.ts'
+import * as employeeScheduling from './employeeScheduling.ts'
 import type { Employee } from './scheduleApi.ts'
 
 
@@ -48,4 +49,45 @@ test('creating excludes a disabled employee from the shift modal', () => {
 
 test('picker colors are normalized to an opaque uppercase hex value', () => {
   assert.equal(normalizeEmployeeColor('#3d74c4'), '#3D74C4')
+})
+
+test('optimistic employee settings updates preserve the prior state for rollback', () => {
+  const updateEmployeeSetting = (
+    employeeScheduling as unknown as {
+      updateEmployeeSetting?: <T>(
+        entries: Record<string, T>,
+        auth0Id: string,
+        patch: Partial<T>,
+      ) => Record<string, T>
+    }
+  ).updateEmployeeSetting
+  assert.equal(typeof updateEmployeeSetting, 'function')
+
+  const original = {
+    'auth0|1': { color: '#3D74C4', isSchedulable: 1 },
+  }
+  const optimistic = updateEmployeeSetting!(original, 'auth0|1', {
+    color: '#2E7FA3',
+    isSchedulable: 0,
+  })
+
+  assert.deepEqual(original['auth0|1'], { color: '#3D74C4', isSchedulable: 1 })
+  assert.deepEqual(optimistic['auth0|1'], { color: '#2E7FA3', isSchedulable: 0 })
+})
+
+test('shift creation surfaces the server eligibility explanation', () => {
+  const scheduleApiErrorMessage = (
+    employeeScheduling as unknown as {
+      scheduleApiErrorMessage?: (error: unknown, fallback: string) => string
+    }
+  ).scheduleApiErrorMessage
+  assert.equal(typeof scheduleApiErrorMessage, 'function')
+  assert.equal(
+    scheduleApiErrorMessage!(
+      { response: { data: { error: 'Employee is disabled for shift assignment' } } },
+      'Failed to save shift',
+    ),
+    'Employee is disabled for shift assignment',
+  )
+  assert.equal(scheduleApiErrorMessage!(new Error('network'), 'Failed'), 'Failed')
 })
