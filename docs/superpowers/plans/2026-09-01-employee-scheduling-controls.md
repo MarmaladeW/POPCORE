@@ -503,4 +503,3 @@ git commit -m "build(frontend): update employee scheduling assets"
 ```powershell
 git push origin codex/schedule-mobile-polish
 ```
-

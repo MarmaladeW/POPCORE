@@ -462,7 +462,7 @@ html body {
           &${t}-cell-fix-left:hover,
           &${t}-cell-fix-right:hover
         `]:{background:e.tableFixedHeaderSortActiveBg}},[`${t}-thead th${t}-column-sort`]:{background:e.tableHeaderSortBg,"&::before":{backgroundColor:"transparent !important"}},[`td${t}-column-sort`]:{background:e.tableBodySortBg},[`${t}-column-title`]:{position:"relative",zIndex:1,flex:1,minWidth:0},[`${t}-column-sorters`]:{display:"flex",flex:"auto",alignItems:"center",justifyContent:"space-between","&::after":{position:"absolute",inset:0,width:"100%",height:"100%",content:'""'}},[`${t}-column-sorters-tooltip-target-sorter`]:{"&::after":{content:"none"}},[`${t}-column-sorter`]:{marginInlineStart:n,color:o,fontSize:0,transition:`color ${e.motionDurationSlow}`,"&-inner":{display:"inline-flex",flexDirection:"column",alignItems:"center"},"&-up, &-down":{fontSize:r,"&.active":{color:e.colorPrimary}},[`${t}-column-sorter-up + ${t}-column-sorter-down`]:{marginTop:"-0.3em"}},[`${t}-column-sorters:hover ${t}-column-sorter`]:{color:i}}}},L8e=e=>{const{componentCls:t,opacityLoading:n,tableScrollThumbBg:r,tableScrollThumbBgHover:o,tableScrollThumbSize:i,tableScrollBg:a,zIndexTableSticky:l,stickyScrollBarBorderRadius:s,lineWidth:u,lineType:d,tableBorderColor:f}=e,m=`${Q(u)} ${d} ${f}`;return{[`${t}-wrapper`]:{[`${t}-sticky`]:{"&-holder":{position:"sticky",zIndex:l,background:e.colorBgContainer},"&-scroll":{position:"sticky",bottom:0,height:`${Q(i)} !important`,zIndex:l,display:"flex",alignItems:"center",background:a,borderTop:m,opacity:n,"&:hover":{transformOrigin:"center bottom"},"&-bar":{height:i,backgroundColor:r,borderRadius:s,transition:`all ${e.motionDurationSlow}, transform 0s`,position:"absolute",bottom:0,"&:hover, &-active":{backgroundColor:o}}}}}}},hF=e=>{const{componentCls:t,lineWidth:n,tableBorderColor:r,calc:o}=e,i=`${Q(n)} ${e.lineType} ${r}`;return{[`${t}-wrapper`]:{[`${t}-summary`]:{position:"relative",zIndex:e.zIndexTableFixed,background:e.tableBg,"> tr":{"> th, > td":{borderBottom:i}}},[`div${t}-summary`]:{boxShadow:`0 ${Q(o(n).mul(-1).equal())} 0 ${r}`}}}},B8e=e=>{const{componentCls:t,motionDurationMid:n,lineWidth:r,lineType:o,tableBorderColor:i,calc:a}=e,l=`${Q(r)} ${o} ${i}`,s=`${t}-expanded-row-cell`;return{[`${t}-wrapper`]:{[`${t}-tbody-virtual`]:{[`${t}-tbody-virtual-holder-inner`]:{[`
-            & > ${t}-row, 
+            & > ${t}-row,
             & > div:not(${t}-row) > ${t}-row
           `]:{display:"flex",boxSizing:"border-box",width:"100%"}},[`${t}-cell`]:{borderBottom:l,transition:`background ${n}`},[`${t}-expanded-row`]:{[`${s}${s}-fixed`]:{position:"sticky",insetInlineStart:0,overflow:"hidden",width:`calc(var(--virtual-width) - ${Q(r)})`,borderInlineEnd:"none"}}},[`${t}-bordered`]:{[`${t}-tbody-virtual`]:{"&:after":{content:'""',insetInline:0,bottom:0,borderBottom:l,position:"absolute"},[`${t}-cell`]:{borderInlineEnd:l,[`&${t}-cell-fix-right-first:before`]:{content:'""',position:"absolute",insetBlock:0,insetInlineStart:a(r).mul(-1).equal(),borderInlineStart:l}}},[`&${t}-virtual`]:{[`${t}-placeholder ${t}-cell`]:{borderInlineEnd:l,borderBottom:l}}}}}},F8e=e=>{const{componentCls:t,fontWeightStrong:n,tablePaddingVertical:r,tablePaddingHorizontal:o,tableExpandColumnWidth:i,lineWidth:a,lineType:l,tableBorderColor:s,tableFontSize:u,tableBg:d,tableRadius:f,tableHeaderTextColor:m,motionDurationMid:h,tableHeaderBg:g,tableHeaderCellSplitColor:v,tableFooterTextColor:p,tableFooterBg:y,calc:b}=e,S=`${Q(a)} ${l} ${s}`;return{[`${t}-wrapper`]:Object.assign(Object.assign({clear:"both",maxWidth:"100%","--rc-virtual-list-scrollbar-bg":e.tableScrollBg},Ps()),{[t]:Object.assign(Object.assign({},cn(e)),{fontSize:u,background:d,borderRadius:`${Q(f)} ${Q(f)} 0 0`,scrollbarColor:`${e.tableScrollThumbBg} ${e.tableScrollBg}`}),table:{width:"100%",textAlign:"start",borderRadius:`${Q(f)} ${Q(f)} 0 0`,borderCollapse:"separate",borderSpacing:0},[`
           ${t}-cell,
@@ -760,23 +760,23 @@ html body {
     margin-right: `).concat(l,"px ").concat(r,`;
     `),n==="padding"&&"padding-right: ".concat(l,"px ").concat(r,";")].filter(Boolean).join(""),`
   }
-  
+
   .`).concat(cS,` {
     right: `).concat(l,"px ").concat(r,`;
   }
-  
+
   .`).concat(uS,` {
     margin-right: `).concat(l,"px ").concat(r,`;
   }
-  
+
   .`).concat(cS," .").concat(cS,` {
     right: 0 `).concat(r,`;
   }
-  
+
   .`).concat(uS," .").concat(uS,` {
     margin-right: 0 `).concat(r,`;
   }
-  
+
   body[`).concat(op,`] {
     `).concat(eut,": ").concat(l,`px;
   }
