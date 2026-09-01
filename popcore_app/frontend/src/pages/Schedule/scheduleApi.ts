@@ -8,6 +8,7 @@ export interface Employee {
   name: string
   email: string
   is_active: number
+  is_schedulable: number
   is_trainee?: number
   created_at: string
 }
@@ -127,6 +128,7 @@ export interface EmployeeStoreAssignment {
   auth0_id:    string
   name:        string
   color:       string
+  is_schedulable: number
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
 
@@ -186,6 +188,14 @@ export const setEmployeeStores = (employeeId: number, storeCodes: string[]) =>
     `/employees/${employeeId}/stores`,
     { store_codes: storeCodes }
   ).then((r) => r.data)
+
+export const setEmployeeColor = (employeeId: number, color: string) =>
+  client.patch<Employee>(`/employees/${employeeId}/color`, { color }).then((r) => r.data)
+
+export const setEmployeeSchedulable = (employeeId: number, enabled: boolean) =>
+  client.patch<Employee>(`/employees/${employeeId}/schedulable`, {
+    is_schedulable: enabled,
+  }).then((r) => r.data)
 
 // ── Availability ──────────────────────────────────────────────────────────────
 
