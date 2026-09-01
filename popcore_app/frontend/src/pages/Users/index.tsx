@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
-  Table, Space, Popconfirm, Popover, Form, Input, Select,
+  Table, Space, Popconfirm, ColorPicker, Form, Input, Select,
   Switch, message, Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -11,7 +11,18 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { EMPLOYEE_PALETTE } from '../../lib/palette'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
-import { getEmployeeStores, renameEmployee, setEmployeeStores } from '../Schedule/scheduleApi'
+import {
+  getEmployeeStores,
+  renameEmployee,
+  setEmployeeColor,
+  setEmployeeSchedulable,
+  setEmployeeStores,
+} from '../Schedule/scheduleApi'
+import {
+  normalizeEmployeeColor,
+  persistEmployeeSetting,
+  updateEmployeeSetting,
+} from '../Schedule/employeeScheduling'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -51,51 +62,22 @@ const ROLE_AVATAR: Record<string, { bg: string; fg: string }> = {
   viewer:  { bg: '#F4F4F5', fg: '#71717A' },
 }
 
-/** Pick from the curated palette (free color input allowed unreadable
- *  neons / near-whites in the calendars). */
-function ColorSwatchPicker({ value, onChange, size = 16, label }: {
+/** Full-spectrum picker with the curated calendar colors kept as shortcuts. */
+function EmployeeColorPicker({ value, onChange, disabled = false }: {
   value: string
   onChange: (color: string) => void
-  size?: number
-  label?: string
+  disabled?: boolean
 }) {
   return (
-    <Popover
-      trigger="click"
-      content={
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 24px)', gap: 6 }}>
-          {EMPLOYEE_PALETTE.map(c => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => onChange(c)}
-              title={c}
-              style={{
-                width: 24, height: 24, borderRadius: '50%', background: c,
-                border: value?.toLowerCase() === c.toLowerCase()
-                  ? '2px solid #111827' : '2px solid transparent',
-                cursor: 'pointer', padding: 0,
-              }}
-            />
-          ))}
-        </div>
-      }
-    >
-      <button
-        type="button"
-        title="更改员工颜色 / Change color"
-        style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-        }}
-      >
-        <span style={{
-          width: size, height: size, borderRadius: '50%', background: value || '#6366f1',
-          display: 'inline-block', border: '1px solid #e5e7eb', flexShrink: 0,
-        }} />
-        {label && <span className="text-xs text-muted-foreground">{label}</span>}
-      </button>
-    </Popover>
+    <ColorPicker
+      value={value || '#6366f1'}
+      size="small"
+      disabled={disabled}
+      disabledAlpha
+      showText={(color) => normalizeEmployeeColor(color.toHexString())}
+      presets={[{ label: '常用颜色 / Presets', colors: EMPLOYEE_PALETTE }]}
+      onChangeComplete={(color) => onChange(normalizeEmployeeColor(color.toHexString()))}
+    />
   )
 }
 
@@ -109,6 +91,7 @@ interface EmpStoreEntry {
   name:   string
   stores: string[]
   color:  string
+  isSchedulable: number
 }
 
 /** Store badges (read-only). Top-level component: defining these inside
@@ -170,6 +153,10 @@ export default function UsersPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editUser, setEditUser]   = useState<User | null>(null)
   const [form] = Form.useForm()
+  const colorRequests = useRef(new Set<string>())
+  const schedulableRequests = useRef(new Set<string>())
+  const [savingColors, setSavingColors] = useState<Record<string, boolean>>({})
+  const [savingSchedulable, setSavingSchedulable] = useState<Record<string, boolean>>({})
 
   // Map: auth0_id → { empId, stores[] }
   const [empStoreMap, setEmpStoreMap] = useState<Record<string, EmpStoreEntry>>({})
@@ -193,6 +180,7 @@ export default function UsersPage() {
           m[e.auth0_id] = {
             empId: e.employee_id, name: e.name || '',
             stores: e.stores, color: e.color || '#6366f1',
+            isSchedulable: e.is_schedulable ?? 1,
           }
         })
         setEmpStoreMap(m)
@@ -297,15 +285,50 @@ export default function UsersPage() {
 
   async function handleEmpColorChange(auth0Id: string, color: string) {
     const entry = empStoreMap[auth0Id]
-    if (!entry) return
-    setEmpStoreMap(prev => ({
-      ...prev,
-      [auth0Id]: { ...prev[auth0Id], color },
-    }))
+    if (!entry || colorRequests.current.has(auth0Id)) return
+    const previousColor = entry.color
+    const normalized = normalizeEmployeeColor(color)
+    colorRequests.current.add(auth0Id)
+    setSavingColors(prev => ({ ...prev, [auth0Id]: true }))
     try {
-      await client.patch(`/employees/${entry.empId}/color`, { color })
-    } catch {
-      message.error('颜色更新失败')
+      await persistEmployeeSetting({
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          color: normalized,
+        })),
+        persist: () => setEmployeeColor(entry.empId, normalized),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          color: previousColor,
+        })),
+      })
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '颜色更新失败')
+    } finally {
+      colorRequests.current.delete(auth0Id)
+      setSavingColors(prev => ({ ...prev, [auth0Id]: false }))
+    }
+  }
+
+  async function handleSchedulableChange(auth0Id: string, enabled: boolean) {
+    const entry = empStoreMap[auth0Id]
+    if (!entry || schedulableRequests.current.has(auth0Id)) return
+    const previous = entry.isSchedulable
+    schedulableRequests.current.add(auth0Id)
+    setSavingSchedulable(prev => ({ ...prev, [auth0Id]: true }))
+    try {
+      await persistEmployeeSetting({
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          isSchedulable: enabled ? 1 : 0,
+        })),
+        persist: () => setEmployeeSchedulable(entry.empId, enabled),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          isSchedulable: previous,
+        })),
+      })
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '排班设置更新失败')
+    } finally {
+      schedulableRequests.current.delete(auth0Id)
+      setSavingSchedulable(prev => ({ ...prev, [auth0Id]: false }))
     }
   }
 
@@ -354,21 +377,43 @@ export default function UsersPage() {
     {
       title: '颜色',
       key: 'color',
-      width: 70,
+      width: 120,
       align: 'center' as const,
       render: (_: unknown, r: User) => {
         const entry = empStoreMap[r.id]
         if (!entry) return null
         const color = entry.color || '#6366f1'
         return isManager ? (
-          <ColorSwatchPicker value={color} onChange={c => handleEmpColorChange(r.id, c)} />
+          <EmployeeColorPicker
+            value={color}
+            disabled={!!savingColors[r.id]}
+            onChange={c => handleEmpColorChange(r.id, c)}
+          />
         ) : (
           <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb' }} />
         )
       },
     },
     {
-      title: '状态',
+      title: '排班',
+      key: 'is_schedulable',
+      width: 90,
+      align: 'center',
+      render: (_, r) => {
+        const entry = empStoreMap[r.id]
+        if (!entry) return null
+        return (
+          <Switch
+            checked={entry.isSchedulable !== 0}
+            size="small"
+            loading={!!savingSchedulable[r.id]}
+            onChange={(enabled) => handleSchedulableChange(r.id, enabled)}
+          />
+        )
+      },
+    },
+    {
+      title: '账户状态',
       dataIndex: 'is_active',
       width: 90,
       align: 'center',
@@ -477,14 +522,21 @@ export default function UsersPage() {
                     }
                   </div>
 
-                  {/* Row 3: employee color (managers only) */}
+                  {/* Row 3: employee-only scheduling controls (managers only) */}
                   {isManager && empStoreMap[u.id] && (
-                    <div className="flex items-center gap-1.5 mt-1 pl-11">
-                      <ColorSwatchPicker
+                    <div className="flex items-center gap-2 mt-2 pl-11">
+                      <span className="text-xs text-muted-foreground">员工颜色</span>
+                      <EmployeeColorPicker
                         value={empStoreMap[u.id].color || '#6366f1'}
+                        disabled={!!savingColors[u.id]}
                         onChange={c => handleEmpColorChange(u.id, c)}
-                        size={14}
-                        label="员工颜色"
+                      />
+                      <span className="text-xs text-muted-foreground ml-auto">参与排班</span>
+                      <Switch
+                        checked={empStoreMap[u.id].isSchedulable !== 0}
+                        size="small"
+                        loading={!!savingSchedulable[u.id]}
+                        onChange={(enabled) => handleSchedulableChange(u.id, enabled)}
                       />
                     </div>
                   )}
@@ -494,7 +546,7 @@ export default function UsersPage() {
                     最后登录：{u.last_login ? u.last_login.slice(0, 16) : '从未'}
                   </div>
 
-                  {/* Row 4: status toggle (left) + actions (right) */}
+                  {/* Row 5: account status toggle (left) + actions (right) */}
                   <div className="flex items-center mt-2 pl-11">
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <Switch
@@ -503,7 +555,7 @@ export default function UsersPage() {
                         disabled={me?.sub === u.id}
                         onChange={() => toggleActive(u)}
                       />
-                      <span>{u.is_active === 1 ? '启用' : '禁用'}</span>
+                      <span>账户{u.is_active === 1 ? '启用' : '禁用'}</span>
                     </div>
                     <div className="ml-auto flex gap-2">
                       <Button size="sm" variant="outline" onClick={() => openEdit(u)}>编辑</Button>

@@ -552,10 +552,16 @@ def schedule_shifts_create():
     if err:
         con.close()
         return err
-    emp = con.execute('SELECT id FROM employees WHERE id = ?', (employee_id,)).fetchone()
-    if not emp:
+    emp = con.execute(
+        'SELECT id, is_active, is_schedulable FROM employees WHERE id = ?',
+        (employee_id,),
+    ).fetchone()
+    if not emp or not emp['is_active']:
         con.close()
         return jsonify({'error': 'Employee not found'}), 404
+    if not emp['is_schedulable']:
+        con.close()
+        return jsonify({'error': 'Employee is disabled for shift assignment'}), 409
     con.execute('''
         INSERT INTO shifts
             (employee_id, date, start_time, end_time, assigned_by, notes, store_id, position, updated_at)

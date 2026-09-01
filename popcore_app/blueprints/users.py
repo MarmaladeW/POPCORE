@@ -241,12 +241,13 @@ def get_employee_stores():
     rows = con.execute('''
         SELECT e.id AS employee_id, e.auth0_id, e.name,
                COALESCE(e.color, '#6366f1') AS color,
+               e.is_schedulable,
                GROUP_CONCAT(s.code) AS store_codes
         FROM employees e
         LEFT JOIN employee_stores es ON es.employee_id = e.id
         LEFT JOIN stores s ON s.id = es.store_id AND s.is_active = 1
         WHERE e.is_active = 1
-        GROUP BY e.id, e.auth0_id, e.name, e.color
+        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable
         ORDER BY e.name
     ''').fetchall()
     con.close()
@@ -258,6 +259,7 @@ def get_employee_stores():
             'auth0_id':    r['auth0_id'],
             'name':        r['name'],
             'color':       r['color'],
+            'is_schedulable': r['is_schedulable'],
             'stores':      codes,
         })
     return jsonify(result)
@@ -280,6 +282,40 @@ def patch_employee_color(employee_id):
     con.execute('UPDATE employees SET color = ? WHERE id = ?', (color, employee_id))
     con.commit()
     updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
+    con.close()
+    return jsonify(dict(updated))
+
+
+@bp.route('/api/employees/<int:employee_id>/schedulable', methods=['PATCH'])
+@role_required('manager')
+def patch_employee_schedulable(employee_id):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON body must be an object'}), 400
+    value = data.get('is_schedulable')
+    if isinstance(value, bool):
+        normalized = int(value)
+    elif isinstance(value, int) and value in (0, 1):
+        normalized = value
+    else:
+        return jsonify({'error': 'is_schedulable must be a boolean or 0/1'}), 400
+
+    con = get_db()
+    row = con.execute(
+        'SELECT id FROM employees WHERE id = ? AND is_active = 1',
+        (employee_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+    con.execute(
+        'UPDATE employees SET is_schedulable = ? WHERE id = ?',
+        (normalized, employee_id),
+    )
+    con.commit()
+    updated = con.execute(
+        'SELECT * FROM employees WHERE id = ?', (employee_id,)
+    ).fetchone()
     con.close()
     return jsonify(dict(updated))
 

@@ -15,6 +15,7 @@ import {
   DEFAULT_STORE_HOURS, halfSplitFor, hoursForStore, openHoursFor, positionsForStore,
   type OpenHoursConfig, type PositionsMap, type ShiftPreset, type StoreHoursMap,
 } from './openHours'
+import { scheduleApiErrorMessage } from './employeeScheduling'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -122,8 +123,14 @@ export default function ShiftModal({
 
   const realStores = stores.filter((s) => s.code !== 'ALL')
 
+  const schedulableEmployeeIds = new Set(
+    employees.filter((employee) => employee.is_schedulable !== 0).map((employee) => employee.id),
+  )
+  const schedulableAvailForDate = availForDate.filter(
+    (availability) => schedulableEmployeeIds.has(availability.employee_id),
+  )
   const availByEmpId: Record<number, Availability> = {}
-  for (const a of availForDate) availByEmpId[a.employee_id] = a
+  for (const a of schedulableAvailForDate) availByEmpId[a.employee_id] = a
 
   const staff    = employees.filter((e) => !e.is_trainee)
   const trainees = employees.filter((e) => !!e.is_trainee)
@@ -233,6 +240,11 @@ export default function ShiftModal({
     onClose()
   }
 
+  const handleCreateError = (error: unknown) => {
+    msgApi.error(scheduleApiErrorMessage(error, 'Failed to save shift'))
+    setSavePhase('idle')
+  }
+
   const handleSave = async () => {
     try {
       const values = await form.validateFields() as ShiftFormValues
@@ -254,22 +266,28 @@ export default function ShiftModal({
 
       // New shift: check for conflicts before saving
       setSavePhase('checking')
+      let result
       try {
-        const result = await checkConflicts({
+        result = await checkConflicts({
           employee_id: values.employee_id,
           date:        date!,
           store_code:  values.store_code,
         })
-        if (result.has_conflict) {
-          pendingValues.current = values
-          setConflicts(result.conflicts)
-          setSavePhase('conflict')
-        } else {
-          await doCreateShift(values)
-        }
       } catch {
         pendingValues.current = values
         setSavePhase('error')
+        return
+      }
+      if (result.has_conflict) {
+        pendingValues.current = values
+        setConflicts(result.conflicts)
+        setSavePhase('conflict')
+      } else {
+        try {
+          await doCreateShift(values)
+        } catch (error) {
+          handleCreateError(error)
+        }
       }
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return
@@ -281,9 +299,8 @@ export default function ShiftModal({
     if (!pendingValues.current) return
     try {
       await doCreateShift(pendingValues.current)
-    } catch {
-      msgApi.error('Failed to save shift')
-      setSavePhase('idle')
+    } catch (error) {
+      handleCreateError(error)
     }
   }
 
@@ -358,13 +375,13 @@ export default function ShiftModal({
           )}
 
           {/* Availability summary — only when form is visible */}
-          {showForm && availForDate.length > 0 && (
+          {showForm && schedulableAvailForDate.length > 0 && (
             <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm">
               <div className="font-semibold text-emerald-800 mb-1">
                 Available on {date}:
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {availForDate.map((a) => {
+                {schedulableAvailForDate.map((a) => {
                   const emp  = employees.find((e) => e.id === a.employee_id)
                   const name = emp
                     ? (emp.name || emp.email || `ID ${emp.id}`)
