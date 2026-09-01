@@ -616,6 +616,21 @@ def _migration_add_is_trainee_to_employees(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_is_trainee_to_employees')")
 
 
+def _migration_add_is_schedulable_to_employees(con, cur):
+    """Whether managers may create new shifts for an employee."""
+    cur.execute("PRAGMA table_info(employees)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'is_schedulable' not in cols:
+        cur.execute(
+            "ALTER TABLE employees "
+            "ADD COLUMN is_schedulable INTEGER NOT NULL DEFAULT 1"
+        )
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations (name) "
+        "VALUES ('add_is_schedulable_to_employees')"
+    )
+
+
 def _migration_create_schedule_notes_table(con, cur):
     """Free-form manager notes attached to a schedule period (month/week/day)."""
     cur.execute('''
@@ -686,6 +701,7 @@ def _get_migrations():
         ('add_ical_token_to_employees',          _migration_add_ical_token_to_employees),
         ('add_position_to_shifts',               _migration_add_position_to_shifts),
         ('add_is_trainee_to_employees',          _migration_add_is_trainee_to_employees),
+        ('add_is_schedulable_to_employees',      _migration_add_is_schedulable_to_employees),
         ('create_schedule_notes_table',          _migration_create_schedule_notes_table),
         ('create_schedule_checklist_table',      _migration_create_schedule_checklist_table),
         ('assign_curated_employee_colors',       _migration_assign_curated_employee_colors),
