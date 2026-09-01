@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Table, Space, Popconfirm, ColorPicker, Form, Input, Select,
   Switch, message, Tag,
@@ -20,6 +20,7 @@ import {
 } from '../Schedule/scheduleApi'
 import {
   normalizeEmployeeColor,
+  persistEmployeeSetting,
   updateEmployeeSetting,
 } from '../Schedule/employeeScheduling'
 import { Button } from '@/components/ui/button'
@@ -62,14 +63,16 @@ const ROLE_AVATAR: Record<string, { bg: string; fg: string }> = {
 }
 
 /** Full-spectrum picker with the curated calendar colors kept as shortcuts. */
-function EmployeeColorPicker({ value, onChange }: {
+function EmployeeColorPicker({ value, onChange, disabled = false }: {
   value: string
   onChange: (color: string) => void
+  disabled?: boolean
 }) {
   return (
     <ColorPicker
       value={value || '#6366f1'}
       size="small"
+      disabled={disabled}
       disabledAlpha
       showText={(color) => normalizeEmployeeColor(color.toHexString())}
       presets={[{ label: '常用颜色 / Presets', colors: EMPLOYEE_PALETTE }]}
@@ -150,6 +153,10 @@ export default function UsersPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editUser, setEditUser]   = useState<User | null>(null)
   const [form] = Form.useForm()
+  const colorRequests = useRef(new Set<string>())
+  const schedulableRequests = useRef(new Set<string>())
+  const [savingColors, setSavingColors] = useState<Record<string, boolean>>({})
+  const [savingSchedulable, setSavingSchedulable] = useState<Record<string, boolean>>({})
 
   // Map: auth0_id → { empId, stores[] }
   const [empStoreMap, setEmpStoreMap] = useState<Record<string, EmpStoreEntry>>({})
@@ -278,32 +285,50 @@ export default function UsersPage() {
 
   async function handleEmpColorChange(auth0Id: string, color: string) {
     const entry = empStoreMap[auth0Id]
-    if (!entry) return
+    if (!entry || colorRequests.current.has(auth0Id)) return
     const previousColor = entry.color
     const normalized = normalizeEmployeeColor(color)
-    setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { color: normalized }))
+    colorRequests.current.add(auth0Id)
+    setSavingColors(prev => ({ ...prev, [auth0Id]: true }))
     try {
-      await setEmployeeColor(entry.empId, normalized)
+      await persistEmployeeSetting({
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          color: normalized,
+        })),
+        persist: () => setEmployeeColor(entry.empId, normalized),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          color: previousColor,
+        })),
+      })
     } catch (err: any) {
-      setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { color: previousColor }))
       message.error(err?.response?.data?.error ?? '颜色更新失败')
+    } finally {
+      colorRequests.current.delete(auth0Id)
+      setSavingColors(prev => ({ ...prev, [auth0Id]: false }))
     }
   }
 
   async function handleSchedulableChange(auth0Id: string, enabled: boolean) {
     const entry = empStoreMap[auth0Id]
-    if (!entry) return
+    if (!entry || schedulableRequests.current.has(auth0Id)) return
     const previous = entry.isSchedulable
-    setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
-      isSchedulable: enabled ? 1 : 0,
-    }))
+    schedulableRequests.current.add(auth0Id)
+    setSavingSchedulable(prev => ({ ...prev, [auth0Id]: true }))
     try {
-      await setEmployeeSchedulable(entry.empId, enabled)
+      await persistEmployeeSetting({
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          isSchedulable: enabled ? 1 : 0,
+        })),
+        persist: () => setEmployeeSchedulable(entry.empId, enabled),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          isSchedulable: previous,
+        })),
+      })
     } catch (err: any) {
-      setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
-        isSchedulable: previous,
-      }))
       message.error(err?.response?.data?.error ?? '排班设置更新失败')
+    } finally {
+      schedulableRequests.current.delete(auth0Id)
+      setSavingSchedulable(prev => ({ ...prev, [auth0Id]: false }))
     }
   }
 
@@ -359,7 +384,11 @@ export default function UsersPage() {
         if (!entry) return null
         const color = entry.color || '#6366f1'
         return isManager ? (
-          <EmployeeColorPicker value={color} onChange={c => handleEmpColorChange(r.id, c)} />
+          <EmployeeColorPicker
+            value={color}
+            disabled={!!savingColors[r.id]}
+            onChange={c => handleEmpColorChange(r.id, c)}
+          />
         ) : (
           <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb' }} />
         )
@@ -377,6 +406,7 @@ export default function UsersPage() {
           <Switch
             checked={entry.isSchedulable !== 0}
             size="small"
+            loading={!!savingSchedulable[r.id]}
             onChange={(enabled) => handleSchedulableChange(r.id, enabled)}
           />
         )
@@ -498,12 +528,14 @@ export default function UsersPage() {
                       <span className="text-xs text-muted-foreground">员工颜色</span>
                       <EmployeeColorPicker
                         value={empStoreMap[u.id].color || '#6366f1'}
+                        disabled={!!savingColors[u.id]}
                         onChange={c => handleEmpColorChange(u.id, c)}
                       />
                       <span className="text-xs text-muted-foreground ml-auto">参与排班</span>
                       <Switch
                         checked={empStoreMap[u.id].isSchedulable !== 0}
                         size="small"
+                        loading={!!savingSchedulable[u.id]}
                         onChange={(enabled) => handleSchedulableChange(u.id, enabled)}
                       />
                     </div>

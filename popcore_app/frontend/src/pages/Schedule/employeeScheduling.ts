@@ -37,3 +37,17 @@ export function scheduleApiErrorMessage(error: unknown, fallback: string): strin
   const detail = response?.data?.error
   return typeof detail === 'string' && detail.trim() ? detail : fallback
 }
+
+export async function persistEmployeeSetting<T>(options: {
+  optimistic: () => void
+  persist: () => Promise<T>
+  rollback: () => void
+}): Promise<T> {
+  options.optimistic()
+  try {
+    return await options.persist()
+  } catch (error) {
+    options.rollback()
+    throw error
+  }
+}

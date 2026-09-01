@@ -151,6 +151,16 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 400)
 
+    def test_patch_schedulable_rejects_non_object_json_bodies(self):
+        for value in ('invalid', 1, True, [1]):
+            with self.subTest(value=value):
+                response = self.client.patch(
+                    '/api/employees/1/schedulable',
+                    headers=AUTH_HEADERS,
+                    json=value,
+                )
+                self.assertEqual(response.status_code, 400)
+
     def test_patch_schedulable_rejects_missing_or_inactive_employee(self):
         for employee_id in (3, 999):
             with self.subTest(employee_id=employee_id):

@@ -91,3 +91,27 @@ test('shift creation surfaces the server eligibility explanation', () => {
   )
   assert.equal(scheduleApiErrorMessage!(new Error('network'), 'Failed'), 'Failed')
 })
+
+test('a rejected employee setting request restores the previous value', async () => {
+  const persistEmployeeSetting = (
+    employeeScheduling as unknown as {
+      persistEmployeeSetting?: <T>(options: {
+        optimistic: () => void
+        persist: () => Promise<T>
+        rollback: () => void
+      }) => Promise<T>
+    }
+  ).persistEmployeeSetting
+  assert.equal(typeof persistEmployeeSetting, 'function')
+
+  let color = '#3D74C4'
+  await assert.rejects(
+    persistEmployeeSetting!({
+      optimistic: () => { color = '#2E7FA3' },
+      persist: async () => { throw new Error('save failed') },
+      rollback: () => { color = '#3D74C4' },
+    }),
+    /save failed/,
+  )
+  assert.equal(color, '#3D74C4')
+})

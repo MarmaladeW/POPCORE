@@ -290,6 +290,8 @@ def patch_employee_color(employee_id):
 @role_required('manager')
 def patch_employee_schedulable(employee_id):
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON body must be an object'}), 400
     value = data.get('is_schedulable')
     if isinstance(value, bool):
         normalized = int(value)
