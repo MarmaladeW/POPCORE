@@ -56,6 +56,10 @@ import {
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
 } from './schedulePresentation'
+import {
+  assignableEmployees as getAssignableEmployees,
+  shiftModalEmployees,
+} from './employeeScheduling'
 
 import { EMPLOYEE_PALETTE, textColorOn } from '../../lib/palette'
 
@@ -114,6 +118,14 @@ export default function ManagerCalendar() {
   // saved color map arrives after FullCalendar's first date-range request.
   const [empColors, setEmpColors] = useState<Record<number, string>>({})
   const storeColorRef = useRef<Record<string, string>>({})
+  const schedulableEmployees = getAssignableEmployees(employees)
+  const modalEmployees = shiftModalEmployees(employees, selectedShift?.employee_id)
+
+  useEffect(() => {
+    if (filterEmpId !== null && !schedulableEmployees.some((employee) => employee.id === filterEmpId)) {
+      setFilterEmpId(null)
+    }
+  }, [filterEmpId, schedulableEmployees])
 
   // Keep storeColorRef in sync with global stores (updated on mount + color PATCH)
   useEffect(() => {
@@ -476,7 +488,7 @@ export default function ManagerCalendar() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="__all__">All employees</SelectItem>
-              {employees.map((e) => (
+              {schedulableEmployees.map((e) => (
                 <SelectItem key={e.id} value={String(e.id)}>
                   {(e.name || e.email || e.auth0_id) + (e.is_trainee ? ' (Trainee)' : '')}
                 </SelectItem>
@@ -542,7 +554,7 @@ export default function ManagerCalendar() {
 
       {/* Employee filter — avatar strip on mobile, pill chips on desktop.
           Both: click to filter the calendars + show that person's hours. */}
-      {isMobile && employees.length > 0 && (
+      {isMobile && schedulableEmployees.length > 0 && (
         <div
           className="flex gap-2.5 overflow-x-auto -mx-2 px-2 pb-1"
           style={{ scrollbarWidth: 'none' }}
@@ -571,7 +583,7 @@ export default function ManagerCalendar() {
               All
             </span>
           </button>
-          {employees.map((e) => {
+          {schedulableEmployees.map((e) => {
             const empColor = empColors[e.id] ?? FALLBACK_COLORS[0]
             const name     = e.name || e.email || `E${e.id}`
             const active   = filterEmpId === e.id
@@ -621,9 +633,9 @@ export default function ManagerCalendar() {
           })}
         </div>
       )}
-      {!isMobile && employees.length > 0 && (
+      {!isMobile && schedulableEmployees.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {employees.map((e) => {
+          {schedulableEmployees.map((e) => {
             const empColor = empColors[e.id] ?? FALLBACK_COLORS[0]
             const active   = filterEmpId === e.id
             return (
@@ -714,11 +726,11 @@ export default function ManagerCalendar() {
 
       {/* Coverage checklist + period notes: proves everyone was assigned or
           at least considered for the visible month/week/day */}
-      {periodKey && employees.length > 0 && (
+      {periodKey && schedulableEmployees.length > 0 && (
         <CoveragePanel
           periodKey={periodKey}
           periodLabel={viewTitle}
-          employees={employees}
+          employees={schedulableEmployees}
         />
       )}
 
@@ -802,7 +814,7 @@ export default function ManagerCalendar() {
       <ShiftModal
         open={modalOpen}
         date={selectedDate}
-        employees={employees}
+        employees={modalEmployees}
         existing={selectedShift}
         availForDate={availForDate}
         defaultStoreCode={modalStoreCode}
