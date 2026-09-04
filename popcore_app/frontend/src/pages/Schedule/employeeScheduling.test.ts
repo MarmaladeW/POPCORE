@@ -115,3 +115,30 @@ test('a rejected employee setting request restores the previous value', async ()
   )
   assert.equal(color, '#3D74C4')
 })
+
+test('screen eyedropper colors are normalized before saving', async () => {
+  const pickScreenColor = (
+    employeeScheduling as unknown as {
+      pickScreenColor?: (
+        open: () => Promise<{ sRGBHex: string }>,
+      ) => Promise<string>
+    }
+  ).pickScreenColor
+  assert.equal(typeof pickScreenColor, 'function')
+
+  const color = await pickScreenColor!(async () => ({ sRGBHex: '#1d58af' }))
+
+  assert.equal(color, '#1D58AF')
+})
+
+test('cancelling the screen eyedropper is recognized as a quiet cancellation', () => {
+  const isEyeDropperCancellation = (
+    employeeScheduling as unknown as {
+      isEyeDropperCancellation?: (error: unknown) => boolean
+    }
+  ).isEyeDropperCancellation
+  assert.equal(typeof isEyeDropperCancellation, 'function')
+
+  assert.equal(isEyeDropperCancellation!({ name: 'AbortError' }), true)
+  assert.equal(isEyeDropperCancellation!(new Error('permission denied')), false)
+})
