@@ -4,7 +4,7 @@ import {
   Switch, message, Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { Plus, RefreshCw } from 'lucide-react'
+import { Pipette, Plus, RefreshCw } from 'lucide-react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -19,7 +19,9 @@ import {
   setEmployeeStores,
 } from '../Schedule/scheduleApi'
 import {
+  isEyeDropperCancellation,
   normalizeEmployeeColor,
+  pickScreenColor,
   persistEmployeeSetting,
   updateEmployeeSetting,
 } from '../Schedule/employeeScheduling'
@@ -68,16 +70,58 @@ function EmployeeColorPicker({ value, onChange, disabled = false }: {
   onChange: (color: string) => void
   disabled?: boolean
 }) {
+  const [picking, setPicking] = useState(false)
+
+  const handleScreenPick = async () => {
+    type EyeDropperConstructor = new () => {
+      open: () => Promise<{ sRGBHex: string }>
+    }
+    const EyeDropper = (window as typeof window & {
+      EyeDropper?: EyeDropperConstructor
+    }).EyeDropper
+
+    if (!EyeDropper) {
+      message.warning('此浏览器不支持屏幕取色，请使用最新版 Chrome 或 Edge')
+      return
+    }
+
+    setPicking(true)
+    try {
+      const color = await pickScreenColor(() => new EyeDropper().open())
+      onChange(color)
+    } catch (error) {
+      if (!isEyeDropperCancellation(error)) {
+        message.error('屏幕取色失败，请重试')
+      }
+    } finally {
+      setPicking(false)
+    }
+  }
+
   return (
-    <ColorPicker
-      value={value || '#6366f1'}
-      size="small"
-      disabled={disabled}
-      disabledAlpha
-      showText={(color) => normalizeEmployeeColor(color.toHexString())}
-      presets={[{ label: '常用颜色 / Presets', colors: EMPLOYEE_PALETTE }]}
-      onChangeComplete={(color) => onChange(normalizeEmployeeColor(color.toHexString()))}
-    />
+    <div className="inline-flex items-center gap-1">
+      <ColorPicker
+        value={value || '#6366f1'}
+        size="small"
+        disabled={disabled || picking}
+        disabledAlpha
+        showText={(color) => normalizeEmployeeColor(color.toHexString())}
+        presets={[{ label: '常用颜色 / Presets', colors: EMPLOYEE_PALETTE }]}
+        onChangeComplete={(color) => onChange(normalizeEmployeeColor(color.toHexString()))}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="h-7 w-7 shrink-0"
+        disabled={disabled || picking}
+        title="从屏幕取色 / Pick color from screen"
+        aria-label="从屏幕取色 / Pick color from screen"
+        onClick={handleScreenPick}
+      >
+        <Pipette className="h-3.5 w-3.5" />
+      </Button>
+    </div>
   )
 }
 
@@ -377,7 +421,7 @@ export default function UsersPage() {
     {
       title: '颜色',
       key: 'color',
-      width: 120,
+      width: 155,
       align: 'center' as const,
       render: (_: unknown, r: User) => {
         const entry = empStoreMap[r.id]
@@ -524,20 +568,27 @@ export default function UsersPage() {
 
                   {/* Row 3: employee-only scheduling controls (managers only) */}
                   {isManager && empStoreMap[u.id] && (
-                    <div className="flex items-center gap-2 mt-2 pl-11">
-                      <span className="text-xs text-muted-foreground">员工颜色</span>
-                      <EmployeeColorPicker
-                        value={empStoreMap[u.id].color || '#6366f1'}
-                        disabled={!!savingColors[u.id]}
-                        onChange={c => handleEmpColorChange(u.id, c)}
-                      />
-                      <span className="text-xs text-muted-foreground ml-auto">参与排班</span>
-                      <Switch
-                        checked={empStoreMap[u.id].isSchedulable !== 0}
-                        size="small"
-                        loading={!!savingSchedulable[u.id]}
-                        onChange={(enabled) => handleSchedulableChange(u.id, enabled)}
-                      />
+                    <div className="mt-2 pl-11 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">员工颜色</span>
+                        <span className="ml-auto">
+                          <EmployeeColorPicker
+                            value={empStoreMap[u.id].color || '#6366f1'}
+                            disabled={!!savingColors[u.id]}
+                            onChange={c => handleEmpColorChange(u.id, c)}
+                          />
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">参与排班</span>
+                        <Switch
+                          className="ml-auto"
+                          checked={empStoreMap[u.id].isSchedulable !== 0}
+                          size="small"
+                          loading={!!savingSchedulable[u.id]}
+                          onChange={(enabled) => handleSchedulableChange(u.id, enabled)}
+                        />
+                      </div>
                     </div>
                   )}
 

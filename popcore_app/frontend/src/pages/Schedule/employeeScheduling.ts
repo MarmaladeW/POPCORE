@@ -18,6 +18,20 @@ export function normalizeEmployeeColor(value: string): string {
   return value.toUpperCase()
 }
 
+export async function pickScreenColor(
+  open: () => Promise<{ sRGBHex: string }>,
+): Promise<string> {
+  const result = await open()
+  return normalizeEmployeeColor(result.sRGBHex)
+}
+
+export function isEyeDropperCancellation(error: unknown): boolean {
+  return !!error
+    && typeof error === 'object'
+    && 'name' in error
+    && error.name === 'AbortError'
+}
+
 export function updateEmployeeSetting<T>(
   entries: Record<string, T>,
   auth0Id: string,
