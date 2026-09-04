@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POPCORE 库存管理系统 — 店员操作手册</title>
+  <style>
+    /* ===== 基础重置 ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ===== 全局 ===== */
+    body {
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.8;
+      color: #1a1a1a;
+      background: #f5f5f5;
+    }
+
+    /* ===== 页面包装 ===== */
+    .page-wrap {
+      max-width: 860px;
+      margin: 32px auto;
+      background: #fff;
+      box-shadow: 0 2px 16px rgba(0,0,0,.08);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    /* ===== 封面 ===== */
+    .cover {
+      background: linear-gradient(135deg, #1d1d3b 0%, #2e2e5e 60%, #4a3080 100%);
+      color: #fff;
+      padding: 72px 64px 64px;
+      position: relative;
+      overflow: hidden;
+    }
+    .cover::after {
+      content: "";
+      position: absolute;
+      bottom: -60px; right: -60px;
+      width: 280px; height: 280px;
+      border-radius: 50%;
+      background: rgba(255,255,255,.04);
+    }
+    .cover .badge {
+      display: inline-block;
+      background: rgba(255,255,255,.15);
+      border: 1px solid rgba(255,255,255,.3);
+      border-radius: 100px;
+      padding: 4px 16px;
+      font-size: 12px;
+      letter-spacing: 2px;
+      margin-bottom: 24px;
+    }
+    .cover h1 {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      margin-bottom: 12px;
+    }
+    .cover .subtitle {
+      font-size: 18px;
+      opacity: .75;
+      margin-bottom: 32px;
+    }
+    .cover .meta {
+      font-size: 12px;
+      opacity: .5;
+      border-top: 1px solid rgba(255,255,255,.15);
+      padding-top: 24px;
+    }
+
+    /* ===== 目录 ===== */
+    .toc {
+      padding: 48px 64px;
+      background: #fafafa;
+      border-bottom: 1px solid #eee;
+    }
+    .toc h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1d1d3b;
+      margin-bottom: 20px;
+      padding-left: 12px;
+      border-left: 4px solid #6b3fa0;
+    }
+    .toc ol {
+      list-style: none;
+      counter-reset: toc-counter;
+    }
+    .toc ol li {
+      counter-increment: toc-counter;
+      display: flex;
+      align-items: baseline;
+      padding: 6px 0;
+      border-bottom: 1px dotted #e0e0e0;
+      font-size: 13px;
+      color: #444;
+    }
+    .toc ol li::before {
+      content: counter(toc-counter, decimal-leading-zero);
+      font-size: 11px;
+      font-weight: 700;
+      color: #6b3fa0;
+      min-width: 28px;
+      flex-shrink: 0;
+    }
+    .toc ol li a {
+      color: inherit;
+      text-decoration: none;
+    }
+    .toc ol li a:hover { color: #6b3fa0; }
+
+    /* ===== 内容区 ===== */
+    .content {
+      padding: 48px 64px;
+    }
+
+    /* ===== 章节标题 ===== */
+    .section {
+      margin-bottom: 56px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #e8e0f0;
+    }
+    .section-num {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      background: #6b3fa0;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .section-header h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1d1d3b;
+    }
+    h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #2e2e5e;
+      margin: 24px 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h3::before {
+      content: "";
+      display: inline-block;
+      width: 4px; height: 15px;
+      background: #6b3fa0;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    p { margin-bottom: 10px; color: #333; }
+
+    /* ===== 步骤列表 ===== */
+    .steps {
+      list-style: none;
+      counter-reset: step-counter;
+      margin: 12px 0 20px;
+    }
+    .steps li {
+      counter-increment: step-counter;
+      display: flex;
+      gap: 12px;
+      margin-bottom: 10px;
+      align-items: flex-start;
+    }
+    .steps li::before {
+      content: counter(step-counter);
+      min-width: 24px; height: 24px;
+      border-radius: 50%;
+      background: #6b3fa0;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    /* ===== 普通列表 ===== */
+    ul.bullet {
+      list-style: none;
+      margin: 8px 0 16px;
+      padding: 0;
+    }
+    ul.bullet li {
+      padding: 4px 0 4px 20px;
+      position: relative;
+      color: #333;
+    }
+    ul.bullet li::before {
+      content: "▸";
+      position: absolute;
+      left: 0;
+      color: #6b3fa0;
+      font-size: 12px;
+    }
+
+    /* ===== 权限表格 ===== */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      font-size: 13px;
+    }
+    th {
+      background: #2e2e5e;
+      color: #fff;
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 600;
+    }
+    td {
+      padding: 9px 14px;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+    tr:nth-child(even) td { background: #f9f7ff; }
+    td.center, th.center { text-align: center; }
+    .check { color: #22c55e; font-size: 16px; }
+    .cross { color: #ef4444; font-size: 16px; }
+
+    /* ===== 信息卡片 ===== */
+    .card {
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin: 16px 0;
+    }
+    .card-info { background: #eff6ff; border-left: 4px solid #3b82f6; }
+    .card-warn { background: #fffbeb; border-left: 4px solid #f59e0b; }
+    .card-tip  { background: #f0fdf4; border-left: 4px solid #22c55e; }
+    .card-title {
+      font-weight: 700;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: #1a1a1a;
+    }
+    .card p { margin: 0; font-size: 13px; color: #444; }
+
+    /* ===== 工作流步骤图 ===== */
+    .workflow {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin: 20px 0;
+      flex-wrap: wrap;
+    }
+    .wf-step {
+      flex: 1;
+      min-width: 140px;
+      background: #f3eeff;
+      border: 1px solid #d4bfff;
+      border-radius: 8px;
+      padding: 16px 14px;
+      position: relative;
+      text-align: center;
+    }
+    .wf-step + .wf-step {
+      margin-left: 10px;
+    }
+    .wf-step + .wf-step::before {
+      content: "→";
+      position: absolute;
+      left: -14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #6b3fa0;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .wf-num {
+      width: 28px; height: 28px;
+      background: #6b3fa0;
+      color: #fff;
+      border-radius: 50%;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 8px;
+    }
+    .wf-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: #2e2e5e;
+      margin-bottom: 4px;
+    }
+    .wf-sub {
+      font-size: 11px;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    /* ===== 快速参考 ===== */
+    .quick-ref {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .qr-item {
+      background: #fafafa;
+      border: 1px solid #e8e0f0;
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .qr-label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+    .qr-title {
+      font-weight: 700;
+      font-size: 14px;
+      color: #1d1d3b;
+      margin-bottom: 6px;
+    }
+    .qr-desc {
+      font-size: 12px;
+      color: #555;
+      line-height: 1.6;
+    }
+
+    /* ===== 注意事项 ===== */
+    .faq-item {
+      margin-bottom: 20px;
+      background: #fafafa;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .faq-q {
+      background: #2e2e5e;
+      color: #fff;
+      padding: 10px 16px;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .faq-a {
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #333;
+      line-height: 1.7;
+    }
+
+    /* ===== 页脚 ===== */
+    .footer {
+      background: #f5f5f5;
+      padding: 24px 64px;
+      text-align: center;
+      font-size: 12px;
+      color: #999;
+      border-top: 1px solid #eee;
+    }
+
+    /* ===== 打印样式 ===== */
+    @media print {
+      body { background: white; font-size: 12px; }
+      .page-wrap { box-shadow: none; margin: 0; border-radius: 0; max-width: 100%; }
+      .cover { padding: 48px; }
+      .content, .toc { padding: 32px 48px; }
+      .section { page-break-inside: avoid; }
+      .section-header { page-break-after: avoid; }
+      h3 { page-break-after: avoid; }
+      .footer { display: none; }
+      a { text-decoration: none; color: inherit; }
+    }
+
+    @page {
+      margin: 15mm;
+    }
+
+    /* ===== 导航链接颜色 ===== */
+    code {
+      background: #f3eeff;
+      color: #6b3fa0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+
+    .tag {
+      display: inline-block;
+      background: #e0f2fe;
+      color: #0369a1;
+      border-radius: 100px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+    .tag.green { background: #dcfce7; color: #15803d; }
+    .tag.orange { background: #fff7ed; color: #c2410c; }
+    .tag.purple { background: #f3e8ff; color: #6b21a8; }
+  </style>
+</head>
+<body>
+
+<div class="page-wrap">
+
+  <!-- ========== 封面 ========== -->
+  <div class="cover">
+    <div class="badge">内部文档 · 仅限员工</div>
+    <h1>POPCORE</h1>
+    <div class="subtitle">库存管理系统 — 店员操作手册</div>
+    <div class="meta">
+      版本：v1.0 &nbsp;·&nbsp; 更新日期：2026年3月 &nbsp;·&nbsp; 适用角色：店员 / 经理 / 管理员
+    </div>
+  </div>
+
+  <!-- ========== 目录 ========== -->
+  <div class="toc">
+    <h2>目录</h2>
+    <ol>
+      <li><a href="#overview">系统概述</a></li>
+      <li><a href="#login">登录与权限说明</a></li>
+      <li><a href="#dashboard">仪表板（Dashboard）</a></li>
+      <li><a href="#products">产品管理（Products）</a></li>
+      <li><a href="#stock">库存管理（Stock）</a></li>
+      <li><a href="#restock">补货管理（Restock）</a></li>
+      <li><a href="#sales">销售记录（Sales）</a></li>
+      <li><a href="#market">市场价格（Market Prices）</a></li>
+      <li><a href="#quickref">常见操作快速参考</a></li>
+      <li><a href="#faq">注意事项与常见问题</a></li>
+    </ol>
+  </div>
+
+  <!-- ========== 正文 ========== -->
+  <div class="content">
+
+    <!-- 1. 系统概述 -->
+    <div class="section" id="overview">
+      <div class="section-header">
+        <div class="section-num">1</div>
+        <h2>系统概述</h2>
+      </div>
+      <p>
+        <strong>POPCORE</strong> 是一套专为 POP MART 盲盒零售店设计的库存管理系统，帮助门店团队高效完成日常的进货、入店、销售记录以及市场价格监控等工作。
+      </p>
+      <p>系统分为以下几个主要功能模块：</p>
+      <ul class="bullet">
+        <li><strong>仪表板</strong>：一眼掌握库存和销售全局概况</li>
+        <li><strong>产品管理</strong>：维护所有 POP MART 产品信息</li>
+        <li><strong>库存管理</strong>：跟踪楼上仓库与店内陈列的库存数量</li>
+        <li><strong>补货管理</strong>：四步流程完成夜间补货操作</li>
+        <li><strong>销售记录</strong>：按天记录 POS 刷卡与现金销售数据</li>
+        <li><strong>市场价格</strong>：自动爬取竞品在线售价，辅助定价决策</li>
+      </ul>
+      <div class="card card-info">
+        <div class="card-title">💡 库存单位说明</div>
+        <p>系统使用"<strong>端（dan）</strong>"作为库存显示单位。每端含若干盒，具体数量因产品不同而异（在产品详情中配置）。操作时请注意填写的是"端数"而非"盒数"。</p>
+      </div>
+    </div>
+
+    <!-- 2. 登录与权限 -->
+    <div class="section" id="login">
+      <div class="section-header">
+        <div class="section-num">2</div>
+        <h2>登录与权限说明</h2>
+      </div>
+
+      <h3>如何登录</h3>
+      <ol class="steps">
+        <li>在浏览器中打开系统地址</li>
+        <li>点击页面上的 <strong>"登录"</strong> 按钮</li>
+        <li>在弹出窗口中输入分配给您的用户名（邮箱）和密码</li>
+        <li>登录成功后即可进入主界面</li>
+      </ol>
+      <div class="card card-warn">
+        <div class="card-title">⚠️ 注意</div>
+        <p>账号由管理员统一创建和分配。如需新账号或修改密码，请联系管理员。请勿将账号密码共享给他人。</p>
+      </div>
+
+      <h3>角色权限对照表</h3>
+      <p>系统共有四种角色，不同角色可使用的功能不同：</p>
+      <table>
+        <thead>
+          <tr>
+            <th>功能</th>
+            <th class="center">查看者<br><small>Viewer</small></th>
+            <th class="center">店员<br><small>Staff</small></th>
+            <th class="center">经理<br><small>Manager</small></th>
+            <th class="center">管理员<br><small>Admin</small></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>查看仪表板、库存、销售数据</td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>库存入店 / 楼上补货操作</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>销售记录录入</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>补货流程操作</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>导出报表 / 批量操作</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>产品信息编辑</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>触发市场价格爬虫</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>用户管理（创建/删除账号）</td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="cross">✗</span></td>
+            <td class="center"><span class="check">✓</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 3. 仪表板 -->
+    <div class="section" id="dashboard">
+      <div class="section-header">
+        <div class="section-num">3</div>
+        <h2>仪表板（Dashboard）</h2>
+      </div>
+      <p>登录后默认进入仪表板页面，汇总展示门店的核心运营数据。</p>
+
+      <h3>页面包含内容</h3>
+      <ul class="bullet">
+        <li><strong>库存总览卡片</strong>：显示楼上仓库总量、店内陈列总量、低库存产品数量</li>
+        <li><strong>低库存预警列表</strong>：库存低于安全线的产品，需要优先补货</li>
+        <li><strong>近期销售趋势图</strong>：折线图展示近 7 天或 30 天的销售走势</li>
+        <li><strong>最近库存变动</strong>：显示最新的入店和补货操作记录</li>
+      </ul>
+
+      <div class="card card-tip">
+        <div class="card-title">✅ 建议</div>
+        <p>每天开始工作前先查看仪表板，关注低库存预警，及时安排补货。</p>
+      </div>
+    </div>
+
+    <!-- 4. 产品管理 -->
+    <div class="section" id="products">
+      <div class="section-header">
+        <div class="section-num">4</div>
+        <h2>产品管理（Products）</h2>
+      </div>
+      <p>产品管理页面是所有产品信息的数据库，记录每款 POP MART 产品的名称、系列、价格和类型等信息。</p>
+
+      <h3>搜索和筛选产品</h3>
+      <ol class="steps">
+        <li>在页面顶部的搜索框输入产品名称（支持中文、英文或记账名模糊搜索）</li>
+        <li>可通过下拉菜单按 <strong>IP 系列</strong>（如 Molly、Crybaby）或 <strong>产品类型</strong> 进一步筛选</li>
+        <li>结果列表会实时更新，点击任意产品可查看详情</li>
+      </ol>
+
+      <h3>新增产品 <span class="tag purple">经理/管理员</span></h3>
+      <ol class="steps">
+        <li>点击页面右上角 <strong>"新增产品"</strong> 按钮</li>
+        <li>填写产品信息：SKU、中英文名称、记账名、售价、IP系列、产品类型等</li>
+        <li>点击 <strong>"保存"</strong> 完成创建</li>
+      </ol>
+
+      <h3>粘贴导入批量添加 <span class="tag purple">经理/管理员</span></h3>
+      <p>可从 Excel 表格中复制数据，批量导入多个产品：</p>
+      <ol class="steps">
+        <li>在 Excel 或 Google Sheets 中选中要导入的产品数据（每行一个产品，包含 SKU 和记账名等信息）</li>
+        <li>复制所选内容（Ctrl+C）</li>
+        <li>点击页面中的 <strong>"粘贴导入"</strong> 按钮</li>
+        <li>在弹出框中粘贴数据（Ctrl+V）</li>
+        <li>系统会自动匹配并预览结果，确认后点击 <strong>"确认导入"</strong></li>
+      </ol>
+
+      <h3>上传隐藏款图片 <span class="tag purple">经理/管理员</span></h3>
+      <ol class="steps">
+        <li>在产品列表中找到目标产品，点击进入详情</li>
+        <li>点击 <strong>"隐藏款图片"</strong> 按钮</li>
+        <li>上传小尺寸（缩略图）和大尺寸图片文件</li>
+        <li>上传完成后点击 <strong>"保存"</strong></li>
+      </ol>
+    </div>
+
+    <!-- 5. 库存管理 -->
+    <div class="section" id="stock">
+      <div class="section-header">
+        <div class="section-num">5</div>
+        <h2>库存管理（Stock）</h2>
+      </div>
+      <p>库存管理页面跟踪每个产品在 <strong>两个位置</strong> 的存放数量：</p>
+      <ul class="bullet">
+        <li><strong>楼上（仓库）</strong>：2 楼储存区，属于备货库存</li>
+        <li><strong>店内（店面）</strong>：1 楼陈列区，属于待销售库存</li>
+      </ul>
+
+      <h3>查看库存</h3>
+      <ol class="steps">
+        <li>进入 <strong>Stock</strong> 页面</li>
+        <li>在搜索框输入产品名称或 SKU 进行查询</li>
+        <li>列表中可看到每个产品的楼上库存和店内库存数量（单位：端）</li>
+      </ol>
+
+      <h3>入店操作（楼上 → 店内）<span class="tag green">Staff+</span></h3>
+      <p>当店内货架需要补充货品时，执行"入店"操作将楼上库存移入店内：</p>
+      <ol class="steps">
+        <li>搜索找到目标产品</li>
+        <li>点击该产品行的 <strong>"入店"</strong> 按钮</li>
+        <li>在弹出框中填写：
+          <ul class="bullet" style="margin-top: 6px;">
+            <li>数量（端）</li>
+            <li>日期（默认今天）</li>
+            <li>备注（可选）</li>
+          </ul>
+        </li>
+        <li>点击 <strong>"确认"</strong> 完成操作</li>
+        <li>系统自动：楼上库存 <strong>减少</strong>，店内库存 <strong>增加</strong></li>
+      </ol>
+      <div class="card card-warn">
+        <div class="card-title">⚠️ 注意</div>
+        <p>如果楼上库存不足，系统会拒绝操作并提示。请勿在库存为零时执行入店。</p>
+      </div>
+
+      <h3>楼上补货 <span class="tag green">Staff+</span></h3>
+      <p>当楼上仓库收到新货时，执行"楼上补货"操作增加仓库库存：</p>
+      <ol class="steps">
+        <li>搜索找到目标产品</li>
+        <li>点击 <strong>"楼上补货"</strong> 按钮</li>
+        <li>输入到货数量（端）和日期</li>
+        <li>点击 <strong>"确认"</strong> 完成</li>
+      </ol>
+
+      <h3>库存调整 <span class="tag green">Staff+</span></h3>
+      <p>当实际盘点与系统数据不符时，可执行调整操作修正库存：</p>
+      <ol class="steps">
+        <li>找到对应产品，点击 <strong>"调整"</strong> 按钮</li>
+        <li>选择调整位置（楼上 或 店内）</li>
+        <li>输入调整数量（正数增加，负数减少）和备注原因</li>
+        <li>确认提交</li>
+      </ol>
+
+      <h3>查看交易历史</h3>
+      <p>点击页面顶部 <strong>"交易历史"</strong> 标签，可查看所有库存操作记录，包含操作类型、数量、操作人和时间。</p>
+
+      <h3>导出库存报表 <span class="tag">Manager+</span></h3>
+      <p>点击页面右上角 <strong>"导出"</strong> 按钮，可将当前库存数据导出为 Excel 文件。</p>
+    </div>
+
+    <!-- 6. 补货管理 -->
+    <div class="section" id="restock">
+      <div class="section-header">
+        <div class="section-num">6</div>
+        <h2>补货管理（Restock）</h2>
+      </div>
+      <p>补货管理是系统最核心的工作流程，用于 <strong>夜间从仓库向店面搬货</strong> 的全流程管理。操作分为四个阶段：</p>
+
+      <div class="workflow">
+        <div class="wf-step">
+          <div class="wf-num">1</div>
+          <div class="wf-title">录入中</div>
+          <div class="wf-sub">添加需要补货的产品和数量</div>
+        </div>
+        <div class="wf-step">
+          <div class="wf-num">2</div>
+          <div class="wf-title">待拣货</div>
+          <div class="wf-sub">提交清单，系统快照仓库库存</div>
+        </div>
+        <div class="wf-step">
+          <div class="wf-num">3</div>
+          <div class="wf-title">拣货中</div>
+          <div class="wf-sub">仓库实际找货，确认数量</div>
+        </div>
+        <div class="wf-step">
+          <div class="wf-num">4</div>
+          <div class="wf-title">已完成</div>
+          <div class="wf-sub">完成，库存自动更新</div>
+        </div>
+      </div>
+
+      <h3>第 1 步：录入中（添加补货清单）</h3>
+      <ol class="steps">
+        <li>进入 <strong>Restock</strong> 页面，系统会自动创建或载入今日的补货会话</li>
+        <li>在搜索框输入产品名称，找到需要补货的产品</li>
+        <li>点击 <strong>"添加"</strong>，输入需要补充的数量（端）</li>
+        <li>重复上述步骤，添加所有需要补货的产品</li>
+        <li>清单确认无误后，点击 <strong>"提交清单"</strong> 进入下一步</li>
+      </ol>
+      <div class="card card-info">
+        <div class="card-title">💡 提示</div>
+        <p>可以在添加时参考页面上显示的当前库存数量，判断需要补充多少。</p>
+      </div>
+
+      <h3>第 2 步：待拣货（系统快照库存）</h3>
+      <p>提交清单后，系统会自动记录此刻楼上仓库的实际库存数量（快照），作为拣货的参考基准。此步骤<strong>无需手动操作</strong>，系统自动完成。</p>
+      <p>可以点击 <strong>"生成拣货清单"</strong> 按钮打印或查看拣货单，交给仓库工作人员。</p>
+
+      <h3>第 3 步：拣货中（仓库确认找货情况）</h3>
+      <ol class="steps">
+        <li>仓库人员按拣货清单逐项找货</li>
+        <li>每找到一项，在系统中该产品的 <strong>"找到数量"</strong> 输入框填写实际拿到的数量</li>
+        <li>点击 <strong>"已找到"</strong> 标记该条目完成</li>
+        <li>如某产品仓库中找不到，标记为 <strong>"未找到"</strong></li>
+        <li>所有条目处理完毕后，进入下一步</li>
+      </ol>
+
+      <h3>第 4 步：已完成（库存更新）</h3>
+      <ol class="steps">
+        <li>确认所有拣货结果后，点击 <strong>"完成补货"</strong> 按钮</li>
+        <li>系统自动将找到的数量从 <strong>楼上库存中扣除</strong></li>
+        <li>生成本次补货的进店凭证，操作完毕</li>
+      </ol>
+      <div class="card card-warn">
+        <div class="card-title">⚠️ 重要提醒</div>
+        <p>每天只能有一个补货会话。请在当天实际搬货完成后再点击"完成补货"，操作不可撤销。</p>
+      </div>
+    </div>
+
+    <!-- 7. 销售记录 -->
+    <div class="section" id="sales">
+      <div class="section-header">
+        <div class="section-num">7</div>
+        <h2>销售记录（Sales）</h2>
+      </div>
+      <p>销售记录页面用于每天录入门店的销售数据，分别记录 POS 刷卡和现金的销售数量。</p>
+
+      <h3>录入当日销售</h3>
+      <ol class="steps">
+        <li>进入 <strong>Sales</strong> 页面，默认显示今天的日期</li>
+        <li>在产品搜索框中输入产品名称并选择</li>
+        <li>在输入框中分别填写：
+          <ul class="bullet" style="margin-top: 6px;">
+            <li><strong>POS 数量</strong>：刷卡支付的销售数量（盒）</li>
+            <li><strong>现金数量</strong>：现金支付的销售数量（盒）</li>
+          </ul>
+        </li>
+        <li>系统自动计算合计销量并保存</li>
+      </ol>
+
+      <h3>查看历史销售</h3>
+      <ol class="steps">
+        <li>点击页面顶部的日期选择器，切换到目标日期</li>
+        <li>页面下方展示该日期的所有产品销售明细</li>
+        <li>右侧显示 7 天或 30 天销售趋势图表</li>
+      </ol>
+
+      <h3>批量上传销售数据 <span class="tag">Manager+</span></h3>
+      <ol class="steps">
+        <li>点击 <strong>"批量上传"</strong> 按钮</li>
+        <li>准备好 Excel/CSV 格式的销售数据，按系统要求格式整理</li>
+        <li>上传文件，系统批量导入数据</li>
+      </ol>
+
+      <h3>导出销售报表 <span class="tag">Manager+</span></h3>
+      <p>点击 <strong>"导出"</strong> 按钮，可选择日期范围后导出 Excel 格式的销售报表。</p>
+
+      <div class="card card-warn">
+        <div class="card-title">⚠️ 注意</div>
+        <p>如需清除某天的全部销售数据，点击"清除本日数据"按钮。此操作不可恢复，请谨慎使用。</p>
+      </div>
+    </div>
+
+    <!-- 8. 市场价格 -->
+    <div class="section" id="market">
+      <div class="section-header">
+        <div class="section-num">8</div>
+        <h2>市场价格（Market Prices）</h2>
+      </div>
+      <p>市场价格页面自动从竞品在线商城抓取产品价格，帮助门店了解市场行情。</p>
+
+      <h3>查看竞品价格</h3>
+      <p>进入 <strong>Market Prices</strong> 页面，可看到以下竞品商城的价格数据：</p>
+      <ul class="bullet">
+        <li><strong>POP MART Canada</strong>（popmart.com/ca）官方在线价格</li>
+        <li><strong>Mr. Pen Toronto</strong>（mrpen.ca）当地零售价</li>
+        <li><strong>Whoopea</strong>（whoopea.com）竞品价格</li>
+      </ul>
+      <p>表格中可查看每款产品在各渠道的：当前售价、是否在售（在库/缺货）、是否有折扣活动。</p>
+
+      <h3>更新价格数据 <span class="tag orange">Admin</span></h3>
+      <ol class="steps">
+        <li>点击页面右上角的 <strong>"运行爬虫"</strong> 按钮</li>
+        <li>系统在后台自动抓取最新价格，期间可继续使用其他功能</li>
+        <li>爬取完成后页面数据会自动刷新</li>
+      </ol>
+
+      <h3>查看爬虫日志</h3>
+      <p>在左侧导航点击 <strong>"爬虫日志（Scrape Log）"</strong>，可查看每次爬取的执行时间、抓取数量、匹配率和错误信息。</p>
+    </div>
+
+    <!-- 9. 快速参考 -->
+    <div class="section" id="quickref">
+      <div class="section-header">
+        <div class="section-num">9</div>
+        <h2>常见操作快速参考</h2>
+      </div>
+
+      <div class="quick-ref">
+        <div class="qr-item">
+          <div class="qr-label">场景 01</div>
+          <div class="qr-title">记录今日销售</div>
+          <div class="qr-desc">
+            Sales → 确认日期为今日<br>
+            → 搜索产品 → 填写 POS / 现金数量 → 自动保存
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 02</div>
+          <div class="qr-title">货架需要补货（入店）</div>
+          <div class="qr-desc">
+            Stock → 搜索产品<br>
+            → 点击"入店" → 输入数量 → 确认
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 03</div>
+          <div class="qr-title">新货到仓（楼上补货）</div>
+          <div class="qr-desc">
+            Stock → 搜索产品<br>
+            → 点击"楼上补货" → 输入到货数量 → 确认
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 04</div>
+          <div class="qr-title">夜间搬货（补货流程）</div>
+          <div class="qr-desc">
+            Restock → 录入需补货产品<br>
+            → 提交清单 → 仓库拣货确认 → 完成
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 05</div>
+          <div class="qr-title">查询某产品库存</div>
+          <div class="qr-desc">
+            Stock → 搜索产品名称<br>
+            → 查看楼上 / 店内库存数量
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 06</div>
+          <div class="qr-title">库存盘点发现差异</div>
+          <div class="qr-desc">
+            Stock → 搜索产品<br>
+            → 点击"调整" → 输入实际差值及原因 → 确认
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 07</div>
+          <div class="qr-title">查看低库存预警</div>
+          <div class="qr-desc">
+            Dashboard → 查看"低库存预警"列表<br>
+            → 安排入店或补货操作
+          </div>
+        </div>
+        <div class="qr-item">
+          <div class="qr-label">场景 08</div>
+          <div class="qr-title">查询历史销售数据</div>
+          <div class="qr-desc">
+            Sales → 点击日期选择器<br>
+            → 选择目标日期 → 查看当日销售明细
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 10. 注意事项和常见问题 -->
+    <div class="section" id="faq">
+      <div class="section-header">
+        <div class="section-num">10</div>
+        <h2>注意事项与常见问题</h2>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 入店时系统提示"楼上库存不足"怎么办？</div>
+        <div class="faq-a">
+          这表示楼上仓库中该产品的实际库存少于您要入店的数量。请先到仓库实地确认库存，如有差异可在 Stock 页面执行"调整"操作修正数量，再重新执行入店。
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 今天的补货会话已经关闭，但我还需要补录数据怎么办？</div>
+        <div class="faq-a">
+          每天只能有一个补货会话。如已完成，可通过 Stock 页面的"入店"功能直接操作库存调拨，并在备注中注明原因。如需恢复会话，请联系管理员。
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 搜索产品时找不到想要的产品怎么办？</div>
+        <div class="faq-a">
+          可尝试以下方法：① 换用产品的中文全名或英文名搜索；② 尝试输入 SKU 编号；③ 尝试记账名（非正式简称，如"SA草莓"）。如仍找不到，该产品可能尚未录入系统，请联系经理或管理员添加。
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 销售数量填写错误，如何修改？</div>
+        <div class="faq-a">
+          在 Sales 页面找到该日期和产品，直接点击数字输入框重新输入正确数量并保存即可。系统会覆盖原有数据。
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 系统页面刷新后数据消失了怎么办？</div>
+        <div class="faq-a">
+          大多数操作在点击"确认"或"保存"后即已保存到数据库，刷新页面不会影响已保存的数据。如发现数据异常，请截图并联系管理员排查。
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 我的账号没有权限执行某个操作怎么办？</div>
+        <div class="faq-a">
+          请联系管理员确认您的账号角色。如需要更高权限（如导出报表、编辑产品），由管理员在用户管理页面提升您的角色级别。
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">❓ 库存数量单位"端"是多少盒？</div>
+        <div class="faq-a">
+          每端的盒数因产品不同而不同，具体数量在产品详情中配置。如不确定，可在产品管理页面查看该产品的"每端盒数"字段。
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+
+  <!-- ========== 页脚 ========== -->
+  <div class="footer">
+    POPCORE 库存管理系统 — 店员操作手册 &nbsp;|&nbsp; 仅供内部使用 &nbsp;|&nbsp; 如有问题请联系系统管理员
+  </div>
+
+</div><!-- /page-wrap -->
+
+</body>
+</html>
