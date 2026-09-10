@@ -124,7 +124,7 @@ logrotate --debug "$LOGROTATE_DST" >/dev/null 2>&1 && ok "logrotate config valid
 
 # ── 7. cron — daily backup at 02:00 ─────────────────────────────────────────
 step "Setting up daily backup cron job"
-CRON_CMD="0 2 * * * $APP_DIR/backup.sh >> /var/log/popcore-backup.log 2>&1"
+CRON_CMD="0 2 * * * POPCORE_DB_PATH=/var/lib/popcore/popcore.db POPCORE_HIDDEN_IMG_DIR=/var/lib/popcore/uploads/hidden_imgs POPCORE_PAYMENT_EVIDENCE_DIR=/var/lib/popcore/uploads/payment_evidence POPCORE_CONDITION_EVIDENCE_DIR=/var/lib/popcore/uploads/condition_evidence $APP_DIR/backup.sh >> /var/log/popcore-backup.log 2>&1"
 CRON_MARKER="popcore-backup"
 
 # Add only if not already present
@@ -148,7 +148,7 @@ echo "  Service management:"
 echo "    systemctl status popcore"
 echo "    systemctl restart popcore"
 echo "    journalctl -u popcore -f          # live logs"
-echo "    tail -f $APP_DIR/server.log       # file logs"
+echo "    tail -f /var/log/popcore/server.log       # file logs"
 echo ""
 echo "  Backup:"
 echo "    $APP_DIR/backup.sh                # run manually"

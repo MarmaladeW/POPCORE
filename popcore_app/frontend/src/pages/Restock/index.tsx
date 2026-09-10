@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Tabs, Typography, Tag, Spin, Button, Table, Popconfirm,
-  Empty, Modal, message, Grid, Space,
+  Empty, message, Grid, Space,
 } from 'antd'
 import {
   PlusOutlined, AuditOutlined, StarOutlined,
@@ -47,6 +47,23 @@ export interface RestockSession {
   submitted_at: string | null
   completed_at: string | null
   items: RestockItem[]
+  delivery?: {
+    id: number
+    version: number
+    status: 'planned' | 'active' | 'completed' | 'cancelled'
+    lines: Array<{
+      line_no: number
+      product_id: number
+      native_unit: 'box' | 'set' | 'piece'
+      requested_quantity: number
+      dispatched_quantity: number
+      received_quantity: number
+      returned_quantity: number
+      loss_quantity: number
+      short_quantity: number
+      outstanding_transit: number
+    }>
+  }
 }
 
 interface SessionSummary {
@@ -116,28 +133,14 @@ function TodaySessions() {
     }
   }
 
-  async function handleDelete(s: SessionSummary) {
-    if (s.status === 'completed') {
-      Modal.confirm({
-        title:   '撤销已完成的补货？',
-        content: '此操作将撤销库存变动（恢复仓库库存），且无法恢复。确认继续？',
-        okText:  '确认撤销',
-        okButtonProps: { danger: true },
-        onOk: () => doDelete(s.id),
-      })
-    } else {
-      await doDelete(s.id)
-    }
-  }
-
   async function doDelete(id: number) {
     setDeletingId(id)
     try {
       await client.delete(`/restock/session/${id}`)
       message.success('已撤销')
       await load()
-    } catch {
-      message.error('撤销失败，请重试')
+    } catch (error: any) {
+      message.error(error?._serverMessage || '撤销失败，请重试')
     } finally {
       setDeletingId(null)
     }
@@ -186,13 +189,7 @@ function TodaySessions() {
               </Popconfirm>
             )
             : (
-              <Button
-                size="small" danger
-                loading={deletingId === s.id}
-                onClick={() => handleDelete(s)}
-              >
-                撤销
-              </Button>
+              <Tag>保留记录</Tag>
             )
           }
         </Space>

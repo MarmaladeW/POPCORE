@@ -9,6 +9,7 @@ import sentry_sdk
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from sentry_sdk.integrations.flask import FlaskIntegration
+from telemetry import scrub_event
 
 from db import (
     BASE_DIR, STATIC_DIR, HIDDEN_IMG_DIR,
@@ -20,7 +21,8 @@ from auth import AUTH0_DOMAIN
 sentry_sdk.init(
     dsn=os.environ.get('SENTRY_DSN', ''),
     integrations=[FlaskIntegration()],
-    send_default_pii=True,
+    send_default_pii=False,
+    before_send=scrub_event,
     traces_sample_rate=0.2,
     profiles_sample_rate=0.1,
     environment=os.environ.get('APP_ENV', 'development'),
@@ -62,6 +64,13 @@ from blueprints.inventory import bp as inventory_bp
 from blueprints.schedule  import bp as schedule_bp
 from blueprints.insights  import bp as insights_bp
 from blueprints.settings  import bp as settings_bp
+from blueprints.goods     import bp as goods_bp
+from blueprints.sale_documents import bp as sale_documents_bp
+from blueprints.payments  import bp as payments_bp
+from blueprints.closing   import bp as closing_bp
+from blueprints.trades    import bp as trades_bp
+from blueprints.today     import bp as today_bp
+from blueprints.reports   import bp as reports_bp
 
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
@@ -73,6 +82,13 @@ app.register_blueprint(inventory_bp)
 app.register_blueprint(schedule_bp)
 app.register_blueprint(insights_bp)
 app.register_blueprint(settings_bp)
+app.register_blueprint(goods_bp)
+app.register_blueprint(sale_documents_bp)
+app.register_blueprint(payments_bp)
+app.register_blueprint(closing_bp)
+app.register_blueprint(trades_bp)
+app.register_blueprint(today_bp)
+app.register_blueprint(reports_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.
@@ -80,36 +96,15 @@ app.register_blueprint(settings_bp)
 # so the scheduler thread is not duplicated across workers.
 if not os.environ.get('DISABLE_SCHEDULER'):
     import atexit
-    import sqlite3 as _sqlite3
-    from datetime import datetime as _dt
     from apscheduler.schedulers.background import BackgroundScheduler
-    from insights import generate_daily_insights as _gen_insights
-    from db import DB_PATH as _DB_PATH
-
-    _insights_last_run: dict = {'date': None}
+    from insights import run_due_daily_insights as _run_due_insights
 
     def _insights_job():
         """Run nightly insights at the time stored in app_settings.insight_generate_time."""
-        now   = _dt.utcnow()
-        today = now.date().isoformat()
-        if _insights_last_run['date'] == today:
-            return
         try:
-            _con = _sqlite3.connect(_DB_PATH)
-            _row = _con.execute(
-                "SELECT value FROM app_settings WHERE key = 'insight_generate_time'"
-            ).fetchone()
-            _con.close()
-            time_str = _row[0] if _row else '02:00'
+            _run_due_insights()
         except Exception:
-            time_str = '02:00'
-        try:
-            sched_h, sched_m = int(time_str.split(':')[0]), int(time_str.split(':')[1])
-        except Exception:
-            sched_h, sched_m = 2, 0
-        if now.hour == sched_h and now.minute == sched_m:
-            _gen_insights()
-            _insights_last_run['date'] = today
+            app.logger.exception('Daily insight generation failed')
 
     _scheduler = BackgroundScheduler(daemon=True)
     _scheduler.add_job(_insights_job, 'interval', minutes=1, id='nightly_insights')

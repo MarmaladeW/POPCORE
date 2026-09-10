@@ -17,7 +17,8 @@ them without a code deploy.  Two checks have adaptive overrides:
 import json
 import sqlite3
 import statistics
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from db import DB_PATH
 
@@ -68,13 +69,13 @@ def _get_active_stores(cur) -> list[str]:
 
 # ─── Adaptive helpers ─────────────────────────────────────────────────────────
 
-def _compute_velocity_thresholds(cur, store: str, cfg_spike: float, cfg_drop: float):
+def _compute_velocity_thresholds(cur, store: str, cfg_spike: float, cfg_drop: float, today=None):
     """
     Compute adaptive spike/drop thresholds from the last 30 days of 7d-vs-prior-7d
     rolling ratios (store-level).  Returns (effective_spike, effective_drop).
     Falls back to configured values when fewer than 10 ratio data points exist.
     """
-    today = datetime.utcnow().date()
+    today = today or datetime.utcnow().date()
     lookback = (today - timedelta(days=44)).isoformat()
 
     cur.execute('''
@@ -125,13 +126,13 @@ def _median_inter_sale_interval(cur, product_id: int, store: str):
 
 # ─── Check functions ──────────────────────────────────────────────────────────
 
-def _check_velocity_spike(cur, store: str, thresholds: dict) -> list:
+def _check_velocity_spike(cur, store: str, thresholds: dict, today=None) -> list:
     cfg_spike        = float(thresholds.get('velocity_spike_ratio', 2.0))
     cfg_drop         = float(thresholds.get('velocity_drop_ratio',  0.3))
     high_price_limit = float(thresholds.get('high_price_threshold', 0))
-    eff_spike, eff_drop = _compute_velocity_thresholds(cur, store, cfg_spike, cfg_drop)
+    today = today or datetime.utcnow().date()
+    eff_spike, eff_drop = _compute_velocity_thresholds(cur, store, cfg_spike, cfg_drop, today)
 
-    today    = datetime.utcnow().date()
     today_s  = today.isoformat()
     d7_s     = (today - timedelta(days=7)).isoformat()
     d14_s    = (today - timedelta(days=14)).isoformat()
@@ -189,10 +190,10 @@ def _check_velocity_spike(cur, store: str, thresholds: dict) -> list:
     return insights
 
 
-def _check_dead_stock(cur, store: str, thresholds: dict) -> list:
+def _check_dead_stock(cur, store: str, thresholds: dict, today=None) -> list:
     cfg_days         = int(thresholds.get('dead_stock_days', 14))
     high_price_limit = float(thresholds.get('high_price_threshold', 0))
-    today    = datetime.utcnow().date()
+    today    = today or datetime.utcnow().date()
     cutoff_s = (today - timedelta(days=cfg_days)).isoformat()
 
     cur.execute('''
@@ -243,10 +244,11 @@ def _check_dead_stock(cur, store: str, thresholds: dict) -> list:
     return insights
 
 
-def _check_revenue_gap(cur, store: str, thresholds: dict) -> list:
+def _check_revenue_gap(cur, store: str, thresholds: dict, today=None) -> list:
     gap_pct  = float(thresholds.get('revenue_gap_pct', 20.0))
-    today_s  = datetime.utcnow().date().isoformat()
-    d7_s     = (datetime.utcnow().date() - timedelta(days=7)).isoformat()
+    today = today or datetime.utcnow().date()
+    today_s  = today.isoformat()
+    d7_s     = (today - timedelta(days=7)).isoformat()
 
     cur.execute('''
         SELECT COALESCE(SUM(ds.qty_sold * p.price), 0) AS revenue
@@ -284,11 +286,12 @@ def _check_revenue_gap(cur, store: str, thresholds: dict) -> list:
     }]
 
 
-def _check_stockout_risk(cur, store: str, thresholds: dict) -> list:
+def _check_stockout_risk(cur, store: str, thresholds: dict, today=None) -> list:
     days_runway      = float(thresholds.get('stockout_days_runway', 7.0))
     high_price_limit = float(thresholds.get('high_price_threshold', 0))
-    today_s          = datetime.utcnow().date().isoformat()
-    d30_s            = (datetime.utcnow().date() - timedelta(days=30)).isoformat()
+    today = today or datetime.utcnow().date()
+    today_s          = today.isoformat()
+    d30_s            = (today - timedelta(days=30)).isoformat()
 
     cur.execute('''
         SELECT s.product_id, p.jizhanming, p.sku,
@@ -327,9 +330,10 @@ def _check_stockout_risk(cur, store: str, thresholds: dict) -> list:
     return insights
 
 
-def _check_data_quality(cur, store: str, thresholds: dict) -> list:
+def _check_data_quality(cur, store: str, thresholds: dict, today=None) -> list:
     stale_days = int(thresholds.get('data_quality_days', 14))
-    cutoff_s   = (datetime.utcnow().date() - timedelta(days=stale_days)).isoformat()
+    today = today or datetime.utcnow().date()
+    cutoff_s   = (today - timedelta(days=stale_days)).isoformat()
 
     cur.execute('''
         SELECT s.product_id, p.jizhanming, p.sku,
@@ -358,7 +362,7 @@ def _check_data_quality(cur, store: str, thresholds: dict) -> list:
     ]
 
 
-def _check_sales_swap(cur, store: str, thresholds: dict) -> list:
+def _check_sales_swap(cur, store: str, thresholds: dict, today=None) -> list:
     """
     Detect likely wrong-记账名 entries by pairing evening-count discrepancies.
 
@@ -368,12 +372,13 @@ def _check_sales_swap(cur, store: str, thresholds: dict) -> list:
     An opposite-sign, equal-magnitude pair on the same date+store is the
     signature. Corroboration: A actually has ≥N units recorded sold that day.
     """
+    today = today or datetime.utcnow().date()
     cur.execute('''
         SELECT MAX(ic.date) AS d
         FROM inventory_checks ic
         JOIN stores st ON st.id = ic.store_id
-        WHERE st.code = ? AND ic.date >= date('now', '-3 days')
-    ''', (store,))
+        WHERE st.code = ? AND ic.date >= ?
+    ''', (store, (today - timedelta(days=3)).isoformat()))
     row = cur.fetchone()
     check_date = row['d'] if row else None
     if not check_date:
@@ -454,13 +459,14 @@ def _check_sales_swap(cur, store: str, thresholds: dict) -> list:
 
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 
-def generate_daily_insights() -> int:
+def generate_daily_insights(con=None, business_date=None) -> int:
     """
     Run all checks for every active store and write results to insights.
     Undismissed insights older than 48h are pruned first.
     Returns the number of new insights written.
     """
-    con = _get_db()
+    owned = con is None
+    con = con or _get_db()
     cur = con.cursor()
     try:
         cur.execute('''
@@ -477,18 +483,22 @@ def generate_daily_insights() -> int:
         thresholds['stockout_days_runway'] = float(app_cfg.get('insight_stockout_days',    thresholds.get('stockout_days_runway', 7)))
         thresholds['high_price_threshold'] = float(app_cfg.get('insight_high_price_threshold', 0))
         stores     = _get_active_stores(cur)
-        now        = datetime.utcnow().isoformat()
+        today = date.fromisoformat(business_date) if business_date else datetime.utcnow().date()
+        mode = cur.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()
+        if mode and mode['mode'] == 'authoritative':
+            stores = []
+        now        = datetime.now(timezone.utc).isoformat()
         all_ins    = []
 
         for store in stores:
             has_history = _has_min_history(cur, store, days=7)
             if has_history:
-                all_ins.extend(_check_velocity_spike(cur, store, thresholds))
-                all_ins.extend(_check_dead_stock(cur, store, thresholds))
-                all_ins.extend(_check_revenue_gap(cur, store, thresholds))
-            all_ins.extend(_check_stockout_risk(cur, store, thresholds))
-            all_ins.extend(_check_data_quality(cur, store, thresholds))
-            all_ins.extend(_check_sales_swap(cur, store, thresholds))
+                all_ins.extend(_check_velocity_spike(cur, store, thresholds, today))
+                all_ins.extend(_check_dead_stock(cur, store, thresholds, today))
+                all_ins.extend(_check_revenue_gap(cur, store, thresholds, today))
+            all_ins.extend(_check_stockout_risk(cur, store, thresholds, today))
+            all_ins.extend(_check_data_quality(cur, store, thresholds, today))
+            all_ins.extend(_check_sales_swap(cur, store, thresholds, today))
 
         for ins in all_ins:
             cur.execute('''
@@ -499,7 +509,56 @@ def generate_daily_insights() -> int:
                   ins['title'], ins['body'], ins.get('product_id'),
                   ins.get('meta', '{}'), now))
 
-        con.commit()
+        if owned:
+            con.commit()
         return len(all_ins)
     finally:
-        con.close()
+        if owned:
+            con.close()
+
+
+def insight_business_date(now: datetime) -> str:
+    if now.tzinfo is None:
+        raise ValueError('now must be timezone-aware')
+    return now.astimezone(ZoneInfo('America/Toronto')).date().isoformat()
+
+
+def run_due_daily_insights(now=None) -> int:
+    """Run once for a due Toronto business date; failed dates may retry."""
+    now = now or datetime.now(timezone.utc)
+    local = now.astimezone(ZoneInfo('America/Toronto'))
+    business_date = insight_business_date(now)
+    con = _get_db()
+    try:
+        configured = _get_app_settings(con.cursor())['insight_generate_time']
+        try:
+            hour, minute = (int(value) for value in configured.split(':', 1))
+        except (TypeError, ValueError):
+            hour, minute = 2, 0
+        if (local.hour, local.minute) < (hour, minute):
+            return 0
+        con.execute('BEGIN IMMEDIATE')
+        row = con.execute("SELECT status FROM insight_runs WHERE job='daily_insights' AND business_date=?", (business_date,)).fetchone()
+        if row and row['status'] in {'running', 'succeeded'}:
+            con.rollback(); return 0
+        started = now.astimezone(timezone.utc).isoformat()
+        con.execute("""INSERT INTO insight_runs(job,business_date,status,started_at,finished_at,error)
+            VALUES ('daily_insights',?,'running',?,NULL,NULL)
+            ON CONFLICT(job,business_date) DO UPDATE SET status='running',started_at=excluded.started_at,finished_at=NULL,error=NULL""", (business_date,started))
+        count = generate_daily_insights(con, business_date)
+        con.execute("UPDATE insight_runs SET status='succeeded',finished_at=? WHERE job='daily_insights' AND business_date=?", (datetime.now(timezone.utc).isoformat(),business_date))
+        con.commit(); return count
+    except Exception as exc:
+        con.rollback()
+        try:
+            con.execute("""INSERT INTO insight_runs(job,business_date,status,started_at,finished_at,error)
+                VALUES ('daily_insights',?,'failed',?,?,?)
+                ON CONFLICT(job,business_date) DO UPDATE SET status='failed',finished_at=excluded.finished_at,error=excluded.error""",
+                (business_date,now.astimezone(timezone.utc).isoformat(),datetime.now(timezone.utc).isoformat(),str(exc)[:500]))
+            con.commit()
+        finally:
+            con.close()
+        raise
+    finally:
+        try: con.close()
+        except Exception: pass

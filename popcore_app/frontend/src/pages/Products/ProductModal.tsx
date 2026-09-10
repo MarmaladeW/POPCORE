@@ -56,6 +56,11 @@ interface Product {
   hidden_has_large?: number
   hidden_prob_small?: string
   hidden_prob_large?: string
+  series_id?: number | null
+  stock_form?: 'sealed_set' | 'random_box' | 'confirmed_design' | 'piece' | null
+  stock_unit?: 'set' | 'box' | 'piece' | null
+  design_name?: string | null
+  identity_status?: 'unverified' | 'verified'
 }
 
 interface Props {
@@ -75,6 +80,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
   const { series, productTypes } = useAppStore()
   const isEdit = !!product?.id
   const isMobile = useIsMobile()
+  const [catalogSeries, setCatalogSeries] = useState<{ id: number; name: string }[]>([])
 
   // Track whether this product is a blind box so we can show/hide hierarchy fields
   const [isBlindBox, setIsBlindBox] = useState(false)
@@ -93,6 +99,17 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       setIsBlindBox(false)
     }
   }, [open, product, form])
+
+  useEffect(() => {
+    if (!open || !isEdit) return
+    Promise.all([
+      client.get(`/products/${product!.id}/inventory-identity`),
+      client.get('/product-series'),
+    ]).then(([identity, seriesResponse]) => {
+      form.setFieldsValue(identity.data)
+      setCatalogSeries(seriesResponse.data)
+    }).catch(() => message.error('Unable to load inventory identity'))
+  }, [open, isEdit, product, form])
 
   async function handleOk() {
     try {
@@ -212,6 +229,43 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
         </div>
 
         <Divider style={{ margin: '4px 0 16px', borderColor: '#f0f0f0' }} />
+
+        {isEdit && (
+          <>
+            <Divider style={{ margin: '4px 0 12px', borderColor: '#e0e7ff' }}>
+              <span style={{ fontSize: 12, color: '#6366F1', fontWeight: 600 }}>Inventory Identity</span>
+            </Divider>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0 16px' }}>
+              <Form.Item name="series_id" label="Reviewed Series">
+                <Select allowClear options={catalogSeries.map(s => ({ value: s.id, label: s.name }))} />
+              </Form.Item>
+              <Form.Item name="identity_status" label="Review Status">
+                <Select options={[
+                  { value: 'unverified', label: 'Unverified' },
+                  { value: 'verified', label: 'Verified' },
+                ]} />
+              </Form.Item>
+              <Form.Item name="stock_form" label="Stock Form">
+                <Select allowClear options={[
+                  { value: 'sealed_set', label: 'Sealed set' },
+                  { value: 'random_box', label: 'Random box' },
+                  { value: 'confirmed_design', label: 'Confirmed design' },
+                  { value: 'piece', label: 'Piece' },
+                ]} />
+              </Form.Item>
+              <Form.Item name="stock_unit" label="Native Unit">
+                <Select allowClear options={[
+                  { value: 'set', label: 'Set' },
+                  { value: 'box', label: 'Box' },
+                  { value: 'piece', label: 'Piece' },
+                ]} />
+              </Form.Item>
+            </div>
+            <Form.Item name="design_name" label="Confirmed Design Name">
+              <Input placeholder="Required only for a confirmed design" />
+            </Form.Item>
+          </>
+        )}
 
         {/* — Details — */}
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0 16px' }}>

@@ -1,0 +1,13 @@
+import { useEffect, useState } from 'react'
+import { Alert, Button, Card, Input, Space, Spin, Tag, Typography, Upload, message } from 'antd'
+import { useParams } from 'react-router-dom'
+import { useHasRole } from '../../auth/useRole'
+import { decideConditionCase, getConditionCase, uploadConditionEvidence } from '../../api/trades'
+
+export default function TradeCasePage(){
+  const id=Number(useParams().id); const manager=useHasRole('manager')
+  const [data,setData]=useState<any>(); const [error,setError]=useState(''); const [busy,setBusy]=useState(false); const [reason,setReason]=useState('')
+  const load=async()=>{setBusy(true);setError('');try{setData(await getConditionCase(id))}catch(e:any){setError(e?._serverMessage||'Condition case could not be loaded.')}finally{setBusy(false)}}
+  useEffect(()=>{void load()},[id]) // eslint-disable-line react-hooks/exhaustive-deps
+  return <Spin spinning={busy}><Space direction="vertical" size={16} style={{width:'100%'}}><Typography.Title level={2}>Condition case</Typography.Title>{error&&<Alert type="error" showIcon message={error} action={<Button onClick={load}>Retry</Button>}/>} {data&&<Card title={`Case ${data.case_id}`}><Space direction="vertical" style={{width:'100%'}}><Space wrap><Tag>{data.status}</Tag><Tag>Version {data.version}</Tag></Space><Typography.Text>{data.observed_condition}</Typography.Text><Typography.Text type="secondary">{data.note}</Typography.Text><Upload beforeUpload={async file=>{setBusy(true);try{await uploadConditionEvidence(id,file);message.success('Private evidence uploaded');await load()}catch(e:any){setError(e?._serverMessage||'Upload failed')}finally{setBusy(false)}return false}} showUploadList={false} accept="image/jpeg,image/png,image/webp"><Button style={{minHeight:44}}>Upload private photo</Button></Upload>{manager&&data.status==='open'&&<><Input.TextArea aria-label="Decision reason" value={reason} onChange={e=>setReason(e.target.value)} placeholder="Specific decision reason"/><Space wrap><Button style={{minHeight:44}} onClick={async()=>{setBusy(true);try{await decideConditionCase(id,{expected_version:data.version,disposition:'declined',reason});message.success('Decision recorded');await load()}catch(e:any){setError(e?._serverMessage||'Decision failed')}finally{setBusy(false)}}}>Decline with reason</Button><Button style={{minHeight:44}} onClick={async()=>{setBusy(true);try{await decideConditionCase(id,{expected_version:data.version,disposition:'referred_for_separate_review',reason});message.success('Referred for separate review');await load()}catch(e:any){setError(e?._serverMessage||'Decision failed')}finally{setBusy(false)}}}>Refer for refund/return review</Button></Space></>}</Space></Card>}</Space></Spin>
+}

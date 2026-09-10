@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
   Typography, Row, Col, InputNumber, Card,
-  DatePicker, AutoComplete, Spin,
+  DatePicker, AutoComplete, Spin, Alert,
 } from 'antd'
 import {
   ExportOutlined, DeleteOutlined,
@@ -59,6 +59,8 @@ export default function SalesPage() {
   const [sales,   setSales]   = useState<SaleRow[]>([])
   const [summary, setSummary] = useState<SummaryRow[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [lastSuccess, setLastSuccess] = useState<Date | null>(null)
   const [addSearch,    setAddSearch]    = useState('')
   const [addOptions,   setAddOptions]   = useState<any[]>([])
   const [pendingAdd,   setPendingAdd]   = useState<{ id: number; label: string } | null>(null)
@@ -72,33 +74,59 @@ export default function SalesPage() {
   // Dates that have sales records, keyed by "YYYY-MM" month
   const [recordedDates, setRecordedDates] = useState<Set<string>>(new Set())
   const recordedFetchRef = useRef<string>('')
+  const recordedRequestRef = useRef(0)
+  const salesRequestRef = useRef(0)
+  const salesScopeRef = useRef('')
 
   const dateStr = date.format('YYYY-MM-DD')
 
   const loadSales = useCallback(() => {
     if (!sc) return
+    const requestId = ++salesRequestRef.current
+    const scope = `${sc}:${dateStr}`
+    if (salesScopeRef.current !== scope) {
+      salesScopeRef.current = scope
+      setSales([])
+      setSummary([])
+      setLastSuccess(null)
+    }
     setLoading(true)
-    client.get('/sales', { params: { date: dateStr, store_code: sc } })
-      .then(r => setSales(r.data))
-      .finally(() => setLoading(false))
+    setLoadError(null)
+    Promise.all([
+      client.get('/sales', { params: { date: dateStr, store_code: sc } }),
+      client.get('/sales/summary', { params: { store_code: sc } }),
+    ])
+      .then(([salesResponse, summaryResponse]) => {
+        if (requestId !== salesRequestRef.current) return
+        setSales(salesResponse.data)
+        setSummary(summaryResponse.data)
+        setLastSuccess(new Date())
+      })
+      .catch(() => {
+        if (requestId === salesRequestRef.current) setLoadError('Unable to load sales data.')
+      })
+      .finally(() => {
+        if (requestId === salesRequestRef.current) setLoading(false)
+      })
   }, [dateStr, sc])
-
-  const loadSummary = useCallback(() => {
-    if (!sc) return
-    client.get('/sales/summary', { params: { store_code: sc } }).then(r => setSummary(r.data))
-  }, [sc])
 
   const fetchRecordedDates = useCallback((month: string) => {
     if (!sc || !month) return
     const key = `${sc}:${month}`
     if (recordedFetchRef.current === key) return
     recordedFetchRef.current = key
+    const requestId = ++recordedRequestRef.current
+    setRecordedDates(new Set())
     client.get('/sales/recorded-dates', { params: { store: sc, month } })
-      .then(r => setRecordedDates(new Set(r.data as string[])))
+      .then(r => {
+        if (requestId === recordedRequestRef.current) {
+          setRecordedDates(new Set(r.data as string[]))
+        }
+      })
       .catch(() => {})
   }, [sc])
 
-  useEffect(() => { loadSales(); loadSummary() }, [loadSales, loadSummary])
+  useEffect(() => { loadSales() }, [loadSales])
 
   // Load recorded dates whenever the visible month changes
   useEffect(() => {
@@ -296,6 +324,10 @@ export default function SalesPage() {
   ]
 
 
+  if (loadError && !lastSuccess) {
+    return <Alert role="alert" type="error" showIcon message={loadError} action={<Button onClick={loadSales}>Retry</Button>} />
+  }
+
   return (
     <div>
       {/* Header */}
@@ -387,6 +419,7 @@ export default function SalesPage() {
             <Text style={{ color: '#6b7280' }}>Track POS and cash sales by product</Text>
           </div>
           <Space wrap size={[8, 8]}>
+            <Button onClick={loadSales}>Refresh</Button>
             <DatePicker
               value={date}
               onChange={d => setDate(d ?? dayjs())}
@@ -524,7 +557,19 @@ export default function SalesPage() {
       </Row>
 
       {/* Daily Report Entry — shown when no sales yet OR user clicks Import; hidden in ALL mode */}
-      {!isAll && (importMode || (!loading && sales.length === 0)) && (
+      {loadError && (
+        <Alert
+          role="alert"
+          type={lastSuccess ? 'warning' : 'error'}
+          showIcon
+          message={lastSuccess ? 'Showing previously loaded sales data' : loadError}
+          description={lastSuccess ? `Last updated ${lastSuccess.toLocaleTimeString()}` : undefined}
+          action={<Button onClick={loadSales}>Retry</Button>}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {!isAll && !loadError && (importMode || (!loading && sales.length === 0)) && (
         <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px 20px', marginBottom: 20 }}>
           {importMode && sales.length > 0 && (
             <div style={{ marginBottom: 12 }}>
@@ -588,7 +633,7 @@ export default function SalesPage() {
         </div>
         {isMobile ? (
           <Spin spinning={loading}>
-            {sales.length === 0 && !loading ? (
+            {sales.length === 0 && !loading && !loadError ? (
               <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>
                 No products added for this date
               </div>

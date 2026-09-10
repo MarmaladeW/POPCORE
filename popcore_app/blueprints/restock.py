@@ -2,11 +2,19 @@
 blueprints/restock.py — restock session workflow (pending → submitted → picking → completed).
 """
 from datetime import date
+import json
 from flask import Blueprint, request, jsonify
 
 from db import get_db, _ensure_stock_row
 from auth import login_required, role_required
+from validation import SQLITE_INTEGER_MAX, invalid_input, read_int
 from blueprints.stores import _resolve_store
+from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
+from inventory_commands import (
+    InventoryConflict, InventoryError, InventoryValidationError,
+    post_inventory, require_inventory_access,
+)
+from goods_operations import act_on_delivery, create_delivery, delivery_detail
 
 bp = Blueprint('restock', __name__)
 
@@ -96,49 +104,43 @@ def delete_restock_session(sid):
     """
     Cancel / delete a restock session.
     - pending / submitted / picking: delete items then session (no stock changes).
-    - completed: reverse stock movements first, then delete.
+    - completed: retain posted stock history and require a later correction.
     """
     con = get_db()
+    con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
     cur.execute('SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
+        con.rollback()
         con.close()
         return jsonify({'error': 'Session not found'}), 404
 
-    status   = sess['status']
-    store_id = sess['store_id']
-    reversed_count = 0
+    status = sess['status']
+
+    if cur.execute(
+        'SELECT 1 FROM inventory_deliveries WHERE restock_session_id=?', (sid,)
+    ).fetchone():
+        con.rollback()
+        con.close()
+        return jsonify({
+            'error': 'A started goods delivery must be received, returned, or resolved',
+            'code': 'delivery_already_started',
+        }), 409
 
     if status == 'completed':
-        cur.execute('''
-            SELECT product_id, qty_change
-            FROM stock_movements
-            WHERE session_id = ? AND movement_type = 'restock_in' AND location = 'store'
-        ''', (sid,))
-        movements = cur.fetchall()
-        for m in movements:
-            pid = m['product_id']
-            qty = m['qty_change']
-            cur.execute('''
-                UPDATE stock
-                SET instore_qty  = MAX(0, instore_qty  - ?),
-                    upstairs_qty = upstairs_qty + ?,
-                    last_updated = datetime('now')
-                WHERE product_id = ? AND store_id = ?
-            ''', (qty, qty, pid, store_id))
-            reversed_count += 1
-        cur.execute('DELETE FROM stock_movements WHERE session_id = ?', (sid,))
-        cur.execute(
-            "DELETE FROM stock_transactions WHERE notes LIKE ?",
-            (f'%session#{sid}%',),
-        )
+        con.rollback()
+        con.close()
+        return jsonify({
+            'error': 'Completed restocks are retained; record a correction instead',
+            'code': 'completed_restock_retained',
+        }), 409
 
     cur.execute('DELETE FROM restock_items WHERE session_id = ?', (sid,))
     cur.execute('DELETE FROM restock_sessions WHERE id = ?', (sid,))
     con.commit()
     con.close()
-    return jsonify({'ok': True, 'reversed_count': reversed_count})
+    return jsonify({'ok': True, 'reversed_count': 0})
 
 
 @bp.route('/api/restock/session/today')
@@ -183,23 +185,93 @@ def get_restock_session(sid):
     session  = dict(row)
     store_id = session['store_id']
     session['items'] = _restock_session_items(cur, sid, store_id)
+    delivery = cur.execute(
+        'SELECT id FROM inventory_deliveries WHERE restock_session_id=?', (sid,)
+    ).fetchone()
+    if delivery:
+        try:
+            session['delivery'] = delivery_detail(
+                con, delivery['id'], actor=request.jwt_payload
+            )
+        except PermissionError:
+            con.close()
+            return jsonify({'error': 'Inventory access denied'}), 403
     con.close()
     return jsonify(session)
+
+
+def _restock_delivery(con, sid):
+    existing = con.execute(
+        'SELECT id FROM inventory_deliveries WHERE restock_session_id=?', (sid,)
+    ).fetchone()
+    if existing:
+        return existing['id']
+    session = con.execute(
+        'SELECT id, date, status, store_id FROM restock_sessions WHERE id=?',
+        (sid,),
+    ).fetchone()
+    if session is None or session['status'] not in {'submitted', 'picking'}:
+        raise InventoryConflict('Restock session is not ready',
+                                'restock_state_conflict')
+    floor = _inventory_location(con, session['store_id'], 'floor')
+    back = _inventory_location(con, session['store_id'], 'upstairs', 'warehouse')
+    if floor is None or back is None:
+        raise InventoryConflict('Reviewed inventory locations are missing',
+                                'inventory_store_missing')
+    lines = [dict(row) for row in con.execute(
+        """SELECT ri.product_id, p.stock_unit AS unit,
+                  ri.requested_qty AS requested_quantity
+           FROM restock_items ri JOIN products p ON p.id=ri.product_id
+           WHERE ri.session_id=? ORDER BY ri.id""", (sid,)
+    )]
+    if not lines:
+        raise InventoryValidationError('Restock session has no items')
+    created = create_delivery(con, {
+        'source_location_id': back, 'destination_location_id': floor,
+        'business_date': session['date'], 'restock_session_id': sid,
+        'lines': lines,
+    }, actor=request.jwt_payload, request_key=f'restock-delivery:{sid}',
+        kind='restock')
+    return created['id']
+
+
+@bp.post('/api/restock/session/<int:sid>/pick', defaults={'action': 'dispatch'})
+@bp.post('/api/restock/session/<int:sid>/receive', defaults={'action': 'receive'})
+@bp.post('/api/restock/session/<int:sid>/return', defaults={'action': 'return'})
+@bp.post('/api/restock/session/<int:sid>/resolve-loss', defaults={'action': 'resolve_loss'})
+@bp.post('/api/restock/session/<int:sid>/short-close', defaults={'action': 'short_close'})
+@role_required('staff')
+def restock_goods_action(sid, action):
+    con = get_db()
+    try:
+        delivery_id = _restock_delivery(con, sid)
+        result = act_on_delivery(
+            con, delivery_id, action, request.get_json(silent=True) or {},
+            actor=request.jwt_payload,
+            request_key=request.headers.get('Idempotency-Key'),
+        )
+        return jsonify(result)
+    except PermissionError:
+        return jsonify({'error': 'Inventory access denied',
+                        'code': 'inventory_forbidden'}), 403
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
 
 
 @bp.route('/api/restock/items', methods=['POST'])
 @role_required('staff')
 def add_restock_item():
     data = request.get_json() or {}
-    sid  = data.get('session_id')
-    pid  = data.get('product_id')
-    qty  = data.get('requested_qty')
-    if not sid or not pid or not qty or int(qty) <= 0:
-        return jsonify({'error': 'session_id, product_id, requested_qty 必须填写且有效'}), 400
+    try:
+        sid = read_int(data.get('session_id'), 'session_id', minimum=1)
+        pid = read_int(data.get('product_id'), 'product_id', minimum=1)
+        qty = read_int(data.get('requested_qty'), 'requested_qty', minimum=1)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
 
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (int(sid),))
+    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
@@ -208,12 +280,16 @@ def add_restock_item():
         con.close()
         return jsonify({'error': '只能在 pending 状态下修改清单'}), 403
 
+    if cur.execute('SELECT 1 FROM products WHERE id = ?', (pid,)).fetchone() is None:
+        con.close()
+        return jsonify(error='Product not found', code='not_found'), 404
+
     cur.execute('''
         INSERT INTO restock_items (session_id, product_id, requested_qty)
         VALUES (?, ?, ?)
         ON CONFLICT(session_id, product_id) DO UPDATE SET
             requested_qty = excluded.requested_qty
-    ''', (int(sid), int(pid), int(qty)))
+    ''', (sid, pid, qty))
     con.commit()
     item_id = cur.lastrowid
     con.close()
@@ -224,6 +300,7 @@ def add_restock_item():
 @role_required('staff')
 def delete_restock_item(iid):
     con = get_db()
+    con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
     cur.execute('''
         SELECT rs.status FROM restock_items ri
@@ -232,12 +309,23 @@ def delete_restock_item(iid):
     ''', (iid,))
     row = cur.fetchone()
     if not row:
+        con.rollback()
         con.close()
         return jsonify({'error': 'Item not found'}), 404
     if row['status'] != 'pending':
+        con.rollback()
         con.close()
         return jsonify({'error': '只能在 pending 状态下删除条目'}), 400
-    cur.execute('DELETE FROM restock_items WHERE id = ?', (iid,))
+    cur.execute('''
+        DELETE FROM restock_items
+        WHERE id = ? AND session_id IN (
+            SELECT id FROM restock_sessions WHERE status = 'pending'
+        )
+    ''', (iid,))
+    if cur.rowcount != 1:
+        con.rollback()
+        con.close()
+        return jsonify({'error': '补货状态已改变，无法删除条目'}), 409
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -316,6 +404,15 @@ def pick_restock_item(iid):
     if item['session_status'] not in ('submitted', 'picking'):
         con.close()
         return jsonify({'error': '只能在 submitted/picking 状态下更新拣货结果'}), 400
+    if cur.execute(
+        'SELECT 1 FROM inventory_deliveries WHERE restock_session_id=?',
+        (item['session_id'],),
+    ).fetchone():
+        con.close()
+        return jsonify({
+            'error': 'Picked quantities are locked after physical dispatch',
+            'code': 'delivery_already_started',
+        }), 409
 
     if pick_status == 'not_found':
         found_qty = 0
@@ -324,10 +421,11 @@ def pick_restock_item(iid):
         if found_qty is None:
             con.close()
             return jsonify({'error': 'found 时须提供 found_qty'}), 400
-        found_qty = int(found_qty)
-        if found_qty < 1:
+        try:
+            found_qty = read_int(found_qty, 'found_qty', minimum=1)
+        except ValueError as exc:
             con.close()
-            return jsonify({'error': 'found_qty 须 >= 1'}), 400
+            return jsonify(invalid_input(exc)), 400
         if found_qty > item['requested_qty']:
             con.close()
             return jsonify({'error': f'found_qty ({found_qty}) 不可超过 requested_qty ({item["requested_qty"]})'}), 400
@@ -349,7 +447,7 @@ def complete_restock_session(sid):
     """
     picking/submitted → completed.
     Validates all items picked, then syncs stock in a single transaction.
-    effective = min(found_qty, actual_upstairs_qty) guards against negatives.
+    A shortage leaves the complete session unchanged.
     """
     con = get_db()
     cur = con.cursor()
@@ -358,6 +456,125 @@ def complete_restock_session(sid):
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
+    if _is_authoritative(con):
+        store_id = sess['store_id']
+        delivery = con.execute(
+            'SELECT status FROM inventory_deliveries WHERE restock_session_id=?',
+            (sid,),
+        ).fetchone()
+        if delivery and delivery['status'] != 'completed':
+            con.close()
+            return jsonify({
+                'error': 'Receive or resolve picked goods before completion',
+                'code': 'delivery_receipt_required',
+            }), 409
+        if sess['status'] == 'completed':
+            prior = con.execute(
+                """SELECT stored_result FROM inventory_documents
+                   WHERE source_type='restock_session' AND source_id=?
+                     AND status='posted'""", (str(sid),)
+            ).fetchone()
+            try:
+                require_inventory_access(
+                    con, request.jwt_payload, (store_id,), 'staff'
+                )
+            except PermissionError:
+                con.close()
+                return jsonify({'error': 'Inventory access denied',
+                                'code': 'inventory_forbidden'}), 403
+            con.close()
+            if prior and prior['stored_result']:
+                return jsonify(json.loads(prior['stored_result']))
+            return jsonify({'error': 'Completed restock has no inventory document',
+                            'code': 'reconciliation_required'}), 409
+        if sess['status'] not in ('submitted', 'picking'):
+            con.close()
+            return jsonify({'error': f'当前状态 {sess["status"]} 不可完成'}), 400
+        pending = con.execute(
+            """SELECT 1 FROM restock_items
+               WHERE session_id=? AND pick_status='pending' LIMIT 1""", (sid,)
+        ).fetchone()
+        if pending:
+            con.close()
+            return jsonify({'error': '还有未确认拣货', 'code': 'restock_pending'}), 409
+        floor = _inventory_location(con, store_id, 'floor')
+        back = _inventory_location(con, store_id, 'upstairs', 'warehouse')
+        if floor is None or back is None:
+            con.close()
+            return jsonify({'error': 'Reviewed inventory locations are missing',
+                            'code': 'inventory_store_missing'}), 409
+        found_items = con.execute(
+            """SELECT ri.product_id, SUM(ri.found_qty) AS found_qty,
+                      p.stock_unit
+               FROM restock_items ri JOIN products p ON p.id=ri.product_id
+               WHERE ri.session_id=? AND ri.pick_status='found' AND ri.found_qty>0
+               GROUP BY ri.product_id, p.stock_unit""", (sid,)
+        ).fetchall()
+        if not found_items:
+            try:
+                require_inventory_access(
+                    con, request.jwt_payload, (store_id,), 'staff'
+                )
+            except PermissionError:
+                con.close()
+                return jsonify({'error': 'Inventory access denied',
+                                'code': 'inventory_forbidden'}), 403
+            con.execute('BEGIN IMMEDIATE')
+            updated = con.execute(
+                """UPDATE restock_sessions
+                   SET status='completed', completed_at=datetime('now')
+                   WHERE id=? AND status IN ('submitted','picking')""", (sid,)
+            )
+            if updated.rowcount != 1:
+                con.rollback()
+                con.close()
+                return jsonify({'error': 'Restock session changed before completion',
+                                'code': 'restock_state_conflict'}), 409
+            con.commit()
+            con.close()
+            return jsonify({'ok': True, 'synced': 0, 'items': []})
+        lines = []
+        for item in found_items:
+            source = con.execute(
+                """SELECT version FROM inventory_balances
+                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+                (item['product_id'], back),
+            ).fetchone()
+            target = con.execute(
+                """SELECT version FROM inventory_balances
+                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+                (item['product_id'], floor),
+            ).fetchone()
+            lines.append({
+                'product_id': item['product_id'], 'quantity': item['found_qty'],
+                'unit': item['stock_unit'], 'from_location_id': back,
+                'from_disposition': 'saleable', 'to_location_id': floor,
+                'to_disposition': 'saleable', 'expected_versions': {
+                    'from': source['version'] if source else 0,
+                    'to': target['version'] if target else 0,
+                },
+            })
+        try:
+            result = post_inventory(
+                con, {'kind': 'restock_complete',
+                      'business_date': date.today().isoformat(),
+                      'source_type': 'restock_session', 'source_id': str(sid),
+                      'reason': f'Restock session {sid}', 'lines': lines},
+                actor=request.jwt_payload, request_key=f'restock-session-{sid}',
+            )
+            con.close()
+            return jsonify(result)
+        except PermissionError:
+            con.close()
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        except InventoryError as exc:
+            con.close()
+            return _inventory_error(exc)
+    con.execute('BEGIN IMMEDIATE')
+    sess = cur.execute(
+        'SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,)
+    ).fetchone()
     if sess['status'] not in ('submitted', 'picking'):
         con.close()
         return jsonify({'error': f'当前状态 {sess["status"]} 不可完成'}), 400
@@ -387,34 +604,61 @@ def complete_restock_session(sid):
     synced_details = []
 
     for item in found_items:
+        stock_row = cur.execute(
+            '''SELECT upstairs_qty, instore_qty FROM stock
+               WHERE product_id=? AND store_id=?''',
+            (item['product_id'], store_id),
+        ).fetchone()
+        available = stock_row['upstairs_qty'] if stock_row else 0
+        instore = stock_row['instore_qty'] if stock_row else 0
+        if item['found_qty'] > available:
+            con.rollback()
+            con.close()
+            return jsonify({
+                'error': f'Insufficient upstairs stock ({available})',
+                'code': 'insufficient_stock',
+                'product_id': item['product_id'],
+            }), 409
+        try:
+            read_int(instore + item['found_qty'], 'instore_qty')
+        except ValueError as exc:
+            con.rollback()
+            con.close()
+            return jsonify(invalid_input(exc)), 400
+
+    for item in found_items:
         pid = item['product_id']
         requested_found = item['found_qty']
         _ensure_stock_row(cur, pid, store_id)
-        cur.execute('SELECT upstairs_qty FROM stock WHERE product_id=? AND store_id=?',
-                    (pid, store_id))
-        stock_row = cur.fetchone()
-        actual_warehouse = stock_row['upstairs_qty'] if stock_row else 0
-        effective_qty = min(requested_found, actual_warehouse)
-        if effective_qty <= 0:
-            synced_details.append({'product_id': pid, 'requested': requested_found,
-                                   'found': requested_found, 'effective': 0})
-            continue
+        effective_qty = requested_found
 
         cur.execute('''
             UPDATE stock
             SET upstairs_qty = upstairs_qty - ?,
                 instore_qty  = instore_qty  + ?,
                 last_updated = datetime('now')
-            WHERE product_id = ? AND store_id = ?
-        ''', (effective_qty, effective_qty, pid, store_id))
+            WHERE product_id = ? AND store_id = ? AND upstairs_qty >= ?
+              AND instore_qty <= ?
+        ''', (effective_qty, effective_qty, pid, store_id, effective_qty,
+              SQLITE_INTEGER_MAX - effective_qty))
+        if cur.rowcount != 1:
+            con.rollback()
+            con.close()
+            return jsonify({
+                'error': 'Stock changed before restock completion',
+                'code': 'insufficient_stock',
+                'product_id': pid,
+            }), 409
         cur.execute('''
-            INSERT INTO stock_movements (product_id, session_id, movement_type, qty_change, location)
-            VALUES (?, ?, 'restock_out', ?, 'warehouse')
-        ''', (pid, sid, -effective_qty))
+            INSERT INTO stock_movements
+                (product_id, session_id, movement_type, qty_change, location, store_id)
+            VALUES (?, ?, 'restock_out', ?, 'warehouse', ?)
+        ''', (pid, sid, -effective_qty, store_id))
         cur.execute('''
-            INSERT INTO stock_movements (product_id, session_id, movement_type, qty_change, location)
-            VALUES (?, ?, 'restock_in', ?, 'store')
-        ''', (pid, sid, effective_qty))
+            INSERT INTO stock_movements
+                (product_id, session_id, movement_type, qty_change, location, store_id)
+            VALUES (?, ?, 'restock_in', ?, 'store', ?)
+        ''', (pid, sid, effective_qty, store_id))
         cur.execute('''
             INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
             VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?, ?)

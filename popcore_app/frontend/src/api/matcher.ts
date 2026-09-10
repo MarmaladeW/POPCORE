@@ -196,8 +196,9 @@ export async function batchMatch(
 export async function parseReportBackend(
   text: string,
   storeCode: string,
+  engine: 'rules' | 'llm' = 'rules',
 ): Promise<ParseReportResponse> {
-  const r = await client.post('/sales/parse_report', { text, store_code: storeCode })
+  const r = await client.post('/sales/parse_report', { text, store_code: storeCode, engine })
   return r.data as ParseReportResponse
 }
 

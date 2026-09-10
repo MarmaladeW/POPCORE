@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Button, Space, Tag, Popconfirm,
-  message, Typography, Table, Badge, Spin, Modal, Tabs,
+  message, Typography, Table, Badge, Spin, Modal, Tabs, Alert,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -34,6 +34,9 @@ interface Product {
   hidden_count: string
   hidden_has_small: number
   hidden_has_large: number
+  stock_form?: 'sealed_set' | 'random_box' | 'confirmed_design' | 'piece' | null
+  stock_unit?: 'set' | 'box' | 'piece' | null
+  identity_status?: 'unverified' | 'verified'
 }
 
 interface StockRow {
@@ -128,6 +131,10 @@ export default function ProductsPage() {
   const [products,  setProducts]  = useState<Product[]>([])
   const [stockMap,  setStockMap]  = useState<Map<number, number>>(new Map())
   const [loading,   setLoading]   = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [lastSuccess, setLastSuccess] = useState<Date | null>(null)
+  const requestRef = useRef(0)
+  const scopeRef = useRef('')
   const [searchQ,      setSearchQ]      = useState('')
   const [searchSeries, setSearchSeries] = useState('')
   const [searchType,   setSearchType]   = useState('')
@@ -153,7 +160,16 @@ export default function ProductsPage() {
 
   const load = useCallback(() => {
     const sc = selectedStore?.code
+    const requestId = ++requestRef.current
+    const scope = `${sc ?? ''}:${searchQ}:${searchSeries}:${searchType}`
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope
+      setProducts([])
+      setStockMap(new Map())
+      setLastSuccess(null)
+    }
     setLoading(true)
+    setLoadError(null)
     const params: Record<string, string> = {}
     if (searchQ)      params.q = searchQ
     if (searchSeries) params.series = searchSeries
@@ -163,15 +179,19 @@ export default function ProductsPage() {
       client.get('/products/search', { params }),
       client.get('/stock', { params: stockParams }),
     ]).then(([prodR, stockR]) => {
+      if (requestId !== requestRef.current) return
       setProducts(prodR.data)
       const m = new Map<number, number>()
       ;(stockR.data as StockRow[]).forEach(r => {
         m.set(r.product_id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
       })
       setStockMap(m)
+      setLastSuccess(new Date())
     }).catch(() => {
-      message.error('加载失败，请刷新页面')
-    }).finally(() => setLoading(false))
+      if (requestId === requestRef.current) setLoadError('Unable to load products.')
+    }).finally(() => {
+      if (requestId === requestRef.current) setLoading(false)
+    })
   }, [searchQ, searchSeries, searchType, selectedStore?.code])
 
   useEffect(() => { load() }, [load])
@@ -334,6 +354,18 @@ export default function ProductsPage() {
         : '—',
     },
     {
+      title: 'Inventory',
+      width: 120,
+      render: (_, r) => (
+        <div>
+          <Tag color={r.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 11 }}>
+            {r.identity_status === 'verified' ? 'Verified' : 'Unverified'}
+          </Tag>
+          {r.stock_unit && <div style={{ fontSize: 11, color: '#6b7280' }}>{r.stock_form?.replaceAll('_', ' ')} · {r.stock_unit}</div>}
+        </div>
+      ),
+    },
+    {
       title: 'Price (CA$)',
       dataIndex: 'price',
       width: 110,
@@ -392,6 +424,10 @@ export default function ProductsPage() {
     },
   ]
 
+  if (loadError && !lastSuccess) {
+    return <Alert role="alert" type="error" showIcon message={loadError} action={<Button onClick={load}>Retry</Button>} />
+  }
+
   return (
     <div>
       {/* Header */}
@@ -401,6 +437,7 @@ export default function ProductsPage() {
           <Text style={{ color: '#6b7280', fontSize: 13 }}>{products.length} products</Text>
         </div>
         <Space size={8}>
+          <Button onClick={load}>Refresh</Button>
           {/* Filter toggle on mobile */}
           {isMobile && (
             <Button
@@ -432,6 +469,18 @@ export default function ProductsPage() {
       </div>
 
       {/* Filters — always visible on desktop, toggle on mobile */}
+      {loadError && (
+        <Alert
+          role="alert"
+          type={lastSuccess ? 'warning' : 'error'}
+          showIcon
+          message={lastSuccess ? 'Showing previously loaded products' : loadError}
+          description={lastSuccess ? `Last updated ${lastSuccess.toLocaleTimeString()}` : undefined}
+          action={<Button onClick={load}>Retry</Button>}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       {(!isMobile || filtersVisible) && (
         <div style={{
           background: '#fff',
@@ -471,7 +520,7 @@ export default function ProductsPage() {
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
         {isMobile ? (
           <Spin spinning={loading}>
-            {!loading && products.length === 0 && (
+            {!loading && !loadError && products.length === 0 && (
               <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No products found</div>
             )}
             {products.map(p => (

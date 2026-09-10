@@ -1,22 +1,35 @@
 """
 blueprints/products.py — product catalogue, search, aliases, hidden images, export.
 """
+import io
 import os
 import re
 import uuid
 import sqlite3
 from datetime import date, datetime
 from flask import Blueprint, request, jsonify, Response
-from werkzeug.utils import secure_filename
+from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
 from matcher import match_jzm, batch_match_jzm, match_name, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
+from catalog_identity import (
+    CatalogConflict, add_conversion, assign_barcode, resolve_barcode,
+    update_product_identity,
+)
 
 bp = Blueprint('products', __name__)
 
-ALLOWED_IMG_EXTS  = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif'}
 ALLOWED_IMG_TYPES = {'general', 'small', 'large'}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+IMAGE_EXTENSIONS = {
+    'JPEG': '.jpg',
+    'PNG': '.png',
+    'GIF': '.gif',
+    'WEBP': '.webp',
+    'AVIF': '.avif',
+}
 
 
 def _score_product(product, tokens, q_full):
@@ -140,7 +153,8 @@ def search_products():
         limit_param  = [limit] if limit else []
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob, is_bestseller
+                   brand, notes, release_date, search_blob, is_bestseller,
+                   stock_form, stock_unit, design_name, identity_status
             FROM products
             {where}
             ORDER BY sku DESC
@@ -166,7 +180,8 @@ def search_products():
     and_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-               brand, notes, release_date, search_blob, is_bestseller
+               brand, notes, release_date, search_blob, is_bestseller,
+               stock_form, stock_unit, design_name, identity_status
         FROM products
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
@@ -177,7 +192,8 @@ def search_products():
     or_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-               brand, notes, release_date, search_blob, is_bestseller
+               brand, notes, release_date, search_blob, is_bestseller,
+               stock_form, stock_unit, design_name, identity_status
         FROM products
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
@@ -190,7 +206,8 @@ def search_products():
     if char_conditions:
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob
+                   brand, notes, release_date, search_blob,
+                   stock_form, stock_unit, design_name, identity_status
             FROM products
             WHERE {char_conditions} {filter_sql}
             LIMIT 200
@@ -204,7 +221,8 @@ def search_products():
         bi_params = [f'%{b}%' for b in bigrams] + filter_params
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob
+                   brand, notes, release_date, search_blob,
+                   stock_form, stock_unit, design_name, identity_status
             FROM products
             WHERE ({bi_cond}) {filter_sql}
             LIMIT 200
@@ -264,8 +282,18 @@ def get_product(pid):
         return jsonify({'error': 'Not found'}), 404
     cur.execute('SELECT id, alias FROM product_aliases WHERE product_id = ? ORDER BY id', (pid,))
     aliases = [dict(r) for r in cur.fetchall()]
+    cur.execute('''SELECT id, code, code_kind, input_unit, quantity_per_scan
+                   FROM product_barcodes WHERE product_id=? ORDER BY id''', (pid,))
+    barcodes = [dict(r) for r in cur.fetchall()]
+    cur.execute('''SELECT c.id, c.target_product_id, target.sku AS target_sku,
+                          c.output_per_input, c.version
+                   FROM product_conversions c
+                   JOIN products target ON target.id=c.target_product_id
+                   WHERE c.source_product_id=? ORDER BY c.version''', (pid,))
+    conversions = [dict(r) for r in cur.fetchall()]
     con.close()
-    return jsonify({**dict(row), 'aliases': aliases})
+    return jsonify({**dict(row), 'aliases': aliases, 'barcodes': barcodes,
+                    'conversions': conversions})
 
 
 # ─── Aliases ──────────────────────────────────────────────────────────────────
@@ -383,6 +411,11 @@ def list_hidden_images(pid):
 @bp.route('/api/products/<int:pid>/hidden_images', methods=['POST'])
 @role_required('manager')
 def upload_hidden_image(pid):
+    if request.content_length and request.content_length > 12 * 1024 * 1024:
+        return jsonify({
+            'error': 'Image upload is too large',
+            'code': 'image_too_large',
+        }), 413
     if 'image' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
     f = request.files['image']
@@ -390,26 +423,72 @@ def upload_hidden_image(pid):
     if img_type not in ALLOWED_IMG_TYPES:
         img_type = 'general'
 
-    orig_name = secure_filename(f.filename or 'img.jpg')
-    ext = os.path.splitext(orig_name)[1].lower()
-    if ext not in ALLOWED_IMG_EXTS:
-        ext = '.jpg'
-    filename = f'{uuid.uuid4().hex}{ext}'
-
-    save_dir = os.path.join(HIDDEN_IMG_DIR, str(pid))
-    os.makedirs(save_dir, exist_ok=True)
-    f.save(os.path.join(save_dir, filename))
-
-    rel = f'{pid}/{filename}'
     con = get_db()
     cur = con.cursor()
-    cur.execute(
-        'INSERT INTO hidden_images (product_id, image_type, filename) VALUES (?, ?, ?)',
-        (pid, img_type, rel)
-    )
-    new_id = cur.lastrowid
-    con.commit()
-    con.close()
+    if cur.execute('SELECT 1 FROM products WHERE id = ?', (pid,)).fetchone() is None:
+        con.close()
+        return jsonify({
+            'error': 'Product not found',
+            'code': 'not_found',
+        }), 404
+
+    content = f.stream.read(MAX_IMAGE_BYTES + 1)
+    request.close()
+    if len(content) > MAX_IMAGE_BYTES:
+        con.close()
+        return jsonify({
+            'error': 'Image upload is too large',
+            'code': 'image_too_large',
+        }), 413
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image_format = image.format
+            frames = getattr(image, 'n_frames', 1)
+            if image.width * image.height * frames > MAX_IMAGE_PIXELS:
+                con.close()
+                return jsonify({
+                    'error': 'Image dimensions are too large',
+                    'code': 'image_too_large',
+                }), 413
+            image.verify()
+        with Image.open(io.BytesIO(content)) as image:
+            for frame in ImageSequence.Iterator(image):
+                frame.load()
+        ext = IMAGE_EXTENSIONS[image_format]
+    except (KeyError, OSError, SyntaxError, UnidentifiedImageError, ValueError):
+        con.close()
+        return jsonify({
+            'error': 'Uploaded file is not a valid supported image',
+            'code': 'invalid_image',
+        }), 400
+
+    filename = f'{uuid.uuid4().hex}{ext}'
+    save_dir = os.path.join(HIDDEN_IMG_DIR, str(pid))
+    os.makedirs(save_dir, exist_ok=True)
+    final_path = os.path.join(save_dir, filename)
+    temp_path = final_path + '.part'
+    try:
+        with open(temp_path, 'xb') as saved:
+            saved.write(content)
+        os.replace(temp_path, final_path)
+        rel = f'{pid}/{filename}'
+        cur.execute(
+            '''INSERT INTO hidden_images (product_id, image_type, filename)
+               VALUES (?, ?, ?)''',
+            (pid, img_type, rel),
+        )
+        new_id = cur.lastrowid
+        con.commit()
+    except Exception:
+        con.rollback()
+        for path in (temp_path, final_path):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        con.close()
     return jsonify({'ok': True, 'id': new_id, 'filename': rel,
                     'url': f'/hidden_imgs/{rel}', 'image_type': img_type}), 201
 
@@ -438,42 +517,62 @@ def delete_hidden_image(pid, img_id):
 @bp.route('/api/products/<int:pid>', methods=['PATCH'])
 @role_required('manager')
 def update_product(pid):
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object', 'code': 'invalid_input'}), 400
     allowed = {'jizhanming', 'price', 'notes', 'name_cn_en', 'product_type',
                'brand', 'release_date', 'edition_size', 'channel', 'hidden',
                'style_notes', 'boxes_per_dan', 'ip_series',
                'hidden_count', 'hidden_has_small', 'hidden_has_large',
                'hidden_prob_small', 'hidden_prob_large', 'is_bestseller'}
+    identity_fields = {
+        'series_id', 'stock_form', 'stock_unit', 'design_name', 'identity_status'
+    }
     updates = {k: v for k, v in data.items() if k in allowed}
-    if not updates:
+    identity_updates = {k: v for k, v in data.items() if k in identity_fields}
+    if not updates and not identity_updates:
         return jsonify({'error': 'Nothing to update'}), 400
 
     con = get_db()
-    cur = con.cursor()
-    cur.execute('SELECT * FROM products WHERE id = ?', (pid,))
-    _row = cur.fetchone()
-    if _row is None:
+    try:
+        cur = con.cursor()
+        cur.execute('SELECT * FROM products WHERE id = ?', (pid,))
+        row = cur.fetchone()
+        if row is None:
+            return jsonify({'error': 'Product not found'}), 404
+        if identity_updates:
+            update_product_identity(con, pid, identity_updates)
+        if updates:
+            product = dict(row)
+            product.update(updates)
+            search_blob = ' '.join([
+                (product.get('sku') or '').lower(),
+                (product.get('jizhanming') or '').lower(),
+                (product.get('name_cn_en') or '').lower(),
+                (product.get('brand') or '').lower(),
+                (product.get('product_type') or '').lower(),
+                (product.get('ip_series') or '').lower(),
+            ])
+            updates['search_blob'] = search_blob
+            set_clause = ', '.join(f'{k} = ?' for k in updates)
+            cur.execute(
+                f'UPDATE products SET {set_clause} WHERE id = ?',
+                [*updates.values(), pid],
+            )
+        con.commit()
+    except CatalogConflict as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': exc.code}), 409
+    except ValueError as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    except sqlite3.IntegrityError:
+        con.rollback()
+        return jsonify({'error': 'Identity conflicts with existing catalog data',
+                        'code': 'identity_conflict'}), 409
+    finally:
         con.close()
-        return jsonify({'error': 'Product not found'}), 404
-    product = dict(_row)
-    product.update(updates)
-    search_blob = ' '.join([
-        (product.get('sku') or '').lower(),
-        (product.get('jizhanming') or '').lower(),
-        (product.get('name_cn_en') or '').lower(),
-        (product.get('brand') or '').lower(),
-        (product.get('product_type') or '').lower(),
-        (product.get('ip_series') or '').lower(),
-    ])
-    updates['search_blob'] = search_blob
-
-    set_clause = ', '.join(f'{k} = ?' for k in updates)
-    values = list(updates.values()) + [pid]
-    cur.execute(f'UPDATE products SET {set_clause} WHERE id = ?', values)
-    con.commit()
-    con.close()
     return jsonify({'ok': True})
-
 
 @bp.route('/api/products', methods=['POST'])
 @role_required('manager')
@@ -569,6 +668,185 @@ def get_product_types():
     con.close()
     return jsonify(rows)
 
+
+# ─── Explicit catalog identity ────────────────────────────────────────────────
+
+@bp.route('/api/product-series', methods=['GET'])
+@login_required
+def list_product_series():
+    con = get_db()
+    try:
+        rows = [dict(row) for row in con.execute(
+            'SELECT id, name FROM product_series ORDER BY name, id'
+        )]
+        return jsonify(rows)
+    finally:
+        con.close()
+
+
+@bp.route('/api/product-series', methods=['POST'])
+@role_required('manager')
+def create_product_series():
+    data = request.get_json(silent=True)
+    name = (data.get('name') if isinstance(data, dict) else '')
+    name = name.strip() if isinstance(name, str) else ''
+    if not name:
+        return jsonify({'error': 'name is required', 'code': 'invalid_input'}), 400
+    con = get_db()
+    try:
+        cur = con.execute('INSERT INTO product_series(name) VALUES (?)', (name,))
+        con.commit()
+        return jsonify({'id': cur.lastrowid, 'name': name}), 201
+    except sqlite3.IntegrityError:
+        con.rollback()
+        return jsonify({'error': 'Series already exists',
+                        'code': 'series_conflict'}), 409
+    finally:
+        con.close()
+
+
+@bp.route('/api/products/<int:pid>/barcodes', methods=['POST'])
+@role_required('manager')
+def create_product_barcode(pid):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object', 'code': 'invalid_input'}), 400
+    con = get_db()
+    try:
+        result = assign_barcode(
+            con, pid, data.get('code'), data.get('code_kind'),
+            data.get('input_unit'), data.get('quantity_per_scan'),
+        )
+        con.commit()
+        return jsonify(result), 201
+    except CatalogConflict as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': exc.code}), 409
+    except ValueError as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
+@bp.route('/api/products/<int:pid>/barcodes', methods=['GET'])
+@login_required
+def list_product_barcodes(pid):
+    con = get_db()
+    try:
+        if not con.execute('SELECT 1 FROM products WHERE id=?', (pid,)).fetchone():
+            return jsonify({'error': 'Product not found', 'code': 'not_found'}), 404
+        rows = con.execute(
+            """SELECT id, code, code_kind, input_unit, quantity_per_scan
+               FROM product_barcodes WHERE product_id=? ORDER BY id""", (pid,)
+        ).fetchall()
+        return jsonify([dict(row) for row in rows])
+    finally:
+        con.close()
+
+
+@bp.route('/api/products/<int:pid>/inventory-identity', methods=['GET'])
+@login_required
+def get_product_inventory_identity(pid):
+    con = get_db()
+    try:
+        product = con.execute(
+            """SELECT p.id, p.sku, p.series_id, ps.name AS series_name,
+                      p.stock_form, p.stock_unit, p.design_name,
+                      p.identity_status
+               FROM products p
+               LEFT JOIN product_series ps ON ps.id=p.series_id
+               WHERE p.id=?""", (pid,)
+        ).fetchone()
+        if product is None:
+            return jsonify({'error': 'Product not found', 'code': 'not_found'}), 404
+        barcodes = [dict(row) for row in con.execute(
+            """SELECT id, code, code_kind, input_unit, quantity_per_scan
+               FROM product_barcodes WHERE product_id=? ORDER BY id""", (pid,)
+        )]
+        conversions = [dict(row) for row in con.execute(
+            """SELECT c.id, c.target_product_id, target.sku AS target_sku,
+                      c.output_per_input, c.version
+               FROM product_conversions c
+               JOIN products target ON target.id=c.target_product_id
+               WHERE c.source_product_id=? ORDER BY c.version""", (pid,)
+        )]
+        return jsonify({**dict(product), 'barcodes': barcodes,
+                        'conversions': conversions})
+    finally:
+        con.close()
+
+
+@bp.route('/api/products/<int:pid>/inventory-identity', methods=['PATCH'])
+@role_required('manager')
+def patch_product_inventory_identity(pid):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object',
+                        'code': 'invalid_input'}), 400
+    allowed = {'series_id', 'stock_form', 'stock_unit', 'design_name',
+               'identity_status'}
+    updates = {key: value for key, value in data.items() if key in allowed}
+    if not updates:
+        return jsonify({'error': 'Nothing to update', 'code': 'invalid_input'}), 400
+    con = get_db()
+    try:
+        update_product_identity(con, pid, updates)
+        con.commit()
+    except CatalogConflict as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': exc.code}), 409
+    except ValueError as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/products/resolve-barcode')
+@login_required
+def resolve_product_barcode():
+    con = get_db()
+    try:
+        result = resolve_barcode(
+            con, request.args.get('code', ''), request.args.get('purpose', '')
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
+@bp.route('/api/inventory/resolve-barcode')
+@login_required
+def resolve_inventory_barcode():
+    return resolve_product_barcode.__wrapped__()
+
+
+@bp.route('/api/products/<int:pid>/conversions', methods=['POST'])
+@role_required('manager')
+def create_product_conversion(pid):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object', 'code': 'invalid_input'}), 400
+    con = get_db()
+    try:
+        result = add_conversion(
+            con, pid, data.get('target_product_id'),
+            data.get('output_per_input'), data.get('version'),
+        )
+        con.commit()
+        return jsonify(result), 201
+    except CatalogConflict as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': exc.code}), 409
+    except ValueError as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
 
 # ─── Export & bulk delete ─────────────────────────────────────────────────────
 
@@ -1021,6 +1299,29 @@ def bulk_delete_products():
     con = get_db()
     cur = con.cursor()
     ph  = ','.join('?' * len(pids))
+
+    history_queries = (
+        f'SELECT 1 FROM daily_sales WHERE product_id IN ({ph}) LIMIT 1',
+        f'SELECT 1 FROM stock_transactions WHERE product_id IN ({ph}) LIMIT 1',
+        f'''SELECT 1 FROM stock WHERE product_id IN ({ph})
+            AND (upstairs_qty != 0 OR instore_qty != 0 OR claw_qty != 0)
+            LIMIT 1''',
+        f'SELECT 1 FROM stock_movements WHERE product_id IN ({ph}) LIMIT 1',
+        f'SELECT 1 FROM restock_items WHERE product_id IN ({ph}) LIMIT 1',
+        f'SELECT 1 FROM inventory_checks WHERE product_id IN ({ph}) LIMIT 1',
+        f'SELECT 1 FROM inventory_movements WHERE product_id IN ({ph}) LIMIT 1',
+        f'''SELECT 1 FROM product_conversions
+            WHERE source_product_id IN ({ph}) OR target_product_id IN ({ph})
+            LIMIT 1''',
+        f'SELECT 1 FROM product_barcodes WHERE product_id IN ({ph}) LIMIT 1',
+    )
+    if any(cur.execute(query, pids * (2 if ' OR target_product_id' in query else 1)).fetchone()
+           for query in history_queries):
+        con.close()
+        return jsonify({
+            'error': 'Products with stock or operational history are retained',
+            'code': 'product_history_retained',
+        }), 409
 
     cur.execute(f'SELECT filename FROM hidden_images WHERE product_id IN ({ph})', pids)
     for row in cur.fetchall():

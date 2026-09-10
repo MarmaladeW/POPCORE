@@ -68,6 +68,8 @@ npm run dev            # http://localhost:5173
 
 ### Windows (quick start)
 
+For the verified D: checkout, virtual environment, environment loading, tests, and safe build commands, follow [Windows development](docs/development-windows.md). The legacy launcher below does not load .env itself.
+
 Double-click `popcore_app/start.bat`. It initialises the database if missing and starts the Flask dev server.
 
 ---
@@ -160,7 +162,7 @@ All variables are read from `popcore_app/.env`. Copy `popcore_app/.env.example` 
 ## Database
 
 - **Engine:** SQLite 3 with WAL mode and foreign-key enforcement
-- **Path:** `popcore_app/popcore.db` (excluded from git)
+- **Path:** `popcore_app/popcore.db` locally (excluded from git); production uses `POPCORE_DB_PATH=/var/lib/popcore/popcore.db`
 - **Init:** Run `python popcore_app/init_db.py` with the Excel source files present
 - **Schema migrations:** handled automatically on startup via `migrate_db()` in `app.py`
 
@@ -168,7 +170,7 @@ All variables are read from `popcore_app/.env`. Copy `popcore_app/.env.example` 
 
 ## Backups
 
-`backup.sh` takes a hot WAL-safe snapshot and keeps 30 days of history.
+`backup.sh` takes a hot WAL-safe snapshot, packages every referenced product/payment/condition attachment with hashes, and keeps the existing 30-day retention. See [release and recovery](docs/release-and-recovery.md).
 
 ```bash
 # Manual run
@@ -193,7 +195,7 @@ KEEP_DAYS=60 bash popcore_app/backup.sh
 
 | Log | Location | Description |
 |---|---|---|
-| Application | `popcore_app/server.log` | Gunicorn access + error logs |
+| Application | `/var/log/popcore/server.log` | Gunicorn access + error logs |
 | systemd journal | `journalctl -u popcore` | Same output, searchable |
 | Backup | `/var/log/popcore-backup.log` | Daily backup cron output |
 | nginx access | `/var/log/nginx/access.log` | Reverse-proxy access log |
@@ -205,7 +207,7 @@ KEEP_DAYS=60 bash popcore_app/backup.sh
 # Live log stream
 journalctl -u popcore -f
 # or
-tail -f popcore_app/server.log
+tail -f /var/log/popcore/server.log
 ```
 
 ---

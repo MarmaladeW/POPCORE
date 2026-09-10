@@ -1,6 +1,7 @@
 """
 blueprints/sales.py — daily sales records, batch import, daily report, export.
 """
+import os
 import re
 import unicodedata
 from datetime import date, timedelta
@@ -8,8 +9,11 @@ from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
+from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
 from matcher import match_jzm, normalize as _norm_jzm, clean_name as _clean_jzm
+from inventory_commands import InventoryError, post_inventory
+from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
 bp = Blueprint('sales', __name__)
 
@@ -85,17 +89,18 @@ def get_sales():
 @role_required('staff')
 def upsert_sale():
     data  = request.get_json()
-    if not data or 'product_id' not in data:
+    if not isinstance(data, dict) or 'product_id' not in data:
         return jsonify({'error': 'product_id is required'}), 400
     try:
-        pid      = int(data['product_id'])
-        qty_pos  = int(data.get('qty_pos',  0) or 0)
-        qty_cash = int(data.get('qty_cash', 0) or 0)
+        pid      = read_int(data['product_id'], 'product_id', minimum=1)
+        qty_pos  = read_int(data.get('qty_pos', 0), 'qty_pos')
+        qty_cash = read_int(data.get('qty_cash', 0), 'qty_cash')
         if 'qty_pos' not in data and 'qty_cash' not in data:
-            qty_cash = int(data.get('qty_sold', 0) or 0)
-    except (ValueError, TypeError):
-        return jsonify({'error': 'product_id and qty fields must be integers'}), 400
-    d        = data.get('date', str(date.today()))
+            qty_cash = read_int(data.get('qty_sold', 0), 'qty_sold')
+        read_int(qty_pos + qty_cash, 'qty_sold')
+        d = read_date(data.get('date', str(date.today())))
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     notes    = data.get('notes', '')
     qty_sold = qty_pos + qty_cash
 
@@ -105,6 +110,10 @@ def upsert_sale():
         con.close()
         return err
     cur = con.cursor()
+    if cur.execute('SELECT 1 FROM products WHERE id = ?', (pid,)).fetchone() is None:
+        con.close()
+        return jsonify({'error': 'Product not found', 'code': 'not_found',
+                        'field': 'product_id'}), 404
     cur.execute('''
         INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -189,7 +198,29 @@ def sales_summary():
 @role_required('manager')
 def delete_sales_record(record_id):
     con = get_db()
+    con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
+    record = cur.execute(
+        'SELECT date, store FROM daily_sales WHERE id = ?', (record_id,)
+    ).fetchone()
+    if record:
+        store = cur.execute(
+            'SELECT id FROM stores WHERE code = ?', (record['store'],)
+        ).fetchone()
+        if store:
+            prior_stock = cur.execute(f'''
+                SELECT 1 FROM stock_transactions
+                WHERE date = ? AND store_id = ?
+                  AND txn_type IN ({','.join('?' * len(_REPORT_TXN_TYPES))})
+                LIMIT 1
+            ''', (record['date'], store['id'], *_REPORT_TXN_TYPES)).fetchone()
+            if prior_stock:
+                con.rollback()
+                con.close()
+                return jsonify({
+                    'error': 'This report has stock history and requires reconciliation',
+                    'code': 'reconciliation_required',
+                }), 409
     cur.execute('DELETE FROM daily_sales WHERE id = ?', (record_id,))
     con.commit()
     con.close()
@@ -205,12 +236,36 @@ def batch_stock_operation():
             date: '...', items: [{product_id, qty, notes}] }
     """
     data      = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     operation = data.get('operation', 'ru_dian')
-    d         = data.get('date', str(date.today()))
     items     = data.get('items', [])
 
     if operation not in ('ru_dian', 'restock_upstairs', 'out_dian', 'ru_dian_claw'):
         return jsonify({'error': 'Invalid operation'}), 400
+    if not isinstance(items, list):
+        return jsonify({'error': 'items must be a list', 'code': 'invalid_input',
+                        'field': 'items'}), 400
+    try:
+        d = read_date(data.get('date', str(date.today())))
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+
+    validated_items = []
+    for line, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            return jsonify({'error': 'Each item must be an object',
+                            'code': 'invalid_input', 'line': line}), 400
+        try:
+            pid = read_int(item['product_id'], 'product_id', minimum=1)
+            qty = read_int(item.get('qty'), 'qty', minimum=1)
+        except KeyError:
+            return jsonify({'error': 'product_id is required',
+                            'code': 'invalid_input', 'field': 'product_id',
+                            'line': line}), 400
+        except ValueError as exc:
+            return jsonify(invalid_input(exc, line=line)), 400
+        validated_items.append((pid, qty, item.get('notes', '')))
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
@@ -220,74 +275,210 @@ def batch_stock_operation():
     cur = con.cursor()
     results = []
 
-    for item in items:
-        try:
-            pid = int(item['product_id'])
-            qty = int(item.get('qty', 0))
-        except (KeyError, ValueError, TypeError):
+    product_ids = {row[0] for row in validated_items}
+    if product_ids:
+        placeholders = ','.join('?' * len(product_ids))
+        found = {
+            row[0] for row in cur.execute(
+                f'SELECT id FROM products WHERE id IN ({placeholders})',
+                tuple(product_ids),
+            )
+        }
+        missing = product_ids - found
+        if missing:
             con.close()
-            return jsonify({'error': f'Each item must have an integer product_id and qty'}), 400
-        notes = item.get('notes', '')
-        if qty <= 0:
-            continue
+            return jsonify({'error': 'Product not found', 'code': 'not_found',
+                            'field': 'product_id'}), 404
 
+    if _is_authoritative(con):
+        request_key = request.headers.get('Idempotency-Key', '').strip()
+        if not request_key:
+            con.close()
+            return jsonify({'error': 'Idempotency-Key is required',
+                            'code': 'idempotency_key_required'}), 400
+        if operation == 'ru_dian_claw':
+            con.close()
+            return jsonify({'error': 'Claw stock meaning requires catalog review',
+                            'code': 'migration_required'}), 409
+        floor = _inventory_location(con, store_id, 'floor')
+        back = _inventory_location(con, store_id, 'upstairs', 'warehouse')
+        if floor is None or back is None:
+            con.close()
+            return jsonify({'error': 'Reviewed inventory locations are missing',
+                            'code': 'inventory_store_missing'}), 409
+        totals = {}
+        for pid, qty, _notes in validated_items:
+            totals[pid] = totals.get(pid, 0) + qty
+        prior_versions = {row['product_id']: row for row in con.execute(
+            """SELECT l.product_id, l.from_version, l.to_version
+               FROM inventory_documents d
+               JOIN inventory_document_lines l ON l.document_id=d.id
+               WHERE d.request_key=?""", (request_key,)
+        )}
+        lines = []
+        for pid, qty in totals.items():
+            product = con.execute(
+                'SELECT stock_unit FROM products WHERE id=?', (pid,)
+            ).fetchone()
+            unit = product['stock_unit'] if product else None
+            def balance(location_id):
+                return con.execute(
+                    """SELECT version FROM inventory_balances
+                       WHERE product_id=? AND location_id=?
+                         AND disposition='saleable'""", (pid, location_id)
+                ).fetchone()
+            if operation == 'restock_upstairs':
+                target = balance(back)
+                prior = prior_versions.get(pid)
+                line = {'product_id': pid, 'quantity': qty, 'unit': unit,
+                        'to_location_id': back, 'to_disposition': 'saleable',
+                        'expected_versions': {'to': (prior['to_version'] if prior
+                                                     else target['version'] if target else 0)}}
+                kind = 'receipt'
+            elif operation == 'ru_dian':
+                source, target = balance(back), balance(floor)
+                prior = prior_versions.get(pid)
+                line = {'product_id': pid, 'quantity': qty, 'unit': unit,
+                        'from_location_id': back, 'from_disposition': 'saleable',
+                        'to_location_id': floor, 'to_disposition': 'saleable',
+                        'expected_versions': {
+                            'from': (prior['from_version'] if prior
+                                     else source['version'] if source else 0),
+                            'to': (prior['to_version'] if prior
+                                   else target['version'] if target else 0)}}
+                kind = 'move'
+            else:
+                source = balance(floor)
+                prior = prior_versions.get(pid)
+                line = {'product_id': pid, 'quantity': qty, 'unit': unit,
+                        'from_location_id': floor, 'from_disposition': 'saleable',
+                        'expected_versions': {'from': (prior['from_version'] if prior
+                                                       else source['version'] if source else 0)}}
+                kind = 'consume'
+            lines.append(line)
+        try:
+            result = post_inventory(
+                con, {'kind': kind, 'business_date': d,
+                      'reason': f'Batch {operation}', 'lines': lines},
+                actor=request.jwt_payload, request_key=request_key,
+            )
+            con.close()
+            return jsonify({**result, 'ok': True,
+                            'results': [{'pid': pid, 'ok': True} for pid in totals]})
+        except PermissionError:
+            con.close()
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        except InventoryError as exc:
+            con.close()
+            return _inventory_error(exc)
+
+    con.execute('BEGIN IMMEDIATE')
+    required = {}
+    if operation in {'ru_dian', 'ru_dian_claw', 'out_dian'}:
+        source_column = (
+            'instore_qty' if operation == 'out_dian' else 'upstairs_qty'
+        )
+        for pid, qty, _notes in validated_items:
+            try:
+                required[pid] = read_int(
+                    required.get(pid, 0) + qty, 'total_quantity', minimum=1
+                )
+            except ValueError as exc:
+                con.rollback()
+                con.close()
+                return jsonify(invalid_input(exc)), 400
+        for pid, qty in required.items():
+            row = cur.execute(
+                f'''SELECT {source_column} AS available FROM stock
+                    WHERE product_id=? AND store_id=?''',
+                (pid, store_id),
+            ).fetchone()
+            available = row['available'] if row else 0
+            if qty > available:
+                con.rollback()
+                con.close()
+                return jsonify({
+                    'error': f'Insufficient stock ({available})',
+                    'code': 'insufficient_stock',
+                    'product_id': pid,
+                }), 409
+
+    totals = {}
+    for pid, qty, _notes in validated_items:
+        try:
+            totals[pid] = read_int(
+                totals.get(pid, 0) + qty, 'total_quantity', minimum=1
+            )
+        except ValueError as exc:
+            con.rollback()
+            con.close()
+            return jsonify(invalid_input(exc)), 400
+    for pid, qty in totals.items():
+        row = cur.execute(
+            '''SELECT upstairs_qty, instore_qty, claw_qty FROM stock
+               WHERE product_id=? AND store_id=?''',
+            (pid, store_id),
+        ).fetchone()
+        upstairs = row['upstairs_qty'] if row else 0
+        instore = row['instore_qty'] if row else 0
+        claw = row['claw_qty'] if row else 0
+        try:
+            if operation == 'restock_upstairs':
+                read_int(upstairs + qty, 'upstairs_qty')
+            elif operation == 'ru_dian':
+                read_int(instore + qty, 'instore_qty')
+            elif operation == 'ru_dian_claw':
+                read_int(instore + qty, 'instore_qty')
+                read_int(claw + qty, 'claw_qty')
+        except ValueError as exc:
+            con.rollback()
+            con.close()
+            return jsonify(invalid_input(exc)), 400
+
+    for pid, qty, notes in validated_items:
         _ensure_stock_row(cur, pid, store_id)
 
         if operation == 'ru_dian':
-            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ? AND store_id = ?',
-                        (pid, store_id))
-            row = cur.fetchone()
-            upstairs = row['upstairs_qty'] if row else 0
-            if qty > upstairs:
-                results.append({'pid': pid, 'ok': False,
-                                 'error': f'楼上库存不足（{upstairs}）'})
-                continue
             cur.execute('''
                 UPDATE stock SET upstairs_qty = upstairs_qty - ?,
                                  instore_qty  = instore_qty  + ?,
                                  last_updated = ?
-                WHERE product_id = ? AND store_id = ?
-            ''', (qty, qty, d, pid, store_id))
+                WHERE product_id = ? AND store_id = ? AND upstairs_qty >= ?
+                  AND instore_qty <= ?
+            ''', (qty, qty, d, pid, store_id, qty, SQLITE_INTEGER_MAX - qty))
             loc = 'upstairs->instore'
         elif operation == 'out_dian':
-            cur.execute('SELECT instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
-                        (pid, store_id))
-            row = cur.fetchone()
-            instore = row['instore_qty'] if row else 0
-            if qty > instore:
-                results.append({'pid': pid, 'ok': False,
-                                 'error': f'店内库存不足（{instore}）'})
-                continue
             cur.execute('''
                 UPDATE stock SET instore_qty = instore_qty - ?,
                                  last_updated = ?
-                WHERE product_id = ? AND store_id = ?
-            ''', (qty, d, pid, store_id))
+                WHERE product_id = ? AND store_id = ? AND instore_qty >= ?
+            ''', (qty, d, pid, store_id, qty))
             loc = 'instore_out'
         elif operation == 'ru_dian_claw':
-            cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ? AND store_id = ?',
-                        (pid, store_id))
-            row = cur.fetchone()
-            upstairs = row['upstairs_qty'] if row else 0
-            if qty > upstairs:
-                results.append({'pid': pid, 'ok': False,
-                                 'error': f'楼上库存不足（{upstairs}）'})
-                continue
             cur.execute('''
                 UPDATE stock SET upstairs_qty = upstairs_qty - ?,
                                  instore_qty  = instore_qty  + ?,
                                  claw_qty     = claw_qty     + ?,
                                  last_updated = ?
-                WHERE product_id = ? AND store_id = ?
-            ''', (qty, qty, qty, d, pid, store_id))
+                WHERE product_id = ? AND store_id = ? AND upstairs_qty >= ?
+                  AND instore_qty <= ? AND claw_qty <= ?
+            ''', (qty, qty, qty, d, pid, store_id, qty,
+                  SQLITE_INTEGER_MAX - qty, SQLITE_INTEGER_MAX - qty))
             loc = 'upstairs->claw'
         else:  # restock_upstairs
             cur.execute('''
                 UPDATE stock SET upstairs_qty = upstairs_qty + ?,
                                  last_updated = ?
-                WHERE product_id = ? AND store_id = ?
-            ''', (qty, d, pid, store_id))
+                WHERE product_id = ? AND store_id = ? AND upstairs_qty <= ?
+            ''', (qty, d, pid, store_id, SQLITE_INTEGER_MAX - qty))
             loc = 'upstairs'
+
+        if cur.rowcount != 1:
+            con.rollback()
+            con.close()
+            return jsonify({'error': 'Stock changed before the operation completed',
+                            'code': 'insufficient_stock', 'product_id': pid}), 409
 
         cur.execute('''
             INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
@@ -319,18 +510,38 @@ def batch_upsert_sales():
         return jsonify({'error': 'items must be a list'}), 400
 
     rows = []
-    for item in items:
-        try:
-            pid      = int(item['product_id'])
-            qty_pos  = int(item.get('qty_pos',  0) or 0)
-            qty_cash = int(item.get('qty_cash', 0) or 0)
-        except (KeyError, ValueError, TypeError):
+    for line, item in enumerate(items, 1):
+        if not isinstance(item, dict):
             con.close()
-            return jsonify({'error': 'Each item must have an integer product_id, qty_pos, and qty_cash'}), 400
-        rows.append((pid, item.get('date', str(date.today())), store_code,
-                     qty_pos, qty_cash, qty_pos + qty_cash, item.get('notes', '')))
+            return jsonify({'error': 'Each item must be an object',
+                            'code': 'invalid_input', 'line': line}), 400
+        try:
+            pid      = read_int(item['product_id'], 'product_id', minimum=1)
+            qty_pos  = read_int(item.get('qty_pos', 0), 'qty_pos')
+            qty_cash = read_int(item.get('qty_cash', 0), 'qty_cash')
+            qty_sold = read_int(qty_pos + qty_cash, 'qty_sold')
+        except KeyError:
+            con.close()
+            return jsonify({'error': 'product_id is required',
+                            'code': 'invalid_input', 'field': 'product_id',
+                            'line': line}), 400
+        except ValueError as exc:
+            con.close()
+            return jsonify(invalid_input(exc, line=line)), 400
+        try:
+            item_date = read_date(item.get('date', str(date.today())))
+        except ValueError as exc:
+            con.close()
+            return jsonify(invalid_input(exc, line=line)), 400
+        rows.append((pid, item_date, store_code,
+                     qty_pos, qty_cash, qty_sold, item.get('notes', '')))
 
     cur = con.cursor()
+    for line, row in enumerate(rows, 1):
+        if cur.execute('SELECT 1 FROM products WHERE id = ?', (row[0],)).fetchone() is None:
+            con.close()
+            return jsonify({'error': 'Product not found', 'code': 'not_found',
+                            'field': 'product_id', 'line': line}), 404
     cur.executemany('''
         INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -423,14 +634,63 @@ def submit_daily_report():
     }
     """
     data  = request.get_json(silent=True) or {}
-    d     = (data.get('date') or '').strip()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
+    raw_date = data.get('date')
     items = data.get('items')
     mode  = (data.get('mode') or 'replace').strip().lower()
 
-    if not d or not isinstance(items, list):
+    if not raw_date or not isinstance(items, list):
         return jsonify({'error': 'date and items required'}), 400
     if mode not in ('replace', 'append'):
         return jsonify({'error': "mode must be 'replace' or 'append'"}), 400
+
+    try:
+        d = read_date(raw_date)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+
+    validated_items = []
+    valid_sections = SALES_SECTIONS | {'break_display', 'stock_in', 'stock_out'}
+    for line, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            return jsonify({'error': 'Each item must be an object',
+                            'code': 'invalid_input', 'line': line}), 400
+        try:
+            normalized = dict(item)
+            normalized['product_id'] = read_int(
+                item['product_id'], 'product_id', minimum=1
+            )
+            section = item.get('section')
+            if not isinstance(section, str) or section.strip() not in valid_sections:
+                raise ValueError('section must be a supported report section')
+            normalized['section'] = section.strip()
+            if normalized['section'] in SALES_SECTIONS:
+                normalized['qty_pos'] = read_int(item.get('qty_pos', 0), 'qty_pos')
+                normalized['qty_cash'] = read_int(item.get('qty_cash', 0), 'qty_cash')
+                normalized['qty'] = read_int(item.get('qty', 0), 'qty')
+                read_int(normalized['qty_pos'] + normalized['qty_cash'], 'qty_sold')
+            elif normalized['section'] in {'break_display', 'stock_out'}:
+                normalized['qty'] = read_int(item.get('qty'), 'qty', minimum=1)
+            else:
+                normalized['box_size'] = read_int(
+                    item.get('box_size'), 'box_size', minimum=1
+                )
+                normalized['num_boxes'] = read_int(
+                    item.get('num_boxes'), 'num_boxes', minimum=1
+                )
+                read_int(
+                    normalized['box_size'] * normalized['num_boxes'],
+                    'total_units',
+                    minimum=1,
+                )
+        except KeyError:
+            return jsonify({'error': 'product_id is required',
+                            'code': 'invalid_input', 'field': 'product_id',
+                            'line': line}), 400
+        except ValueError as exc:
+            return jsonify(invalid_input(exc, line=line)), 400
+        validated_items.append(normalized)
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
@@ -438,7 +698,30 @@ def submit_daily_report():
         con.close()
         return err
 
+    if _is_authoritative(con) and any(
+        item['section'] in {'break_display', 'stock_in', 'stock_out'}
+        for item in validated_items
+    ):
+        con.close()
+        return jsonify({
+            'error': 'Legacy report stock sections require reviewed document intake',
+            'code': 'migration_required',
+        }), 409
+
     cur = con.cursor()
+    product_ids = {item['product_id'] for item in validated_items}
+    if product_ids:
+        placeholders = ','.join('?' * len(product_ids))
+        found = {
+            row[0] for row in cur.execute(
+                f'SELECT id FROM products WHERE id IN ({placeholders})',
+                tuple(product_ids),
+            )
+        }
+        if found != product_ids:
+            con.close()
+            return jsonify({'error': 'Product not found', 'code': 'not_found',
+                            'field': 'product_id'}), 404
     sales_count   = 0
     txn_count     = 0
     replaced_rows = 0
@@ -454,10 +737,78 @@ def submit_daily_report():
         return _price_cache[pid]
 
     try:
+        con.execute('BEGIN IMMEDIATE')
         if mode == 'replace':
+            prior_stock = cur.execute(f'''
+                SELECT 1 FROM stock_transactions
+                WHERE date = ? AND store_id = ?
+                  AND txn_type IN ({','.join('?' * len(_REPORT_TXN_TYPES))})
+                LIMIT 1
+            ''', (d, store_id, *_REPORT_TXN_TYPES)).fetchone()
+            if prior_stock:
+                con.rollback()
+                con.close()
+                return jsonify({
+                    'error': 'This report has stock history and requires reconciliation',
+                    'code': 'reconciliation_required',
+                }), 409
             replaced_rows, reverted_txns = _revert_report_day(cur, d, store_code, store_id)
 
-        for item in items:
+        required_instore = {}
+        required_upstairs = {}
+        for item in validated_items:
+            pid = item['product_id']
+            if item['section'] in {'break_display', 'stock_out'}:
+                required_instore[pid] = read_int(
+                    required_instore.get(pid, 0) + item['qty'],
+                    'total_quantity', minimum=1,
+                )
+            elif item['section'] == 'stock_in':
+                product = cur.execute(
+                    'SELECT product_type, boxes_per_dan FROM products WHERE id=?',
+                    (pid,),
+                ).fetchone()
+                bpd = (
+                    (product['boxes_per_dan'] or 1)
+                    if product and product['product_type'] == '盲盒'
+                    else 1
+                )
+                qty = read_int(
+                    item['box_size'] * item['num_boxes'] * bpd,
+                    'total_units',
+                    minimum=1,
+                )
+                required_upstairs[pid] = read_int(
+                    required_upstairs.get(pid, 0) + qty,
+                    'total_units', minimum=1,
+                )
+        for pid in set(required_instore) | set(required_upstairs):
+            balance = cur.execute(
+                '''SELECT upstairs_qty, instore_qty FROM stock
+                   WHERE product_id=? AND store_id=?''',
+                (pid, store_id),
+            ).fetchone()
+            upstairs = balance['upstairs_qty'] if balance else 0
+            instore = balance['instore_qty'] if balance else 0
+            if (required_instore.get(pid, 0) > instore
+                    or required_upstairs.get(pid, 0) > upstairs):
+                con.rollback()
+                con.close()
+                return jsonify({
+                    'error': 'Insufficient stock for report',
+                    'code': 'insufficient_stock',
+                    'product_id': pid,
+                }), 409
+            try:
+                read_int(
+                    instore + required_upstairs.get(pid, 0), 'instore_qty'
+                )
+            except ValueError as exc:
+                con.rollback()
+                con.close()
+                return jsonify(invalid_input(exc)), 400
+
+        for item in validated_items:
             pid     = item.get('product_id')
             section = (item.get('section') or '').strip()
             notes   = (item.get('notes') or '').strip()
@@ -466,9 +817,9 @@ def submit_daily_report():
                 continue
 
             if section in SALES_SECTIONS:
-                qty_pos  = int(item.get('qty_pos',  0) or 0)
-                qty_cash = int(item.get('qty_cash', 0) or 0)
-                qty      = int(item.get('qty',      0) or 0)
+                qty_pos  = item['qty_pos']
+                qty_cash = item['qty_cash']
+                qty      = item['qty']
                 base_qty = (qty_pos + qty_cash) or qty
                 if base_qty <= 0:
                     continue
@@ -476,7 +827,7 @@ def submit_daily_report():
                 quantities = {c: 0 for c in _SECTION_QTY_COL.values()}
                 quantities[_SECTION_QTY_COL[section]] = base_qty
 
-                cur.execute('''
+                cur.execute(f'''
                     INSERT INTO daily_sales
                         (product_id, date, store, qty_pos, qty_cash, qty_claw,
                          qty_display, qty_employee, qty_sold, unit_price, raw_name, notes)
@@ -499,14 +850,22 @@ def submit_daily_report():
                             WHEN excluded.notes = '' THEN notes
                             ELSE notes || '; ' || excluded.notes
                         END
+                    WHERE qty_pos <= {SQLITE_INTEGER_MAX} - excluded.qty_pos
+                      AND qty_cash <= {SQLITE_INTEGER_MAX} - excluded.qty_cash
+                      AND qty_claw <= {SQLITE_INTEGER_MAX} - excluded.qty_claw
+                      AND qty_display <= {SQLITE_INTEGER_MAX} - excluded.qty_display
+                      AND qty_employee <= {SQLITE_INTEGER_MAX} - excluded.qty_employee
+                      AND qty_sold <= {SQLITE_INTEGER_MAX} - excluded.qty_sold
                 ''', (pid, d, store_code,
                       quantities['qty_pos'], quantities['qty_cash'], quantities['qty_claw'],
                       quantities['qty_display'], quantities['qty_employee'],
                       base_qty, _unit_price(pid), raw, notes))
+                if cur.rowcount != 1:
+                    raise ValueError('qty_sold exceeds the supported range')
                 sales_count += 1
 
             elif section == 'break_display':
-                qty = int(item.get('qty', 1) or 1)
+                qty = item['qty']
                 _ensure_stock_row(cur, pid, store_id)
                 cur.execute('''
                     INSERT INTO stock_transactions
@@ -514,14 +873,19 @@ def submit_daily_report():
                     VALUES (?, 'display_open', ?, 'instore', ?, ?, ?)
                 ''', (pid, -qty, d, notes or 'display opened', store_id))
                 cur.execute('''
-                    UPDATE stock SET instore_qty = MAX(0, instore_qty - ?),
+                    UPDATE stock SET instore_qty = instore_qty - ?,
                                      last_updated = datetime('now')
-                    WHERE product_id = ? AND store_id = ?
-                ''', (qty, pid, store_id))
+                    WHERE product_id = ? AND store_id = ? AND instore_qty >= ?
+                ''', (qty, pid, store_id, qty))
+                if cur.rowcount != 1:
+                    con.rollback()
+                    con.close()
+                    return jsonify({'error': 'Stock changed before report submission',
+                                    'code': 'insufficient_stock', 'product_id': pid}), 409
                 txn_count += 1
 
             elif section == 'stock_out':
-                qty = int(item.get('qty', 0) or 0) or int(item.get('qty_pos', 0) or 0) or 1
+                qty = item['qty']
                 _ensure_stock_row(cur, pid, store_id)
                 cur.execute('''
                     INSERT INTO stock_transactions
@@ -529,37 +893,48 @@ def submit_daily_report():
                     VALUES (?, 'report_stock_out', ?, 'instore→out', ?, ?, ?)
                 ''', (pid, qty, d, notes or '出店', store_id))
                 cur.execute('''
-                    UPDATE stock SET instore_qty = MAX(0, instore_qty - ?),
+                    UPDATE stock SET instore_qty = instore_qty - ?,
                                      last_updated = datetime('now')
-                    WHERE product_id = ? AND store_id = ?
-                ''', (qty, pid, store_id))
+                    WHERE product_id = ? AND store_id = ? AND instore_qty >= ?
+                ''', (qty, pid, store_id, qty))
+                if cur.rowcount != 1:
+                    con.rollback()
+                    con.close()
+                    return jsonify({'error': 'Stock changed before report submission',
+                                    'code': 'insufficient_stock', 'product_id': pid}), 409
                 txn_count += 1
 
             elif section == 'stock_in':
-                box_size   = int(item.get('box_size',  1) or 1)
-                num_boxes  = int(item.get('num_boxes', 1) or 1)
+                box_size   = item['box_size']
+                num_boxes  = item['num_boxes']
                 total_duan = box_size * num_boxes
                 cur.execute('SELECT product_type, boxes_per_dan FROM products WHERE id=?', (pid,))
                 prow = cur.fetchone()
                 bpd  = (prow['boxes_per_dan'] or 1) if (prow and prow['product_type'] == '盲盒') else 1
-                total_units = total_duan * bpd
+                total_units = read_int(total_duan * bpd, 'total_units', minimum=1)
                 cur.execute('''
                     INSERT INTO stock_transactions
                         (product_id, txn_type, qty, location, date, notes, store_id)
                     VALUES (?, 'report_stock_in', ?, 'upstairs→instore', ?, ?, ?)
                 ''', (pid, total_units, d, notes or f'{num_boxes}端', store_id))
                 cur.execute('''
-                    INSERT INTO stock (product_id, store_id, upstairs_qty, instore_qty)
-                    VALUES (?, ?, 0, ?)
-                    ON CONFLICT(product_id, store_id) DO UPDATE SET
-                        upstairs_qty = MAX(0, upstairs_qty - ?),
-                        instore_qty  = instore_qty + ?,
+                    UPDATE stock
+                    SET upstairs_qty = upstairs_qty - ?,
+                        instore_qty = instore_qty + ?,
                         last_updated = datetime('now')
-                ''', (pid, store_id, total_units, total_units, total_units))
+                    WHERE product_id = ? AND store_id = ? AND upstairs_qty >= ?
+                      AND instore_qty <= ?
+                ''', (total_units, total_units, pid, store_id, total_units,
+                      SQLITE_INTEGER_MAX - total_units))
+                if cur.rowcount != 1:
+                    con.rollback()
+                    con.close()
+                    return jsonify({'error': 'Stock changed before report submission',
+                                    'code': 'insufficient_stock', 'product_id': pid}), 409
                 txn_count += 1
 
         # Record match corrections for manually-reviewed items (Issue 3)
-        for item in items:
+        for item in validated_items:
             bucket = (item.get('source_bucket') or '').strip()
             if bucket not in ('review', 'failed'):
                 continue
@@ -580,7 +955,20 @@ def submit_daily_report():
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', corrections)
 
+        if any(item['section'] in SALES_SECTIONS for item in validated_items) \
+                and data.get('classification') != 'summary_only':
+            con.rollback()
+            con.close()
+            return jsonify({
+                'error': 'Classify this legacy report as a reconciliation summary before saving',
+                'code': 'reconciliation_classification_required',
+            }), 409
+
         con.commit()
+    except ValueError as exc:
+        con.rollback()
+        con.close()
+        return jsonify(invalid_input(exc)), 400
     except Exception as e:
         con.rollback()
         con.close()
@@ -652,18 +1040,34 @@ def export_sales():
 @bp.route('/api/sales/clear_day', methods=['DELETE'])
 @role_required('manager')
 def clear_sales_day():
-    d = request.args.get('date', '')
-    if not d:
-        return jsonify({'error': 'date param required'}), 400
+    try:
+        d = read_date(request.args.get('date', ''))
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     store_code_raw = (request.args.get('store_code') or '').strip().upper()
     if store_code_raw == 'ALL':
         return jsonify({'error': 'Cannot write with store_code ALL. Select a specific store.'}), 400
     con = get_db()
+    con.execute('BEGIN IMMEDIATE')
     store_id, store_code, err = _require_store_param(con)
     if err:
+        con.rollback()
         con.close()
         return err
     cur = con.cursor()
+    prior_stock = cur.execute(f'''
+        SELECT 1 FROM stock_transactions
+        WHERE date = ? AND store_id = ?
+          AND txn_type IN ({','.join('?' * len(_REPORT_TXN_TYPES))})
+        LIMIT 1
+    ''', (d, store_id, *_REPORT_TXN_TYPES)).fetchone()
+    if prior_stock:
+        con.rollback()
+        con.close()
+        return jsonify({
+            'error': 'This report has stock history and requires reconciliation',
+            'code': 'reconciliation_required',
+        }), 409
     cur.execute('DELETE FROM daily_sales WHERE date = ? AND store = ?', (d, store_code))
     deleted = cur.rowcount
     con.commit()
@@ -943,7 +1347,7 @@ def parse_daily_report():
     parser_engine = 'rules'
     multi_day     = False
     llm_result    = None
-    if engine_req != 'rules':
+    if engine_req == 'llm' and os.environ.get('ENABLE_LLM_PARSER') == '1':
         try:
             import llm_parser
             if llm_parser.available():

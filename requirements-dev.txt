@@ -1,0 +1,3 @@
+-r popcore_app/requirements.txt
+# Flask CLI --env-file support for local development.
+python-dotenv>=1.0,<2
