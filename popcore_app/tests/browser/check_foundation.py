@@ -101,7 +101,7 @@ async def page_state_checks(browser):
         state = {'mode': 'error'}
         context, page = await context_with_api(browser, state)
         await page.goto(BASE + path)
-        await expect(page.get_by_role('alert')).to_contain_text(error_text, timeout=15_000)
+        await expect(page.get_by_role('alert')).to_contain_text(error_text)
         await expect(page.get_by_text(marker, exact=False)).to_have_count(0)
         state['mode'] = 'data'
         await page.get_by_role('button', name='Retry', exact=True).click()
