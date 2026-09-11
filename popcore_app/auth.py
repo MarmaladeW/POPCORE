@@ -48,7 +48,14 @@ def _decode_token(token: str) -> dict:
         key = next((k for k in jwks['keys'] if k['kid'] == header['kid']), None)
     if key is None:
         raise ValueError(f'Unknown key id: {header.get("kid")}')
-    return jose_jwt.decode(token, key, algorithms=ALGORITHMS, audience=AUTH0_AUDIENCE)
+    return jose_jwt.decode(
+        token,
+        key,
+        algorithms=ALGORITHMS,
+        audience=AUTH0_AUDIENCE,
+        issuer=f'https://{AUTH0_DOMAIN}/',
+        options={'require_exp': True, 'require_sub': True, 'require_iss': True},
+    )
 
 
 def login_required(f):
@@ -59,6 +66,11 @@ def login_required(f):
             return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
         try:
             request.jwt_payload = _decode_token(auth[7:])
+        except http_req.RequestException:
+            return jsonify({
+                'error': 'Authentication service unavailable',
+                'code': 'authentication_unavailable',
+            }), 503
         except Exception:
             return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
         return f(*args, **kwargs)
@@ -76,6 +88,11 @@ def role_required(*allowed_roles):
             try:
                 payload = _decode_token(auth[7:])
                 request.jwt_payload = payload
+            except http_req.RequestException:
+                return jsonify({
+                    'error': 'Authentication service unavailable',
+                    'code': 'authentication_unavailable',
+                }), 503
             except Exception:
                 return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
             role = payload.get(ROLE_CLAIM, 'viewer')

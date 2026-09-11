@@ -13,12 +13,14 @@ import {
   EllipsisOutlined,
   CalendarOutlined,
   SettingOutlined,
+  CheckCircleOutlined,
+  SwapOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useRole, useHasRole } from '../auth/useRole'
 import { useAppStore, ALL_STORES } from '../store'
-import { fetchInsightCount } from '../pages/Dashboard/InsightFeed'
 import dayjs from 'dayjs'
 
 const { Sider, Header, Content } = Layout
@@ -152,7 +154,6 @@ function InsightBadge({ count }: { count: number }) {
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [collapsed,      setCollapsed]      = useState(false)
   const [moreDrawerOpen, setMoreDrawerOpen] = useState(false)
-  const [insightCount,   setInsightCount]   = useState(0)
   const screens    = useBreakpoint()
   const isMobile   = !screens.md          // < 768px
 
@@ -165,67 +166,41 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const isStaff   = useHasRole('staff')
   const { stores, selectedStore, setSelectedStore } = useAppStore()
 
-  const selectedKey = location.pathname === '/' ? '/' : '/' + location.pathname.split('/')[1]
-
-  useEffect(() => {
-    if (!isStaff) return
-    const refresh = () => {
-      fetchInsightCount(
-        selectedStore?.code !== 'ALL' ? selectedStore?.code : undefined
-      ).then(setInsightCount)
-    }
-    refresh()
-    const t = setInterval(refresh, 5 * 60 * 1000)
-    return () => clearInterval(t)
-  }, [isStaff, selectedStore?.code])
-
-  const dashLabel = (
-    <span style={{ display: 'flex', alignItems: 'center' }}>
-      Dashboard
-      <InsightBadge count={insightCount} />
-    </span>
-  )
+  const selectedKey = location.pathname.startsWith('/sales/entry')
+    ? '/sales/entry'
+    : location.pathname === '/' ? '/' : '/' + location.pathname.split('/')[1]
 
   // All nav items (for desktop sidebar)
   const navItems = [
-    ...(isStaff   ? [{ key: '/',              icon: <DashboardOutlined />, label: dashLabel       }] : []),
+    { key: '/',              icon: <DashboardOutlined />, label: 'Today'       },
     { key: '/products',      icon: <AppstoreOutlined />,  label: 'Products'      },
     ...(isStaff   ? [{ key: '/stock',         icon: <InboxOutlined />,     label: 'Stock'         }] : []),
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,      label: 'Restock'       }] : []),
+    ...(isStaff   ? [{ key: '/sales/entry',   icon: <DollarOutlined />,    label: 'Enter Sale'    }] : []),
+    ...(isStaff   ? [{ key: '/closing',       icon: <CheckCircleOutlined />, label: 'Closing'     }] : []),
+    ...(isStaff   ? [{ key: '/trades',        icon: <SwapOutlined />, label: 'Trades'             }] : []),
     ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />,    label: 'Sales'         }] : []),
+    ...(isManager ? [{ key: '/reports',       icon: <BarChartOutlined />,  label: 'Reports'       }] : []),
     { key: '/schedule',      icon: <CalendarOutlined />,  label: 'Schedule'      },
     ...(isAdmin   ? [{ key: '/settings',     icon: <SettingOutlined />,   label: 'Settings'      }] : []),
   ]
 
-  const dashIconMobile = (
-    <div style={{ position: 'relative', display: 'inline-flex' }}>
-      <DashboardOutlined />
-      {insightCount > 0 && (
-        <span style={{
-          position:     'absolute',
-          top:          -4,
-          right:        -6,
-          width:        8,
-          height:       8,
-          borderRadius: '50%',
-          background:   '#EF4444',
-        }} />
-      )}
-    </div>
-  )
-
   // Mobile bottom tab bar: the 4 most-used pages (role-gated)
   const bottomTabs = [
-    ...(isStaff   ? [{ key: '/',        icon: dashIconMobile, label: 'Dashboard' }] : []),
-    { key: '/products',  icon: <AppstoreOutlined />,  label: 'Products'  },
-    ...(isStaff   ? [{ key: '/stock',   icon: <InboxOutlined />,     label: 'Stock'     }] : []),
+    { key: '/',        icon: <DashboardOutlined />, label: 'Today' },
+    ...(isStaff   ? [{ key: '/stock',   icon: <InboxOutlined />,     label: 'Inventory' }] : []),
+    ...(isStaff   ? [{ key: isManager ? '/sales' : '/sales/entry', icon: <DollarOutlined />, label: 'Sales' }] : []),
     { key: '/schedule',  icon: <CalendarOutlined />,  label: 'Schedule'  },
   ]
 
   // "More" drawer extra nav items
   const moreNavItems = [
+    { key: '/products', icon: <AppstoreOutlined />, label: 'Products' },
     ...(isStaff   ? [{ key: '/restock',       icon: <ShopOutlined />,   label: 'Restock'       }] : []),
-    ...(isManager ? [{ key: '/sales',         icon: <DollarOutlined />, label: 'Sales'         }] : []),
+    ...(isStaff   ? [{ key: '/sales/entry',   icon: <DollarOutlined />, label: 'Enter Sale'    }] : []),
+    ...(isStaff   ? [{ key: '/closing',       icon: <CheckCircleOutlined />, label: 'Closing'   }] : []),
+    ...(isStaff   ? [{ key: '/trades',        icon: <SwapOutlined />, label: 'Trades'           }] : []),
+    ...(isManager ? [{ key: '/reports',       icon: <BarChartOutlined />, label: 'Reports'       }] : []),
     ...(isAdmin   ? [{ key: '/settings',     icon: <SettingOutlined />, label: 'Settings'      }] : []),
   ]
 

@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify
 
 from db import get_db
 from auth import login_required, role_required
+from inventory_commands import require_inventory_access
 
 bp = Blueprint('stores', __name__)
 
@@ -100,3 +101,92 @@ def delete_store(store_id):
     con.execute('DELETE FROM stores WHERE id = ?', (store_id,))
     con.commit()
     return jsonify({'ok': True})
+
+# Inventory locations and permissions are separate from Schedule store membership.
+@bp.route('/api/inventory/locations')
+@login_required
+def list_inventory_locations():
+    con = get_db()
+    try:
+        requested_code = request.args.get('store_code', '').strip().upper()
+        if requested_code:
+            store = con.execute(
+                """SELECT DISTINCT s.id
+                   FROM stores s
+                   JOIN inventory_locations l ON l.store_id=s.id
+                   WHERE s.code=? AND s.is_active=1 AND l.is_active=1""",
+                (requested_code,),
+            ).fetchone()
+            if store is None:
+                return jsonify({'error': 'Inventory store not found',
+                                'code': 'inventory_store_missing'}), 404
+            try:
+                require_inventory_access(
+                    con, request.jwt_payload, (store['id'],), 'viewer'
+                )
+            except PermissionError:
+                return jsonify({'error': 'Inventory access denied',
+                                'code': 'inventory_forbidden'}), 403
+            store_filter = 'AND s.id=?'
+            params = (request.jwt_payload['sub'], store['id'])
+        else:
+            store_filter = ''
+            params = (request.jwt_payload['sub'],)
+
+        rows = con.execute(
+            f"""SELECT l.id, l.store_id, s.code AS store_code,
+                       l.code, l.name, l.is_active,
+                       ss.opening_verified, ss.opening_document_id
+                FROM inventory_locations l
+                JOIN stores s ON s.id=l.store_id
+                JOIN inventory_access ia ON ia.store_id=s.id
+                                         AND ia.auth0_sub=?
+                LEFT JOIN inventory_scope_state ss
+                       ON ss.store_id=s.id AND ss.location_id=l.id
+                WHERE s.is_active=1 AND l.is_active=1 {store_filter}
+                ORDER BY s.code, l.code""",
+            params,
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item['is_active'] = bool(item['is_active'])
+            item['opening_verified'] = bool(item['opening_verified'])
+            result.append(item)
+        return jsonify(result)
+    finally:
+        con.close()
+
+
+@bp.route('/api/inventory/access', methods=['POST'])
+@role_required('admin')
+def grant_inventory_access():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object',
+                        'code': 'invalid_input'}), 400
+    subject = data.get('auth0_sub')
+    store_id = data.get('store_id')
+    if not isinstance(subject, str) or not subject.strip():
+        return jsonify({'error': 'auth0_sub is required',
+                        'code': 'invalid_input'}), 400
+    if type(store_id) is not int or store_id < 1:
+        return jsonify({'error': 'store_id must be a positive integer',
+                        'code': 'invalid_input'}), 400
+    con = get_db()
+    try:
+        if not con.execute(
+            """SELECT 1 FROM inventory_locations
+               WHERE store_id=? AND is_active=1 LIMIT 1""", (store_id,)
+        ).fetchone():
+            return jsonify({'error': 'Inventory store not found',
+                            'code': 'inventory_store_missing'}), 404
+        con.execute(
+            "INSERT OR IGNORE INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)",
+            (subject.strip(), store_id),
+        )
+        con.commit()
+        return jsonify({'ok': True, 'auth0_sub': subject.strip(),
+                        'store_id': store_id}), 201
+    finally:
+        con.close()

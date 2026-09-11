@@ -1,0 +1,80 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            constraints: requirements-windows.constraints.txt
+          - os: ubuntu-latest
+            constraints: requirements-linux.constraints.txt
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt -c ${{ matrix.constraints }}
+      - run: python -m pip check
+      - run: python -m unittest discover -s popcore_app/tests -v
+        env:
+          DISABLE_SCHEDULER: '1'
+      - run: python scripts/check_release_recovery.py --output .local/build6/recovery-ci
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: popcore_app/frontend/package-lock.json
+      - run: npm ci
+        working-directory: popcore_app/frontend
+      - run: npm test
+        working-directory: popcore_app/frontend
+      - run: npm run build -- --outDir ../../.local/frontend-build
+        working-directory: popcore_app/frontend
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: popcore_app/frontend/package-lock.json
+      - run: python -m pip install -r requirements-dev.txt -c requirements-linux.constraints.txt
+      - run: npm ci
+        working-directory: popcore_app/frontend
+      - run: python -m playwright install --with-deps chromium
+      - run: python popcore_app/tests/browser/check_foundation.py
+      - run: python popcore_app/tests/browser/check_inventory_core.py
+      - run: python popcore_app/tests/browser/check_goods_flow.py
+      - run: python popcore_app/tests/browser/check_store_day.py
+      - run: python popcore_app/tests/browser/check_trades_today.py
+      - run: python popcore_app/tests/browser/check_release_pilot.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: browser-failure
+          path: |
+            .local/**/browser
+            .local/build6/integration
+          include-hidden-files: true
+          if-no-files-found: ignore

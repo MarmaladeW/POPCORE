@@ -4,23 +4,38 @@ import { Modal } from 'antd'
 // Injected once from App.tsx after Auth0 is ready
 let _getToken: (() => Promise<string>) | null = null
 let _sessionWarningShown = false
+let _tokenWarningShown = false
 
-export function setTokenGetter(fn: () => Promise<string>) {
+export function setTokenGetter(fn: (() => Promise<string>) | null) {
   _getToken = fn
-  _sessionWarningShown = false
 }
 
-const client = axios.create({ baseURL: '/api' })
+export function resetAuthWarnings() {
+  _sessionWarningShown = false
+  _tokenWarningShown = false
+}
+
+const client = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || '/api' })
 
 client.interceptors.request.use(async (config) => {
-  if (_getToken) {
-    try {
-      const token = await _getToken()
-      config.headers.Authorization = `Bearer ${token}`
-    } catch {
-      // token fetch failed — request will get a 401 handled below
+  if (!_getToken) return Promise.reject(new Error('Authentication is not ready'))
+  let token: string
+  try {
+    token = await _getToken()
+  } catch (error) {
+    if (!_tokenWarningShown) {
+      _tokenWarningShown = true
+      Modal.confirm({
+        title: 'Unable to continue sign-in',
+        content: 'Authentication could not provide an access token. Check the Auth0 configuration or connection, then sign in again.',
+        okText: 'Sign in again',
+        cancelText: 'Stay here',
+        onOk: () => window.dispatchEvent(new Event('popcore:reauthenticate')),
+      })
     }
+    return Promise.reject(error)
   }
+  config.headers.Authorization = `Bearer ${token}`
   return config
 })
 
@@ -29,11 +44,12 @@ client.interceptors.response.use(
   (err: AxiosError) => {
     if (err.response?.status === 401 && !_sessionWarningShown) {
       _sessionWarningShown = true
-      Modal.warning({
-        title: 'Session Expired',
-        content: 'Your session has expired. Please reload the page to log back in.',
-        okText: 'Reload',
-        onOk: () => window.location.reload(),
+      Modal.confirm({
+        title: 'Sign-in rejected',
+        content: 'The API rejected the current access token. Sign in again to continue; your current page and unsaved entries will remain open.',
+        okText: 'Sign in again',
+        cancelText: 'Stay here',
+        onOk: () => window.dispatchEvent(new Event('popcore:reauthenticate')),
       })
     }
     const serverMessage = (err.response?.data as any)?.error

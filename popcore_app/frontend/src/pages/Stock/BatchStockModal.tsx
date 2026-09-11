@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   Modal, Steps, Select, Input, Button, Table, Space, Tag,
   Alert, message, DatePicker, InputNumber, AutoComplete, Progress, Tooltip,
@@ -41,6 +41,17 @@ interface MatchedItem {
  */
 function parseLine(raw: string): { rawName: string; qty: number; flagged: boolean; notes: string } {
   const t = raw.trim()
+
+  // Report shorthand: "Product 12*1" means 12 boxes, not one unit of "Product 12".
+  const multiplied = t.match(/^(.*\D)\s+(\d+)\s*\*\s*(\d+)$/)
+  if (multiplied && multiplied[1].trim()) {
+    return {
+      rawName: multiplied[1].trim(),
+      qty: Number(multiplied[2]) * Number(multiplied[3]),
+      flagged: false,
+      notes: '',
+    }
+  }
 
   // Step 1: * separator
   const starIdx = t.lastIndexOf('*')
@@ -103,8 +114,9 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
   const [matching, setMatch]  = useState(false)
   const [submitting, setSub]  = useState(false)
   const [results, setResults] = useState<any[]>([])
+  const requestIntent = useRef<{ signature: string; key: string } | null>(null)
 
-  function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0) }
+  function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0); requestIntent.current = null }
 
   async function match() {
     // Two-stage split: newlines first, then commas — explicit ordering
@@ -166,11 +178,18 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
     if (!toSub.length) { message.warning('没有可提交的行'); return }
     setSub(true)
     try {
-      const r = await client.post('/stock/batch_operation', {
+      const payload = {
         operation: op,
         date: date.format('YYYY-MM-DD'),
         store_code: selectedStore?.code,
         items: toSub.map(i => ({ product_id: i.product_id, qty: i.qty, notes: i.notes })),
+      }
+      const signature = JSON.stringify(payload)
+      if (!requestIntent.current || requestIntent.current.signature !== signature) {
+        requestIntent.current = { signature, key: crypto.randomUUID() }
+      }
+      const r = await client.post('/stock/batch_operation', payload, {
+        headers: { 'Idempotency-Key': requestIntent.current.key },
       })
       setResults(r.data.results || [])
       setStep(2)
@@ -228,8 +247,11 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
             onChange={v => updateItem(r._key, { qty: v ?? 1, flagged: false })} />
         </Space>
       ) : (
-        <InputNumber size="small" min={1} value={r.qty} style={{ width: 70 }}
-          onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
+        <Space size={4}>
+          <InputNumber size="small" min={1} value={r.qty} style={{ width: 70 }}
+            onChange={v => updateItem(r._key, { qty: v ?? 1 })} />
+          <span style={{ fontSize: 11, color: '#6b7280' }}>boxes</span>
+        </Space>
       ),
     },
     {

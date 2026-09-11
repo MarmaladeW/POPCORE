@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   Table, InputNumber, Button, Tag, message, Modal,
   Space, Typography, Grid, Alert, Progress, Tooltip,
@@ -23,6 +23,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
   const [localFoundQty, setLocalFoundQty] = useState<Record<number, number>>({})
   const [previewOpen,   setPreviewOpen]   = useState(false)
   const [completing,    setCompleting]    = useState(false)
+  const requestKey = useRef(crypto.randomUUID())
 
   const isCompleted   = session.status === 'completed'
   const pendingCount  = session.items.filter(i => i.pick_status === 'pending').length
@@ -59,8 +60,22 @@ export default function PickingStep({ session, onRefresh }: Props) {
   async function handleComplete() {
     setCompleting(true)
     try {
-      const { data } = await client.post(`/restock/session/${session.id}/complete`)
-      message.success(`入店完成，共同步 ${data.synced} 件产品`)
+      const foundLines = session.items.flatMap((item, index) => (
+        item.pick_status === 'found' && (item.found_qty ?? 0) > 0
+          ? [{ line_no: index + 1, quantity: item.found_qty }]
+          : []
+      ))
+      const path = foundLines.length ? 'pick' : 'short-close'
+      const lines = foundLines.length ? foundLines : session.items.map((item, index) => ({
+        line_no: index + 1, quantity: item.requested_qty,
+      }))
+      await client.post(`/restock/session/${session.id}/${path}`, {
+        expected_version: session.delivery?.version ?? 1,
+        lines,
+        ...(!foundLines.length ? { reason: 'All items marked not found' } : {}),
+      }, { headers: { 'Idempotency-Key': requestKey.current } })
+      requestKey.current = crypto.randomUUID()
+      message.success(foundLines.length ? 'Physical pick confirmed' : 'No-stock restock closed')
       setPreviewOpen(false)
       onRefresh()
     } catch (err: unknown) {
@@ -223,7 +238,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
               size={isMobile ? 'middle' : 'large'}
               onClick={() => setPreviewOpen(true)}
             >
-              完成拣货
+              确认拣货
             </Button>
           </Tooltip>
         </div>
@@ -256,7 +271,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
       <Modal
         open={previewOpen}
         title="确认入店清单"
-        okText="确认入店"
+        okText="确认拣货"
         cancelText="取消"
         confirmLoading={completing}
         onOk={handleComplete}
@@ -264,7 +279,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
         width={500}
       >
         <p style={{ marginBottom: 12 }}>
-          以下商品将从仓库移入门店，库存同步后不可撤销：
+          以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存：
         </p>
         {previewItems.length === 0
           ? <Text type="secondary">没有找到任何商品（全部缺货）</Text>

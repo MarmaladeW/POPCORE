@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Table, Input, Select, Button, Space, Tag, Popconfirm,
-  message, Typography, Row, Col, Card, Spin,
+  message, Typography, Row, Col, Card, Spin, Alert,
 } from 'antd'
 import {
   ReloadOutlined, ExportOutlined, DeleteOutlined,
@@ -15,6 +15,7 @@ import RoleGuard from '../../components/RoleGuard'
 import RestockModal from './RestockModal'
 import BatchStockModal from './BatchStockModal'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useNavigate } from 'react-router-dom'
 
 const { Search } = Input
 const { Text, Title } = Typography
@@ -32,6 +33,8 @@ interface StockRow {
   last_updated: string
   stock_notes: string
   price: number | null
+  stock_unit?: 'set' | 'box' | 'piece' | null
+  identity_status?: 'unverified' | 'verified'
 }
 
 interface Transaction {
@@ -49,11 +52,14 @@ interface Transaction {
 
 interface Summary {
   products_tracked:    number
-  total_upstairs_qty:  number
-  total_instore_qty:   number
+  total_upstairs_qty:  number | null
+  total_instore_qty:   number | null
   low_stock_count:     number
   out_of_stock_count:  number
-  total_stock_value:   number
+  total_stock_value:   number | null
+  mode?: 'legacy' | 'authoritative'
+  complete?: boolean
+  unit_totals?: { unit: string; floor_qty: number; back_qty: number; total_qty: number }[]
 }
 
 const TXN_LABELS: Record<string, string> = {
@@ -69,7 +75,8 @@ const TXN_COLORS: Record<string, string> = {
 }
 
 /** Format a raw qty number into 端/盒 breakdown for blind boxes, or plain 件 for others. */
-function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan'>): string {
+function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan' | 'stock_unit'>): string {
+  if (row.stock_unit) return `${qty} ${row.stock_unit}${qty === 1 ? '' : 's'}`
   if (row.product_type !== '盲盒' || !row.boxes_per_dan) {
     return `${qty} 件`
   }
@@ -91,6 +98,7 @@ function stockStatus(total: number) {
 }
 
 export default function StockPage() {
+  const navigate = useNavigate()
   const isMobile = useIsMobile()
   const { series, selectedStore } = useAppStore()
   const sc = selectedStore?.code
@@ -99,6 +107,11 @@ export default function StockPage() {
   const [txns,     setTxns]    = useState<Transaction[]>([])
   const [summary,  setSummary] = useState<Summary | null>(null)
   const [loading,  setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [lastSuccess, setLastSuccess] = useState<Date | null>(null)
+  const requestRef = useRef(0)
+  const transactionRequestRef = useRef(0)
+  const scopeRef = useRef('')
   const [q,        setQ]       = useState('')
   const [filterSeries, setFilterSeries] = useState('')
   const [page,     setPage]    = useState(1)
@@ -114,7 +127,17 @@ export default function StockPage() {
 
   const loadStock = useCallback(() => {
     if (!sc) return
+    const requestId = ++requestRef.current
+    const scope = `${sc}:${q}:${filterSeries}:${page}`
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope
+      setStock([])
+      setSummary(null)
+      setTotal(0)
+      setLastSuccess(null)
+    }
     setLoading(true)
+    setLoadError(null)
     const params: Record<string, string | number> = { page, page_size: PAGE_SIZE, store_code: sc }
     if (q) params.q = q
     if (filterSeries) params.series = filterSeries
@@ -122,20 +145,34 @@ export default function StockPage() {
       client.get('/stock', { params }),
       client.get('/stock/summary', { params: { store_code: sc } }),
     ]).then(([sResp, sumResp]) => {
+      if (requestId !== requestRef.current) return
       setStock(sResp.data.items)
       setTotal(sResp.data.total)
       setSummary(sumResp.data)
-    }).finally(() => setLoading(false))
+      setLastSuccess(new Date())
+    }).catch(() => {
+      if (requestId === requestRef.current) setLoadError('Unable to load stock data.')
+    }).finally(() => {
+      if (requestId === requestRef.current) setLoading(false)
+    })
   }, [q, filterSeries, page, sc])
 
   const loadTxns = useCallback(() => {
     if (!sc) return
+    const requestId = ++transactionRequestRef.current
     client.get('/stock/transactions', { params: { limit: 100, store_code: sc } })
-      .then(r => setTxns(r.data))
+      .then(r => {
+        if (requestId === transactionRequestRef.current) setTxns(r.data)
+      })
   }, [sc])
 
   useEffect(() => { setPage(1) }, [q, filterSeries])
   useEffect(() => { loadStock() }, [loadStock])
+  useEffect(() => {
+    transactionRequestRef.current++
+    setTxns([])
+    if (activeTab === 'history') loadTxns()
+  }, [activeTab, loadTxns, sc])
 
   async function handleDeleteRows() {
     try {
@@ -192,6 +229,11 @@ export default function StockPage() {
         <div>
           <div style={{ fontWeight: 500, color: '#111827', fontSize: 13 }}>{r.jizhanming || '—'}</div>
           {r.product_type && <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.product_type}</div>}
+          {r.identity_status && (
+            <Tag color={r.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 10 }}>
+              {r.identity_status === 'verified' ? 'Verified identity' : 'Unverified identity'}
+            </Tag>
+          )}
         </div>
       ),
     },
@@ -287,13 +329,19 @@ export default function StockPage() {
     { title: 'Notes', dataIndex: 'notes', ellipsis: true },
   ]
 
+  const byUnit = (side: 'back_qty' | 'floor_qty') => (summary?.unit_totals ?? [])
+    .map(row => `${row[side]} ${row.unit}${row[side] === 1 ? '' : 's'}`).join(' · ') || 'Unavailable'
   const summaryCards = summary ? [
-    { label: 'Upstairs Total', value: summary.total_upstairs_qty, color: '#6366F1',  icon: <ArrowUpOutlined /> },
-    { label: 'In-Store Total', value: summary.total_instore_qty,  color: '#10B981',  icon: <InboxOutlined /> },
-    { label: 'Total Stock Value', value: `CA$ ${(summary.total_stock_value ?? 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    { label: 'Upstairs / Back Stock', value: summary.mode === 'authoritative' ? byUnit('back_qty') : summary.total_upstairs_qty, color: '#6366F1',  icon: <ArrowUpOutlined /> },
+    { label: 'Floor Stock', value: summary.mode === 'authoritative' ? byUnit('floor_qty') : summary.total_instore_qty,  color: '#10B981',  icon: <InboxOutlined /> },
+    { label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       color: '#6366F1', icon: null },
     { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count, color: '#ef4444', icon: <WarningOutlined /> },
   ] : []
+
+  if (loadError && !lastSuccess) {
+    return <Alert role="alert" type="error" showIcon message={loadError} action={<Button onClick={loadStock}>Retry</Button>} />
+  }
 
   return (
     <div>
@@ -303,13 +351,25 @@ export default function StockPage() {
           <Title level={3} style={{ margin: 0 }}>Stock Management</Title>
           <Text style={{ color: '#6b7280' }}>Manage upstairs warehouse and in-store inventory</Text>
         </div>
-        {!isAll && (
-          <RoleGuard minRole="staff">
-            <Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
-              Adjust Stock
-            </Button>
-          </RoleGuard>
-        )}
+        <Space>
+          {!isAll && (
+            <RoleGuard minRole="staff">
+              <Space wrap>
+                <Button onClick={() => navigate('/goods/receiving')}>Receive</Button>
+                <Button onClick={() => navigate('/goods/transfers')}>Transfer</Button>
+                <Button onClick={() => navigate('/goods/counts')}>Count</Button>
+              </Space>
+            </RoleGuard>
+          )}
+          <Button onClick={loadStock}>Refresh</Button>
+          {!isAll && (
+            <RoleGuard minRole="staff">
+              <Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
+                Adjust Stock
+              </Button>
+            </RoleGuard>
+          )}
+        </Space>
       </div>
 
       {isAll && (
@@ -319,6 +379,18 @@ export default function StockPage() {
         }}>
           Viewing all stores combined. Please select a specific store to make changes.
         </div>
+      )}
+
+      {loadError && (
+        <Alert
+          role="alert"
+          type={lastSuccess ? 'warning' : 'error'}
+          showIcon
+          message={lastSuccess ? 'Showing previously loaded stock data' : loadError}
+          description={lastSuccess ? `Last updated ${lastSuccess.toLocaleTimeString()}` : undefined}
+          action={<Button onClick={loadStock}>Retry</Button>}
+          style={{ marginBottom: 16 }}
+        />
       )}
 
       {/* Summary cards */}
@@ -353,7 +425,7 @@ export default function StockPage() {
               ] as const).map(t => (
                 <button
                   key={t.key}
-                  onClick={() => { setActiveTab(t.key); if (t.key === 'history') loadTxns() }}
+                  onClick={() => setActiveTab(t.key)}
                   style={{
                     padding:      '6px 14px',
                     minHeight:    44,
@@ -382,7 +454,7 @@ export default function StockPage() {
             ] as const).map(t => (
               <button
                 key={t.key}
-                onClick={() => { setActiveTab(t.key); if (t.key === 'history') loadTxns() }}
+                onClick={() => setActiveTab(t.key)}
                 style={{
                   padding:       '14px 16px',
                   border:        'none',
@@ -442,7 +514,7 @@ export default function StockPage() {
               </div>
               {isMobile ? (
                 <Spin spinning={loading}>
-                  {!loading && stock.length === 0 && (
+                  {!loading && !loadError && stock.length === 0 && (
                     <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No stock records</div>
                   )}
                   {stock.map(row => {

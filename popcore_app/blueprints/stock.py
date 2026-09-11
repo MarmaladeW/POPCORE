@@ -2,13 +2,282 @@
 blueprints/stock.py — stock queries, movements, adjustments, export.
 """
 from datetime import date
+import json
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
+from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
+from inventory_commands import (
+    InventoryError, post_inventory, require_inventory_access,
+)
+
+
+def _missing_product(cur, product_id):
+    return cur.execute(
+        'SELECT 1 FROM products WHERE id = ?', (product_id,)
+    ).fetchone() is None
 
 bp = Blueprint('stock', __name__)
+
+
+def _inventory_error(exc):
+    return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+
+
+def _inventory_store(con, store_code):
+    resolved = _resolve_store(con, (store_code or '').strip().upper())
+    if resolved is None:
+        return None
+    return resolved
+
+
+def _is_authoritative(con):
+    row = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()
+    return row is not None and row['mode'] == 'authoritative'
+
+
+def _inventory_location(con, store_id, *codes):
+    placeholders = ','.join('?' * len(codes))
+    row = con.execute(
+        f"""SELECT id FROM inventory_locations
+            WHERE store_id=? AND is_active=1 AND code IN ({placeholders})
+            ORDER BY CASE code WHEN ? THEN 0 ELSE 1 END LIMIT 1""",
+        (store_id, *codes, codes[0]),
+    ).fetchone()
+    return row['id'] if row else None
+
+
+def _authoritative_stock_adapter(con, data, store_id, operation, product_id,
+                                 quantity, business_date, notes='', location=None,
+                                 new_quantity=None):
+    request_key = request.headers.get('Idempotency-Key', '').strip()
+    if not request_key:
+        raise InventoryError(
+            'Idempotency-Key is required in authoritative inventory mode',
+            'idempotency_key_required', 400,
+        )
+    prior_line = con.execute(
+        """SELECT l.from_version, l.to_version, l.quantity,
+                  l.from_location_id, l.to_location_id
+           FROM inventory_documents d
+           JOIN inventory_document_lines l ON l.document_id=d.id AND l.line_no=1
+           WHERE d.request_key=?""", (request_key,),
+    ).fetchone()
+    product = con.execute(
+        'SELECT stock_unit FROM products WHERE id=?', (product_id,)
+    ).fetchone()
+    unit = product['stock_unit'] if product else None
+    floor = _inventory_location(con, store_id, 'floor')
+    back = _inventory_location(con, store_id, 'upstairs', 'warehouse')
+    if floor is None or back is None:
+        raise InventoryError('Reviewed inventory locations are missing',
+                             'inventory_store_missing', 409)
+
+    def current(location_id):
+        return con.execute(
+            """SELECT quantity, version FROM inventory_balances
+               WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+            (product_id, location_id),
+        ).fetchone()
+
+    if operation == 'restock_upstairs':
+        to = current(back)
+        kind = 'receipt'
+        line = {'product_id': product_id, 'quantity': quantity, 'unit': unit,
+                'to_location_id': back, 'to_disposition': 'saleable',
+                'expected_versions': {'to': (prior_line['to_version'] if prior_line
+                                              else to['version'] if to else 0)}}
+    elif operation == 'ru_dian':
+        source, target = current(back), current(floor)
+        kind = 'move'
+        line = {'product_id': product_id, 'quantity': quantity, 'unit': unit,
+                'from_location_id': back, 'from_disposition': 'saleable',
+                'to_location_id': floor, 'to_disposition': 'saleable',
+                'expected_versions': {
+                    'from': (prior_line['from_version'] if prior_line
+                             else source['version'] if source else 0),
+                    'to': (prior_line['to_version'] if prior_line
+                           else target['version'] if target else 0),
+                }}
+    elif operation == 'adjust':
+        target_id = floor if location == 'instore' else back
+        balance = current(target_id)
+        old_quantity = balance['quantity'] if balance else 0
+        delta = new_quantity - old_quantity
+        if prior_line and delta == 0:
+            stored = con.execute(
+                """SELECT stored_result FROM inventory_documents
+                   WHERE request_key=? AND status='posted'""", (request_key,)
+            ).fetchone()
+            if stored and stored['stored_result']:
+                result = json.loads(stored['stored_result'])
+                return {**result,
+                        'upstairs_qty': current(back)['quantity'] if current(back) else 0,
+                        'instore_qty': current(floor)['quantity'] if current(floor) else 0}
+        if delta == 0:
+            raise InventoryError('New quantity matches the current balance',
+                                 'no_change', 400)
+        if not str(notes).strip():
+            raise InventoryError('A correction reason is required',
+                                 'reason_required', 400)
+        kind = 'correction'
+        endpoint = ({'to_location_id': target_id, 'to_disposition': 'saleable',
+                     'expected_versions': {'to': (prior_line['to_version'] if prior_line
+                                                  else balance['version'] if balance else 0)}}
+                    if delta > 0 else
+                    {'from_location_id': target_id, 'from_disposition': 'saleable',
+                     'expected_versions': {'from': (prior_line['from_version'] if prior_line
+                                                    else balance['version'] if balance else 0)}})
+        line = {'product_id': product_id, 'quantity': abs(delta), 'unit': unit,
+                **endpoint}
+    else:
+        raise InventoryError('Legacy operation has no authoritative meaning',
+                             'migration_required', 409)
+
+    result = post_inventory(
+        con, {'kind': kind, 'business_date': business_date,
+              'reason': str(notes).strip() or operation, 'lines': [line]},
+        actor=request.jwt_payload, request_key=request_key,
+    )
+    floor_balance, back_balance = current(floor), current(back)
+    return {**result,
+            'upstairs_qty': back_balance['quantity'] if back_balance else 0,
+            'instore_qty': floor_balance['quantity'] if floor_balance else 0}
+
+
+@bp.route('/api/inventory/commands', methods=['POST'])
+@login_required
+def post_inventory_command():
+    request_key = request.headers.get('Idempotency-Key', '').strip()
+    if not request_key:
+        return jsonify({'error': 'Idempotency-Key is required',
+                        'code': 'idempotency_key_required'}), 400
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({'error': 'Expected a JSON object',
+                        'code': 'invalid_input'}), 400
+    if payload.get('kind') == 'opening':
+        return jsonify({'error': 'Opening is available only in the migration rehearsal',
+                        'code': 'opening_not_public'}), 400
+    con = get_db()
+    try:
+        existed = con.execute(
+            'SELECT 1 FROM inventory_documents WHERE request_key=?',
+            (request_key,),
+        ).fetchone() is not None
+        result = post_inventory(
+            con, payload, actor=request.jwt_payload, request_key=request_key,
+        )
+        return jsonify(result), 200 if existed else 201
+    except PermissionError:
+        if con.in_transaction:
+            con.rollback()
+        return jsonify({'error': 'Inventory access denied',
+                        'code': 'inventory_forbidden'}), 403
+    except InventoryError as exc:
+        if con.in_transaction:
+            con.rollback()
+        return _inventory_error(exc)
+    finally:
+        con.close()
+
+
+@bp.route('/api/inventory/balances')
+@login_required
+def get_inventory_balances():
+    con = get_db()
+    try:
+        resolved = _inventory_store(con, request.args.get('store_code'))
+        if resolved is None:
+            return jsonify({'error': 'Valid store_code is required',
+                            'code': 'invalid_input'}), 400
+        store_id, store_code = resolved
+        try:
+            require_inventory_access(
+                con, request.jwt_payload, (store_id,), 'viewer'
+            )
+        except PermissionError:
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        rows = con.execute(
+            """SELECT b.product_id, p.sku, p.jizhanming, p.name_cn_en,
+                      p.stock_unit AS unit, p.identity_status,
+                      b.location_id, l.code AS location_code,
+                      l.name AS location_name, b.disposition,
+                      b.quantity, b.version, ss.opening_verified
+               FROM inventory_balances b
+               JOIN products p ON p.id=b.product_id
+               JOIN inventory_locations l ON l.id=b.location_id
+               JOIN inventory_scope_state ss ON ss.location_id=l.id
+               WHERE l.store_id=?
+               ORDER BY p.sku, l.code, b.disposition""", (store_id,)
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item['opening_verified'] = bool(item['opening_verified'])
+            items.append(item)
+        mode = con.execute(
+            'SELECT mode FROM inventory_mode WHERE id=1'
+        ).fetchone()['mode']
+        return jsonify({'store_code': store_code, 'mode': mode, 'items': items})
+    finally:
+        con.close()
+
+
+@bp.route('/api/inventory/documents/<int:document_id>')
+@login_required
+def get_inventory_document(document_id):
+    con = get_db()
+    try:
+        document = con.execute(
+            """SELECT id, kind, source_type, source_id, actor_sub,
+                      business_date, posted_at, correction_of, status
+               FROM inventory_documents WHERE id=? AND status='posted'""",
+            (document_id,),
+        ).fetchone()
+        if document is None:
+            return jsonify({'error': 'Inventory document not found',
+                            'code': 'not_found'}), 404
+        store_ids = [row['store_id'] for row in con.execute(
+            """SELECT DISTINCT l.store_id
+               FROM inventory_movements m
+               JOIN inventory_locations l ON l.id=m.location_id
+               WHERE m.document_id=?""", (document_id,)
+        )]
+        try:
+            require_inventory_access(
+                con, request.jwt_payload, store_ids, 'viewer'
+            )
+        except PermissionError:
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        lines = [dict(row) for row in con.execute(
+            """SELECT line_no, product_id, native_unit, quantity,
+                      from_location_id, from_disposition,
+                      to_location_id, to_disposition,
+                      from_version, to_version,
+                      conversion_id, conversion_factor
+               FROM inventory_document_lines WHERE document_id=?
+               ORDER BY line_no""", (document_id,)
+        )]
+        movements = [dict(row) for row in con.execute(
+            """SELECT id, line_no, product_id, location_id,
+                      disposition, quantity
+               FROM inventory_movements WHERE document_id=? ORDER BY id""",
+            (document_id,),
+        )]
+        corrections = [row['id'] for row in con.execute(
+            """SELECT id FROM inventory_documents
+               WHERE correction_of=? AND status='posted' ORDER BY id""",
+            (document_id,),
+        )]
+        return jsonify({**dict(document), 'lines': lines,
+                        'movements': movements, 'corrections': corrections})
+    finally:
+        con.close()
 
 
 def _require_store_param(con):
@@ -91,6 +360,7 @@ def get_all_stock():
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan,
+                   p.stock_unit, p.identity_status,
                    COALESCE(SUM(s.upstairs_qty), 0) AS upstairs_qty,
                    COALESCE(SUM(s.instore_qty),  0) AS instore_qty,
                    COALESCE(MAX(s.last_updated), '') AS last_updated,
@@ -114,6 +384,7 @@ def get_all_stock():
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan,
+                   p.stock_unit, p.identity_status,
                    COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                    COALESCE(s.instore_qty,  0) AS instore_qty,
                    COALESCE(s.last_updated, '') AS last_updated,
@@ -134,6 +405,7 @@ def get_all_stock():
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan,
+                   p.stock_unit, p.identity_status,
                    s.upstairs_qty, s.instore_qty,
                    s.last_updated, COALESCE(s.notes, '') AS stock_notes
             FROM stock s
@@ -162,6 +434,7 @@ def get_stock(product_id):
     cur.execute('''
         SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                p.ip_series, p.product_type, p.boxes_per_dan,
+               p.stock_unit, p.identity_status,
                COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                COALESCE(s.instore_qty,  0) AS instore_qty,
                COALESCE(s.last_updated, '') AS last_updated,
@@ -199,32 +472,60 @@ def patch_stock(product_id):
 def ru_dian():
     """Move stock from upstairs (2F) to in-store (1F)."""
     data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     try:
-        pid = int(data['product_id'])
-        qty = int(data['qty'])
-    except (KeyError, TypeError, ValueError) as e:
-        return jsonify({'error': f'Invalid input: {e}'}), 400
-    d     = data.get('date', str(date.today()))
+        pid = read_int(data['product_id'], 'product_id', minimum=1)
+        qty = read_int(data['qty'], 'qty', minimum=1)
+        d = read_date(data.get('date', str(date.today())))
+    except KeyError as exc:
+        return jsonify({'error': f'{exc.args[0]} is required',
+                        'code': 'invalid_input', 'field': exc.args[0]}), 400
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     notes = data.get('notes', '')
-
-    if qty <= 0:
-        return jsonify({'error': '入店数量必须大于0'}), 400
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
     if err:
         con.close()
         return err
+    if _is_authoritative(con):
+        try:
+            return jsonify(_authoritative_stock_adapter(
+                con, data, store_id, 'ru_dian', pid, qty, d, notes
+            ))
+        except PermissionError:
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        finally:
+            con.close()
+    con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
+    if _missing_product(cur, pid):
+        con.rollback()
+        con.close()
+        return jsonify(error='Product not found', code='not_found'), 404
     _ensure_stock_row(cur, pid, store_id)
 
-    cur.execute('SELECT upstairs_qty FROM stock WHERE product_id = ? AND store_id = ?',
+    cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
                 (pid, store_id))
     row = cur.fetchone()
     upstairs = row['upstairs_qty'] if row else 0
+    instore = row['instore_qty'] if row else 0
     if qty > upstairs:
+        con.rollback()
         con.close()
-        return jsonify({'error': f'楼上库存不足（现有 {upstairs}）'}), 400
+        return jsonify({'error': f'楼上库存不足（现有 {upstairs}）',
+                        'code': 'insufficient_stock'}), 409
+    try:
+        read_int(instore + qty, 'instore_qty')
+    except ValueError as exc:
+        con.rollback()
+        con.close()
+        return jsonify(invalid_input(exc)), 400
 
     cur.execute('''
         UPDATE stock
@@ -232,7 +533,13 @@ def ru_dian():
             instore_qty  = instore_qty  + ?,
             last_updated = ?
         WHERE product_id = ? AND store_id = ?
-    ''', (qty, qty, d, pid, store_id))
+          AND upstairs_qty >= ? AND instore_qty <= ?
+    ''', (qty, qty, d, pid, store_id, qty, SQLITE_INTEGER_MAX - qty))
+    if cur.rowcount != 1:
+        con.rollback()
+        con.close()
+        return jsonify({'error': 'Stock changed before the operation completed',
+                        'code': 'insufficient_stock'}), 409
     cur.execute('''
         INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
         VALUES (?, 'ru_dian', ?, 'upstairs->instore', ?, ?, ?)
@@ -252,31 +559,66 @@ def ru_dian():
 def restock_upstairs():
     """Receive new stock into upstairs (2F) storage."""
     data  = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     try:
-        pid = int(data['product_id'])
-        qty = int(data['qty'])
-    except (KeyError, TypeError, ValueError) as e:
-        return jsonify({'error': f'Invalid input: {e}'}), 400
-    d     = data.get('date', str(date.today()))
+        pid = read_int(data['product_id'], 'product_id', minimum=1)
+        qty = read_int(data['qty'], 'qty', minimum=1)
+        d = read_date(data.get('date', str(date.today())))
+    except KeyError as exc:
+        return jsonify({'error': f'{exc.args[0]} is required',
+                        'code': 'invalid_input', 'field': exc.args[0]}), 400
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     notes = data.get('notes', '')
-
-    if qty <= 0:
-        return jsonify({'error': '入库数量必须大于0'}), 400
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
     if err:
         con.close()
         return err
+    if _is_authoritative(con):
+        try:
+            return jsonify(_authoritative_stock_adapter(
+                con, data, store_id, 'restock_upstairs', pid, qty, d, notes
+            ))
+        except PermissionError:
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        finally:
+            con.close()
+    con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
+    if _missing_product(cur, pid):
+        con.rollback()
+        con.close()
+        return jsonify(error='Product not found', code='not_found'), 404
     _ensure_stock_row(cur, pid, store_id)
+
+    row = cur.execute(
+        'SELECT upstairs_qty FROM stock WHERE product_id=? AND store_id=?',
+        (pid, store_id),
+    ).fetchone()
+    try:
+        read_int(row['upstairs_qty'] + qty, 'upstairs_qty')
+    except ValueError as exc:
+        con.rollback()
+        con.close()
+        return jsonify(invalid_input(exc)), 400
 
     cur.execute('''
         UPDATE stock
         SET upstairs_qty = upstairs_qty + ?,
             last_updated = ?
-        WHERE product_id = ? AND store_id = ?
-    ''', (qty, d, pid, store_id))
+        WHERE product_id = ? AND store_id = ? AND upstairs_qty <= ?
+    ''', (qty, d, pid, store_id, SQLITE_INTEGER_MAX - qty))
+    if cur.rowcount != 1:
+        con.rollback()
+        con.close()
+        return jsonify({'error': 'upstairs_qty exceeds the supported range',
+                        'code': 'invalid_input', 'field': 'upstairs_qty'}), 400
     cur.execute('''
         INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
         VALUES (?, 'restock_upstairs', ?, 'upstairs', ?, ?, ?)
@@ -296,15 +638,18 @@ def restock_upstairs():
 def adjust_stock():
     """Manual adjustment (correction) of upstairs or instore count."""
     data     = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     try:
-        pid     = int(data['product_id'])
-        new_qty = int(data['new_qty'])
-    except (KeyError, TypeError, ValueError) as e:
-        return jsonify({'error': f'Invalid input: {e}'}), 400
-    if new_qty < 0:
-        return jsonify({'error': '库存不能为负数'}), 400
+        pid = read_int(data['product_id'], 'product_id', minimum=1)
+        new_qty = read_int(data['new_qty'], 'new_qty')
+        d = read_date(data.get('date', str(date.today())))
+    except KeyError as exc:
+        return jsonify({'error': f'{exc.args[0]} is required',
+                        'code': 'invalid_input', 'field': exc.args[0]}), 400
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     location = data.get('location', 'upstairs')
-    d        = data.get('date', str(date.today()))
     notes    = data.get('notes', '')
 
     if location not in ('upstairs', 'instore'):
@@ -315,13 +660,32 @@ def adjust_stock():
     if err:
         con.close()
         return err
+    if _is_authoritative(con):
+        try:
+            return jsonify(_authoritative_stock_adapter(
+                con, data, store_id, 'adjust', pid, 0, d, notes,
+                location=location, new_quantity=new_qty,
+            ))
+        except PermissionError:
+            return jsonify({'error': 'Inventory access denied',
+                            'code': 'inventory_forbidden'}), 403
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        finally:
+            con.close()
+    con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
+    if _missing_product(cur, pid):
+        con.rollback()
+        con.close()
+        return jsonify(error='Product not found', code='not_found'), 404
     _ensure_stock_row(cur, pid, store_id)
 
     cur.execute('SELECT upstairs_qty, instore_qty FROM stock WHERE product_id = ? AND store_id = ?',
                 (pid, store_id))
     _row = cur.fetchone()
     if _row is None:
+        con.rollback()
         con.close()
         return jsonify({'error': 'Stock row not found'}), 404
     s = dict(_row)
@@ -416,6 +780,62 @@ def stock_summary():
         con.close()
         return err
     cur = con.cursor()
+
+    if _is_authoritative(con):
+        if store_code == 'ALL':
+            store_ids = [row['store_id'] for row in con.execute(
+                'SELECT store_id FROM inventory_access WHERE auth0_sub=?',
+                (request.jwt_payload.get('sub'),),
+            )]
+            if not store_ids:
+                con.close()
+                return jsonify({'error': 'Inventory access denied',
+                                'code': 'inventory_forbidden'}), 403
+        else:
+            store_ids = [store_id]
+            try:
+                require_inventory_access(con, request.jwt_payload, store_ids, 'viewer')
+            except PermissionError:
+                con.close()
+                return jsonify({'error': 'Inventory access denied',
+                                'code': 'inventory_forbidden'}), 403
+        placeholders = ','.join('?' * len(store_ids))
+        unit_rows = [dict(row) for row in con.execute(f'''
+            SELECT p.stock_unit AS unit,
+                   SUM(CASE WHEN l.code='floor' THEN b.quantity ELSE 0 END) AS floor_qty,
+                   SUM(CASE WHEN l.code IN ('upstairs','warehouse') THEN b.quantity ELSE 0 END) AS back_qty,
+                   SUM(b.quantity) AS total_qty
+            FROM inventory_balances b
+            JOIN products p ON p.id=b.product_id
+            JOIN inventory_locations l ON l.id=b.location_id
+            WHERE l.store_id IN ({placeholders}) AND b.disposition='saleable'
+            GROUP BY p.stock_unit ORDER BY p.stock_unit
+        ''', store_ids)]
+        product_totals = [row['quantity'] for row in con.execute(f'''
+            SELECT SUM(b.quantity) AS quantity
+            FROM inventory_balances b
+            JOIN inventory_locations l ON l.id=b.location_id
+            WHERE l.store_id IN ({placeholders}) AND b.disposition='saleable'
+            GROUP BY b.product_id
+        ''', store_ids)]
+        incomplete = con.execute(f'''
+            SELECT 1 FROM inventory_balances b
+            JOIN products p ON p.id=b.product_id
+            JOIN inventory_locations l ON l.id=b.location_id
+            WHERE l.store_id IN ({placeholders})
+              AND (p.identity_status!='verified' OR p.stock_unit IS NULL)
+            LIMIT 1
+        ''', store_ids).fetchone() is not None
+        result = {
+            'mode': 'authoritative', 'complete': not incomplete,
+            'products_tracked': len(product_totals), 'unit_totals': unit_rows,
+            'total_upstairs_qty': None, 'total_instore_qty': None,
+            'total_stock_value': None,
+            'low_stock_count': sum(0 < qty <= 3 for qty in product_totals),
+            'out_of_stock_count': sum(qty == 0 for qty in product_totals),
+        }
+        con.close()
+        return jsonify(result)
 
     if store_code == 'ALL':
         cur.execute('''
@@ -552,7 +972,37 @@ def delete_stock_rows():
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, _ = resolved
     cur = con.cursor()
+
     ph  = ','.join('?' * len(pids))
+    inventory_retained = cur.execute(f'''
+        SELECT 1 FROM inventory_movements m
+        JOIN inventory_locations l ON l.id=m.location_id
+        WHERE l.store_id=? AND m.product_id IN ({ph}) LIMIT 1
+    ''', [store_id] + pids).fetchone()
+    if inventory_retained:
+        con.close()
+        return jsonify({
+            'error': 'Stock rows with authoritative history are retained',
+            'code': 'stock_row_retained',
+        }), 409
+    retained = cur.execute(f'''
+        SELECT 1 FROM stock s
+        WHERE s.store_id = ? AND s.product_id IN ({ph})
+          AND (
+            s.upstairs_qty != 0 OR s.instore_qty != 0 OR s.claw_qty != 0
+            OR EXISTS (
+              SELECT 1 FROM stock_transactions st
+              WHERE st.store_id=s.store_id AND st.product_id=s.product_id
+            )
+          )
+        LIMIT 1
+    ''', [store_id] + pids).fetchone()
+    if retained:
+        con.close()
+        return jsonify({
+            'error': 'Stock rows with quantities or history are retained',
+            'code': 'stock_row_retained',
+        }), 409
     cur.execute(f'DELETE FROM stock WHERE store_id = ? AND product_id IN ({ph})',
                 [store_id] + pids)
     deleted = cur.rowcount

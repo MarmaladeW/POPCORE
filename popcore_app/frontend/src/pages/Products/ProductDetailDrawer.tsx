@@ -31,6 +31,12 @@ interface ProductDetail {
   hidden_prob_large: string
   is_bestseller: number
   aliases?: { id: number; alias: string }[]
+  stock_form?: string | null
+  stock_unit?: string | null
+  design_name?: string | null
+  identity_status?: 'unverified' | 'verified'
+  barcodes?: { id: number; code: string; code_kind: string; input_unit: string; quantity_per_scan: number }[]
+  conversions?: { id: number; target_sku: string; output_per_input: number; version: number }[]
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -157,6 +163,30 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
                 <div style={{ fontSize: 13, color: '#374151' }}>{product.name_cn_en}</div>
               </div>
             )}
+
+            <Divider style={{ margin: '12px 0' }} />
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>Inventory Identity</div>
+              <Space wrap>
+                <Tag color={product.identity_status === 'verified' ? 'green' : 'orange'}>
+                  {product.identity_status === 'verified' ? 'Verified' : 'Unverified'}
+                </Tag>
+                {product.stock_form && <Tag>{product.stock_form.replaceAll('_', ' ')}</Tag>}
+                {product.stock_unit && <Tag color="blue">Unit: {product.stock_unit}</Tag>}
+              </Space>
+              <Field label="Confirmed Design" value={product.design_name} />
+              {(product.conversions ?? []).map(c => (
+                <div key={c.id} style={{ fontSize: 12, color: '#374151', marginTop: 6 }}>
+                  Conversion v{c.version}: 1 {product.stock_unit} → {c.output_per_input} boxes ({c.target_sku})
+                </div>
+              ))}
+              {(product.barcodes ?? []).map(b => (
+                <div key={b.id} style={{ fontSize: 12, fontFamily: 'monospace', marginTop: 6 }}>
+                  {b.code} · {b.code_kind} · {b.quantity_per_scan} {b.input_unit}
+                </div>
+              ))}
+            </div>
 
             <Divider style={{ margin: '12px 0' }} />
 

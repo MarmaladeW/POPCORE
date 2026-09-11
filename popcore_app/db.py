@@ -6,14 +6,16 @@ import os
 from flask import g
 
 BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-DB_PATH        = os.path.join(BASE_DIR, 'popcore.db')
-STATIC_DIR     = os.path.join(BASE_DIR, 'static')
-HIDDEN_IMG_DIR = os.path.join(BASE_DIR, 'uploads', 'hidden_imgs')
+DB_PATH        = os.environ.get('POPCORE_DB_PATH', os.path.join(BASE_DIR, 'popcore.db'))
+STATIC_DIR     = os.environ.get('POPCORE_STATIC_DIR', os.path.join(BASE_DIR, 'static'))
+HIDDEN_IMG_DIR = os.environ.get('POPCORE_HIDDEN_IMG_DIR', os.path.join(BASE_DIR, 'uploads', 'hidden_imgs'))
 
 
 def esc_csv(v):
     """Escape a value for CSV output (RFC 4180)."""
     s = str(v) if v is not None else ''
+    if isinstance(v, str) and s.lstrip(' \t\r').startswith(('=', '+', '-', '@')):
+        s = "'" + s
     if ',' in s or '"' in s or '\n' in s:
         s = '"' + s.replace('"', '""') + '"'
     return s
@@ -678,6 +680,885 @@ def _migration_assign_curated_employee_colors(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('assign_curated_employee_colors')")
 
 
+def _migration_create_catalog_identity(con, cur):
+    """Add explicit catalog identity without interpreting legacy quantities."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS product_series (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        );
+    ''')
+    cur.execute('PRAGMA table_info(products)')
+    columns = {row['name'] for row in cur.fetchall()}
+    additions = (
+        ('series_id', 'INTEGER REFERENCES product_series(id)'),
+        ('stock_form', "TEXT CHECK (stock_form IS NULL OR stock_form IN ('random_box','sealed_set','confirmed_design','ordinary'))"),
+        ('stock_unit', "TEXT CHECK (stock_unit IS NULL OR stock_unit IN ('box','set','piece'))"),
+        ('design_name', 'TEXT'),
+        ('identity_status', "TEXT NOT NULL DEFAULT 'unverified' CHECK (identity_status IN ('unverified','verified'))"),
+    )
+    for column, definition in additions:
+        if column not in columns:
+            cur.execute(f'ALTER TABLE products ADD COLUMN {column} {definition}')
+
+    cur.executescript('''
+        CREATE INDEX IF NOT EXISTS idx_products_series_id
+        ON products(series_id);
+
+        CREATE TABLE IF NOT EXISTS product_conversions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            target_product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            output_per_input   INTEGER NOT NULL CHECK (output_per_input > 0),
+            version            INTEGER NOT NULL CHECK (version > 0),
+            CHECK (source_product_id != target_product_id),
+            UNIQUE(source_product_id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_conversions_target
+        ON product_conversions(target_product_id);
+
+        CREATE TABLE IF NOT EXISTS product_barcodes (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            code               TEXT NOT NULL CHECK (code != ''),
+            product_id         INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            code_kind          TEXT NOT NULL CHECK (code_kind IN ('manufacturer','internal')),
+            input_unit         TEXT NOT NULL CHECK (input_unit IN ('box','set','piece')),
+            quantity_per_scan  INTEGER NOT NULL CHECK (quantity_per_scan > 0),
+            UNIQUE(code, product_id, code_kind, input_unit)
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_barcodes_code
+        ON product_barcodes(code);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_product_barcodes_internal
+        ON product_barcodes(code) WHERE code_kind='internal';
+    ''')
+
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) "
+        "VALUES ('create_catalog_identity')"
+    )
+
+def _migration_create_inventory_locations_and_access(con, cur):
+    """Create reviewed physical locations and explicit operations scope."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS inventory_locations (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id  INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            code      TEXT NOT NULL,
+            name      TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+            UNIQUE(store_id, code)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_access (
+            auth0_sub TEXT NOT NULL,
+            store_id  INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+            PRIMARY KEY(auth0_sub, store_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_scope_state (
+            store_id            INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            location_id         INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            opening_verified    INTEGER NOT NULL DEFAULT 0 CHECK (opening_verified IN (0,1)),
+            opening_document_id INTEGER,
+            PRIMARY KEY(store_id, location_id),
+            UNIQUE(location_id)
+        );
+    ''')
+    reviewed = {
+        'DT': (('floor', 'Floor'), ('upstairs', 'Upstairs')),
+        'MK': (('floor', 'Floor'), ('warehouse', 'Warehouse')),
+    }
+    for store_code, locations in reviewed.items():
+        store = cur.execute(
+            'SELECT id FROM stores WHERE code=?', (store_code,)
+        ).fetchone()
+        if store is None:
+            continue
+        store_id = store['id']
+        for code, name in locations:
+            cur.execute(
+                """INSERT OR IGNORE INTO inventory_locations
+                   (store_id, code, name, is_active) VALUES (?, ?, ?, 1)""",
+                (store_id, code, name),
+            )
+            location_id = cur.execute(
+                'SELECT id FROM inventory_locations WHERE store_id=? AND code=?',
+                (store_id, code),
+            ).fetchone()['id']
+            cur.execute(
+                """INSERT OR IGNORE INTO inventory_scope_state
+                   (store_id, location_id, opening_verified)
+                   VALUES (?, ?, 0)""",
+                (store_id, location_id),
+            )
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) "
+        "VALUES ('create_inventory_locations_and_access')"
+    )
+
+def _migration_create_inventory_posting_core(con, cur):
+    """Create the append-only inventory ledger and derived balances."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS inventory_mode (
+            id                 INTEGER PRIMARY KEY CHECK (id=1),
+            mode               TEXT NOT NULL CHECK (mode IN ('legacy','authoritative')),
+            cutover_identifier TEXT,
+            cutover_at         TEXT
+        );
+        INSERT OR IGNORE INTO inventory_mode(id, mode) VALUES (1, 'legacy');
+
+        CREATE TABLE IF NOT EXISTS inventory_documents (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind          TEXT NOT NULL CHECK (kind IN ('opening','receipt','move','consume','open_set','correction','restock_complete')),
+            request_key   TEXT NOT NULL UNIQUE,
+            payload_hash  TEXT NOT NULL,
+            source_type   TEXT,
+            source_id     TEXT,
+            actor_sub     TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            posted_at     TEXT,
+            correction_of INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            status        TEXT NOT NULL CHECK (status IN ('building','posted')),
+            stored_result TEXT,
+            CHECK ((source_type IS NULL) = (source_id IS NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_document_source
+        ON inventory_documents(source_type, source_id)
+        WHERE source_type IS NOT NULL AND source_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS inventory_document_lines (
+            document_id       INTEGER NOT NULL REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            line_no           INTEGER NOT NULL CHECK (line_no > 0),
+            product_id        INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            native_unit       TEXT NOT NULL CHECK (native_unit IN ('box','set','piece')),
+            quantity          INTEGER NOT NULL CHECK (quantity > 0),
+            from_location_id  INTEGER REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            from_disposition  TEXT CHECK (from_disposition IS NULL OR from_disposition IN ('saleable','trade','display','hold','damaged','transit')),
+            to_location_id    INTEGER REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            to_disposition    TEXT CHECK (to_disposition IS NULL OR to_disposition IN ('saleable','trade','display','hold','damaged','transit')),
+            from_version      INTEGER CHECK (from_version IS NULL OR from_version >= 0),
+            to_version        INTEGER CHECK (to_version IS NULL OR to_version >= 0),
+            conversion_id     INTEGER REFERENCES product_conversions(id) ON DELETE RESTRICT,
+            conversion_factor INTEGER CHECK (conversion_factor IS NULL OR conversion_factor > 0),
+            PRIMARY KEY(document_id, line_no)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_movements (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id  INTEGER NOT NULL,
+            line_no      INTEGER NOT NULL,
+            product_id   INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            location_id  INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            disposition  TEXT NOT NULL CHECK (disposition IN ('saleable','trade','display','hold','damaged','transit')),
+            quantity     INTEGER NOT NULL CHECK (quantity != 0),
+            FOREIGN KEY(document_id, line_no)
+                REFERENCES inventory_document_lines(document_id, line_no)
+                ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_inventory_movements_balance
+        ON inventory_movements(product_id, location_id, disposition, id);
+
+        CREATE TABLE IF NOT EXISTS inventory_balances (
+            product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            disposition TEXT NOT NULL CHECK (disposition IN ('saleable','trade','display','hold','damaged','transit')),
+            quantity    INTEGER NOT NULL CHECK (quantity >= 0),
+            version     INTEGER NOT NULL CHECK (version >= 0),
+            PRIMARY KEY(product_id, location_id, disposition)
+        );
+
+        CREATE TRIGGER IF NOT EXISTS inventory_documents_posted_no_update
+        BEFORE UPDATE ON inventory_documents
+        WHEN OLD.status='posted'
+        BEGIN
+            SELECT RAISE(ABORT, 'posted inventory document is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS inventory_documents_posted_no_delete
+        BEFORE DELETE ON inventory_documents
+        WHEN OLD.status='posted'
+        BEGIN
+            SELECT RAISE(ABORT, 'posted inventory document is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS inventory_lines_posted_no_update
+        BEFORE UPDATE ON inventory_document_lines
+        WHEN EXISTS (
+            SELECT 1 FROM inventory_documents d
+            WHERE d.id=OLD.document_id AND d.status='posted'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'posted inventory line is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS inventory_lines_posted_no_delete
+        BEFORE DELETE ON inventory_document_lines
+        WHEN EXISTS (
+            SELECT 1 FROM inventory_documents d
+            WHERE d.id=OLD.document_id AND d.status='posted'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'posted inventory line is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS inventory_movements_no_update
+        BEFORE UPDATE ON inventory_movements
+        BEGIN
+            SELECT RAISE(ABORT, 'inventory movement is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS inventory_movements_no_delete
+        BEFORE DELETE ON inventory_movements
+        BEGIN
+            SELECT RAISE(ABORT, 'inventory movement is immutable');
+        END;
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) "
+        "VALUES ('create_inventory_posting_core')"
+    )
+
+def _migration_create_open_set_provenance(con, cur):
+    """Track only provenance retained for opened reviewed sets."""
+    if cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_conversions'"
+    ).fetchone() is None:
+        return
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS inventory_open_sets (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            opening_document_id INTEGER NOT NULL REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            random_product_id   INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            location_id         INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            purpose             TEXT NOT NULL CHECK (purpose IN ('customer_tray','replenishment')),
+            remaining_qty       INTEGER NOT NULL CHECK (remaining_qty >= 0),
+            UNIQUE(opening_document_id, random_product_id, location_id, purpose)
+        );
+        CREATE INDEX IF NOT EXISTS idx_inventory_open_sets_balance
+        ON inventory_open_sets(random_product_id, location_id, remaining_qty);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_full_reversal
+        ON inventory_documents(correction_of)
+        WHERE kind='correction' AND correction_of IS NOT NULL;
+
+        CREATE TRIGGER IF NOT EXISTS referenced_conversion_no_update
+        BEFORE UPDATE ON product_conversions
+        WHEN EXISTS (
+            SELECT 1 FROM inventory_document_lines l
+            WHERE l.conversion_id=OLD.id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'referenced product conversion is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS referenced_conversion_no_delete
+        BEFORE DELETE ON product_conversions
+        WHEN EXISTS (
+            SELECT 1 FROM inventory_document_lines l
+            WHERE l.conversion_id=OLD.id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'referenced product conversion is immutable');
+        END;
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) "
+        "VALUES ('create_open_set_provenance')"
+    )
+
+
+def _migration_link_inventory_compatibility(con, cur):
+    """Link legacy history rows to immutable inventory documents."""
+    for table in ('stock_transactions', 'stock_movements'):
+        columns = {row['name'] for row in cur.execute(f'PRAGMA table_info({table})')}
+        if 'inventory_document_id' not in columns:
+            cur.execute(
+                f'ALTER TABLE {table} ADD COLUMN inventory_document_id INTEGER'
+            )
+    cur.executescript('''
+        CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory_document
+        ON stock_transactions(inventory_document_id);
+        CREATE INDEX IF NOT EXISTS idx_stock_movements_inventory_document
+        ON stock_movements(inventory_document_id);
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) "
+        "VALUES ('link_inventory_compatibility')"
+    )
+
+
+def _migration_create_goods_workflows(con, cur):
+    """Create versioned receiving, delivery, count, and target records."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS operation_requests (
+            request_key  TEXT PRIMARY KEY,
+            operation    TEXT NOT NULL,
+            resource_id  INTEGER,
+            actor_sub    TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            stored_result TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS goods_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            destination_location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            business_date TEXT NOT NULL,
+            shipment_reference TEXT,
+            supplier TEXT,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','posted','cancelled')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_by TEXT NOT NULL,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS goods_receipt_lines (
+            receipt_id INTEGER NOT NULL REFERENCES goods_receipts(id) ON DELETE CASCADE,
+            line_no INTEGER NOT NULL CHECK(line_no > 0),
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            native_unit TEXT NOT NULL CHECK(native_unit IN ('box','set','piece')),
+            expected_quantity INTEGER CHECK(expected_quantity IS NULL OR expected_quantity >= 0),
+            saleable_quantity INTEGER NOT NULL DEFAULT 0 CHECK(saleable_quantity >= 0),
+            damaged_quantity INTEGER NOT NULL DEFAULT 0 CHECK(damaged_quantity >= 0),
+            hold_quantity INTEGER NOT NULL DEFAULT 0 CHECK(hold_quantity >= 0),
+            discrepancy_note TEXT,
+            PRIMARY KEY(receipt_id, line_no)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN ('restock','transfer')),
+            restock_session_id INTEGER UNIQUE REFERENCES restock_sessions(id) ON DELETE RESTRICT,
+            source_location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            destination_location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            business_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','active','completed','cancelled')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK(source_location_id <> destination_location_id)
+        );
+        CREATE TABLE IF NOT EXISTS inventory_delivery_lines (
+            delivery_id INTEGER NOT NULL REFERENCES inventory_deliveries(id) ON DELETE CASCADE,
+            line_no INTEGER NOT NULL CHECK(line_no > 0),
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            native_unit TEXT NOT NULL CHECK(native_unit IN ('box','set','piece')),
+            requested_quantity INTEGER NOT NULL CHECK(requested_quantity > 0),
+            dispatched_quantity INTEGER NOT NULL DEFAULT 0 CHECK(dispatched_quantity >= 0),
+            received_quantity INTEGER NOT NULL DEFAULT 0 CHECK(received_quantity >= 0),
+            returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK(returned_quantity >= 0),
+            loss_quantity INTEGER NOT NULL DEFAULT 0 CHECK(loss_quantity >= 0),
+            short_quantity INTEGER NOT NULL DEFAULT 0 CHECK(short_quantity >= 0),
+            PRIMARY KEY(delivery_id, line_no),
+            CHECK(dispatched_quantity <= requested_quantity),
+            CHECK(received_quantity + returned_quantity + loss_quantity <= dispatched_quantity),
+            CHECK(short_quantity <= requested_quantity - dispatched_quantity)
+        );
+        CREATE TABLE IF NOT EXISTS inventory_delivery_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            delivery_id INTEGER NOT NULL REFERENCES inventory_deliveries(id) ON DELETE RESTRICT,
+            action TEXT NOT NULL CHECK(action IN ('dispatch','receive','return','resolve_loss','short_close')),
+            actor_sub TEXT NOT NULL,
+            reason TEXT,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS inventory_delivery_event_lines (
+            event_id INTEGER NOT NULL REFERENCES inventory_delivery_events(id) ON DELETE RESTRICT,
+            line_no INTEGER NOT NULL,
+            delivery_line_no INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            disposition TEXT NOT NULL CHECK(disposition IN ('saleable','hold','damaged')),
+            PRIMARY KEY(event_id, line_no)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_counts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            disposition TEXT NOT NULL DEFAULT 'saleable' CHECK(disposition IN ('saleable','trade','display','hold','damaged')),
+            business_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted','approved','returned')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_by TEXT NOT NULL,
+            reviewed_by TEXT,
+            review_reason TEXT,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS inventory_count_lines (
+            count_id INTEGER NOT NULL REFERENCES inventory_counts(id) ON DELETE CASCADE,
+            line_no INTEGER NOT NULL CHECK(line_no > 0),
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            native_unit TEXT NOT NULL CHECK(native_unit IN ('box','set','piece')),
+            expected_quantity INTEGER NOT NULL CHECK(expected_quantity >= 0),
+            observed_quantity INTEGER NOT NULL CHECK(observed_quantity >= 0),
+            captured_balance_version INTEGER NOT NULL CHECK(captured_balance_version >= 0),
+            PRIMARY KEY(count_id, line_no)
+        );
+        CREATE TABLE IF NOT EXISTS inventory_floor_targets (
+            location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE CASCADE,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            min_quantity INTEGER NOT NULL CHECK(min_quantity >= 0),
+            max_quantity INTEGER NOT NULL CHECK(max_quantity >= min_quantity),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            updated_by TEXT NOT NULL,
+            PRIMARY KEY(location_id, product_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_open
+        ON inventory_deliveries(status, source_location_id, destination_location_id);
+        CREATE INDEX IF NOT EXISTS idx_receipt_store_date
+        ON goods_receipts(store_id, business_date);
+        CREATE INDEX IF NOT EXISTS idx_count_store_date
+        ON inventory_counts(store_id, business_date);
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('create_goods_workflows')"
+    )
+
+
+def _migration_add_delivery_provenance(con, cur):
+    """Retain selected opened-set identity while its units are in delivery transit."""
+    columns = {
+        row['name'] for row in cur.execute(
+            'PRAGMA table_info(inventory_delivery_lines)'
+        )
+    }
+    additions = (
+        ('open_set_id', 'INTEGER REFERENCES inventory_open_sets(id) ON DELETE RESTRICT'),
+        ('open_set_opening_document_id', 'INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT'),
+        ('open_set_purpose', "TEXT CHECK(open_set_purpose IS NULL OR open_set_purpose IN ('customer_tray','replenishment'))"),
+    )
+    for name, definition in additions:
+        if name not in columns:
+            cur.execute(
+                f'ALTER TABLE inventory_delivery_lines ADD COLUMN {name} {definition}'
+            )
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('add_delivery_provenance')"
+    )
+
+
+def _migration_create_sale_documents(con, cur):
+    """Create immutable individual sale facts and inventory allocations."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS sale_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            business_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','posted')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            entry_mode TEXT NOT NULL CHECK(entry_mode IN ('planned_entry','already_paid')),
+            currency TEXT NOT NULL DEFAULT 'CAD' CHECK(currency='CAD'),
+            subtotal_cents INTEGER CHECK(subtotal_cents IS NULL OR subtotal_cents >= 0),
+            source_tax_cents INTEGER CHECK(source_tax_cents IS NULL OR source_tax_cents >= 0),
+            gross_cents INTEGER CHECK(gross_cents IS NULL OR gross_cents >= 0),
+            reduction_cents INTEGER CHECK(reduction_cents IS NULL OR reduction_cents >= 0),
+            rounding_cents INTEGER,
+            collected_cents INTEGER CHECK(collected_cents IS NULL OR collected_cents >= 0),
+            financial_status TEXT NOT NULL DEFAULT 'draft' CHECK(financial_status IN ('draft','recorded')),
+            allocation_status TEXT NOT NULL DEFAULT 'draft' CHECK(allocation_status IN ('draft','pending','allocated')),
+            allocation_reason TEXT,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            posted_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sale_lines (
+            sale_id INTEGER NOT NULL REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            line_no INTEGER NOT NULL CHECK(line_no > 0),
+            product_id INTEGER REFERENCES products(id) ON DELETE RESTRICT,
+            raw_product_text TEXT,
+            product_name_snapshot TEXT,
+            stock_form_snapshot TEXT,
+            native_unit TEXT CHECK(native_unit IS NULL OR native_unit IN ('box','set','piece')),
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            unit_price_cents INTEGER CHECK(unit_price_cents IS NULL OR unit_price_cents >= 0),
+            source_tax_cents INTEGER CHECK(source_tax_cents IS NULL OR source_tax_cents >= 0),
+            location_id INTEGER REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            captured_balance_version INTEGER CHECK(captured_balance_version IS NULL OR captured_balance_version >= 0),
+            open_set_id INTEGER REFERENCES inventory_open_sets(id) ON DELETE RESTRICT,
+            PRIMARY KEY(sale_id, line_no),
+            CHECK(product_id IS NOT NULL OR raw_product_text IS NOT NULL)
+        );
+        CREATE TABLE IF NOT EXISTS sale_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            source_system TEXT NOT NULL,
+            source_account TEXT NOT NULL,
+            source_reference TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source_system, source_account, source_reference)
+        );
+        CREATE TABLE IF NOT EXISTS sale_allocations (
+            sale_id INTEGER NOT NULL REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            line_no INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','allocated')),
+            reason TEXT,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            PRIMARY KEY(sale_id, line_no),
+            FOREIGN KEY(sale_id, line_no) REFERENCES sale_lines(sale_id, line_no) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sale_store_date
+        ON sale_documents(store_id, business_date, status);
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('create_sale_documents')"
+    )
+
+
+def _migration_add_sale_fresh_set_selection(con, cur):
+    """Retain an explicit sealed-set choice for an atomic sale opening."""
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(sale_lines)')}
+    additions = (
+        ('fresh_set_product_id', 'INTEGER REFERENCES products(id) ON DELETE RESTRICT'),
+        ('fresh_set_conversion_id', 'INTEGER REFERENCES product_conversions(id) ON DELETE RESTRICT'),
+        ('fresh_set_conversion_factor', 'INTEGER CHECK(fresh_set_conversion_factor IS NULL OR fresh_set_conversion_factor > 0)'),
+        ('fresh_set_balance_version', 'INTEGER CHECK(fresh_set_balance_version IS NULL OR fresh_set_balance_version >= 0)'),
+    )
+    for name, definition in additions:
+        if name not in columns:
+            cur.execute(f'ALTER TABLE sale_lines ADD COLUMN {name} {definition}')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('add_sale_fresh_set_selection')"
+    )
+
+
+def _migration_create_sale_payments(con, cur):
+    """Create tender, correction, return, and source-review facts."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS sale_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            tender TEXT NOT NULL CHECK(tender IN
+                ('cash','card','e_transfer','wechat','alipay')),
+            amount_cents INTEGER CHECK(amount_cents IS NULL OR amount_cents >= 0),
+            source_system TEXT,
+            source_account TEXT,
+            source_reference TEXT,
+            state TEXT NOT NULL DEFAULT 'recorded'
+                CHECK(state IN ('recorded','verified','rejected')),
+            recorded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source_system, source_account, source_reference)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sale_payments_sale
+        ON sale_payments(sale_id, id);
+        CREATE TABLE IF NOT EXISTS payment_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_id INTEGER NOT NULL REFERENCES sale_payments(id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL CHECK(event_type IN
+                ('verify','reject','correction','refund')),
+            direction TEXT NOT NULL CHECK(direction IN ('none','increase','decrease')),
+            amount_cents INTEGER CHECK(amount_cents IS NULL OR amount_cents >= 0),
+            reason TEXT NOT NULL,
+            actor_sub TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sale_reconciliations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            business_date TEXT NOT NULL,
+            intent TEXT NOT NULL CHECK(intent IN
+                ('missing_transactions','summary_only','stock_already_posted')),
+            source_system TEXT NOT NULL,
+            source_account TEXT NOT NULL,
+            source_reference TEXT NOT NULL,
+            sale_id INTEGER REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            notes TEXT NOT NULL,
+            reviewed_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source_system, source_account, source_reference)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_reconciliation_inventory
+        ON sale_reconciliations(inventory_document_id)
+        WHERE inventory_document_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS sale_returns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            sale_line_no INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            disposition TEXT NOT NULL CHECK(disposition IN ('saleable','damaged','hold')),
+            reason TEXT NOT NULL,
+            inventory_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            reviewed_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(sale_id, sale_line_no)
+                REFERENCES sale_lines(sale_id, line_no) ON DELETE RESTRICT
+        );
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('create_sale_payments')"
+    )
+
+
+def _migration_create_payment_evidence(con, cur):
+    """Create private immutable payment attachments and review history."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS payment_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_id INTEGER NOT NULL REFERENCES sale_payments(id) ON DELETE RESTRICT,
+            object_id TEXT NOT NULL UNIQUE,
+            mime_type TEXT NOT NULL CHECK(mime_type IN
+                ('image/jpeg','image/png','image/webp')),
+            byte_size INTEGER NOT NULL CHECK(byte_size > 0),
+            uploader_sub TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','accepted','rejected')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_payment_evidence_payment
+        ON payment_evidence(payment_id, id);
+        CREATE TABLE IF NOT EXISTS payment_evidence_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            evidence_id INTEGER NOT NULL REFERENCES payment_evidence(id) ON DELETE RESTRICT,
+            decision TEXT NOT NULL CHECK(decision IN ('accepted','rejected')),
+            reason TEXT NOT NULL,
+            reviewer_sub TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('create_payment_evidence')"
+    )
+
+
+def _migration_create_closing(con, cur):
+    """Create one versioned closing session and immutable cash facts per store-day."""
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS closing_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            business_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK(status IN ('draft','submitted','closed')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            intake_complete INTEGER NOT NULL DEFAULT 0 CHECK(intake_complete IN (0,1)),
+            source_token TEXT,
+            created_by TEXT NOT NULL,
+            submitted_by TEXT,
+            submitted_at TEXT,
+            reviewed_by TEXT,
+            closed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(store_id, business_date)
+        );
+        CREATE TABLE IF NOT EXISTS cash_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            business_date TEXT NOT NULL,
+            closing_session_id INTEGER REFERENCES closing_sessions(id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL CHECK(event_type IN
+                ('paid_in','refund','payout','removal')),
+            amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+            reason TEXT NOT NULL,
+            actor_sub TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_cash_event_store_date
+        ON cash_events(store_id, business_date, id);
+        CREATE TABLE IF NOT EXISTS closing_cash_counts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            closing_session_id INTEGER NOT NULL REFERENCES closing_sessions(id) ON DELETE RESTRICT,
+            revision INTEGER NOT NULL CHECK(revision > 0),
+            denomination_counts_json TEXT NOT NULL,
+            opening_coin_cents INTEGER NOT NULL CHECK(opening_coin_cents >= 0),
+            retained_coin_cents INTEGER NOT NULL CHECK(retained_coin_cents >= 0),
+            counted_cents INTEGER NOT NULL CHECK(counted_cents >= 0),
+            expected_cents INTEGER NOT NULL,
+            variance_cents INTEGER NOT NULL,
+            retained_cents INTEGER NOT NULL,
+            removal_cents INTEGER,
+            source_token TEXT NOT NULL,
+            counted_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(closing_session_id, revision)
+        );
+        CREATE TABLE IF NOT EXISTS closing_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            closing_session_id INTEGER NOT NULL UNIQUE
+                REFERENCES closing_sessions(id) ON DELETE RESTRICT,
+            source_token TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            cash_removal_event_id INTEGER UNIQUE REFERENCES cash_events(id) ON DELETE RESTRICT,
+            reviewed_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS closing_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            closing_session_id INTEGER NOT NULL REFERENCES closing_sessions(id) ON DELETE RESTRICT,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            actor_sub TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(closing_session_id, source_type, source_id)
+        );
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations(name) VALUES ('create_closing')")
+
+
+def _migration_harden_build4_financial_facts(con, cur):
+    """Enforce Build 4 financial bounds, count freshness, and exclusive links."""
+    columns = {
+        row['name'] for row in cur.execute('PRAGMA table_info(closing_cash_counts)')
+    }
+    if 'source_token' not in columns:
+        cur.execute('ALTER TABLE closing_cash_counts ADD COLUMN source_token TEXT')
+    cur.executescript('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_reconciliation_inventory
+        ON sale_reconciliations(inventory_document_id)
+        WHERE inventory_document_id IS NOT NULL;
+
+        CREATE TRIGGER IF NOT EXISTS sale_documents_nonnegative_insert
+        BEFORE INSERT ON sale_documents
+        WHEN NEW.subtotal_cents < 0 OR NEW.source_tax_cents < 0
+          OR NEW.gross_cents < 0 OR NEW.collected_cents < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'sale amounts must be nonnegative');
+        END;
+        CREATE TRIGGER IF NOT EXISTS sale_documents_nonnegative_update
+        BEFORE UPDATE ON sale_documents
+        WHEN NEW.subtotal_cents < 0 OR NEW.source_tax_cents < 0
+          OR NEW.gross_cents < 0 OR NEW.collected_cents < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'sale amounts must be nonnegative');
+        END;
+        CREATE TRIGGER IF NOT EXISTS sale_lines_nonnegative_insert
+        BEFORE INSERT ON sale_lines
+        WHEN NEW.unit_price_cents < 0 OR NEW.source_tax_cents < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'sale line amounts must be nonnegative');
+        END;
+        CREATE TRIGGER IF NOT EXISTS sale_lines_nonnegative_update
+        BEFORE UPDATE ON sale_lines
+        WHEN NEW.unit_price_cents < 0 OR NEW.source_tax_cents < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'sale line amounts must be nonnegative');
+        END;
+    ''')
+    cur.execute(
+        "INSERT OR IGNORE INTO _migrations(name) VALUES ('harden_build4_financial_facts')"
+    )
+
+
+def _migration_create_trades(con, cur):
+    """Add physical trade identity, slot history, and condition cases."""
+    sale_line_columns = {
+        row['name'] for row in cur.execute('PRAGMA table_info(sale_lines)')
+    }
+    if 'condition_disclosure' not in sale_line_columns:
+        cur.execute('ALTER TABLE sale_lines ADD COLUMN condition_disclosure TEXT')
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS trade_units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            design_product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            series_id INTEGER NOT NULL REFERENCES product_series(id) ON DELETE RESTRICT,
+            origin TEXT NOT NULL CHECK (origin IN ('random_opening','inspected_trade','confirmed_purchase')),
+            eligibility TEXT NOT NULL CHECK (eligibility IN ('eligible','ineligible')),
+            location_id INTEGER REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            custody TEXT NOT NULL CHECK (custody IN ('slot','customer','sold','review')),
+            condition_disclosure TEXT NOT NULL,
+            source_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS trade_slots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            series_id INTEGER NOT NULL REFERENCES product_series(id) ON DELETE RESTRICT,
+            location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+            occupant_unit_id INTEGER REFERENCES trade_units(id) ON DELETE RESTRICT,
+            version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+            is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(store_id, series_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_slots_occupant
+        ON trade_slots(occupant_unit_id) WHERE occupant_unit_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS trade_inspections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_id INTEGER NOT NULL REFERENCES trade_slots(id) ON DELETE RESTRICT,
+            incoming_unit_id INTEGER NOT NULL REFERENCES trade_units(id) ON DELETE RESTRICT,
+            outgoing_unit_id INTEGER REFERENCES trade_units(id) ON DELETE RESTRICT,
+            expected_slot_version INTEGER NOT NULL,
+            proof_kind TEXT NOT NULL,
+            proof_reference TEXT NOT NULL,
+            check_notes TEXT,
+            box_checked INTEGER NOT NULL CHECK (box_checked IN (0,1)),
+            accessories_checked INTEGER NOT NULL CHECK (accessories_checked IN (0,1)),
+            condition_observed TEXT NOT NULL,
+            disclosure TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK (decision IN ('accepted','rejected')),
+            actor_sub TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS trade_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_id INTEGER NOT NULL REFERENCES trade_slots(id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL CHECK (event_type IN ('open','swap','sale')),
+            slot_version_before INTEGER NOT NULL,
+            slot_version_after INTEGER NOT NULL,
+            incoming_unit_id INTEGER REFERENCES trade_units(id) ON DELETE RESTRICT,
+            outgoing_unit_id INTEGER REFERENCES trade_units(id) ON DELETE RESTRICT,
+            inspection_id INTEGER REFERENCES trade_inspections(id) ON DELETE RESTRICT,
+            consume_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            receipt_document_id INTEGER REFERENCES inventory_documents(id) ON DELETE RESTRICT,
+            sale_id INTEGER REFERENCES sale_documents(id) ON DELETE RESTRICT,
+            actor_sub TEXT NOT NULL,
+            reason TEXT,
+            business_date TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS condition_cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+            unit_id INTEGER REFERENCES trade_units(id) ON DELETE RESTRICT,
+            sale_id INTEGER,
+            sale_line_no INTEGER,
+            observed_condition TEXT NOT NULL,
+            disclosed_condition TEXT,
+            status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (unit_id IS NOT NULL OR (sale_id IS NOT NULL AND sale_line_no IS NOT NULL)),
+            FOREIGN KEY(sale_id, sale_line_no)
+              REFERENCES sale_lines(sale_id, line_no) ON DELETE RESTRICT
+        );
+        CREATE TABLE IF NOT EXISTS condition_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL REFERENCES condition_cases(id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL CHECK (event_type IN ('note','decision')),
+            disposition TEXT,
+            reason TEXT NOT NULL,
+            actor_sub TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS condition_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL REFERENCES condition_cases(id) ON DELETE RESTRICT,
+            object_id TEXT NOT NULL UNIQUE,
+            mime_type TEXT NOT NULL,
+            byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+            content_hash TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    ''')
+    cur.execute("INSERT OR IGNORE INTO _migrations(name) VALUES ('create_trades')")
+
+def _migration_create_insight_runs(con, cur):
+    cur.execute('''CREATE TABLE IF NOT EXISTS insight_runs (
+        job TEXT NOT NULL, business_date TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+        started_at TEXT NOT NULL, finished_at TEXT, error TEXT,
+        PRIMARY KEY(job,business_date)
+    )''')
+    cur.execute("INSERT OR IGNORE INTO _migrations(name) VALUES ('create_insight_runs')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -705,6 +1586,21 @@ def _get_migrations():
         ('create_schedule_notes_table',          _migration_create_schedule_notes_table),
         ('create_schedule_checklist_table',      _migration_create_schedule_checklist_table),
         ('assign_curated_employee_colors',       _migration_assign_curated_employee_colors),
+        ('create_catalog_identity',               _migration_create_catalog_identity),
+        ('create_inventory_locations_and_access', _migration_create_inventory_locations_and_access),
+        ('create_inventory_posting_core',          _migration_create_inventory_posting_core),
+        ('create_open_set_provenance',             _migration_create_open_set_provenance),
+        ('link_inventory_compatibility',            _migration_link_inventory_compatibility),
+        ('create_goods_workflows',                   _migration_create_goods_workflows),
+        ('add_delivery_provenance',                  _migration_add_delivery_provenance),
+        ('create_sale_documents',                    _migration_create_sale_documents),
+        ('add_sale_fresh_set_selection',             _migration_add_sale_fresh_set_selection),
+        ('create_sale_payments',                      _migration_create_sale_payments),
+        ('create_payment_evidence',                    _migration_create_payment_evidence),
+        ('create_closing',                             _migration_create_closing),
+        ('harden_build4_financial_facts',              _migration_harden_build4_financial_facts),
+        ('create_trades',                               _migration_create_trades),
+        ('create_insight_runs',                          _migration_create_insight_runs),
     ]
 
 

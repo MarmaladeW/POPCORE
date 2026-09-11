@@ -22,6 +22,10 @@ WorkingDirectory=__REPO_DIR__/popcore_app
 
 # Load production secrets from .env (never commit this file)
 EnvironmentFile=__REPO_DIR__/popcore_app/.env
+Environment=POPCORE_DB_PATH=/var/lib/popcore/popcore.db
+Environment=POPCORE_HIDDEN_IMG_DIR=/var/lib/popcore/uploads/hidden_imgs
+Environment=POPCORE_PAYMENT_EVIDENCE_DIR=/var/lib/popcore/uploads/payment_evidence
+Environment=POPCORE_CONDITION_EVIDENCE_DIR=/var/lib/popcore/uploads/condition_evidence
 
 # Start Gunicorn; -c picks up gunicorn.conf.py (workers, bind, timeout, etc.)
 ExecStart=__VENV_DIR__/bin/gunicorn -c gunicorn.conf.py app:app
@@ -30,8 +34,8 @@ ExecStart=__VENV_DIR__/bin/gunicorn -c gunicorn.conf.py app:app
 ExecReload=/bin/kill -s HUP $MAINPID
 
 # Write access + error logs to server.log (logrotate handles rotation)
-StandardOutput=append:__REPO_DIR__/popcore_app/server.log
-StandardError=append:__REPO_DIR__/popcore_app/server.log
+StandardOutput=append:/var/log/popcore/server.log
+StandardError=append:/var/log/popcore/server.log
 
 # Restart automatically on crash; wait 5 s before each attempt
 Restart=on-failure
@@ -42,6 +46,13 @@ StartLimitBurst=3
 # Security hardening
 PrivateTmp=true
 NoNewPrivileges=true
+StateDirectory=popcore
+LogsDirectory=popcore
+CacheDirectory=popcore
+UMask=0027
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/popcore /var/log/popcore /var/cache/popcore
 
 [Install]
 WantedBy=multi-user.target

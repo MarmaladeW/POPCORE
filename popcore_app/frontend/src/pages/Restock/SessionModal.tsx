@@ -6,6 +6,7 @@ import client from '../../api/client'
 import type { RestockSession } from './index'
 import RequestStep from './RequestStep'
 import PickingStep from './PickingStep'
+import ReceivingStep from './ReceivingStep'
 
 interface Props {
   sessionId: number | null
@@ -69,6 +70,12 @@ export default function SessionModal({ sessionId, onClose }: Props) {
       label:    <span><CheckSquareOutlined /> 仓库拣货</span>,
       disabled: status === 'pending',
       children: session ? <PickingStep session={session} onRefresh={loadSession} /> : null,
+    },
+    {
+      key: 'receiving',
+      label: 'Receive',
+      disabled: !session?.delivery,
+      children: session ? <ReceivingStep session={session} onRefresh={loadSession} /> : null,
     },
   ]
 

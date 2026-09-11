@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import {
-  Input, Button, Table, Tag, Select, Space,
+  Input, Button, Table, Tag, Select, Space, Checkbox,
   Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge,
 } from 'antd'
 import {
@@ -118,6 +118,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
   const [step,          setStep]         = useState<'input' | 'review' | 'done'>('input')
   const [rawText,       setRawText]       = useState('')
+  const [useLlm,        setUseLlm]        = useState(false)
   const [parsing,       setParsing]       = useState(false)
   const [submitting,    setSubmitting]    = useState(false)
 
@@ -143,7 +144,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     if (!rawText.trim()) { message.warning('请粘贴日报内容'); return }
     setParsing(true)
     try {
-      const res = await parseReportBackend(rawText, defaultStore)
+      const res = await parseReportBackend(
+        rawText, defaultStore, useLlm ? 'llm' : 'rules'
+      )
 
       setParsedDate(res.detected_date)
       setParsedStore(res.store)
@@ -306,6 +309,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         date: submitDate,
         store_code: submitStore,
         mode: 'replace',
+        classification: 'summary_only',
         items: payload,
       })
       setStep('done')
@@ -617,9 +621,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           placeholder={`2026.04.01 DT汇总\n卡机汇总：\nchiikawa hipper*1\nsmiski hipper*2\n\n随手记汇总：\n星星人点亮场景*9\n\n入店：\ndimoo奇遇小夜灯 6*2\nsmiski cheer 12*1`}
           style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 12 }}
         />
-        <Button type="primary" size="large" loading={parsing} onClick={handleParse}>
-          Parse Report
-        </Button>
+        <Space direction="vertical" size={10}>
+          <Checkbox checked={useLlm} onChange={event => setUseLlm(event.target.checked)}>
+            Use optional AI parsing (sends this pasted report text to the configured Anthropic service)
+          </Checkbox>
+          <Button type="primary" size="large" loading={parsing} onClick={handleParse}>
+            Parse Report
+          </Button>
+        </Space>
       </div>
     )
   }

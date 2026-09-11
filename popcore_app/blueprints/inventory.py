@@ -28,6 +28,26 @@ def _calc_theoretical_qty(cur, product_id: int, today: str,
     """
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
 
+    mode = cur.execute(
+        'SELECT mode FROM inventory_mode WHERE id=1'
+    ).fetchone()
+    if mode and mode['mode'] == 'authoritative':
+        location = cur.execute(
+            """SELECT l.id, ss.opening_verified
+               FROM inventory_locations l
+               JOIN inventory_scope_state ss ON ss.location_id=l.id
+               WHERE l.store_id=? AND l.code='floor' AND l.is_active=1""",
+            (store_id,),
+        ).fetchone()
+        if location is None or not location['opening_verified']:
+            return None, today, True
+        balance = cur.execute(
+            """SELECT quantity FROM inventory_balances
+               WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+            (product_id, location['id']),
+        ).fetchone()
+        return (balance['quantity'] if balance else 0), today, False
+
     cur.execute('''
         SELECT actual_qty, date AS check_date
         FROM inventory_checks
@@ -159,6 +179,13 @@ def submit_inventory_check():
         theoretical_qty, base_check_date, _ = _calc_theoretical_qty(
             cur, int(pid), today, store_id, store_code
         )
+        if theoretical_qty is None:
+            con.rollback()
+            con.close()
+            return jsonify({
+                'error': 'Reviewed opening balance is required',
+                'code': 'reconciliation_required',
+            }), 409
         discrepancy = int(actual_qty) - theoretical_qty
 
         try:

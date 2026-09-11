@@ -30,3 +30,37 @@ node_modules/
 
 # Frontend node_modules (nested path)
 popcore_app/frontend/node_modules/
+
+# Local environment variants; retain reviewed templates and public Vite config.
+.env.*
+!.env.example
+!/popcore_app/frontend/.env.production
+.flaskenv
+
+# Local credentials and keys
+secrets/
+credentials*.json
+*service-account*.json
+*.pem
+*.key
+
+# SQLite databases, WAL journals, and backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+popcore_app/backups/
+
+# Local runtime data and verification output
+.local/
+popcore_app/uploads/
+/copy of 11.xlsx
+/POP_CORE_v3.xlsx
+*.log.*
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
+# Existing popcore_app/static files are intentionally tracked release assets.
