@@ -76,4 +76,5 @@ jobs:
           path: |
             .local/**/browser
             .local/build6/integration
+          include-hidden-files: true
           if-no-files-found: ignore

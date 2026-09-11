@@ -1,6 +1,7 @@
 """Small SQLite-plus-referenced-attachments backup/restore helper."""
 from __future__ import annotations
 import hashlib,json,shutil,sqlite3
+from contextlib import closing
 from pathlib import Path
 
 KINDS={
@@ -22,9 +23,9 @@ def _hash(path):
 def create_package(db_path,roots,output):
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=False)
     snapshot=output/'database.db'
-    with sqlite3.connect(db_path) as source,sqlite3.connect(snapshot) as target:source.backup(target)
+    with closing(sqlite3.connect(db_path)) as source,closing(sqlite3.connect(snapshot)) as target:source.backup(target)
     manifest={'version':1,'database':'database.db','attachments':[]}
-    with sqlite3.connect(snapshot) as con:
+    with closing(sqlite3.connect(snapshot)) as con:
         for kind,(table,column) in KINDS.items():
             for (value,) in con.execute(f'SELECT {column} FROM {table} ORDER BY id'):
                 source,relative=_safe(roots[kind],value)
@@ -48,7 +49,7 @@ def restore_package(package,target):
         source,relative=_safe(package/'attachments'/item['kind'],item['path'])
         if not source.is_file() or source.stat().st_size!=item['size'] or _hash(source)!=item['sha256']:raise ValueError('attachment manifest mismatch')
         manifest_refs.append((item['kind'],relative.as_posix()))
-    with sqlite3.connect(package/'database.db') as con:
+    with closing(sqlite3.connect(package/'database.db')) as con:
         required_refs=[]
         for kind,(table,column) in KINDS.items():
             required_refs.extend((kind,_safe(package/'attachments'/kind,value)[1].as_posix()) for (value,) in con.execute(f'SELECT {column} FROM {table}'))
@@ -59,7 +60,7 @@ def restore_package(package,target):
     for item in items:
         source,relative=_safe(package/'attachments'/item['kind'],item['path'])
         destination=target/'attachments'/item['kind']/relative;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,destination)
-    with sqlite3.connect(target/'database.db') as con:
+    with closing(sqlite3.connect(target/'database.db')) as con:
         if con.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('restored database integrity failed')
         if con.execute('PRAGMA foreign_key_check').fetchall():raise ValueError('restored database foreign keys failed')
     return manifest
