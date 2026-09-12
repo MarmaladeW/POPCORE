@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Tabs, Typography, Tag, Spin, Button, Table, Popconfirm,
-  Empty, message, Grid, Space,
+  Alert, Empty, message, Grid, Space,
 } from 'antd'
 import {
   PlusOutlined, AuditOutlined, StarOutlined,
@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
+import { useSearchParams } from 'react-router-dom'
 import client from '../../api/client'
 import { useHasRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
@@ -41,6 +42,7 @@ export interface RestockItem {
 
 export interface RestockSession {
   id: number
+  store_id: number
   date: string
   status: 'pending' | 'submitted' | 'picking' | 'completed'
   created_at: string
@@ -97,26 +99,36 @@ const STATUS_COLORS: Record<string, string> = {
 // ── Today's session list ──────────────────────────────────────────────────────
 
 function TodaySessions() {
+  const [params, setParams] = useSearchParams()
   const [sessions, setSessions]   = useState<SessionSummary[]>([])
   const [loading, setLoading]     = useState(true)
   const [creating, setCreating]   = useState(false)
-  const [openId, setOpenId]       = useState<number | null>(null)
+  const requestedId = Number(params.get('session_id'))
+  const [openId, setOpenId]       = useState<number | null>(Number.isInteger(requestedId) && requestedId > 0 ? requestedId : null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const request = useRef(0)
   const { selectedStore } = useAppStore()
 
   const load = useCallback(async () => {
     const sc = selectedStore?.code
     if (!sc) return
+    const current = ++request.current
+    setSessions([])
+    setLoadError('')
     setLoading(true)
     try {
       const { data } = await client.get<SessionSummary[]>('/restock/sessions/today', { params: { store_code: sc } })
-      setSessions(data)
+      if (current === request.current) setSessions(data)
+    } catch (cause: any) {
+      if (current === request.current) setLoadError(cause?.response?.data?.error || 'Unable to load restock sessions for this store.')
     } finally {
-      setLoading(false)
+      if (current === request.current) setLoading(false)
     }
   }, [selectedStore?.code])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); return () => { request.current += 1 } }, [load])
+  useEffect(() => { if (Number.isInteger(requestedId) && requestedId > 0) setOpenId(requestedId) }, [requestedId])
 
   async function handleCreate() {
     const sc = selectedStore?.code
@@ -210,6 +222,7 @@ function TodaySessions() {
           新建补货
         </Button>
       </div>
+      {loadError && <Alert type="error" showIcon message={loadError} style={{ marginBottom: 12 }} />}
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
@@ -234,7 +247,7 @@ function TodaySessions() {
 
       <SessionModal
         sessionId={openId}
-        onClose={() => { setOpenId(null); load() }}
+        onClose={() => { setOpenId(null); const next = new URLSearchParams(params); next.delete('session_id'); setParams(next); load() }}
       />
     </>
   )
@@ -282,6 +295,15 @@ export default function RestockPage() {
         size={isMobile ? 'small' : 'middle'}
         style={{ background: '#fff', padding: isMobile ? '0 8px 8px' : '0 16px 16px', borderRadius: 8 }}
       />
+      <RestockSuggestions />
     </div>
   )
+}
+
+interface Suggestion {product_id:number;sku:string;name:string;unit:string;floor_quantity:number;available_back_quantity:number;outstanding_inbound:number;min_quantity:number;max_quantity:number;suggested_quantity:number}
+function RestockSuggestions(){
+  const selectedStore=useAppStore(state=>state.selectedStore)
+  const[data,setData]=useState<Suggestion[]>(),[error,setError]=useState('')
+  useEffect(()=>{if(!selectedStore||selectedStore.code==='ALL'){setData(undefined);setError('Select one store to view floor suggestions.');return}let current=true;setData(undefined);setError('');client.get('/inventory/locations').then(response=>{const floor=response.data.find((location:{store_id:number;code:string})=>location.store_id===selectedStore.id&&location.code==='floor');if(!floor)throw new Error('floor');return client.get('/goods/restock-suggestions',{params:{location_id:floor.id}})}).then(response=>{if(current)setData(response.data.items)}).catch(cause=>{if(current)setError(cause?.response?.data?.error||'Restock suggestions are unavailable because reviewed floor/back-stock configuration is missing.')});return()=>{current=false}},[selectedStore])
+  return <div style={{marginTop:16}}><Title level={5}>Floor suggestions</Title>{error&&<Alert type="info" showIcon message={error}/>} {data&&<Table rowKey="product_id" pagination={false} size="small" dataSource={data} columns={[{title:'Product',render:(_,row)=>`${row.name||row.sku} (${row.sku})`},{title:'Target',render:(_,row)=>`${row.min_quantity}–${row.max_quantity} ${row.unit}s`},{title:'Floor',dataIndex:'floor_quantity'},{title:'Available back',dataIndex:'available_back_quantity'},{title:'Inbound',dataIndex:'outstanding_inbound'},{title:'Suggested',render:(_,row)=><strong>{row.suggested_quantity} {row.unit}s</strong>}]}/>}<Typography.Text type="secondary">Read-only guidance. Suggestions never move stock or create a shipment; target editing requires a versioned read contract.</Typography.Text></div>
 }

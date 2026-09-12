@@ -390,6 +390,7 @@ export default function ProductsPage() {
           <Button
             type="text"
             size="small"
+            aria-label={`View images for ${r.jizhanming || r.sku}`}
             icon={<PictureOutlined />}
             onClick={() => setImagesProduct(r)}
             style={{ color: '#6b7280' }}
@@ -398,6 +399,7 @@ export default function ProductsPage() {
             <Button
               type="text"
               size="small"
+              aria-label={`Edit ${r.jizhanming || r.sku}`}
               icon={<EditOutlined />}
               onClick={() => openEdit(r)}
               style={{ color: '#6366F1' }}
@@ -416,7 +418,7 @@ export default function ProductsPage() {
                 }
               }}
             >
-              <Button type="text" size="small" icon={<DeleteOutlined />} danger />
+              <Button type="text" size="small" aria-label={`Delete ${r.jizhanming || r.sku}`} icon={<DeleteOutlined />} danger />
             </Popconfirm>
           </RoleGuard>
         </Space>
@@ -431,7 +433,7 @@ export default function ProductsPage() {
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div className="pc-page-actions" style={{ marginBottom: 16 }}>
         <div>
           <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>Products</Title>
           <Text style={{ color: '#6b7280', fontSize: 13 }}>{products.length} products</Text>
@@ -441,6 +443,7 @@ export default function ProductsPage() {
           {/* Filter toggle on mobile */}
           {isMobile && (
             <Button
+              aria-label="Toggle product filters"
               icon={<FilterOutlined />}
               onClick={() => setFiltersVisible(v => !v)}
               type={filtersVisible ? 'primary' : 'default'}
@@ -527,21 +530,24 @@ export default function ProductsPage() {
               <div key={p.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }} onClick={() => setDetailId(p.id)}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, fontSize: 13, color: '#111827' }}>{p.jizhanming || p.name_cn_en || '—'}</div>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: '#20242D', overflowWrap: 'anywhere' }}>{p.jizhanming || p.name_cn_en || 'Unnamed product'}</div>
                     {p.name_cn_en && p.jizhanming && (
-                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name_cn_en}</div>
+                      <div style={{ fontSize: 12, color: '#596273', marginTop: 2, overflowWrap: 'anywhere' }}>{p.name_cn_en}</div>
                     )}
                     <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{p.sku}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
                     {stockBadge(stockMap.get(p.id) ?? 0)}
-                    <Button type="text" size="small" icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
-                    <RoleGuard minRole="manager"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
+                    <Button type="text" size="small" aria-label={`View images for ${p.jizhanming || p.sku}`} icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
+                    <RoleGuard minRole="manager"><Button type="text" size="small" aria-label={`Edit ${p.jizhanming || p.sku}`} icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                   {p.ip_series && <Tag color="blue" style={{ fontSize: 10 }}>{p.ip_series}</Tag>}
                   {p.product_type && <Tag color={TYPE_COLORS[p.product_type] ?? 'default'} style={{ fontSize: 10 }}>{p.product_type}</Tag>}
+                  <Tag color={p.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 10 }}>
+                    {p.identity_status === 'verified' ? `Verified · ${p.stock_unit}` : 'Unverified identity'}
+                  </Tag>
                   {p.price != null && <Text style={{ fontSize: 12, color: '#6366F1', fontWeight: 600 }}>${p.price.toFixed(2)}</Text>}
                 </div>
               </div>

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from playwright.async_api import async_playwright, expect
 
@@ -46,20 +47,27 @@ PRODUCTS = [
      'stock_form': 'confirmed_design', 'stock_unit': 'box', 'design_name': 'B',
      'identity_status': 'verified', 'upstairs_qty': 1, 'instore_qty': 0},
 ]
+FAR_PRODUCT = {**PRODUCTS[1], 'id': 501, 'product_id': 501, 'sku': 'FAR-501',
+               'jizhanming': 'Outside First 500', 'name_cn_en': '第501项 / Outside First 500'}
 
 
 def api_payload(path, query, request):
     if path == '/api/products/search':
+        if parse_qs(query).get('q', [''])[0].lower() == 'far-501':
+            return [FAR_PRODUCT]
         return PRODUCTS
     if path == '/api/stock':
         return {'items': PRODUCTS, 'total': len(PRODUCTS)} if 'page=' in query else PRODUCTS
     if path == '/api/stock/summary':
         return {'products_tracked': 5, 'total_upstairs_qty': 8,
                 'total_instore_qty': 3, 'low_stock_count': 4,
-                'out_of_stock_count': 1, 'total_stock_value': 0}
+                'out_of_stock_count': 1, 'total_stock_value': 0,
+                'mode': 'authoritative', 'complete': True,
+                'unit_totals': [{'unit': 'box', 'floor_qty': 3, 'back_qty': 5,
+                                 'total_qty': 8}]}
     match = re.fullmatch(r'/api/products/(\d+)', path)
     if match:
-        item = next(p for p in PRODUCTS if p['id'] == int(match.group(1)))
+        item = next(p for p in [*PRODUCTS, FAR_PRODUCT] if p['id'] == int(match.group(1)))
         return {**item, 'aliases': [], 'barcodes': (
             [{'id': 1, 'code': '001234567890', 'code_kind': 'manufacturer',
               'input_unit': 'box', 'quantity_per_scan': 1}]
@@ -98,14 +106,28 @@ def api_payload(path, query, request):
 
 
 async def checks(browser):
-    state = {'mode': 'data', 'api_payload': api_payload}
+    evidence = ROOT / '.local' / 'frontend-alignment' / 'after'
+    evidence.mkdir(parents=True, exist_ok=True)
+    opening_commands = []
+    def tracked_api(path, query, request):
+        if path == '/api/inventory/commands' and request.method == 'POST':
+            opening_commands.append(request.post_data)
+        return api_payload(path, query, request)
+    state = {'mode': 'data', 'api_payload': tracked_api}
     context, page = await context_with_api(browser, state)
     await page.goto(BASE + '/products')
     await expect(page.get_by_text('Legacy Item', exact=True).first).to_be_visible()
     await expect(page.get_by_text('Unverified', exact=True).first).to_be_visible()
     await expect(page.get_by_text('Verified', exact=True).first).to_be_visible()
+    await page.screenshot(path=evidence / 'products-1280.png', full_page=True)
     await page.get_by_text('Sealed Set', exact=True).last.click()
     await expect(page.get_by_text('Conversion v1', exact=False)).to_be_visible()
+    await page.keyboard.press('Escape')
+    search = page.get_by_placeholder('Search name, SKU, 记账名...')
+    await search.fill('FAR-501')
+    await expect(page.get_by_text('Outside First 500', exact=True).first).to_be_visible()
+    await page.get_by_text('Outside First 500', exact=True).first.click()
+    await expect(page.get_by_text('第501项 / Outside First 500', exact=True)).to_be_visible()
     await page.keyboard.press('Escape')
 
     resolution = await page.evaluate("""async () => {
@@ -119,6 +141,10 @@ async def checks(browser):
 
     await page.goto(BASE + '/stock')
     await page.locator('select').first.select_option('DT')
+    await expect(page.get_by_role('heading', name='Inventory', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Authoritative inventory', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Floor · saleable: 3 boxes', exact=True).first).to_be_visible()
+    await page.screenshot(path=evidence / 'inventory-1280.png', full_page=True)
     row = page.get_by_role('row').filter(has_text='Random Box')
     await row.get_by_role('button', name='Adjust').click()
     await expect(page.get_by_text('Quantity (box)', exact=True)).to_be_visible()
@@ -134,6 +160,34 @@ async def checks(browser):
     await expect(page.get_by_text('boxes', exact=True)).to_be_visible()
     batch_row = page.get_by_role('row').filter(has_text='Random Box')
     await expect(batch_row.locator('.ant-input-number-input')).to_have_value('12')
+    assert opening_commands == []
+    await context.close()
+
+    def legacy_api(path, query, request):
+        if path == '/api/stock/summary':
+            return {**api_payload(path, query, request), 'mode': 'legacy', 'complete': False}
+        return api_payload(path, query, request)
+    context,page=await context_with_api(browser,{
+        'mode':'data','api_payload':legacy_api,
+        'get_status_for_path':{
+            '/api/inventory/locations':(403,{'error':'Inventory access denied'}),
+            '/api/inventory/balances':(403,{'error':'Inventory access denied'}),
+        },
+    })
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/stock')
+    await expect(page.get_by_text('Legacy inventory view',exact=True)).to_be_visible()
+    await context.close()
+
+    def unopened_api(path, query, request):
+        result = api_payload(path, query, request)
+        if path == '/api/inventory/locations':
+            return [{**location, 'opening_verified': False} for location in result]
+        return result
+    context,page=await context_with_api(browser,{'mode':'data','api_payload':unopened_api})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/stock')
+    await expect(page.get_by_text('Opening review incomplete',exact=True)).to_be_visible()
     await context.close()
 
 

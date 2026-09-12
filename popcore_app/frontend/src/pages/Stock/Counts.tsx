@@ -1,90 +1,40 @@
-import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Typography } from 'antd'
-import { useRef, useState } from 'react'
+import { Alert,Button,Card,Form,Input,InputNumber,Select,Space,Spin,Table,Typography } from 'antd'
+import { useEffect,useRef,useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import OperationScanInput from '../../components/OperationScanInput'
 import { useHasRole } from '../../auth/useRole'
-import {
-  actOnCount, createCount, requestKey, resolveGoodsBarcode,
-  type GoodsProduct, type InventoryLocation, type WorkflowResult,
-} from '../../api/goods'
+import { actOnCount,createCount,getCount,requestKey,resolveGoodsBarcode,searchGoodsProducts,type CountDetail,type GoodsProduct,type InventoryLocation } from '../../api/goods'
+import { torontoDate } from '../Dashboard/todayPresentation'
 
-const { Text } = Typography
+const failure=(cause:unknown)=>(cause as {response?:{data?:{error?:string}}})?.response?.data?.error||'Count action failed. The saved observation is unchanged.'
+const conflict=(cause:unknown)=>(cause as {response?:{status?:number}})?.response?.status===409
+const rejected=(cause:unknown)=>{const status=(cause as {response?:{status?:number}})?.response?.status;return !!status&&status>=400&&status<500}
+type CountAction='submit'|'approve'|'return'
+type CountIntent={action:CountAction;key:string;countId:number;body:object}
 
-export default function Counts({ products, locations }: {
-  products: GoodsProduct[]
-  locations: InventoryLocation[]
-}) {
-  const isManager = useHasRole('manager')
-  const [locationId, setLocationId] = useState<number>()
-  const [productId, setProductId] = useState<number>()
-  const [observed, setObserved] = useState(0)
-  const [reason, setReason] = useState('')
-  const [count, setCount] = useState<WorkflowResult>()
-  const [error, setError] = useState('')
-  const keys = useRef({ create: requestKey(), submit: requestKey(), approve: requestKey() })
-  const product = products.find(item => item.id === productId)
-
-  async function scan(code: string) {
-    try {
-      const result = await resolveGoodsBarcode(code, 'move')
-      if (result.status !== 'exact') {
-        setError('Scan needs an exact product selection. The count draft is unchanged.')
-        return
-      }
-      const candidate = result.candidates[0]
-      setProductId(candidate.product_id)
-      setObserved(value => (
-        productId === candidate.product_id ? value + candidate.quantity_per_scan
-          : candidate.quantity_per_scan
-      ))
-    } catch {
-      setError('Unable to resolve the scan. The count draft is unchanged.')
-    }
-  }
-
-  async function start() {
-    if (!locationId || !product?.stock_unit) return
-    try {
-      setError('')
-      const result = await createCount({
-        location_id: locationId, business_date: new Date().toLocaleDateString('en-CA'),
-        lines: [{ product_id: product.id, unit: product.stock_unit, observed_quantity: observed }],
-      }, keys.current.create)
-      setCount(result)
-    } catch (cause) {
-      setError((cause as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Count draft failed.')
-    }
-  }
-
-  async function act(action: 'submit' | 'approve') {
-    if (!count) return
-    try {
-      setError('')
-      const result = await actOnCount(count.id, action, {
-        expected_version: count.version,
-        ...(action === 'approve' ? { reason } : {}),
-      }, keys.current[action])
-      setCount(result)
-      keys.current[action] = requestKey()
-    } catch (cause) {
-      setError((cause as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Count action failed. The observation is unchanged.')
-    }
-  }
-
-  return (
-    <Card title="Physical count">
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {error && <Alert type="error" showIcon message={error} />}
-        <OperationScanInput onScan={scan} />
-        <Form layout="vertical">
-          <Form.Item label="Location" required><Select value={locationId} onChange={setLocationId} options={locations.map(item => ({ value: item.id, label: item.name }))} /></Form.Item>
-          <Form.Item label="Product" required><Select showSearch optionFilterProp="label" value={productId} onChange={setProductId} options={products.map(item => ({ value: item.id, label: `${item.sku || ''} ${item.jizhanming || ''}` }))} /></Form.Item>
-          <Form.Item label="Observed quantity"><InputNumber min={0} precision={0} value={observed} onChange={value => setObserved(value || 0)} /></Form.Item>
-        </Form>
-        {!count && <Button type="primary" disabled={!locationId || !product?.stock_unit} onClick={start}>Save observation</Button>}
-        {count?.status === 'draft' && <Button type="primary" onClick={() => act('submit')}>Submit for review</Button>}
-        {count?.status === 'submitted' && isManager && <Space direction="vertical" style={{ width: '100%' }}><Input value={reason} onChange={event => setReason(event.target.value)} placeholder="Review reason" /><Button type="primary" disabled={!reason.trim()} onClick={() => act('approve')}>Approve adjustment</Button></Space>}
-        {count && <Text>Count #{count.id}: {count.status}, version {count.version}</Text>}
-      </Space>
-    </Card>
-  )
+export default function Counts({products,locations}:{products:GoodsProduct[];locations:InventoryLocation[]}){
+  const isManager=useHasRole('manager'),[params]=useSearchParams(),resumeId=Number(params.get('count_id'))
+  const[locationId,setLocationId]=useState<number>(),[productId,setProductId]=useState<number>(),[observed,setObserved]=useState(0)
+  const[productOptions,setProductOptions]=useState(products)
+  const[reason,setReason]=useState(''),[count,setCount]=useState<CountDetail>(),[recountId,setRecountId]=useState<number>()
+  const[savedId,setSavedId]=useState<number>(),[pendingCreate,setPendingCreate]=useState(false)
+  const[error,setError]=useState(''),[loading,setLoading]=useState(false),[pendingAction,setPendingAction]=useState<CountAction>()
+  const[refreshNeeded,setRefreshNeeded]=useState(false)
+  const createIntent=useRef<{key:string;body:object}|null>(null)
+  const actionIntent=useRef<CountIntent|null>(null)
+  const busy=useRef(false)
+  const product=productOptions.find(item=>item.id===productId),load=async(id:number,signal?:AbortSignal)=>{setCount(await getCount(id,signal));setRefreshNeeded(false)}
+  useEffect(()=>{setCount(undefined);setError('');setRecountId(undefined);if(!params.has('count_id'))return;if(!Number.isInteger(resumeId)||resumeId<1){setError('Count reference is invalid.');return}const controller=new AbortController();setLoading(true);load(resumeId,controller.signal).catch(cause=>{if(!controller.signal.aborted)setError(failure(cause))}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[params,resumeId])
+  useEffect(()=>setProductOptions(products),[products])
+  async function searchProducts(value:string){if(value.trim()){const results=await searchGoodsProducts(value);setProductOptions(product&&!results.some(item=>item.id===product.id)?[product,...results]:results)}}
+  async function scan(code:string){try{const result=await resolveGoodsBarcode(code,'move');if(result.status!=='exact'){setError('Scan needs an exact product selection. The count observation is unchanged.');return}const candidate=result.candidates[0];if(!productOptions.some(item=>item.id===candidate.product_id))setProductOptions(current=>[...current,{id:candidate.product_id,sku:code,jizhanming:`Product reference ${candidate.product_id}`,stock_unit:candidate.stock_unit,identity_status:'verified'}]);setProductId(candidate.product_id);setObserved(value=>productId===candidate.product_id?value+candidate.quantity_per_scan:candidate.quantity_per_scan)}catch{setError('Unable to resolve the scan. The count observation is unchanged.')}}
+  async function start(){if(busy.current||!locationId||!product?.stock_unit)return;busy.current=true;setLoading(true);let createdId:number|undefined;const body={location_id:locationId,business_date:torontoDate(),lines:[{product_id:product.id,unit:product.stock_unit,observed_quantity:observed}]};const intent=createIntent.current||{key:requestKey(),body};createIntent.current=intent;setPendingCreate(true);try{const result=await createCount(intent.body,intent.key);createdId=result.id;setSavedId(result.id);setPendingCreate(false);await load(result.id);setSavedId(undefined);createIntent.current=null}catch(cause){if(!createdId&&rejected(cause)){createIntent.current=null;setPendingCreate(false)}setError(createdId?'Count saved; refresh needed. No second count will be created.':failure(cause))}finally{busy.current=false;setLoading(false)}}
+  async function runAction(intent:CountIntent){if(busy.current)return;busy.current=true;setLoading(true);setError('');try{const result=await actOnCount(intent.countId,intent.action,intent.body,intent.key);actionIntent.current=null;setPendingAction(undefined);if(result.recount_id)setRecountId(result.recount_id);try{await load(result.id)}catch{setRefreshNeeded(true);setError('Count action saved; refresh needed before another action.')}}catch(cause){if(rejected(cause)){actionIntent.current=null;setPendingAction(undefined)}if(conflict(cause)){setReason('');try{await load(intent.countId)}catch{setRefreshNeeded(true);setError('Count changed and could not be refreshed. Retry refresh before another action.');return}}setError(failure(cause))}finally{busy.current=false;setLoading(false)}}
+  function act(action:CountAction){if(!count)return;const intent=actionIntent.current||{action,key:requestKey(),countId:count.id,body:{expected_version:count.version,...(action!=='submit'?{reason:reason.trim()}:{})}};actionIntent.current=intent;setPendingAction(intent.action);void runAction(intent)}
+  if(loading&&!count)return <Card title="Physical count"><Spin/></Card>
+  if(savedId&&!count)return <Card title={`Count #${savedId}`}><Alert type="warning" showIcon message="Count saved; refresh needed." action={<Button onClick={async()=>{setLoading(true);try{await load(savedId);setSavedId(undefined);createIntent.current=null}catch(cause){setError(failure(cause))}finally{setLoading(false)}}}>Retry refresh</Button>}/>{error&&<Alert type="error" showIcon message={error}/>}</Card>
+  if(refreshNeeded&&count)return <Card title={`Count #${count.id}`}><Alert type="warning" showIcon message={error} action={<Button onClick={()=>load(count.id)}>Retry refresh</Button>}/></Card>
+  if(params.has('count_id')&&!count)return <Card title="Physical count"><Alert type="error" showIcon message={error||'Unable to load this count.'}/></Card>
+  if(count){const statusLabel={draft:'Draft observation',submitted:'Submitted for review',approved:'Approved adjustment',returned:'Returned for recount'}[count.status]||count.status;return <Card title={`Count #${count.id}`}><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error} action={pendingAction?<Button onClick={()=>runAction(actionIntent.current!)}>Retry identical request</Button>:undefined}/>}<Typography.Text>{locations.find(item=>item.id===count.location_id)?.name||`Location reference ${count.location_id}`} · {count.business_date} · {count.disposition}</Typography.Text><Typography.Text strong>{statusLabel}</Typography.Text><Table rowKey="line_no" pagination={false} dataSource={count.lines} columns={[{title:'Product',render:(_,line)=>products.find(item=>item.id===line.product_id)?.jizhanming||`Product reference ${line.product_id}`},{title:'Expected',render:(_,line)=>`${line.expected_quantity} ${line.native_unit}s`},{title:'Observed',render:(_,line)=>`${line.observed_quantity} ${line.native_unit}s`},{title:'Captured balance version',dataIndex:'captured_balance_version'}]}/>{count.status==='draft'&&<Button type="primary" disabled={!!pendingAction} onClick={()=>act('submit')}>Submit for review</Button>}{count.status==='submitted'&&isManager&&<Space direction="vertical" style={{width:'100%'}}><Input aria-label="Count review reason" disabled={!!pendingAction} value={reason} onChange={event=>setReason(event.target.value)} placeholder="Separate review reason"/><Space><Button type="primary" disabled={!!pendingAction||!reason.trim()} onClick={()=>act('approve')}>Approve adjustment</Button><Button disabled={!!pendingAction||!reason.trim()} onClick={()=>act('return')}>Return for recount</Button></Space></Space>}{recountId&&<Alert type="info" showIcon message={`Returned record preserved. Recount #${recountId} is a new draft with copied observations.`}/>}<Alert type="info" showIcon message="Submitted and approved observations are read-only. Editing a recount requires a separate reviewed backend contract."/></Space></Card>}
+  return <Card title="Physical count"><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error}/>}<OperationScanInput onScan={scan} disabled={pendingCreate}/><Form layout="vertical" disabled={pendingCreate}><Form.Item label="Location" required><Select value={locationId} onChange={setLocationId} options={locations.map(item=>({value:item.id,label:item.name}))}/></Form.Item><Form.Item label="Product" required><Select showSearch filterOption={false} onSearch={searchProducts} optionFilterProp="label" value={productId} onChange={setProductId} options={productOptions.map(item=>({value:item.id,label:`${item.sku||''} ${item.jizhanming||''}`}))}/></Form.Item><Form.Item label="Observed quantity"><InputNumber min={0} precision={0} value={observed} onChange={value=>setObserved(value||0)}/></Form.Item></Form><Button type="primary" loading={loading} disabled={!locationId||!product?.stock_unit} onClick={start}>Save observation</Button></Space></Card>
 }

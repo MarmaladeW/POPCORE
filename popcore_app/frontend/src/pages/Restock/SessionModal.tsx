@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Modal, Tabs, Spin, Tag, Steps } from 'antd'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Alert, Modal, Tabs, Spin, Tag, Steps } from 'antd'
 import { InboxOutlined, CheckSquareOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import client from '../../api/client'
@@ -30,24 +30,36 @@ export default function SessionModal({ sessionId, onClose }: Props) {
   const [session, setSession] = useState<RestockSession | null>(null)
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('request')
+  const [error, setError] = useState('')
+  const request = useRef(0)
 
   const loadSession = useCallback(async () => {
     if (!sessionId) return
+    const current = ++request.current
     setLoading(true)
+    setError('')
     try {
-      const { data } = await client.get<RestockSession>(`/restock/session/${sessionId}`)
+      const [{ data }, locations] = await Promise.all([
+        client.get<RestockSession>(`/restock/session/${sessionId}`),
+        client.get<Array<{ store_id: number }>>('/inventory/locations'),
+      ])
+      if (current !== request.current) return
+      if (!locations.data.some(location => location.store_id === data.store_id)) {
+        setSession(null)
+        setError('You do not have inventory access to this restock session.')
+        return
+      }
       setSession(data)
       // Auto-switch tab based on status
       if (data.status === 'pending') setActiveTab('request')
       else setActiveTab('picking')
-      // Auto-close when completed
-      if (data.status === 'completed') {
-        setTimeout(() => onClose(), 1200)
-      }
+    } catch (cause: any) {
+      if (current !== request.current) return
+      setError(cause?.response?.data?.error || 'Unable to load this restock record.')
     } finally {
       setLoading(false)
     }
-  }, [sessionId, onClose])
+  }, [sessionId])
 
   useEffect(() => {
     if (sessionId) {
@@ -55,6 +67,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
       setActiveTab('request')
       loadSession()
     }
+    return () => { request.current += 1 }
   }, [sessionId, loadSession])
 
   const status = session?.status ?? 'pending'
@@ -63,19 +76,19 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     {
       key:      'request',
       label:    <span><InboxOutlined /> 录入补货</span>,
-      children: session ? <RequestStep session={session} onRefresh={loadSession} /> : null,
+      children: session && !error && !loading ? <RequestStep session={session} onRefresh={loadSession} /> : null,
     },
     {
       key:      'picking',
       label:    <span><CheckSquareOutlined /> 仓库拣货</span>,
       disabled: status === 'pending',
-      children: session ? <PickingStep session={session} onRefresh={loadSession} /> : null,
+      children: session && !error && !loading ? <PickingStep session={session} onRefresh={loadSession} /> : null,
     },
     {
       key: 'receiving',
       label: 'Receive',
       disabled: !session?.delivery,
-      children: session ? <ReceivingStep session={session} onRefresh={loadSession} /> : null,
+      children: session && !error && !loading ? <ReceivingStep session={session} onRefresh={loadSession} /> : null,
     },
   ]
 
@@ -106,6 +119,8 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     >
       {loading && !session ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
+      ) : error && !session ? (
+        <Alert type="error" showIcon message={error} />
       ) : (
         <>
           <div style={{ padding: '12px 24px 4px', borderBottom: '1px solid #f0f0f0' }}>
@@ -120,6 +135,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
               ]}
             />
           </div>
+          {error && <Alert type="error" showIcon message={error} />}
           <Tabs
             activeKey={activeTab}
             onChange={setActiveTab}

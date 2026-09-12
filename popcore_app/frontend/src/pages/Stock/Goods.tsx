@@ -1,6 +1,6 @@
 import { Alert, Button, Spin, Tabs, Typography } from 'antd'
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import type { GoodsProduct, InventoryLocation } from '../../api/goods'
@@ -14,22 +14,26 @@ export default function GoodsPage({ initialTab }: {
   initialTab: 'receiving' | 'transfers' | 'counts'
 }) {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
   const selectedStore = useAppStore(state => state.selectedStore)
   const [products, setProducts] = useState<GoodsProduct[]>([])
   const [locations, setLocations] = useState<InventoryLocation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const resumed = params.has('receipt_id') || params.has('transfer_id') || params.has('count_id')
 
   useEffect(() => {
-    if (!selectedStore || selectedStore.code === 'ALL') {
+    if (!selectedStore || (selectedStore.code === 'ALL' && !resumed)) {
       setLoading(false)
       return
     }
     let current = true
+    setProducts([])
+    setLocations([])
     setLoading(true)
     setError('')
     Promise.all([
-      client.get('/stock', { params: {
+      selectedStore.code === 'ALL' ? Promise.resolve({ data: { items: [] } }) : client.get('/stock', { params: {
         store_code: selectedStore.code, page: 1, page_size: 500,
       } }),
       client.get('/inventory/locations'),
@@ -43,9 +47,9 @@ export default function GoodsPage({ initialTab }: {
       if (current) setLoading(false)
     })
     return () => { current = false }
-  }, [selectedStore])
+  }, [resumed, selectedStore])
 
-  if (!selectedStore || selectedStore.code === 'ALL') {
+  if (!selectedStore || (selectedStore.code === 'ALL' && !resumed)) {
     return <Alert type="info" showIcon message="Select one store before handling goods." />
   }
   if (loading) return <Spin />
@@ -62,13 +66,13 @@ export default function GoodsPage({ initialTab }: {
         onChange={key => navigate(`/goods/${key}`)}
         items={[
           { key: 'receiving', label: 'Receiving', children: (
-            <Receiving products={products} locations={localLocations} storeId={selectedStore.id} />
+            <Receiving products={products} locations={resumed ? locations : localLocations} storeId={selectedStore.id} />
           ) },
           { key: 'transfers', label: 'Transfers', children: (
             <Transfers products={products} locations={locations} />
           ) },
           { key: 'counts', label: 'Counts', children: (
-            <Counts products={products} locations={localLocations} />
+            <Counts products={products} locations={resumed ? locations : localLocations} />
           ) },
         ]}
       />

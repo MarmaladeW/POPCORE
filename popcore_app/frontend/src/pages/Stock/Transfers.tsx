@@ -1,73 +1,40 @@
-import { Alert, Button, Card, Form, InputNumber, Select, Space, Typography } from 'antd'
-import { useRef, useState } from 'react'
-import {
-  actOnTransfer, createTransfer, requestKey,
-  type GoodsProduct, type InventoryLocation, type WorkflowResult,
-} from '../../api/goods'
+import { Alert,Button,Card,Form,Input,InputNumber,Select,Space,Spin,Table,Typography } from 'antd'
+import { useEffect,useRef,useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { useHasRole } from '../../auth/useRole'
+import { actOnTransfer,createTransfer,getTransfer,requestKey,searchGoodsProducts,type GoodsProduct,type InventoryLocation,type TransferDetail } from '../../api/goods'
+import { torontoDate } from '../Dashboard/todayPresentation'
 
-const { Text } = Typography
+type Action='dispatch'|'receive'|'return'|'resolve_loss'|'short_close'
+type TransferIntent={action:Action;key:string;transferId:number;body:object}
+const failure=(cause:unknown)=>(cause as {response?:{data?:{error?:string}}})?.response?.data?.error||'Transfer action failed. Refresh and review the saved quantities.'
+const conflict=(cause:unknown)=>(cause as {response?:{status?:number}})?.response?.status===409
+const rejected=(cause:unknown)=>{const status=(cause as {response?:{status?:number}})?.response?.status;return !!status&&status>=400&&status<500}
 
-export default function Transfers({ products, locations }: {
-  products: GoodsProduct[]
-  locations: InventoryLocation[]
-}) {
-  const [source, setSource] = useState<number>()
-  const [destination, setDestination] = useState<number>()
-  const [productId, setProductId] = useState<number>()
-  const [quantity, setQuantity] = useState(1)
-  const [delivered, setDelivered] = useState(1)
-  const [transfer, setTransfer] = useState<WorkflowResult>()
-  const [error, setError] = useState('')
-  const keys = useRef({ create: requestKey(), dispatch: requestKey(), receive: requestKey() })
-  const product = products.find(item => item.id === productId)
-
-  async function create() {
-    if (!source || !destination || !product?.stock_unit) return
-    setError('')
-    try {
-      const result = await createTransfer({
-        source_location_id: source, destination_location_id: destination,
-        business_date: new Date().toLocaleDateString('en-CA'),
-        lines: [{ product_id: product.id, unit: product.stock_unit, requested_quantity: quantity }],
-      }, keys.current.create)
-      setTransfer(result)
-    } catch (reason) {
-      setError((reason as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Transfer draft failed.')
-    }
-  }
-
-  async function act(action: 'dispatch' | 'receive') {
-    if (!transfer) return
-    setError('')
-    try {
-      const amount = action === 'dispatch' ? quantity : delivered
-      const result = await actOnTransfer(transfer.id, action, {
-        expected_version: transfer.version,
-        lines: [{ line_no: 1, quantity: amount }],
-      }, keys.current[action])
-      setTransfer(result)
-      keys.current[action] = requestKey()
-    } catch (reason) {
-      setError((reason as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Transfer action failed. The draft is unchanged.')
-    }
-  }
-
-  return (
-    <Card title="Transfer stock">
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {error && <Alert type="error" showIcon message={error} />}
-        <Form layout="vertical">
-          <Form.Item label="Source" required><Select value={source} onChange={setSource} options={locations.map(item => ({ value: item.id, label: `${item.store_code} · ${item.name}` }))} /></Form.Item>
-          <Form.Item label="Destination" required><Select value={destination} onChange={setDestination} options={locations.map(item => ({ value: item.id, label: `${item.store_code} · ${item.name}` }))} /></Form.Item>
-          <Form.Item label="Product" required><Select showSearch optionFilterProp="label" value={productId} onChange={setProductId} options={products.map(item => ({ value: item.id, label: `${item.sku || ''} ${item.jizhanming || ''}` }))} /></Form.Item>
-          <Form.Item label="Requested quantity"><InputNumber min={1} precision={0} value={quantity} onChange={value => setQuantity(value || 1)} /></Form.Item>
-        </Form>
-        <Text>Effect on dispatch: -{quantity} {product?.stock_unit || 'units'} from source saleable, +{quantity} in this transfer.</Text>
-        {!transfer && <Button type="primary" disabled={!source || !destination || !product?.stock_unit} onClick={create}>Create transfer</Button>}
-        {transfer && transfer.version === 1 && <Button type="primary" onClick={() => act('dispatch')}>Dispatch {quantity}</Button>}
-        {transfer && transfer.version > 1 && transfer.status !== 'completed' && <Space><InputNumber min={1} max={quantity} precision={0} value={delivered} onChange={value => setDelivered(value || 1)} /><Button type="primary" onClick={() => act('receive')}>Receive delivered quantity</Button></Space>}
-        {transfer && <Text>Transfer #{transfer.id}: {transfer.status}, version {transfer.version}</Text>}
-      </Space>
-    </Card>
-  )
+export default function Transfers({products,locations}:{products:GoodsProduct[];locations:InventoryLocation[]}){
+  const isManager=useHasRole('manager'),[params]=useSearchParams(),resumeId=Number(params.get('transfer_id'))
+  const[source,setSource]=useState<number>(),[destination,setDestination]=useState<number>(),[productId,setProductId]=useState<number>()
+  const[productOptions,setProductOptions]=useState(products)
+  const[quantity,setQuantity]=useState(1),[amount,setAmount]=useState(1),[reason,setReason]=useState('')
+  const[transfer,setTransfer]=useState<TransferDetail>(),[error,setError]=useState(''),[loading,setLoading]=useState(false)
+  const[refreshNeeded,setRefreshNeeded]=useState(false)
+  const[savedId,setSavedId]=useState<number>(),[pendingCreate,setPendingCreate]=useState(false)
+  const[pendingAction,setPendingAction]=useState<Action>(),product=productOptions.find(item=>item.id===productId)
+  const createIntent=useRef<{key:string;body:object}|null>(null)
+  const actionIntent=useRef<TransferIntent|null>(null)
+  const busy=useRef(false)
+  const load=async(id:number,signal?:AbortSignal)=>{const detail=await getTransfer(id,signal);setTransfer(detail);setRefreshNeeded(false);const line=detail.lines[0];setAmount(line?.outstanding_transit||Math.max(1,(line?.requested_quantity||1)-(line?.dispatched_quantity||0)-(line?.short_quantity||0)))}
+  useEffect(()=>{setTransfer(undefined);setError('');if(!params.has('transfer_id'))return;if(!Number.isInteger(resumeId)||resumeId<1){setError('Transfer reference is invalid.');return}const controller=new AbortController();setLoading(true);load(resumeId,controller.signal).catch(cause=>{if(!controller.signal.aborted)setError(failure(cause))}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[params,resumeId])
+  useEffect(()=>setProductOptions(products),[products])
+  async function searchProducts(value:string){if(value.trim()){const results=await searchGoodsProducts(value);setProductOptions(product&&!results.some(item=>item.id===product.id)?[product,...results]:results)}}
+  async function create(){if(busy.current||!source||!destination||!product?.stock_unit)return;busy.current=true;setLoading(true);let createdId:number|undefined;const body={source_location_id:source,destination_location_id:destination,business_date:torontoDate(),lines:[{product_id:product.id,unit:product.stock_unit,requested_quantity:quantity}]};const intent=createIntent.current||{key:requestKey(),body};createIntent.current=intent;setPendingCreate(true);try{const result=await createTransfer(intent.body,intent.key);createdId=result.id;setSavedId(result.id);setPendingCreate(false);await load(result.id);setSavedId(undefined);createIntent.current=null}catch(cause){if(!createdId&&rejected(cause)){createIntent.current=null;setPendingCreate(false)}setError(createdId?'Transfer saved; refresh needed. No second transfer will be created.':failure(cause))}finally{busy.current=false;setLoading(false)}}
+  async function runAction(intent:TransferIntent){if(busy.current)return;busy.current=true;setLoading(true);setError('');try{const result=await actOnTransfer(intent.transferId,intent.action,intent.body,intent.key);actionIntent.current=null;setPendingAction(undefined);try{await load(result.id)}catch{setRefreshNeeded(true);setError('Transfer action saved; refresh needed before another action.')}}catch(cause){if(rejected(cause)){actionIntent.current=null;setPendingAction(undefined)}if(conflict(cause)){setReason('');try{await load(intent.transferId)}catch{setRefreshNeeded(true);setError('Transfer changed and could not be refreshed. Retry refresh before another action.');return}}setError(failure(cause))}finally{busy.current=false;setLoading(false)}}
+  function act(action:Action,lineNo:number,max:number){if(!transfer)return;if(amount<1||amount>max){setError(`Quantity must be between 1 and ${max}. No transfer action was sent.`);return}const intent=actionIntent.current||{action,key:requestKey(),transferId:transfer.id,body:{expected_version:transfer.version,lines:[{line_no:lineNo,quantity:amount,disposition:'saleable'}],...(reason.trim()?{reason:reason.trim()}:{})}};actionIntent.current=intent;setPendingAction(intent.action);void runAction(intent)}
+  if(loading&&!transfer)return <Card title="Transfer stock"><Spin/></Card>
+  if(savedId&&!transfer)return <Card title={`Transfer #${savedId}`}><Alert type="warning" showIcon message="Transfer saved; refresh needed." action={<Button onClick={async()=>{setLoading(true);try{await load(savedId);setSavedId(undefined);createIntent.current=null}catch(cause){setError(failure(cause))}finally{setLoading(false)}}}>Retry refresh</Button>}/>{error&&<Alert type="error" showIcon message={error}/>}</Card>
+  if(refreshNeeded&&transfer)return <Card title={`Transfer #${transfer.id}`}><Alert type="warning" showIcon message={error} action={<Button onClick={()=>load(transfer.id)}>Retry refresh</Button>}/></Card>
+  if(params.has('transfer_id')&&!transfer)return <Card title="Transfer stock"><Alert type="error" showIcon message={error||'Unable to load this transfer.'}/></Card>
+  if(!transfer)return <Card title="Transfer stock"><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error}/>}<Form layout="vertical" disabled={pendingCreate}><Form.Item label="Source" required><Select value={source} onChange={setSource} options={locations.map(item=>({value:item.id,label:`${item.store_code} · ${item.name}`}))}/></Form.Item><Form.Item label="Destination" required><Select value={destination} onChange={setDestination} options={locations.map(item=>({value:item.id,label:`${item.store_code} · ${item.name}`}))}/></Form.Item><Form.Item label="Product" required><Select showSearch filterOption={false} onSearch={searchProducts} optionFilterProp="label" value={productId} onChange={setProductId} options={productOptions.map(item=>({value:item.id,label:`${item.sku||''} ${item.jizhanming||''}`}))}/></Form.Item><Form.Item label="Requested quantity"><InputNumber min={1} precision={0} value={quantity} onChange={value=>setQuantity(value||1)}/></Form.Item></Form><Typography.Text>Effect on dispatch: -{quantity} {product?.stock_unit||'units'} from source saleable, +{quantity} in transit.</Typography.Text>{isManager?<Button type="primary" loading={loading} disabled={!source||!destination||!product?.stock_unit} onClick={create}>Create transfer</Button>:<Alert type="info" showIcon message="A manager creates transfer drafts."/>}</Space></Card>
+  const sourceLocation=locations.find(item=>item.id===transfer.source_location_id),destinationLocation=locations.find(item=>item.id===transfer.destination_location_id)
+  return <Card title={`Transfer #${transfer.id}`}><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error} action={pendingAction?<Button onClick={()=>runAction(actionIntent.current!)}>Retry identical request</Button>:undefined}/>}<Typography.Text>{sourceLocation?.name||`Location reference ${transfer.source_location_id}`} → {destinationLocation?.name||`Location reference ${transfer.destination_location_id}`} · {transfer.business_date}</Typography.Text><Typography.Text strong>Status: {transfer.status}, version {transfer.version}</Typography.Text><Table rowKey="line_no" pagination={false} dataSource={transfer.lines} columns={[{title:'Product',render:(_,line)=>products.find(item=>item.id===line.product_id)?.jizhanming||`Product reference ${line.product_id}`},{title:'Requested',dataIndex:'requested_quantity'},{title:'Dispatched',dataIndex:'dispatched_quantity'},{title:'Received',dataIndex:'received_quantity'},{title:'Returned',dataIndex:'returned_quantity'},{title:'Loss',dataIndex:'loss_quantity'},{title:'Short',dataIndex:'short_quantity'},{title:'Outstanding',render:(_,line)=>`${line.outstanding_transit} ${line.native_unit}s`}]} />{transfer.lines.map(line=><Typography.Text key={line.line_no}>Outstanding: {line.outstanding_transit} {line.native_unit}s</Typography.Text>)}{transfer.status!=='completed'&&transfer.status!=='cancelled'&&<><Alert type="info" showIcon message="Dispatch moves saleable stock into transit; receive moves transit to destination; return restores source; loss consumes transit. Short close changes no stock."/><Space wrap><InputNumber aria-label="Action quantity" disabled={!!pendingAction} min={1} precision={0} value={amount} onChange={value=>setAmount(value||1)}/><Input aria-label="Transfer reason" disabled={!!pendingAction} value={reason} onChange={event=>setReason(event.target.value)} placeholder="Reason for loss or short close"/></Space>{transfer.lines.map(line=>{const undispatched=line.requested_quantity-line.dispatched_quantity-line.short_quantity;return <Space key={line.line_no} wrap>{undispatched>0&&sourceLocation&&<Button disabled={!!pendingAction} onClick={()=>act('dispatch',line.line_no,undispatched)}>Dispatch</Button>}{line.outstanding_transit>0&&destinationLocation&&<Button type="primary" disabled={!!pendingAction} onClick={()=>act('receive',line.line_no,line.outstanding_transit)}>Receive</Button>}{line.outstanding_transit>0&&sourceLocation&&<Button disabled={!!pendingAction} onClick={()=>act('return',line.line_no,line.outstanding_transit)}>Return to source</Button>}{line.outstanding_transit>0&&sourceLocation&&isManager&&<Button danger disabled={!!pendingAction||!reason.trim()} onClick={()=>act('resolve_loss',line.line_no,line.outstanding_transit)}>Resolve loss</Button>}{line.outstanding_transit===0&&undispatched>0&&sourceLocation&&<Button disabled={!!pendingAction||!reason.trim()} onClick={()=>act('short_close',line.line_no,undispatched)}>Short close</Button>}</Space>})}</>}</Space></Card>
 }

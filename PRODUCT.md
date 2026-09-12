@@ -6,11 +6,11 @@ product
 
 ## Users
 
-POPCORE is primarily used by store owners and managers to assign employee shifts across retail locations. Staff also use the schedule to understand their assigned shifts and availability. Managers need to work quickly on desktop while retaining a clear, touch-friendly view on mobile.
+POPCORE is primarily used by store owners and managers to run inventory, sales, restocking, staffing, and scheduling across retail locations. Staff use phones on the shop floor for daily operations and their personal shifts; managers also need fast desktop and tablet review.
 
 ## Product Purpose
 
-POPCORE brings product, stock, sales, restocking, staffing, and scheduling operations into one internal tool. The scheduling surface succeeds when a manager can immediately see who is assigned, identify coverage gaps, make changes confidently, and verify that every employee has been considered without losing the calendar itself.
+POPCORE brings product, stock, sales, restocking, staffing, and scheduling operations into one internal tool. Operations succeed when a user can see scope, status, native units, and action effects, then resume work without interpreting internal IDs. The scheduling surface succeeds when a manager can immediately see who is assigned, identify coverage gaps, make changes confidently, and verify that every employee has been considered without losing the calendar itself.
 
 ## Brand Personality
 

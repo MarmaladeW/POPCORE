@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { Button, ConfigProvider, Modal, Result } from 'antd'
 
@@ -11,6 +11,8 @@ import { resetAuthWarnings, setTokenGetter } from './api/client'
 import { useAppStore, ALL_STORES } from './store'
 import type { Store } from './store'
 import client from './api/client'
+import { operationsTheme } from './theme/operations'
+import './styles/operations.css'
 
 import SchedulePage    from './pages/Schedule'
 const DashboardPage=lazy(()=>import('./pages/Dashboard'))
@@ -37,6 +39,7 @@ function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNo
 }
 
 function AppInner() {
+  const location = useLocation()
   const { getAccessTokenSilently, isAuthenticated, loginWithRedirect, user } = useAuth0()
   const { setSeries, setProductTypes, setStores, setSelectedStore, selectedStore } = useAppStore()
   const [bootstrapError, setBootstrapError] = useState(false)
@@ -99,7 +102,7 @@ function AppInner() {
   }, [bootstrapAttempt, isAuthenticated, user?.sub]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (bootstrapError) {
-    return (
+    const errorApp = (
       <AppLayout key={user?.sub}>
         <Result
           status="error"
@@ -109,9 +112,12 @@ function AppInner() {
         />
       </AppLayout>
     )
+    return location.pathname.startsWith('/schedule')
+      ? errorApp
+      : <ConfigProvider theme={operationsTheme}>{errorApp}</ConfigProvider>
   }
 
-  return (
+  const routedApp = (
     <AppLayout key={user?.sub}>
       <ErrorBoundary>
         <Suspense fallback={<div role="status" aria-live="polite">Loading page…</div>}><Routes>
@@ -139,6 +145,9 @@ function AppInner() {
       </ErrorBoundary>
     </AppLayout>
   )
+  return location.pathname.startsWith('/schedule')
+    ? routedApp
+    : <ConfigProvider theme={operationsTheme}>{routedApp}</ConfigProvider>
 }
 
 export default function App() {

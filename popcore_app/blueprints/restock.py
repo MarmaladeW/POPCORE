@@ -19,6 +19,19 @@ from goods_operations import act_on_delivery, create_delivery, delivery_detail
 bp = Blueprint('restock', __name__)
 
 
+def _restock_access_denied(con, store_id, minimum_role):
+    if not _is_authoritative(con):
+        return None
+    try:
+        require_inventory_access(
+            con, request.jwt_payload, (store_id,), minimum_role
+        )
+    except PermissionError:
+        return jsonify({'error': 'Inventory access denied',
+                        'code': 'inventory_forbidden'}), 403
+    return None
+
+
 def _restock_session_items(cur, sid, store_id):
     """Return items for a session, joined with product and live stock info."""
     cur.execute('''
@@ -51,6 +64,10 @@ def restock_sessions_today():
         con.close()
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, store_code = resolved
+    denied = _restock_access_denied(con, store_id, 'viewer')
+    if denied is not None:
+        con.close()
+        return denied
     cur = con.cursor()
     cur.execute('''
         SELECT rs.id, rs.date, rs.status, rs.created_at, rs.submitted_at, rs.completed_at,
@@ -85,6 +102,10 @@ def create_restock_session():
         con.close()
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, store_code = resolved
+    denied = _restock_access_denied(con, store_id, 'staff')
+    if denied is not None:
+        con.close()
+        return denied
     cur = con.cursor()
     cur.execute(
         "INSERT INTO restock_sessions (date, status, store_id) VALUES (?, 'pending', ?)",
@@ -115,6 +136,12 @@ def delete_restock_session(sid):
         con.rollback()
         con.close()
         return jsonify({'error': 'Session not found'}), 404
+
+    denied = _restock_access_denied(con, sess['store_id'], 'staff')
+    if denied is not None:
+        con.rollback()
+        con.close()
+        return denied
 
     status = sess['status']
 
@@ -158,6 +185,10 @@ def restock_session_today():
         con.close()
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, store_code = resolved
+    denied = _restock_access_denied(con, store_id, 'viewer')
+    if denied is not None:
+        con.close()
+        return denied
     cur = con.cursor()
     cur.execute(
         "SELECT * FROM restock_sessions"
@@ -184,6 +215,10 @@ def get_restock_session(sid):
         return jsonify({'error': 'Session not found'}), 404
     session  = dict(row)
     store_id = session['store_id']
+    denied = _restock_access_denied(con, store_id, 'viewer')
+    if denied is not None:
+        con.close()
+        return denied
     session['items'] = _restock_session_items(cur, sid, store_id)
     delivery = cur.execute(
         'SELECT id FROM inventory_deliveries WHERE restock_session_id=?', (sid,)
@@ -244,6 +279,14 @@ def _restock_delivery(con, sid):
 def restock_goods_action(sid, action):
     con = get_db()
     try:
+        session = con.execute(
+            'SELECT store_id FROM restock_sessions WHERE id=?', (sid,)
+        ).fetchone()
+        if session:
+            denied = _restock_access_denied(con, session['store_id'], 'staff')
+            if denied is not None:
+                con.close()
+                return denied
         delivery_id = _restock_delivery(con, sid)
         result = act_on_delivery(
             con, delivery_id, action, request.get_json(silent=True) or {},
@@ -271,11 +314,15 @@ def add_restock_item():
 
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT status FROM restock_sessions WHERE id = ?', (sid,))
+    cur.execute('SELECT status, store_id FROM restock_sessions WHERE id = ?', (sid,))
     sess = cur.fetchone()
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
+    denied = _restock_access_denied(con, sess['store_id'], 'staff')
+    if denied is not None:
+        con.close()
+        return denied
     if sess['status'] != 'pending':
         con.close()
         return jsonify({'error': '只能在 pending 状态下修改清单'}), 403
@@ -303,7 +350,7 @@ def delete_restock_item(iid):
     con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
     cur.execute('''
-        SELECT rs.status FROM restock_items ri
+        SELECT rs.status, rs.store_id FROM restock_items ri
         JOIN restock_sessions rs ON rs.id = ri.session_id
         WHERE ri.id = ?
     ''', (iid,))
@@ -312,6 +359,11 @@ def delete_restock_item(iid):
         con.rollback()
         con.close()
         return jsonify({'error': 'Item not found'}), 404
+    denied = _restock_access_denied(con, row['store_id'], 'staff')
+    if denied is not None:
+        con.rollback()
+        con.close()
+        return denied
     if row['status'] != 'pending':
         con.rollback()
         con.close()
@@ -342,6 +394,10 @@ def submit_restock_session(sid):
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
+    denied = _restock_access_denied(con, sess['store_id'], 'staff')
+    if denied is not None:
+        con.close()
+        return denied
     if sess['status'] != 'pending':
         con.close()
         return jsonify({'error': f'当前状态 {sess["status"]} 不可提交'}), 400
@@ -376,6 +432,10 @@ def restock_picking_list(sid):
         con.close()
         return jsonify({'error': 'Session not found'}), 404
     store_id = sess['store_id']
+    denied = _restock_access_denied(con, store_id, 'viewer')
+    if denied is not None:
+        con.close()
+        return denied
     items = _restock_session_items(cur, sid, store_id)
     con.close()
     return jsonify({'session_status': sess['status'], 'items': items})
@@ -392,7 +452,8 @@ def pick_restock_item(iid):
     con = get_db()
     cur = con.cursor()
     cur.execute('''
-        SELECT ri.*, rs.status AS session_status, rs.id AS session_id
+        SELECT ri.*, rs.status AS session_status, rs.id AS session_id,
+               rs.store_id AS store_id
         FROM restock_items ri
         JOIN restock_sessions rs ON rs.id = ri.session_id
         WHERE ri.id = ?
@@ -401,6 +462,10 @@ def pick_restock_item(iid):
     if not item:
         con.close()
         return jsonify({'error': 'Item not found'}), 404
+    denied = _restock_access_denied(con, item['store_id'], 'staff')
+    if denied is not None:
+        con.close()
+        return denied
     if item['session_status'] not in ('submitted', 'picking'):
         con.close()
         return jsonify({'error': '只能在 submitted/picking 状态下更新拣货结果'}), 400
@@ -456,6 +521,10 @@ def complete_restock_session(sid):
     if not sess:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
+    denied = _restock_access_denied(con, sess['store_id'], 'staff')
+    if denied is not None:
+        con.close()
+        return denied
     if _is_authoritative(con):
         store_id = sess['store_id']
         delivery = con.execute(

@@ -48,8 +48,8 @@ async def main():
             await expect(page.get_by_text('Enter completed sale',exact=True)).to_be_visible()
             await page.get_by_label('Receipt or order reference').fill('PILOT-REAL-1')
             await page.get_by_label('Product').click();await page.get_by_text('Pilot Box',exact=False).last.click()
-            await page.get_by_label('Quantity').fill('2');await page.get_by_label('Actual unit price (cents)').fill('1000')
-            await page.get_by_label('Actual collected total (cents)').fill('2000');await page.get_by_label('Cash').fill('2000')
+            await page.get_by_label('Quantity').fill('2');await page.get_by_label('Actual unit price ($)').fill('10.00')
+            await page.get_by_label('Actual collected total ($)').fill('20.00');await page.get_by_label('Cash ($)').fill('20.00')
             await page.get_by_role('button',name='Save draft').click();await expect(page.get_by_text('Draft saved',exact=True)).to_be_visible()
             await page.get_by_role('button',name='Record sale').click();await expect(page.get_by_text('Sale recorded',exact=True)).to_be_visible()
             await page.get_by_role('button',name='View sale').click();await expect(page.get_by_text('Sale #1',exact=True)).to_be_visible()
@@ -59,16 +59,28 @@ async def main():
             await page.get_by_role('button',name='Upload privately').click();await expect(page.get_by_text('Evidence saved for review',exact=True)).to_be_visible()
             await page.goto(BASE+'/sales/documents/1');await expect(page.get_by_text('Evidence #1',exact=True)).to_be_visible()
             await page.evaluate("([token])=>{window.__FOUNDATION_AUTH={role:'manager',token};window.dispatchEvent(new Event('foundation-auth'))}",[config['tokens']['manager']])
-            await page.get_by_label('Payment 1 reason').fill('Cash counted');await page.get_by_role('button',name='Verify').click()
+            await page.get_by_label('Payment 1 verification reason').fill('Cash counted');await page.get_by_role('button',name='Verify').click()
             await expect(page.get_by_text('verified',exact=True)).to_be_visible()
-            await page.get_by_label('Evidence 1 reason').fill('Readable receipt');await page.get_by_role('button',name='Accept').click()
+            await page.get_by_label('Evidence 1 acceptance reason').fill('Readable receipt');await page.get_by_role('button',name='Accept').click()
             await expect(page.get_by_text('accepted',exact=True)).to_be_visible()
             await page.goto(BASE+'/reports?report=tenders')
             await page.evaluate("([token])=>{window.__FOUNDATION_AUTH={role:'manager',token};window.dispatchEvent(new Event('foundation-auth'))}",[config['tokens']['manager']])
             await expect(page.get_by_text('Operational reports',exact=True)).to_be_visible()
-            await expect(page.get_by_role('cell',name='2000').first).to_be_visible()
+            await expect(page.get_by_role('cell',name='$20.00').first).to_be_visible()
             await page.goto(BASE+'/closing');await page.get_by_role('button',name='Start closing').click()
-            await expect(page.get_by_text('Source documents',exact=True)).to_be_visible()
+            await page.get_by_text('All completed POS sales',exact=False).click()
+            await page.get_by_label('Opening coins ($)').fill('0.00');await page.get_by_label('Retained coins ($)').fill('0.00')
+            for label in ('$100 count','$50 count','$20 count','$10 count','$5 count','$2 count','$1 count','25¢ count','10¢ count','5¢ count'):
+                await page.get_by_label(label, exact=True).fill('0')
+            await page.get_by_label('$50 count', exact=True).fill('13');await page.get_by_label('$20 count', exact=True).fill('1')
+            await page.get_by_role('button',name='Save cash count').click()
+            await expect(page.get_by_text('$20.00',exact=True).last).to_be_visible()
+            await page.get_by_role('button',name='Submit for manager review').click()
+            await expect(page.get_by_text('submitted',exact=True)).to_be_visible()
+            await page.evaluate("([token])=>{window.__FOUNDATION_AUTH={role:'manager',token};window.dispatchEvent(new Event('foundation-auth'))}",[config['tokens']['manager']])
+            await page.get_by_role('button',name='Close store day').click()
+            await expect(page.get_by_text('Store day closed',exact=True)).to_be_visible()
+            await expect(page.get_by_text('Immutable closing snapshot',exact=True)).to_be_visible()
             await page.screenshot(path=out/'real-closing-390.png',full_page=True)
             await context.close();await browser.close()
         con=sqlite3.connect(config['db_path'])
@@ -77,8 +89,10 @@ async def main():
                'payments':con.execute('SELECT COUNT(*) FROM sale_payments').fetchone()[0],
                'verified_payments':con.execute("SELECT COUNT(*) FROM sale_payments WHERE state='verified'").fetchone()[0],
                'accepted_evidence':con.execute("SELECT COUNT(*) FROM payment_evidence WHERE status='accepted'").fetchone()[0],
-               'closing_sessions':con.execute('SELECT COUNT(*) FROM closing_sessions').fetchone()[0]}
-        con.close();assert facts=={'sale_documents':1,'sale_movements':1,'payments':1,'verified_payments':1,'accepted_evidence':1,'closing_sessions':1},facts
+               'closing_sessions':con.execute('SELECT COUNT(*) FROM closing_sessions').fetchone()[0],
+               'closing_snapshots':con.execute('SELECT COUNT(*) FROM closing_snapshots').fetchone()[0],
+               'cash_removals':con.execute("SELECT COUNT(*) FROM cash_events WHERE event_type='removal'").fetchone()[0]}
+        con.close();assert facts=={'sale_documents':1,'sale_movements':1,'payments':1,'verified_payments':1,'accepted_evidence':1,'closing_sessions':1,'closing_snapshots':1,'cash_removals':1},facts
         (out/'result.json').write_text(json.dumps({'passed':True,'facts':facts},indent=2),encoding='utf-8')
         print(f'Real release pilot passed; evidence: {out}',flush=True)
     finally:

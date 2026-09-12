@@ -15,7 +15,7 @@ def api_for(role, state):
             sections={'catalog':{'total':1,'rows':[{'source_id':7,'type':'catalog_identity','status':'unresolved','store_id':None,'version':None,'updated_at':None,'link':'/products','label':'Catalog identity'}]}}
             if role!='viewer': sections.update({'my_work':{'total':1,'rows':[{'source_id':41,'type':'sale','status':'draft','store_id':1,'version':1,'updated_at':today,'link':'/sales/documents/41'}]},'operations':{'total':0,'rows':[]}})
             if role in ('manager','admin'): sections['financial']={'total':1,'rows':[{'source_id':41,'type':'financial_sale','status':'posted','store_id':1,'version':2,'updated_at':today,'link':'/sales/documents/41'}]}
-            return {'business_date':today,'generated_at':today,'role':role,'scope':'DT','store_ids':[1] if role!='viewer' else [],'authorized_stores':[],'sections':sections}
+            return {'business_date':today,'generated_at':today,'role':role,'scope':'DT','store_ids':[1] if role!='viewer' else [],'authorized_stores':[{'id':1,'code':'DT','name':'Downtown'}],'sections':sections}
         if path=='/api/schedule/shifts/me':
             state['shift_reads']=state.get('shift_reads',0)+1
             return [{'id':1,'employee_id':1,'date':today,'start_time':'09:00','end_time':'17:00','assigned_by':'manager','notes':'','position':'Floor','created_at':'','updated_at':'','store_code':'MK'},{'id':2,'employee_id':1,'date':future,'start_time':'10:00','end_time':'18:00','assigned_by':'manager','notes':'','created_at':'','updated_at':'','store_code':'DT'}]
@@ -26,6 +26,7 @@ def api_for(role, state):
     return api
 
 async def checks(browser):
+    evidence=ROOT/'.local'/'frontend-alignment'/'after';evidence.mkdir(parents=True,exist_ok=True)
     for role in ('viewer','staff','manager','admin'):
         state={'mode':'data'};state['api_payload']=api_for(role,state)
         context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':role})
@@ -38,7 +39,11 @@ async def checks(browser):
             await expect(page.get_by_role('main').get_by_text('MK',exact=True)).to_be_visible()
             before=state['shift_reads'];await page.evaluate("window.dispatchEvent(new Event('focus'))");await page.wait_for_timeout(100);assert state['shift_reads']>before
             await page.get_by_text('View Schedule',exact=True).click();await expect(page.get_by_text('Schedule',exact=True).first).to_be_visible();await page.goto(BASE+'/')
+        if role!='viewer':
+            await expect(page.get_by_role('link',name='Resume sale #41',exact=True)).to_have_attribute('href','/sales/documents/41')
+            await expect(page.get_by_text('Store 1',exact=True)).to_have_count(0)
         if role in ('manager','admin'): await expect(page.get_by_text('Sales and tender checks',exact=False)).to_be_visible()
+        if role=='manager': await page.screenshot(path=evidence/'today-390.png',full_page=True)
         width=await page.evaluate('document.body.scrollWidth');assert width<=392
         await context.close()
     state={'mode':'data'}
@@ -55,9 +60,9 @@ async def checks(browser):
     await page.goto(BASE+'/');await expect(page.get_by_text('synthetic failure',exact=True)).to_be_visible();await context.close()
     state={'mode':'data','delay_first_today':True}
     def account_api(path,query,request):
-        result=api_for('manager' if state.get('today_reads',0)>1 else 'staff',state)(path,query,request)
+        result=api_for('manager' if state.get('today_reads',0)>0 else 'staff',state)(path,query,request)
         if path=='/api/today':
-            result['sections']['my_work']['rows'][0]['label']='New Account' if state.get('today_reads',0)>1 else 'Old Account'
+            result['sections']['my_work']['rows'][0]['label']='New Account' if state.get('today_reads',0)>0 else 'Old Account'
         return result
     state['api_payload']=account_api
     context,page=await context_with_api(browser,state,auth={'role':'staff'})
@@ -69,6 +74,23 @@ async def checks(browser):
     assert state.get('today_reads',0)>=1
     await page.evaluate("window.__FOUNDATION_AUTH={role:'manager'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_text('New Account',exact=True)).to_be_visible();await page.wait_for_timeout(700);await expect(page.get_by_text('Old Account',exact=True)).to_have_count(0);await context.close()
+    state={'mode':'data','delay_first_today':True}
+    def downgrade_api(path,query,request):
+        first=state.get('today_reads',0)==0
+        result=api_for('manager' if first else 'viewer',state)(path,query,request)
+        if path=='/api/today' and first: result['sections']['my_work']['rows'][0]['label']='Old manager work'
+        return result
+    state['api_payload']=downgrade_api
+    context,page=await context_with_api(browser,state,auth={'role':'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/')
+    for _ in range(50):
+        if state.get('today_reads',0)>=1: break
+        await asyncio.sleep(.05)
+    assert state.get('today_reads',0)>=1
+    await page.evaluate("window.__FOUNDATION_AUTH={role:'viewer'};window.dispatchEvent(new Event('foundation-auth'))")
+    await expect(page.get_by_text('Catalog identity',exact=True)).to_be_visible();await page.wait_for_timeout(700)
+    await expect(page.get_by_text('Old manager work',exact=True)).to_have_count(0);await expect(page.get_by_text('My work',exact=True)).to_have_count(0);await context.close()
     state={'mode':'data'};state['api_payload']=api_for('staff',state)
     context,page=await context_with_api(browser,state,viewport={'width':768,'height':900},auth={'role':'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
