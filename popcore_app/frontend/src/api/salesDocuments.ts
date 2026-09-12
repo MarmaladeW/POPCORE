@@ -75,8 +75,12 @@ export async function postSale(id: number, version: number, key: string) {
   }, { headers: { 'Idempotency-Key': key } })).data as SaleResult
 }
 
-export async function fetchSale(id: number) {
-  return (await client.get(`/sale-documents/${id}`)).data as SaleResult
+export async function fetchSale(id: number, signal?: AbortSignal) {
+  return (await client.get(`/sale-documents/${id}`, { signal })).data as SaleResult
+}
+
+export async function fetchPaymentEvidence(id: number, signal?: AbortSignal) {
+  return (await client.get(`/payment-evidence/${id}/content`, { responseType: 'blob', signal })).data as Blob
 }
 
 export async function addPayments(

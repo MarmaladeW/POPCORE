@@ -1,113 +1,66 @@
-import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Typography } from 'antd'
-import { useEffect, useRef, useState } from 'react'
+import { Alert,Button,Card,Form,Input,InputNumber,Select,Space,Spin,Table,Typography } from 'antd'
+import { useEffect,useRef,useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import OperationScanInput from '../../components/OperationScanInput'
-import {
-  createReceipt, postReceipt, requestKey, resolveGoodsBarcode,
-  type GoodsProduct, type InventoryLocation,
-} from '../../api/goods'
+import { cancelReceipt,createReceipt,getReceipt,postReceipt,requestKey,resolveGoodsBarcode,searchGoodsProducts,updateReceipt,type GoodsProduct,type InventoryLocation,type ReceiptDetail,type ReceiptLine } from '../../api/goods'
+import { torontoDate } from '../Dashboard/todayPresentation'
 
-const { Text } = Typography
+const failure=(cause:unknown,fallback:string)=>(cause as {response?:{data?:{error?:string}}})?.response?.data?.error||fallback
+const conflict=(cause:unknown)=>(cause as {response?:{status?:number}})?.response?.status===409
+const rejected=(cause:unknown)=>{const status=(cause as {response?:{status?:number}})?.response?.status;return !!status&&status>=400&&status<500}
+type ReceiptAction='update'|'post'|'cancel'
+type ReceiptIntent={action:ReceiptAction;key:string;receiptId:number;version:number;body?:object}
 
-export default function Receiving({ products, locations, storeId }: {
-  products: GoodsProduct[]
-  locations: InventoryLocation[]
-  storeId: number
-}) {
-  const [productId, setProductId] = useState<number>()
-  const [locationId, setLocationId] = useState<number>()
-  const [quantity, setQuantity] = useState(0)
-  const [expected, setExpected] = useState<number | null>(null)
-  const [reference, setReference] = useState('')
-  const [disposition, setDisposition] = useState<'saleable' | 'damaged' | 'hold'>('saleable')
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
-  const keys = useRef({ create: requestKey(), post: requestKey() })
-  const product = products.find(item => item.id === productId)
-  const dirty = Boolean(productId || locationId || quantity || expected !== null || reference)
+export default function Receiving({products,locations,storeId}:{products:GoodsProduct[];locations:InventoryLocation[];storeId:number}){
+  const[params]=useSearchParams(),resumeId=Number(params.get('receipt_id'))
+  const[receipt,setReceipt]=useState<ReceiptDetail>()
+  const[productOptions,setProductOptions]=useState(products)
+  const[savedId,setSavedId]=useState<number>(),[pendingCreate,setPendingCreate]=useState(false)
+  const[productId,setProductId]=useState<number>(),[locationId,setLocationId]=useState<number>()
+  const[quantity,setQuantity]=useState(0),[expected,setExpected]=useState<number|null>(null)
+  const[reference,setReference]=useState(''),[disposition,setDisposition]=useState<'saleable'|'damaged'|'hold'>('saleable')
+  const[error,setError]=useState(''),[loading,setLoading]=useState(false)
+  const[refreshNeeded,setRefreshNeeded]=useState(false)
+  const keys=useRef({create:requestKey()})
+  const createIntent=useRef<{key:string;body:object}|null>(null)
+  const actionIntent=useRef<ReceiptIntent|null>(null)
+  const[pendingAction,setPendingAction]=useState<ReceiptAction>()
+  const busy=useRef(false)
+  const savedDraft=useRef('')
+  const product=productOptions.find(item=>item.id===productId)
 
-  useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => {
-      if (!dirty) return
-      event.preventDefault()
-      event.returnValue = ''
-    }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [dirty])
+  async function load(id:number,signal?:AbortSignal){const detail=await getReceipt(id,signal);savedDraft.current=JSON.stringify(draftBody(detail));setReceipt(detail);setLocationId(detail.destination_location_id);setReference(detail.shipment_reference||'');setRefreshNeeded(false)}
+  useEffect(()=>{setReceipt(undefined);setError('');if(!params.has('receipt_id'))return;if(!Number.isInteger(resumeId)||resumeId<1){setError('Receipt reference is invalid.');return}const controller=new AbortController();setLoading(true);load(resumeId,controller.signal).catch(cause=>{if(!controller.signal.aborted)setError(failure(cause,'Unable to load this receipt.'))}).finally(()=>{if(!controller.signal.aborted)setLoading(false)});return()=>controller.abort()},[params,resumeId])
+  useEffect(()=>setProductOptions(products),[products])
 
-  async function scan(code: string) {
-    setError('')
-    try {
-      const result = await resolveGoodsBarcode(code)
-      if (result.status !== 'exact') {
-        setError(result.status === 'unknown' ? 'Unknown barcode. Select a product.' : 'Barcode is ambiguous. Select the exact product.')
+  async function scan(code:string){
+    try{
+      const result=await resolveGoodsBarcode(code)
+      if(result.status!=='exact'){setError(result.status==='unknown'?'Unknown barcode. The receipt is unchanged.':'Barcode is ambiguous. Select the exact product.');return}
+      const candidate=result.candidates[0]
+      if(receipt){
+        const matched=receipt.lines.some(line=>line.product_id===candidate.product_id&&line.native_unit===candidate.stock_unit)
+        const added:ReceiptLine={line_no:Math.max(0,...receipt.lines.map(line=>line.line_no))+1,product_id:candidate.product_id,native_unit:candidate.stock_unit,expected_quantity:null,saleable_quantity:candidate.quantity_per_scan,damaged_quantity:0,hold_quantity:0,discrepancy_note:null}
+        setReceipt({...receipt,lines:matched?receipt.lines.map(line=>line.product_id===candidate.product_id&&line.native_unit===candidate.stock_unit?{...line,saleable_quantity:line.saleable_quantity+candidate.quantity_per_scan}:line):[...receipt.lines,added]})
         return
       }
-      const candidate = result.candidates[0]
-      setProductId(candidate.product_id)
-      setQuantity(current => (
-        productId === candidate.product_id
-          ? current + candidate.quantity_per_scan
-          : candidate.quantity_per_scan
-      ))
-    } catch {
-      setError('Unable to resolve the scan. The draft is unchanged.')
-    }
+      if(!productOptions.some(item=>item.id===candidate.product_id))setProductOptions(current=>[...current,{id:candidate.product_id,sku:code,jizhanming:`Product reference ${candidate.product_id}`,stock_unit:candidate.stock_unit,identity_status:'verified'}])
+      setProductId(candidate.product_id);setQuantity(current=>productId===candidate.product_id?current+candidate.quantity_per_scan:candidate.quantity_per_scan)
+    }catch{setError('Unable to resolve the scan. The receipt is unchanged.')}
   }
+  async function searchProducts(value:string){if(value.trim()){const results=await searchGoodsProducts(value);setProductOptions(product&&!results.some(item=>item.id===product.id)?[product,...results]:results)}}
+  function draftBody(detail:ReceiptDetail){return {store_id:detail.store_id,destination_location_id:detail.destination_location_id,business_date:detail.business_date,shipment_reference:detail.shipment_reference,supplier:detail.supplier,lines:detail.lines.map(line=>({product_id:line.product_id,unit:line.native_unit,expected_quantity:line.expected_quantity,saleable_quantity:line.saleable_quantity,damaged_quantity:line.damaged_quantity,hold_quantity:line.hold_quantity,discrepancy_note:line.discrepancy_note}))}}
+  async function saveNew(){if(busy.current||!product?.stock_unit||!locationId)return;busy.current=true;setLoading(true);setError('');let createdId:number|undefined;const field=`${disposition}_quantity`;const body={store_id:storeId,destination_location_id:locationId,business_date:torontoDate(),shipment_reference:reference||null,lines:[{product_id:product.id,unit:product.stock_unit,expected_quantity:expected,saleable_quantity:0,damaged_quantity:0,hold_quantity:0,[field]:quantity,discrepancy_note:expected!==null&&expected!==quantity?'Shipment quantity differs':null}]};const intent=createIntent.current||{key:keys.current.create,body};createIntent.current=intent;setPendingCreate(true);try{const result=await createReceipt(intent.body,intent.key);createdId=result.id;setSavedId(result.id);setPendingCreate(false);await load(result.id);setSavedId(undefined);createIntent.current=null;keys.current.create=requestKey()}catch(cause){if(!createdId&&rejected(cause)){createIntent.current=null;keys.current.create=requestKey();setPendingCreate(false)}setError(createdId?'Receipt saved; refresh needed. No second draft will be created.':failure(cause,'Receipt result is unconfirmed. Retry sends the identical draft.'))}finally{busy.current=false;setLoading(false)}}
+  async function runAction(intent:ReceiptIntent){if(busy.current)return;busy.current=true;setLoading(true);setError('');try{const result=intent.action==='update'?await updateReceipt(intent.receiptId,intent.body!,intent.key):intent.action==='post'?await postReceipt(intent.receiptId,intent.version,intent.key):await cancelReceipt(intent.receiptId,intent.version,intent.key);actionIntent.current=null;setPendingAction(undefined);try{await load(result.id)}catch{setRefreshNeeded(true);setError(`Receipt ${intent.action} saved; refresh needed before another action.`)}}catch(cause){if(rejected(cause)){actionIntent.current=null;setPendingAction(undefined)}if(conflict(cause)){try{await load(intent.receiptId)}catch{setRefreshNeeded(true);setError('Receipt changed and could not be refreshed. Retry refresh before another action.');return}}setError(failure(cause,'Receipt result is unconfirmed. Retry sends the identical request.'))}finally{busy.current=false;setLoading(false)}}
+  function saveDraft(){if(!receipt)return;const intent=actionIntent.current||{action:'update' as const,key:requestKey(),receiptId:receipt.id,version:receipt.version,body:{expected_version:receipt.version,...draftBody(receipt)}};actionIntent.current=intent;setPendingAction(intent.action);void runAction(intent)}
+  function transition(action:'post'|'cancel'){if(!receipt)return;const intent=actionIntent.current||{action,key:requestKey(),receiptId:receipt.id,version:receipt.version};actionIntent.current=intent;setPendingAction(intent.action);void runAction(intent)}
+  const changeLine=(lineNo:number,change:Partial<ReceiptLine>)=>setReceipt(current=>current&&({...current,lines:current.lines.map(line=>line.line_no===lineNo?{...line,...change}:line)}))
+  const receiptDirty=!!receipt&&JSON.stringify(draftBody(receipt))!==savedDraft.current
 
-  async function submit() {
-    if (!product || !product.stock_unit || !locationId) return
-    setSaving(true)
-    setError('')
-    try {
-      const field = `${disposition}_quantity`
-      const draft = await createReceipt({
-        store_id: storeId,
-        destination_location_id: locationId,
-        business_date: new Date().toLocaleDateString('en-CA'),
-        shipment_reference: reference || null,
-        lines: [{
-          product_id: product.id, unit: product.stock_unit,
-          expected_quantity: expected,
-          saleable_quantity: 0, damaged_quantity: 0, hold_quantity: 0,
-          [field]: quantity,
-          discrepancy_note: expected !== null && expected !== quantity ? 'Shipment quantity differs' : null,
-        }],
-      }, keys.current.create)
-      await postReceipt(draft.id, draft.version, keys.current.post)
-      keys.current = { create: requestKey(), post: requestKey() }
-      setQuantity(0)
-      setExpected(null)
-      setReference('')
-    } catch (reason) {
-      setError((reason as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Receipt failed. Your draft is still here.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Card title="Receive shipment">
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        {error && <Alert type="error" showIcon message={error} />}
-        <OperationScanInput onScan={scan} disabled={saving} />
-        <Form layout="vertical">
-          <Form.Item label="Destination" required>
-            <Select value={locationId} onChange={setLocationId} options={locations.map(item => ({ value: item.id, label: item.name }))} />
-          </Form.Item>
-          <Form.Item label="Product" required>
-            <Select showSearch optionFilterProp="label" value={productId} onChange={setProductId} options={products.map(item => ({ value: item.id, label: `${item.sku || ''} ${item.jizhanming || ''}` }))} />
-          </Form.Item>
-          <Space wrap>
-            <Form.Item label="Actual quantity"><InputNumber min={0} precision={0} value={quantity} onChange={value => setQuantity(value || 0)} /></Form.Item>
-            <Form.Item label="Expected (optional)"><InputNumber min={0} precision={0} value={expected} onChange={value => setExpected(value)} /></Form.Item>
-            <Form.Item label="Condition"><Select style={{ width: 130 }} value={disposition} onChange={setDisposition} options={['saleable', 'damaged', 'hold'].map(value => ({ value, label: value }))} /></Form.Item>
-          </Space>
-          <Form.Item label="Shipment reference"><Input value={reference} onChange={event => setReference(event.target.value)} /></Form.Item>
-        </Form>
-        <Text>Effect: +{quantity} {product?.stock_unit || 'units'} at {locations.find(item => item.id === locationId)?.name || 'selected destination'} ({disposition}).</Text>
-        <Button type="primary" loading={saving} disabled={!product?.stock_unit || !locationId || quantity < 1} onClick={submit}>Review and post receipt</Button>
-      </Space>
-    </Card>
-  )
+  if(loading&&!receipt)return <Card title="Receive shipment"><Spin/></Card>
+  if(savedId&&!receipt)return <Card title={`Receipt #${savedId}`}><Alert type="warning" showIcon message="Receipt saved; refresh needed." action={<Button onClick={async()=>{setLoading(true);try{await load(savedId);setSavedId(undefined);createIntent.current=null;keys.current.create=requestKey()}catch(cause){setError(failure(cause,'Unable to refresh the saved receipt.'))}finally{setLoading(false)}}}>Retry refresh</Button>}/>{error&&<Alert type="error" showIcon message={error}/>}</Card>
+  if(refreshNeeded&&receipt)return <Card title={`Receipt #${receipt.id}`}><Alert type="warning" showIcon message={error} action={<Button onClick={()=>load(receipt.id)}>Retry refresh</Button>}/></Card>
+  if(params.has('receipt_id')&&!receipt)return <Card title="Receive shipment"><Alert type="error" showIcon message={error||'Unable to load this receipt.'}/></Card>
+  if(receipt)return <Card title={`Receipt #${receipt.id}`}><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error} action={pendingAction?<Button onClick={()=>runAction(actionIntent.current!)}>Retry identical request</Button>:undefined}/>}<Typography.Text>{locations.find(location=>location.id===receipt.destination_location_id)?.name||`Location reference ${receipt.destination_location_id}`} · {receipt.business_date}</Typography.Text><Typography.Text>{receipt.shipment_reference||'No shipment reference'}</Typography.Text><OperationScanInput onScan={scan} disabled={loading||!!pendingAction||receipt.status!=='draft'}/><Table rowKey="line_no" pagination={false} dataSource={receipt.lines} columns={[{title:'Product',render:(_,line)=>products.find(item=>item.id===line.product_id)?.jizhanming||`Product reference ${line.product_id}`},{title:'Expected',render:(_,line)=><InputNumber aria-label={`Line ${line.line_no} expected`} disabled={!!pendingAction||receipt.status!=='draft'} min={0} precision={0} value={line.expected_quantity} onChange={value=>changeLine(line.line_no,{expected_quantity:value})}/>},...(['saleable','damaged','hold'] as const).map(kind=>({title:kind,render:(_:unknown,line:ReceiptLine)=><InputNumber aria-label={`Line ${line.line_no} ${kind}`} disabled={!!pendingAction||receipt.status!=='draft'} min={0} precision={0} value={line[`${kind}_quantity`]} onChange={value=>changeLine(line.line_no,{[`${kind}_quantity`]:value||0})}/>})),{title:'Discrepancy',render:(_,line)=><Input aria-label={`Line ${line.line_no} discrepancy`} disabled={!!pendingAction||receipt.status!=='draft'} value={line.discrepancy_note||''} onChange={event=>changeLine(line.line_no,{discrepancy_note:event.target.value||null})}/>}]} />{receipt.lines.map(line=><Space key={line.line_no} wrap><Typography.Text>{line.saleable_quantity} {line.native_unit}s saleable</Typography.Text><Typography.Text>{line.damaged_quantity} {line.native_unit}s damaged</Typography.Text><Typography.Text>{line.hold_quantity} {line.native_unit}s hold</Typography.Text></Space>)}<Typography.Text strong>Status: {receipt.status}</Typography.Text>{receipt.status==='draft'&&<Space wrap><Button disabled={!!pendingAction} onClick={saveDraft}>Save draft changes</Button><Button type="primary" disabled={!!pendingAction||receiptDirty} title={receiptDirty?'Save draft changes before posting':undefined} onClick={()=>transition('post')}>Post receipt</Button><Button danger disabled={!!pendingAction} onClick={()=>transition('cancel')}>Cancel draft</Button></Space>}{receipt.status==='posted'&&<Alert type="success" showIcon message="Receipt posted to inventory."/>}</Space></Card>
+  return <Card title="Receive shipment"><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error}/>}<OperationScanInput onScan={scan} disabled={loading||pendingCreate}/><Form layout="vertical" disabled={pendingCreate}><Form.Item label="Destination" required><Select value={locationId} onChange={setLocationId} options={locations.map(item=>({value:item.id,label:item.name}))}/></Form.Item><Form.Item label="Product" required><Select showSearch filterOption={false} onSearch={searchProducts} optionFilterProp="label" value={productId} onChange={setProductId} options={productOptions.map(item=>({value:item.id,label:`${item.sku||''} ${item.jizhanming||''}`}))}/></Form.Item><Space wrap><Form.Item label="Actual quantity"><InputNumber min={0} precision={0} value={quantity} onChange={value=>setQuantity(value||0)}/></Form.Item><Form.Item label="Expected (optional)"><InputNumber min={0} precision={0} value={expected} onChange={setExpected}/></Form.Item><Form.Item label="Condition"><Select style={{width:130}} value={disposition} onChange={setDisposition} options={['saleable','damaged','hold'].map(value=>({value,label:value}))}/></Form.Item></Space><Form.Item label="Shipment reference"><Input value={reference} onChange={event=>setReference(event.target.value)}/></Form.Item></Form><Typography.Text>Effect after posting: +{quantity} {product?.stock_unit||'units'} at {locations.find(item=>item.id===locationId)?.name||'selected destination'} ({disposition}).</Typography.Text><Button type="primary" loading={loading} disabled={!product?.stock_unit||!locationId||quantity<1} onClick={saveNew}>Save draft for review</Button></Space></Card>
 }

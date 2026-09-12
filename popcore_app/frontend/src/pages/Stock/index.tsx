@@ -6,7 +6,7 @@ import {
 import {
   ReloadOutlined, ExportOutlined, DeleteOutlined,
   EditOutlined,
-  InboxOutlined, ArrowUpOutlined, WarningOutlined,
+  InboxOutlined, ArrowUpOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
@@ -62,6 +62,23 @@ interface Summary {
   unit_totals?: { unit: string; floor_qty: number; back_qty: number; total_qty: number }[]
 }
 
+interface InventoryLocation {
+  id: number
+  name: string
+  code: string
+  opening_verified: boolean
+}
+
+interface InventoryBalance {
+  product_id: number
+  location_id: number
+  location_name: string
+  location_code: string
+  disposition: string
+  quantity: number
+  unit: string
+}
+
 const TXN_LABELS: Record<string, string> = {
   ru_dian:          'In-Store',
   restock_upstairs: 'Restock',
@@ -75,8 +92,13 @@ const TXN_COLORS: Record<string, string> = {
 }
 
 /** Format a raw qty number into 端/盒 breakdown for blind boxes, or plain 件 for others. */
+function formatUnit(qty: number, unit: string) {
+  const plural = unit === 'box' ? 'boxes' : `${unit}s`
+  return `${qty} ${qty === 1 ? unit : plural}`
+}
+
 function formatQty(qty: number, row: Pick<StockRow, 'product_type' | 'boxes_per_dan' | 'stock_unit'>): string {
-  if (row.stock_unit) return `${qty} ${row.stock_unit}${qty === 1 ? '' : 's'}`
+  if (row.stock_unit) return formatUnit(qty, row.stock_unit)
   if (row.product_type !== '盲盒' || !row.boxes_per_dan) {
     return `${qty} 件`
   }
@@ -106,6 +128,8 @@ export default function StockPage() {
   const [stock,    setStock]   = useState<StockRow[]>([])
   const [txns,     setTxns]    = useState<Transaction[]>([])
   const [summary,  setSummary] = useState<Summary | null>(null)
+  const [locations, setLocations] = useState<InventoryLocation[]>([])
+  const [balances, setBalances] = useState<InventoryBalance[]>([])
   const [loading,  setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [lastSuccess, setLastSuccess] = useState<Date | null>(null)
@@ -133,6 +157,8 @@ export default function StockPage() {
       scopeRef.current = scope
       setStock([])
       setSummary(null)
+      setLocations([])
+      setBalances([])
       setTotal(0)
       setLastSuccess(null)
     }
@@ -144,18 +170,26 @@ export default function StockPage() {
     Promise.all([
       client.get('/stock', { params }),
       client.get('/stock/summary', { params: { store_code: sc } }),
-    ]).then(([sResp, sumResp]) => {
+      client.get('/inventory/locations', { params: isAll ? {} : { store_code: sc } })
+        .catch(() => ({ data: [] })),
+      isAll
+        ? Promise.resolve({ data: { items: [] } })
+        : client.get('/inventory/balances', { params: { store_code: sc } })
+            .catch(() => ({ data: { items: [] } })),
+    ]).then(([sResp, sumResp, locationResp, balanceResp]) => {
       if (requestId !== requestRef.current) return
       setStock(sResp.data.items)
       setTotal(sResp.data.total)
       setSummary(sumResp.data)
+      setLocations(Array.isArray(locationResp.data) ? locationResp.data : [])
+      setBalances(Array.isArray(balanceResp.data?.items) ? balanceResp.data.items : [])
       setLastSuccess(new Date())
     }).catch(() => {
       if (requestId === requestRef.current) setLoadError('Unable to load stock data.')
     }).finally(() => {
       if (requestId === requestRef.current) setLoading(false)
     })
-  }, [q, filterSeries, page, sc])
+  }, [isAll, q, filterSeries, page, sc])
 
   const loadTxns = useCallback(() => {
     if (!sc) return
@@ -240,6 +274,15 @@ export default function StockPage() {
     {
       title: 'Series', dataIndex: 'ip_series', width: 120,
       render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—',
+    },
+    {
+      title: 'Location balances', width: 190,
+      render: (_, r) => {
+        const facts = balances.filter(balance => balance.product_id === r.id)
+        return facts.length ? <Space direction="vertical" size={2}>{facts.map(balance => <Text key={`${balance.location_id}:${balance.disposition}`} style={{ fontSize: 12 }}>
+          {balance.location_name || locations.find(location => location.id === balance.location_id)?.name || balance.location_code} · {balance.disposition}: {formatUnit(balance.quantity, balance.unit)}
+        </Text>)}</Space> : <Text type="secondary">Unavailable</Text>
+      },
     },
     {
       title: <><ArrowUpOutlined /> Upstairs</>,
@@ -332,12 +375,12 @@ export default function StockPage() {
   const byUnit = (side: 'back_qty' | 'floor_qty') => (summary?.unit_totals ?? [])
     .map(row => `${row[side]} ${row.unit}${row[side] === 1 ? '' : 's'}`).join(' · ') || 'Unavailable'
   const summaryCards = summary ? [
-    { label: 'Upstairs / Back Stock', value: summary.mode === 'authoritative' ? byUnit('back_qty') : summary.total_upstairs_qty, color: '#6366F1',  icon: <ArrowUpOutlined /> },
-    { label: 'Floor Stock', value: summary.mode === 'authoritative' ? byUnit('floor_qty') : summary.total_instore_qty,  color: '#10B981',  icon: <InboxOutlined /> },
-    { label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      color: '#6366F1', icon: null },
-    { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count, color: '#ef4444', icon: <WarningOutlined /> },
+    { label: 'Upstairs / Back Stock', value: summary.mode === 'authoritative' ? byUnit('back_qty') : summary.total_upstairs_qty },
+    { label: 'Floor Stock', value: summary.mode === 'authoritative' ? byUnit('floor_qty') : summary.total_instore_qty },
+    { label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+    { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count },
   ] : []
+  const openingReady = locations.length > 0 && locations.every(location => location.opening_verified)
 
   if (loadError && !lastSuccess) {
     return <Alert role="alert" type="error" showIcon message={loadError} action={<Button onClick={loadStock}>Retry</Button>} />
@@ -346,10 +389,10 @@ export default function StockPage() {
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+      <div className="pc-page-actions" style={{ marginBottom: 20 }}>
         <div>
-          <Title level={3} style={{ margin: 0 }}>Stock Management</Title>
-          <Text style={{ color: '#6b7280' }}>Manage upstairs warehouse and in-store inventory</Text>
+          <Title level={3} style={{ margin: 0 }}>Inventory</Title>
+          <Text type="secondary">Verified products, native units, and store locations</Text>
         </div>
         <Space>
           {!isAll && (
@@ -381,6 +424,26 @@ export default function StockPage() {
         </div>
       )}
 
+      {summary?.mode && <Alert
+        type={summary.mode === 'authoritative' && summary.complete && openingReady ? 'success' : 'warning'}
+        showIcon
+        message={summary.mode === 'legacy' ? 'Legacy inventory view'
+          : !summary.complete ? 'Inventory identity review incomplete'
+          : locations.length === 0 ? 'Opening readiness unavailable'
+          : !openingReady ? 'Opening review incomplete'
+          : 'Authoritative inventory'}
+        description={summary.mode === 'legacy'
+          ? 'Quantities use the legacy stock model until reviewed opening balances are available.'
+          : !summary.complete
+            ? 'Some rows lack verified product identity or a native unit. Quantities remain separated and no opening value is inferred.'
+            : locations.length === 0
+              ? 'Opening status could not be confirmed. Refresh or ask a manager to verify inventory access before posting.'
+              : !openingReady
+              ? 'Reviewed opening balances are required for every authorized location before posting inventory.'
+              : 'Changes use verified product identities, native units, locations, dispositions, and reviewed opening balances.'}
+        style={{ marginBottom: 16 }}
+      />}
+
       {loadError && (
         <Alert
           role="alert"
@@ -398,8 +461,8 @@ export default function StockPage() {
         <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           {summaryCards.map(c => (
             <Col key={c.label} xs={12} sm={6}>
-              <Card style={{ borderRadius: 10, borderLeft: `4px solid ${c.color}` }} bodyStyle={{ padding: '16px 20px' }}>
-                <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
+              <Card style={{ borderRadius: 8, borderColor: '#DDE2EA' }} bodyStyle={{ padding: '16px 20px' }}>
+                <div style={{ fontSize: 12, color: '#596273', marginBottom: 4 }}>{c.label}</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
               </Card>
             </Col>
@@ -524,9 +587,16 @@ export default function StockPage() {
                       <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 500, fontSize: 13, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.jizhanming || '—'}</div>
-                            <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{row.sku}</div>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: '#20242D', overflowWrap: 'anywhere' }}>{row.jizhanming || row.name_cn_en || 'Unnamed product'}</div>
+                            {row.name_cn_en && row.name_cn_en !== row.jizhanming && <div style={{ fontSize: 12, color: '#596273', marginTop: 2, overflowWrap: 'anywhere' }}>{row.name_cn_en}</div>}
+                            <div style={{ fontSize: 11, color: '#687386', fontFamily: 'monospace', marginTop: 2 }}>{row.sku}</div>
                             {row.ip_series && <Tag color="blue" style={{ fontSize: 10, marginTop: 4 }}>{row.ip_series}</Tag>}
+                            {row.identity_status && <Tag color={row.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 10, marginTop: 4 }}>
+                              {row.identity_status === 'verified' ? `Verified · ${row.stock_unit}` : 'Unverified identity'}
+                            </Tag>}
+                            {balances.filter(balance => balance.product_id === row.id).map(balance => <div key={`${balance.location_id}:${balance.disposition}`} style={{ marginTop: 4, color: '#596273', fontSize: 12 }}>
+                              {balance.location_name || locations.find(location => location.id === balance.location_id)?.name || balance.location_code} · {balance.disposition}: {formatUnit(balance.quantity, balance.unit)}
+                            </div>)}
                           </div>
                           <div style={{ flexShrink: 0, marginLeft: 8 }}>{stockStatus(total)}</div>
                         </div>

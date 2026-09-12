@@ -19,12 +19,31 @@ export interface ClosingSession {
     event_totals_cents: Record<'paid_in'|'refund'|'payout'|'removal',number>
   }
   latest_cash_count?: {
+    id: number
+    revision: number
+    opening_coin_cents: number
+    retained_coin_cents: number
+    denomination_counts: Record<string,number>
     counted_cents: number
     expected_cents: number
     variance_cents: number
     retained_cents: number
     removal_cents: number | null
   } | null
+  tender_totals_cents?: Record<'cash'|'card'|'e_transfer'|'wechat'|'alipay',number>
+  unknown_payment_ids?: number[]
+  snapshot?: {
+    snapshot_id: number
+    counted_cents: number
+    expected_cents: number
+    variance_cents: number
+    retained_cents: number
+    removal_cents: number | null
+    accepted_exceptions: Record<string,string> | string[]
+    tender_totals_cents?: Record<string,number>
+    unknown_payment_ids?: number[]
+  }
+  late_adjustments?: Array<{id:number;source_type:string;source_id:string;reason:string;created_at?:string}>
   hard_blockers?: string[]
   review_exceptions?: string[]
   source_documents?: {
@@ -60,8 +79,8 @@ export async function addCashCount(id: number, session: ClosingSession,
   }, { headers: { 'Idempotency-Key': key } })).data as ClosingSession
 }
 
-export async function fetchClosing(id: number) {
-  return (await client.get(`/closing/${id}`)).data as ClosingSession
+export async function fetchClosing(id: number, signal?: AbortSignal) {
+  return (await client.get(`/closing/${id}`, { signal })).data as ClosingSession
 }
 
 export async function addCashEvent(id:number,session:ClosingSession,eventType:'paid_in'|'refund'|'payout',amountCents:number,reason:string,key:string){

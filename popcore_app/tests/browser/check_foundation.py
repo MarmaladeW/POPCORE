@@ -50,6 +50,14 @@ async def context_with_api(browser, state, viewport=None, auth=None):
             return
         if parsed.path.startswith('/api/'):
             state['api_count'] = state.get('api_count', 0) + 1
+            recorded_request = {
+                'method': route.request.method, 'path': parsed.path,
+                'query': parsed.query,
+                'idempotency_key': route.request.headers.get('idempotency-key'),
+            }
+            if route.request.headers.get('content-type', '').startswith('application/json'):
+                recorded_request['post_data'] = route.request.post_data_json
+            state.setdefault('requests', []).append(recorded_request)
             if (parsed.path.startswith('/api/schedule/shifts/')
                     and route.request.method in {'PATCH', 'DELETE'}):
                 state.setdefault('schedule_mutations', []).append(route.request.method)
@@ -72,10 +80,10 @@ async def context_with_api(browser, state, viewport=None, auth=None):
             if forced and route.request.method != 'GET':
                 await route.fulfill(status=forced[0], content_type='application/json', body=json.dumps(forced[1]))
                 return
-            if parsed.path == '/api/today' and state.get('delay_first_today'):
-                state['today_reads'] = state.get('today_reads', 0) + 1
-                if state['today_reads'] == 1:
-                    await asyncio.sleep(.6)
+            forced_get = state.get('get_status_for_path', {}).get(parsed.path)
+            if forced_get and route.request.method == 'GET':
+                await route.fulfill(status=forced_get[0], content_type='application/json', body=json.dumps(forced_get[1]))
+                return
             if state.get('delay_dt') and 'store_code=DT' in parsed.query and parsed.path == '/api/stock':
                 await asyncio.sleep(.6)
             custom_payload = state.get('api_payload')
@@ -83,6 +91,10 @@ async def context_with_api(browser, state, viewport=None, auth=None):
                     if custom_payload else payload(
                         parsed.path, parsed.query, state.get('mode') == 'empty'
                     ))
+            if parsed.path == '/api/today' and state.get('delay_first_today'):
+                state['today_reads'] = state.get('today_reads', 0) + 1
+                if state['today_reads'] == 1:
+                    await asyncio.sleep(.6)
             await route.fulfill(status=200, content_type='application/json', body=json.dumps(body))
             return
         await route.continue_()
@@ -226,6 +238,32 @@ async def schedule_checks(browser):
     await context.close()
 
 
+async def navigation_checks(browser):
+    evidence = ROOT / '.local' / 'frontend-alignment' / 'after'
+    evidence.mkdir(parents=True, exist_ok=True)
+    for viewport in ({'width': 390, 'height': 844}, {'width': 768, 'height': 900},
+                     {'width': 1440, 'height': 1000}):
+        context, page = await context_with_api(
+            browser, {'mode': 'data'}, viewport=viewport, auth={'role': 'staff'},
+        )
+        await page.goto(BASE + '/goods/receiving')
+        inventory = page.get_by_role('link', name='Inventory', exact=True)
+        await expect(inventory).to_have_attribute('aria-current', 'page')
+        if viewport['width'] == 390:
+            more = page.get_by_role('button', name='More', exact=True)
+            await more.focus()
+            await page.keyboard.press('Enter')
+            await expect(page.get_by_role('dialog', name='More')).to_be_visible()
+            await page.keyboard.press('Escape')
+            await expect(more).to_be_focused()
+        assert await page.evaluate('document.body.scrollWidth') <= viewport['width'] + 2
+        await page.screenshot(path=evidence / f"operations-{viewport['width']}.png", full_page=True)
+        await page.goto(BASE + '/schedule')
+        await expect(page.get_by_text('Schedule', exact=True).first).to_be_visible()
+        await page.screenshot(path=evidence / f"schedule-{viewport['width']}.png", full_page=True)
+        await context.close()
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
@@ -245,6 +283,7 @@ async def main():
                 await auth_checks(browser)
                 await wrong_store_check(browser)
                 await schedule_checks(browser)
+                await navigation_checks(browser)
             except Exception:
                 for context in browser.contexts:
                     if context.pages:

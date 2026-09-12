@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { Auth0Provider } from '@auth0/auth0-react'
 import App from './App'
+import './lib/reconciliationNavigation'
 import 'antd/dist/reset.css'
 import './index.css'
 
