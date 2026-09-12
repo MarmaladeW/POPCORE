@@ -127,7 +127,7 @@ async def checks(browser):
     await search.fill('FAR-501')
     await expect(page.get_by_text('Outside First 500', exact=True).first).to_be_visible()
     await page.get_by_text('Outside First 500', exact=True).first.click()
-    await expect(page.get_by_text('第501项 / Outside First 500', exact=True)).to_be_visible()
+    await expect(page.get_by_role('dialog').get_by_text('第501项 / Outside First 500', exact=True)).to_be_visible()
     await page.keyboard.press('Escape')
 
     resolution = await page.evaluate("""async () => {
