@@ -150,7 +150,7 @@ All variables are read from `popcore_app/.env`. Copy `popcore_app/.env.example` 
 | `VITE_AUTH0_AUDIENCE` | Same value as `AUTH0_AUDIENCE` above |
 
 > The pre-built bundle in `popcore_app/static/` already has these values baked in.
-> Only rebuild if you change Auth0 tenants:
+> Rebuild and commit `popcore_app/static/` for every frontend release, including source or public Auth0 configuration changes. A verification build under `.local/` is not served in production:
 > ```bash
 > cd popcore_app/frontend
 > npm install && npm run build
@@ -233,8 +233,11 @@ git pull
 # If Python dependencies changed:
 venv/bin/pip install -r popcore_app/requirements.txt
 
-# If the frontend was changed (pre-built bundle is committed, so usually skip this):
-# cd popcore_app/frontend && npm install && npm run build && cd ../..
+# Frontend releases must include the rebuilt popcore_app/static/ bundle.
+# Before committing a frontend release, run from the development checkout:
+# cd popcore_app/frontend && npm ci && npm run build && cd ../..
+# Review and commit the generated static assets with the source changes.
+# Pulling TypeScript source and restarting alone cannot update the visible UI.
 
 # Restart to pick up backend changes
 sudo systemctl restart popcore
