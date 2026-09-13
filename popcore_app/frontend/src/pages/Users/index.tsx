@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   Table, Space, Popconfirm, ColorPicker, Form, Input, Select,
-  Switch, message, Tag,
+  Switch, message, Tag, Checkbox, Alert,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Pipette, Plus, RefreshCw } from 'lucide-react'
@@ -39,6 +39,11 @@ interface User {
   is_active: number
   created_at: string
   last_login: string
+}
+
+interface InventoryAccess {
+  stores: { id: number; code: string; name: string }[]
+  grants: { auth0_sub: string; store_id: number }[]
 }
 
 const ROLE_OPTIONS = [
@@ -204,6 +209,63 @@ export default function UsersPage() {
 
   // Map: auth0_id → { empId, stores[] }
   const [empStoreMap, setEmpStoreMap] = useState<Record<string, EmpStoreEntry>>({})
+  const [inventoryAccess, setInventoryAccess] = useState<InventoryAccess>()
+  const [accessError, setAccessError] = useState('')
+  const [accessSaving, setAccessSaving] = useState(false)
+  const accessRequest = useRef(0)
+  const accessBusy = useRef(false)
+
+  async function loadAccess() {
+    const request = ++accessRequest.current
+    setInventoryAccess(undefined)
+    setAccessError('')
+    try {
+      const response = await client.get<InventoryAccess>('/inventory/access')
+      if (request === accessRequest.current) setInventoryAccess(response.data)
+    } catch (err: any) {
+      if (request === accessRequest.current) setAccessError(err?.response?.data?.error ?? 'Unable to load store operations access.')
+    }
+  }
+
+  useEffect(() => {
+    if (isAdmin) void loadAccess()
+    return () => { ++accessRequest.current }
+  }, [isAdmin, me?.sub])
+
+  async function changeAccess(subject: string, storeId: number, granted: boolean) {
+    if (!isAdmin || !inventoryAccess || accessBusy.current) return
+    accessBusy.current = true
+    setAccessSaving(true)
+    const request = ++accessRequest.current
+    const data = { auth0_sub: subject, store_id: storeId }
+    try {
+      if (granted) await client.post('/inventory/access', data)
+      else await client.delete('/inventory/access', { data })
+      if (request !== accessRequest.current) return
+      setInventoryAccess(previous => previous && ({ ...previous, grants: [
+        ...previous.grants.filter(grant => grant.auth0_sub !== subject || grant.store_id !== storeId),
+        ...(granted ? [data] : []),
+      ] }))
+      message.success(granted ? 'Store operations access granted' : 'Store operations access revoked')
+    } catch (err: any) {
+      if (request !== accessRequest.current) return
+      message.error(err?.response?.data?.error ?? 'Could not confirm the access change. Reloading saved permissions.')
+      await loadAccess()
+    } finally {
+      accessBusy.current = false
+      setAccessSaving(false)
+    }
+  }
+
+  function accessCheckboxes(u: User) {
+    if (!inventoryAccess) return <span>{accessError ? 'Access unavailable' : 'Loading access…'}</span>
+    if (!inventoryAccess.stores.length) return <span>No operations stores configured</span>
+    return <Space wrap>{inventoryAccess.stores.map(store => <Checkbox key={store.id}
+      aria-label={`${u.username}: ${store.code} operations access`} title={store.name}
+      style={{ minHeight: 44, alignItems: 'center' }} disabled={accessSaving}
+      checked={inventoryAccess.grants.some(grant => grant.auth0_sub === u.id && grant.store_id === store.id)}
+      onChange={event => void changeAccess(u.id, store.id, event.target.checked)}>{store.code}</Checkbox>)}</Space>
+  }
 
   function load() {
     if (!isAdmin) return
@@ -405,7 +467,7 @@ export default function UsersPage() {
       ),
     },
     {
-      title: '门店',
+      title: '排班门店 / Scheduling stores',
       key: 'stores',
       width: 180,
       render: (_, r) => isManager
@@ -417,6 +479,12 @@ export default function UsersPage() {
           />
         )
         : <StoreBadges codes={empStoreMap[r.id]?.stores ?? []} storeColors={storeColorMap} />,
+    },
+    {
+      title: '门店操作权限 / Store operations access',
+      key: 'operations_access',
+      width: 210,
+      render: (_, user) => accessCheckboxes(user),
     },
     {
       title: '颜色',
@@ -515,10 +583,14 @@ export default function UsersPage() {
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <Button onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户</Button>
-        <Button variant="outline" onClick={() => { load(); loadStores() }}>
+        <Button variant="outline" disabled={accessSaving} onClick={() => { load(); loadStores(); void loadAccess() }}>
           <RefreshCw className="h-4 w-4 mr-1" />刷新
         </Button>
       </div>
+
+      <p style={{ color: '#596273' }}>Store operations access enables Today, inventory and other store workflows within each user's role. Changes save immediately; scheduling stores are separate.</p>
+      {accessError && <Alert type="error" showIcon message={accessError} style={{ marginBottom: 16 }}
+        action={<Button variant="outline" disabled={accessSaving} onClick={() => void loadAccess()}>Retry access</Button>} />}
 
       {isMobile ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -554,6 +626,7 @@ export default function UsersPage() {
 
                   {/* Row 2: store badges */}
                   <div className="flex items-center gap-1 mt-1 pl-11 flex-wrap">
+                    <span className="text-xs text-muted-foreground">排班门店 / Scheduling stores</span>
                     {isManager
                       ? (
                         <StoreSelect
@@ -564,6 +637,11 @@ export default function UsersPage() {
                       )
                       : <StoreBadges codes={empStoreMap[u.id]?.stores ?? []} storeColors={storeColorMap} />
                     }
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    <div className="text-xs text-muted-foreground">门店操作权限 / Store operations access</div>
+                    {accessCheckboxes(u)}
                   </div>
 
                   {/* Row 3: employee-only scheduling controls (managers only) */}
@@ -637,6 +715,7 @@ export default function UsersPage() {
           loading={loading}
           dataSource={users}
           columns={columns}
+          scroll={{ x: 1450 }}
           pagination={false}
         />
       )}
