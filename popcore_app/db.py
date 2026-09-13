@@ -1559,6 +1559,39 @@ def _migration_create_insight_runs(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations(name) VALUES ('create_insight_runs')")
 
 
+def _migration_availability_period_submissions(con, cur):
+    # Rebuild only availability to remove its old employee/date uniqueness.
+    con.commit()
+    cur.execute('BEGIN IMMEDIATE')
+    sequence = cur.execute("SELECT seq FROM sqlite_sequence WHERE name='availability'").fetchone()
+    cur.execute("""CREATE TABLE availability_period_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+        notes TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        store_id INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id),
+        status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','unavailable')),
+        UNIQUE(employee_id, date, store_id)
+    )""")
+    cur.execute("""INSERT INTO availability_period_new
+        (id,employee_id,date,start_time,end_time,notes,created_at,updated_at,store_id)
+        SELECT id,employee_id,date,start_time,end_time,notes,created_at,updated_at,store_id
+        FROM availability""")
+    cur.execute('DROP TABLE availability')
+    cur.execute('ALTER TABLE availability_period_new RENAME TO availability')
+    if sequence:
+        cur.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='availability'", (sequence['seq'],))
+    cur.execute('CREATE INDEX idx_availability_date ON availability(date)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS availability_submissions (
+        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        store_id INTEGER NOT NULL REFERENCES stores(id), period_start TEXT NOT NULL,
+        version INTEGER NOT NULL, submitted_at TEXT,
+        PRIMARY KEY(employee_id,store_id,period_start)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('availability_period_submissions')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1601,6 +1634,7 @@ def _get_migrations():
         ('harden_build4_financial_facts',              _migration_harden_build4_financial_facts),
         ('create_trades',                               _migration_create_trades),
         ('create_insight_runs',                          _migration_create_insight_runs),
+        ('availability_period_submissions',             _migration_availability_period_submissions),
     ]
 
 

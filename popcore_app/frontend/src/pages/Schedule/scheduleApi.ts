@@ -26,7 +26,29 @@ export interface Availability {
   employee_name?: string
   auth0_id?: string
   store_code?: string
+  status?: 'available' | 'unavailable'
+  submitted_at?: string | null
+  submission_version?: number
 }
+
+export interface AvailabilityPeriod {
+  period_start: string
+  period_end: string
+  store_code: string
+  version: number
+  submitted_at: string | null
+  days: Availability[]
+}
+
+export const getAvailabilityPeriod = (periodStart: string, storeCode: string) =>
+  client.get<AvailabilityPeriod>('/schedule/availability/period', {
+    params: { period_start: periodStart, store_code: storeCode },
+  }).then(r => r.data)
+
+export const submitAvailabilityPeriod = (data: {
+  period_start: string; store_code: string; version: number
+  days: { date: string; status: 'available' | 'unavailable'; start_time: string; end_time: string; notes: string }[]
+}) => client.put<AvailabilityPeriod>('/schedule/availability/period', data).then(r => r.data)
 
 export interface Shift {
   id: number
@@ -199,14 +221,6 @@ export const setEmployeeSchedulable = (employeeId: number, enabled: boolean) =>
 
 // ── Availability ──────────────────────────────────────────────────────────────
 
-export const getMyAvailability = (start?: string, end?: string, storeCode?: string) => {
-  const params: Record<string, string> = {}
-  if (start) params.start = start
-  if (end) params.end = end
-  if (storeCode) params.store_code = storeCode
-  return client.get<Availability[]>('/schedule/availability/me', { params }).then((r) => r.data)
-}
-
 export const getAllAvailability = (start?: string, end?: string, storeCode?: string) => {
   const params: Record<string, string> = {}
   if (start) params.start = start
@@ -214,17 +228,6 @@ export const getAllAvailability = (start?: string, end?: string, storeCode?: str
   if (storeCode) params.store_code = storeCode
   return client.get<Availability[]>('/schedule/availability', { params }).then((r) => r.data)
 }
-
-export const upsertAvailability = (data: {
-  date: string
-  start_time: string
-  end_time: string
-  notes?: string
-  store_code?: string
-}) => client.post<Availability>('/schedule/availability', data).then((r) => r.data)
-
-export const deleteAvailability = (id: number) =>
-  client.delete(`/schedule/availability/${id}`).then((r) => r.data)
 
 // ── Shifts ────────────────────────────────────────────────────────────────────
 
@@ -239,6 +242,7 @@ export const getMyShifts = (params?: { start?: string; end?: string; store_code?
   client.get<Shift[]>('/schedule/shifts/me', { params }).then((r) => r.data)
 
 export const createShift = (data: {
+  require_availability?: boolean
   employee_id: number
   date: string
   start_time: string
@@ -250,7 +254,7 @@ export const createShift = (data: {
 
 export const updateShift = (
   id: number,
-  data: { start_time?: string; end_time?: string; notes?: string; position?: string; store_code?: string }
+  data: { start_time?: string; end_time?: string; notes?: string; position?: string; store_code?: string; require_availability?: boolean }
 ) => client.patch<Shift>(`/schedule/shifts/${id}`, data).then((r) => r.data)
 
 export const deleteShift = (id: number) =>

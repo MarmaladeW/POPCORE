@@ -1,4 +1,13 @@
 import { create } from 'zustand'
+import type { AvailabilityDraft } from '../pages/Schedule/availabilityPeriod'
+
+export interface AvailabilityDraftState {
+  days: AvailabilityDraft[]
+  version: number
+  submittedAt: string | null
+  dirty: boolean
+}
+
 
 export interface Store {
   id: number
@@ -22,6 +31,9 @@ function loadPersistedStore(): Store | null {
 }
 
 interface AppState {
+  availabilityDrafts: Record<string, AvailabilityDraftState>
+  setAvailabilityDrafts: (update: (previous: Record<string, AvailabilityDraftState>) => Record<string, AvailabilityDraftState>) => void
+  clearAvailabilityDrafts: () => void
   series: string[]
   productTypes: string[]
   stores: Store[]
@@ -33,6 +45,9 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
+  availabilityDrafts: {},
+  setAvailabilityDrafts: (update) => set(state => ({ availabilityDrafts: update(state.availabilityDrafts) })),
+  clearAvailabilityDrafts: () => set({ availabilityDrafts: {} }),
   series: [],
   productTypes: [],
   stores: [],

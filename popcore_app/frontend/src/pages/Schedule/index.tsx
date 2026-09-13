@@ -1,23 +1,20 @@
 import { useEffect } from 'react'
+import { Tabs } from 'antd'
 import { useHasRole } from '../../auth/useRole'
 import EmployeeView from './EmployeeView'
 import ManagerView from './ManagerView'
+import AvailabilityCalendar from './AvailabilityCalendar'
 import { getMe } from './scheduleApi'
+import './schedule.css'
 
 export default function SchedulePage() {
   const isManager = useHasRole('manager')
-
-  // Auto-register the current user in the employees table on first visit
-  useEffect(() => {
-    getMe().catch(() => {})
-  }, [])
-
-  return (
-    <div className="px-2">
-      <h3 className="text-xl font-semibold mb-4">
-        {isManager ? 'Shift Scheduling' : 'My Schedule'}
-      </h3>
-      {isManager ? <ManagerView /> : <EmployeeView />}
-    </div>
-  )
+  useEffect(() => { getMe().catch(() => {}) }, [])
+  return <div className="pc-schedule-page">
+    <h2>Schedule</h2>
+    {isManager ? <ManagerView /> : <Tabs defaultActiveKey="availability" items={[
+      { key: 'availability', label: 'My availability', children: <AvailabilityCalendar /> },
+      { key: 'shifts', label: 'My shifts', children: <EmployeeView /> },
+    ]} />}
+  </div>
 }

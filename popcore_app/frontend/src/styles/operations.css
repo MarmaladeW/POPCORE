@@ -21,16 +21,6 @@
 .pc-shell-operations .pc-sidebar-menu a { color: inherit; }
 .pc-shell-operations .pc-header { background: rgba(255,255,255,.96); border-bottom: 1px solid #DDE2EA; }
 .pc-shell-operations .pc-brand { border-bottom: 1px solid #DDE2EA; color: #20242D; }
-.pc-shell-schedule, .pc-shell-schedule .pc-main { background: #F0F2F5; }
-.pc-shell-schedule .pc-sidebar, .pc-shell-schedule .pc-sidebar-menu { background: #0D1B2A; }
-.pc-shell-schedule .pc-sidebar-menu, .pc-shell-schedule .pc-collapse, .pc-shell-schedule .pc-brand { color: white; }
-.pc-shell-schedule .pc-brand { padding: 20px; border-bottom: 1px solid rgba(255,255,255,.08); }
-.pc-shell-schedule .pc-brand-mark { border-radius: 10px; background: linear-gradient(135deg, #6366F1, #8B5CF6); }
-.pc-shell-schedule .pc-brand small { color: rgba(255,255,255,.45); }
-.pc-shell-schedule .pc-header { background: white; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-.pc-shell-schedule > .pc-bottom-nav { border-color: rgba(255,255,255,.12); background: #0D1B2A; }
-.pc-shell-schedule > .pc-bottom-nav > a, .pc-shell-schedule > .pc-bottom-nav > button { color: rgba(255,255,255,.72); }
-.pc-shell-schedule > .pc-bottom-nav .active { color: #818CF8; }
 .pc-bottom-nav { position: fixed; inset: auto 0 0; z-index: 100; display: flex; padding-bottom: env(safe-area-inset-bottom); border-top: 1px solid #DDE2EA; background: #FFFFFF; }
 .pc-bottom-nav > a, .pc-bottom-nav > button { position: relative; display: flex; min-width: 0; min-height: 56px; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 0; color: #687386; }
 .pc-more-button { border: 0; background: transparent; font: inherit; }
@@ -63,12 +53,8 @@
   .pc-header .pc-brand { min-height: 0; padding: 0; border: 0; }
   .pc-header .pc-brand-mark { width: 32px; height: 32px; flex-basis: 32px; }
   .pc-header .pc-brand small { display: none; }
-  .pc-shell-schedule .pc-header { background: #0D1B2A; color: white; }
-  .pc-shell-schedule .pc-header .pc-brand { color: white; }
-  .pc-shell-schedule .pc-store-select { border-color: rgba(255,255,255,.24); background: #14263A; color: white; }
   .pc-store-select-mobile { width: 104px; }
   .pc-content { padding: 16px 16px calc(72px + env(safe-area-inset-bottom)); }
-  .pc-shell-schedule .pc-content { padding: 12px 12px calc(72px + env(safe-area-inset-bottom)); }
   .pc-loading-panel, .pc-today-section { padding: 14px; }
   .pc-page-actions { align-items: flex-start; }
   .pc-page-actions > .ant-space { flex-wrap: wrap; }
