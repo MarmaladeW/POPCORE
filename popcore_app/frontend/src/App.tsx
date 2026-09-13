@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { Button, ConfigProvider, Modal, Result } from 'antd'
 
@@ -39,11 +39,18 @@ function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNo
 }
 
 function AppInner() {
-  const location = useLocation()
   const { getAccessTokenSilently, isAuthenticated, loginWithRedirect, user } = useAuth0()
-  const { setSeries, setProductTypes, setStores, setSelectedStore, selectedStore } = useAppStore()
+  const { setSeries, setProductTypes, setStores, setSelectedStore, selectedStore, clearAvailabilityDrafts } = useAppStore()
   const [bootstrapError, setBootstrapError] = useState(false)
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0)
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (Object.values(useAppStore.getState().availabilityDrafts).some(draft => draft.dirty)) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [])
 
   useEffect(() => {
     setTokenGetter(() =>
@@ -68,11 +75,12 @@ function AppInner() {
 
   useEffect(() => {
     resetAuthWarnings()
+    clearAvailabilityDrafts()
     setSeries([])
     setProductTypes([])
     setStores([])
     setBootstrapError(false)
-  }, [user?.sub, setProductTypes, setSeries, setStores])
+  }, [user?.sub, setProductTypes, setSeries, setStores, clearAvailabilityDrafts])
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -112,9 +120,7 @@ function AppInner() {
         />
       </AppLayout>
     )
-    return location.pathname.startsWith('/schedule')
-      ? errorApp
-      : <ConfigProvider theme={operationsTheme}>{errorApp}</ConfigProvider>
+    return <ConfigProvider theme={operationsTheme}>{errorApp}</ConfigProvider>
   }
 
   const routedApp = (
@@ -145,9 +151,7 @@ function AppInner() {
       </ErrorBoundary>
     </AppLayout>
   )
-  return location.pathname.startsWith('/schedule')
-    ? routedApp
-    : <ConfigProvider theme={operationsTheme}>{routedApp}</ConfigProvider>
+  return <ConfigProvider theme={operationsTheme}>{routedApp}</ConfigProvider>
 }
 
 export default function App() {

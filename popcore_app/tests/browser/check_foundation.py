@@ -213,7 +213,7 @@ async def schedule_checks(browser):
     state = {'mode': 'data', 'schedule_mutations': []}
     context, page = await context_with_api(browser, state)
     await page.goto(BASE + '/schedule')
-    await expect(page.get_by_text('Shift Scheduling', exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
     await page.locator('.fc-event:not(.fc-bg-event)').first.click()
     await expect(page.get_by_role('button', name='Save', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Save', exact=True).click()

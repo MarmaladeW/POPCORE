@@ -1,0 +1,47 @@
+.pc-schedule-page { color: #20242D; --background: #FFFFFF; --foreground: #20242D; --muted: #F0F2F5; --muted-foreground: #596273; --border: #DDE2EA; --primary: #4F46E5; --primary-foreground: #FFFFFF; }
+.pc-schedule-page > h2 { margin: 0; font-size: 24px; font-weight: 650; }
+.pc-schedule-dialog { border: 1px solid #DDE2EA; border-radius: 8px; background: white; color: #20242D; }
+:is(.pc-schedule-page, .pc-schedule-dialog) [data-slot='button'] { border: 1px solid #DDE2EA; background: white; color: #20242D; cursor: pointer; }
+:is(.pc-schedule-page, .pc-schedule-dialog) [data-slot='button'].bg-primary { border-color: #4F46E5; background: #4F46E5; color: white; }
+:is(.pc-schedule-page, .pc-schedule-dialog) [data-slot='button'].bg-destructive { border-color: #B42318; background: #B42318; color: white; }
+.pc-schedule-dialog :focus-visible { outline: 3px solid rgba(79,70,229,.35); outline-offset: 2px; }
+.pc-calendar-views button { border: 0; background: white; color: #20242D; cursor: pointer; }
+.pc-calendar-views button + button { border-left: 1px solid #DDE2EA; }
+.pc-calendar-views button[aria-pressed='true'] { background: #4F46E5; color: white; }
+.pc-schedule-page .fc { --fc-border-color: #DDE2EA; --fc-page-bg-color: white; --fc-neutral-bg-color: #F7F8FA; background: white; }
+.pc-schedule-page .fc-daygrid-day-top a { color: #20242D; }
+.pc-availability-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; margin-top: 16px; overflow: hidden; border: 1px solid #DDE2EA; border-radius: 8px; background: #DDE2EA; }
+.pc-availability-weekday { padding: 8px; background: white; text-align: center; font-weight: 600; }
+.pc-availability-day { display: flex; min-width: 0; min-height: 130px; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px; background: white; border: 0; color: #596273; text-align: left; font: inherit; cursor: pointer; }
+.pc-availability-day > strong { align-self: flex-end; color: #20242D; }
+.pc-availability-day > small { font-size: 12px; }
+.pc-availability-day:not(button) { cursor: default; overflow-wrap: anywhere; }
+.pc-availability-employee { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.pc-availability-available { background: #EFF6F0; color: #256038; }
+.pc-availability-unavailable { background: #F7F8FA; }
+.pc-availability-day[aria-pressed='true'] { box-shadow: inset 0 0 0 2px #4F46E5; }
+.pc-schedule-detail { margin-top: 16px; padding: 16px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; }
+.pc-schedule-detail h4 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
+.pc-availability-editor { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.pc-availability-editor > label { display: grid; gap: 4px; min-width: 120px; max-width: 100%; }
+.pc-availability-editor input[type='time'] { min-height: 40px; padding: 6px 10px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; color: #20242D; font-size: 16px; }
+.pc-schedule-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid #DDE2EA; }
+.pc-schedule-people { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.pc-schedule-person { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid #EDF0F4; }
+.pc-schedule-person small { display: block; color: #596273; font-size: 12px; }
+.pc-schedule-person button { flex-shrink: 0; }
+.pc-shift-types { display: flex; gap: 6px; flex-wrap: wrap; }
+.pc-shift-types .ant-radio-button-wrapper { height: auto; min-height: 36px; padding: 6px 10px; border: 1px solid #DDE2EA; border-radius: 6px; line-height: 1.4; white-space: normal; }
+.pc-shift-types .ant-radio-button-wrapper::before { display: none; }
+@media (max-width: 767px) {
+  .pc-schedule-people { grid-template-columns: 1fr; gap: 12px; }
+  .pc-availability-weekday { padding: 6px 0; font-size: 11px; }
+  .pc-availability-day { min-height: 94px; gap: 4px; padding: 6px 2px; align-items: center; font-size: 10px; overflow-wrap: anywhere; }
+  .pc-availability-day > strong { align-self: center; font-size: 13px; }
+  .pc-availability-day > small { font-size: 11px; }
+  .pc-shift-types .ant-radio-button-wrapper { min-height: 44px; }
+  .pc-schedule-page .fc-header-toolbar { flex-wrap: wrap; gap: 8px; }
+}
+
+.pc-calendar-date { border: 0; border-radius: 4px; padding: 6px; min-width: 36px; min-height: 36px; background: transparent; color: #20242D; font: inherit; cursor: pointer; }
+@media (pointer: coarse) { .pc-calendar-date { min-height: 44px; min-width: 44px; } }

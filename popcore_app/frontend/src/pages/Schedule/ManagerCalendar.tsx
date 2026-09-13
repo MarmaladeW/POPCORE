@@ -8,7 +8,7 @@ import type {
   CalendarApi, DatesSetArg, EventClickArg, EventContentArg, EventInput,
 } from '@fullcalendar/core'
 import { RefreshCw, ChevronLeft, ChevronRight, Info } from 'lucide-react'
-import { Popover } from 'antd'
+import { Alert, Popover } from 'antd'
 import dayjs from 'dayjs'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -47,6 +47,8 @@ import {
   type StoreHoursMap,
 } from './openHours'
 import ShiftModal from './ShiftModal'
+import ScheduleDayPanel from './ScheduleDayPanel'
+import { cycleStart } from './availabilityPeriod'
 import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -68,10 +70,11 @@ const FALLBACK_COLORS = EMPLOYEE_PALETTE
 
 const UNCOVERED_COLOR = '#ef4444'
 
-type ViewType = 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay'
+type ViewType = 'dayGridMonth' | 'dayGridFortnight' | 'timeGridWeek' | 'timeGridDay'
 
 const VIEW_OPTIONS: { value: ViewType; label: string }[] = [
   { value: 'dayGridMonth', label: 'Month' },
+  { value: 'dayGridFortnight', label: 'Two weeks' },
   { value: 'timeGridWeek', label: 'Week' },
   { value: 'timeGridDay',  label: 'Day' },
 ]
@@ -88,8 +91,13 @@ export default function ManagerCalendar() {
   const [empStores,     setEmpStores]     = useState<Record<number, string[]>>({})
   const [filterEmpId,   setFilterEmpId]   = useState<number | null>(null)
   const [eventsByStore, setEventsByStore] = useState<Record<string, EventInput[]>>({})
+  const [showAvailability, setShowAvailability] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const requestNumber = useRef(0)
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | undefined>()
   const [viewTitle,     setViewTitle]     = useState('')
-  const [viewType,      setViewType]      = useState<ViewType>('dayGridMonth')
+  const [viewType,      setViewType]      = useState<ViewType>('dayGridFortnight')
   const [empHours,      setEmpHours]      = useState<EmployeeHours | null>(null)
 
   const [staffReqs,      setStaffReqs]      = useState<StaffRequirements>(DEFAULT_STAFF_REQUIREMENTS)
@@ -162,11 +170,16 @@ export default function ManagerCalendar() {
 
   const loadEvents = useCallback(
     async (start: string, end: string, vt: ViewType) => {
+      const request = ++requestNumber.current
+      setLoading(true)
+      setLoadError('')
+      try {
       const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
         getAllAvailability(start, end, 'ALL'),
         getShifts({ start, end, store_code: 'ALL' }),
       ])
 
+      if (request !== requestNumber.current) return
       const empIdToIdx: Record<number, number> = {}
       employees.forEach((e, i) => { empIdToIdx[e.id] = i })
 
@@ -181,20 +194,21 @@ export default function ManagerCalendar() {
         if (!availsByDate.current[a.date]) availsByDate.current[a.date] = []
         availsByDate.current[a.date].push(a)
 
+        if (a.status === 'unavailable' || !a.submitted_at) continue
         const code = a.store_code || ''
         if (!byStore[code]) continue
         const empColor = empColors[a.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[a.employee_id] ?? 0]
         byStore[code].push({
           id: `avail-${a.id}`,
-          title: `${a.employee_name ?? 'Employee'} available`,
+          title: `${a.employee_name ?? 'Employee'} ${a.start_time}–${a.end_time}`,
           start: `${a.date}T${a.start_time}`,
           end:   `${a.date}T${a.end_time}`,
-          backgroundColor: empColor + '33',
+          backgroundColor: empColor,
           borderColor:     empColor,
-          textColor:       '#374151',
-          display:         'background',
-          extendedProps:   { type: 'availability', employee_id: a.employee_id },
+          textColor:       textColorOn(empColor),
+          display:         'block',
+          extendedProps:   { type: 'availability', employee_id: a.employee_id, date: a.date, store_code: code, emp_name: a.employee_name, emp_color: empColor, start_time: a.start_time, end_time: a.end_time },
         })
       }
 
@@ -245,13 +259,13 @@ export default function ManagerCalendar() {
         for (let d = dayjs(start); d.isBefore(last); d = d.add(1, 'day')) {
           const dateStr = d.format('YYYY-MM-DD')
           // Month grid: don't flood padding days from adjacent months with red
-          if (vt === 'dayGridMonth' && period
+          if ((vt === 'dayGridMonth' || vt === 'dayGridFortnight') && period
               && (dateStr < period.start || dateStr >= period.end)) continue
           const gaps = understaffedIntervals(
             code, dateStr, shiftsByStoreDate[code][dateStr] ?? [], staffReqs, storeHours,
           )
           if (gaps.length === 0) continue
-          if (vt === 'dayGridMonth') {
+          if ((vt === 'dayGridMonth' || vt === 'dayGridFortnight')) {
             byStore[code].push({
               id:              `gap-${code}-${dateStr}`,
               start:           dateStr,
@@ -277,6 +291,12 @@ export default function ManagerCalendar() {
       }
 
       setEventsByStore(byStore)
+      } catch {
+        if (request !== requestNumber.current) return
+        shiftById.current = {}; availsByDate.current = {}
+        setEventsByStore({})
+        setLoadError('Could not load the schedule and availability. Retry before assigning shifts.')
+      } finally { if (request === requestNumber.current) setLoading(false) }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [employees, storesKey, staffReqs, storeHours, empColors]
@@ -317,6 +337,7 @@ export default function ManagerCalendar() {
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       const vt    = arg.view.type as ViewType
       setCurrentRange({ start, end })
+      setSelectedDate(null)
       setViewTitle(arg.view.title)
       setViewType(vt)
       // The "real" period (month/week/day) — excludes the padding days a
@@ -324,6 +345,7 @@ export default function ManagerCalendar() {
       const cs = dayjs(arg.view.currentStart)
       setPeriodKey(
         vt === 'dayGridMonth' ? `month:${cs.format('YYYY-MM')}`
+        : vt === 'dayGridFortnight' ? `fortnight:${cs.format('YYYY-MM-DD')}`
         : vt === 'timeGridWeek' ? `week:${cs.format('YYYY-MM-DD')}`
         : `day:${cs.format('YYYY-MM-DD')}`,
       )
@@ -343,11 +365,15 @@ export default function ManagerCalendar() {
     setSelectedDate(dateStr)
     setSelectedShift(null)
     setAvailForDate(availsByDate.current[dateStr] ?? [])
-    setModalOpen(true)
+    setSelectedEmployeeId(undefined)
   }
 
   const handleEventClick = useCallback((arg: EventClickArg) => {
-    const { type, shift_id } = arg.event.extendedProps as { type: string; shift_id?: number }
+    const { type, shift_id, date, store_code } = arg.event.extendedProps as { type: string; shift_id?: number; date?: string; store_code?: string }
+    if (type === 'availability' && date && store_code) {
+      setSelectedDate(date); setModalStoreCode(store_code); setSelectedShift(null)
+      setAvailForDate(availsByDate.current[date] ?? [])
+    }
     if (type === 'shift' && shift_id != null) {
       const shift = shiftById.current[shift_id]
       if (shift) {
@@ -366,13 +392,16 @@ export default function ManagerCalendar() {
     }
   }, [loadEvents, currentRange, viewType])
 
-  const visibleEvents = (evts: EventInput[]) =>
-    filterEmpId === null
-      ? evts
-      : evts.filter((e) => {
-          const p = e.extendedProps as { type?: string; employee_id?: number } | undefined
-          return p?.type === 'coverage' || p?.employee_id === filterEmpId
-        })
+  useEffect(() => {
+    window.addEventListener('popcore:availability-submitted', handleSaved)
+    return () => window.removeEventListener('popcore:availability-submitted', handleSaved)
+  }, [handleSaved])
+
+  const visibleEvents = (evts: EventInput[]) => evts.filter(event => {
+    const props = event.extendedProps as { type?: string; employee_id?: number } | undefined
+    if (showAvailability ? props?.type !== 'availability' : props?.type === 'availability') return false
+    return filterEmpId === null || props?.type === 'coverage' || props?.employee_id === filterEmpId
+  })
 
   // Custom shift rendering: no more duplicated "12:00 name 12:00–22:00" —
   // one bold name plus a compact, readable time chip (and position if set).
@@ -381,9 +410,9 @@ export default function ManagerCalendar() {
       type?: string; kind?: ShiftKind; is_trainee?: boolean; position?: string
       emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
     }
-    if (p.type !== 'shift') return true   // default rendering for backgrounds
+    if (p.type !== 'shift' && p.type !== 'availability') return true   // default rendering for backgrounds
     const kind    = p.kind ?? 'custom'
-    const halfTag = kind === 'first' ? 'AM' : kind === 'second' ? 'PM' : ''
+    const halfTag = p.type === 'availability' ? '' : kind === 'first' ? 'AM' : kind === 'second' ? 'PM' : ''
     const range   = compactRange(p.start_time ?? '', p.end_time ?? '')
     const tip = [
       p.emp_name,
@@ -393,7 +422,7 @@ export default function ManagerCalendar() {
       p.is_trainee && 'TRAINEE',
     ].filter(Boolean).join(' · ')
 
-    if (arg.view.type === 'dayGridMonth') {
+    if (arg.view.type === 'dayGridMonth' || arg.view.type === 'dayGridFortnight') {
       if (isMobile) {
         const employeeName = p.emp_name ?? 'Employee'
         const employeeColor = p.emp_color ?? '#6366F1'
@@ -439,25 +468,33 @@ export default function ManagerCalendar() {
     )
   }
 
-  const isTimeGrid = viewType !== 'dayGridMonth'
+  const isTimeGrid = viewType.startsWith('timeGrid')
 
   return (
     <div className="space-y-3">
 
+      {loadError && <Alert type="error" showIcon message={loadError} action={<Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end, viewType)}>Retry</Button>} />}
+      {loading && <span role="status">Loading schedule…</span>}
+      <div className="flex flex-wrap gap-2" aria-label="Calendar contents">
+        <Button variant={showAvailability ? 'outline' : 'default'} aria-pressed={!showAvailability} onClick={() => setShowAvailability(false)}>Assigned shifts</Button>
+        <Button variant={showAvailability ? 'default' : 'outline'} aria-pressed={showAvailability} onClick={() => setShowAvailability(true)}>Availability</Button>
+        <span className="text-sm text-muted-foreground self-center">{showAvailability ? 'Submitted hours employees can work. Select a date to assign.' : 'Assigned shifts. Select a date to see who is available.'}</span>
+      </div>
+
       {/* Row 1: navigation ←→ + Today + Month|Week|Day toggle */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center justify-between gap-0.5 sm:justify-start">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => eachCal((a) => a.prev())}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Previous calendar period" onClick={() => eachCal((a) => a.prev())}>
             <ChevronLeft className="size-4" />
           </Button>
           <span className="text-sm font-semibold min-w-24 text-center px-1">{viewTitle}</span>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => eachCal((a) => a.next())}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Next calendar period" onClick={() => eachCal((a) => a.next())}>
             <ChevronRight className="size-4" />
           </Button>
         </div>
         <div className="grid grid-cols-[auto_1fr] items-center gap-2 sm:flex">
-          <Button variant="outline" size="sm" className="h-8" onClick={() => eachCal((a) => a.today())}>Today</Button>
-          <div className="flex min-w-0 rounded-lg border border-border overflow-hidden text-xs font-medium">
+          <Button variant="outline" size="sm" className="h-8" onClick={() => eachCal((a) => a.gotoDate(viewType === 'dayGridFortnight' ? cycleStart(dayjs().format('YYYY-MM-DD')) : new Date()))}>Today</Button>
+          <div className="pc-calendar-views flex min-w-0 rounded-lg border border-border overflow-hidden text-xs font-medium">
             {VIEW_OPTIONS.map((v, i) => (
               <button
                 key={v.value}
@@ -469,7 +506,7 @@ export default function ManagerCalendar() {
                     ? 'bg-primary text-primary-foreground'
                     : 'bg-background text-foreground hover:bg-muted',
                 )}
-                onClick={() => eachCal((a) => a.changeView(v.value))}
+                onClick={() => eachCal((a) => a.changeView(v.value, v.value === 'dayGridFortnight' ? cycleStart(dayjs(a.getDate()).format('YYYY-MM-DD')) : undefined))}
               >{v.label}</button>
             ))}
           </div>
@@ -727,11 +764,11 @@ export default function ManagerCalendar() {
       {/* Coverage checklist + period notes: proves everyone was assigned or
           at least considered for the visible month/week/day */}
       {periodKey && schedulableEmployees.length > 0 && (
-        <CoveragePanel
+        <details><summary className="text-sm cursor-pointer">Employee checklist and period notes</summary><CoveragePanel
           periodKey={periodKey}
           periodLabel={viewTitle}
           employees={schedulableEmployees}
-        />
+        /></details>
       )}
 
       {/* Legend: shift styles */}
@@ -773,7 +810,7 @@ export default function ManagerCalendar() {
           <div
             className={cn(
               'rounded-xl border overflow-hidden',
-              isMobile && viewType === 'dayGridMonth' && 'pc-mobile-month',
+              isMobile && !isTimeGrid && 'pc-mobile-month',
             )}
             style={{ borderColor: (st.color || '#6366f1') + '66' }}
           >
@@ -781,6 +818,8 @@ export default function ManagerCalendar() {
               ref={(el) => { calRefs.current[st.code] = el }}
               plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
               initialView={viewType}
+              initialDate={cycleStart(dayjs().format('YYYY-MM-DD'))}
+              views={{ dayGridFortnight: { type: 'dayGrid', duration: { weeks: 2 }, dateIncrement: { weeks: 2 }, dateAlignment: 'week' } }}
               headerToolbar={false}
               height="auto"
               timeZone="local"
@@ -788,6 +827,12 @@ export default function ManagerCalendar() {
               events={visibleEvents(eventsByStore[st.code] ?? [])}
               datesSet={i === 0 ? handleDatesSet : undefined}
               dateClick={handleDateClickFor(st.code)}
+              dayCellContent={arg => <button type="button" className="pc-calendar-date" aria-label={`View ${dayjs(arg.date).format('YYYY-MM-DD')} ${st.code}`} onClick={event => {
+                event.stopPropagation()
+                const date = dayjs(arg.date).format('YYYY-MM-DD')
+                setModalStoreCode(st.code); setSelectedDate(date); setSelectedShift(null)
+                setAvailForDate(availsByDate.current[date] ?? []); setSelectedEmployeeId(undefined)
+              }}>{arg.dayNumberText}</button>}
               eventClick={handleEventClick}
               eventContent={renderEvent}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
@@ -802,6 +847,15 @@ export default function ManagerCalendar() {
               slotLabelInterval="01:00"
             />
           </div>
+          {selectedDate && modalStoreCode === st.code && !loading && !loadError && <ScheduleDayPanel
+            date={selectedDate} storeCode={st.code} employees={employees}
+            availability={availsByDate.current[selectedDate] ?? []} shifts={Object.values(shiftById.current)}
+            onAssign={employeeId => {
+              setSelectedEmployeeId(employeeId); setSelectedShift(null)
+              setAvailForDate(availsByDate.current[selectedDate] ?? []); setModalOpen(true)
+            }}
+            onEdit={shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) }}
+          />}
         </section>
       ))}
       {isTimeGrid && realStores.length > 0 && (
@@ -818,6 +872,7 @@ export default function ManagerCalendar() {
         existing={selectedShift}
         availForDate={availForDate}
         defaultStoreCode={modalStoreCode}
+        defaultEmployeeId={selectedEmployeeId}
         storeHours={storeHours}
         shiftPresets={shiftPresets}
         positionsMap={positionsMap}

@@ -28,10 +28,10 @@ const ROLE_LABELS: Record<string, string> = {
 
 type NavItem = { key: string; icon: React.ReactNode; label: string }
 
-function Brand({ collapsed = false, schedule = false }: { collapsed?: boolean; schedule?: boolean }) {
+function Brand({ collapsed = false }: { collapsed?: boolean }) {
   return <div className="pc-brand">
     <span className="pc-brand-mark" aria-hidden="true">P</span>
-    {!collapsed && <span><strong>POPCORE</strong><small>{schedule ? 'Inventory System' : 'Store operations'}</small></span>}
+    {!collapsed && <span><strong>POPCORE</strong><small>Store operations</small></span>}
   </div>
 }
 
@@ -80,7 +80,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const screens = useBreakpoint()
   const mobile = !screens.md
   const location = useLocation()
-  const schedule = location.pathname.startsWith('/schedule')
   const { user, logout } = useAuth0()
   const role = useRole()
   const admin = useHasRole('admin')
@@ -123,13 +122,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       key: item.key, icon: item.icon, label: <NavLink item={item} active={active === item.key} />,
     })) },
   ]
-  const scheduleItems = [
-    daily[0], ...planning.filter(item => item.key === '/products'), ...daily.slice(1),
-    ...review, planning[0], ...planning.filter(item => item.key === '/settings'),
-  ]
-  const menuItems: MenuProps['items'] = schedule ? scheduleItems.map(item => ({
-    key: item.key, icon: item.icon, label: <NavLink item={item} active={active === item.key} />,
-  })) : groupedMenuItems
   const bottom: NavItem[] = [
     daily[0],
     ...(staff ? [daily[1], { key: manager ? '/sales' : '/sales/entry', icon: <DollarOutlined />, label: 'Sales' }] : []),
@@ -137,7 +129,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   ]
   const bottomKeys = new Set(bottom.map(item => item.key))
   const more = [...daily, ...review, ...planning].filter(item => !bottomKeys.has(item.key))
-  const shellClass = schedule ? 'pc-shell pc-shell-schedule' : 'pc-shell pc-shell-operations'
+  const shellClass = 'pc-shell pc-shell-operations'
 
   const accountItems: MenuProps['items'] = [{
     key: 'logout', icon: <LogoutOutlined />, label: 'Sign out', danger: true,
@@ -149,8 +141,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       className="pc-sidebar" width={SIDEBAR_W} collapsedWidth={SIDEBAR_C}
       collapsed={collapsed} trigger={null}
     >
-      <Brand collapsed={collapsed} schedule={schedule} />
-      <Menu className="pc-sidebar-menu" theme={schedule ? 'dark' : 'light'} mode="inline" selectedKeys={[active]} items={menuItems} />
+      <Brand collapsed={collapsed} />
+      <Menu className="pc-sidebar-menu" theme="light" mode="inline" selectedKeys={[active]} items={groupedMenuItems} />
       <Button
         className="pc-collapse" type="text"
         aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
@@ -161,7 +153,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     <Layout className="pc-main" style={{ marginLeft: mobile ? 0 : (collapsed ? SIDEBAR_C : SIDEBAR_W) }}>
       <Header className="pc-header">
-        {mobile ? <Brand schedule={schedule} /> : <span className="pc-date">{dayjs().format('dddd, MMMM D, YYYY')}</span>}
+        {mobile ? <Brand /> : <span className="pc-date">{dayjs().format('dddd, MMMM D, YYYY')}</span>}
         <div className="pc-header-actions">
           <StoreSelect mobile={mobile} />
           {!mobile && <Tag className="pc-role" style={{ color: ROLE_COLORS[role], borderColor: `${ROLE_COLORS[role]}55` }}>

@@ -16,6 +16,7 @@ import {
   type OpenHoursConfig, type PositionsMap, type ShiftPreset, type StoreHoursMap,
 } from './openHours'
 import { scheduleApiErrorMessage } from './employeeScheduling'
+import { availabilityIssue } from './availabilityPeriod'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -32,6 +33,7 @@ interface Props {
   /** Store preselected in the Location field for new shifts (e.g. the
    *  calendar section the manager clicked in). */
   defaultStoreCode?: string | null
+  defaultEmployeeId?: number
   /** Per-store opening hours from the schedule config (drives the shift
    *  presets for whichever store is selected in the Location field). */
   storeHours?: StoreHoursMap
@@ -102,7 +104,7 @@ function matchPreset(
 }
 
 export default function ShiftModal({
-  open, date, employees, existing, availForDate, defaultStoreCode,
+  open, date, employees, existing, availForDate, defaultStoreCode, defaultEmployeeId,
   storeHours = DEFAULT_STORE_HOURS, shiftPresets = [], positionsMap = {},
   onClose, onSaved,
 }: Props) {
@@ -112,6 +114,14 @@ export default function ShiftModal({
 
   // Presets follow the store chosen in the Location field
   const watchedStore: string | undefined = Form.useWatch('store_code', form)
+  const watchedEmployee: number | undefined = Form.useWatch('employee_id', form)
+  const watchedStart: string | undefined = Form.useWatch('start_time', form)
+  const watchedEnd: string | undefined = Form.useWatch('end_time', form)
+  const chosenStore = watchedStore || existing?.store_code || defaultStoreCode || ''
+  const selectedAvailability = availForDate.find(day => day.employee_id === watchedEmployee && day.store_code === chosenStore)
+  const employee = employees.find(item => item.id === watchedEmployee)
+  const requireAvailability = !existing && !!employee && !employee.is_trainee
+  const issue = employee && !employee.is_trainee ? availabilityIssue(selectedAvailability, chosenStore, watchedStart || '', watchedEnd || '') : null
   const openHours: OpenHoursConfig = hoursForStore(
     watchedStore || existing?.store_code || defaultStoreCode || '', storeHours,
   )
@@ -127,7 +137,7 @@ export default function ShiftModal({
     employees.filter((employee) => employee.is_schedulable !== 0).map((employee) => employee.id),
   )
   const schedulableAvailForDate = availForDate.filter(
-    (availability) => schedulableEmployeeIds.has(availability.employee_id),
+    (availability) => schedulableEmployeeIds.has(availability.employee_id) && availability.store_code === chosenStore && availability.status !== 'unavailable' && !!availability.submitted_at,
   )
   const availByEmpId: Record<number, Availability> = {}
   for (const a of schedulableAvailForDate) availByEmpId[a.employee_id] = a
@@ -188,7 +198,10 @@ export default function ShiftModal({
           || (selectedStore && selectedStore.code !== 'ALL' ? selectedStore.code : undefined)
           || (realStores.length === 1 ? realStores[0].code : undefined),
       })
-      setPreset('custom')
+      const available = availForDate.find(day => day.employee_id === defaultEmployeeId && day.store_code === defaultStoreCode && day.status !== 'unavailable' && day.submitted_at)
+      if (defaultEmployeeId !== undefined) form.setFieldValue('employee_id', defaultEmployeeId)
+      if (available) form.setFieldsValue({ start_time: available.start_time, end_time: available.end_time })
+      setPreset(available ? matchPreset(date, hoursForStore(defaultStoreCode || '', storeHours), shiftPresets, available.start_time, available.end_time) : 'custom')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, existing, form])
@@ -213,6 +226,9 @@ export default function ShiftModal({
     if (avail) {
       form.setFieldsValue({ start_time: avail.start_time, end_time: avail.end_time })
       syncPresetFromForm()
+    } else {
+      form.setFieldsValue({ start_time: undefined, end_time: undefined })
+      setPreset('custom')
     }
   }
 
@@ -227,6 +243,7 @@ export default function ShiftModal({
   const doCreateShift = async (values: ShiftFormValues) => {
     await createShift({
       employee_id: values.employee_id,
+      require_availability: requireAvailability,
       date:        date!,
       start_time:  values.start_time,
       end_time:    values.end_time,
@@ -249,8 +266,9 @@ export default function ShiftModal({
     try {
       const values = await form.validateFields() as ShiftFormValues
 
+      if (requireAvailability && issue) { msgApi.error(issue); return }
       if (existing) {
-        // Updates can't change employee or date, so no conflict possible
+        setSavePhase('checking')
         await updateShift(existing.id, {
           start_time: values.start_time,
           end_time:   values.end_time,
@@ -291,16 +309,8 @@ export default function ShiftModal({
       }
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return
-      msgApi.error('Failed to save shift')
-    }
-  }
-
-  const handleConfirmAnyway = async () => {
-    if (!pendingValues.current) return
-    try {
-      await doCreateShift(pendingValues.current)
-    } catch (error) {
-      handleCreateError(error)
+      msgApi.error(scheduleApiErrorMessage(err, 'Failed to save shift'))
+      setSavePhase('idle')
     }
   }
 
@@ -331,17 +341,13 @@ export default function ShiftModal({
         || `Employee ${pendingValues.current.employee_id}`)
     : ''
 
-  const conflictStore = pendingValues.current
-    ? realStores.find((s) => s.code === pendingValues.current!.store_code)
-    : null
-
   return (
     <>
       {ctxHolder}
       <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-        <DialogContent style={{ maxWidth: 480 }}>
+        <DialogContent className="pc-schedule-dialog" style={{ maxWidth: 480, maxHeight: '90dvh', overflowY: 'auto' }}>
           <DialogHeader>
-            <DialogTitle>Assign shift — {date ?? ''}</DialogTitle>
+            <DialogTitle>{existing ? 'Edit shift' : 'Assign shift'} — {date ?? ''}</DialogTitle>
           </DialogHeader>
 
           {/* Conflict warning panel */}
@@ -360,7 +366,7 @@ export default function ShiftModal({
                 ))}
               </ul>
               <p className="text-sm text-amber-800">
-                Do you still want to assign this shift at {conflictStore?.name || conflictStore?.code || 'this store'}?
+                Edit the existing shift before assigning another. This assignment will not replace it.
               </p>
             </div>
           )}
@@ -369,7 +375,7 @@ export default function ShiftModal({
           {savePhase === 'error' && (
             <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3">
               <p className="text-sm text-red-700">
-                Could not check for conflicts. Save anyway?
+                Could not check for conflicts. Retry before saving.
               </p>
             </div>
           )}
@@ -395,6 +401,8 @@ export default function ShiftModal({
               </div>
             </div>
           )}
+
+          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
 
           {/* Form — kept mounted to preserve values; hidden during conflict/error */}
           <div style={showForm ? {} : { display: 'none' }}>
@@ -459,6 +467,7 @@ export default function ShiftModal({
               <Form.Item label="Shift type" style={{ marginBottom: 12 }}>
                 <Radio.Group
                   optionType="button"
+                  className="pc-shift-types"
                   buttonStyle="solid"
                   size="small"
                   value={preset}
@@ -552,13 +561,12 @@ export default function ShiftModal({
             {savePhase === 'conflict' && (
               <>
                 <Button variant="outline" onClick={handleGoBack}>Go Back</Button>
-                <Button onClick={handleConfirmAnyway}>Confirm Anyway</Button>
               </>
             )}
             {savePhase === 'error' && (
               <>
                 <Button variant="outline" onClick={() => setSavePhase('idle')}>Cancel</Button>
-                <Button onClick={handleConfirmAnyway}>Save Anyway</Button>
+                <Button onClick={handleSave}>Retry check</Button>
               </>
             )}
             {showForm && (
@@ -568,10 +576,11 @@ export default function ShiftModal({
                     variant="outline"
                     className="sm:mr-auto text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
                     onClick={handleDelete}
+                    disabled={savePhase === 'checking'}
                   >Delete</Button>
                 )}
                 <Button variant="outline" onClick={onClose}>Cancel</Button>
-                <Button onClick={handleSave} disabled={savePhase === 'checking'}>
+                <Button onClick={handleSave} disabled={savePhase === 'checking' || (requireAvailability && !!issue)}>
                   {savePhase === 'checking' ? 'Checking…' : 'Save'}
                 </Button>
               </>

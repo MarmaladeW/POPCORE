@@ -3,6 +3,7 @@ blueprints/schedule.py — employee profiles, availability, shifts, monthly hour
 """
 import datetime as _dt
 import secrets
+import re as _re
 
 from flask import Blueprint, request, jsonify, Response
 
@@ -110,7 +111,9 @@ def _require_store_param(con):
 
 
 def _require_store_body(con, data):
-    store_code = (data.get('store_code') or '').strip().upper()
+    if not isinstance(data.get('store_code'), str):
+        return None, None, (jsonify({'error': 'store_code is required'}), 400)
+    store_code = data['store_code'].strip().upper()
     if not store_code:
         return None, None, (jsonify({'error': 'store_code is required'}), 400)
     if store_code == 'ALL':
@@ -308,6 +311,155 @@ def schedule_trainees_delete(trainee_id):
 
 # ─── Availability ──────────────────────────────────────────────────────────────
 
+_AVAILABILITY_ANCHOR = _dt.date(2026, 9, 21)
+
+
+def _schedule_date(value):
+    if not isinstance(value, str) or not _re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value):
+        raise ValueError('Use dates in YYYY-MM-DD format')
+    return _dt.date.fromisoformat(value)
+
+
+def _schedule_times(start, end):
+    if any(not isinstance(t, str) or not _re.fullmatch(r'([01][0-9]|2[0-3]):[0-5][0-9]', t)
+           for t in (start, end)) or end <= start:
+        raise ValueError('Use HH:MM times with end after start')
+
+
+def _availability_day(data):
+    if not isinstance(data, dict):
+        raise ValueError('Each day must be an object')
+    _schedule_date(data.get('date'))
+    status = data.get('status', 'available')
+    if status not in ('available', 'unavailable'):
+        raise ValueError('Choose available or unavailable for each day')
+    if not isinstance(data.get('notes', ''), str):
+        raise ValueError('Notes must be text')
+    start, end = data.get('start_time', ''), data.get('end_time', '')
+    if status == 'available':
+        _schedule_times(start, end)
+    elif start != '' or end != '':
+        raise ValueError('Unavailable days must have empty times')
+    return (data['date'], start, end, data.get('notes', ''), status)
+
+
+def _availability_period(date):
+    return str(date - _dt.timedelta(days=(date - _AVAILABILITY_ANCHOR).days % 14))
+
+
+def _availability_rows(con, rows):
+    submissions = {}
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            key = (item['employee_id'], item['store_id'], _availability_period(_schedule_date(item['date'])))
+        except ValueError:
+            # Historical malformed dates remain readable, but never count as submitted.
+            item.update(submitted_at=None, submission_version=0)
+        else:
+            if key not in submissions:
+                submissions[key] = con.execute('''SELECT version,submitted_at FROM availability_submissions
+                    WHERE employee_id=? AND store_id=? AND period_start=?''', key).fetchone()
+            submission = submissions[key]
+            item.update(submitted_at=submission['submitted_at'] if submission else None,
+                        submission_version=submission['version'] if submission else 0)
+        result.append(item)
+    return result
+
+
+def _invalidate_availability(con, employee_id, store_id, date):
+    try:
+        period = _availability_period(_schedule_date(date))
+    except ValueError:
+        return
+    con.execute('''INSERT INTO availability_submissions(employee_id,store_id,period_start,version,submitted_at)
+        VALUES (?,?,?,1,NULL) ON CONFLICT(employee_id,store_id,period_start)
+        DO UPDATE SET version=version+1,submitted_at=NULL''', (employee_id,store_id,period))
+
+
+def _save_availability(con, employee_id, store_id, day):
+    date, start, end, notes, status = day
+    con.execute('''INSERT INTO availability(employee_id,store_id,date,start_time,end_time,notes,status)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(employee_id,date,store_id) DO UPDATE SET
+        start_time=excluded.start_time,end_time=excluded.end_time,notes=excluded.notes,
+        status=excluded.status,updated_at=datetime('now')''',
+        (employee_id,store_id,date,start,end,notes,status))
+
+
+def _submitted_availability_covers(con, employee_id, store_id, date, start, end):
+    row = con.execute('''SELECT a.start_time,a.end_time FROM availability a
+        JOIN availability_submissions s ON s.employee_id=a.employee_id AND s.store_id=a.store_id
+        WHERE a.employee_id=? AND a.store_id=? AND a.date=? AND a.status='available'
+        AND s.period_start=? AND s.submitted_at IS NOT NULL''',
+        (employee_id,store_id,date,_availability_period(_schedule_date(date)))).fetchone()
+    return row is not None and row['start_time'] <= start and row['end_time'] >= end
+
+
+@bp.route('/api/schedule/availability/period', methods=['GET', 'PUT'])
+@login_required
+def schedule_availability_period():
+    data = request.args if request.method == 'GET' else request.get_json(silent=True)
+    if not data or not hasattr(data, 'get'):
+        return jsonify({'error': 'A period and store are required'}), 400
+    subject = request.jwt_payload.get('sub')
+    if not isinstance(subject, str) or not subject.strip():
+        return jsonify({'error': 'Authenticated identity required'}), 401
+    try:
+        first = _schedule_date(data.get('period_start'))
+        if _availability_period(first) != str(first):
+            raise ValueError('period_start must start a two-week cycle anchored to 2026-09-21')
+        last = first + _dt.timedelta(days=13)
+        if 'employee_id' in data:
+            raise ValueError('Only your own availability can be submitted or read here')
+        days = []
+        if request.method == 'PUT':
+            if type(data.get('version')) is not int or data['version'] < 0:
+                raise ValueError('A nonnegative integer version is required')
+            if not isinstance(data.get('days'), list) or len(data['days']) != 14:
+                raise ValueError('Submit all 14 days')
+            if any(not isinstance(day, dict) or 'status' not in day for day in data['days']):
+                raise ValueError('An explicit status is required for all 14 days')
+            days = [_availability_day(day) for day in data['days']]
+            if {day[0] for day in days} != {str(first + _dt.timedelta(days=i)) for i in range(14)}:
+                raise ValueError('Submit each date in this cycle exactly once')
+    except (ValueError, OverflowError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    con = get_db()
+    try:
+        store_id, store_code, err = _require_store_body(con, data)
+        if err:
+            return err
+        emp = _get_or_create_employee(con, subject)
+        if not emp['is_active'] or emp['is_trainee']:
+            return jsonify({'error': 'Active employee required'}), 403
+        con.execute('BEGIN IMMEDIATE' if request.method == 'PUT' else 'BEGIN')
+        submission = con.execute('''SELECT version,submitted_at FROM availability_submissions
+            WHERE employee_id=? AND store_id=? AND period_start=?''', (emp['id'],store_id,str(first))).fetchone()
+        version = submission['version'] if submission else 0
+        if request.method == 'PUT':
+            if version != data['version']:
+                return jsonify({'error': 'Availability changed. Reload this period before resubmitting.', 'version': version}), 409
+            for day in days:
+                _save_availability(con, emp['id'], store_id, day)
+            con.execute('''INSERT INTO availability_submissions(employee_id,store_id,period_start,version,submitted_at)
+                VALUES (?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                ON CONFLICT(employee_id,store_id,period_start) DO UPDATE SET
+                version=excluded.version,submitted_at=excluded.submitted_at''', (emp['id'],store_id,str(first),version+1))
+        submission = con.execute('''SELECT version,submitted_at FROM availability_submissions
+            WHERE employee_id=? AND store_id=? AND period_start=?''', (emp['id'],store_id,str(first))).fetchone()
+        rows = con.execute('''SELECT * FROM availability WHERE employee_id=? AND store_id=?
+            AND date>=? AND date<=? ORDER BY date''', (emp['id'],store_id,str(first),str(last))).fetchall()
+        result = dict(period_start=str(first),period_end=str(last),store_code=store_code,
+                      version=submission['version'] if submission else 0,
+                      submitted_at=submission['submitted_at'] if submission else None,
+                      days=_availability_rows(con,rows))
+        con.commit()
+        return jsonify(result)
+    finally:
+        con.close()
+
+
 @bp.route('/api/schedule/availability/me', methods=['GET'])
 @login_required
 def schedule_avail_me():
@@ -328,9 +480,11 @@ def schedule_avail_me():
         query  += ' AND date >= ?'; params.append(start)
     if end:
         query  += ' AND date <= ?'; params.append(end)
+    con.execute('BEGIN')
     rows = con.execute(query, params).fetchall()
+    result = _availability_rows(con, rows)
     con.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(result)
 
 
 @bp.route('/api/schedule/availability', methods=['GET'])
@@ -359,9 +513,11 @@ def schedule_avail_all():
     if end:
         query  += ' AND a.date <= ?'; params.append(end)
     query += ' ORDER BY a.date, e.name'
+    con.execute('BEGIN')
     rows = con.execute(query, params).fetchall()
+    result = _availability_rows(con, rows)
     con.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(result)
 
 
 @bp.route('/api/schedule/availability', methods=['POST'])
@@ -369,33 +525,23 @@ def schedule_avail_all():
 def schedule_avail_upsert():
     auth0_id   = request.jwt_payload.get('sub', '')
     data       = request.get_json(silent=True) or {}
-    avail_date = data.get('date', '')
-    start_time = data.get('start_time', '')
-    end_time   = data.get('end_time', '')
-    notes      = data.get('notes', '')
-    if not avail_date or not start_time or not end_time:
-        return jsonify({'error': 'date, start_time, end_time required'}), 400
+    try:
+        day = _availability_day(data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
     if err:
         con.close()
         return err
     emp = _get_or_create_employee(con, auth0_id)
-    con.execute('''
-        INSERT INTO availability
-            (employee_id, date, start_time, end_time, notes, store_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(employee_id, date) DO UPDATE SET
-            start_time = excluded.start_time,
-            end_time   = excluded.end_time,
-            notes      = excluded.notes,
-            store_id   = excluded.store_id,
-            updated_at = datetime('now')
-    ''', (emp['id'], avail_date, start_time, end_time, notes, store_id))
+    con.execute('BEGIN IMMEDIATE')
+    _save_availability(con, emp['id'], store_id, day)
+    _invalidate_availability(con, emp['id'], store_id, day[0])
     con.commit()
     row = con.execute(
-        'SELECT * FROM availability WHERE employee_id = ? AND date = ?',
-        (emp['id'], avail_date)
+        'SELECT * FROM availability WHERE employee_id = ? AND date = ? AND store_id = ?',
+        (emp['id'], day[0], store_id)
     ).fetchone()
     con.close()
     return jsonify(dict(row)), 201
@@ -414,7 +560,9 @@ def schedule_avail_delete(avail_id):
     if row['employee_id'] != emp['id']:
         con.close()
         return jsonify({'error': 'Forbidden'}), 403
+    con.execute('BEGIN IMMEDIATE')
     con.execute('DELETE FROM availability WHERE id = ?', (avail_id,))
+    _invalidate_availability(con, emp['id'], row['store_id'], row['date'])
     con.commit()
     con.close()
     return jsonify({'ok': True})
@@ -538,6 +686,8 @@ def schedule_shifts_me():
 @role_required('manager')
 def schedule_shifts_create():
     data        = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object'}), 400
     assigned_by = request.jwt_payload.get('sub', '')
     employee_id = data.get('employee_id')
     shift_date  = data.get('date', '')
@@ -547,7 +697,19 @@ def schedule_shifts_create():
     position    = str(data.get('position') or '').strip()[:40]
     if not employee_id or not shift_date or not start_time or not end_time:
         return jsonify({'error': 'employee_id, date, start_time, end_time required'}), 400
+    try:
+        _schedule_date(shift_date)
+        _schedule_times(start_time, end_time)
+        if type(employee_id) is not int or employee_id <= 0:
+            raise ValueError('employee_id must be a positive integer')
+        if not isinstance(data.get('notes', ''), str):
+            raise ValueError('Notes must be text')
+        if 'require_availability' in data and type(data['require_availability']) is not bool:
+            raise ValueError('require_availability must be a boolean')
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     con = get_db()
+    con.execute('BEGIN IMMEDIATE')
     store_id, store_code, err = _require_store_body(con, data)
     if err:
         con.close()
@@ -562,19 +724,16 @@ def schedule_shifts_create():
     if not emp['is_schedulable']:
         con.close()
         return jsonify({'error': 'Employee is disabled for shift assignment'}), 409
-    con.execute('''
-        INSERT INTO shifts
-            (employee_id, date, start_time, end_time, assigned_by, notes, store_id, position, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(employee_id, date) DO UPDATE SET
-            start_time  = excluded.start_time,
-            end_time    = excluded.end_time,
-            assigned_by = excluded.assigned_by,
-            notes       = excluded.notes,
-            store_id    = excluded.store_id,
-            position    = excluded.position,
-            updated_at  = datetime('now')
-    ''', (employee_id, shift_date, start_time, end_time, assigned_by, notes, store_id, position))
+    if con.execute('SELECT id FROM shifts WHERE employee_id=? AND date=?', (employee_id,shift_date)).fetchone():
+        con.close()
+        return jsonify({'error': 'Employee already has a shift on this date. Edit the existing shift.'}), 409
+    if data.get('require_availability') and not _submitted_availability_covers(con, employee_id,store_id,shift_date,start_time,end_time):
+        con.close()
+        return jsonify({'error': 'Submitted availability no longer covers these hours. Reload availability.'}), 409
+    con.execute("""INSERT INTO shifts
+        (employee_id,date,start_time,end_time,assigned_by,notes,store_id,position)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (employee_id,shift_date,start_time,end_time,assigned_by,notes,store_id,position))
     con.commit()
     row = con.execute(
         'SELECT * FROM shifts WHERE employee_id = ? AND date = ?',
@@ -588,7 +747,10 @@ def schedule_shifts_create():
 @role_required('manager')
 def schedule_shifts_update(shift_id):
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object'}), 400
     con  = get_db()
+    con.execute('BEGIN IMMEDIATE')
     row  = con.execute('SELECT * FROM shifts WHERE id = ?', (shift_id,)).fetchone()
     if not row:
         con.close()
@@ -605,6 +767,20 @@ def schedule_shifts_update(shift_id):
             con.close()
             return err
         updates['store_id'] = store_id
+    try:
+        _schedule_times(updates.get('start_time', row['start_time']), updates.get('end_time', row['end_time']))
+        if not isinstance(data.get('notes', ''), str):
+            raise ValueError('Notes must be text')
+        if 'require_availability' in data and type(data['require_availability']) is not bool:
+            raise ValueError('require_availability must be a boolean')
+    except ValueError as exc:
+        con.close()
+        return jsonify({'error': str(exc)}), 400
+    if data.get('require_availability') and not _submitted_availability_covers(
+            con,row['employee_id'],updates.get('store_id',row['store_id']),row['date'],
+            updates.get('start_time',row['start_time']),updates.get('end_time',row['end_time'])):
+        con.close()
+        return jsonify({'error': 'Submitted availability no longer covers these hours. Reload availability.'}), 409
     if updates:
         set_parts = []
         vals: list = []
@@ -685,16 +861,15 @@ def schedule_conflicts():
 
 # ─── Period notes + coverage checklist ────────────────────────────────────────
 # A "period" is what the manager calendar currently shows, keyed as
-# month:YYYY-MM, week:YYYY-MM-DD (week start) or day:YYYY-MM-DD.
+# month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD.
 
-import re as _re
-_PERIOD_KEY_RE = _re.compile(r'^(month:\d{4}-\d{2}|(week|day):\d{4}-\d{2}-\d{2})$')
+_PERIOD_KEY_RE = _re.compile(r'^(month:\d{4}-\d{2}|(fortnight|week|day):\d{4}-\d{2}-\d{2})$')
 
 
 def _require_period_key():
     key = (request.args.get('key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
-        return None, (jsonify({'error': 'key must be month:YYYY-MM, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400)
+        return None, (jsonify({'error': 'key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400)
     return key, None
 
 
@@ -718,7 +893,7 @@ def schedule_notes_put():
     data = request.get_json(silent=True) or {}
     key  = str(data.get('period_key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
-        return jsonify({'error': 'period_key must be month:YYYY-MM, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
+        return jsonify({'error': 'period_key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
     content    = str(data.get('content') or '')[:5000]
     updated_by = request.jwt_payload.get('sub', '')
     con = get_db()
@@ -757,7 +932,7 @@ def schedule_checklist_put():
     data = request.get_json(silent=True) or {}
     key  = str(data.get('period_key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
-        return jsonify({'error': 'period_key must be month:YYYY-MM, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
+        return jsonify({'error': 'period_key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
     try:
         employee_id = int(data.get('employee_id'))
     except (TypeError, ValueError):

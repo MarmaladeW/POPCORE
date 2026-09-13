@@ -3,8 +3,7 @@ import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
-import type { DateClickArg } from '@fullcalendar/interaction'
-import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core'
+import type { DatesSetArg, EventInput } from '@fullcalendar/core'
 import dayjs from 'dayjs'
 import { CalendarPlus, Copy, RotateCw } from 'lucide-react'
 import { message } from 'antd'
@@ -14,30 +13,25 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import {
-  getMyAvailability, getMyShifts, getCalendarFeed, getScheduleConfig, resetCalendarFeed,
-  type Availability, type Shift,
+  getMyShifts, getCalendarFeed, getScheduleConfig, resetCalendarFeed,
+  type Shift,
 } from './scheduleApi'
-import AvailabilityModal from './AvailabilityModal'
 import {
   DEFAULT_STORE_HOURS, businessHoursFrom, gridWindow, parseStoreOpenHours, unionHours,
   type OpenHoursConfig,
 } from './openHours'
-import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
 export default function EmployeeView() {
-  const { selectedStore } = useAppStore()
   const calRef = useRef<FullCalendar>(null)
   const [events, setEvents] = useState<EventInput[]>([])
-  const [modalOpen, setModalOpen] = useState(false)
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
-  const [selectedAvail, setSelectedAvail] = useState<Availability | null>(null)
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
   const [syncOpen, setSyncOpen] = useState(false)
   const [feedUrl, setFeedUrl] = useState<string | null>(null)
   // This calendar mixes stores, so shade with the widest hours across stores
   const [openHours, setOpenHours] = useState<OpenHoursConfig>(unionHours(DEFAULT_STORE_HOURS))
   const [viewType, setViewType] = useState('dayGridMonth')
+  const [loadError, setLoadError] = useState(false)
   const isMobile = useIsMobile()
   const [msgApi, msgCtx] = message.useMessage()
 
@@ -47,36 +41,16 @@ export default function EmployeeView() {
       .catch(() => {})
   }, [])
 
-  const availByDate = useRef<Record<string, Availability>>({})
 
   const loadEvents = useCallback(async (start: string, end: string) => {
-    const sc = selectedStore?.code
-    const [avails, shifts]: [Availability[], Shift[]] = await Promise.all([
-      getMyAvailability(start, end, sc),
-      getMyShifts({ start, end, store_code: sc }),
-    ])
-
-    availByDate.current = {}
+    setLoadError(false)
+    const shifts: Shift[] = await getMyShifts({ start, end, store_code: 'ALL' })
     const evts: EventInput[] = []
-
-    for (const a of avails) {
-      availByDate.current[a.date] = a
-      evts.push({
-        id: `avail-${a.id}`,
-        title: `Available ${a.start_time}–${a.end_time}`,
-        start: `${a.date}T${a.start_time}`,
-        end: `${a.date}T${a.end_time}`,
-        backgroundColor: '#10B981',
-        borderColor: '#059669',
-        textColor: '#fff',
-        extendedProps: { type: 'availability', avail: a },
-      })
-    }
 
     for (const s of shifts) {
       evts.push({
         id: `shift-${s.id}`,
-        title: `Shift ${s.start_time}–${s.end_time}${s.position ? ` · ${s.position}` : ''}`,
+        title: `${s.store_code || ''} ${s.start_time}–${s.end_time}${s.position ? ` · ${s.position}` : ''}`,
         start: `${s.date}T${s.start_time}`,
         end: `${s.date}T${s.end_time}`,
         backgroundColor: '#6366F1',
@@ -95,34 +69,10 @@ export default function EmployeeView() {
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       setCurrentRange({ start, end })
       setViewType(arg.view.type)
-      loadEvents(start, end)
+      loadEvents(start, end).catch(() => { setEvents([]); setLoadError(true) })
     },
     [loadEvents]
   )
-
-  const handleDateClick = useCallback((arg: DateClickArg) => {
-    setSelectedDate(arg.dateStr)
-    setSelectedAvail(availByDate.current[arg.dateStr] ?? null)
-    setModalOpen(true)
-  }, [])
-
-  const handleEventClick = useCallback((arg: EventClickArg) => {
-    const { type, avail } = arg.event.extendedProps as {
-      type: string
-      avail?: Availability
-    }
-    if (type === 'availability' && avail) {
-      setSelectedDate(avail.date)
-      setSelectedAvail(avail)
-      setModalOpen(true)
-    }
-  }, [])
-
-  const handleSaved = useCallback(() => {
-    if (currentRange) {
-      loadEvents(currentRange.start, currentRange.end)
-    }
-  }, [loadEvents, currentRange])
 
   const openSyncDialog = async () => {
     setSyncOpen(true)
@@ -159,12 +109,9 @@ export default function EmployeeView() {
   return (
     <div className="space-y-3">
       {msgCtx}
+      {loadError && <div role="alert">Could not load your shifts. <Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end).catch(() => setLoadError(true))}>Retry</Button></div>}
       {/* Legend + calendar sync */}
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1.5" title="Days you marked as available">
-          <span className="size-3 rounded-sm shrink-0 bg-emerald-500" />
-          Availability
-        </span>
         <span className="flex items-center gap-1.5" title="Shifts assigned by a manager">
           <span className="size-3 rounded-sm shrink-0 bg-primary" />
           Assigned shift
@@ -201,8 +148,6 @@ export default function EmployeeView() {
           firstDay={1}
           events={events}
           datesSet={handleDatesSet}
-          dateClick={handleDateClick}
-          eventClick={handleEventClick}
           eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
           businessHours={businessHoursFrom(openHours)}
           allDaySlot={false}
@@ -213,14 +158,6 @@ export default function EmployeeView() {
           slotLabelInterval="01:00"
         />
       </div>
-
-      <AvailabilityModal
-        open={modalOpen}
-        date={selectedDate}
-        existing={selectedAvail}
-        onClose={() => setModalOpen(false)}
-        onSaved={handleSaved}
-      />
 
       {/* Calendar sync dialog */}
       <Dialog open={syncOpen} onOpenChange={(o) => !o && setSyncOpen(false)}>
