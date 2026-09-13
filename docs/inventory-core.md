@@ -12,6 +12,12 @@ Manufacturer barcodes may intentionally resolve to multiple confirmed designs. I
 
 Inventory locations are separate from Schedule store membership. The migration creates DT floor/upstairs and MK floor/warehouse only. An Auth0 subject needs an explicit `inventory_access` row for each store, in addition to a sufficient JWT role. MT has no invented inventory locations.
 
+Admins manage these grants under **Users → Store operations access**. Check DT or MK on the relevant user's row (including your own) to grant access; uncheck to revoke. Changes save immediately and the checkbox updates after the server confirms. Retry Today after granting access. **Scheduling stores** is a separate control and does not grant operations access. Granting access does not enable authoritative stock or verify opening counts.
+
+`GET /api/inventory/access` lists operations-ready stores and existing grants for admins, including admins who have no store grant yet. The existing `POST` grants one `auth0_sub`/`store_id` pair; `DELETE` idempotently revokes just that pair. All three methods require the admin role. Failed reads show an error; ambiguous writes reread saved grants before allowing another change.
+
+Local verification: `test_inventory_access.py` covers role boundaries, self-grants, per-store revocation, idempotency and validation. `tests/browser/check_user_access.py` uses disposable SQLite data and mocked authentication to check Users controls, grant/revoke effects on Today, error recovery and desktop/mobile layouts. This does not grant access to live accounts or verify live Auth0.
+
 ## Posting contract
 
 `POST /api/inventory/commands` requires an `Idempotency-Key` header and accepts receipt, move, consume, open_set, correction, and restock_complete commands. The public route rejects opening commands. Each line names a product, positive native quantity, affected location/disposition, and expected balance versions. Version zero means the balance does not yet exist.

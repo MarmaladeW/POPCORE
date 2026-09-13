@@ -65,6 +65,7 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: python popcore_app/tests/browser/check_foundation.py
       - run: python popcore_app/tests/browser/check_schedule_calendar.py
+      - run: python popcore_app/tests/browser/check_user_access.py
       - run: python popcore_app/tests/browser/check_inventory_core.py
       - run: python popcore_app/tests/browser/check_goods_flow.py
       - run: python popcore_app/tests/browser/check_store_day.py

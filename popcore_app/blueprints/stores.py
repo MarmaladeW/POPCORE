@@ -158,7 +158,22 @@ def list_inventory_locations():
         con.close()
 
 
-@bp.route('/api/inventory/access', methods=['POST'])
+@bp.route('/api/inventory/access', methods=['GET'])
+@role_required('admin')
+def list_inventory_access():
+    con = get_db()
+    try:
+        stores = con.execute('''SELECT s.id,s.code,s.name FROM stores s
+            WHERE s.is_active=1 AND EXISTS (SELECT 1 FROM inventory_locations l
+                WHERE l.store_id=s.id AND l.is_active=1) ORDER BY s.id''').fetchall()
+        grants = con.execute('SELECT auth0_sub,store_id FROM inventory_access ORDER BY auth0_sub,store_id').fetchall()
+        return jsonify({'stores': [dict(row) for row in stores],
+                        'grants': [dict(row) for row in grants]})
+    finally:
+        con.close()
+
+
+@bp.route('/api/inventory/access', methods=['POST', 'DELETE'])
 @role_required('admin')
 def grant_inventory_access():
     data = request.get_json(silent=True)
@@ -175,9 +190,14 @@ def grant_inventory_access():
                         'code': 'invalid_input'}), 400
     con = get_db()
     try:
+        if request.method == 'DELETE':
+            con.execute('DELETE FROM inventory_access WHERE auth0_sub=? AND store_id=?',
+                        (subject.strip(), store_id))
+            con.commit()
+            return jsonify({'ok': True, 'auth0_sub': subject.strip(), 'store_id': store_id})
         if not con.execute(
-            """SELECT 1 FROM inventory_locations
-               WHERE store_id=? AND is_active=1 LIMIT 1""", (store_id,)
+            """SELECT 1 FROM inventory_locations l JOIN stores s ON s.id=l.store_id
+               WHERE l.store_id=? AND l.is_active=1 AND s.is_active=1 LIMIT 1""", (store_id,)
         ).fetchone():
             return jsonify({'error': 'Inventory store not found',
                             'code': 'inventory_store_missing'}), 404
