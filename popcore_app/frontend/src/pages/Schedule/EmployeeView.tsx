@@ -6,13 +6,14 @@ import interactionPlugin from '@fullcalendar/interaction'
 import type { DatesSetArg, EventInput } from '@fullcalendar/core'
 import dayjs from 'dayjs'
 import { CalendarPlus, Copy, RotateCw } from 'lucide-react'
-import { Alert, message } from 'antd'
+import { Alert, Input, message } from 'antd'
+import { useHasRole } from '../../auth/useRole'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import {
-  getMyShifts, getCalendarFeed, getScheduleConfig, resetCalendarFeed,
+  getMyShifts, getCalendarFeed, getScheduleConfig, resetCalendarFeed, updateScheduleReminder,
   type Shift,
 } from './scheduleApi'
 import {
@@ -21,6 +22,12 @@ import {
 import { shiftKindLabel } from './schedulePresentation'
 
 export default function EmployeeView() {
+  const canEditReminder = useHasRole('manager')
+  const [reminder, setReminder] = useState('提前十分钟到！')
+  const [reminderReady, setReminderReady] = useState(false)
+  const [reminderError, setReminderError] = useState('')
+  const [reminderDraft, setReminderDraft] = useState<string | null>(null)
+  const [savingReminder, setSavingReminder] = useState(false)
   const calRef = useRef<FullCalendar>(null)
   const [events, setEvents] = useState<EventInput[]>([])
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
@@ -32,11 +39,31 @@ export default function EmployeeView() {
   const [loadError, setLoadError] = useState(false)
   const [msgApi, msgCtx] = message.useMessage()
 
-  useEffect(() => {
+  const loadConfig = () => {
+    setReminderError('')
     getScheduleConfig()
-      .then(cfg => setStoreHours(parseStoreOpenHours(cfg.schedule_open_hours)))
-      .catch(() => {})
-  }, [])
+      .then(cfg => {
+        setStoreHours(parseStoreOpenHours(cfg.schedule_open_hours))
+        setReminder(cfg.schedule_reminder)
+        setReminderReady(true)
+      })
+      .catch(() => setReminderError('Could not load the latest reminder.'))
+  }
+  useEffect(loadConfig, [])
+
+  const saveReminder = async () => {
+    if (reminderDraft === null) return
+    setSavingReminder(true)
+    setReminderError('')
+    try {
+      const saved = await updateScheduleReminder(reminderDraft)
+      setReminder(saved.content)
+      setReminderDraft(null)
+      msgApi.success('Reminder saved for everyone')
+    } catch {
+      setReminderError('Could not save the reminder. Your edits are still here; retry saving.')
+    } finally { setSavingReminder(false) }
+  }
 
 
   const loadEvents = useCallback(async (start: string, end: string) => {
@@ -105,7 +132,19 @@ export default function EmployeeView() {
   return (
     <div className="space-y-3">
       {msgCtx}
-      <Alert type="warning" showIcon message={<strong style={{ fontSize: 20 }}>提前十分钟到！</strong>} />
+      <Alert type="warning" showIcon className="pc-shift-reminder"
+        message={<strong style={{ fontSize: 20, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{reminder}</strong>}
+        action={canEditReminder && reminderDraft === null && <Button variant="outline" disabled={!reminderReady} onClick={() => setReminderDraft(reminder)}>Edit reminder</Button>}
+        description={reminderDraft !== null && <div className="space-y-2">
+          <label htmlFor="schedule-reminder">Reminder for all employees (both stores)</label>
+          <Input.TextArea id="schedule-reminder" value={reminderDraft} maxLength={1000} showCount autoSize={{ minRows: 2, maxRows: 6 }} disabled={savingReminder} onChange={event => setReminderDraft(event.target.value)} />
+          <div className="flex gap-2 pt-2">
+            <Button disabled={savingReminder || !reminderDraft.trim()} onClick={saveReminder}>{savingReminder ? 'Saving…' : 'Save reminder'}</Button>
+            <Button variant="outline" disabled={savingReminder} onClick={() => { setReminderDraft(null); setReminderError('') }}>Cancel</Button>
+          </div>
+        </div>}
+      />
+      {reminderError && <Alert type="error" showIcon message={reminderError} action={!reminderReady && <Button variant="outline" onClick={loadConfig}>Retry reminder</Button>} />}
       {loadError && <div role="alert">Could not load your shifts. <Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end).catch(() => setLoadError(true))}>Retry</Button></div>}
       {/* Legend + calendar sync */}
       <div className="flex items-center gap-4 text-xs text-muted-foreground">

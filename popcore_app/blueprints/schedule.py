@@ -125,6 +125,8 @@ def _require_store_body(con, data):
     return store_id, store_code, None
 
 
+DEFAULT_SCHEDULE_REMINDER = '提前十分钟到！'
+
 # ─── Schedule config (readable by any logged-in user) ─────────────────────────
 
 @bp.route('/api/schedule/config', methods=['GET'])
@@ -134,14 +136,35 @@ def schedule_config():
     manager-only, but every employee's calendar needs opening hours etc."""
     from blueprints.settings import SETTINGS_DEFAULTS
     keys = ('schedule_month_start_day', 'schedule_required_staff', 'schedule_open_hours',
-            'schedule_shift_presets', 'schedule_positions')
+            'schedule_shift_presets', 'schedule_positions', 'schedule_reminder')
     con = get_db()
     result = {}
     for key in keys:
         row = con.execute('SELECT value FROM app_settings WHERE key = ?', (key,)).fetchone()
-        result[key] = row['value'] if row else SETTINGS_DEFAULTS.get(key, '')
+        result[key] = row['value'] if row else SETTINGS_DEFAULTS.get(key, DEFAULT_SCHEDULE_REMINDER if key == 'schedule_reminder' else '')
     con.close()
     return jsonify(result)
+
+
+@bp.route('/api/schedule/reminder', methods=['PUT'])
+@role_required('manager')
+def update_schedule_reminder():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) != {'content'}:
+        return jsonify({'error': 'Provide only reminder content'}), 400
+    content = data['content']
+    if not isinstance(content, str) or not content.strip() or len(content) > 1000:
+        return jsonify({'error': 'Reminder must be 1–1000 characters'}), 400
+    con = get_db()
+    try:
+        con.execute(
+            "INSERT INTO app_settings (key,value) VALUES ('schedule_reminder',?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (content.strip(),),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return jsonify({'content': content.strip()})
 
 
 # ─── Employee profile ──────────────────────────────────────────────────────────

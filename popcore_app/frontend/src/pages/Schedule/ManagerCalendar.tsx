@@ -87,6 +87,7 @@ export default function ManagerCalendar() {
   const storesKey  = realStores.map((s) => s.code).join(',')
 
   const calRefs = useRef<Record<string, FullCalendar | null>>({})
+  const assignmentRef = useRef<HTMLElement>(null)
 
   const [employees,     setEmployees]     = useState<Employee[]>([])
   const [empStores,     setEmpStores]     = useState<Record<number, string[]>>({})
@@ -360,20 +361,23 @@ export default function ManagerCalendar() {
     [loadEvents]
   )
 
-  const handleDateClickFor = (storeCode: string) => (arg: DateClickArg) => {
-    const dateStr = arg.dateStr.slice(0, 10)
+  const selectDay = useCallback((storeCode: string, dateStr: string) => {
     setModalStoreCode(storeCode)
     setSelectedDate(dateStr)
     setSelectedShift(null)
     setAvailForDate(availsByDate.current[dateStr] ?? [])
     setSelectedEmployeeId(undefined)
-  }
+    if (window.matchMedia('(max-width: 1100px)').matches) {
+      requestAnimationFrame(() => assignmentRef.current?.scrollIntoView({ block: 'start' }))
+    }
+  }, [])
+
+  const handleDateClickFor = (storeCode: string) => (arg: DateClickArg) => selectDay(storeCode, arg.dateStr.slice(0, 10))
 
   const handleEventClick = useCallback((arg: EventClickArg) => {
     const { type, shift_id, date, store_code } = arg.event.extendedProps as { type: string; shift_id?: number; date?: string; store_code?: string }
     if (type === 'availability' && date && store_code) {
-      setSelectedDate(date); setModalStoreCode(store_code); setSelectedShift(null)
-      setAvailForDate(availsByDate.current[date] ?? [])
+      selectDay(store_code, date)
     }
     if (type === 'shift' && shift_id != null) {
       const shift = shiftById.current[shift_id]
@@ -385,7 +389,7 @@ export default function ManagerCalendar() {
         setModalOpen(true)
       }
     }
-  }, [])
+  }, [selectDay])
 
   const handleSaved = useCallback(() => {
     if (currentRange) {
@@ -800,6 +804,8 @@ export default function ManagerCalendar() {
       {realStores.length === 0 && (
         <div className="text-sm text-muted-foreground px-1">Loading stores…</div>
       )}
+      <div className="pc-assignment-workspace">
+      <div className="pc-store-calendars">
       {realStores.map((st, i) => (
         <section key={st.code} className="space-y-1.5">
           <header className="flex items-center gap-2 pt-1">
@@ -824,17 +830,16 @@ export default function ManagerCalendar() {
               initialDate={cycleStart(dayjs().format('YYYY-MM-DD'))}
               views={{ dayGridFortnight: { type: 'dayGrid', duration: { weeks: 2 }, dateIncrement: { weeks: 2 }, dateAlignment: 'week' } }}
               headerToolbar={false}
-              height="auto"
+              height={isMobile ? 'auto' : viewType === 'dayGridFortnight' ? 280 : 340}
               timeZone="local"
               firstDay={1}
               events={visibleEvents(eventsByStore[st.code] ?? [])}
               datesSet={i === 0 ? handleDatesSet : undefined}
               dateClick={handleDateClickFor(st.code)}
+              dayCellClassNames={arg => dayjs(arg.date).format('YYYY-MM-DD') === selectedDate ? ['pc-selected-day'] : []}
               dayCellContent={arg => <button type="button" className="pc-calendar-date" aria-label={`View ${dayjs(arg.date).format('YYYY-MM-DD')} ${st.code}`} onClick={event => {
                 event.stopPropagation()
-                const date = dayjs(arg.date).format('YYYY-MM-DD')
-                setModalStoreCode(st.code); setSelectedDate(date); setSelectedShift(null)
-                setAvailForDate(availsByDate.current[date] ?? []); setSelectedEmployeeId(undefined)
+                selectDay(st.code, dayjs(arg.date).format('YYYY-MM-DD'))
               }}>{dayjs(arg.date).format('D')}</button>}
               eventClick={handleEventClick}
               eventContent={renderEvent}
@@ -850,8 +855,21 @@ export default function ManagerCalendar() {
               slotLabelInterval="01:00"
             />
           </div>
-          {selectedDate && modalStoreCode === st.code && !loading && !loadError && <ScheduleDayPanel
-            date={selectedDate} storeCode={st.code} employees={employees}
+        </section>
+      ))}
+      </div>
+      <aside ref={assignmentRef} className="pc-assignment-sidebar" aria-label="Shift assignment panel">
+        {selectedDate && modalStoreCode ? <>
+          <div className="pc-assignment-store-switch" aria-label="Assignment store">
+            {realStores.map(store => <Button key={store.code}
+              variant={modalStoreCode === store.code ? 'default' : 'outline'}
+              aria-pressed={modalStoreCode === store.code}
+              onClick={() => { setModalStoreCode(store.code); setSelectedShift(null); setSelectedEmployeeId(undefined) }}
+            >{store.name || store.code}</Button>)}
+            <Button variant="outline" aria-label="Close day details" onClick={() => setSelectedDate(null)}>×</Button>
+          </div>
+          {loading ? <p role="status">Loading day details…</p> : loadError ? <p role="alert">Retry loading the schedule to assign shifts.</p> : <ScheduleDayPanel
+            date={selectedDate} storeCode={modalStoreCode} employees={employees}
             availability={availsByDate.current[selectedDate] ?? []} shifts={Object.values(shiftById.current)}
             onAssign={employeeId => {
               setSelectedEmployeeId(employeeId); setSelectedShift(null)
@@ -859,8 +877,9 @@ export default function ManagerCalendar() {
             }}
             onEdit={shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) }}
           />}
-        </section>
-      ))}
+        </> : <div className="pc-assignment-placeholder"><strong>Assign shifts</strong><p>Select a date in either store's calendar to review availability and assign employees.</p></div>}
+      </aside>
+      </div>
       {isTimeGrid && realStores.length > 0 && (
         <p className="text-xs text-muted-foreground px-1">
           Grey areas are outside opening hours. Red areas have fewer staff scheduled than

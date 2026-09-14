@@ -45,7 +45,26 @@
 
 .pc-calendar-date { border: 0; border-radius: 4px; padding: 6px; min-width: 36px; min-height: 36px; background: transparent; color: #20242D; font: inherit; cursor: pointer; }
 .pc-personal-shift { display: flex; flex-direction: column; padding: 3px; white-space: normal; overflow-wrap: anywhere; }
+.pc-assignment-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; align-items: start; gap: 16px; }
+.pc-store-calendars { display: grid; gap: 16px; min-width: 0; }
+.pc-assignment-sidebar { position: sticky; top: 80px; min-width: 0; max-height: calc(100dvh - 96px); overflow-y: auto; scroll-margin-top: 80px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; }
+.pc-assignment-sidebar .pc-schedule-detail { margin: 0; border: 0; padding: 12px; }
+.pc-assignment-sidebar .pc-schedule-people { grid-template-columns: 1fr; gap: 16px; }
+.pc-assignment-sidebar .pc-page-actions { display: grid; gap: 8px; margin-bottom: 16px; }
+.pc-assignment-sidebar h4 { margin: 0; }
+.pc-assignment-placeholder { padding: 16px; }
+.pc-assignment-placeholder p { margin: 8px 0 0; color: #596273; }
+.pc-assignment-store-switch { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px; border-bottom: 1px solid #DDE2EA; }
+.pc-assignment-store-switch button { font-size: 12px; }
+.pc-selected-day { box-shadow: inset 0 0 0 2px #4F46E5; }
+.pc-shift-reminder .ant-alert-content { min-width: 0; }
+@media (max-width: 1100px) {
+  .pc-assignment-workspace { grid-template-columns: minmax(0, 1fr); }
+  .pc-assignment-sidebar { position: static; max-height: 420px; grid-row: 1; }
+}
 @media (max-width: 767px) {
+  .pc-shift-reminder { flex-wrap: wrap; gap: 8px; }
+  .pc-shift-reminder .ant-alert-action { margin-inline-start: 0; }
   .pc-mobile-shift { height: auto; min-height: 44px; flex-direction: column; padding: 3px 1px; line-height: 1.2; }
   .pc-mobile-shift-kind { font-size: 10px; font-weight: 600; white-space: normal; text-align: center; letter-spacing: 0; }
   .pc-personal-shift { font-size: 10px; line-height: 1.3; }
