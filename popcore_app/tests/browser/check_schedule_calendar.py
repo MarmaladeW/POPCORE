@@ -38,6 +38,8 @@ async def run_checks(browser, case):
         for offset, end in ((2, '22:00'), (3, '17:00')):
             con.execute('''INSERT INTO shifts(employee_id,store_id,date,start_time,end_time,assigned_by)
                 VALUES (101,1,?,'12:00',?,'fixture')''', (str(START + timedelta(days=offset)), end))
+        con.execute('''INSERT INTO shifts(employee_id,store_id,date,start_time,end_time,assigned_by)
+            VALUES (103,(SELECT id FROM stores WHERE code='MK'),?,'12:00','21:00','fixture')''', (str(START + timedelta(days=5)),))
         con.commit()
     days = [{'date': str(START + timedelta(days=i)), 'status': 'available', 'start_time': '12:00', 'end_time': '17:00', 'notes': ''} for i in range(14)]
     days[1].update(status='unavailable', start_time='', end_time='', notes='Class all day')
@@ -107,12 +109,36 @@ async def run_checks(browser, case):
     await page.get_by_role('button', name='Submit two weeks', exact=True).click()
     await expect(page.get_by_role('status').filter(has_text='Submitted')).to_be_visible()
     await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
+    await expect(page.get_by_text('提前十分钟到！', exact=True)).to_be_visible()
     await expect(page.locator('.pc-personal-shift').filter(has_text='Full day').first).to_be_visible()
     await expect(page.locator('.pc-personal-shift').filter(has_text='Half day (AM)').first).to_be_visible()
     await page.screenshot(path=OUT/'my-shifts-390.png', full_page=True, animations='disabled')
     await context.close()
 
     context, page = await page_for('manager')
+    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await page.get_by_role('button', name='Edit reminder', exact=True).click()
+    await page.get_by_label('Reminder for all employees (both stores)', exact=True).fill('提前十分钟到！\nPlease check your shift time.')
+    await page.route('**/api/schedule/reminder', lambda route: route.fulfill(status=500, content_type='application/json', body='{}'))
+    await page.get_by_role('button', name='Save reminder', exact=True).click()
+    await expect(page.get_by_text('Could not save the reminder. Your edits are still here; retry saving.', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Reminder for all employees (both stores)', exact=True)).to_have_value('提前十分钟到！\nPlease check your shift time.')
+    await page.set_viewport_size({'width':390,'height':980})
+    assert await page.evaluate('document.body.scrollWidth') <= 392
+    await page.wait_for_function("[...document.querySelectorAll('.ant-tabs-tabpane-active .fc table')].every(table => table.getBoundingClientRect().width < 390)")
+    await page.screenshot(path=OUT/'reminder-editor-390.png', full_page=True, animations='disabled')
+    await page.set_viewport_size({'width':1440,'height':980})
+    await page.unroute('**/api/schedule/reminder')
+    await page.get_by_role('button', name='Save reminder', exact=True).click()
+    await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
+    await page.reload()
+    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
+    await page.get_by_role('button', name='Edit reminder', exact=True).click()
+    await page.get_by_label('Reminder for all employees (both stores)', exact=True).fill('Discard this')
+    await page.get_by_role('button', name='Cancel', exact=True).click()
+    await expect(page.get_by_text('Discard this', exact=True)).to_have_count(0)
     await page.get_by_role('tab', name='Availability', exact=True).click()
     switcher = page.get_by_label('Availability employee', exact=True).first
     await switcher.click()
@@ -152,6 +178,18 @@ async def run_checks(browser, case):
     await page.keyboard.press('Enter')
     panel = page.get_by_role('region', name=f'Schedule details {START} DT')
     await expect(panel.get_by_text('Not submitted', exact=True).first).to_be_visible()
+    workspace = page.locator('.pc-assignment-workspace')
+    await workspace.scroll_into_view_if_needed()
+    calendars = page.locator('.pc-store-calendars > section')
+    await expect(calendars).to_have_count(2)
+    first, second, side = await calendars.nth(0).bounding_box(), await calendars.nth(1).bounding_box(), await panel.bounding_box()
+    assert second['y'] + second['height'] <= 980, (first, second, side)
+    assert side['x'] >= first['x'] + first['width'], (first, side)
+    await page.screenshot(path=OUT/'assignment-workspace-1440.png', full_page=True, animations='disabled')
+    await page.get_by_role('button', name=f'View {START} MK', exact=True).click()
+    await expect(page.get_by_role('region', name=f'Schedule details {START} MK')).to_be_visible()
+    await expect(page.locator('.pc-schedule-detail')).to_have_count(1)
+    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
     celia = panel.locator('.pc-schedule-person').filter(has_text='Celia')
     await celia.get_by_role('button', name='Assign', exact=True).click()
     dialog = page.get_by_role('dialog')
@@ -186,6 +224,11 @@ async def run_checks(browser, case):
     with closing(case.connect()) as con:
         assert con.execute('SELECT end_time FROM shifts WHERE employee_id=103 AND date=?', (str(START),)).fetchone()[0] == '22:00'
     await page.get_by_role('button', name='Assigned shifts', exact=True).click()
+    await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason')).to_be_visible()
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+    controls = await page.locator('.pc-assignment-store-switch').bounding_box()
+    assert controls['y'] >= 64, controls
+
     for width in (1440,768,390):
         await page.set_viewport_size({'width':width,'height':980})
         await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
@@ -194,12 +237,24 @@ async def run_checks(browser, case):
             await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Half day (AM)').first).to_be_visible()
         assert await page.evaluate('document.body.scrollWidth') <= width + 2
         await page.screenshot(path=OUT / f'manager-{width}.png', full_page=True, animations='disabled')
+    await page.get_by_role('button', name=f'View {START + timedelta(days=1)} MK', exact=True).click()
+    mobile_panel = await page.locator('.pc-assignment-sidebar').bounding_box()
+    assert 64 <= mobile_panel['y'] < 200, mobile_panel
+    await expect(page.get_by_role('region', name=f'Schedule details {START + timedelta(days=1)} MK')).to_be_visible()
+    # Re-selecting the same date must also bring its controls back into view.
+    await page.get_by_role('button', name=f'View {START + timedelta(days=1)} MK', exact=True).click()
+    await page.wait_for_function("document.querySelector('.pc-assignment-sidebar').getBoundingClientRect().top < 200")
     await page.evaluate("document.documentElement.style.zoom='2'")
     assert await page.evaluate('document.body.scrollWidth') <= 392
     await page.evaluate("document.documentElement.style.zoom='1'")
     await page.get_by_role('button', name='Day', exact=True).click()
     await expect(page.locator('.pc-mobile-grid-kind').filter(has_text='Full day').first).to_be_visible()
     await expect(page.locator('.pc-mobile-grid-kind').filter(has_text='Half day (AM)').first).to_be_visible()
+    await context.close()
+    context, page = await page_for('staff', 390)
+    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
+    await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
     await context.close()
 
 

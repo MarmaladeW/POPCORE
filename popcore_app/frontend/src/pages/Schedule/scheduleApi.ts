@@ -121,6 +121,7 @@ export interface CalendarFeed {
 }
 
 export interface ScheduleConfig {
+  schedule_reminder: string
   schedule_month_start_day: string
   schedule_required_staff: string
   schedule_open_hours: string
@@ -158,6 +159,9 @@ export interface EmployeeStoreAssignment {
 
 export const getScheduleConfig = () =>
   client.get<ScheduleConfig>('/schedule/config').then((r) => r.data)
+
+export const updateScheduleReminder = (content: string) =>
+  client.put<{ content: string }>('/schedule/reminder', { content }).then((r) => r.data)
 
 // ── Employee profile ──────────────────────────────────────────────────────────
 
