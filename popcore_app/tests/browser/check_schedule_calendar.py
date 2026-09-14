@@ -121,6 +121,7 @@ async def run_checks(browser, case):
     await page.get_by_role('button', name='Expand navigation', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
     await page.get_by_role('link', name='Today', exact=True).click()
+    await expect(page.get_by_role('heading', name='Today / 今日', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
     await page.get_by_role('link', name='Schedule', exact=True).click()
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
