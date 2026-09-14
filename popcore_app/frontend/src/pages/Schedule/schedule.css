@@ -45,21 +45,51 @@
 
 .pc-calendar-date { border: 0; border-radius: 4px; padding: 6px; min-width: 36px; min-height: 36px; background: transparent; color: #20242D; font: inherit; cursor: pointer; }
 .pc-personal-shift { display: flex; flex-direction: column; padding: 3px; white-space: normal; overflow-wrap: anywhere; }
-.pc-assignment-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; align-items: start; gap: 16px; }
-.pc-store-calendars { display: grid; gap: 16px; min-width: 0; }
-.pc-assignment-sidebar { position: sticky; top: 80px; min-width: 0; max-height: calc(100dvh - 96px); overflow-y: auto; scroll-margin-top: 80px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; }
+.pc-manager-calendar { display: flex; flex-direction: column; gap: 12px; }
+.pc-calendar-controls { flex: 0 0 auto; }
+.pc-calendar-extras { position: relative; }
+.pc-calendar-extras > summary { cursor: pointer; font-size: 13px; }
+.pc-calendar-extras-content { padding: 12px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; }
+.pc-assignment-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-height: 0; }
+.pc-assignment-workspace.pc-assignment-open { grid-template-columns: minmax(0, 1fr) 280px; }
+.pc-store-calendars { display: grid; gap: 12px; min-width: 0; min-height: 0; }
+.pc-assignment-sidebar { min-width: 0; min-height: 0; max-height: 100%; overflow-y: auto; scroll-margin-top: 80px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; }
 .pc-assignment-sidebar .pc-schedule-detail { margin: 0; border: 0; padding: 12px; }
 .pc-assignment-sidebar .pc-schedule-people { grid-template-columns: 1fr; gap: 16px; }
 .pc-assignment-sidebar .pc-page-actions { display: grid; gap: 8px; margin-bottom: 16px; }
 .pc-assignment-sidebar h4 { margin: 0; }
-.pc-assignment-placeholder { padding: 16px; }
-.pc-assignment-placeholder p { margin: 8px 0 0; color: #596273; }
 .pc-assignment-store-switch { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px; border-bottom: 1px solid #DDE2EA; }
 .pc-assignment-store-switch button { font-size: 12px; }
 .pc-selected-day { box-shadow: inset 0 0 0 2px #4F46E5; }
 .pc-shift-reminder .ant-alert-content { min-width: 0; }
+@media (min-width: 1101px) {
+  .pc-calendar-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 20px; }
+  .pc-calendar-controls > * { margin: 0; }
+  .pc-calendar-controls > .ant-alert, .pc-calendar-controls > [role='status'] { grid-column: 1 / -1; }
+  .pc-calendar-hint { display: none; }
+  .pc-calendar-filter { grid-column: 1 / -1; }
+  .pc-calendar-extras { grid-column: 1 / -1; }
+  .pc-calendar-month .pc-calendar-date { min-height: 24px; height: 24px; padding: 2px 6px; }
+  .pc-store-calendars .pc-shift { line-height: 1.2; font-size: 12px; }
+  .pc-store-calendars .pc-shift-name { white-space: normal; overflow-wrap: anywhere; }
+  .pc-manager-calendar { height: calc(100dvh - 204px); min-height: 400px; }
+  .pc-manager-calendar.pc-calendar-date-grid { height: auto; min-height: 0; }
+  .pc-calendar-date-grid .pc-store-calendar-body { flex: none; }
+  .pc-calendar-date-grid .pc-assignment-sidebar { align-self: start; position: sticky; top: 80px; max-height: calc(100dvh - 96px); }
+  .pc-assignment-workspace { flex: 1; }
+  .pc-store-calendars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pc-store-calendars > section { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .pc-store-calendars > section > header { flex-shrink: 0; }
+  .pc-store-calendar-body { flex: 1; min-height: 0; }
+  .pc-calendar-extras-content { position: absolute; top: 100%; left: 0; right: 0; max-height: 60vh; overflow-y: auto; z-index: 10; box-shadow: 0 4px 16px #20242D20; }
+  .pc-store-calendars .pc-shift:not(.pc-shift-grid) { display: block; }
+  .pc-store-calendars .pc-shift-time { font-size: 10px; }
+}
+@media (min-width: 768px) and (max-width: 1100px) {
+  .pc-manager-calendar:not(.pc-calendar-date-grid) .pc-store-calendar-body { height: 340px; }
+}
 @media (max-width: 1100px) {
-  .pc-assignment-workspace { grid-template-columns: minmax(0, 1fr); }
+  .pc-assignment-workspace.pc-assignment-open { grid-template-columns: minmax(0, 1fr); }
   .pc-assignment-sidebar { position: static; max-height: 420px; grid-row: 1; }
 }
 @media (max-width: 767px) {
@@ -70,3 +100,31 @@
   .pc-personal-shift { font-size: 10px; line-height: 1.3; }
 }
 @media (pointer: coarse) { .pc-calendar-date { min-height: 44px; min-width: 44px; } }
+
+.pc-shift-heading, .pc-shift-details { display: flex; align-items: center; gap: 3px; min-width: 0; }
+
+@media (min-width: 1101px) {
+  .pc-content:has(.pc-calendar-month) { padding-top: 8px; padding-bottom: 8px; }
+  .pc-schedule-page:has(.pc-calendar-month) > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .pc-calendar-month { gap: 8px; }
+  .pc-calendar-month .pc-calendar-controls { column-gap: 12px; }
+  .pc-calendar-month .pc-calendar-filter { grid-column: 1; }
+  .pc-calendar-month .pc-calendar-filter > span { display: none; }
+  .pc-calendar-month .pc-calendar-extras { grid-column: 2; align-self: center; }
+  .pc-calendar-month .pc-store-calendar-body { container-type: inline-size; }
+  .pc-calendar-month .pc-calendar-date { min-height: 18px; height: 18px; padding: 0 4px; }
+  .pc-calendar-month .fc-daygrid-day-number { padding: 0 4px; line-height: 18px; }
+  .pc-calendar-month .fc .fc-daygrid-body .fc-daygrid-day-events { margin-bottom: 0; }
+  .pc-calendar-month .pc-assignment-sidebar { max-height: calc(100dvh - 230px); }
+  .pc-calendar-month .fc-daygrid-event { border: 0; margin-top: 1px; }
+  .pc-calendar-month .pc-shift { padding: 0 2px; font-size: 11px; line-height: 15px; }
+  .pc-calendar-month .pc-shift-name { white-space: nowrap; font-weight: 600; }
+  .pc-calendar-month .pc-shift-details { display: none; }
+  @container (min-width: 700px) {
+    .pc-calendar-month .pc-shift:not(.pc-shift-grid) { display: flex; }
+    .pc-calendar-month .pc-shift-heading { flex: 1; }
+    .pc-calendar-month .pc-shift-details { display: flex; flex-shrink: 0; }
+    .pc-calendar-month .pc-shift-pos { display: none; }
+  }
+}
+@media (pointer: coarse) { .pc-calendar-month .pc-calendar-date { min-height: 44px; height: 44px; } }
