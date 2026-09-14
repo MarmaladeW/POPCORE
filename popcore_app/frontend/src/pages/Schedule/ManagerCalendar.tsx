@@ -788,16 +788,6 @@ export default function ManagerCalendar() {
         </div>
       )}
 
-      {/* Coverage checklist + period notes: proves everyone was assigned or
-          at least considered for the visible month/week/day */}
-      {periodKey && schedulableEmployees.length > 0 && (
-        <details><summary className="text-sm cursor-pointer">Employee checklist and period notes</summary><CoveragePanel
-          periodKey={periodKey}
-          periodLabel={viewTitle}
-          employees={schedulableEmployees}
-        /></details>
-      )}
-
       {/* Legend: shift styles */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground px-1">
         <span className="flex items-center gap-1.5">
@@ -828,7 +818,7 @@ export default function ManagerCalendar() {
       {realStores.length === 0 && (
         <div className="text-sm text-muted-foreground px-1">Loading stores…</div>
       )}
-      <div ref={workspaceRef} className={cn("pc-assignment-workspace", selectedDate && "pc-assignment-open")}>
+      <div ref={workspaceRef} className="pc-assignment-workspace pc-assignment-open">
       <div className="pc-store-calendars">
       {realStores.map((st, i) => (
         <section key={st.code} className="space-y-1.5">
@@ -883,7 +873,12 @@ export default function ManagerCalendar() {
         </section>
       ))}
       </div>
-      {selectedDate && modalStoreCode && <aside ref={assignmentRef} className="pc-assignment-sidebar" aria-label="Shift assignment panel">
+      <aside ref={assignmentRef} className="pc-assignment-sidebar" aria-label="Shift assignment panel">
+        {periodKey && schedulableEmployees.length > 0 && <CoveragePanel
+          periodKey={periodKey} periodLabel={viewTitle}
+          employees={schedulableEmployees} employeeColors={empColors}
+        />}
+        {selectedDate && modalStoreCode ? <div className="pc-assignment-day">
           <div className="pc-assignment-store-switch" aria-label="Assignment store">
             {realStores.map(store => <Button key={store.code}
               variant={modalStoreCode === store.code ? 'default' : 'outline'}
@@ -894,6 +889,7 @@ export default function ManagerCalendar() {
           </div>
           {loading ? <p role="status">Loading day details…</p> : loadError ? <p role="alert">Retry loading the schedule to assign shifts.</p> : <ScheduleDayPanel
             date={selectedDate} storeCode={modalStoreCode} employees={employees}
+            employeeColors={empColors} storeHours={storeHours}
             availability={availsByDate.current[selectedDate] ?? []} shifts={Object.values(shiftById.current)}
             onAssign={employeeId => {
               setSelectedEmployeeId(employeeId); setSelectedShift(null)
@@ -901,7 +897,8 @@ export default function ManagerCalendar() {
             }}
             onEdit={shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) }}
           />}
-      </aside>}
+        </div> : <p className="pc-assignment-placeholder">Select a date in either calendar to assign shifts.</p>}
+      </aside>
       </div>
       {isTimeGrid && realStores.length > 0 && (
         <p className="text-xs text-muted-foreground px-1">

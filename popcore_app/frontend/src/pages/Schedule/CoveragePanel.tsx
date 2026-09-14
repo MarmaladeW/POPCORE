@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Input, message } from 'antd'
-import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert } from 'lucide-react'
 import dayjs from 'dayjs'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { EMPLOYEE_PALETTE, textColorOn } from '@/lib/palette'
 import {
   getChecklist,
   getScheduleNote,
@@ -20,14 +19,14 @@ interface Props {
   /** Human title of the visible period (e.g. "August 2026") */
   periodLabel: string
   employees: Employee[]
+  employeeColors: Record<number, string>
 }
 
 /** A deliberately manual checklist for the visible schedule period. Shift
  *  assignments never change these ticks; managers confirm each person. */
 export default function CoveragePanel({
-  periodKey, periodLabel, employees,
+  periodKey, periodLabel, employees, employeeColors,
 }: Props) {
-  const [open, setOpen] = useState(true)
   const [entries, setEntries] = useState<Record<number, ChecklistEntry>>({})
   const [noteContent, setNoteContent] = useState('')
   const [noteDirty, setNoteDirty] = useState(false)
@@ -62,13 +61,12 @@ export default function CoveragePanel({
 
   const people = useMemo(
     () => [...employees].sort((a, b) =>
+      Number(!!entries[a.id]?.considered) - Number(!!entries[b.id]?.considered) ||
       (a.name || a.email || '').localeCompare(b.name || b.email || '')),
-    [employees],
+    [employees, entries],
   )
 
   const checkedCount   = people.filter(p => !!entries[p.id]?.considered).length
-  const uncheckedCount = people.length - checkedCount
-  const allChecked     = uncheckedCount === 0
 
   const toggleManualCheck = async (emp: Employee) => {
     const cur = entries[emp.id]
@@ -109,36 +107,17 @@ export default function CoveragePanel({
   }
 
   return (
-    <div className="rounded-xl border border-border overflow-hidden">
+    <section className="pc-coverage-panel" aria-label="Period employee checklist">
       {msgCtx}
-      {/* Header: status summary, always visible */}
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="pc-coverage-header w-full flex items-center gap-2 px-3 py-2 bg-muted/40 text-left"
-      >
-        {allChecked ? (
-          <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
-        ) : (
-          <CircleAlert className="size-4 text-red-500 shrink-0" />
-        )}
-        <span className="text-sm font-semibold">
-          Coverage<span className="hidden sm:inline"> checklist</span> — {periodLabel}
-        </span>
-        <span className={cn('text-xs', allChecked ? 'text-emerald-700' : 'text-red-600')}>
-          {allChecked ? 'All checked' : `${uncheckedCount} unchecked`}
-        </span>
-        <span className="ml-auto hidden text-xs text-muted-foreground whitespace-nowrap sm:inline">
-          {checkedCount} checked
-        </span>
-        {open ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />}
-      </button>
-
-      {open && (
-        <div className="p-2 space-y-2">
+      <header className="pc-coverage-header">
+        <h4>Employee checklist</h4>
+        <span role="status">{checkedCount}/{people.length} reviewed</span>
+        <small>{periodLabel} · Both stores</small>
+      </header>
+        <div className="space-y-2">
           {/* Small manual checks wrap naturally; shift data never controls them. */}
           <ul
-            className="pc-coverage-list m-0 flex list-none flex-wrap gap-1.5 p-0"
+            className="pc-coverage-list"
             aria-label="Employee coverage checklist"
           >
             {people.map(p => {
@@ -146,24 +125,18 @@ export default function CoveragePanel({
               const name  = p.name || p.email || `Employee ${p.id}`
               const presentation = manualChecklistPresentation(!!entry?.considered)
               const { state } = presentation
+              const color = employeeColors[p.id] ?? EMPLOYEE_PALETTE[0]
               return (
                 <li key={p.id}>
-                  <label
-                  className={cn(
-                      'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs transition-colors',
-                      state === 'checked'
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                        : 'border-border bg-background text-foreground hover:bg-muted/60',
-                    )}
-                  >
+                  <label>
                     <input
                       type="checkbox"
                       checked={state === 'checked'}
                       onChange={() => toggleManualCheck(p)}
-                      className="size-3.5 shrink-0 accent-emerald-600"
+                      className="size-3.5 shrink-0 accent-indigo-600"
                       aria-label={`${presentation.statusLabel}: ${name}`}
                     />
-                    <span className="max-w-36 truncate font-medium">{name}</span>
+                    <span className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{name}</span>
                     {!!p.is_trainee && (
                       <span
                         className="shrink-0 rounded px-1 text-[8px] font-bold"
@@ -191,6 +164,7 @@ export default function CoveragePanel({
             </summary>
             <div className="border-t border-border p-2">
               <Input.TextArea
+                aria-label="Period notes"
                 rows={2}
                 autoSize={{ minRows: 2, maxRows: 5 }}
                 placeholder={`Notes for ${periodLabel} (visible to managers)…`}
@@ -207,7 +181,6 @@ export default function CoveragePanel({
             </div>
           </details>
         </div>
-      )}
-    </div>
+    </section>
   )
 }
