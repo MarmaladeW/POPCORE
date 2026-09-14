@@ -6,7 +6,7 @@ import interactionPlugin from '@fullcalendar/interaction'
 import type { DatesSetArg, EventInput } from '@fullcalendar/core'
 import dayjs from 'dayjs'
 import { CalendarPlus, Copy, RotateCw } from 'lucide-react'
-import { message } from 'antd'
+import { Alert, message } from 'antd'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -105,6 +105,7 @@ export default function EmployeeView() {
   return (
     <div className="space-y-3">
       {msgCtx}
+      <Alert type="warning" showIcon message={<strong style={{ fontSize: 20 }}>提前十分钟到！</strong>} />
       {loadError && <div role="alert">Could not load your shifts. <Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end).catch(() => setLoadError(true))}>Retry</Button></div>}
       {/* Legend + calendar sync */}
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
