@@ -181,6 +181,12 @@ async def run_checks(browser, case):
     await expect(page.get_by_role('button', name='Two weeks', exact=True)).to_have_attribute('aria-pressed', 'true')
     await page.get_by_role('button', name='Availability', exact=True).click()
     await expect(page.locator('.fc-event').filter(has_text='Celia').first).to_be_visible()
+    checklist = page.get_by_role('list', name='Employee coverage checklist')
+    await expect(checklist).to_be_visible()
+    await expect(checklist.get_by_role('checkbox', name='Unchecked: Celia', exact=True)).not_to_be_checked()
+    await checklist.get_by_role('checkbox', name='Unchecked: Jessi', exact=True).check()
+    await expect(checklist.get_by_role('checkbox', name='Checked: Jessi', exact=True)).to_be_checked()
+    assert await checklist.locator('.pc-employee-name').filter(has_text='Celia').evaluate('(el) => getComputedStyle(el).backgroundColor') == 'rgb(20, 86, 103)'
     # Date selection opens details, not an immediate assignment modal.
     await page.get_by_role('button', name=f'View {START} DT', exact=True).focus()
     await page.keyboard.press('Enter')
@@ -224,6 +230,9 @@ async def run_checks(browser, case):
         saved = con.execute('SELECT * FROM shifts WHERE employee_id=102 AND date=?', (str(START),)).fetchone()
         assert saved and saved['start_time']=='12:00' and saved['end_time']=='17:00'
     await expect(panel.get_by_text('Assigned · 1', exact=True)).to_be_visible()
+    await expect(celia.locator('.pc-assignment-kind')).to_have_text('Half day (AM)')
+    assert await celia.locator('.pc-employee-name').evaluate('(el) => getComputedStyle(el).backgroundColor') == 'rgb(20, 86, 103)'
+    await expect(checklist.get_by_role('checkbox', name='Unchecked: Celia', exact=True)).not_to_be_checked()
     await panel.locator('.pc-schedule-person').filter(has_text='Mason').get_by_role('button', name='Assign', exact=True).click()
     await expect(dialog.get_by_role('alert')).to_contain_text('You can still assign this shift')
     await dialog.get_by_text('Full day (12:00–22:00)', exact=True).click()
@@ -231,8 +240,25 @@ async def run_checks(browser, case):
     await dialog.get_by_role('button', name='Save', exact=True).click()
     await expect(dialog).not_to_be_visible()
     await expect(panel.get_by_text('Assigned · 2', exact=True)).to_be_visible()
+    await expect(panel.locator('.pc-schedule-person').filter(has_text='Mason').locator('.pc-assignment-kind')).to_have_text('Full day')
+    await panel.locator('.pc-schedule-person').filter(has_text='Mason').get_by_role('button', name='Edit', exact=True).click()
+    await dialog.get_by_text('2-7 (15:00–19:00)', exact=True).click()
+    await dialog.get_by_role('button', name='Save', exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    await expect(panel.locator('.pc-schedule-person').filter(has_text='Mason').locator('.pc-assignment-kind')).to_have_text('Custom')
+    await panel.locator('.pc-schedule-person').filter(has_text='Mason').get_by_role('button', name='Edit', exact=True).click()
+    await dialog.get_by_text('Full day (12:00–22:00)', exact=True).click()
+    await dialog.get_by_role('button', name='Save', exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    await page.get_by_role('button', name='Close day details', exact=True).click()
+    await expect(checklist).to_be_visible()
+    await expect(checklist.get_by_role('checkbox', name='Checked: Jessi', exact=True)).to_be_checked()
+    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
     with closing(case.connect()) as con:
         assert con.execute('SELECT end_time FROM shifts WHERE employee_id=103 AND date=?', (str(START),)).fetchone()[0] == '22:00'
+    await page.get_by_role('button', name=f'View {START + timedelta(days=5)} MK', exact=True).click()
+    await expect(page.get_by_role('region', name=f'Schedule details {START + timedelta(days=5)} MK').locator('.pc-assignment-kind')).to_have_text('Half day (PM)')
+    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
     await page.get_by_role('button', name='Assigned shifts', exact=True).click()
     await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason')).to_be_visible()
     await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
@@ -309,6 +335,22 @@ async def run_checks(browser, case):
     assert await page.locator('.pc-content').evaluate('(el) => el.scrollHeight <= el.clientHeight + 2')
     assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')
     await page.screenshot(path=OUT/'all-shifts-MONTH-1366.png', animations='disabled')
+    # Long notes remain saveable without displacing the checklist or hiding day controls.
+    await page.set_viewport_size({'width':1366,'height':700})
+    await page.locator('.pc-coverage-notes summary').click()
+    await page.get_by_role('textbox', name='Period notes', exact=True).fill('Weekend coverage\nConfirm Celia\nConfirm Mason\nReview trainees\nCheck both stores')
+    await page.get_by_role('button', name='Save notes', exact=True).scroll_into_view_if_needed()
+    save_bounds = await page.get_by_role('button', name='Save notes', exact=True).bounding_box()
+    assert 64 <= save_bounds['y'] and save_bounds['y'] + save_bounds['height'] <= 700, save_bounds
+    await page.get_by_role('button', name='Save notes', exact=True).click()
+    await expect(page.get_by_text('Notes saved', exact=True)).to_be_visible()
+    assert await page.locator('.pc-assignment-day').evaluate('(el) => el.clientHeight') >= 170
+    await page.reload()
+    await expect(checklist.get_by_role('checkbox', name='Checked: Jessi', exact=True)).to_be_checked()
+    await page.get_by_role('button', name='Month', exact=True).click()
+    await page.locator('.pc-coverage-notes summary').click()
+    await expect(page.get_by_role('textbox', name='Period notes', exact=True)).to_have_value('Weekend coverage\nConfirm Celia\nConfirm Mason\nReview trainees\nCheck both stores')
+    await page.locator('.pc-coverage-notes summary').click()
     await page.get_by_role('button', name='Month', exact=True).click()
     # Check the previous month too (August 2026 has six actual calendar weeks).
     await page.set_viewport_size({'width':1280,'height':800})
