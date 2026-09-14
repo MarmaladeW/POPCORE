@@ -57,6 +57,7 @@ import {
   mobileMonthEventLimit,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
+  shiftKindLabel,
 } from './schedulePresentation'
 import {
   assignableEmployees as getAssignableEmployees,
@@ -432,6 +433,7 @@ export default function ManagerCalendar() {
           endTime: p.end_time ?? '',
           position: p.position ?? '',
           isTrainee: !!p.is_trainee,
+          shiftType: p.type === 'shift' ? shiftKindLabel(kind) : 'Available',
         })
         return (
           <div
@@ -440,8 +442,8 @@ export default function ManagerCalendar() {
             title={accessibleLabel}
             style={{ background: employeeColor, color: textColorOn(employeeColor) }}
           >
-            <span>{compactEmployeeLabel(employeeName)}</span>
-            {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}
+            <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}</span>
+            <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
           </div>
         )
       }
@@ -457,6 +459,7 @@ export default function ManagerCalendar() {
     }
     return (
       <div className="pc-shift pc-shift-grid" title={tip}>
+        {isMobile && <div className="pc-mobile-grid-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</div>}
         <div className="pc-shift-time">
           {p.start_time}–{p.end_time}
           {halfTag && <span className="pc-shift-half">{halfTag}</span>}
@@ -832,7 +835,7 @@ export default function ManagerCalendar() {
                 const date = dayjs(arg.date).format('YYYY-MM-DD')
                 setModalStoreCode(st.code); setSelectedDate(date); setSelectedShift(null)
                 setAvailForDate(availsByDate.current[date] ?? []); setSelectedEmployeeId(undefined)
-              }}>{arg.dayNumberText}</button>}
+              }}>{dayjs(arg.date).format('D')}</button>}
               eventClick={handleEventClick}
               eventContent={renderEvent}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}

@@ -4,7 +4,7 @@
 
 **Goal:** Implement the approved calendar preview: two-week employee availability, manager day details and assignment, existing shift presets, and the current operations shell.
 **Architecture:** Reuse FullCalendar, ShiftModal, current roles and store selection. Add complete, versioned availability submissions to the existing availability data. Keep existing shifts and calendar feeds intact.
-**Spec:** User-approved calendar preview and shift-type follow-up in this task. Per-store availability is retained; cycles are anchored to Monday 2026-09-21. Draft edits stay in browser memory across app navigation until Submit or an identity change. A submission contains all 14 dates; missing is never unavailable. Deadline shown is the Friday before the cycle; no hard cutoff is introduced.
+**Spec:** User-approved calendar preview and shift-type follow-up in this task. Per-store availability is retained; cycles are anchored to Monday 2026-09-14 (corrected by the user). Draft edits stay in browser memory across app navigation until Submit or an identity change. A submission contains all 14 dates; missing is never unavailable. Deadline shown is the Friday before the cycle; no hard cutoff is introduced.
 **Stack:** Existing Flask/SQLite, React/TypeScript, Ant Design and FullCalendar; no dependencies.
 
 ## Task 1: Availability persistence and assignment safeguards
@@ -19,7 +19,7 @@
 - [x] Add date-cycle and day-response helpers with Node tests (including DST and year boundaries).
 - [x] Add employee two-week calendar with multi-date selection, available/unavailable hours, repeat first week, 14-day completion, submit/resubmit and errors without draft loss. Keep My shifts/calendar sync.
 - [x] Add manager Two weeks view, Assigned shifts/Availability toggle, day details grouping assigned/available/other responses, and preselected employee assignment through existing ShiftModal.
-- [x] Preserve presets from store hours/settings. Show availability conflicts before assignment and require valid hours. Preserve shifts when availability changes and flag mismatch.
+- [x] Preserve presets from store hours/settings. Allow missing availability; show and enforce conflicts with submitted hours. Preserve shifts when availability changes and flag mismatch.
 - [x] Use operations theme/navigation on Schedule. Keep employee colors and existing coverage, reports, trainees and personal shifts.
 
 ## Task 3: Verify and review

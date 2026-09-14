@@ -58,7 +58,7 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
           return <div className="pc-schedule-person" key={employee.id}><div><strong>{name(employee)}</strong>
             <small>{employee.is_trainee ? 'Trainee · manual assignment' : !day?.submitted_at ? 'Not submitted' : 'Unavailable'}</small>
             {day?.notes && <small>{day.notes}</small>}
-          </div></div>
+          </div>{!day?.submitted_at && <Button variant="outline" disabled={!!elsewhere(employee.id)} onClick={() => onAssign(employee.id)}>Assign</Button>}</div>
         })}
       </section>
     </div>

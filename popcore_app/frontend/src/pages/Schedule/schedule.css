@@ -44,4 +44,10 @@
 }
 
 .pc-calendar-date { border: 0; border-radius: 4px; padding: 6px; min-width: 36px; min-height: 36px; background: transparent; color: #20242D; font: inherit; cursor: pointer; }
+.pc-personal-shift { display: flex; flex-direction: column; padding: 3px; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .pc-mobile-shift { height: auto; min-height: 44px; flex-direction: column; padding: 3px 1px; line-height: 1.2; }
+  .pc-mobile-shift-kind { font-size: 10px; font-weight: 600; white-space: normal; text-align: center; letter-spacing: 0; }
+  .pc-personal-shift { font-size: 10px; line-height: 1.3; }
+}
 @media (pointer: coarse) { .pc-calendar-date { min-height: 44px; min-width: 44px; } }

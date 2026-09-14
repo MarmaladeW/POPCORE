@@ -3,10 +3,10 @@ import test from 'node:test'
 import { cycleStart, cycleDates, repeatFirstWeek, emptyDays, availabilityIssue } from './availabilityPeriod.ts'
 
 test('shared 14-day cycles stay aligned across DST, years and earlier dates', () => {
-  assert.equal(cycleStart('2026-09-21'), '2026-09-21')
-  assert.equal(cycleStart('2026-10-04'), '2026-09-21')
-  assert.equal(cycleStart('2026-10-05'), '2026-10-05')
-  assert.equal(cycleStart('2026-09-20'), '2026-09-07')
+  assert.equal(cycleStart('2026-09-14'), '2026-09-14')
+  assert.equal(cycleStart('2026-09-27'), '2026-09-14')
+  assert.equal(cycleStart('2026-09-28'), '2026-09-28')
+  assert.equal(cycleStart('2026-09-13'), '2026-08-31')
   for (const date of ['2026-11-01', '2027-03-14', '2027-01-01']) {
     const days = cycleDates(cycleStart(date))
     assert.equal(days.length, 14)

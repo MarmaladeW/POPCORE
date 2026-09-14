@@ -1,9 +1,16 @@
+import type { ShiftKind } from './openHours'
+
+export function shiftKindLabel(kind: ShiftKind): string {
+  return { full: 'Full day', first: 'Half day (AM)', second: 'Half day (PM)', custom: 'Custom' }[kind]
+}
+
 interface ShiftAccessibleLabelInput {
   employeeName: string
   startTime: string
   endTime: string
   position: string
   isTrainee: boolean
+  shiftType?: string
 }
 
 export function compactEmployeeLabel(name: string): string {
@@ -22,10 +29,12 @@ export function mobileShiftAccessibleLabel({
   endTime,
   position,
   isTrainee,
+  shiftType,
 }: ShiftAccessibleLabelInput): string {
   return [
     employeeName,
     `${startTime}–${endTime}`,
+    shiftType,
     position || null,
     isTrainee ? 'Trainee' : null,
   ].filter(Boolean).join(' · ')

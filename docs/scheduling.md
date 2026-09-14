@@ -4,7 +4,7 @@ Schedule uses the current operations navigation and theme. Managers open Team sc
 
 ## Employee workflow
 
-- Select a store and a two-week period. Shared cycles start on Mondays, anchored to September 21, 2026, and repeat every 14 days in both directions.
+- Select a store and a two-week period. Shared cycles start on Mondays, anchored to September 14, 2026: September 14–27, then September 28–October 11, repeating every 14 days in both directions.
 - Select one or more calendar dates, enter available hours or mark unavailable, then apply. Repeat first week copies all seven responses into the second week, including dates not yet set.
 - Complete all 14 dates and submit. Missing responses are distinct from unavailable. The Friday before the period is displayed as guidance; there is no enforced deadline.
 - Drafts stay in browser memory while switching stores, periods, tabs or app pages. They are cleared when the signed-in identity changes and do not survive reloading or closing the app. The browser receives an unsaved-changes warning while any draft is dirty.
@@ -16,7 +16,8 @@ Schedule uses the current operations navigation and theme. Managers open Team sc
 - The Availability tab has a searchable employee switcher. My availability keeps the signed-in employee's editor; selecting another employee shows their submitted two-week calendar, hours, unavailable dates, notes and submission timestamp in read-only mode. Store and period navigation apply to that employee. Unsubmitted or historical daily data is labeled Not submitted. Refresh reloads declarations; a failed request shows a retry action instead of an empty calendar.
 - Toggle Assigned shifts / Availability, then select a date to see assignments, submitted available employees, unavailable responses and employees who have not submitted. Date buttons also support keyboard selection.
 - Assign opens the existing shift editor with the employee selected. Full day, both Half shifts, configured custom slots and Custom remain available; times come from store hours and existing settings.
-- New non-trainee assignments through this workflow must fit submitted availability. The server rechecks those hours atomically when saving. Existing same-day assignments, including another store, cannot be silently replaced.
+- Managers and admins can assign shifts when the employee has not submitted availability. The editor explains this and permits saving. If availability was submitted, new non-trainee assignments must fit those hours; the server rechecks atomically when saving. Existing same-day assignments, including another store, cannot be silently replaced.
+- Mobile team and personal calendars show Full day, Half day (AM/PM), or Custom labels rather than initials or dots alone.
 - Existing shifts may still be edited or deleted. Availability changes that no longer cover a shift show a Review warning. Trainee assignment retains its existing behavior.
 
 ## Persistence and compatibility
@@ -24,6 +25,8 @@ Schedule uses the current operations navigation and theme. Managers open Team sc
 The `availability_period_submissions` migration preserves existing availability IDs, timestamps and the autoincrement high-water mark; uniqueness becomes employee/date/store. It adds available/unavailable status and an `availability_submissions` table containing a version and submission timestamp for each employee/store/period. Historical daily rows remain readable but count as unsubmitted until a complete period is submitted.
 
 `GET /api/schedule/availability/period` reads the authenticated employee's period. `PUT` takes `period_start`, `store_code`, `version` and exactly 14 explicit daily responses. Writes are atomic and reject stale versions with HTTP 409. Team availability reads remain manager-only. Legacy daily endpoints remain compatible and invalidate the affected period's submission marker. Shift callers using `require_availability: true` receive the server-side submission/hours check; legacy callers retain their existing assignment policy.
+
+After correcting the cycle from September 21 to September 14, existing daily hours and assigned shifts are preserved. Old cycle submission markers do not confirm the new split: employees must complete and resubmit the corrected periods. Managers can assign shifts while those submissions are pending. `require_availability: true` now checks submitted hours when a submission exists; missing submissions do not block assignment.
 
 ## Local verification
 

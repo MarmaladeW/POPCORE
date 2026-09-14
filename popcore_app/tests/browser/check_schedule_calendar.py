@@ -18,7 +18,7 @@ from support import IsolatedApiCase
 from blueprints import users
 
 OUT = HERE.parents[2] / '.local' / 'schedule-browser'
-ANCHOR = date(2026, 9, 21)
+ANCHOR = date(2026, 9, 14)
 START = date.today() - timedelta(days=(date.today() - ANCHOR).days % 14)
 
 
@@ -35,6 +35,9 @@ async def run_checks(browser, case):
             INSERT INTO employee_stores(employee_id,store_id) VALUES (101,1),(102,1),(103,1);
             INSERT INTO app_settings(key,value) VALUES ('schedule_shift_presets','[{"label":"2-7","start":"15:00","end":"19:00"}]');
         """)
+        for offset, end in ((2, '22:00'), (3, '17:00')):
+            con.execute('''INSERT INTO shifts(employee_id,store_id,date,start_time,end_time,assigned_by)
+                VALUES (101,1,?,'12:00',?,'fixture')''', (str(START + timedelta(days=offset)), end))
         con.commit()
     days = [{'date': str(START + timedelta(days=i)), 'status': 'available', 'start_time': '12:00', 'end_time': '17:00', 'notes': ''} for i in range(14)]
     days[1].update(status='unavailable', start_time='', end_time='', notes='Class all day')
@@ -103,6 +106,10 @@ async def run_checks(browser, case):
     await expect(calendar.locator('button').nth(0)).to_contain_text('20:00')
     await page.get_by_role('button', name='Submit two weeks', exact=True).click()
     await expect(page.get_by_role('status').filter(has_text='Submitted')).to_be_visible()
+    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await expect(page.locator('.pc-personal-shift').filter(has_text='Full day').first).to_be_visible()
+    await expect(page.locator('.pc-personal-shift').filter(has_text='Half day (AM)').first).to_be_visible()
+    await page.screenshot(path=OUT/'my-shifts-390.png', full_page=True, animations='disabled')
     await context.close()
 
     context, page = await page_for('manager')
@@ -169,14 +176,30 @@ async def run_checks(browser, case):
         saved = con.execute('SELECT * FROM shifts WHERE employee_id=102 AND date=?', (str(START),)).fetchone()
         assert saved and saved['start_time']=='12:00' and saved['end_time']=='17:00'
     await expect(panel.get_by_text('Assigned · 1', exact=True)).to_be_visible()
+    await panel.locator('.pc-schedule-person').filter(has_text='Mason').get_by_role('button', name='Assign', exact=True).click()
+    await expect(dialog.get_by_role('alert')).to_contain_text('You can still assign this shift')
+    await dialog.get_by_text('Full day (12:00–22:00)', exact=True).click()
+    await expect(dialog.get_by_role('button', name='Save', exact=True)).to_be_enabled()
+    await dialog.get_by_role('button', name='Save', exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    await expect(panel.get_by_text('Assigned · 2', exact=True)).to_be_visible()
+    with closing(case.connect()) as con:
+        assert con.execute('SELECT end_time FROM shifts WHERE employee_id=103 AND date=?', (str(START),)).fetchone()[0] == '22:00'
     await page.get_by_role('button', name='Assigned shifts', exact=True).click()
     for width in (1440,768,390):
         await page.set_viewport_size({'width':width,'height':980})
         await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
+        if width == 390:
+            await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Full day').first).to_be_visible()
+            await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Half day (AM)').first).to_be_visible()
         assert await page.evaluate('document.body.scrollWidth') <= width + 2
         await page.screenshot(path=OUT / f'manager-{width}.png', full_page=True, animations='disabled')
     await page.evaluate("document.documentElement.style.zoom='2'")
     assert await page.evaluate('document.body.scrollWidth') <= 392
+    await page.evaluate("document.documentElement.style.zoom='1'")
+    await page.get_by_role('button', name='Day', exact=True).click()
+    await expect(page.locator('.pc-mobile-grid-kind').filter(has_text='Full day').first).to_be_visible()
+    await expect(page.locator('.pc-mobile-grid-kind').filter(has_text='Half day (AM)').first).to_be_visible()
     await context.close()
 
 

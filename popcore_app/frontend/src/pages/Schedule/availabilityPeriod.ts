@@ -1,5 +1,5 @@
 const DAY_MS = 86_400_000
-const ANCHOR = Date.UTC(2026, 8, 21)
+const ANCHOR = Date.UTC(2026, 8, 14)
 
 export function cycleStart(date: string): string {
   const day = Date.parse(`${date}T00:00:00Z`)

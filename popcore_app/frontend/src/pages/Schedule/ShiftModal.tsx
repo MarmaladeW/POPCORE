@@ -122,6 +122,7 @@ export default function ShiftModal({
   const employee = employees.find(item => item.id === watchedEmployee)
   const requireAvailability = !existing && !!employee && !employee.is_trainee
   const issue = employee && !employee.is_trainee ? availabilityIssue(selectedAvailability, chosenStore, watchedStart || '', watchedEnd || '') : null
+  const blockingIssue = requireAvailability && selectedAvailability?.submitted_at ? issue : null
   const openHours: OpenHoursConfig = hoursForStore(
     watchedStore || existing?.store_code || defaultStoreCode || '', storeHours,
   )
@@ -266,7 +267,7 @@ export default function ShiftModal({
     try {
       const values = await form.validateFields() as ShiftFormValues
 
-      if (requireAvailability && issue) { msgApi.error(issue); return }
+      if (blockingIssue) { msgApi.error(blockingIssue); return }
       if (existing) {
         setSavePhase('checking')
         await updateShift(existing.id, {
@@ -402,7 +403,7 @@ export default function ShiftModal({
             </div>
           )}
 
-          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
+          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{!existing && !selectedAvailability?.submitted_at && ' You can still assign this shift.'}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
 
           {/* Form — kept mounted to preserve values; hidden during conflict/error */}
           <div style={showForm ? {} : { display: 'none' }}>
@@ -580,7 +581,7 @@ export default function ShiftModal({
                   >Delete</Button>
                 )}
                 <Button variant="outline" onClick={onClose}>Cancel</Button>
-                <Button onClick={handleSave} disabled={savePhase === 'checking' || (requireAvailability && !!issue)}>
+                <Button onClick={handleSave} disabled={savePhase === 'checking' || !!blockingIssue}>
                   {savePhase === 'checking' ? 'Checking…' : 'Save'}
                 </Button>
               </>
