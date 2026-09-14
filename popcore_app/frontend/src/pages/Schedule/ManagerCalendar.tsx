@@ -88,6 +88,19 @@ export default function ManagerCalendar() {
 
   const calRefs = useRef<Record<string, FullCalendar | null>>({})
   const assignmentRef = useRef<HTMLElement>(null)
+  const workspaceRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let frame = 0
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        Object.values(calRefs.current).forEach(calendar => calendar?.getApi().updateSize())
+      })
+    })
+    workspaceRef.current?.querySelectorAll('.pc-store-calendar-body').forEach(element => observer.observe(element))
+    return () => { observer.disconnect(); cancelAnimationFrame(frame) }
+  }, [storesKey])
 
   const [employees,     setEmployees]     = useState<Employee[]>([])
   const [empStores,     setEmpStores]     = useState<Record<number, string[]>>({})
@@ -452,12 +465,16 @@ export default function ManagerCalendar() {
         )
       }
       return (
-        <div className="pc-shift" title={tip}>
-          {p.is_trainee && <span className="pc-shift-t">T</span>}
-          {halfTag && <span className="pc-shift-half">{halfTag}</span>}
-          <span className="pc-shift-name">{p.emp_name}</span>
-          {p.position && <span className="pc-shift-pos">{p.position}</span>}
-          <span className="pc-shift-time">{range}</span>
+        <div className="pc-shift" title={tip} aria-label={tip}>
+          <div className="pc-shift-heading">
+            {p.is_trainee && <span className="pc-shift-t">T</span>}
+            <span className="pc-shift-name">{p.emp_name}</span>
+          </div>
+          <div className="pc-shift-details">
+            {halfTag && <span className="pc-shift-half">{halfTag}</span>}
+            {p.position && <span className="pc-shift-pos">{p.position}</span>}
+            <span className="pc-shift-time">{range}</span>
+          </div>
         </div>
       )
     }
@@ -478,18 +495,18 @@ export default function ManagerCalendar() {
   const isTimeGrid = viewType.startsWith('timeGrid')
 
   return (
-    <div className="space-y-3">
-
+    <div className={cn("pc-manager-calendar", viewType === "dayGridMonth" && "pc-calendar-month", !isTimeGrid && "pc-calendar-date-grid")}>
+      <div className="pc-calendar-controls space-y-3">
       {loadError && <Alert type="error" showIcon message={loadError} action={<Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end, viewType)}>Retry</Button>} />}
       {loading && <span role="status">Loading schedule…</span>}
-      <div className="flex flex-wrap gap-2" aria-label="Calendar contents">
+      <div className="pc-calendar-mode flex flex-wrap gap-2" aria-label="Calendar contents">
         <Button variant={showAvailability ? 'outline' : 'default'} aria-pressed={!showAvailability} onClick={() => setShowAvailability(false)}>Assigned shifts</Button>
         <Button variant={showAvailability ? 'default' : 'outline'} aria-pressed={showAvailability} onClick={() => setShowAvailability(true)}>Availability</Button>
-        <span className="text-sm text-muted-foreground self-center">{showAvailability ? 'Submitted hours employees can work. Select a date to assign.' : 'Assigned shifts. Select a date to see who is available.'}</span>
+        <span className="pc-calendar-hint text-sm text-muted-foreground self-center">{showAvailability ? 'Submitted hours employees can work. Select a date to assign.' : 'Assigned shifts. Select a date to see who is available.'}</span>
       </div>
 
       {/* Row 1: navigation ←→ + Today + Month|Week|Day toggle */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="pc-calendar-navigation flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center justify-between gap-0.5 sm:justify-start">
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Previous calendar period" onClick={() => eachCal((a) => a.prev())}>
             <ChevronLeft className="size-4" />
@@ -521,7 +538,7 @@ export default function ManagerCalendar() {
       </div>
 
       {/* Row 2: employee filter (desktop) + refresh + staffing info */}
-      <div className="flex items-center gap-2">
+      <div className="pc-calendar-filter flex items-center gap-2">
         {!isMobile && (
           <Select
             value={filterEmpId !== null ? String(filterEmpId) : '__all__'}
@@ -598,6 +615,9 @@ export default function ManagerCalendar() {
 
       {/* Employee filter — avatar strip on mobile, pill chips on desktop.
           Both: click to filter the calendars + show that person's hours. */}
+      <details className="pc-calendar-extras" open={isMobile}>
+        <summary>Team details and notes</summary>
+        <div className="pc-calendar-extras-content space-y-3">
       {isMobile && schedulableEmployees.length > 0 && (
         <div
           className="flex gap-2.5 overflow-x-auto -mx-2 px-2 pb-1"
@@ -800,11 +820,15 @@ export default function ManagerCalendar() {
         </span>
       </div>
 
+        </div>
+      </details>
+      </div>
+
       {/* One calendar section per store, always navigated in sync */}
       {realStores.length === 0 && (
         <div className="text-sm text-muted-foreground px-1">Loading stores…</div>
       )}
-      <div className="pc-assignment-workspace">
+      <div ref={workspaceRef} className={cn("pc-assignment-workspace", selectedDate && "pc-assignment-open")}>
       <div className="pc-store-calendars">
       {realStores.map((st, i) => (
         <section key={st.code} className="space-y-1.5">
@@ -818,7 +842,7 @@ export default function ManagerCalendar() {
           </header>
           <div
             className={cn(
-              'rounded-xl border overflow-hidden',
+              'pc-store-calendar-body rounded-xl border overflow-hidden',
               isMobile && !isTimeGrid && 'pc-mobile-month',
             )}
             style={{ borderColor: (st.color || '#6366f1') + '66' }}
@@ -830,9 +854,10 @@ export default function ManagerCalendar() {
               initialDate={cycleStart(dayjs().format('YYYY-MM-DD'))}
               views={{ dayGridFortnight: { type: 'dayGrid', duration: { weeks: 2 }, dateIncrement: { weeks: 2 }, dateAlignment: 'week' } }}
               headerToolbar={false}
-              height={isMobile ? 'auto' : viewType === 'dayGridFortnight' ? 280 : 340}
+              height={isMobile || !isTimeGrid ? 'auto' : '100%'}
               timeZone="local"
               firstDay={1}
+              fixedWeekCount={false}
               events={visibleEvents(eventsByStore[st.code] ?? [])}
               datesSet={i === 0 ? handleDatesSet : undefined}
               dateClick={handleDateClickFor(st.code)}
@@ -845,7 +870,7 @@ export default function ManagerCalendar() {
               eventContent={renderEvent}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
               businessHours={businessHoursFrom(hoursForStore(st.code, storeHours))}
-              dayMaxEvents={mobileMonthEventLimit(isMobile, viewType)}
+              dayMaxEvents={isMobile ? mobileMonthEventLimit(true, viewType) : false}
               moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
               allDaySlot={false}
               nowIndicator
@@ -858,8 +883,7 @@ export default function ManagerCalendar() {
         </section>
       ))}
       </div>
-      <aside ref={assignmentRef} className="pc-assignment-sidebar" aria-label="Shift assignment panel">
-        {selectedDate && modalStoreCode ? <>
+      {selectedDate && modalStoreCode && <aside ref={assignmentRef} className="pc-assignment-sidebar" aria-label="Shift assignment panel">
           <div className="pc-assignment-store-switch" aria-label="Assignment store">
             {realStores.map(store => <Button key={store.code}
               variant={modalStoreCode === store.code ? 'default' : 'outline'}
@@ -877,8 +901,7 @@ export default function ManagerCalendar() {
             }}
             onEdit={shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) }}
           />}
-        </> : <div className="pc-assignment-placeholder"><strong>Assign shifts</strong><p>Select a date in either store's calendar to review availability and assign employees.</p></div>}
-      </aside>
+      </aside>}
       </div>
       {isTimeGrid && realStores.length > 0 && (
         <p className="text-xs text-muted-foreground px-1">

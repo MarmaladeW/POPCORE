@@ -74,7 +74,8 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const [userCollapsed, setCollapsed] = useState(false)
+  const [scheduleExpanded, setScheduleExpanded] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
   const moreButton = useRef<HTMLButtonElement>(null)
   const screens = useBreakpoint()
@@ -86,6 +87,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const manager = useHasRole('manager')
   const staff = useHasRole('staff')
   const active = currentNav(location.pathname, manager)
+  const collapsed = active === '/schedule' ? !scheduleExpanded : userCollapsed
+  useEffect(() => setScheduleExpanded(false), [location.pathname])
 
   useEffect(() => setMoreOpen(false), [location.pathname])
 
@@ -147,7 +150,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         className="pc-collapse" type="text"
         aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
         icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-        onClick={() => setCollapsed(value => !value)}
+        onClick={() => active === '/schedule' ? setScheduleExpanded(value => !value) : setCollapsed(value => !value)}
       >{collapsed ? null : 'Collapse'}</Button>
     </Sider>}
 
