@@ -7,7 +7,6 @@ import type { DatesSetArg, EventInput } from '@fullcalendar/core'
 import dayjs from 'dayjs'
 import { CalendarPlus, Copy, RotateCw } from 'lucide-react'
 import { message } from 'antd'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -17,10 +16,9 @@ import {
   type Shift,
 } from './scheduleApi'
 import {
-  DEFAULT_STORE_HOURS, businessHoursFrom, gridWindow, parseStoreOpenHours, unionHours,
-  type OpenHoursConfig,
+  DEFAULT_STORE_HOURS, businessHoursFrom, gridWindow, parseStoreOpenHours, unionHours, hoursForStore, shiftKindFor,
 } from './openHours'
-import { useIsMobile } from '../../hooks/useIsMobile'
+import { shiftKindLabel } from './schedulePresentation'
 
 export default function EmployeeView() {
   const calRef = useRef<FullCalendar>(null)
@@ -29,15 +27,14 @@ export default function EmployeeView() {
   const [syncOpen, setSyncOpen] = useState(false)
   const [feedUrl, setFeedUrl] = useState<string | null>(null)
   // This calendar mixes stores, so shade with the widest hours across stores
-  const [openHours, setOpenHours] = useState<OpenHoursConfig>(unionHours(DEFAULT_STORE_HOURS))
-  const [viewType, setViewType] = useState('dayGridMonth')
+  const [storeHours, setStoreHours] = useState(DEFAULT_STORE_HOURS)
+  const openHours = unionHours(storeHours)
   const [loadError, setLoadError] = useState(false)
-  const isMobile = useIsMobile()
   const [msgApi, msgCtx] = message.useMessage()
 
   useEffect(() => {
     getScheduleConfig()
-      .then(cfg => setOpenHours(unionHours(parseStoreOpenHours(cfg.schedule_open_hours))))
+      .then(cfg => setStoreHours(parseStoreOpenHours(cfg.schedule_open_hours)))
       .catch(() => {})
   }, [])
 
@@ -68,7 +65,6 @@ export default function EmployeeView() {
       const start = dayjs(arg.start).format('YYYY-MM-DD')
       const end   = dayjs(arg.end).format('YYYY-MM-DD')
       setCurrentRange({ start, end })
-      setViewType(arg.view.type)
       loadEvents(start, end).catch(() => { setEvents([]); setLoadError(true) })
     },
     [loadEvents]
@@ -128,12 +124,7 @@ export default function EmployeeView() {
       </div>
 
       {/* Calendar card */}
-      <div
-        className={cn(
-          'rounded-xl border border-border overflow-hidden',
-          isMobile && viewType === 'dayGridMonth' && 'popcore-dots',
-        )}
-      >
+      <div className="rounded-xl border border-border overflow-hidden">
         <FullCalendar
           ref={calRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -147,6 +138,17 @@ export default function EmployeeView() {
           timeZone="local"
           firstDay={1}
           events={events}
+          eventDisplay="block"
+          dayMaxEvents={3}
+          eventContent={arg => {
+            const shift = arg.event.extendedProps.shift as Shift
+            const label = shiftKindLabel(shiftKindFor(shift.date, hoursForStore(shift.store_code || '', storeHours), shift.start_time, shift.end_time))
+            return <div className="pc-personal-shift" title={`${arg.event.title} · ${label}`}>
+              <strong>{shift.store_code} · {label}</strong>
+              <span>{shift.start_time}–{shift.end_time}</span>
+              {shift.position && <span>{shift.position}</span>}
+            </div>
+          }}
           datesSet={handleDatesSet}
           eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
           businessHours={businessHoursFrom(openHours)}

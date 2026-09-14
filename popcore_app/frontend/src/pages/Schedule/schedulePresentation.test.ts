@@ -7,7 +7,15 @@ import {
   mobileMonthEventLimit,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
+  shiftKindLabel,
 } from './schedulePresentation.ts'
+
+test('shift types are readable on mobile', () => {
+  assert.equal(shiftKindLabel('full'), 'Full day')
+  assert.equal(shiftKindLabel('first'), 'Half day (AM)')
+  assert.equal(shiftKindLabel('second'), 'Half day (PM)')
+  assert.equal(shiftKindLabel('custom'), 'Custom')
+})
 
 test('mobile employee labels stay recognizable inside narrow month cells', () => {
   assert.equal(compactEmployeeLabel('YC'), 'YC')

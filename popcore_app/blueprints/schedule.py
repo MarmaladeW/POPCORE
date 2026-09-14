@@ -311,7 +311,7 @@ def schedule_trainees_delete(trainee_id):
 
 # ─── Availability ──────────────────────────────────────────────────────────────
 
-_AVAILABILITY_ANCHOR = _dt.date(2026, 9, 21)
+_AVAILABILITY_ANCHOR = _dt.date(2026, 9, 14)
 
 
 def _schedule_date(value):
@@ -387,7 +387,12 @@ def _save_availability(con, employee_id, store_id, day):
         (employee_id,store_id,date,start,end,notes,status))
 
 
-def _submitted_availability_covers(con, employee_id, store_id, date, start, end):
+def _availability_allows_shift(con, employee_id, store_id, date, start, end):
+    submission = con.execute('''SELECT submitted_at FROM availability_submissions
+        WHERE employee_id=? AND store_id=? AND period_start=?''',
+        (employee_id,store_id,_availability_period(_schedule_date(date)))).fetchone()
+    if not submission or not submission['submitted_at']:
+        return True
     row = con.execute('''SELECT a.start_time,a.end_time FROM availability a
         JOIN availability_submissions s ON s.employee_id=a.employee_id AND s.store_id=a.store_id
         WHERE a.employee_id=? AND a.store_id=? AND a.date=? AND a.status='available'
@@ -408,7 +413,7 @@ def schedule_availability_period():
     try:
         first = _schedule_date(data.get('period_start'))
         if _availability_period(first) != str(first):
-            raise ValueError('period_start must start a two-week cycle anchored to 2026-09-21')
+            raise ValueError('period_start must start a two-week cycle anchored to 2026-09-14')
         last = first + _dt.timedelta(days=13)
         if 'employee_id' in data:
             raise ValueError('Only your own availability can be submitted or read here')
@@ -727,7 +732,7 @@ def schedule_shifts_create():
     if con.execute('SELECT id FROM shifts WHERE employee_id=? AND date=?', (employee_id,shift_date)).fetchone():
         con.close()
         return jsonify({'error': 'Employee already has a shift on this date. Edit the existing shift.'}), 409
-    if data.get('require_availability') and not _submitted_availability_covers(con, employee_id,store_id,shift_date,start_time,end_time):
+    if data.get('require_availability') and not _availability_allows_shift(con, employee_id,store_id,shift_date,start_time,end_time):
         con.close()
         return jsonify({'error': 'Submitted availability no longer covers these hours. Reload availability.'}), 409
     con.execute("""INSERT INTO shifts
@@ -776,7 +781,7 @@ def schedule_shifts_update(shift_id):
     except ValueError as exc:
         con.close()
         return jsonify({'error': str(exc)}), 400
-    if data.get('require_availability') and not _submitted_availability_covers(
+    if data.get('require_availability') and not _availability_allows_shift(
             con,row['employee_id'],updates.get('store_id',row['store_id']),row['date'],
             updates.get('start_time',row['start_time']),updates.get('end_time',row['end_time'])):
         con.close()
