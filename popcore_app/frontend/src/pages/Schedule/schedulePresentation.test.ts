@@ -4,7 +4,6 @@ import test from 'node:test'
 import {
   compactEmployeeLabel,
   manualChecklistPresentation,
-  mobileMonthEventLimit,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
   shiftKindLabel,
@@ -46,12 +45,6 @@ test('mobile shift labels retain the complete assignment for assistive technolog
     }),
     'Trainee 1 · 12:00–17:00 · Trainee',
   )
-})
-
-test('mobile month view shows three assignments before using an overflow count', () => {
-  assert.equal(mobileMonthEventLimit(true, 'dayGridMonth'), 3)
-  assert.equal(mobileMonthEventLimit(false, 'dayGridMonth'), 4)
-  assert.equal(mobileMonthEventLimit(true, 'timeGridWeek'), 4)
 })
 
 test('checklist completion is controlled only by the saved manual tick', () => {

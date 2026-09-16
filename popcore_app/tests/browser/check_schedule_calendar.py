@@ -193,14 +193,15 @@ async def run_checks(browser, case):
     panel = page.get_by_role('region', name=f'Schedule details {START} DT')
     await expect(panel.get_by_text('Not submitted', exact=True).first).to_be_visible()
     workspace = page.locator('.pc-assignment-workspace')
-    # Both stores must fit without moving the page.
+    # Locations stack and use the calendar workspace's full width.
     await page.evaluate('window.scrollTo(0, 0)')
     calendars = page.locator('.pc-store-calendars > section')
     await expect(calendars).to_have_count(2)
     first, second, side = await calendars.nth(0).bounding_box(), await calendars.nth(1).bounding_box(), await panel.bounding_box()
-    assert second['y'] + second['height'] <= 980, (first, second, side)
-    assert abs(first['y'] - second['y']) < 2 and second['x'] >= first['x'] + first['width'], (first, second)
-    assert side['x'] >= second['x'] + second['width'], (second, side)
+    assert second['y'] >= first['y'] + first['height'], (first, second)
+    assert abs(first['x'] - second['x']) < 2 and abs(first['width'] - second['width']) < 2, (first, second)
+    assert first['width'] == await page.locator('.pc-store-calendars').evaluate('(el) => el.getBoundingClientRect().width')
+    assert side['x'] >= first['x'] + first['width'], (first, side)
     await page.screenshot(path=OUT/'assignment-workspace-1440.png', full_page=True, animations='disabled')
     await page.get_by_role('button', name=f'View {START} MK', exact=True).click()
     await expect(page.get_by_role('region', name=f'Schedule details {START} MK')).to_be_visible()
@@ -299,14 +300,16 @@ async def run_checks(browser, case):
     await page.set_viewport_size({'width':1440,'height':900})
     await page.get_by_role('button', name='Month', exact=True).click()
     await page.get_by_role('button', name='Refresh', exact=True).click()
-    for width, height in ((1440,900), (1280,800), (1366,768), (1920,1080)):
+    for width, height in ((1440,900), (1280,800), (1366,768), (1920,1080), (3840,2160)):
         await page.set_viewport_size({'width':width,'height':height})
         await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendars .fc table')].every(table => table.getBoundingClientRect().width <= table.closest('.fc').getBoundingClientRect().width + 1)")
         await expect(page.locator('.pc-store-calendars .fc-daygrid-more-link')).to_have_count(0)
         for calendar in (calendars.nth(0), calendars.nth(1)):
             await expect(calendar.locator('.fc-daygrid-day-events .pc-shift:visible').first).to_be_visible()
         first, second = await calendars.nth(0).bounding_box(), await calendars.nth(1).bounding_box()
-        assert abs(first['y'] - second['y']) < 2, (first,second)
+        assert second['y'] >= first['y'] + first['height'], (first,second)
+        assert abs(first['x'] - second['x']) < 2 and abs(first['width'] - second['width']) < 2, (first,second)
+        assert await page.evaluate('document.body.scrollWidth') <= width + 2
         for code in ('DT','MK'):
             day = page.locator(f'.pc-store-calendars section:has(button[aria-label="View {START} {code}"]) td[data-date="{START}"]')
             assert await day.locator('.pc-shift:visible').count() >= 6
@@ -319,6 +322,20 @@ async def run_checks(browser, case):
             await expect(calendar.locator('.fc-daygrid-day-events .pc-shift:visible').first).to_be_visible()
         await page.screenshot(path=OUT/f'month-assignment-fit-{width}.png', animations='disabled')
         await page.get_by_role('button', name='Close day details', exact=True).click()
+    # Busy days expand in both date-grid views, including on phones.
+    for view in ('Two weeks', 'Month'):
+        await page.get_by_role('button', name=view, exact=True).click()
+        for width in (3840, 1920, 768, 390):
+            await page.set_viewport_size({'width':width,'height':2160 if width == 3840 else 980})
+            await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendars .fc table')].every(table => table.getBoundingClientRect().width <= table.closest('.fc').getBoundingClientRect().width + 1)")
+            await expect(page.locator('.pc-store-calendars .fc-daygrid-more-link')).to_have_count(0)
+            for code in ('DT', 'MK'):
+                day = page.locator(f'.pc-store-calendars section:has(button[aria-label="View {START} {code}"]) td[data-date="{START}"]')
+                shifts = day.locator('.pc-shift:visible, .pc-mobile-shift:visible')
+                assert await shifts.count() >= 6
+                assert await shifts.evaluate_all('(els) => els.every(el => el.getBoundingClientRect().bottom <= el.closest("td").getBoundingClientRect().bottom)'), 'Every employee must fit inside the day'
+            assert await page.evaluate('document.body.scrollWidth') <= width + 2
+            await page.screenshot(path=OUT/f'all-people-{view.replace(" ", "-")}-{width}.png', full_page=True, animations='disabled')
     # Representative monthly staffing: four daily at Downtown, two at Markham, plus existing shifts.
     with closing(case.connect()) as con:
         con.execute('DELETE FROM shifts WHERE employee_id IN (205,206,303,304,305,306)')
@@ -331,8 +348,7 @@ async def run_checks(browser, case):
     await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
     await expect(page.get_by_role('region', name=f'Schedule details {START} DT').get_by_text('Assigned · 6', exact=True)).to_be_visible()
     await expect(page.locator('.pc-store-calendars .fc-daygrid-more-link')).to_have_count(0)
-    await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.getBoundingClientRect().bottom <= innerHeight)", timeout=5000)
-    assert await page.locator('.pc-content').evaluate('(el) => el.scrollHeight <= el.clientHeight + 2')
+    await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.scrollHeight <= el.clientHeight + 2)")
     assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')
     await page.screenshot(path=OUT/'all-shifts-MONTH-1366.png', animations='disabled')
     # Long notes remain saveable without displacing the checklist or hiding day controls.
@@ -358,7 +374,7 @@ async def run_checks(browser, case):
     previous_date = START.replace(day=1) - timedelta(days=1)
     await page.get_by_role('button', name=f'View {previous_date} MK', exact=True).click()
     await expect(page.get_by_role('region', name=f'Schedule details {previous_date} MK')).to_be_visible()
-    await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.getBoundingClientRect().bottom <= innerHeight)", timeout=5000)
+    await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.scrollHeight <= el.clientHeight + 2)")
     assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')
     await page.screenshot(path=OUT/'previous-month-fit-1280.png', animations='disabled')
     await page.set_viewport_size({'width':1024,'height':800})

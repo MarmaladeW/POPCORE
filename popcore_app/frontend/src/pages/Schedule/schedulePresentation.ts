@@ -40,10 +40,6 @@ export function mobileShiftAccessibleLabel({
   ].filter(Boolean).join(' · ')
 }
 
-export function mobileMonthEventLimit(isMobile: boolean, viewType: string): number {
-  return isMobile && viewType === 'dayGridMonth' ? 3 : 4
-}
-
 export function shiftColorPresentation(employeeColor: string, _kind: string) {
   return {
     backgroundColor: employeeColor,
