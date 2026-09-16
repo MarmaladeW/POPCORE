@@ -12,7 +12,7 @@ from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
-from matcher import match_jzm, batch_match_jzm, match_name, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
+from matcher import match_jzm, batch_match_jzm, load_matching_aliases, match_name, identity_conflicts, normalize_sku, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
 from catalog_identity import (
     CatalogConflict, add_conversion, assign_barcode, resolve_barcode,
     update_product_identity,
@@ -84,17 +84,16 @@ def get_by_jizhanming():
         return jsonify([])
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
-    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
+    aliases = load_matching_aliases(con)
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
         FROM products
-        WHERE jizhanming IS NOT NULL AND jizhanming != ''
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
     matches = match_jzm(name, all_products, aliases=aliases, threshold=75, limit=5)
-    return jsonify([p for _, p in matches])
+    # Legacy callers treat one result as confirmed; fuzzy suggestions use search.
+    return jsonify([p for score, p in matches if score == 100])
 
 
 @bp.route('/api/products/match', methods=['POST'])
@@ -111,11 +110,10 @@ def batch_match_products():
 
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
-    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
+    aliases = load_matching_aliases(con)
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
-        FROM products WHERE jizhanming IS NOT NULL AND jizhanming != ''
+        FROM products
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
@@ -329,8 +327,15 @@ def save_alias():
         return jsonify({'error': 'alias normalises to empty'}), 400
     con = get_db()
     try:
+        con.execute('BEGIN IMMEDIATE')
+        if not con.execute('SELECT 1 FROM products WHERE id=?', (pid,)).fetchone():
+            return jsonify({'error': 'Product not found'}), 404
+        owner = con.execute('SELECT product_id FROM product_aliases WHERE alias_norm=?',
+                            (alias_norm,)).fetchone()
+        if owner and owner['product_id'] != pid:
+            return jsonify({'error': 'Alias already belongs to another product'}), 409
         con.execute(
-            'INSERT OR REPLACE INTO product_aliases (product_id, alias, alias_norm) VALUES (?,?,?)',
+            'INSERT OR IGNORE INTO product_aliases (product_id, alias, alias_norm) VALUES (?,?,?)',
             (pid, alias, alias_norm),
         )
         con.commit()
@@ -988,6 +993,21 @@ def _fetch_sheet_rows():
         return 'error', []
 
 
+def _sheet_identity_collision(query, product_id, products, aliases):
+    """Check all exact identities, including aliases, without fuzzy/type filtering."""
+    qn = norm_jzm(_clean_jzm(query))
+    if not qn:
+        return False
+    if aliases.get(qn) not in (None, product_id):
+        return True
+    query_sku = normalize_sku(query)
+    return any(p['id'] != product_id and (
+        qn in (norm_jzm(_clean_jzm(p.get('name_cn_en') or '')),
+               norm_jzm(_clean_jzm(p.get('jizhanming') or '')))
+        or query_sku == normalize_sku(p.get('sku'))
+    ) for p in products)
+
+
 @bp.route('/api/products/sync-sheet', methods=['POST'])
 @role_required('admin')
 def sync_sheet_preview():
@@ -1002,7 +1022,7 @@ def sync_sheet_preview():
       3. col B fuzzy-matched (legacy fallback, only when C is empty/unmatched)
     and col B is what gets WRITTEN (into products.jizhanming).
 
-    Buckets: changed (rename, prechecked when high-confidence), review
+    Buckets: changed (rename, prechecked for unique exact identity), review
     (rename, human must opt in), conflicts (multiple rows claim one product,
     or stored ref disagrees), new_products (row matches nothing — candidate
     to create), ref_learns (matched, nothing to rename, but the 编号 can be
@@ -1016,6 +1036,7 @@ def sync_sheet_preview():
     all_products = [dict(r) for r in cur.fetchall()]
     cur.execute('SELECT alias_norm, product_id FROM product_aliases')
     aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
+    matching_aliases = load_matching_aliases(con)
     con.close()
 
     # Duplicate scan always runs, even when the sheet is unreachable
@@ -1043,15 +1064,17 @@ def sync_sheet_preview():
                 continue
 
             target, via, score = None, None, 0
+            hits = []
             if ref and ref in ref_map:
                 target, via, score = ref_map[ref], 'ref', 100
+                hits = [(score, target)]
             if target is None and name_c:
-                hits = match_name(name_c, all_products, threshold=60, limit=1)
+                hits = match_name(name_c, all_products, threshold=60, limit=5)
                 if hits:
                     score, target = hits[0]
                     via = 'name'
             if target is None and jzm_b:
-                hits = match_jzm(jzm_b, all_products, aliases=aliases, threshold=60, limit=1)
+                hits = match_jzm(jzm_b, all_products, aliases=matching_aliases, threshold=60, limit=5)
                 if hits:
                     score, target = hits[0]
                     via = 'jzm_b'
@@ -1061,15 +1084,30 @@ def sync_sheet_preview():
                                      'jizhanming': jzm_b, 'name': name_c})
                 continue
 
-            per_pid.setdefault(target['id'], []).append({
-                'key':              i,
-                'ref':              ref,
-                'sheet_jizhanming': jzm_b,
-                'sheet_name':       name_c,
-                'match_via':        via,
-                'score':            score,
-                'target':           target,
-            })
+            ambiguous = score == 100 and len(hits) > 1 and hits[1][0] == 100
+            cue_conflict = any(identity_conflicts(text, target)
+                               for text in (name_c, jzm_b) if text)
+            candidates = [{**p, 'score': sc} for sc, p in hits]
+            entry = {
+                'key': i, 'ref': ref, 'sheet_jizhanming': jzm_b, 'sheet_name': name_c,
+                'match_via': via, 'score': score, 'target': target,
+                'candidates': candidates, 'ambiguous': ambiguous,
+                'reason': 'ambiguous' if ambiguous else ('type_conflict' if cue_conflict else 'fuzzy'),
+                'prechecked': (via == 'ref' or score == 100) and not ambiguous and not cue_conflict,
+                'product_id': None if ambiguous else target['id'],
+                'sku': '' if ambiguous else target['sku'],
+                'old_jizhanming': target.get('jizhanming') or '',
+                'new_jizhanming': jzm_b or target.get('jizhanming') or '',
+                'sheet_ref': ref,
+                'expected_jizhanming': target.get('jizhanming'),
+                'expected_sheet_ref': target.get('sheet_ref'),
+                'expected_name_cn_en': target.get('name_cn_en'),
+                'expected_product_type': target.get('product_type'),
+            }
+            if ambiguous:
+                review.append({k: v for k, v in entry.items() if k != 'target'})
+                continue
+            per_pid.setdefault(target['id'], []).append(entry)
 
         for pid, entries in per_pid.items():
             target = entries[0]['target']
@@ -1103,33 +1141,29 @@ def sync_sheet_preview():
             old_jzm       = base['product_jizhanming']
             rename_needed = bool(e['sheet_jizhanming']) and \
                 norm_jzm(_clean_jzm(old_jzm)) != norm_jzm(_clean_jzm(e['sheet_jizhanming']))
-            high_conf   = e['match_via'] == 'ref' or e['score'] >= 95
+            if rename_needed and _sheet_identity_collision(e['sheet_jizhanming'], pid, all_products, aliases):
+                conflicts.append({
+                    'key': f'destination-{pid}', 'reason': 'destination_collision', **base,
+                    'rows': [{k: e[k] for k in
+                              ('key', 'ref', 'sheet_jizhanming', 'sheet_name', 'match_via', 'score')}],
+                })
+                continue
+            high_conf = e['prechecked']
             ref_learnable = bool(e['ref']) and not stored_ref
 
-            if rename_needed:
-                entry = {
-                    'key':              e['key'],
-                    'ref':              e['ref'],
-                    'sheet_jizhanming': e['sheet_jizhanming'],
-                    'sheet_name':       e['sheet_name'],
-                    'product_id':       pid,
-                    'sku':              target['sku'],
-                    'old_jizhanming':   old_jzm,
-                    'new_jizhanming':   e['sheet_jizhanming'],
-                    'match_via':        e['match_via'],
-                    'score':            e['score'],
-                    'prechecked':       high_conf,
-                    'sheet_ref':        e['ref'] if ref_learnable else '',
-                }
+            if rename_needed or not high_conf:
+                entry = {k: v for k, v in e.items() if k != 'target'}
                 (changed if high_conf else review).append(entry)
             else:
                 unchanged += 1
-                if ref_learnable and high_conf:
+                if ref_learnable:
                     ref_learns.append({
-                        'product_id': pid,
-                        'sku':        target['sku'],
-                        'jizhanming': old_jzm,
-                        'sheet_ref':  e['ref'],
+                        'product_id': pid, 'sku': target['sku'], 'jizhanming': old_jzm,
+                        'sheet_ref': e['ref'],
+                        'expected_jizhanming': target.get('jizhanming'),
+                        'expected_sheet_ref': target.get('sheet_ref'),
+                        'expected_name_cn_en': target.get('name_cn_en'),
+                        'expected_product_type': target.get('product_type'),
                     })
 
     return jsonify({
@@ -1145,130 +1179,149 @@ def sync_sheet_preview():
 
 
 def _apply_sheet_ref(con, product_id: int, sheet_ref: str) -> bool:
-    """Set products.sheet_ref when the product has none yet. The partial
-    unique index rejects a ref already claimed by another product."""
+    """Learn a stable reference, refusing either kind of identity reassignment."""
     if not sheet_ref:
         return False
-    try:
-        cur = con.execute(
-            "UPDATE products SET sheet_ref = ? WHERE id = ? "
-            "AND (sheet_ref IS NULL OR sheet_ref = '')",
-            (sheet_ref, product_id))
-        return cur.rowcount > 0
-    except sqlite3.IntegrityError:
+    row = con.execute('SELECT sheet_ref FROM products WHERE id=?', (product_id,)).fetchone()
+    if row['sheet_ref'] == sheet_ref:
         return False
+    if row['sheet_ref']:
+        raise CatalogConflict('Product already has another Sheet reference', 'sheet_ref_conflict')
+    con.execute('UPDATE products SET sheet_ref=? WHERE id=?', (sheet_ref, product_id))
+    return True
 
 
 @bp.route('/api/products/sync-sheet/confirm', methods=['POST'])
 @role_required('admin')
 def sync_sheet_confirm():
-    """
-    Apply a previewed sync: rename checked rows (learning their 编号 and
-    keeping the OLD jizhanming as an alias so historical reports still
-    match), remember 编号 for ref_learns, and create checked new products
-    with auto-generated SKUs.
-    """
-    data            = request.get_json(silent=True) or {}
-    changes         = data.get('changes', []) or []
-    review_accepted = data.get('review_accepted', []) or []
-    ref_learns      = data.get('ref_learns', []) or []
-    creates         = data.get('create_products', []) or []
-    all_changes     = list(changes) + list(review_accepted)
+    """Apply all reviewed operations atomically against their preview snapshots."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object'}), 400
+    groups = [data.get(key, []) for key in
+              ('changes', 'review_accepted', 'ref_learns', 'create_products')]
+    if any(not isinstance(group, list) or any(not isinstance(op, dict) for op in group)
+           for group in groups):
+        return jsonify({'error': 'Sync operations must be lists of objects'}), 400
+    changes, reviews, ref_learns, creates = groups
+
+    def text_field(op, key):
+        value = op.get(key, '')
+        if not isinstance(value, str):
+            raise ValueError(f'{key} must be a string')
+        return value.strip()
 
     con = get_db()
-    cur = con.cursor()
     updated = created = refs_learned = 0
-
-    for change in all_changes:
-        product_id = change.get('product_id')
-        new_jzm    = (change.get('new_jizhanming') or '').strip()
-        if not product_id or not new_jzm:
-            continue
-        cur.execute('SELECT * FROM products WHERE id = ?', (product_id,))
-        row = cur.fetchone()
-        if not row:
-            continue
-        product = dict(row)
-        old_jzm = (product.get('jizhanming') or '').strip()
-        search_blob = ' '.join([
-            (product.get('sku')          or '').lower(),
-            new_jzm.lower(),
-            (product.get('name_cn_en')   or '').lower(),
-            (product.get('brand')        or '').lower(),
-            (product.get('product_type') or '').lower(),
-            (product.get('ip_series')    or '').lower(),
-        ])
-        con.execute(
-            'UPDATE products SET jizhanming = ?, search_blob = ? WHERE id = ?',
-            (new_jzm, search_blob, product_id),
-        )
-        # Keep the old shorthand alive as an alias — historical daily reports
-        # written with the old 记账名 must keep matching this product.
-        old_norm = norm_jzm(_clean_jzm(old_jzm))
-        if old_norm and old_norm != norm_jzm(_clean_jzm(new_jzm)):
-            con.execute('''
-                INSERT OR IGNORE INTO product_aliases (product_id, alias, alias_norm, created_by)
-                VALUES (?, ?, ?, 'sheet_sync')
-            ''', (product_id, old_jzm, old_norm))
-        if _apply_sheet_ref(con, product_id, (change.get('sheet_ref') or '').strip()):
-            refs_learned += 1
-        updated += 1
-
-    for rl in ref_learns:
-        pid = rl.get('product_id')
-        ref = (rl.get('sheet_ref') or '').strip()
-        if pid and ref and _apply_sheet_ref(con, pid, ref):
-            refs_learned += 1
-
-    if creates:
-        cur.execute("SELECT sku FROM products WHERE sku LIKE 'SP%' ORDER BY sku DESC LIMIT 1")
-        row = cur.fetchone()
-        try:
-            next_num = int((row[0].replace('SP', '').lstrip('0') or '0')) + 1 if row else 1
-        except ValueError:
-            next_num = None   # non-numeric SKU scheme — cannot auto-create
-        for cp in creates:
-            if next_num is None:
-                break
-            jzm  = (cp.get('jizhanming') or '').strip()
-            name = (cp.get('name_cn_en') or cp.get('name') or '').strip()
-            ref  = (cp.get('sheet_ref') or cp.get('ref') or '').strip()
-            if not jzm and not name:
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        seen = set()
+        operations = [(op, True) for op in changes + reviews] + [(op, False) for op in ref_learns]
+        for op, rename in operations:
+            pid = op.get('product_id')
+            if type(pid) is not int or pid <= 0:
+                raise ValueError('product_id must be a positive integer')
+            if pid in seen:
+                raise CatalogConflict('Multiple operations claim one product', 'duplicate_product')
+            seen.add(pid)
+            row = con.execute('SELECT * FROM products WHERE id=?', (pid,)).fetchone()
+            if not row:
+                raise CatalogConflict('Product no longer exists', 'stale_preview')
+            product = dict(row)
+            fields = ('jizhanming', 'sheet_ref', 'name_cn_en', 'product_type')
+            for field in fields:
+                if 'expected_' + field not in op:
+                    raise ValueError('Preview snapshot required: expected_' + field)
+            ref = text_field(op, 'sheet_ref')
+            new_jzm = text_field(op, 'new_jizhanming') if rename else ''
+            # A lost response can be retried if every identity still matches
+            # the requested final state. Name/type edits always invalidate it.
+            replay = (product['jizhanming'] == (new_jzm or op['expected_jizhanming'])
+                      and product['sheet_ref'] == (ref or op['expected_sheet_ref']))
+            for field in fields:
+                if op['expected_' + field] != product[field]:
+                    if field in ('jizhanming', 'sheet_ref') and replay:
+                        continue
+                    raise CatalogConflict('Product changed; preview the Sheet again', 'stale_preview')
+            if rename:
+                catalog = [dict(r) for r in con.execute('SELECT id, sku, name_cn_en, jizhanming FROM products')]
+                aliases = {r['alias_norm']: r['product_id'] for r in con.execute('SELECT * FROM product_aliases')}
+                if _sheet_identity_collision(new_jzm, pid, catalog, aliases):
+                    raise CatalogConflict('New shorthand belongs to another product; fix the Sheet',
+                                          'destination_collision')
+            if _apply_sheet_ref(con, pid, ref):
+                refs_learned += 1
+            if not rename:
+                if not ref:
+                    raise ValueError('sheet_ref is required for ref_learns')
                 continue
+            old_jzm = product.get('jizhanming') or ''
+            if not new_jzm:
+                if old_jzm or not ref:
+                    raise ValueError('new_jizhanming is required')
+                continue  # A name-only Sheet row can learn its ref without inventing a shorthand.
+            if new_jzm == old_jzm:
+                continue
+            old_norm = norm_jzm(_clean_jzm(old_jzm))
+            if old_norm and old_norm != norm_jzm(_clean_jzm(new_jzm)):
+                owner = con.execute('SELECT product_id FROM product_aliases WHERE alias_norm=?',
+                                    (old_norm,)).fetchone()
+                if owner and owner['product_id'] != pid:
+                    raise CatalogConflict('Old shorthand alias belongs to another product', 'alias_conflict')
+                con.execute("""INSERT OR IGNORE INTO product_aliases
+                    (product_id, alias, alias_norm, created_by) VALUES (?, ?, ?, 'sheet_sync')""",
+                            (pid, old_jzm, old_norm))
+            search_blob = ' '.join((new_jzm if field == 'jizhanming' else product.get(field) or '').lower()
+                                   for field in ('sku', 'jizhanming', 'name_cn_en', 'brand', 'product_type', 'ip_series'))
+            con.execute('UPDATE products SET jizhanming=?, search_blob=? WHERE id=?',
+                        (new_jzm, search_blob, pid))
+            updated += 1
+
+        # Allocate from numeric SP SKUs only; custom SKUs do not disable creation.
+        next_num = max((int(r['sku'][2:]) for r in con.execute('SELECT sku FROM products')
+                        if re.fullmatch(r'SP[0-9]+', r['sku'] or '')), default=0) + 1
+        for op in creates:
+            jzm = text_field(op, 'jizhanming')
+            name = text_field(op, 'name_cn_en') if 'name_cn_en' in op else text_field(op, 'name')
+            ref = text_field(op, 'sheet_ref') if 'sheet_ref' in op else text_field(op, 'ref')
+            if not name and not jzm:
+                raise ValueError('A new product requires a name or shorthand')
+            existing = con.execute('SELECT * FROM products WHERE sheet_ref=?', (ref,)).fetchone() if ref else None
+            if existing:
+                if (existing['name_cn_en'] or '') == name and (existing['jizhanming'] or '') == jzm:
+                    continue  # Retry of this same create, including duplicates in one request.
+                raise CatalogConflict('Sheet reference belongs to a different identity', 'sheet_ref_conflict')
+            catalog = [dict(r) for r in con.execute('SELECT * FROM products')]
+            aliases = {r['alias_norm']: r['product_id'] for r in con.execute('SELECT * FROM product_aliases')}
+            if any(_sheet_identity_collision(value, None, catalog, aliases) for value in (name, jzm)):
+                raise CatalogConflict('Exact catalog identity exists; review instead of creating', 'identity_conflict')
             sku = f'SP{next_num:05d}'
             next_num += 1
-            search_blob = ' '.join([sku.lower(), jzm.lower(), name.lower()])
-            try:
-                con.execute('''
-                    INSERT INTO products (sku, name_cn_en, jizhanming, search_blob, notes)
-                    VALUES (?, ?, ?, ?, '')
-                ''', (sku, name, jzm, search_blob))
-                created += 1
-                if ref:
-                    pid_new = con.execute('SELECT id FROM products WHERE sku = ?', (sku,)).fetchone()
-                    if pid_new and _apply_sheet_ref(con, pid_new['id'], ref):
-                        refs_learned += 1
-            except sqlite3.IntegrityError:
-                continue
+            con.execute("""INSERT INTO products
+                (sku, name_cn_en, jizhanming, sheet_ref, search_blob, notes)
+                VALUES (?, ?, ?, ?, ?, '')""",
+                        (sku, name, jzm, ref or None, ' '.join((sku, jzm, name)).lower()))
+            created += 1
+            refs_learned += bool(ref)
 
-    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    con.execute(
-        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('last_sheet_sync_at', ?)",
-        (now_str,),
-    )
-    con.execute(
-        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('last_sheet_sync_count', ?)",
-        (str(updated + created),),
-    )
-    con.commit()
-    con.close()
+        now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+        con.executemany('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)',
+                        [('last_sheet_sync_at', now_str), ('last_sheet_sync_count', str(updated + created))])
+        con.commit()
+    except (CatalogConflict, sqlite3.IntegrityError) as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': getattr(exc, 'code', 'identity_conflict')}), 409
+    except ValueError as exc:
+        con.rollback()
+        return jsonify({'error': str(exc)}), 400
+    finally:
+        con.close()
 
     try:
         import ranker
         ranker.invalidate_cache()
     except Exception:
         pass
-
     return jsonify({'ok': True, 'updated': updated, 'created': created,
                     'refs_learned': refs_learned})
 
