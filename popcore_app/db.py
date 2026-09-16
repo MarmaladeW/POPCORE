@@ -1592,6 +1592,17 @@ def _migration_availability_period_submissions(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('availability_period_submissions')")
 
 
+def _migration_report_match_choices(con, cur):
+    cur.execute("""CREATE TABLE IF NOT EXISTS report_match_choices (
+        name_key TEXT NOT NULL,
+        note_key TEXT NOT NULL,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        identity_signature TEXT NOT NULL,
+        PRIMARY KEY(name_key, note_key, product_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_match_choices')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1635,6 +1646,7 @@ def _get_migrations():
         ('create_trades',                               _migration_create_trades),
         ('create_insight_runs',                          _migration_create_insight_runs),
         ('availability_period_submissions',             _migration_availability_period_submissions),
+        ('report_match_choices',                       _migration_report_match_choices),
     ]
 
 

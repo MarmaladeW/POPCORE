@@ -14,7 +14,9 @@ from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
-from matcher import match_jzm, identity_conflicts, load_matching_aliases, normalize as _norm_jzm, clean_name as _clean_jzm
+from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm,
+                     clean_name as _clean_jzm, report_match_key, report_identity_signature,
+                     load_report_match_choices)
 from inventory_commands import InventoryError, post_inventory
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
@@ -706,6 +708,28 @@ def submit_daily_report():
     except ValueError as exc:
         return jsonify(invalid_input(exc)), 400
 
+    section_choices = data.get('section_choices', [])
+    if not isinstance(section_choices, list):
+        return jsonify(invalid_input('section_choices must be a list')), 400
+    learned_sections = {}
+    for choice in section_choices:
+        if not isinstance(choice, dict) or not isinstance(choice.get('header'), str):
+            return jsonify(invalid_input('section_choices require an explicit heading')), 400
+        header = unicodedata.normalize('NFKC', choice['header']).strip()
+        section = choice.get('section')
+        heading = _detect_section_type(header, {})
+        if (not header or len(header.splitlines()) != 1 or not header.endswith(':')
+                or not header[:-1].strip() or any(c in header[:-1] for c in ':*')
+                or not isinstance(section, str)
+                or section not in {'pos', 'cash', 'stock_in', 'stock_out', 'break_display', 'skip'}
+                or heading != ('unknown', '')):
+            return jsonify(invalid_input('section_choices require an unknown heading and supported section')), 400
+        key = re.sub(r'\s+', '', header.rstrip(':').lower())
+        stored_section = 'ignore' if section == 'skip' else section
+        if key in learned_sections and learned_sections[key] != stored_section:
+            return jsonify({'error': 'Conflicting section choices', 'code': 'section_choice_conflict'}), 409
+        learned_sections[key] = stored_section
+
     validated_items = []
     valid_sections = (SALES_SECTIONS - {'employee_discount', 'sell_display', 'claw'}) | {'break_display', 'stock_in', 'stock_out'}
     for line, item in enumerate(items, 1):
@@ -716,6 +740,9 @@ def submit_daily_report():
             if item.get('flagged') or item.get('unknown_header'):
                 raise ValueError('Resolve every report item before submitting')
             normalized = dict(item)
+            for field in ('raw_name', 'notes', 'source_bucket'):
+                if item.get(field) is not None and not isinstance(item[field], str):
+                    raise ValueError(f'{field} must be text')
             normalized['product_id'] = read_int(
                 item['product_id'], 'product_id', minimum=1
             )
@@ -797,6 +824,18 @@ def submit_daily_report():
 
     try:
         con.execute('BEGIN IMMEDIATE')
+        for key, section in learned_sections.items():
+            existing = _detect_section_type(key + ':', {
+                row['alias_norm']: row['section_type']
+                for row in cur.execute('SELECT alias_norm,section_type FROM section_aliases')
+            })
+            if existing != ('unknown', '') and existing != ('skip' if section == 'ignore' else section, ''):
+                con.rollback()
+                con.close()
+                return jsonify({'error': 'Heading already has a different section',
+                                'code': 'section_choice_conflict'}), 409
+            cur.execute('INSERT OR IGNORE INTO section_aliases(alias_norm,section_type) VALUES (?,?)',
+                        (key, section))
         if mode == 'replace':
             prior_stock = cur.execute(f'''
                 SELECT 1 FROM stock_transactions
@@ -984,7 +1023,10 @@ def submit_daily_report():
             pid_c = item.get('product_id')
             if not raw_name_c or not pid_c:
                 continue
-            norm_name_c = _norm_jzm(_clean_jzm(raw_name_c))
+            # Qualified review must not dispute an unrelated bare legacy alias.
+            notes_c = (item.get('notes') or '').strip()
+            correction_name = raw_name_c + ' (' + notes_c + ')' if notes_c else raw_name_c
+            norm_name_c = _norm_jzm(_clean_jzm(correction_name))
             fuzzy_score_c = int(item.get('fuzzy_score', 0) or 0)
             top_score_c   = int(item.get('top_score',   0) or 0)
             was_top_c     = 1 if item.get('was_top') else 0
@@ -1006,30 +1048,30 @@ def submit_daily_report():
                 'code': 'reconciliation_classification_required',
             }), 409
 
-        # Teach only a reviewed, unambiguous name, inside the successful submission.
-        # Conflicting review history revokes our learned alias instead of picking a winner.
-        if corrections:
-            catalog = [dict(row) for row in cur.execute('SELECT * FROM products')]
-            products_by_id = {p['id']: p for p in catalog}
-            for raw_name_c, norm_name_c, pid_c, *_ in corrections:
-                owners = {row[0] for row in cur.execute(
-                    'SELECT DISTINCT product_id FROM match_corrections WHERE norm_name=?', (norm_name_c,))}
-                owners.update(item['product_id'] for item in validated_items
-                              if _norm_jzm(_clean_jzm(item.get('raw_name') or '')) == norm_name_c)
-                if len(owners) != 1:
-                    cur.execute("DELETE FROM product_aliases WHERE alias_norm=? AND created_by='report-review'",
-                                (norm_name_c,))
+        # Report-only exact choices never widen into global aliases. Multiple owners
+        # are retained as a dispute; another submission cannot silently pick a winner.
+        reviewed_keys = {
+            report_match_key(item.get('raw_name') or '', item.get('notes') or '')
+            for item in validated_items if item['section'] in ('pos', 'cash')
+            and item.get('source_bucket') in ('review', 'failed') and (item.get('raw_name') or '').strip()
+        }
+        if reviewed_keys:
+            catalog = {row['id']: dict(row) for row in cur.execute('SELECT * FROM products')}
+            for item in validated_items:
+                key = report_match_key(item.get('raw_name') or '', item.get('notes') or '')
+                if key not in reviewed_keys or item['section'] not in ('pos', 'cash'):
                     continue
-                if not norm_name_c or identity_conflicts(raw_name_c, products_by_id[pid_c]):
-                    continue
-                if any(item.get('notes') for item in validated_items
-                       if _norm_jzm(_clean_jzm(item.get('raw_name') or '')) == norm_name_c):
-                    continue  # A character/variant note must not teach the unqualified name.
-                if any(p['id'] != pid_c for _, p in match_jzm(raw_name_c, catalog, threshold=100)):
-                    continue
-                cur.execute("""INSERT OR IGNORE INTO product_aliases
-                    (product_id, alias, alias_norm, created_by) VALUES (?, ?, ?, 'report-review')""",
-                    (pid_c, raw_name_c, norm_name_c))
+                owners = {item['product_id']}
+                if not key[1]:
+                    # Preserve an established exact legacy alias when reviews disagree.
+                    owners.update(row['product_id'] for row in cur.execute('SELECT alias,product_id FROM product_aliases')
+                                  if report_match_key(row['alias']) == key)
+                for pid in owners:
+                    cur.execute("""INSERT INTO report_match_choices
+                        (name_key,note_key,product_id,identity_signature) VALUES (?,?,?,?)
+                        ON CONFLICT(name_key,note_key,product_id) DO UPDATE
+                        SET identity_signature=excluded.identity_signature""",
+                        (*key, pid, report_identity_signature(catalog[pid])))
 
         if mode == 'replace':
             cur.execute('DELETE FROM daily_report_metadata WHERE date=? AND store=?', (d, store_code))
@@ -1396,6 +1438,7 @@ def parse_daily_report():
     con = get_db()
     cur = con.cursor()
     aliases = load_matching_aliases(con)
+    report_choices = load_report_match_choices(con)
     cur.execute('SELECT alias_norm, section_type FROM section_aliases')
     section_aliases = {r['alias_norm']: r['section_type'] for r in cur.fetchall()}
     cur.execute('''
@@ -1636,18 +1679,22 @@ def parse_daily_report():
 
     return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                          cash_total_reported, parser_engine, multi_day,
-                         aliases, all_products, cash_expected_reported, metadata_errors, report_notes)
+                         aliases, all_products, cash_expected_reported, metadata_errors, report_notes,
+                         report_choices)
 
 
 def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                   cash_total_reported, parser_engine, multi_day,
                   aliases, all_products, cash_expected_reported=None,
-                  metadata_errors=None, report_notes=None):
+                  metadata_errors=None, report_notes=None, report_choices=None):
     """Layers 4+5 — shared by both engines: alias lookup + fuzzy match +
     bucketing, stock plausibility flags, and the response payload."""
     confirmed: list[dict] = []
     review:    list[dict] = []
     failed:    list[dict] = []
+    choices = report_choices or {}
+    reviewed_names = {key[0] for key in choices}
+    products_by_id = {product['id']: product for product in all_products}
 
     def _bucket(item: dict, hits: list) -> None:
         """Place a resolved item into the correct bucket."""
@@ -1690,7 +1737,15 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         # Secret/hidden variants in notes are part of product identity.
         qualifier = item.get('note', '')
         query = raw_name + ' ' + qualifier if re.search(r'秘密|隐藏|secret|hidden', qualifier, re.I) else raw_name
-        hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+        key = report_match_key(raw_name, qualifier)
+        chosen = choices.get(key)
+        if chosen in products_by_id:
+            hits = [(100, products_by_id[chosen])]
+        else:
+            hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+            if key[0] in reviewed_names:
+                # Stale/disputed choice or a changed note must be reviewed again.
+                hits = [(min(score, 99), product) for score, product in hits]
         _bucket(item, hits)
 
     # ── Stock plausibility: flag sales rows that exceed known in-store stock ──
