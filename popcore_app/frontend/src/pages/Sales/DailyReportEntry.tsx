@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  Input, Button, Table, Tag, Select, Space, Checkbox,
+  Input, Button, Table, Tag, Select, Space,
   Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge,
 } from 'antd'
 import {
@@ -115,7 +115,6 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
   const [step,          setStep]         = useState<'input' | 'review' | 'done'>('input')
   const [rawText,       setRawText]       = useState('')
-  const [useLlm,        setUseLlm]        = useState(false)
   const [parsing,       setParsing]       = useState(false)
   const [submitting,    setSubmitting]    = useState(false)
 
@@ -130,7 +129,6 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [cashExpected, setCashExpected] = useState<number | null>(null)
   const [reportNotes, setReportNotes] = useState<ReportAnnotations>({})
   const [metadataErrors, setMetadataErrors] = useState<string[]>([])
-  const [parserEngine,  setParserEngine]  = useState<'llm' | 'rules'>('rules')
   const [multiDay,      setMultiDay]      = useState(false)
 
   // ── Parse (call backend) ──────────────────────────────────────────────────
@@ -140,7 +138,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     setParsing(true)
     try {
       const res = await parseReportBackend(
-        rawText, defaultStore, useLlm ? 'llm' : 'rules'
+        rawText, defaultStore, 'rules'
       )
 
       setParsedDate(res.detected_date ?? date)
@@ -185,7 +183,6 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       setCashExpected(res.cash_expected_reported ?? null)
       setReportNotes(Object.fromEntries(REPORT_NOTE_SECTIONS.map(({ key }) => [key, res[key] ?? []])))
       setMetadataErrors(res.metadata_errors ?? [])
-      setParserEngine(res.parser_engine ?? 'rules')
       setMultiDay(res.multi_day ?? false)
 
       setUnknowns(
@@ -272,6 +269,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         store_code: submitStore,
         mode: 'replace',
         classification: 'summary_only',
+        section_choices: unknowns.filter(u => u.resolvedSection !== null)
+          .map(u => ({ header: u.headerText, section: u.resolvedSection })),
         report_metadata: {
           cash_actual: cashTotalReported,
           cash_expected: cashExpected,
@@ -576,9 +575,6 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 12 }}
         />
         <Space direction="vertical" size={10}>
-          <Checkbox checked={useLlm} onChange={event => setUseLlm(event.target.checked)}>
-            Use optional AI parsing (sends this pasted report text to the configured Anthropic service)
-          </Checkbox>
           <Button type="primary" size="large" loading={parsing} onClick={handleParse}>
             Parse Report
           </Button>
@@ -620,9 +616,6 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         <label>Store <Select aria-label="Report store" value={parsedStore || undefined}
           onChange={setParsedStore} style={{ width: 130 }}
           options={stores.filter(s => s.code !== 'ALL').map(s => ({ value: s.code, label: s.code }))} /></label>
-        <Tag color={parserEngine === 'llm' ? 'geekblue' : 'default'} style={{ fontSize: 11 }}>
-          {parserEngine === 'llm' ? 'AI 解析' : '规则解析'}
-        </Tag>
         <Tag color="green" icon={<CheckCircleOutlined />}>{confirmedReady} confirmed</Tag>
         {pendingReview > 0 && (
           <Tag color="orange" icon={<WarningOutlined />}>{pendingReview} need review</Tag>

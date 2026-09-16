@@ -57,7 +57,7 @@ function Field({ label, value }: { label: string; value?: string | number | null
 
 interface Props {
   productId: number | null
-  stockTotal: number
+  stockTotal: number | null
   onClose: () => void
   onEdit: (p: ProductDetail) => void
   onImages: (p: ProductDetail) => void
@@ -141,7 +141,7 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
               </div>
               <div>
                 <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>Stock</div>
-                {stockTotal === 0
+                {stockTotal == null ? <Text type="secondary">Unknown</Text> : stockTotal === 0
                   ? <Badge count={stockTotal} showZero style={{ backgroundColor: '#ef4444' }} />
                   : stockTotal <= 3
                     ? <Badge count={stockTotal} showZero style={{ backgroundColor: '#F59E0B' }} />

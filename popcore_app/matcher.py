@@ -27,6 +27,8 @@ match_title(scraped_title, products, threshold=65)
   Uses space-preserving normalisation (better for English token matching).
 """
 
+import hashlib
+import json
 import re
 import unicodedata
 from collections import Counter
@@ -234,6 +236,42 @@ def _limit_hits(hits: list, limit: int) -> list:
     hits.sort(key=lambda x: (-x[0], x[1]['id']))
     count = max(2, limit, sum(score == 100 for score, _ in hits))
     return hits[:count]
+
+
+def report_match_key(raw_name: str, notes: str = '') -> tuple[str, str]:
+    """Exact report identity: normalize typography, never remove meaningful letters."""
+    return tuple(' '.join(unicodedata.normalize('NFKC', value).casefold().split())
+                 for value in (raw_name, notes))
+
+
+def report_identity_signature(product: dict) -> str:
+    """Invalidate review when identity changes, not when price or shorthand changes."""
+    fields = ('sku', 'name_cn_en', 'product_type', 'ip_series', 'brand', 'series_id',
+              'stock_form', 'stock_unit', 'design_name', 'edition_size', 'hidden',
+              'style_notes', 'boxes_per_dan', 'identity_status')
+    values = [report_match_key(str(product.get(field) or ''))[0] for field in fields]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
+def load_report_match_choices(con) -> dict:
+    """A stale or disputed exact choice remains review-only, including exact hits."""
+    choices = {}
+    for row in con.execute("""SELECT p.*, c.name_key, c.note_key, c.identity_signature
+                            FROM report_match_choices c JOIN products p ON p.id=c.product_id"""):
+        product = dict(row)
+        key = (row['name_key'], row['note_key'])
+        if key in choices or row['identity_signature'] != report_identity_signature(product):
+            choices[key] = None
+        else:
+            choices[key] = row['id']
+    # Old corrections lack notes. They can veto an exact bare choice, never
+    # approve one or transfer a lossy normalized conflict to a different variant.
+    for row in con.execute('SELECT DISTINCT raw_name,norm_name,product_id FROM match_corrections'):
+        key = report_match_key(row['raw_name'])
+        if (key in choices and row['norm_name'] == normalize(clean_name(row['raw_name']))
+                and choices[key] != row['product_id']):
+            choices[key] = None
+    return choices
 
 
 def load_matching_aliases(con) -> dict:

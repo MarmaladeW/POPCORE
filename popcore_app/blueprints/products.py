@@ -1,7 +1,9 @@
 """
 blueprints/products.py — product catalogue, search, aliases, hidden images, export.
 """
+import csv
 import io
+import math
 import os
 import re
 import uuid
@@ -12,6 +14,7 @@ from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
+from validation import read_int
 from matcher import match_jzm, batch_match_jzm, load_matching_aliases, match_name, identity_conflicts, normalize_sku, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
 from catalog_identity import (
     CatalogConflict, add_conversion, assign_barcode, resolve_barcode,
@@ -903,6 +906,175 @@ def export_products():
     )
 
 
+# ─── Catalog-only CSV / TSV import ───────────────────────────────────────────
+
+_CATALOG_IMPORT_FIELDS = (
+    'jizhanming', 'name_cn_en', 'ip_series', 'product_type', 'brand', 'price',
+    'release_date', 'edition_size', 'channel', 'notes', 'boxes_per_dan',
+)
+_CATALOG_IMPORT_COLUMNS = ('sku',) + _CATALOG_IMPORT_FIELDS
+_CATALOG_IMPORT_HEADERS = dict(zip(
+    ('记账名', '产品名称', '系列', '类型', '品牌', '单价', '发售时间', '版本/限量', '渠道', '备注'),
+    _CATALOG_IMPORT_FIELDS,
+))
+
+
+def _catalog_import_values(values):
+    if not isinstance(values, dict) or set(values) - set(_CATALOG_IMPORT_FIELDS):
+        raise ValueError('values may contain catalog metadata fields only')
+    result = {}
+    for field, value in values.items():
+        if isinstance(value, str):
+            value = value.strip()
+        if field in ('price', 'boxes_per_dan'):
+            if value is None or value == '':
+                value = None
+            elif field == 'boxes_per_dan':
+                value = read_int(value, field, minimum=1)
+            else:
+                if type(value) not in (str, int, float):
+                    raise ValueError('price must be a finite number >= 0')
+                try:
+                    value = float(value)
+                except (ValueError, OverflowError):
+                    raise ValueError('price must be a finite number >= 0') from None
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError('price must be a finite number >= 0')
+        elif not isinstance(value, str):
+            raise ValueError(f'{field} must be text')
+        result[field] = value
+    return result
+
+
+def _catalog_import_catalog(con):
+    catalog = {}
+    for row in con.execute('SELECT id, ' + ', '.join(_CATALOG_IMPORT_COLUMNS) + ' FROM products'):
+        catalog.setdefault(normalize_sku(row['sku']), []).append(dict(row))
+    return catalog
+
+
+def _catalog_import_product(catalog, sku, seen):
+    if not isinstance(sku, str) or not sku.strip():
+        raise ValueError('sku must be nonempty text')
+    key = normalize_sku(sku)
+    if key in seen:
+        raise ValueError('Duplicate SKU in import: ' + sku)
+    seen.add(key)
+    matches = catalog.get(key, [])
+    if len(matches) > 1:
+        raise CatalogConflict('Multiple catalog products share SKU: ' + sku, 'sku_conflict')
+    return matches[0] if matches else None
+
+
+@bp.route('/api/products/import/preview', methods=['POST'])
+@role_required('manager')
+def catalog_import_preview():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('text'), str) or not data['text'].strip():
+        return jsonify({'error': 'Nonempty CSV or TSV text is required'}), 400
+    text = data['text'].lstrip('\ufeff')
+    if not text.strip():
+        return jsonify({'error': 'Nonempty CSV or TSV text is required'}), 400
+    con = get_db()
+    try:
+        reader = csv.reader(io.StringIO(text, newline=''),
+                            delimiter='\t' if '\t' in text.splitlines()[0] else ',', strict=True)
+        headers = [_CATALOG_IMPORT_HEADERS.get(h.strip(), h.strip().lower()) for h in next(reader)]
+        if ('sku' not in headers or len(set(headers)) != len(headers)
+                or set(headers) - set(_CATALOG_IMPORT_COLUMNS)):
+            raise ValueError('Headers must contain SKU and supported catalog fields only, without duplicates')
+        catalog = _catalog_import_catalog(con)
+        rows, seen = [], set()
+        for line, cells in enumerate(reader, start=2):
+            if len(cells) != len(headers):
+                raise ValueError(f'Row {line} must have one cell per header')
+            fields = dict(zip(headers, cells))
+            sku = fields.pop('sku').strip()
+            current = _catalog_import_product(catalog, sku, seen)
+            values = _catalog_import_values(fields)
+            rows.append({
+                'sku': sku, 'action': 'update' if current else 'create',
+                'product_id': current['id'] if current else None,
+                'before': {key: current[key] for key in _CATALOG_IMPORT_COLUMNS} if current else None,
+                'values': values,
+            })
+        if not rows:
+            raise ValueError('At least one product row is required')
+        return jsonify({'rows': rows, 'created': sum(r['action'] == 'create' for r in rows),
+                        'updated': sum(r['action'] == 'update' for r in rows)})
+    except CatalogConflict as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), 409
+    except (ValueError, csv.Error, StopIteration) as exc:
+        return jsonify({'error': str(exc) or 'Invalid catalog import', 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
+@bp.route('/api/products/import/confirm', methods=['POST'])
+@role_required('manager')
+def catalog_import_confirm():
+    data = request.get_json(silent=True)
+    rows = data.get('rows') if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return jsonify({'error': 'A nonempty list of preview rows is required'}), 400
+    con = get_db()
+    created = updated = 0
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        catalog, seen = _catalog_import_catalog(con), set()
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {'sku', 'action', 'product_id', 'before', 'values'}:
+                raise ValueError('Expected an unchanged preview row structure')
+            current = _catalog_import_product(catalog, row['sku'], seen)
+            values = _catalog_import_values(row['values'])
+            if row['action'] == 'create':
+                if row['product_id'] is not None or row['before'] is not None:
+                    raise ValueError('Create rows cannot identify an existing product')
+                if current:
+                    if all(current[field] == value for field, value in values.items()):
+                        continue  # Exact SKU and requested values already exist: safe retry.
+                    raise CatalogConflict('SKU appeared since preview; preview again', 'stale_preview')
+                product = {'sku': row['sku'].strip(), **values}
+            elif row['action'] == 'update':
+                before = row['before']
+                if not isinstance(before, dict) or set(before) != set(_CATALOG_IMPORT_COLUMNS):
+                    raise ValueError('Update requires the complete catalog snapshot')
+                if type(row['product_id']) is not int or row['product_id'] <= 0:
+                    raise ValueError('product_id must be a positive integer')
+                if not current or current['id'] != row['product_id']:
+                    raise CatalogConflict('SKU identity changed since preview', 'stale_preview')
+                snapshot = {key: current[key] for key in _CATALOG_IMPORT_COLUMNS}
+                product = {**before, **values}
+                if snapshot == product:
+                    continue  # A completed update may be retried without overwriting anything.
+                if snapshot != before:
+                    raise CatalogConflict('Catalog changed since preview; preview again', 'stale_preview')
+            else:
+                raise ValueError('action must be create or update')
+            search_blob = ' '.join((product.get(field) or '').lower() for field in
+                                   ('sku', 'jizhanming', 'name_cn_en', 'brand', 'product_type', 'ip_series'))
+            writes = {**values, 'search_blob': search_blob}
+            if row['action'] == 'create':
+                writes = {'sku': product['sku'], **writes}
+                con.execute('INSERT INTO products (' + ', '.join(writes) + ') VALUES ('
+                            + ', '.join('?' for _ in writes) + ')', list(writes.values()))
+                created += 1
+            else:
+                con.execute('UPDATE products SET ' + ', '.join(field + '=?' for field in writes)
+                            + ' WHERE id=?', [*writes.values(), current['id']])
+                updated += 1
+        con.commit()
+    except (CatalogConflict, sqlite3.IntegrityError) as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': getattr(exc, 'code', 'sku_conflict')}), 409
+    except ValueError as exc:
+        con.rollback()
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+    return jsonify({'ok': True, 'created': created, 'updated': updated})
+
+
 # ─── Google Sheet Sync ────────────────────────────────────────────────────────
 
 _SHEET_ID = '1bUXTNiFH0iGd4YLrhQ1KJjeGTsbtAyDwp7hVEGFWFwM'
@@ -1009,7 +1181,7 @@ def _sheet_identity_collision(query, product_id, products, aliases):
 
 
 @bp.route('/api/products/sync-sheet', methods=['POST'])
-@role_required('admin')
+@role_required('manager')
 def sync_sheet_preview():
     """
     C-anchored sheet sync preview.
@@ -1192,7 +1364,7 @@ def _apply_sheet_ref(con, product_id: int, sheet_ref: str) -> bool:
 
 
 @bp.route('/api/products/sync-sheet/confirm', methods=['POST'])
-@role_required('admin')
+@role_required('manager')
 def sync_sheet_confirm():
     """Apply all reviewed operations atomically against their preview snapshots."""
     data = request.get_json(silent=True)
@@ -1327,7 +1499,7 @@ def sync_sheet_confirm():
 
 
 @bp.route('/api/products/sync-sheet/last-sync')
-@role_required('admin')
+@role_required('manager')
 def sync_sheet_last_sync():
     con = get_db()
     cur = con.cursor()

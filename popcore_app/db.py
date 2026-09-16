@@ -1674,6 +1674,15 @@ def _migration_checkout_refunds(con, cur):
     )""")
     cur.execute('CREATE INDEX checkout_refunds_attempt ON checkout_refunds(attempt_id)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('checkout_refunds')")
+def _migration_report_match_choices(con, cur):
+    cur.execute("""CREATE TABLE IF NOT EXISTS report_match_choices (
+        name_key TEXT NOT NULL,
+        note_key TEXT NOT NULL,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        identity_signature TEXT NOT NULL,
+        PRIMARY KEY(name_key, note_key, product_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_match_choices')")
 
 
 def _get_migrations():
@@ -1722,6 +1731,7 @@ def _get_migrations():
         ('create_checkouts', _migration_create_checkouts),
         ('checkout_refunds', _migration_checkout_refunds),
         ('store_events', _migration_store_events),
+        ('report_match_choices',                       _migration_report_match_choices),
     ]
 
 
