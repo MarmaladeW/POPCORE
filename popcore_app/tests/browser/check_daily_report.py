@@ -45,9 +45,12 @@ async def flow(browser, viewport):
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')
+        await expect(page.get_by_role('checkbox', name=re.compile('AI|Anthropic'))).to_have_count(0)
+        await expect(page.get_by_text('Anthropic', exact=False)).to_have_count(0)
         await page.locator('textarea').fill('2026.9.14 DT\n卡机汇总：\nTest Product*1\n现金：595/601.5')
         await page.get_by_role('button', name='Parse Report', exact=True).click()
         await expect(page.get_by_label('Physical cash actual', exact=True)).to_have_value('595.00')
+        await expect(page.get_by_text(re.compile('AI 解析|规则解析'))).to_have_count(0)
         await expect(page.get_by_label('Physical cash expected', exact=True)).to_have_value('601.50')
         await expect(page.get_by_text('CA$-6.50', exact=False).first).to_be_visible()
         submit = page.get_by_role('button', name='Confirm & Log', exact=False)
@@ -72,6 +75,8 @@ async def flow(browser, viewport):
         assert len(body['report_metadata']['employee_discounts']) == 1
         assert len(body['report_metadata']['display_sales']) == 1
         assert len(body['report_metadata']['claw_prizes']) == 1
+        parses = [r for r in state['requests'] if r['path'] == '/api/sales/parse_report']
+        assert parses and all(r['post_data']['engine'] == 'rules' for r in parses)
         assert body['items'][1]['was_top'] is False
         assert body['items'][1]['fuzzy_score'] == 0
         assert not any(r['path'] == '/api/products/aliases' for r in state['requests'])
@@ -79,6 +84,32 @@ async def flow(browser, viewport):
     except Exception:
         await page.screenshot(path=OUT / 'failure.png', full_page=True)
         raise
+    finally:
+        await context.close()
+
+
+async def section_choices_flow(browser):
+    def payload(path, query, request):
+        result = api_payload(path, query, request)
+        if path == '/api/sales/parse_report':
+            return {**result, 'review': [], 'unknown_sections': ['Register totals', 'Other notes']}
+        return result
+    state = {'api_payload': payload}
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    try:
+        await page.goto(BASE + '/sales')
+        await page.locator('textarea').fill('2026.9.14 DT\nRegister totals:\nTest Product*1\nOther notes:')
+        await page.get_by_role('button', name='Parse Report', exact=True).click()
+        for header, label in [('Register totals', '卡机 POS'), ('Other notes', '跳过/忽略')]:
+            await page.get_by_role('alert').filter(has_text='Unknown section: ' + header).get_by_role('combobox').click()
+            await page.get_by_title(label, exact=True).click()
+        assert not any(r['method'] == 'POST' and 'section-aliases' in r['path'] for r in state['requests'])
+        await page.get_by_role('button', name='Confirm & Log', exact=False).click()
+        await expect(page.get_by_text('Report imported', exact=False)).to_be_visible()
+        body = next(r['post_data'] for r in state['requests'] if r['path'] == '/api/sales/submit_daily_report')
+        assert body['section_choices'] == [
+            {'header': 'Register totals', 'section': 'pos'}, {'header': 'Other notes', 'section': 'skip'}]
     finally:
         await context.close()
 
@@ -213,6 +244,7 @@ async def main():
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 try:
+                    await section_choices_flow(browser)
                     await metadata_only_flow(browser)
                     for key in NEW_NOTES:
                         await annotation_flow(browser, key)

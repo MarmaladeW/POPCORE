@@ -139,7 +139,8 @@ const TYPE_COLORS: Record<string, string> = {
   'Figure':    'blue',
 }
 
-function stockBadge(total: number) {
+function stockBadge(total: number | null) {
+  if (total == null) return <Text type="secondary">Unknown</Text>
   if (total === 0)  return <Badge count={total} showZero style={{ backgroundColor: '#ef4444' }} />
   if (total <= 3)   return <Badge count={total} showZero style={{ backgroundColor: '#F59E0B' }} />
   return <Badge count={total} showZero style={{ backgroundColor: '#10B981' }} />
@@ -149,7 +150,8 @@ export default function ProductsPage() {
   const isMobile = useIsMobile()
   const { series, productTypes, selectedStore } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
-  const [stockMap,  setStockMap]  = useState<Map<number, number>>(new Map())
+  const [stockMap,  setStockMap]  = useState<Map<number, number> | null>(null)
+  const [stockError, setStockError] = useState(false)
   const [loading,   setLoading]   = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [lastSuccess, setLastSuccess] = useState<Date | null>(null)
@@ -185,7 +187,7 @@ export default function ProductsPage() {
     if (scopeRef.current !== scope) {
       scopeRef.current = scope
       setProducts([])
-      setStockMap(new Map())
+      setStockMap(null)
       setLastSuccess(null)
     }
     setLoading(true)
@@ -195,22 +197,26 @@ export default function ProductsPage() {
     if (searchSeries) params.series = searchSeries
     if (searchType)   params.product_type = searchType
     const stockParams = sc ? { store_code: sc } : {}
-    Promise.all([
-      client.get('/products/search', { params }),
-      client.get('/stock', { params: stockParams }),
-    ]).then(([prodR, stockR]) => {
+    setStockMap(null)
+    setStockError(false)
+    client.get('/products/search', { params }).then(prodR => {
       if (requestId !== requestRef.current) return
       setProducts(prodR.data)
-      const m = new Map<number, number>()
-      ;(stockR.data as StockRow[]).forEach(r => {
-        m.set(r.product_id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
-      })
-      setStockMap(m)
       setLastSuccess(new Date())
     }).catch(() => {
       if (requestId === requestRef.current) setLoadError('Unable to load products.')
     }).finally(() => {
       if (requestId === requestRef.current) setLoading(false)
+    })
+    client.get('/stock', { params: stockParams }).then(stockR => {
+      if (requestId !== requestRef.current) return
+      const m = new Map<number, number>()
+      ;(stockR.data as StockRow[]).forEach(r => {
+        m.set(r.product_id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
+      })
+      setStockMap(m)
+    }).catch(() => {
+      if (requestId === requestRef.current) setStockError(true)
     })
   }, [searchQ, searchSeries, searchType, selectedStore?.code])
 
@@ -219,7 +225,7 @@ export default function ProductsPage() {
   useEffect(() => {
     client.get('/products/sync-sheet/last-sync')
       .then(r => setLastSync(r.data))
-      .catch(() => {/* non-admin users get 403 — silently ignore */})
+      .catch(() => {/* users below manager get 403 — silently ignore */})
   }, [])
 
   async function handleSyncSheet() {
@@ -401,7 +407,7 @@ export default function ProductsPage() {
       title: 'Stock',
       width: 80,
       align: 'center',
-      render: (_, r) => stockBadge(stockMap.get(r.id) ?? 0),
+      render: (_, r) => stockBadge(stockMap ? stockMap.get(r.id) ?? 0 : null),
     },
     {
       title: 'Actions',
@@ -448,10 +454,6 @@ export default function ProductsPage() {
     },
   ]
 
-  if (loadError && !lastSuccess) {
-    return <Alert role="alert" type="error" showIcon message={loadError} action={<Button onClick={load}>Retry</Button>} />
-  }
-
   return (
     <div>
       {/* Header */}
@@ -460,7 +462,7 @@ export default function ProductsPage() {
           <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>Products</Title>
           <Text style={{ color: '#6b7280', fontSize: 13 }}>{products.length} products</Text>
         </div>
-        <Space size={8}>
+        <Space size={8} wrap>
           <Button onClick={load}>Refresh</Button>
           {/* Filter toggle on mobile */}
           {isMobile && (
@@ -472,10 +474,10 @@ export default function ProductsPage() {
               style={{ minWidth: 40 }}
             />
           )}
-          <RoleGuard minRole="admin">
+          <RoleGuard minRole="manager">
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-              <Button icon={<SyncOutlined />} onClick={handleSyncSheet} loading={syncLoading}>
-                {isMobile ? '' : '从表格同步 / Sync from Sheet'}
+              <Button aria-label="Sync from Google Sheet" icon={<SyncOutlined />} onClick={handleSyncSheet} loading={syncLoading} style={{ minHeight: 44 }}>
+                Sync from Google Sheet
               </Button>
               {lastSync.last_sync_at && (
                 <Text style={{ color: '#9ca3af', fontSize: 11 }}>
@@ -492,6 +494,10 @@ export default function ProductsPage() {
           </RoleGuard>
         </Space>
       </div>
+
+      {stockError && <Alert role="alert" type="warning" showIcon
+        message="Stock unavailable. Catalog tools are still available; stock quantities are unknown."
+        style={{ marginBottom: 16 }} />}
 
       {/* Filters — always visible on desktop, toggle on mobile */}
       {loadError && (
@@ -559,7 +565,7 @@ export default function ProductsPage() {
                     <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{p.sku}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                    {stockBadge(stockMap.get(p.id) ?? 0)}
+                    {stockBadge(stockMap ? stockMap.get(p.id) ?? 0 : null)}
                     <Button type="text" size="small" aria-label={`View images for ${p.jizhanming || p.sku}`} icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
                     <RoleGuard minRole="manager"><Button type="text" size="small" aria-label={`Edit ${p.jizhanming || p.sku}`} icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
                   </div>
@@ -618,7 +624,7 @@ export default function ProductsPage() {
       />
       <ProductDetailDrawer
         productId={detailId}
-        stockTotal={stockMap.get(detailId ?? 0) ?? 0}
+        stockTotal={stockMap ? stockMap.get(detailId ?? 0) ?? 0 : null}
         onClose={() => setDetailId(null)}
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
         onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
