@@ -92,7 +92,7 @@
   .pc-manager-calendar { height: calc(100dvh - 204px); min-height: 400px; }
   .pc-manager-calendar.pc-calendar-date-grid { height: auto; min-height: 0; }
   .pc-calendar-date-grid .pc-store-calendar-body { flex: none; }
-  .pc-calendar-date-grid .pc-store-calendars { align-self: start; }
+  .pc-calendar-date-grid .pc-store-calendars { align-self: start; grid-template-columns: minmax(0, 1fr); }
   .pc-assignment-sidebar { --pc-sidebar-offset: 306px; }
   .pc-coverage-panel { max-height: max(100px, calc(100dvh - var(--pc-sidebar-offset) - 180px)); overflow-y: auto; }
   .pc-calendar-date-grid .pc-assignment-sidebar { align-self: start; position: sticky; top: 80px; max-height: calc(100dvh - var(--pc-sidebar-offset)); }

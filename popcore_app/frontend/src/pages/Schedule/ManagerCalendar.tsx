@@ -54,7 +54,6 @@ import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
   compactEmployeeLabel,
-  mobileMonthEventLimit,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
   shiftKindLabel,
@@ -860,8 +859,7 @@ export default function ManagerCalendar() {
               eventContent={renderEvent}
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
               businessHours={businessHoursFrom(hoursForStore(st.code, storeHours))}
-              dayMaxEvents={isMobile ? mobileMonthEventLimit(true, viewType) : false}
-              moreLinkContent={(arg) => isMobile ? `+${arg.num}` : `+${arg.num} more`}
+              dayMaxEvents={false}
               allDaySlot={false}
               nowIndicator
               slotMinTime={gridWindow(hoursForStore(st.code, storeHours)).slotMinTime}

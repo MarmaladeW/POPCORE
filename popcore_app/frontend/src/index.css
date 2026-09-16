@@ -129,9 +129,7 @@
   padding: 0 2px;
 }
 
-/* Manager month view on phones: keep assignments identifiable instead of
-   collapsing them to anonymous dots. Three employee-colored labels fit in a
-   cell; FullCalendar turns any remainder into a compact +N link. */
+/* Manager date grids on phones: show every employee-colored assignment. */
 @media (max-width: 767px) {
   .pc-mobile-month .fc-daygrid-day-frame {
     min-height: 78px;
@@ -158,15 +156,6 @@
     overflow: hidden;
     border: 0;
     border-radius: 4px;
-  }
-  .pc-mobile-month .fc-daygrid-more-link {
-    display: block;
-    margin-top: 1px;
-    text-align: center;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1.2;
-    color: var(--primary);
   }
   .pc-mobile-month .fc-bg-event {
     opacity: 0.12;
