@@ -1,4 +1,5 @@
 """Explicit product identity, barcode, and fixed pack-conversion rules."""
+import json
 import sqlite3
 
 from validation import read_int
@@ -55,6 +56,8 @@ def _has_product_reference(con, product_id):
         ('inventory_checks', 'product_id', None),
         ('inventory_document_lines', 'product_id', None),
         ('trade_units', 'design_product_id', None),
+        ('sale_lines', 'product_id', None),
+        ('sale_lines', 'fresh_set_product_id', None),
     )
     for table, column, extra in checks:
         if not _table_exists(con, table):
@@ -65,6 +68,12 @@ def _has_product_reference(con, product_id):
         if con.execute(f'SELECT 1 FROM {table} WHERE {where} LIMIT 1',
                        (product_id,)).fetchone():
             return True
+    if _table_exists(con, 'checkout_orders'):
+        # ponytail: scan open snapshots on identity edits; normalize lines if this becomes slow.
+        for row in con.execute("SELECT payload FROM checkout_orders WHERE status='open'"):
+            if any(product_id in (line['product_id'], line['fresh_set_product_id'])
+                   for line in json.loads(row['payload'])['lines']):
+                return True
     return False
 
 
@@ -122,7 +131,8 @@ def update_product_identity(con, product_id, updates):
     changes_meaning = any(
         key in values and values[key] != product.get(key) for key in semantic
     )
-    if (product.get('identity_status') == 'verified' and changes_meaning
+    typed_identity = product.get('stock_form') is not None and product.get('stock_unit') is not None
+    if (changes_meaning and (product.get('identity_status') == 'verified' or typed_identity)
             and _has_product_reference(con, product_id)):
         raise CatalogConflict(
             'Referenced product identity cannot be changed in place',

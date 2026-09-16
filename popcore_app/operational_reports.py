@@ -1,5 +1,7 @@
+from checkout_access import require_checkout_history_store
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+from checkout_operations import checkout_funds
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_commands import InventoryValidationError
 
@@ -25,6 +27,9 @@ def query_report(con,name,*,actor,filters):
     except ValueError as exc: raise InventoryValidationError('from/to must be ISO dates') from exc
     if start_date>end_date: raise InventoryValidationError('from must not be after to')
     stores,scope=_scope(con,actor,filters.get('store_code'))
+    if name in FINANCIAL:
+        for store in stores:
+            require_checkout_history_store(con, store['id'], actor, start, end)
     ids=[s['id'] for s in stores];items=[];totals={}
     if ids:
         marks=','.join('?' for _ in ids)
@@ -60,6 +65,22 @@ def query_report(con,name,*,actor,filters):
               SUM(p.amount_cents IS NULL) unknown_count,SUM(p.state='recorded') pending_count,SUM(COALESCE(a.refund_cents,0)) refund_cents
               FROM sale_payments p JOIN sale_documents s ON s.id=p.sale_id LEFT JOIN adjustments a ON a.payment_id=p.id
               WHERE s.store_id IN ({marks}) AND s.business_date BETWEEN ? AND ? GROUP BY p.tender ORDER BY p.tender""",(*ids,start,end))]
+            tenders = {row['tender']:row for row in items}
+            for store_id in ids:
+                funds = checkout_funds(con,store_id,start,end)
+                for kind,rows in funds.items():
+                    for money in rows:
+                        row = tenders.setdefault(money['tender'],dict(tender=money['tender'],recorded_cents=0,
+                            verified_cents=0,unknown_count=0,pending_count=0,refund_cents=0))
+                        if kind == 'refunds':
+                            row['refund_cents'] += money['amount_cents']
+                        else:
+                            row['recorded_cents'] += money['amount_cents']
+                            if money['verified']:
+                                row['verified_cents'] += money['amount_cents']
+                            else:
+                                row['pending_count'] += 1
+            items = [tenders[tender] for tender in sorted(tenders)]
         elif name=='evidence-exceptions':
             items=[dict(r) for r in con.execute(f"""SELECT e.id evidence_id,e.payment_id,s.id sale_id,s.store_id,e.status,e.created_at
               FROM payment_evidence e JOIN sale_payments p ON p.id=e.payment_id JOIN sale_documents s ON s.id=p.sale_id

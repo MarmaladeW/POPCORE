@@ -248,12 +248,14 @@ async def navigation_checks(browser):
         )
         await page.goto(BASE + '/goods/receiving')
         inventory = page.get_by_role('link', name='Inventory', exact=True)
-        await expect(inventory).to_have_attribute('aria-current', 'page')
+        if viewport['width'] != 390:
+            await expect(inventory).to_have_attribute('aria-current', 'page')
         if viewport['width'] == 390:
             more = page.get_by_role('button', name='More', exact=True)
             await more.focus()
             await page.keyboard.press('Enter')
             await expect(page.get_by_role('dialog', name='More')).to_be_visible()
+            await expect(inventory).to_have_attribute('aria-current', 'page')
             await page.keyboard.press('Escape')
             await expect(more).to_be_focused()
         assert await page.evaluate('document.body.scrollWidth') <= viewport['width'] + 2

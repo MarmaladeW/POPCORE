@@ -21,6 +21,7 @@ function issueLabel(code: string) {
   const labels: Record<string,string> = {
     sales_intake_incomplete: 'Sales intake declaration is incomplete.', cash_count_missing: 'A deliberate cash count is required.',
     retained_float_shortfall: 'Counted cash is below the retained float; no removal can be calculated.',
+    checkout_unresolved: `Checkout #${id} is still open. Complete or cancel it before closing.`,
     pending_allocation: `Sale #${id} still needs stock allocation.`, cash_payment_unresolved: `Cash payment #${id} has an unknown or unverified amount.`,
     delivery_unresolved: `Delivery #${id} is still open.`, restock_unresolved: `Restock #${id} is still open.`,
     hot_item_count_missing: `Required hot-item count for product #${id} is missing.`, payment_unverified: `Payment #${id} is not verified.`,
@@ -30,6 +31,7 @@ function issueLabel(code: string) {
 }
 function Issue({ code }: { code: string }) {
   const [kind, id] = code.split(':'), label = issueLabel(code)
+  if (kind === 'checkout_unresolved') return <Link to={`/checkout/${id}`}>{label}</Link>
   if (kind === 'pending_allocation') return <Link to={`/sales/documents/${id}`}>{label}</Link>
   if (kind === 'restock_unresolved') return <Link to={`/restock?session_id=${id}`}>{label}</Link>
   return <Text>{label}</Text>

@@ -3,7 +3,7 @@ import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Tag } from 'antd'
 import type { MenuProps } from 'antd'
 import {
   AppstoreOutlined, BarChartOutlined, CalendarOutlined, CheckCircleOutlined,
-  DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
+  HomeOutlined, CameraOutlined, FileTextOutlined, GiftOutlined, HistoryOutlined, DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
   LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined,
   ShopOutlined, SwapOutlined, UserOutlined,
 } from '@ant-design/icons'
@@ -35,10 +35,11 @@ function Brand({ collapsed = false }: { collapsed?: boolean }) {
   </div>
 }
 
-function StoreSelect({ mobile = false }: { mobile?: boolean }) {
+function StoreSelect({ mobile = false, disabled = false }: { mobile?: boolean; disabled?: boolean }) {
   const { stores, selectedStore, setSelectedStore } = useAppStore()
   if (!stores.length || !selectedStore) return null
   return <select
+    disabled={disabled}
     aria-label="Operations store"
     className={mobile ? 'pc-store-select pc-store-select-mobile' : 'pc-store-select'}
     value={selectedStore.code}
@@ -59,6 +60,7 @@ function StoreSelect({ mobile = false }: { mobile?: boolean }) {
 }
 
 function currentNav(pathname: string, manager: boolean) {
+  if (pathname === '/checkout/history') return '/checkout/history'
   if (pathname.startsWith('/goods/')) return '/stock'
   if (pathname.startsWith('/trades/cases/')) return '/trades'
   if (pathname.startsWith('/sales/documents/') || pathname.startsWith('/sales/payments/')) {
@@ -74,6 +76,12 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const [checkoutBusy, setCheckoutBusy] = useState(false)
+  useEffect(() => {
+    const update = (event: Event) => setCheckoutBusy(Boolean((event as CustomEvent).detail))
+    window.addEventListener('popcore:checkout-busy', update)
+    return () => window.removeEventListener('popcore:checkout-busy', update)
+  }, [])
   const [userCollapsed, setCollapsed] = useState(false)
   const [scheduleExpanded, setScheduleExpanded] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
@@ -93,8 +101,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => setMoreOpen(false), [location.pathname])
 
   const daily: NavItem[] = [
-    { key: '/', icon: <DashboardOutlined />, label: 'Today' },
+    { key: '/', icon: <HomeOutlined />, label: 'Home' },
     ...(staff ? [
+      { key: '/checkout', icon: <CameraOutlined />, label: '买单 / Checkout' },
+      { key: '/incoming', icon: <InboxOutlined />, label: '入店 / Receive goods' },
+      { key: '/claw', icon: <GiftOutlined />, label: '娃娃机 / Claw machine' },
+      { key: '/summary', icon: <FileTextOutlined />, label: '汇总 / Summary' },
+      { key: '/checkout/history', icon: <HistoryOutlined />, label: 'Order history' },
+      { key: '/today', icon: <DashboardOutlined />, label: 'Store tasks' },
       { key: '/stock', icon: <InboxOutlined />, label: 'Inventory' },
       { key: '/restock', icon: <ShopOutlined />, label: 'Restock' },
       { key: '/sales/entry', icon: <DollarOutlined />, label: 'Enter sale' },
@@ -127,7 +141,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   ]
   const bottom: NavItem[] = [
     daily[0],
-    ...(staff ? [daily[1], { key: manager ? '/sales' : '/sales/entry', icon: <DollarOutlined />, label: 'Sales' }] : []),
+    ...(staff ? [daily[1]] : []),
     planning[0],
   ]
   const bottomKeys = new Set(bottom.map(item => item.key))
@@ -158,7 +172,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <Header className="pc-header">
         {mobile ? <Brand /> : <span className="pc-date">{dayjs().format('dddd, MMMM D, YYYY')}</span>}
         <div className="pc-header-actions">
-          <StoreSelect mobile={mobile} />
+          <StoreSelect mobile={mobile} disabled={checkoutBusy} />
           {!mobile && <Tag className="pc-role" style={{ color: ROLE_COLORS[role], borderColor: `${ROLE_COLORS[role]}55` }}>
             {ROLE_LABELS[role] || role}
           </Tag>}

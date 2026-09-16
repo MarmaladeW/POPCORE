@@ -1,8 +1,10 @@
+from checkout_access import require_checkout_history_store
 """Versioned store-day closing and exact cash arithmetic."""
 import hashlib
 import json
 from datetime import datetime, timezone
 
+from checkout_operations import checkout_funds
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryConflict, InventoryValidationError, require_inventory_access
@@ -70,6 +72,9 @@ def cash_summary(con, store_id, business_date, opening_coin_cents):
         (store_id, business_date),
     ):
         event_totals[event['event_type']] += event['amount_cents']
+    funds = checkout_funds(con,store_id,business_date)
+    cash_receipts += sum(r['amount_cents'] for r in funds['receipts'] if r['tender']=='cash' and r['verified'])
+    event_totals['refund'] += sum(r['amount_cents'] for r in funds['refunds'] if r['tender']=='cash')
     opening = OPENING_BILLS_CENTS + opening_coin_cents
     expected = (
         opening + cash_receipts + event_totals['paid_in']
@@ -79,6 +84,7 @@ def cash_summary(con, store_id, business_date, opening_coin_cents):
         'opening_cash_cents': opening,
         'verified_cash_receipts_cents': cash_receipts,
         'unknown_cash_payment_ids': unknown_cash,
+        'unknown_checkout_cash_attempt_ids': [r['id'] for r in funds['receipts'] if r['tender']=='cash' and not r['verified']],
         'event_totals_cents': event_totals,
         'expected_drawer_cents': expected,
     }
@@ -96,6 +102,13 @@ def _source_facts(con, session):
                FROM sale_documents WHERE store_id=? AND business_date=? ORDER BY id""",
             (store_id, business_date),
         )],
+        'checkouts': [tuple(row) for row in con.execute(
+            """SELECT o.id,o.version,o.status,o.sale_id FROM checkout_orders o WHERE o.store_id=?
+            AND (o.business_date=? OR EXISTS(SELECT 1 FROM checkout_refunds r
+            JOIN checkout_attempts a ON a.id=r.attempt_id WHERE a.checkout_id=o.id AND r.business_date=?)) ORDER BY o.id""",
+            (store_id,business_date,business_date),
+        )],
+        'checkout_funds': checkout_funds(con,store_id,business_date),
         'sale_sources': [tuple(row) for row in con.execute(
             """SELECT source.id, source.sale_id, source.source_system,
                       source.source_account, source.source_reference
@@ -197,14 +210,30 @@ def source_token(con, session):
 def _cash_source_token(con, session):
     facts = _source_facts(con, session)
     cash_sources = {
-        key: facts[key] for key in ('payments', 'payment_events', 'cash_events')
+        key: facts[key] for key in ('payments', 'payment_events', 'cash_events', 'checkout_funds')
     }
     raw = json.dumps(cash_sources, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
+def _tender_summary(payments, funds):
+    totals = {tender: 0 for tender in ('cash', 'card', 'e_transfer', 'wechat', 'alipay')}
+    unknown = []
+    for payment in payments:
+        if payment['effective_amount_cents'] is None:
+            unknown.append(payment['id'])
+        else:
+            totals[payment['tender']] += payment['effective_amount_cents']
+    for receipt in funds['receipts']:
+        totals[receipt['tender']] += receipt['amount_cents']
+    for refund in funds['refunds']:
+        totals[refund['tender']] -= refund['amount_cents']
+    return totals,unknown
+
+
 def closing_detail(con, closing_id, *, actor):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'staff')
     token = source_token(con, session)
     count = con.execute(
@@ -238,13 +267,9 @@ def closing_detail(con, closing_id, *, actor):
             result['latest_cash_count'].pop('denomination_counts_json')
         )
     if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['manager']:
-        totals = {tender: 0 for tender in ('cash', 'card', 'e_transfer', 'wechat', 'alipay')}
-        unknown = []
-        for payment in _payment_rows(con, session['store_id'], session['business_date']):
-            if payment['effective_amount_cents'] is None:
-                unknown.append(payment['id'])
-            else:
-                totals[payment['tender']] += payment['effective_amount_cents']
+        funds = checkout_funds(con,session['store_id'],session['business_date'])
+        totals,unknown = _tender_summary(_payment_rows(con,session['store_id'],session['business_date']),funds)
+        result['checkout_funds'] = funds
         result['tender_totals_cents'] = totals
         result['unknown_payment_ids'] = unknown
         hard, exceptions = closing_issues(con, session)
@@ -269,6 +294,12 @@ def closing_issues(con, session):
     exceptions = []
     if not session['intake_complete']:
         hard.append('sales_intake_incomplete')
+    hard.extend(f'checkout_unresolved:{row[0]}' for row in con.execute(
+        """SELECT o.id,o.version,o.status,o.sale_id FROM checkout_orders o WHERE o.store_id=?
+            AND (o.business_date=? OR EXISTS(SELECT 1 FROM checkout_refunds r
+            JOIN checkout_attempts a ON a.id=r.attempt_id WHERE a.checkout_id=o.id AND r.business_date=?)) AND o.status='open' ORDER BY o.id""",
+        (session['store_id'],session['business_date'],session['business_date']),
+    ))
     pending_sales = [row['id'] for row in con.execute(
         """SELECT id FROM sale_documents WHERE store_id=? AND business_date=?
            AND status='posted' AND allocation_status!='allocated' ORDER BY id""",
@@ -288,6 +319,8 @@ def closing_issues(con, session):
         'unknown_cash_payment_ids'
     ]
     hard.extend(f'cash_payment_unresolved:{value}' for value in unknown_cash)
+    hard.extend(f'checkout_cash_unresolved:{value}' for value in cash_summary(
+        con,session['store_id'],session['business_date'],0)['unknown_checkout_cash_attempt_ids'])
     open_deliveries = [row['id'] for row in con.execute(
         """SELECT d.id FROM inventory_deliveries d
            JOIN inventory_locations source ON source.id=d.source_location_id
@@ -329,10 +362,13 @@ def closing_issues(con, session):
 def create_closing(con, data, *, actor, request_key):
     store_id = read_int(data.get('store_id'), 'store_id', minimum=1)
     business_date = read_date(data.get('business_date'), 'business_date')
+    require_checkout_history_store(con, store_id, actor, business_date, business_date)
     require_inventory_access(con, actor, (store_id,), 'staff')
     intent = {'store_id': store_id, 'business_date': business_date}
     _begin(con)
     try:
+        require_checkout_history_store(con, store_id, actor, business_date, business_date)
+        require_inventory_access(con, actor, (store_id,), 'staff')
         key, digest, prior = _replay(con, request_key, 'closing_create', actor, intent)
         if prior:
             result = closing_detail(con, prior['closing_id'], actor=actor)
@@ -363,6 +399,7 @@ def create_closing(con, data, *, actor, request_key):
 
 def update_closing(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'staff')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     intake_complete = data.get('intake_complete')
@@ -372,6 +409,8 @@ def update_closing(con, closing_id, data, *, actor, request_key):
               'intake_complete': intake_complete}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'staff')
         session = _closing(con, closing_id)
         key, digest, prior = _replay(con, request_key, 'closing_update', actor, intent)
         if prior:
@@ -397,6 +436,7 @@ def update_closing(con, closing_id, data, *, actor, request_key):
 
 def add_cash_event(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'staff')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     event_type = data.get('event_type')
@@ -410,6 +450,8 @@ def add_cash_event(con, closing_id, data, *, actor, request_key):
               'event_type': event_type, 'amount_cents': amount, 'reason': reason}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'staff')
         session = _closing(con, closing_id)
         key, digest, prior = _replay(con, request_key, 'cash_event', actor, intent)
         if prior:
@@ -440,6 +482,7 @@ def add_cash_event(con, closing_id, data, *, actor, request_key):
 
 def add_cash_count(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'staff')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     supplied_token = str(data.get('source_token') or '')
@@ -455,6 +498,8 @@ def add_cash_count(con, closing_id, data, *, actor, request_key):
               'retained_coin_cents': retained_coins, 'denomination_counts': counts}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'staff')
         session = _closing(con, closing_id)
         key, digest, prior = _replay(con, request_key, 'cash_count', actor, intent)
         if prior:
@@ -501,6 +546,7 @@ def add_cash_count(con, closing_id, data, *, actor, request_key):
 
 def submit_closing(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'staff')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     supplied_token = str(data.get('source_token') or '')
@@ -508,6 +554,8 @@ def submit_closing(con, closing_id, data, *, actor, request_key):
               'source_token': supplied_token}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'staff')
         session = _closing(con, closing_id)
         key, digest, prior = _replay(con, request_key, 'closing_submit', actor, intent)
         if prior:
@@ -551,6 +599,7 @@ def submit_closing(con, closing_id, data, *, actor, request_key):
 
 def return_closing(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'manager')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     reason = str(data.get('reason') or '').strip()
@@ -559,6 +608,8 @@ def return_closing(con, closing_id, data, *, actor, request_key):
     intent = {'closing_id': closing_id, 'expected_version': expected_version, 'reason': reason}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'manager')
         session = _closing(con, closing_id)
         key, digest, prior = _replay(con, request_key, 'closing_return', actor, intent)
         if prior:
@@ -590,6 +641,7 @@ def return_closing(con, closing_id, data, *, actor, request_key):
 
 def close_closing(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'manager')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     supplied_token = str(data.get('source_token') or '')
@@ -609,6 +661,8 @@ def close_closing(con, closing_id, data, *, actor, request_key):
               'source_token': supplied_token, 'accepted_exceptions': accepted}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'manager')
         session = _closing(con, closing_id)
         key, digest, prior = _replay(con, request_key, 'closing_close', actor, intent)
         if prior:
@@ -633,15 +687,7 @@ def close_closing(con, closing_id, data, *, actor, request_key):
         ).fetchone()
         source_facts = _source_facts(con, session)
         payments = _payment_rows(con, session['store_id'], session['business_date'])
-        tender_totals = {
-            tender: 0 for tender in ('cash', 'card', 'e_transfer', 'wechat', 'alipay')
-        }
-        unknown_payment_ids = []
-        for payment in payments:
-            if payment['effective_amount_cents'] is None:
-                unknown_payment_ids.append(payment['id'])
-            else:
-                tender_totals[payment['tender']] += payment['effective_amount_cents']
+        tender_totals,unknown_payment_ids = _tender_summary(payments,source_facts['checkout_funds'])
         cash = cash_summary(
             con, session['store_id'], session['business_date'],
             count['opening_coin_cents'],
@@ -708,6 +754,7 @@ def close_closing(con, closing_id, data, *, actor, request_key):
 
 def add_closing_adjustment(con, closing_id, data, *, actor, request_key):
     session = _closing(con, closing_id)
+    require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
     require_inventory_access(con, actor, (session['store_id'],), 'manager')
     if session['status'] != 'closed':
         raise InventoryConflict('Adjustments require a closed session', 'closing_state_conflict')
@@ -720,6 +767,8 @@ def add_closing_adjustment(con, closing_id, data, *, actor, request_key):
               'source_id': source_id, 'reason': reason}
     _begin(con)
     try:
+        require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
+        require_inventory_access(con, actor, (session['store_id'],), 'manager')
         key, digest, prior = _replay(con, request_key, 'closing_adjustment', actor, intent)
         if prior:
             con.commit()

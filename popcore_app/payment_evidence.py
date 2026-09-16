@@ -78,7 +78,8 @@ def publish(prepared):
 
 def remove_unreferenced(path, con):
     if con.execute(
-        'SELECT 1 FROM payment_evidence WHERE object_id=?', (path.name,)
+        '''SELECT 1 FROM payment_evidence WHERE object_id=?
+           UNION ALL SELECT 1 FROM checkout_evidence WHERE object_id=?''', (path.name, path.name)
     ).fetchone() is None:
         try:
             path.unlink()
