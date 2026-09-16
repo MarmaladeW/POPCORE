@@ -1861,6 +1861,25 @@ def migrate_db():
             ''', (tag,))
         cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('split_channel_columns_backfill')")
 
+    # Report cash is physical cash only; qty_cash remains legacy non-POS units.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS daily_report_metadata (
+            date TEXT NOT NULL,
+            store TEXT NOT NULL,
+            cash_actual_cents INTEGER CHECK(cash_actual_cents >= 0),
+            cash_expected_cents INTEGER CHECK(cash_expected_cents >= 0),
+            employee_discounts TEXT NOT NULL DEFAULT '[]',
+            display_sales TEXT NOT NULL DEFAULT '[]',
+            claw_prizes TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY(date, store)
+        )
+    """)
+
+    report_columns = {row[1] for row in cur.execute('PRAGMA table_info(daily_report_metadata)')}
+    for column in ('cash_exchanges', 'claw_stock_in', 'display_stock_in', 'display_stock_out'):
+        if column not in report_columns:
+            cur.execute(f"ALTER TABLE daily_report_metadata ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
+
     # ── Market price tables ─────────────────────────────────────────────────
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS market_prices (
@@ -2025,6 +2044,17 @@ def migrate_db():
     ''')
 
     _run_migrations(con, cur)
+
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_attendance (
+            employee_id   INTEGER NOT NULL REFERENCES employees(id),
+            business_date TEXT NOT NULL,
+            store_id      INTEGER NOT NULL REFERENCES stores(id),
+            shift_id      INTEGER REFERENCES shifts(id) ON DELETE SET NULL,
+            punched_in_at TEXT NOT NULL,
+            PRIMARY KEY (employee_id, business_date)
+        )
+    ''')
 
     # ── products.sheet_ref: learned stable key to the Google Sheet's 编号 ────
     # Added after _run_migrations so the legacy products-table rebuild

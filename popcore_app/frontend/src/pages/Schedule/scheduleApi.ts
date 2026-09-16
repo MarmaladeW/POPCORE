@@ -289,3 +289,41 @@ export const getCalendarFeed = () =>
 
 export const resetCalendarFeed = () =>
   client.post<CalendarFeed>('/schedule/calendar-feed/reset').then((r) => r.data)
+
+export interface AttendanceToday {
+  business_date: string
+  shift: {
+    id: number
+    date: string
+    start_time: string
+    end_time: string
+    store_code: string
+    store_name: string
+  } | null
+  attendance: {
+    employee_id: number
+    business_date: string
+    store_id: number
+    shift_id: number | null
+    punched_in_at: string
+  } | null
+}
+
+function readAttendanceStatus(data: AttendanceToday): AttendanceToday {
+  if (!data || typeof data.business_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(data.business_date)
+      || (data.shift !== null && (!data.shift || !Number.isSafeInteger(data.shift.id) || data.shift.id < 1
+        || data.shift.date !== data.business_date || typeof data.shift.start_time !== 'string'
+        || typeof data.shift.end_time !== 'string' || typeof data.shift.store_code !== 'string'
+        || typeof data.shift.store_name !== 'string'))
+      || (data.attendance !== null && (!data.attendance || data.attendance.business_date !== data.business_date
+        || typeof data.attendance.punched_in_at !== 'string' || !Number.isFinite(Date.parse(data.attendance.punched_in_at))))) {
+    throw new Error('Invalid attendance response')
+  }
+  return data
+}
+
+export const getAttendanceToday = () =>
+  client.get<AttendanceToday>('/schedule/attendance/today', { timeout: 15_000 }).then(r => readAttendanceStatus(r.data))
+
+export const punchInToday = (shiftId: number) =>
+  client.post<AttendanceToday>('/schedule/attendance/today', { shift_id: shiftId }, { timeout: 15_000 }).then(r => readAttendanceStatus(r.data))

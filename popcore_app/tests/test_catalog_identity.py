@@ -237,6 +237,10 @@ class CatalogIdentityApiTests(IsolatedApiCase):
                 'product_id': self.product_id,
                 'new_jizhanming': 'renamed',
                 'sheet_ref': 'sheet-001',
+                'expected_jizhanming': 'Test Product',
+                'expected_sheet_ref': None,
+                'expected_name_cn_en': 'Test Product',
+                'expected_product_type': 'ordinary',
             }]},
         )
         self.assertEqual(response.status_code, 200)

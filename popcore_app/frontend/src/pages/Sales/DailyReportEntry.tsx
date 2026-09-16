@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   Input, Button, Table, Tag, Select, Space, Checkbox,
   Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge,
@@ -10,23 +10,20 @@ import {
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import {
-  parseReportBackend, saveAlias, saveSectionAlias, getSectionAliases,
-  type BackendProduct, type BackendCandidate,
+  parseReportBackend,
+  type BackendProduct, type BackendCandidate, type ReportAnnotations,
   type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem,
-  type SectionAlias,
 } from '../../api/matcher'
+import { cashDifference, hasReportNotes, isReportRowReady, matchFeedback, positiveInteger, REPORT_NOTE_SECTIONS, validReportQuantity } from './dailyReportReview'
 
 // ─── Section display metadata ─────────────────────────────────────────────────
 
 const SECTION_META: Record<string, { label: string; color: string }> = {
-  pos:               { label: '卡机',      color: 'blue'    },
-  cash:              { label: '随手记',    color: 'green'   },
+  pos:               { label: '卡机 POS',      color: 'blue'    },
+  cash:              { label: '随手记 Non-POS',    color: 'green'   },
   stock_in:          { label: '入店',      color: 'purple'  },
   stock_out:         { label: '出店',      color: 'orange'  },
-  claw:              { label: '娃娃机',    color: 'gold'    },
-  sell_display:      { label: '卖Display', color: 'cyan'    },
   break_display:     { label: '拆Display', color: 'red'     },
-  employee_discount: { label: '员工折扣',  color: 'magenta' },
 }
 
 function SectionTag({ section }: { section: string }) {
@@ -39,8 +36,7 @@ function SectionTag({ section }: { section: string }) {
 // ─── Extended item types (frontend state adds _key, accepted, overrides) ──────
 
 type ActiveSection =
-  | 'pos' | 'cash' | 'stock_in' | 'stock_out' | 'claw'
-  | 'sell_display' | 'break_display' | 'employee_discount'
+  | 'pos' | 'cash' | 'stock_in' | 'stock_out' | 'break_display'
 
 interface ConfirmedRow extends BackendConfirmedItem {
   _key: string
@@ -57,6 +53,7 @@ interface ReviewRow extends BackendReviewItem {
   qty_cash: number
   qty: number
   notes: string
+  originalTopId: number
   accepted: boolean          // user explicitly accepted this match
   product: BackendProduct    // may be overridden by user
   removed?: boolean
@@ -113,8 +110,8 @@ interface Props {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function DailyReportEntry({ date, onComplete }: Props) {
-  const { selectedStore } = useAppStore()
-  const defaultStore = selectedStore?.code ?? 'DT'
+  const { selectedStore, stores } = useAppStore()
+  const defaultStore = selectedStore?.code === 'ALL' ? '' : selectedStore?.code ?? ''
 
   const [step,          setStep]         = useState<'input' | 'review' | 'done'>('input')
   const [rawText,       setRawText]       = useState('')
@@ -129,14 +126,12 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [review,        setReview]        = useState<ReviewRow[]>([])
   const [failed,        setFailed]        = useState<FailedRow[]>([])
   const [unknowns,      setUnknowns]      = useState<UnknownSectionState[]>([])
-  const [savedAliases,  setSavedAliases]  = useState<SectionAlias[]>([])
   const [cashTotalReported, setCashTotalReported] = useState<number | null>(null)
+  const [cashExpected, setCashExpected] = useState<number | null>(null)
+  const [reportNotes, setReportNotes] = useState<ReportAnnotations>({})
+  const [metadataErrors, setMetadataErrors] = useState<string[]>([])
   const [parserEngine,  setParserEngine]  = useState<'llm' | 'rules'>('rules')
   const [multiDay,      setMultiDay]      = useState(false)
-
-  useEffect(() => {
-    getSectionAliases().then(setSavedAliases).catch(() => {})
-  }, [])
 
   // ── Parse (call backend) ──────────────────────────────────────────────────
 
@@ -148,7 +143,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         rawText, defaultStore, useLlm ? 'llm' : 'rules'
       )
 
-      setParsedDate(res.detected_date)
+      setParsedDate(res.detected_date ?? date)
       setParsedStore(res.store)
 
       const mk = (prefix: string, i: number, name: string) => `${prefix}-${i}-${name}`
@@ -156,7 +151,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       setConfirmed(res.confirmed.map((it, i) => ({
         ...it,
         _key:     mk('c', i, it.raw_name),
-        qty:      it.qty,
+        qty:      it.flagged ? 0 : it.qty,
+        loose_qty: it.loose_qty ?? 0,
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
@@ -165,24 +161,30 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       setReview(res.review.map((it, i) => ({
         ...it,
         _key:     mk('r', i, it.raw_name),
-        qty:      it.qty,
+        qty:      it.flagged ? 0 : it.qty,
+        loose_qty: it.loose_qty ?? 0,
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
+        originalTopId: it.candidates[0]?.id ?? it.product.id,
         accepted: false,
       })))
 
       setFailed(res.failed.map((it, i) => ({
         ...it,
         _key:     mk('f', i, it.raw_name),
-        qty:      it.qty,
+        qty:      it.flagged ? 0 : it.qty,
+        loose_qty: it.loose_qty ?? 0,
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
-        section:  it.section ?? 'pos',
+        section:  it.section ?? 'unknown',
       })))
 
       setCashTotalReported(res.cash_total_reported ?? null)
+      setCashExpected(res.cash_expected_reported ?? null)
+      setReportNotes(Object.fromEntries(REPORT_NOTE_SECTIONS.map(({ key }) => [key, res[key] ?? []])))
+      setMetadataErrors(res.metadata_errors ?? [])
       setParserEngine(res.parser_engine ?? 'rules')
       setMultiDay(res.multi_day ?? false)
 
@@ -190,8 +192,11 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         res.unknown_sections.map(h => ({ headerText: h, resolvedSection: null }))
       )
 
-      if (res.confirmed.length + res.review.length + res.failed.length === 0) {
-        message.warning('未找到可解析的产品行')
+      if (res.confirmed.length + res.review.length + res.failed.length === 0
+          && res.cash_total_reported == null && res.cash_expected_reported == null
+          && !hasReportNotes(res)
+          && !res.metadata_errors?.length && !res.unknown_sections.length && !res.multi_day) {
+        message.warning('未找到可解析的产品行或报告备注')
         return
       }
       setStep('review')
@@ -204,37 +209,18 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
   // ── Unknown section classification ─────────────────────────────────────────
 
-  async function classifyUnknown(headerText: string, resolved: ActiveSection | 'skip') {
+  function classifyUnknown(headerText: string, resolved: ActiveSection | 'skip') {
     setUnknowns(prev =>
       prev.map(u => u.headerText === headerText ? { ...u, resolvedSection: resolved } : u)
     )
-    if (resolved === 'skip') {
-      setFailed(prev => prev.filter(f => f.unknown_header !== headerText))
-    } else {
-      // Move unknown-header items from failed into confirmed/review based on their existing score
-      const toReclassify = failed.filter(f => f.unknown_header === headerText)
-      if (toReclassify.length) {
-        setFailed(prev => prev.filter(f => f.unknown_header !== headerText))
-        // Re-queue them as review items (user still needs to confirm)
-        setReview(prev => [
-          ...prev,
-          ...toReclassify.map(f => ({
-            ...f,
-            _key:      f._key + '-reclassified',
-            section:   resolved,
-            score:     f.score,
-            accepted:  false,
-            product:   (f.candidates[0] ?? null) as unknown as BackendProduct,
-            candidates: f.candidates as BackendCandidate[],
-            warn_blank_jzm: false,
-          } as ReviewRow)),
-        ])
+    // Classification applies only to this preview; abandoned reviews teach no aliases.
+    setFailed(prev => prev.map(row => row.unknown_header !== headerText ? row :
+      resolved === 'skip' ? { ...row, removed: true } : {
+        ...row, section: resolved, unknown_header: null,
+        qty_pos: resolved === 'cash' ? 0 : row.qty,
+        qty_cash: resolved === 'cash' ? row.qty : 0,
       }
-    }
-    try {
-      await saveSectionAlias(headerText, resolved === 'skip' ? 'ignore' : resolved)
-      setSavedAliases(await getSectionAliases())
-    } catch { /* ignore */ }
+    ))
   }
 
   // ── Item update helpers ───────────────────────────────────────────────────
@@ -249,59 +235,35 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     setFailed(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r))
   }
 
-  async function handleManualSelectReview(row: ReviewRow, p: BackendProduct) {
+  function handleManualSelectReview(row: ReviewRow, p: BackendProduct) {
     patchReview(row._key, { product: p, accepted: true })
-    try { await saveAlias(p.id, row.raw_name) } catch (e) { console.error('alias save failed:', e) }
   }
 
-  async function handleManualSelectFailed(row: FailedRow, p: BackendProduct) {
+  function handleManualSelectFailed(row: FailedRow, p: BackendProduct) {
     patchFailed(row._key, { assigned_product: p })
-    try { await saveAlias(p.id, row.raw_name) } catch (e) { console.error('alias save failed:', e) }
   }
 
   // ── Submit ────────────────────────────────────────────────────────────────
 
   async function handleSubmit() {
-    const unresolvedUnknowns = unknowns.filter(u => u.resolvedSection === null)
-    if (unresolvedUnknowns.length) {
-      message.warning(`请先处理 ${unresolvedUnknowns.length} 个未识别的章节`)
+    if (!canSubmit) {
+      message.warning('请检查日期、门店和现金金额，并解决或明确移除所有待处理行；多日报告须分开导入。')
       return
     }
 
-    const submitDate  = parsedDate ?? date
+    const submitDate = parsedDate
     const submitStore = parsedStore
-
-    const payload: any[] = []
-
-    // CONFIRMED items (auto-accepted, not removed, qty known)
-    for (const r of confirmed) {
-      if (r.removed || r.flagged || !r.product?.id) continue
-      payload.push(buildPayloadItem(r, r.product, 'confirmed'))
-    }
-
-    // REVIEW items (user must have explicitly accepted)
-    for (const r of review) {
-      if (r.removed || !r.accepted || r.flagged || !r.product?.id) continue
-      const item = buildPayloadItem(r, r.product, 'review')
-      item.raw_name    = r.raw_name
-      item.fuzzy_score = r.score
-      item.top_score   = r.score
-      item.was_top     = true
-      payload.push(item)
-    }
-
-    // FAILED items where user manually assigned a product
-    for (const r of failed) {
-      if (r.removed || r.flagged || !r.assigned_product?.id) continue
-      const item = buildPayloadItem(r, r.assigned_product, 'failed')
-      item.raw_name    = r.raw_name
-      item.fuzzy_score = 0
-      item.top_score   = 0
-      item.was_top     = false
-      payload.push(item)
-    }
-
-    if (!payload.length) { message.warning('没有可提交的条目'); return }
+    const payload = [
+      ...confirmed.filter(r => !r.removed).map(r => buildPayloadItem(r, r.product, 'confirmed')),
+      ...review.filter(r => !r.removed).map(r => ({
+        ...buildPayloadItem(r, r.product, 'review'),
+        ...matchFeedback(r.candidates, r.product.id, r.originalTopId, r.score),
+      })),
+      ...failed.filter(r => !r.removed).map(r => ({
+        ...buildPayloadItem(r, r.assigned_product!, 'failed'),
+        ...matchFeedback(r.candidates, r.assigned_product!.id, r.candidates[0]?.id, r.candidates[0]?.score ?? r.score),
+      })),
+    ]
 
     setSubmitting(true)
     try {
@@ -310,6 +272,11 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         store_code: submitStore,
         mode: 'replace',
         classification: 'summary_only',
+        report_metadata: {
+          cash_actual: cashTotalReported,
+          cash_expected: cashExpected,
+          ...reportNotes,
+        },
         items: payload,
       })
       setStep('done')
@@ -321,7 +288,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   }
 
   function buildPayloadItem(
-    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; raw_name?: string },
+    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string },
     product: BackendProduct,
     source_bucket: string,
   ) {
@@ -330,29 +297,37 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       raw_name: row.raw_name ?? '', source_bucket,
     }
     if (row.section === 'cash') {
-      base.qty_cash = row.qty_cash || row.qty
+      base.qty_cash = row.qty
     } else if (row.section === 'stock_in') {
-      base.box_size  = row.box_size ?? 1
+      base.box_size  = row.box_size
       base.num_boxes = row.qty
+      base.loose_qty = row.loose_qty ?? 0
     } else if (row.section === 'break_display' || row.section === 'stock_out') {
-      base.qty = row.qty || row.qty_pos
+      base.qty = row.qty
     } else {
-      base.qty_pos = row.qty_pos || row.qty
+      base.qty_pos = row.qty
     }
     return base
   }
 
   // ── Derived counts ────────────────────────────────────────────────────────
 
-  const confirmedReady  = confirmed.filter(r => !r.removed && !r.flagged && r.product?.id).length
-  const reviewAccepted  = review.filter(r => r.accepted && !r.removed && !r.flagged && r.product?.id).length
-  const failedAssigned  = failed.filter(r => r.assigned_product && !r.removed && !r.flagged).length
-  const totalReady      = confirmedReady + reviewAccepted + failedAssigned
-
-  const pendingReview   = review.filter(r => !r.accepted && !r.removed).length
+  const confirmedReady = confirmed.filter(r => !r.removed && isReportRowReady(r)).length
+  const reviewAccepted = review.filter(r => !r.removed && isReportRowReady(r)).length
+  const failedAssigned = failed.filter(r => !r.removed && isReportRowReady({ ...r, product: r.assigned_product })).length
+  const totalReady = confirmedReady + reviewAccepted + failedAssigned
+  const activeCount = [...confirmed, ...review, ...failed].filter(r => !r.removed).length
+  const blockedRows = activeCount - totalReady
+  const pendingReview = review.filter(r => !r.accepted && !r.removed).length
   const unresolvedUnknowns = unknowns.filter(u => u.resolvedSection === null).length
-
-  const canSubmit = unresolvedUnknowns === 0 && totalReady > 0
+  const validCash = [cashTotalReported, cashExpected].every(v => v == null || (Number.isFinite(v) && v >= 0))
+  const validDate = !!parsedDate && /^\d{4}-\d{2}-\d{2}$/.test(parsedDate)
+    && !Number.isNaN(Date.parse(parsedDate)) && new Date(parsedDate).toISOString().slice(0, 10) === parsedDate
+  const hasMetadata = cashTotalReported != null || cashExpected != null
+    || hasReportNotes(reportNotes)
+  const validStore = parsedStore !== 'ALL' && stores.some(store => store.code === parsedStore)
+  const canSubmit = !multiDay && metadataErrors.length === 0 && validDate && validStore && validCash
+    && unresolvedUnknowns === 0 && blockedRows === 0 && (totalReady > 0 || hasMetadata)
 
   // ── Columns ───────────────────────────────────────────────────────────────
 
@@ -360,39 +335,36 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     row: ConfirmedRow | ReviewRow | FailedRow,
     patchFn: (key: string, p: any) => void,
   ) => {
-    const isCash = row.section === 'cash'
-    if (row.flagged) return (
-      <Space size={4}>
-        <Tag color="red" icon={<WarningOutlined />}>无数量</Tag>
-        <InputNumber size="small" min={0} value={0} style={{ width: 55 }}
-          onChange={v => {
-            const q = v ?? 0
-            patchFn(row._key, {
-              qty: q,
-              qty_pos:  isCash ? 0 : q,
-              qty_cash: isCash ? q : 0,
-              flagged: false,
-            })
-          }} />
-      </Space>
-    )
-    if (row.section === 'stock_in' && row.box_size != null) return (
-      <Space size={4}>
-        <Tag style={{ fontSize: 11 }}>{row.box_size}盒/端</Tag>
-        <span style={{ color: '#9ca3af' }}>×</span>
-        <Tag style={{ fontSize: 11 }}>{row.qty}端</Tag>
-        <span style={{ fontWeight: 600, color: '#6366F1' }}>={row.qty * row.box_size}盒</span>
-      </Space>
-    )
+    const updateQuantity = (qty: number, boxSize = row.box_size, looseQty = row.loose_qty ?? 0) => patchFn(row._key, {
+      qty, box_size: boxSize, loose_qty: looseQty,
+      qty_pos: row.section === 'cash' ? 0 : qty,
+      qty_cash: row.section === 'cash' ? qty : 0,
+      flagged: !validReportQuantity({ ...row, qty, box_size: boxSize, loose_qty: looseQty }),
+    })
     return (
-      <Space size={4}>
-        <InputNumber size="small" min={0}
-          value={isCash ? (row.qty_cash || row.qty) : (row.qty_pos || row.qty)}
-          style={{ width: 65 }}
-          onChange={v => {
-            const q = v ?? 0
-            patchFn(row._key, { qty: q, qty_pos: isCash ? 0 : q, qty_cash: isCash ? q : 0 })
-          }} />
+      <Space size={4} wrap>
+        {row.flagged && <Tag color="red" icon={<WarningOutlined />}>请核对数量/包装</Tag>}
+        {row.section === 'stock_in' && <span>包数</span>}
+        <InputNumber size="small" aria-valuemin={1} step={1} changeOnBlur={false}
+          aria-label={`${row.raw_name} ${row.section === 'stock_in' ? '包数' : '数量'}`}
+          value={row.qty || null} status={!positiveInteger(row.qty) ? 'error' : undefined}
+          style={{ width: 70 }} onChange={v => updateQuantity(v ?? 0)} />
+        {row.section === 'stock_in' && (
+          <>
+            <span>× 件/包</span>
+            <InputNumber size="small" aria-valuemin={1} step={1} changeOnBlur={false}
+              aria-label={`${row.raw_name} 包装规格`}
+              value={row.box_size} status={!positiveInteger(row.box_size) ? 'error' : undefined}
+              placeholder="必填" style={{ width: 75 }}
+              onChange={v => updateQuantity(row.qty, v)} />
+            <span>+ 散件</span>
+            <InputNumber size="small" aria-valuemin={0} step={1} changeOnBlur={false}
+              aria-label={`${row.raw_name} 散件`} value={row.loose_qty ?? 0} style={{ width: 70 }}
+              status={!Number.isSafeInteger(row.loose_qty ?? 0) || (row.loose_qty ?? 0) < 0 ? 'error' : undefined}
+              onChange={v => updateQuantity(row.qty, row.box_size, v ?? 0)} />
+            {validReportQuantity(row) && <span>合计 {row.qty * row.box_size! + (row.loose_qty ?? 0)} 件</span>}
+          </>
+        )}
         {row.warn_stock && (
           <Tooltip title={`店内库存仅 ${row.warn_stock.instore}，超卖？可能记错记账名`}>
             <Tag color="orange" style={{ fontSize: 11, margin: 0 }}>库存{row.warn_stock.instore}</Tag>
@@ -409,7 +381,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         <Space direction="vertical" size={0}>
           <Space size={4}>
             <Tag color="green" style={{ margin: 0 }}><CheckCircleOutlined /></Tag>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{r.product.jizhanming}</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{r.product.jizhanming || r.product.name_cn_en || r.product.sku}</span>
           </Space>
           <Space size={4}>
             <Tag style={{ fontSize: 11, margin: 0 }}>{r.product.sku}</Tag>
@@ -459,7 +431,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         if (r.accepted) return (
           <Space size={4}>
             <Tag color="green"><CheckCircleOutlined /></Tag>
-            <span style={{ fontSize: 13 }}>{r.product?.jizhanming}</span>
+            <span style={{ fontSize: 13 }}>{r.product?.jizhanming || r.product?.name_cn_en || r.product?.sku}</span>
             <Tag style={{ fontSize: 11 }}>{r.product?.sku}</Tag>
           </Space>
         )
@@ -473,7 +445,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
               }}
               options={(r.candidates || []).map((c: BackendCandidate) => ({
                 value: c.id,
-                label: `${c.jizhanming || c.sku} (${c.score}%)`,
+                label: `${c.name_cn_en || c.jizhanming || c.sku} · ${c.sku} (${c.score}%)`,
               }))}
             />
             <ProductPicker placeholder="或搜索其他产品..."
@@ -485,8 +457,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     {
       title: '分值', dataIndex: 'score', width: 70,
       render: (v: number, r: ReviewRow) => {
-        const color = r.accepted ? '#10B981' : v >= 70 ? '#f59e0b' : '#ef4444'
-        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{v}%</span>
+        const score = r.candidates.find(c => c.id === r.product?.id)?.score
+        const color = r.accepted ? '#10B981' : (score ?? 0) >= 70 ? '#f59e0b' : '#ef4444'
+        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{score == null ? '手动' : `${score}%`}</span>
       },
     },
     {
@@ -499,17 +472,17 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     },
     {
       title: '操作', key: 'action', width: 120,
-      render: (_: any, r: ReviewRow) => r.accepted ? (
-        <Button size="small" onClick={() => patchReview(r._key, { accepted: false })}>
-          撤销
-        </Button>
-      ) : (
+      render: (_: any, r: ReviewRow) => (
         <Space size={4}>
-          <Button size="small" type="primary"
-            disabled={!r.product?.id}
-            onClick={() => patchReview(r._key, { accepted: true })}>
-            接受
-          </Button>
+          {r.accepted ? (
+            <Button size="small" onClick={() => patchReview(r._key, { accepted: false })}>撤销</Button>
+          ) : (
+            <Button size="small" type="primary"
+              disabled={!r.product?.id}
+              onClick={() => patchReview(r._key, { accepted: true })}>
+              接受
+            </Button>
+          )}
           <Tooltip title="移除此行">
             <Button size="small" danger type="text" icon={<DeleteOutlined />}
               onClick={() => patchReview(r._key, { removed: true })} />
@@ -562,7 +535,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       render: (_: any, r: FailedRow) => (
         <Select size="small" value={r.section} style={{ width: 80 }}
           options={Object.entries(SECTION_META).map(([k, v]) => ({ value: k, label: v.label }))}
-          onChange={v => patchFailed(r._key, { section: v })} />
+          onChange={v => patchFailed(r._key, { section: v, unknown_header: null })} />
       ),
     },
     {
@@ -580,26 +553,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     },
   ]
 
-  // Cash checksum: reported 现金 total vs Σ(qty_cash × price) over ready items
-  const cashComputed = (() => {
-    let sum = 0
-    for (const r of confirmed) {
-      if (!r.removed && !r.flagged && r.section === 'cash' && r.product?.price != null)
-        sum += (r.qty_cash || r.qty) * r.product.price
-    }
-    for (const r of review) {
-      if (!r.removed && r.accepted && !r.flagged && r.section === 'cash' && r.product?.price != null)
-        sum += (r.qty_cash || r.qty) * r.product.price
-    }
-    for (const r of failed) {
-      if (!r.removed && !r.flagged && r.section === 'cash' && r.assigned_product?.price != null)
-        sum += (r.qty_cash || r.qty) * r.assigned_product.price
-    }
-    return Math.round(sum * 100) / 100
-  })()
-  const cashDelta = cashTotalReported != null
-    ? Math.round((cashTotalReported - cashComputed) * 100) / 100
-    : null
+  const cashDelta = cashDifference(cashTotalReported, cashExpected)
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -611,7 +565,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
             Import Daily Report
           </div>
           <div style={{ fontSize: 13, color: '#6b7280' }}>
-            Paste the full end-of-day report. Date and store are detected automatically.
+            Paste one day’s full report. Review the detected date and store before saving.
           </div>
         </div>
         <Input.TextArea
@@ -639,7 +593,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         type="success"
         icon={<CheckCircleOutlined />}
         showIcon
-        message={`Report imported — ${totalReady} items saved`}
+        message={`Report imported — ${totalReady} items and report notes saved`}
         description={parsedDate ? `Date: ${parsedDate}  Store: ${parsedStore}` : undefined}
         action={
           <Button type="primary" onClick={() => onComplete(parsedDate ?? date, parsedStore)}>
@@ -661,9 +615,11 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     <div>
       {/* Summary bar */}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-        {parsedDate && (
-          <Tag color="blue" style={{ fontSize: 13 }}>{parsedDate} · {parsedStore}</Tag>
-        )}
+        <label>Date <Input type="date" aria-label="Report date" value={parsedDate ?? ''}
+          onChange={e => setParsedDate(e.target.value || null)} style={{ width: 150 }} /></label>
+        <label>Store <Select aria-label="Report store" value={parsedStore || undefined}
+          onChange={setParsedStore} style={{ width: 130 }}
+          options={stores.filter(s => s.code !== 'ALL').map(s => ({ value: s.code, label: s.code }))} /></label>
         <Tag color={parserEngine === 'llm' ? 'geekblue' : 'default'} style={{ fontSize: 11 }}>
           {parserEngine === 'llm' ? 'AI 解析' : '规则解析'}
         </Tag>
@@ -687,13 +643,25 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         </div>
       </div>
 
+      {(!validDate || !validStore || !validCash) && (
+        <Alert type="error" showIcon style={{ marginBottom: 8 }}
+          message="请选择有效的日期和具体门店；现金金额须为空或非负数。" />
+      )}
+
       {/* Replace-semantics notice */}
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 8, borderRadius: 8 }}
-        message={`提交将替换 ${parsedDate ?? date} · ${parsedStore} 当天已有的销售记录（可安全重复导入）`}
+        message={`对账汇总（summary only）将替换 ${parsedDate ?? '未选日期'} · ${parsedStore || '未选门店'} 已有日报销售及本次报告元数据，不是追加。`}
+        description="销售汇总不创建收款或扣减销售库存；入店/出店/拆 Display 仍属于库存操作。有库存历史的日报可能需先对账，服务器会阻止直接替换。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。"
       />
+
+      {metadataErrors.length > 0 && (
+        <Alert type="error" showIcon style={{ marginBottom: 8 }}
+          message="报告原文存在错误或冲突，已禁止提交。请返回修改原文后重新解析。"
+          description={<div style={{ whiteSpace: 'pre-wrap' }}>{metadataErrors.join('\n')}</div>} />
+      )}
 
       {/* Multi-day paste warning */}
       {multiDay && (
@@ -701,23 +669,34 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           type="warning"
           showIcon
           style={{ marginBottom: 8, borderRadius: 8 }}
-          message="检测到多个日期 — 本次提交只会记录到一个日期。请将报告按天分开导入。"
+          message="检测到多个日期，已禁止提交。请返回并将报告按天分开导入。"
         />
       )}
 
-      {/* Cash checksum */}
-      {cashTotalReported != null && (
-        <Alert
-          type={cashDelta === 0 ? 'success' : 'warning'}
-          showIcon
-          style={{ marginBottom: 8, borderRadius: 8 }}
-          message={
-            cashDelta === 0
-              ? `现金对账 ✓ 报告 $${cashTotalReported} = 系统合计 $${cashComputed}`
-              : `现金对账: 报告 $${cashTotalReported} · 随手记合计 $${cashComputed} · 差额 $${cashDelta}（差额可能来自税/折扣/记错产品）`
-          }
-        />
+      {blockedRows > 0 && (
+        <Alert type="error" showIcon style={{ marginBottom: 8 }}
+          message={`${blockedRows} 行尚未完成。请核对匹配、数量及包装，接受或明确移除每行；不会跳过未完成行。`} />
       )}
+      <div style={{ marginBottom: 12 }}>
+        <Space wrap>
+          <label>Physical cash actual / 实收 <InputNumber aria-label="Physical cash actual"
+            aria-valuemin={0} step={0.01} changeOnBlur={false} value={cashTotalReported} onChange={setCashTotalReported} /></label>
+          <label>Physical cash expected / 应收 <InputNumber aria-label="Physical cash expected"
+            aria-valuemin={0} step={0.01} changeOnBlur={false} value={cashExpected} onChange={setCashExpected} /></label>
+          <Tag color={cashDelta == null ? 'default' : cashDelta === 0 ? 'green' : 'orange'}>
+            Difference / 差额（实收 − 应收）: {cashDelta == null ? '—' : `CA$${cashDelta.toFixed(2)}`}
+          </Tag>
+        </Space>
+      </div>
+      {REPORT_NOTE_SECTIONS.map(({ key, label, description }) => !!reportNotes[key]?.length && (
+        <Alert key={key} type="info" showIcon style={{ marginBottom: 12 }}
+          message={label}
+          description={<><div>{description}</div>
+            <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{reportNotes[key]!.join('\n')}</div></>} />
+      ))}
+      <Alert type="info" showIcon style={{ marginBottom: 12 }}
+        message="匹配修正仅在提交成功后保存；安全且无冲突的名称映射可用于以后的日报。"
+        description="预览中的选择不会保存。请逐行核对同名记录，接受后再提交。" />
 
       {/* Unknown section classification alerts */}
       {unknowns.filter(u => u.resolvedSection === null).map(u => (
@@ -727,7 +706,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           showIcon
           style={{ marginBottom: 8, borderRadius: 8 }}
           message={
-            <Space>
+            <Space wrap>
               <span>Unknown section: <strong>{u.headerText}</strong> — what type?</span>
               <Select
                 size="small"
@@ -771,7 +750,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                     dataSource={visibleConfirmed}
                     columns={confirmedColumns}
                     pagination={false}
-                    scroll={{ y: 420 }}
+                    scroll={{ x: 850, y: 420 }}
                   />
                 )}
               </>
@@ -806,7 +785,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                       dataSource={visibleReview}
                       columns={reviewColumns}
                       pagination={false}
-                      scroll={{ y: 400 }}
+                      scroll={{ x: 850, y: 400 }}
                     />
                     {pendingReview > 0 && (
                       <div style={{ marginTop: 8 }}>
@@ -852,7 +831,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                       dataSource={visibleFailed}
                       columns={failedColumns}
                       pagination={false}
-                      scroll={{ y: 400 }}
+                      scroll={{ x: 850, y: 400 }}
                     />
                   </>
                 )}

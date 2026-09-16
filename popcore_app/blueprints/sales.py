@@ -2,6 +2,9 @@
 blueprints/sales.py — daily sales records, batch import, daily report, export.
 """
 import os
+import json
+from collections import Counter
+from decimal import Decimal
 import re
 import unicodedata
 from datetime import date, timedelta
@@ -11,7 +14,7 @@ from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
-from matcher import match_jzm, normalize as _norm_jzm, clean_name as _clean_jzm
+from matcher import match_jzm, identity_conflicts, load_matching_aliases, normalize as _norm_jzm, clean_name as _clean_jzm
 from inventory_commands import InventoryError, post_inventory
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
@@ -608,6 +611,42 @@ def _revert_report_day(cur, d: str, store_code: str, store_id: int) -> tuple[int
     return deleted_sales, len(prior)
 
 
+_REPORT_NOTE_FIELDS = ('employee_discounts', 'display_sales', 'claw_prizes',
+                       'cash_exchanges', 'claw_stock_in', 'display_stock_in', 'display_stock_out')
+
+
+def _report_money_cents(value, field):
+    if value is None:
+        return None
+    if not isinstance(value, (str, int, float)) or not re.fullmatch(r'[0-9]+(?:\.[0-9]{1,2})?', str(value)):
+        raise ValueError(f'{field} must be a nonnegative amount with at most two decimals')
+    return read_int(int(Decimal(str(value)) * 100), field)
+
+
+@bp.route('/api/sales/report-metadata')
+@role_required('manager')
+def report_metadata():
+    try:
+        d = read_date(request.args.get('date'))
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    con = get_db()
+    store = (request.args.get('store') or '').strip().upper()
+    if not _resolve_store(con, store):
+        return jsonify({'error': 'Select a specific store', 'code': 'invalid_input'}), 400
+    row = con.execute('SELECT * FROM daily_report_metadata WHERE date=? AND store=?',
+                      (d, store)).fetchone()
+    actual = row['cash_actual_cents'] if row else None
+    expected = row['cash_expected_cents'] if row else None
+    return jsonify({
+        'cash_actual': actual / 100 if actual is not None else None,
+        'cash_expected': expected / 100 if expected is not None else None,
+        'cash_difference': (actual - expected) / 100 if actual is not None and expected is not None else None,
+        **{key: json.loads(row[key]) if row else []
+           for key in _REPORT_NOTE_FIELDS},
+    })
+
+
 @bp.route('/api/sales/submit_daily_report', methods=['POST'])
 @role_required('staff')
 def submit_daily_report():
@@ -616,8 +655,8 @@ def submit_daily_report():
 
     A submission IS the day: by default (mode='replace') any previously
     submitted report for the same (date, store) is removed first — its
-    daily_sales rows deleted and its stock transactions reversed — so
-    re-importing a corrected report is always safe and never double-counts.
+    daily_sales rows deleted. Reports with stock history require reconciliation;
+    their stock movements are never reversed by this endpoint.
     Pass mode='append' for the legacy accumulate behaviour.
 
     Body:
@@ -626,8 +665,7 @@ def submit_daily_report():
       "store_code": "DT",
       "mode":       "replace" | "append"   (default "replace"),
       "items": [
-        { "product_id": <int>, "section": "pos"|"cash"|"claw"|"sell_display"
-                               |"employee_discount"|"break_display"|"stock_in"|"stock_out",
+        { "product_id": <int>, "section": "pos"|"cash"|"break_display"|"stock_in"|"stock_out",
           "qty_pos": <int>, "qty_cash": <int>, "qty": <int>,
           "box_size": <int>, "num_boxes": <int>, "notes": <str>, "raw_name": <str> }
       ]
@@ -650,13 +688,33 @@ def submit_daily_report():
     except ValueError as exc:
         return jsonify(invalid_input(exc)), 400
 
+    metadata = data.get('report_metadata')
+    try:
+        if metadata is not None:
+            if not isinstance(metadata, dict):
+                raise ValueError('report_metadata must be an object')
+            if mode != 'replace':
+                raise ValueError('report_metadata requires replace mode')
+            cash_actual = _report_money_cents(metadata.get('cash_actual'), 'cash_actual')
+            cash_expected = _report_money_cents(metadata.get('cash_expected'), 'cash_expected')
+            annotation_lists = {}
+            for key in _REPORT_NOTE_FIELDS:
+                notes = metadata.get(key, [])
+                if not isinstance(notes, list) or any(not isinstance(n, str) for n in notes):
+                    raise ValueError(f'{key} must be a list of notes')
+                annotation_lists[key] = json.dumps(notes, ensure_ascii=False)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+
     validated_items = []
-    valid_sections = SALES_SECTIONS | {'break_display', 'stock_in', 'stock_out'}
+    valid_sections = (SALES_SECTIONS - {'employee_discount', 'sell_display', 'claw'}) | {'break_display', 'stock_in', 'stock_out'}
     for line, item in enumerate(items, 1):
         if not isinstance(item, dict):
             return jsonify({'error': 'Each item must be an object',
                             'code': 'invalid_input', 'line': line}), 400
         try:
+            if item.get('flagged') or item.get('unknown_header'):
+                raise ValueError('Resolve every report item before submitting')
             normalized = dict(item)
             normalized['product_id'] = read_int(
                 item['product_id'], 'product_id', minimum=1
@@ -669,7 +727,7 @@ def submit_daily_report():
                 normalized['qty_pos'] = read_int(item.get('qty_pos', 0), 'qty_pos')
                 normalized['qty_cash'] = read_int(item.get('qty_cash', 0), 'qty_cash')
                 normalized['qty'] = read_int(item.get('qty', 0), 'qty')
-                read_int(normalized['qty_pos'] + normalized['qty_cash'], 'qty_sold')
+                read_int((normalized['qty_pos'] + normalized['qty_cash']) or normalized['qty'], 'qty_sold', minimum=1)
             elif normalized['section'] in {'break_display', 'stock_out'}:
                 normalized['qty'] = read_int(item.get('qty'), 'qty', minimum=1)
             else:
@@ -679,8 +737,9 @@ def submit_daily_report():
                 normalized['num_boxes'] = read_int(
                     item.get('num_boxes'), 'num_boxes', minimum=1
                 )
+                normalized['loose_qty'] = read_int(item.get('loose_qty', 0), 'loose_qty')
                 read_int(
-                    normalized['box_size'] * normalized['num_boxes'],
+                    normalized['box_size'] * normalized['num_boxes'] + normalized['loose_qty'],
                     'total_units',
                     minimum=1,
                 )
@@ -764,20 +823,7 @@ def submit_daily_report():
                     'total_quantity', minimum=1,
                 )
             elif item['section'] == 'stock_in':
-                product = cur.execute(
-                    'SELECT product_type, boxes_per_dan FROM products WHERE id=?',
-                    (pid,),
-                ).fetchone()
-                bpd = (
-                    (product['boxes_per_dan'] or 1)
-                    if product and product['product_type'] == '盲盒'
-                    else 1
-                )
-                qty = read_int(
-                    item['box_size'] * item['num_boxes'] * bpd,
-                    'total_units',
-                    minimum=1,
-                )
+                qty = read_int(item['box_size'] * item['num_boxes'] + item['loose_qty'], 'total_units', minimum=1)
                 required_upstairs[pid] = read_int(
                     required_upstairs.get(pid, 0) + qty,
                     'total_units', minimum=1,
@@ -907,11 +953,7 @@ def submit_daily_report():
             elif section == 'stock_in':
                 box_size   = item['box_size']
                 num_boxes  = item['num_boxes']
-                total_duan = box_size * num_boxes
-                cur.execute('SELECT product_type, boxes_per_dan FROM products WHERE id=?', (pid,))
-                prow = cur.fetchone()
-                bpd  = (prow['boxes_per_dan'] or 1) if (prow and prow['product_type'] == '盲盒') else 1
-                total_units = read_int(total_duan * bpd, 'total_units', minimum=1)
+                total_units = read_int(box_size * num_boxes + item['loose_qty'], 'total_units', minimum=1)
                 cur.execute('''
                     INSERT INTO stock_transactions
                         (product_id, txn_type, qty, location, date, notes, store_id)
@@ -964,6 +1006,39 @@ def submit_daily_report():
                 'code': 'reconciliation_classification_required',
             }), 409
 
+        # Teach only a reviewed, unambiguous name, inside the successful submission.
+        # Conflicting review history revokes our learned alias instead of picking a winner.
+        if corrections:
+            catalog = [dict(row) for row in cur.execute('SELECT * FROM products')]
+            products_by_id = {p['id']: p for p in catalog}
+            for raw_name_c, norm_name_c, pid_c, *_ in corrections:
+                owners = {row[0] for row in cur.execute(
+                    'SELECT DISTINCT product_id FROM match_corrections WHERE norm_name=?', (norm_name_c,))}
+                owners.update(item['product_id'] for item in validated_items
+                              if _norm_jzm(_clean_jzm(item.get('raw_name') or '')) == norm_name_c)
+                if len(owners) != 1:
+                    cur.execute("DELETE FROM product_aliases WHERE alias_norm=? AND created_by='report-review'",
+                                (norm_name_c,))
+                    continue
+                if not norm_name_c or identity_conflicts(raw_name_c, products_by_id[pid_c]):
+                    continue
+                if any(item.get('notes') for item in validated_items
+                       if _norm_jzm(_clean_jzm(item.get('raw_name') or '')) == norm_name_c):
+                    continue  # A character/variant note must not teach the unqualified name.
+                if any(p['id'] != pid_c for _, p in match_jzm(raw_name_c, catalog, threshold=100)):
+                    continue
+                cur.execute("""INSERT OR IGNORE INTO product_aliases
+                    (product_id, alias, alias_norm, created_by) VALUES (?, ?, ?, 'report-review')""",
+                    (pid_c, raw_name_c, norm_name_c))
+
+        if mode == 'replace':
+            cur.execute('DELETE FROM daily_report_metadata WHERE date=? AND store=?', (d, store_code))
+        if metadata is not None:
+            cur.execute(f"""INSERT INTO daily_report_metadata
+                (date, store, cash_actual_cents, cash_expected_cents, {','.join(_REPORT_NOTE_FIELDS)})
+                VALUES ({','.join('?' for _ in range(4 + len(_REPORT_NOTE_FIELDS)))})""",
+                (d, store_code, cash_actual, cash_expected,
+                 *(annotation_lists[key] for key in _REPORT_NOTE_FIELDS)))
         con.commit()
     except ValueError as exc:
         con.rollback()
@@ -1019,7 +1094,7 @@ def export_sales():
     rows = cur.fetchall()
     con.close()
 
-    header = '日期,记账名,SKU,系列,类型,单价,卡机数量,现金/转账数量,娃娃机,卖Display,员工折扣,总销量,原始输入,备注'
+    header = '日期,记账名,SKU,系列,类型,单价,卡机数量,非卡机数量(现金/转账/微信/支付宝),娃娃机,卖Display,员工折扣,总销量,原始输入,备注'
     lines  = ['﻿' + header]
     for r in rows:
         lines.append(','.join(esc_csv(v) for v in [
@@ -1070,6 +1145,7 @@ def clear_sales_day():
         }), 409
     cur.execute('DELETE FROM daily_sales WHERE date = ? AND store = ?', (d, store_code))
     deleted = cur.rowcount
+    cur.execute('DELETE FROM daily_report_metadata WHERE date=? AND store=?', (d, store_code))
     con.commit()
     con.close()
     return jsonify({'ok': True, 'deleted': deleted})
@@ -1088,13 +1164,15 @@ def recorded_dates():
     cur = con.cursor()
     if store_code == 'ALL':
         cur.execute(
-            "SELECT DISTINCT date FROM daily_sales WHERE date LIKE ? ORDER BY date",
-            (prefix + '%',),
+            "SELECT date FROM daily_sales WHERE date LIKE ? UNION "
+            "SELECT date FROM daily_report_metadata WHERE date LIKE ? ORDER BY date",
+            (prefix + '%', prefix + '%'),
         )
     else:
         cur.execute(
-            "SELECT DISTINCT date FROM daily_sales WHERE date LIKE ? AND store = ? ORDER BY date",
-            (prefix + '%', store_code),
+            "SELECT date FROM daily_sales WHERE date LIKE ? AND store = ? UNION "
+            "SELECT date FROM daily_report_metadata WHERE date LIKE ? AND store = ? ORDER BY date",
+            (prefix + '%', store_code, prefix + '%', store_code),
         )
     dates = [r['date'] for r in cur.fetchall()]
     con.close()
@@ -1108,29 +1186,26 @@ def recorded_dates():
 # Layer 2 — section keyword map (longer/more-specific strings first, lowercase;
 # comparison is case-insensitive)
 _SECTION_MAP = [
-    ('卡机汇总',   'pos'),
-    ('随手记汇总', 'cash'),
-    ('随手记',     'cash'),
-    ('卡机',       'pos'),
-    ('入店',       'stock_in'),
-    ('出店',       'stock_out'),
-    ('入display',  'break_display'),  # putting a unit into display — same stock effect as 拆display
-    ('卖display',  'sell_display'),
-    ('拆display',  'break_display'),
-    ('娃娃机',     'skip'),        # CLAW_MACHINE — skip
-    ('员工折扣',   'employee_discount'),
-    ('晚盘',       'skip'),        # EVENING_CHECK — skip
-    ('博主探店',   'skip'),        # INFLUENCER — skip
-    ('现金',       'cash_total'),  # CASH_TOTAL — captured as a checksum, items skipped
+    ('卡机汇总', 'pos'), ('随手记汇总', 'cash'), ('随手机汇总', 'cash'),
+    ('随手记', 'cash'), ('卡机', 'pos'),
+    ('入店display', 'display_stock_in'), ('出店display', 'display_stock_out'),
+    ('入display', 'display_stock_in'), ('出display', 'display_stock_out'),
+    ('入娃娃机', 'claw_stock_in'), ('娃娃机入', 'claw_stock_in'),
+    ('娃娃机出', 'claw'), ('出娃娃机', 'claw'),
+    ('入店', 'stock_in'), ('出店', 'stock_out'),
+    ('卖display', 'sell_display'), ('卖展示', 'sell_display'),
+    ('拆display', 'break_display'), ('拆展示', 'break_display'),
+    ('娃娃机', 'claw'), ('员工折扣', 'employee_discount'),
+    ('晚盘', 'skip'), ('博主探店', 'skip'), ('现金', 'cash_total'),
 ]
+_REPORT_ANNOTATIONS = {
+    'employee_discount': 'employee_discounts', 'sell_display': 'display_sales',
+    'claw': 'claw_prizes', 'claw_stock_in': 'claw_stock_in',
+    'display_stock_in': 'display_stock_in', 'display_stock_out': 'display_stock_out',
+}
 
-# Layers 5 — score thresholds
-_SCORE_CONFIRMED = 80
-_SCORE_REVIEW    = 50
-# Auto-confirm additionally requires the top hit to beat the runner-up by
-# this margin (exact/alias hits at 100 are exempt) — near-twin names like
-# "smiski sunday"/"smiski sundae" must go to review, not silently pick one.
-_MARGIN_CONFIRM  = 10
+# Fuzzy matches are suggestions only; unique exact identities can confirm.
+_SCORE_REVIEW = 50
 
 _DATE_RE = re.compile(r'(\d{4})[.\-\/年](\d{1,2})[.\-\/月](\d{1,2})')
 
@@ -1146,65 +1221,55 @@ def _preprocess_text(text: str) -> str:
     text = unicodedata.normalize('NFKC', text)
     # 2. Normalize star separator: ∗ (U+2217) not handled by NFKC, strip spaces
     text = text.replace('∗', '*')
-    text = re.sub(r'\s*\*\s*', '*', text)
+    text = re.sub(r'[^\S\n]*\*[^\S\n]*', '*', text)
     # 3. Per-line: strip leading/trailing whitespace, collapse internal spaces
-    lines = [re.sub(r'  +', ' ', ln.strip()) for ln in text.split('\n')]
+    lines = [re.sub(r'  +', ' ', ln.strip()) for ln in text.splitlines()]
     text = '\n'.join(lines)
     # 4. Remove double commas
     text = text.replace(',,', ',').replace('，，', '，')
     return text
 
 
-# Separator that may follow a header keyword on the same line: optional 汇总
-# suffix, then optional colon/dash, e.g. "入店汇总：", "出店:", "卡机 —"
-_HEADER_SEP_RE = re.compile(r'^(?:汇总)?\s*[:：\-—]*\s*')
-# Split on commas that are not inside a (single-level) parenthetical
-_COMMA_SPLIT_RE = re.compile(r'[,，](?![^()]*\))')
-
 
 def _detect_section_type(line: str, section_aliases: dict) -> tuple[str, str] | None:
-    """
-    Return (section_type, inline_content) if the line contains a section header,
-    None if it's a product line.
-
-    inline_content is any text following the header on the same line
-    (e.g. "出店：sa糖果*1" → ('stock_out', 'sa糖果*1')) so header lines can no
-    longer swallow product data.
-
-    'skip'    → known section to ignore entirely.
-    'unknown' → looks like a header but no keyword matched.
-    """
+    """Headers need a delimiter or end-of-line; product quantities are not headers."""
     s = line.strip()
-    lower = s.lower()
     for keyword, section in _SECTION_MAP:
-        idx = lower.find(keyword.lower())
-        if idx == -1:
-            continue
-        prefix = s[:idx]
-        # A keyword inside a product token ("xxx*2出店"?) is not a header
-        if '*' in prefix:
-            continue
-        rest = _HEADER_SEP_RE.sub('', s[idx + len(keyword):], count=1).strip()
-        # Keyword mid-line: only a header when the line is clearly header-shaped —
-        # nothing but the keyword after a short prefix ("DT卡机汇总"), or an
-        # explicit colon right after the keyword ("今日出店：sa糖果*1").
-        if idx > 0:
-            has_colon_after = bool(re.match(r'^(?:汇总)?\s*[:：]', s[idx + len(keyword):]))
-            if not (rest == '' or (has_colon_after and len(prefix.strip()) <= 6)):
-                continue
-            # 现金 appears inside product names too — require line start unless bare
-            if section == 'cash_total' and rest != '':
-                continue
-        return section, rest
-    # User-saved section aliases (alias_norm → section_type); whole-line headers only
-    line_norm = re.sub(r'\s+', '', lower)
+        # Optional spaces allow "卖 display" without changing the item text.
+        pattern = r'^(?:(?:今日|今天|[A-Za-z]{2,6})\s*)?' + r'\s*'.join(map(re.escape, keyword))
+        match = re.match(pattern + r'(?:汇总)?(?:\s*[:：—-]\s*|\s*$)', s, re.I)
+        if match:
+            return section, s[match.end():].strip()
+    line_norm = re.sub(r'\s+', '', s.rstrip(':：').lower())
     for alias_norm, stype in section_aliases.items():
-        if alias_norm and alias_norm in line_norm:
-            return stype, ''
-    # Ends with colon → treat as unknown header
-    if s.endswith(':') or s.endswith('：'):
+        if alias_norm and alias_norm.rstrip(':：') == line_norm:
+            return ('skip' if stype == 'ignore' else stype), ''
+    if s.endswith((':', '：')):
         return 'unknown', ''
     return None
+
+
+def _split_report_items(content: str) -> list[str]:
+    """Use separators outside notes; spaces split only after a written quantity."""
+    parts, start, depth = [], 0, 0
+    for index, char in enumerate(content):
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+        if depth != 0:
+            continue
+        separator = char in ',，;；'
+        if char.isspace() and content[index + 1:].strip():
+            head, _, balanced = _extract_note(content[start:index])
+            rest = content[index + 1:].lstrip()
+            separator = (balanced and rest[0] not in '(*+➕),，;；'
+                         and bool(re.search(r'\*\d+(?:\s*[+➕]\s*\d+)?$', head)))
+        if separator:
+            parts.append(content[start:index].strip())
+            start = index + 1
+    parts.append(content[start:].strip())
+    return [part for part in parts if part]
 
 
 def _extract_date_store(first_line: str, fallback_store: str):
@@ -1213,94 +1278,94 @@ def _extract_date_store(first_line: str, fallback_store: str):
     detected_date = (
         f"{dm.group(1)}-{int(dm.group(2)):02d}-{int(dm.group(3)):02d}" if dm else None
     )
-    sm = re.search(r'([A-Za-z]{2,6})(?:汇总|店)', first_line)
+    suffix = r'(?:汇总|店|\s*$)' if dm else r'(?:汇总|店)'
+    sm = re.search(r'(?<![A-Za-z])([A-Za-z]{2,6})' + suffix, first_line)
     store = sm.group(1).upper() if sm else fallback_store
     return detected_date, store
 
 
-_PAREN_RE = re.compile(r'\(([^()]*)\)')
-
-
-def _extract_note(t: str) -> tuple[str, str]:
-    """Pull parenthetical annotations out of a token.
-
-    Returns (token_without_parens, note). An unclosed '(' captures to the end
-    of the token — never beyond the line it is on.
-    """
-    notes: list[str] = []
-
-    def _cap(m):
-        inner = m.group(1).strip()
-        if inner:
-            notes.append(inner)
-        return ''
-
-    t = _PAREN_RE.sub(_cap, t)
-    if '(' in t:
-        head, _, tail = t.partition('(')
-        tail = tail.strip()
-        if tail:
-            notes.append(tail)
-        t = head
-    return t.strip(), '；'.join(notes)
+def _extract_note(text: str) -> tuple[str, str, bool]:
+    """Extract balanced, possibly nested notes without dropping trailing items."""
+    body, notes, current = [], [], []
+    depth, balanced = 0, True
+    for char in text:
+        if char == '(':
+            if depth:
+                current.append(char)
+            depth += 1
+        elif char == ')' and depth:
+            depth -= 1
+            if depth:
+                current.append(char)
+            else:
+                notes.append(''.join(current).strip())
+                current = []
+        elif depth:
+            current.append(char)
+        else:
+            body.append(char)
+            if char == ')':
+                balanced = False
+    if current:
+        notes.append(''.join(current).strip())
+    return ''.join(body).strip(), '；'.join(filter(None, notes)), balanced and depth == 0
 
 
 def _parse_token(token: str, section: str) -> dict | None:
-    """
-    Layer 3 — parse a single comma-split token.
-
-    Returns None for empty tokens; always returns a dict for non-empty input.
-    flagged=True means no quantity was found (requires user input before commit).
-    Parenthetical content is captured into 'note' rather than discarded.
-    """
-    t, note = _extract_note(token.strip())
+    """Parse written units or receipt packs plus loose units; retain malformed input."""
+    t, note, balanced = _extract_note(token.strip())
     if not t:
-        return None
-
-    # Step 2: lastIndexOf('*') → quantity
-    inferred_split_name = None
-    star_idx = t.rfind('*')
-    if star_idx > 0:
-        raw_name = t[:star_idx].strip()
-        qty_str  = t[star_idx + 1:].strip()
-        # Check for trailing non-digit text after leading digits (e.g. "1星星人随心配粉")
-        m = re.match(r'^(\d+)(.+)$', qty_str)
-        if m:
-            qty = max(1, int(m.group(1)))
-            inferred_split_name = m.group(2).strip() or None
-        else:
-            try:
-                qty = max(1, int(qty_str))
-            except (ValueError, TypeError):
-                qty = 1
-        flagged = False
+        # A standalone/unclosed annotation must remain visible for review.
+        return {'raw_name': token.strip(), 'qty': 0, 'qty_pos': 0, 'qty_cash': 0,
+                'box_size': None, 'loose_qty': 0, 'section': section,
+                'flagged': True, 'note': note, 'unknown_header': None}
+    if section == 'break_display':
+        t = re.sub(r'^display\s*:\s*', '', t, flags=re.I)
+    raw_name, star, qty_str = t.partition('*')
+    raw_name = raw_name.strip()
+    qty, flagged, loose_qty = 0, True, 0
+    box_size = 1 if section == 'stock_in' else None
+    if star:
+        if section == 'stock_in':
+            pack = re.match(r'^(.*?)(\d+)$', raw_name)
+            if pack and pack.group(1).strip() and not re.search(
+                r'(?<![A-Za-z])(?:s|ver|version|series)\s*$', pack.group(1), re.I
+            ):
+                raw_name = pack.group(1).strip().rstrip(':').strip()
+                try:
+                    box_size = read_int(pack.group(2), 'box_size', minimum=1)
+                except ValueError:
+                    box_size = None
+        try:
+            quantities = re.split(r'\s*[+➕]\s*', qty_str.strip()) if section == 'stock_in' else [qty_str.strip()]
+            if len(quantities) > 2:
+                raise ValueError('Invalid quantity')
+            qty = read_int(quantities[0], 'qty', minimum=1)
+            loose_qty = read_int(quantities[1], 'loose_qty') if len(quantities) == 2 else 0
+            read_int(qty * (box_size or 1) + loose_qty, 'total_units', minimum=1)
+            flagged = section == 'stock_in' and box_size is None
+        except ValueError:
+            pass
     else:
-        raw_name = t
-        qty      = 1
-        flagged  = True  # no * found — no explicit quantity
-
-    # Step 3: STOCK_IN trailing-number → box_size
-    box_size = None
-    if section == 'stock_in' and raw_name:
-        m = re.match(r'^(.*\D)\s*(\d+)$', raw_name)
-        if m and m.group(1).strip():
-            box_size = int(m.group(2))
-            raw_name = m.group(1).strip()
-
-    qty_pos  = qty if section != 'cash' else 0
-    qty_cash = qty if section == 'cash' else 0
-
+        direct = re.fullmatch(r'(.+?)\s*:\s*(\d+)', t)
+        if direct:
+            raw_name = direct.group(1).strip()
+            try:
+                qty = read_int(direct.group(2), 'qty', minimum=1)
+                flagged = False
+            except ValueError:
+                pass
+    raw_name = raw_name.rstrip(':').strip()
+    flagged = flagged or not balanced
+    if flagged:
+        note = '；'.join(filter(None, [note, '原文: ' + token.strip()]))
     return {
-        'raw_name':            raw_name,
-        'qty':                 qty,
-        'qty_pos':             qty_pos,
-        'qty_cash':            qty_cash,
-        'box_size':            box_size,
-        'section':             section,
-        'flagged':             flagged,
-        'note':                note,
-        'unknown_header':      None,
-        'inferred_split_name': inferred_split_name,
+        'raw_name': raw_name, 'qty': qty,
+        'qty_pos': qty if section != 'cash' else 0,
+        'qty_cash': qty if section == 'cash' else 0,
+        'box_size': box_size, 'loose_qty': loose_qty, 'section': section,
+        'flagged': flagged, 'note': note, 'unknown_header': None,
+        'inferred_split_name': None,
     }
 
 
@@ -1311,11 +1376,13 @@ def parse_daily_report():
     Full five-layer daily report import pipeline.
 
     Body:  { text: <raw pasted text>, store_code: <str> }
-    Returns three buckets — confirmed (score≥80), review (50–79), failed (<50 or no match) —
+    Returns confirmed unique exact matches, review suggestions, and unmatched items —
     plus detected_date, store, and any unknown section headers that need user classification.
     Nothing is written to daily_sales until the caller POSTs to /api/sales/submit_daily_report.
     """
     data       = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or not isinstance(data.get('text'), str):
+        return jsonify({'error': 'text is required', 'code': 'invalid_input'}), 400
     raw_text   = data.get('text', '')
     store_code = (data.get('store_code') or 'DT').strip().upper()
 
@@ -1328,16 +1395,14 @@ def parse_daily_report():
     # ── Load products + aliases ──────────────────────────────────────────────
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT alias_norm, product_id FROM product_aliases')
-    aliases = {r['alias_norm']: r['product_id'] for r in cur.fetchall()}
+    aliases = load_matching_aliases(con)
     cur.execute('SELECT alias_norm, section_type FROM section_aliases')
     section_aliases = {r['alias_norm']: r['section_type'] for r in cur.fetchall()}
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
-        FROM products WHERE jizhanming IS NOT NULL AND jizhanming != ''
+        FROM products
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
-    con.close()
 
     # ── Engine selection: LLM front-end when configured, rules otherwise ─────
     # The LLM only reads the report (sections, names verbatim, quantities,
@@ -1355,54 +1420,23 @@ def parse_daily_report():
         except Exception:
             llm_result = None
 
-    if llm_result:
-        parser_engine       = 'llm'
-        detected_date       = llm_result.get('date')
-        store_code          = (llm_result.get('store') or store_code).upper()
-        cash_total_reported = llm_result.get('cash_total')
-        multi_day           = bool(llm_result.get('extra_dates'))
+    lines = [ln for ln in text.split('\n') if not re.fullmatch(r'[\s“”\"`]+', ln)]
 
-        raw_items:        list[dict] = []
-        unknown_sections: list[str] = []
-        for li in llm_result['items']:
-            sec = li['section']
-            if sec == 'skip':
-                continue
-            hdr = li.get('header_text') or ''
-            if sec == 'unknown' and hdr and hdr not in unknown_sections:
-                unknown_sections.append(hdr)
-            q       = li.get('qty')
-            flagged = q is None
-            qty     = q if q else 1
-            raw_items.append({
-                'raw_name':            li['name'],
-                'qty':                 qty,
-                'qty_pos':             qty if sec != 'cash' else 0,
-                'qty_cash':            qty if sec == 'cash' else 0,
-                'box_size':            li.get('box_size'),
-                'section':             'pos' if sec == 'unknown' else sec,
-                'flagged':             flagged,
-                'note':                li.get('note') or '',
-                'unknown_header':      hdr if sec == 'unknown' else None,
-                'inferred_split_name': None,
-            })
-        return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
-                             cash_total_reported, parser_engine, multi_day,
-                             aliases, all_products)
-
-    lines = text.split('\n')
-
-    # Extract date/store from first non-empty line
+    # A report title can precede the date/store header. Prefer literal source facts.
+    header_lines = [ln for ln in lines if re.fullmatch(
+        _DATE_RE.pattern + r'日?\s*(?:[A-Za-z]{2,6})?\s*(?:汇总|店)?', ln.strip())]
     detected_date = None
-    first_line    = next((ln.strip() for ln in lines if ln.strip()), '')
-    if first_line:
-        detected_date, store_code = _extract_date_store(first_line, store_code)
+    source_stores = {_extract_date_store(ln, '')[1] for ln in header_lines} - {''}
+    detected_store = next(iter(source_stores)) if len(source_stores) == 1 else ''
+    if header_lines:
+        detected_date, _ = _extract_date_store(header_lines[0], '')
+    store_code = detected_store or store_code
 
     # Report-header/date lines ("2026.04.01 DT汇总") are metadata, not products —
     # skip them without disturbing the current section.
     skipped_lines = {
         i for i, line in enumerate(lines)
-        if line.strip() and _DATE_RE.search(line) and '*' not in line
+        if line in header_lines
     }
     # Multiple distinct dates in one paste → warn (submission records ONE date)
     distinct_dates = {
@@ -1439,15 +1473,79 @@ def parse_daily_report():
     raw_items:           list[dict] = []
     unknown_sections:    list[str] = []
     cash_total_reported: float | None = None
+    cash_expected_reported: float | None = None
+    report_notes = {key: [] for key in _REPORT_NOTE_FIELDS}
+    metadata_errors: list[str] = []
+    if len(source_stores) > 1:
+        metadata_errors.append('Multiple stores detected; import each store separately')
 
     def _capture_cash_total(text_piece: str) -> None:
-        nonlocal cash_total_reported
-        m = re.search(r'(\d+(?:\.\d+)?)', text_piece)
-        if m:
-            cash_total_reported = float(m.group(1))
+        nonlocal cash_total_reported, cash_expected_reported
+        if not text_piece.strip():
+            return
+        parts = text_piece.strip().lstrip('$').split('/')
+        try:
+            if len(parts) > 2 or cash_total_reported is not None:
+                raise ValueError('Cash must contain one actual/expected amount pair')
+            actual = _report_money_cents(parts[0].strip(), 'cash_actual')
+            expected = _report_money_cents(parts[1].strip().lstrip('$'), 'cash_expected') if len(parts) == 2 else None
+            cash_total_reported = actual / 100
+            cash_expected_reported = expected / 100 if expected is not None else None
+        except ValueError:
+            metadata_errors.append('Cannot read cash actual/expected: ' + text_piece)
 
     def _parse_content(content: str, sec: str, hdr: str | None = None) -> None:
-        for token in _COMMA_SPLIT_RE.split(content):
+        if sec in _REPORT_ANNOTATIONS:
+            if not _extract_note(content)[2]:
+                metadata_errors.append('Unclosed or unmatched note: ' + content)
+            report_notes[_REPORT_ANNOTATIONS[sec]].append(content)
+            return
+        discount_index = None
+        for token in _split_report_items(content):
+            item_text, annotation, balanced = _extract_note(token)
+            if not balanced:
+                metadata_errors.append('Unclosed or unmatched note: ' + token)
+            elif item_text.count('*') > 1:
+                metadata_errors.append('Cannot separate item quantities: ' + token)
+            if re.search(r'员工折扣(?:购买|购入)', token):
+                discount_index = len(report_notes['employee_discounts'])
+                report_notes['employee_discounts'].append(token)
+                continue
+            if discount_index is not None and '*' not in token and re.match(
+                r'^(?:EMT|cash|card|微信|支付宝|现金|卡机|本月|今月|剩余)', token, re.I
+            ):
+                report_notes['employee_discounts'][discount_index] += ', ' + token
+                continue
+            discount_index = None
+            if balanced and sec in ('stock_in', 'stock_out') and re.search(r'\bdisplay\b|展示', annotation, re.I):
+                mixed = re.fullmatch(
+                    r'(.+?)\s*:\s*(\d+)\s*[+➕]\s*\((?:display|展示)\)\s*\*(\d+)', token, re.I
+                )
+                if sec == 'stock_in' and mixed:
+                    try:
+                        sealed_qty = read_int(mixed.group(2), 'sealed_qty', minimum=1)
+                        read_int(mixed.group(3), 'display_qty', minimum=1)
+                    except ValueError:
+                        pass
+                    else:
+                        sealed = _parse_token(f'{mixed.group(1)}:{sealed_qty}', sec)
+                        sealed['note'] = '原文: ' + token
+                        raw_items.append(sealed)
+                        report_notes['display_stock_in'].append(token)
+                        continue
+                item = _parse_token(token, sec)
+                if item['flagged'] or re.search(r'[+➕]|^[^*]*\d\s*\(', token):
+                    # Unsupported mixed arithmetic must not disappear into notes.
+                    item['flagged'] = True
+                    item['note'] = '原文: ' + token
+                    raw_items.append(item)
+                    metadata_errors.append('Cannot read display stock quantities: ' + token)
+                else:
+                    report_notes['display_' + sec].append(token)
+                continue
+            if sec == 'cash' and re.fullmatch(r'娃娃机\s*\*\d+(?:\s*\([^()]*\))?', token):
+                report_notes['cash_exchanges'].append(token)
+                continue
             item = _parse_token(token, sec)
             if item:
                 if hdr is not None:
@@ -1488,35 +1586,68 @@ def parse_daily_report():
         # Normal section: split on comma, parse each token individually
         _parse_content(s, sec)
 
+    if llm_result:
+        parser_engine       = 'llm'
+        detected_date       = detected_date or llm_result.get('date')
+        llm_store = (llm_result.get('store') or '').upper()
+        if detected_store and llm_store and detected_store != llm_store:
+            metadata_errors.append('Store detections disagree; correct the report header')
+        store_code = detected_store or llm_store or store_code
+        multi_day           = multi_day or bool(llm_result.get('extra_dates'))
+
+        rule_items = raw_items
+        raw_items = []
+        # Preserve unknown headers detected in the source even if the LLM omits them.
+        for li in llm_result['items']:
+            sec = li['section']
+            if sec == 'skip' or sec in _REPORT_ANNOTATIONS:
+                continue
+            hdr = li.get('header_text') or ''
+            if sec == 'unknown' and hdr and hdr not in unknown_sections:
+                unknown_sections.append(hdr)
+            q       = li.get('qty')
+            try:
+                qty = read_int(q, 'qty', minimum=1)
+                flagged = False
+            except ValueError:
+                qty, flagged = 0, True
+            raw_items.append({
+                'raw_name':            li['name'],
+                'qty':                 qty,
+                'qty_pos':             qty if sec != 'cash' else 0,
+                'qty_cash':            qty if sec == 'cash' else 0,
+                'box_size':            li.get('box_size'),
+                'section':             'pos' if sec == 'unknown' else sec,
+                'flagged':             flagged,
+                'note':                li.get('note') or '',
+                'unknown_header':      hdr if sec == 'unknown' else None,
+                'inferred_split_name': None,
+            })
+
+        def source_signature(items):
+            return Counter((item['section'], unicodedata.normalize('NFKC', item['raw_name']).strip().casefold(),
+                            item['qty'], item.get('box_size') or 1, item.get('loose_qty', 0),
+                            item.get('note') or '', bool(item.get('flagged')))
+                           for item in items)
+
+        if source_signature(raw_items) != source_signature(rule_items):
+            raw_items = rule_items
+            parser_engine = 'rules'
+
     return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                          cash_total_reported, parser_engine, multi_day,
-                         aliases, all_products)
+                         aliases, all_products, cash_expected_reported, metadata_errors, report_notes)
 
 
 def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                   cash_total_reported, parser_engine, multi_day,
-                  aliases, all_products):
+                  aliases, all_products, cash_expected_reported=None,
+                  metadata_errors=None, report_notes=None):
     """Layers 4+5 — shared by both engines: alias lookup + fuzzy match +
     bucketing, stock plausibility flags, and the response payload."""
     confirmed: list[dict] = []
     review:    list[dict] = []
     failed:    list[dict] = []
-
-    def _resolve_hits(name: str, raw: str) -> list:
-        """Alias lookup then fuzzy match; applies re-ranker when model is ready."""
-        qn = _norm_jzm(_clean_jzm(name))
-        if qn and qn in aliases:
-            pid = aliases[qn]
-            p = next((x for x in all_products if x['id'] == pid), None)
-            return [(100, p)] if p else []
-        fuzz_hits = match_jzm(raw, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
-        if fuzz_hits:
-            try:
-                import ranker as _ranker
-                fuzz_hits = _ranker.rerank(fuzz_hits, qn, store_code)
-            except Exception:
-                pass
-        return fuzz_hits
 
     def _bucket(item: dict, hits: list) -> None:
         """Place a resolved item into the correct bucket."""
@@ -1525,10 +1656,10 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
             return
         top_score, top_product = hits[0]
         runner_up  = hits[1][0] if len(hits) > 1 else 0
-        dominant   = top_score == 100 or (top_score - runner_up) >= _MARGIN_CONFIRM
+        unique_exact = top_score == 100 and runner_up < 100
         warn_blank = not (top_product.get('jizhanming') or '').strip()
-        is_inferred = item.get('reason') == 'inferred_split'
-        if top_score >= _SCORE_CONFIRMED and dominant and not is_inferred:
+        if (unique_exact and not item.get('flagged')
+                and item.get('section') in ('pos', 'cash') and parser_engine == 'rules'):
             confirmed.append({
                 **item,
                 'score':          top_score,
@@ -1556,28 +1687,11 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
             failed.append({**item, 'reason': 'empty_name', 'score': 0, 'candidates': []})
             continue
 
-        hits = _resolve_hits(raw_name, raw_name)
+        # Secret/hidden variants in notes are part of product identity.
+        qualifier = item.get('note', '')
+        query = raw_name + ' ' + qualifier if re.search(r'秘密|隐藏|secret|hidden', qualifier, re.I) else raw_name
+        hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
         _bucket(item, hits)
-
-        # Issue 2: inferred split — trailing text after qty digits
-        split_name = item.get('inferred_split_name')
-        if split_name:
-            split_hits = _resolve_hits(split_name, split_name)
-            if split_hits and split_hits[0][0] >= 60:
-                split_item = {
-                    'raw_name':            split_name,
-                    'qty':                 1,
-                    'qty_pos':             0 if item.get('section') == 'cash' else 1,
-                    'qty_cash':            1 if item.get('section') == 'cash' else 0,
-                    'box_size':            None,
-                    'section':             item.get('section'),
-                    'flagged':             True,
-                    'note':                '',
-                    'unknown_header':      None,
-                    'inferred_split_name': None,
-                    'reason':              'inferred_split',
-                }
-                _bucket(split_item, split_hits)
 
     # ── Stock plausibility: flag sales rows that exceed known in-store stock ──
     # Only products with an existing stock row are checked — absence of a row
@@ -1600,7 +1714,6 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                 pid_c = it['product']['id']
                 if pid_c in instore and (it.get('qty') or 0) > instore[pid_c]:
                     it['warn_stock'] = {'instore': instore[pid_c]}
-        con2.close()
 
     return jsonify({
         'detected_date':       detected_date,
@@ -1610,6 +1723,9 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         'failed':              failed,
         'unknown_sections':    unknown_sections,
         'cash_total_reported': cash_total_reported,
+        'cash_expected_reported': cash_expected_reported,
+        **(report_notes or {key: [] for key in _REPORT_NOTE_FIELDS}),
+        'metadata_errors': metadata_errors or [],
         'parser_engine':       parser_engine,
         'multi_day':           multi_day,
     })

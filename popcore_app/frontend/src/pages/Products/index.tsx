@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  Button, Space, Tag, Popconfirm,
+  Button, Space, Tag, Popconfirm, Select,
   message, Typography, Table, Badge, Spin, Modal, Tabs, Alert,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -45,24 +45,40 @@ interface StockRow {
   instore_qty:  number
 }
 
+interface SyncCandidate {
+  id: number
+  sku: string
+  name_cn_en: string
+  jizhanming: string | null
+  sheet_ref: string | null
+  product_type: string | null
+  score: number
+}
+
 interface SyncChangedItem {
   key:              number
   ref:              string
   sheet_jizhanming: string
   sheet_name:       string
-  product_id:       number
+  product_id:       number | null
   sku:              string
   old_jizhanming:   string
   new_jizhanming:   string
   match_via:        'ref' | 'name' | 'jzm_b'
   score:            number
   prechecked:       boolean
+  candidates:       SyncCandidate[]
+  reason:           'ambiguous' | 'type_conflict' | 'fuzzy'
+  expected_jizhanming: string | null
+  expected_sheet_ref: string | null
+  expected_name_cn_en: string | null
+  expected_product_type: string | null
   sheet_ref:        string
 }
 
 interface SyncConflict {
   key:                string
-  reason:             'multi_row' | 'ref_mismatch'
+  reason:             'multi_row' | 'ref_mismatch' | 'destination_collision'
   product_id:         number
   sku:                string
   product_jizhanming: string
@@ -78,6 +94,10 @@ interface SyncNewProduct {
 }
 
 interface SyncRefLearn {
+  expected_jizhanming: string | null
+  expected_sheet_ref: string | null
+  expected_name_cn_en: string | null
+  expected_product_type: string | null
   product_id: number
   sku:        string
   jizhanming: string
@@ -208,7 +228,7 @@ export default function ProductsPage() {
       const r = await client.post('/products/sync-sheet')
       const data = r.data as SyncResult
       setSyncResult(data)
-      // Only high-confidence rows (ref join / ≥95 name match) are pre-checked
+      // Only unambiguous exact identities without conflicting clues are pre-checked.
       setCheckedChangedKeys(data.changed.filter(c => c.prechecked).map(c => c.key))
       setCheckedReviewKeys([])
       setCheckedNewKeys([])
@@ -230,11 +250,13 @@ export default function ProductsPage() {
     setConfirmLoading(true)
     try {
       const pick = (c: SyncChangedItem) =>
-        ({ product_id: c.product_id, new_jizhanming: c.new_jizhanming, sheet_ref: c.sheet_ref })
+        ({ product_id: c.product_id, new_jizhanming: c.new_jizhanming, sheet_ref: c.sheet_ref,
+          expected_jizhanming: c.expected_jizhanming, expected_sheet_ref: c.expected_sheet_ref,
+          expected_name_cn_en: c.expected_name_cn_en, expected_product_type: c.expected_product_type })
       const changes = syncResult.changed
         .filter(c => checkedChangedKeys.includes(c.key)).map(pick)
       const review_accepted = syncResult.review
-        .filter(rv => checkedReviewKeys.includes(rv.key)).map(pick)
+        .filter(rv => checkedReviewKeys.includes(rv.key) && rv.product_id != null).map(pick)
       const create_products = syncResult.new_products
         .filter(n => checkedNewKeys.includes(n.key))
         .map(n => ({ sheet_ref: n.ref, jizhanming: n.jizhanming, name_cn_en: n.name }))
@@ -672,6 +694,43 @@ export default function ProductsPage() {
               title: '新记账名 / New', dataIndex: 'new_jizhanming',
               render: v => <Text style={{ color: '#F59E0B', fontWeight: 500 }}>{v}</Text>,
             },
+            {
+              title: '产品 / Catalog product', key: 'candidate', width: 260,
+              render: (_, r) => r.prechecked ? r.sku : (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Select
+                    aria-label={`Catalog product for Sheet row ${r.key}`}
+                    style={{ width: '100%' }}
+                    placeholder="选择产品 / Choose product"
+                    value={r.product_id ?? undefined}
+                    options={r.candidates.map(c => ({
+                      value: c.id,
+                      label: `${c.sku} · ${c.name_cn_en || c.jizhanming || '—'} · ${c.score}%`,
+                    }))}
+                    onChange={id => {
+                      const candidate = r.candidates.find(c => c.id === id)!
+                      setCheckedReviewKeys(keys => keys.filter(key => key !== r.key))
+                      setSyncResult(current => current && ({ ...current,
+                        review: current.review.map(row => row.key !== r.key ? row : {
+                          ...row, product_id: id, sku: candidate.sku, score: candidate.score,
+                          old_jizhanming: candidate.jizhanming || '',
+                          new_jizhanming: row.sheet_jizhanming || candidate.jizhanming || '',
+                          expected_jizhanming: candidate.jizhanming,
+                          expected_sheet_ref: candidate.sheet_ref,
+                          expected_name_cn_en: candidate.name_cn_en,
+                          expected_product_type: candidate.product_type,
+                        }),
+                      }))
+                    }}
+                  />
+                  <Text type="warning" style={{ fontSize: 12 }}>
+                    {r.reason === 'type_conflict' ? '类型或版本冲突 / Type or variant conflict'
+                      : r.reason === 'ambiguous' ? '多个精确匹配 / Multiple exact matches'
+                      : '请核对产品 / Verify product identity'}
+                  </Text>
+                </Space>
+              ),
+            },
             { title: '匹配 / Match', key: 'via', width: 110, render: (_, r) => viaTag(r) },
           ]
 
@@ -696,7 +755,7 @@ export default function ProductsPage() {
                   dataSource={syncResult.changed}
                   rowKey="key"
                   pagination={false}
-                  scroll={{ y: 280 }}
+                  scroll={{ x: 920, y: 280 }}
                   rowSelection={{
                     selectedRowKeys: checkedChangedKeys,
                     onChange: keys => setCheckedChangedKeys(keys as number[]),
@@ -722,16 +781,17 @@ export default function ProductsPage() {
               ) : (
                 <>
                   <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>
-                    低置信度匹配，默认不勾选 — 请人工核对后勾选。 / Low-confidence matches are unchecked by default.
+                    请先选择正确产品，再勾选确认。 / Choose the correct product, then check the row to approve.
                   </div>
                   <Table<SyncChangedItem>
                     size="small"
                     dataSource={syncResult.review}
                     rowKey="key"
                     pagination={false}
-                    scroll={{ y: 260 }}
+                    scroll={{ x: 920, y: 260 }}
                     rowSelection={{
                       selectedRowKeys: checkedReviewKeys,
+                      getCheckboxProps: row => ({ disabled: row.product_id == null }),
                       onChange: keys => setCheckedReviewKeys(keys as number[]),
                     }}
                     columns={renameColumns}
@@ -801,7 +861,7 @@ export default function ProductsPage() {
               ) : (
                 <>
                   <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>
-                    以下产品被多行认领或编号不一致，需先在表格中修正后重新同步。
+                    以下记录存在产品、编号或记账名冲突，需先在表格中修正后重新同步。
                     / Fix these rows in the sheet, then sync again.
                   </div>
                   <div style={{ maxHeight: 280, overflowY: 'auto' }}>
@@ -812,7 +872,9 @@ export default function ProductsPage() {
                       }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                           <Tag color={c.reason === 'multi_row' ? 'volcano' : 'red'}>
-                            {c.reason === 'multi_row' ? '多行认领同一产品' : '编号不一致'}
+                            {c.reason === 'multi_row' ? '多行认领同一产品'
+                              : c.reason === 'destination_collision' ? '记账名已被占用 / Name already in use'
+                              : '编号不一致'}
                           </Tag>
                           <Text style={{ fontWeight: 500 }}>{c.product_jizhanming || '—'}</Text>
                           <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>{c.sku}</Text>
