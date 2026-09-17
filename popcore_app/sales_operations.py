@@ -1,4 +1,5 @@
 """Immutable individual sale documents and inventory allocation."""
+from checkout_access import require_linked_sale
 from datetime import datetime, timezone
 
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
@@ -160,6 +161,17 @@ def _sale_input(con, data, actor):
         open_set_id = None if open_set_id is None else read_int(
             open_set_id, 'open_set_id', minimum=1
         )
+        if open_set_id is not None:
+            opened = con.execute(
+                'SELECT random_product_id, location_id FROM inventory_open_sets WHERE id=?',
+                (open_set_id,),
+            ).fetchone()
+            if (product['stock_form'] != 'random_box' or opened is None
+                    or opened['random_product_id'] != product_id
+                    or opened['location_id'] != floor['id']):
+                raise InventoryValidationError('Opened set does not match the product and store')
+            if raw.get('fresh_set') is not None:
+                raise InventoryValidationError('Choose an opened set or a fresh set, not both')
         fresh_set = raw.get('fresh_set')
         fresh_values = {
             'fresh_set_product_id': None, 'fresh_set_conversion_id': None,
@@ -230,54 +242,65 @@ def _sale_input(con, data, actor):
     }
 
 
+def _create_sale_in_transaction(con, intent, actor):
+    try:
+        sale_id = con.execute(
+            """INSERT INTO sale_documents
+               (store_id, business_date, entry_mode, subtotal_cents,
+                source_tax_cents, gross_cents, reduction_cents,
+                rounding_cents, collected_cents, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (intent['store_id'], intent['business_date'], intent['entry_mode'],
+             intent['subtotal_cents'], intent['source_tax_cents'],
+             intent['gross_cents'], intent['reduction_cents'],
+             intent['rounding_cents'], intent['collected_cents'], actor['sub']),
+        ).lastrowid
+        source = intent['source']
+        con.execute(
+            """INSERT INTO sale_sources
+               (sale_id, source_system, source_account, source_reference)
+               VALUES (?, ?, ?, ?)""",
+            (sale_id, source['system'], source['account'], source['reference']),
+        )
+    except Exception as exc:
+        if 'UNIQUE constraint failed: sale_sources' in str(exc):
+            raise InventoryConflict('Sale source already exists', 'source_conflict') from exc
+        raise
+    for line_no, line in enumerate(intent['lines'], 1):
+        con.execute(
+            """INSERT INTO sale_lines
+               (sale_id, line_no, product_id, raw_product_text,
+                product_name_snapshot, stock_form_snapshot, native_unit,
+                quantity, unit_price_cents, source_tax_cents, location_id,
+                captured_balance_version, open_set_id, fresh_set_product_id,
+                fresh_set_conversion_id, fresh_set_conversion_factor,
+                fresh_set_balance_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sale_id, line_no, line['product_id'], line['raw_product_text'],
+             line['product_name_snapshot'], line['stock_form_snapshot'], line['unit'],
+             line['quantity'], line['unit_price_cents'], line['source_tax_cents'],
+             line['location_id'], line['captured_balance_version'], line['open_set_id'],
+             line['fresh_set_product_id'], line['fresh_set_conversion_id'],
+             line['fresh_set_conversion_factor'], line['fresh_set_balance_version']),
+        )
+    return sale_id
+
+
+def _reject_checkout_source(system):
+    if system == 'popcore_checkout':
+        raise InventoryValidationError('Checkout source identities are assigned by the checkout workflow')
+
+
 def create_sale(con, data, *, actor, request_key):
     intent = _sale_input(con, data, actor)
+    _reject_checkout_source(intent['source']['system'])
     _begin(con)
     try:
         key, digest, prior = _replay(con, request_key, 'sale_create', actor, intent)
         if prior:
             con.commit()
             return prior
-        try:
-            sale_id = con.execute(
-                """INSERT INTO sale_documents
-                   (store_id, business_date, entry_mode, subtotal_cents,
-                    source_tax_cents, gross_cents, reduction_cents,
-                    rounding_cents, collected_cents, created_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (intent['store_id'], intent['business_date'], intent['entry_mode'],
-                 intent['subtotal_cents'], intent['source_tax_cents'],
-                 intent['gross_cents'], intent['reduction_cents'],
-                 intent['rounding_cents'], intent['collected_cents'], actor['sub']),
-            ).lastrowid
-            source = intent['source']
-            con.execute(
-                """INSERT INTO sale_sources
-                   (sale_id, source_system, source_account, source_reference)
-                   VALUES (?, ?, ?, ?)""",
-                (sale_id, source['system'], source['account'], source['reference']),
-            )
-        except Exception as exc:
-            if 'UNIQUE constraint failed: sale_sources' in str(exc):
-                raise InventoryConflict('Sale source already exists', 'source_conflict') from exc
-            raise
-        for line_no, line in enumerate(intent['lines'], 1):
-            con.execute(
-                """INSERT INTO sale_lines
-                   (sale_id, line_no, product_id, raw_product_text,
-                    product_name_snapshot, stock_form_snapshot, native_unit,
-                    quantity, unit_price_cents, source_tax_cents, location_id,
-                    captured_balance_version, open_set_id, fresh_set_product_id,
-                    fresh_set_conversion_id, fresh_set_conversion_factor,
-                    fresh_set_balance_version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sale_id, line_no, line['product_id'], line['raw_product_text'],
-                 line['product_name_snapshot'], line['stock_form_snapshot'], line['unit'],
-                 line['quantity'], line['unit_price_cents'], line['source_tax_cents'],
-                 line['location_id'], line['captured_balance_version'], line['open_set_id'],
-                 line['fresh_set_product_id'], line['fresh_set_conversion_id'],
-                 line['fresh_set_conversion_factor'], line['fresh_set_balance_version']),
-            )
+        sale_id = _create_sale_in_transaction(con, intent, actor)
         result = {'sale_id': sale_id, 'version': 1, 'status': 'draft'}
         _remember(con, key, 'sale_create', sale_id, actor, digest, result)
         con.commit()
@@ -290,13 +313,16 @@ def create_sale(con, data, *, actor, request_key):
 
 def update_sale(con, sale_id, data, *, actor, request_key):
     sale = _sale_row(con, sale_id)
+    require_linked_sale(con, sale_id, actor, write=True)
     require_inventory_access(con, actor, (sale['store_id'],), 'staff')
     _require_sale_owner(sale, actor)
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     intent = _sale_input(con, data, actor)
+    _reject_checkout_source(intent['source']['system'])
     intent = {'sale_id': sale['id'], 'expected_version': expected_version, **intent}
     _begin(con)
     try:
+        require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         _require_sale_owner(sale, actor)
         key, digest, prior = _replay(con, request_key, 'sale_update', actor, intent)
@@ -374,11 +400,9 @@ def _require_sale_owner(sale, actor):
 
 def sale_detail(con, sale_id, *, actor):
     sale = _sale_row(con, sale_id)
-    require_inventory_access(con, actor, (sale['store_id'],), 'staff')
-    role = actor.get(ROLE_CLAIM, 'viewer')
-    if ROLE_HIERARCHY.get(role, 0) < ROLE_HIERARCHY['manager'] \
-            and sale['created_by'] != actor.get('sub'):
-        raise PermissionError('Sale access denied')
+    if not require_linked_sale(con, sale_id, actor):
+        require_inventory_access(con, actor, (sale['store_id'],), 'staff')
+        _require_sale_owner(sale, actor)
     sale['sale_id'] = sale.pop('id')
     sale['lines'] = [dict(row) for row in con.execute(
         'SELECT * FROM sale_lines WHERE sale_id=? ORDER BY line_no', (sale_id,)
@@ -435,6 +459,28 @@ def _allocation_payload(con, sale, *, current_versions=False):
         if row['product_id'] is None or row['native_unit'] is None:
             unresolved.append('product_mapping_required')
             continue
+        product = con.execute(
+            'SELECT stock_form, stock_unit FROM products WHERE id=?', (row['product_id'],),
+        ).fetchone()
+        if (product is None or product['stock_unit'] != row['native_unit']
+                or product['stock_form'] != row['stock_form_snapshot']):
+            unresolved.append('product_mapping_required')
+            continue
+        if row['fresh_set_product_id'] is not None and row['open_set_id'] is None:
+            source = con.execute(
+                'SELECT stock_form, stock_unit FROM products WHERE id=?',
+                (row['fresh_set_product_id'],),
+            ).fetchone()
+            conversion = con.execute(
+                'SELECT source_product_id, target_product_id, output_per_input FROM product_conversions WHERE id=?',
+                (row['fresh_set_conversion_id'],),
+            ).fetchone()
+            if (source is None or source['stock_form'] != 'sealed_set' or source['stock_unit'] != 'set'
+                    or conversion is None or conversion['source_product_id'] != row['fresh_set_product_id']
+                    or conversion['target_product_id'] != row['product_id']
+                    or conversion['output_per_input'] != row['fresh_set_conversion_factor']):
+                unresolved.append('product_mapping_required')
+                continue
         if row['stock_form_snapshot'] == 'random_box' and row['open_set_id'] is None:
             conversion = con.execute(
                 """SELECT output_per_input FROM product_conversions
@@ -580,12 +626,14 @@ def _post_sale_in_transaction(con, sale, expected_version, actor, key,
 
 def post_sale(con, sale_id, data, *, actor, request_key):
     sale = _sale_row(con, sale_id)
+    require_linked_sale(con, sale_id, actor, write=True)
     require_inventory_access(con, actor, (sale['store_id'],), 'staff')
     _require_sale_owner(sale, actor)
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     intent = {'sale_id': sale['id'], 'expected_version': expected_version}
     _begin(con)
     try:
+        require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         _require_sale_owner(sale, actor)
         key, digest, prior = _replay(con, request_key, 'sale_post', actor, intent)
@@ -610,6 +658,7 @@ def post_sale(con, sale_id, data, *, actor, request_key):
 
 def allocate_sale(con, sale_id, data, *, actor, request_key):
     sale = _sale_row(con, sale_id)
+    require_linked_sale(con, sale_id, actor, write=True)
     require_inventory_access(con, actor, (sale['store_id'],), 'manager')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     reason = str(data.get('reason') or '').strip()
@@ -624,6 +673,7 @@ def allocate_sale(con, sale_id, data, *, actor, request_key):
     }
     _begin(con)
     try:
+        require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         key, digest, prior = _replay(con, request_key, 'sale_allocate', actor, intent)
         if prior:
@@ -743,6 +793,7 @@ def allocate_sale(con, sale_id, data, *, actor, request_key):
 
 def add_sale_payments(con, sale_id, data, *, actor, request_key):
     sale = _sale_row(con, sale_id)
+    require_linked_sale(con, sale_id, actor, write=True)
     require_inventory_access(con, actor, (sale['store_id'],), 'staff')
     if sale['created_by'] != actor.get('sub') and ROLE_HIERARCHY.get(
         actor.get(ROLE_CLAIM, 'viewer'), 0
@@ -754,13 +805,14 @@ def add_sale_payments(con, sale_id, data, *, actor, request_key):
         raise InventoryValidationError('payments must be a non-empty list')
     payments = []
     for raw in raw_payments:
-        if not isinstance(raw, dict) or raw.get('tender') not in TENDERS:
+        if not isinstance(raw, dict) or not isinstance(raw.get('tender'), str) or raw['tender'] not in TENDERS:
             raise InventoryValidationError('payment tender is invalid')
         amount = _optional_cents(raw.get('amount_cents'), 'amount_cents', nonnegative=True)
         source = {
             key: str(raw.get(key) or '').strip() or None
             for key in ('source_system', 'source_account', 'source_reference')
         }
+        _reject_checkout_source(source['source_system'])
         supplied = [value is not None for value in source.values()]
         if any(supplied) and not all(supplied):
             raise InventoryValidationError('payment source identity must be complete')
@@ -768,6 +820,7 @@ def add_sale_payments(con, sale_id, data, *, actor, request_key):
     intent = {'sale_id': sale_id, 'expected_version': expected_version, 'payments': payments}
     _begin(con)
     try:
+        require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         key, digest, prior = _replay(con, request_key, 'sale_payments_add', actor, intent)
         if prior:
@@ -822,6 +875,7 @@ def _payment_sale(con, payment_id):
 
 def record_payment_event(con, payment_id, event_type, data, *, actor, request_key):
     payment = _payment_sale(con, payment_id)
+    require_linked_sale(con, payment['sale_id'], actor, write=True)
     require_inventory_access(con, actor, (payment['store_id'],), 'manager')
     if event_type not in {'verify', 'reject', 'correction', 'refund'}:
         raise InventoryValidationError('payment event is invalid')
@@ -850,6 +904,7 @@ def record_payment_event(con, payment_id, event_type, data, *, actor, request_ke
     }
     _begin(con)
     try:
+        require_linked_sale(con, payment['sale_id'], actor, write=True)
         payment = _payment_sale(con, payment_id)
         key, digest, prior = _replay(con, request_key, 'payment_event', actor, intent)
         if prior:
@@ -905,18 +960,21 @@ def record_payment_event(con, payment_id, event_type, data, *, actor, request_ke
 
 def add_sale_source(con, sale_id, data, *, actor, request_key):
     sale = _sale_row(con, sale_id)
+    require_linked_sale(con, sale_id, actor, write=True)
     require_inventory_access(con, actor, (sale['store_id'],), 'manager')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     source = {
         key: str(data.get(key) or '').strip()
         for key in ('source_system', 'source_account', 'source_reference')
     }
+    _reject_checkout_source(source['source_system'])
     reason = str(data.get('reason') or '').strip()
     if not all(source.values()) or not reason:
         raise InventoryValidationError('complete source identity and reason are required')
     intent = {'sale_id': sale_id, 'expected_version': expected_version, **source, 'reason': reason}
     _begin(con)
     try:
+        require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         key, digest, prior = _replay(con, request_key, 'sale_source_add', actor, intent)
         if prior:
@@ -949,6 +1007,7 @@ def add_sale_source(con, sale_id, data, *, actor, request_key):
 
 def record_sale_return(con, sale_id, data, *, actor, request_key):
     sale = _sale_row(con, sale_id)
+    require_linked_sale(con, sale_id, actor, write=True)
     require_inventory_access(con, actor, (sale['store_id'],), 'manager')
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     line_no = read_int(data.get('line_no'), 'line_no', minimum=1)
@@ -966,6 +1025,7 @@ def record_sale_return(con, sale_id, data, *, actor, request_key):
     }
     _begin(con)
     try:
+        require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         key, digest, prior = _replay(con, request_key, 'sale_return', actor, intent)
         if prior:
@@ -1053,6 +1113,7 @@ def create_sale_reconciliation(con, data, *, actor, request_key):
         )
     linked_sale = None
     if sale_id is not None:
+        require_linked_sale(con, sale_id, actor, write=True)
         linked_sale = _sale_row(con, sale_id)
         if linked_sale['store_id'] != store_id:
             raise InventoryValidationError('sale belongs to another store')
@@ -1100,6 +1161,8 @@ def create_sale_reconciliation(con, data, *, actor, request_key):
     }
     _begin(con)
     try:
+        if sale_id is not None:
+            require_linked_sale(con, sale_id, actor, write=True)
         key, digest, prior = _replay(
             con, request_key, 'sale_reconciliation', actor, normalized
         )

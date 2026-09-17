@@ -41,7 +41,7 @@ async def check(browser, case):
     await page.route(BASE + '/api/users', users)
     await page.route(BASE + '/api/inventory/access', api)
     await page.route(BASE + '/api/today*', api)
-    await page.goto(BASE + '/')
+    await page.goto(BASE + '/today')
     await expect(page.get_by_text('Today store access denied', exact=True)).to_be_visible()
     await page.goto(BASE + '/users')
     dt = page.get_by_role('checkbox', name='Admin: DT operations access', exact=True)
@@ -50,7 +50,7 @@ async def check(browser, case):
     await dt.click()
     await expect(dt).to_be_checked()
     await expect(staff_dt).not_to_be_checked()
-    await page.goto(BASE + '/')
+    await page.goto(BASE + '/today')
     await expect(page.get_by_text('Today store access denied', exact=True)).to_have_count(0)
     await expect(page.get_by_text('No inventory store access', exact=True)).to_have_count(0)
     await page.goto(BASE + '/users')
@@ -78,7 +78,7 @@ async def check(browser, case):
         await page.screenshot(path=OUT/f'users-{width}.png', full_page=True, animations='disabled')
     with closing(case.connect()) as con:
         assert con.execute('SELECT COUNT(*) FROM inventory_access').fetchone()[0] == 0
-    await page.goto(BASE + '/')
+    await page.goto(BASE + '/today')
     await expect(page.get_by_text('Today store access denied', exact=True)).to_be_visible()
     await context.close()
     for role in ('manager', 'staff'):

@@ -15,7 +15,12 @@ import { operationsTheme } from './theme/operations'
 import './styles/operations.css'
 
 import SchedulePage    from './pages/Schedule'
+const HomePage=lazy(()=>import('./pages/Home'))
 const DashboardPage=lazy(()=>import('./pages/Dashboard'))
+const CheckoutPage=lazy(()=>import('./pages/Sales/Checkout'))
+const IncomingPage=lazy(()=>import('./pages/Home/Incoming'))
+const EventEntry=lazy(()=>import('./pages/Home/EventEntry'))
+const StoreSummary=lazy(()=>import('./pages/Home/StoreSummary'))
 const ProductsPage=lazy(()=>import('./pages/Products'))
 const StockPage=lazy(()=>import('./pages/Stock'))
 const GoodsPage=lazy(()=>import('./pages/Stock/Goods'))
@@ -127,7 +132,14 @@ function AppInner() {
     <AppLayout key={user?.sub}>
       <ErrorBoundary>
         <Suspense fallback={<div role="status" aria-live="polite">Loading page…</div>}><Routes>
-          <Route path="/"               element={<RoleRoute minRole="viewer"  element={<DashboardPage />} />} />
+          <Route path="/"               element={<RoleRoute minRole="viewer"  element={<HomePage />} />} />
+          <Route path="/today" element={<RoleRoute minRole="viewer" element={<DashboardPage />} />} />
+          <Route path="/checkout" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
+          <Route path="/checkout/:id" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
+          <Route path="/incoming" element={<RoleRoute minRole="staff" element={<IncomingPage />} />} />
+          <Route path="/incoming/display" element={<RoleRoute minRole="staff" element={<EventEntry display />} />} />
+          <Route path="/claw" element={<RoleRoute minRole="staff" element={<EventEntry />} />} />
+          <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
           <Route path="/stock"          element={<RoleRoute minRole="staff"   element={<StockPage />} />} />
           <Route path="/goods/receiving" element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="receiving" />} />} />

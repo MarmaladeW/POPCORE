@@ -55,6 +55,9 @@ def payload(path, query_string='', empty=False):
     if path == '/api/sales/recorded-dates': return [] if empty else [today]
     if path in ('/api/insights', '/api/history/restock', '/api/history/inventory-check'): return []
     if path == '/api/insights/count': return {'count': 0}
+    if path == '/api/store-events':
+        return {'business_date': today, 'scope': 'personal', 'events': [], 'receipts': [],
+                'transfers': [], 'checkouts': {'pos': [], 'non_pos': [], 'split': []}, 'summary_text': ''}
     if path == '/api/schedule/attendance/today':
         return {'business_date': today, 'shift': None, 'attendance': None}
     if path == '/api/schedule/me':

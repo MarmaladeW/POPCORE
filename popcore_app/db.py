@@ -1592,6 +1592,88 @@ def _migration_availability_period_submissions(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('availability_period_submissions')")
 
 
+def _migration_create_checkouts(con, cur):
+    cur.execute("""CREATE TABLE checkout_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT NOT NULL,
+        reference TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','completed','cancelled')),
+        version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
+        sale_id INTEGER UNIQUE REFERENCES sale_documents(id),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        UNIQUE(store_id,reference)
+    )""")
+    cur.execute("""CREATE TABLE checkout_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        checkout_id INTEGER NOT NULL REFERENCES checkout_orders(id),
+        tender TEXT NOT NULL CHECK(tender IN ('cash','card','e_transfer','wechat','alipay')),
+        amount_cents INTEGER NOT NULL CHECK(amount_cents>0),
+        assigned_to TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','cancelled')),
+        recorded_by TEXT,
+        payment_id INTEGER UNIQUE REFERENCES sale_payments(id),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )""")
+    cur.execute("CREATE UNIQUE INDEX checkout_pending ON checkout_attempts(checkout_id) WHERE status='pending'")
+    cur.execute("CREATE INDEX checkout_assigned ON checkout_attempts(assigned_to,checkout_id)")
+    cur.execute("""CREATE TABLE checkout_evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        attempt_id INTEGER NOT NULL REFERENCES checkout_attempts(id),
+        object_id TEXT NOT NULL UNIQUE,
+        mime_type TEXT NOT NULL,
+        byte_size INTEGER NOT NULL,
+        uploader_sub TEXT NOT NULL,
+        evidence_id INTEGER UNIQUE REFERENCES payment_evidence(id),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('create_checkouts')")
+
+
+def _migration_store_events(con, cur):
+    cur.execute("""CREATE TABLE store_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('claw_prize','claw_refill','display_in','cash_exchange')),
+        actor_sub TEXT NOT NULL,
+        product_id INTEGER REFERENCES products(id),
+        product_name TEXT,
+        quantity INTEGER CHECK(quantity > 0),
+        tender TEXT CHECK(tender IN ('card','e_transfer')),
+        amount_cents INTEGER CHECK(amount_cents > 0),
+        note TEXT NOT NULL DEFAULT '',
+        cash_event_id INTEGER UNIQUE REFERENCES cash_events(id),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        CHECK((kind='cash_exchange' AND product_id IS NULL AND quantity IS NULL
+            AND tender IS NOT NULL AND amount_cents IS NOT NULL AND cash_event_id IS NOT NULL)
+            OR (kind!='cash_exchange' AND product_id IS NOT NULL AND quantity IS NOT NULL
+            AND tender IS NULL AND amount_cents IS NULL AND cash_event_id IS NULL))
+    )""")
+    cur.execute('CREATE INDEX idx_store_events_date ON store_events(store_id,business_date,id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('store_events')")
+
+
+def _migration_checkout_refunds(con, cur):
+    for column in ('abandoned_reason', 'abandoned_by', 'abandoned_at'):
+        cur.execute(f'ALTER TABLE checkout_orders ADD COLUMN {column} TEXT')
+    cur.execute("""CREATE TABLE checkout_refunds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        attempt_id INTEGER NOT NULL REFERENCES checkout_attempts(id),
+        store_id INTEGER NOT NULL REFERENCES stores(id),
+        amount_cents INTEGER NOT NULL CHECK(amount_cents>0),
+        business_date TEXT NOT NULL,
+        reference TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        recorded_by TEXT NOT NULL,
+        receipt_confirmed INTEGER NOT NULL CHECK(receipt_confirmed=1),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        UNIQUE(store_id,reference)
+    )""")
+    cur.execute('CREATE INDEX checkout_refunds_attempt ON checkout_refunds(attempt_id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('checkout_refunds')")
 def _migration_report_match_choices(con, cur):
     cur.execute("""CREATE TABLE IF NOT EXISTS report_match_choices (
         name_key TEXT NOT NULL,
@@ -1646,6 +1728,9 @@ def _get_migrations():
         ('create_trades',                               _migration_create_trades),
         ('create_insight_runs',                          _migration_create_insight_runs),
         ('availability_period_submissions',             _migration_availability_period_submissions),
+        ('create_checkouts', _migration_create_checkouts),
+        ('checkout_refunds', _migration_checkout_refunds),
+        ('store_events', _migration_store_events),
         ('report_match_choices',                       _migration_report_match_choices),
     ]
 
