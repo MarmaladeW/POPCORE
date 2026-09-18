@@ -86,7 +86,6 @@
   .pc-calendar-hint { display: none; }
   .pc-calendar-filter { grid-column: 1 / -1; }
   .pc-calendar-extras { grid-column: 1 / -1; }
-  .pc-calendar-month .pc-calendar-date { min-height: 24px; height: 24px; padding: 2px 6px; }
   .pc-store-calendars .pc-shift { line-height: 1.2; font-size: 12px; }
   .pc-store-calendars .pc-shift-name { white-space: normal; overflow-wrap: anywhere; }
   .pc-manager-calendar { height: calc(100dvh - 204px); min-height: 400px; }
@@ -133,12 +132,12 @@
   .pc-calendar-month .pc-calendar-filter > span { display: none; }
   .pc-calendar-month .pc-calendar-extras { grid-column: 2; align-self: center; }
   .pc-calendar-month .pc-store-calendar-body { container-type: inline-size; }
-  .pc-calendar-month .pc-calendar-date { min-height: 18px; height: 18px; padding: 0 4px; }
-  .pc-calendar-month .fc-daygrid-day-number { padding: 0 4px; line-height: 18px; }
-  .pc-calendar-month .fc .fc-daygrid-body .fc-daygrid-day-events { margin-bottom: 0; }
+  .pc-calendar-month .pc-calendar-date { min-height: 28px; height: 28px; padding: 3px 6px; }
+  .pc-calendar-month .fc-daygrid-day-number { padding: 0 4px; line-height: 28px; }
+  .pc-calendar-month .fc .fc-daygrid-body .fc-daygrid-day-events { margin-bottom: 3px; }
   .pc-calendar-month .pc-assignment-sidebar { --pc-sidebar-offset: 230px; }
   .pc-calendar-month .fc-daygrid-event { border: 0; margin-top: 1px; }
-  .pc-calendar-month .pc-shift { padding: 0 2px; font-size: 11px; line-height: 15px; }
+  .pc-calendar-month .pc-shift { padding: 3px 4px; font-size: 12px; line-height: 18px; }
   .pc-calendar-month .pc-shift-name { white-space: nowrap; font-weight: 600; }
   .pc-calendar-month .pc-shift-details { display: none; }
   @container (min-width: 700px) {
