@@ -379,6 +379,7 @@ export default function ManagerCalendar() {
     setSelectedShift(null)
     setAvailForDate(availsByDate.current[dateStr] ?? [])
     setSelectedEmployeeId(undefined)
+    setModalOpen(true)
     if (window.matchMedia('(max-width: 1100px)').matches) {
       requestAnimationFrame(() => assignmentRef.current?.scrollIntoView({ block: 'start' }))
     }
@@ -895,7 +896,7 @@ export default function ManagerCalendar() {
             }}
             onEdit={shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) }}
           />}
-        </div> : <p className="pc-assignment-placeholder">Select a date in either calendar to assign shifts.</p>}
+        </div> : <p className="pc-assignment-placeholder">Select a date in either calendar to assign a shift.</p>}
       </aside>
       </div>
       {isTimeGrid && realStores.length > 0 && (

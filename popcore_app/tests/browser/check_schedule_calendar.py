@@ -187,9 +187,21 @@ async def run_checks(browser, case):
     await checklist.get_by_role('checkbox', name='Unchecked: Jessi', exact=True).check()
     await expect(checklist.get_by_role('checkbox', name='Checked: Jessi', exact=True)).to_be_checked()
     assert await checklist.locator('.pc-employee-name').filter(has_text='Celia').evaluate('(el) => getComputedStyle(el).backgroundColor') == 'rgb(20, 86, 103)'
-    # Date selection opens details, not an immediate assignment modal.
+    # Date selection opens assignment immediately, with submitted availability first.
     await page.get_by_role('button', name=f'View {START} DT', exact=True).focus()
     await page.keyboard.press('Enter')
+    dialog = page.get_by_role('dialog')
+    await expect(dialog.get_by_text('Assign shift', exact=False)).to_be_visible()
+    await expect(dialog.get_by_text(f'Available on {START}:')).to_be_visible()
+    await dialog.get_by_role('combobox', name='Employee').click()
+    await expect(dialog.locator('.ant-select-item-option-content').first).to_contain_text('Celia')
+    await dialog.get_by_role('combobox', name='Employee').click()
+    await dialog.get_by_role('button', name='Cancel', exact=True).click()
+    async def select_date(date, code):
+        await page.get_by_role('button', name=f'View {date} {code}', exact=True).click()
+        await expect(dialog).to_be_visible()
+        await dialog.get_by_role('button', name='Cancel', exact=True).click()
+
     panel = page.get_by_role('region', name=f'Schedule details {START} DT')
     await expect(panel.get_by_text('Not submitted', exact=True).first).to_be_visible()
     workspace = page.locator('.pc-assignment-workspace')
@@ -203,10 +215,10 @@ async def run_checks(browser, case):
     assert first['width'] == await page.locator('.pc-store-calendars').evaluate('(el) => el.getBoundingClientRect().width')
     assert side['x'] >= first['x'] + first['width'], (first, side)
     await page.screenshot(path=OUT/'assignment-workspace-1440.png', full_page=True, animations='disabled')
-    await page.get_by_role('button', name=f'View {START} MK', exact=True).click()
+    await select_date(START, 'MK')
     await expect(page.get_by_role('region', name=f'Schedule details {START} MK')).to_be_visible()
     await expect(page.locator('.pc-schedule-detail')).to_have_count(1)
-    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
+    await select_date(START, 'DT')
     celia = panel.locator('.pc-schedule-person').filter(has_text='Celia')
     await celia.get_by_role('button', name='Assign', exact=True).click()
     dialog = page.get_by_role('dialog')
@@ -254,12 +266,12 @@ async def run_checks(browser, case):
     await page.get_by_role('button', name='Close day details', exact=True).click()
     await expect(checklist).to_be_visible()
     await expect(checklist.get_by_role('checkbox', name='Checked: Jessi', exact=True)).to_be_checked()
-    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
+    await select_date(START, 'DT')
     with closing(case.connect()) as con:
         assert con.execute('SELECT end_time FROM shifts WHERE employee_id=103 AND date=?', (str(START),)).fetchone()[0] == '22:00'
-    await page.get_by_role('button', name=f'View {START + timedelta(days=5)} MK', exact=True).click()
+    await select_date(START + timedelta(days=5), 'MK')
     await expect(page.get_by_role('region', name=f'Schedule details {START + timedelta(days=5)} MK').locator('.pc-assignment-kind')).to_have_text('Half day (PM)')
-    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
+    await select_date(START, 'DT')
     await page.get_by_role('button', name='Assigned shifts', exact=True).click()
     await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason')).to_be_visible()
     await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
@@ -274,12 +286,12 @@ async def run_checks(browser, case):
             await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Half day (AM)').first).to_be_visible()
         assert await page.evaluate('document.body.scrollWidth') <= width + 2
         await page.screenshot(path=OUT / f'manager-{width}.png', full_page=True, animations='disabled')
-    await page.get_by_role('button', name=f'View {START + timedelta(days=1)} MK', exact=True).click()
+    await select_date(START + timedelta(days=1), 'MK')
     mobile_panel = await page.locator('.pc-assignment-sidebar').bounding_box()
     assert 64 <= mobile_panel['y'] < 200, mobile_panel
     await expect(page.get_by_role('region', name=f'Schedule details {START + timedelta(days=1)} MK')).to_be_visible()
     # Re-selecting the same date must also bring its controls back into view.
-    await page.get_by_role('button', name=f'View {START + timedelta(days=1)} MK', exact=True).click()
+    await select_date(START + timedelta(days=1), 'MK')
     await page.wait_for_function("document.querySelector('.pc-assignment-sidebar').getBoundingClientRect().top < 200")
     await page.evaluate("document.documentElement.style.zoom='2'")
     assert await page.evaluate('document.body.scrollWidth') <= 392
@@ -313,9 +325,12 @@ async def run_checks(browser, case):
         for code in ('DT','MK'):
             day = page.locator(f'.pc-store-calendars section:has(button[aria-label="View {START} {code}"]) td[data-date="{START}"]')
             assert await day.locator('.pc-shift:visible').count() >= 6
+        if width == 1366:
+            assert await page.locator('.pc-calendar-month .pc-shift:visible').first.evaluate('(el) => el.getBoundingClientRect().height') >= 22
+            assert await page.evaluate('document.body.scrollHeight > innerHeight'), 'Month may extend below viewport for readable shifts'
         assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)'), 'Month dates must not need internal scrolling'
         await page.screenshot(path=OUT/f'month-fit-{width}.png', animations='disabled')
-        await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
+        await select_date(START, 'DT')
         await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendars .fc table')].every(table => table.getBoundingClientRect().width <= table.closest('.fc').getBoundingClientRect().width + 1)")
         assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')
         for calendar in (calendars.nth(0), calendars.nth(1)):
@@ -345,7 +360,7 @@ async def run_checks(browser, case):
     await page.set_viewport_size({'width':1366,'height':800})
     await page.reload()
     await page.get_by_role('button', name='Month', exact=True).click()
-    await page.get_by_role('button', name=f'View {START} DT', exact=True).click()
+    await select_date(START, 'DT')
     await expect(page.get_by_role('region', name=f'Schedule details {START} DT').get_by_text('Assigned · 6', exact=True)).to_be_visible()
     await expect(page.locator('.pc-store-calendars .fc-daygrid-more-link')).to_have_count(0)
     await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.scrollHeight <= el.clientHeight + 2)")
@@ -372,7 +387,7 @@ async def run_checks(browser, case):
     await page.set_viewport_size({'width':1280,'height':800})
     await page.get_by_role('button', name='Previous calendar period', exact=True).click()
     previous_date = START.replace(day=1) - timedelta(days=1)
-    await page.get_by_role('button', name=f'View {previous_date} MK', exact=True).click()
+    await select_date(previous_date, 'MK')
     await expect(page.get_by_role('region', name=f'Schedule details {previous_date} MK')).to_be_visible()
     await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.scrollHeight <= el.clientHeight + 2)")
     assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')

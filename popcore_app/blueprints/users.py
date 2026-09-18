@@ -109,12 +109,24 @@ def create_user():
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
     role     = (data.get('role') or 'viewer').strip()
+    trainee_id = data.get('trainee_id')
     if not username or not password:
         return jsonify({'error': '用户名和密码必填'}), 400
     if len(password) < 8:
         return jsonify({'error': '密码至少8位'}), 400
     if role not in ROLE_HIERARCHY:
         return jsonify({'error': '无效角色'}), 400
+    if trainee_id is not None:
+        if type(trainee_id) is not int or trainee_id <= 0:
+            return jsonify({'error': 'Invalid trainee'}), 400
+        con = get_db()
+        trainee = con.execute(
+            'SELECT id FROM employees WHERE id = ? AND is_active = 1 AND is_trainee = 1',
+            (trainee_id,),
+        ).fetchone()
+        if not trainee:
+            con.close()
+            return jsonify({'error': 'Trainee not found'}), 404
 
     try:
         create_resp = _mgmt_post('users', json={
@@ -136,7 +148,16 @@ def create_user():
     # Import schedule helper here to avoid circular import
     from blueprints.schedule import _get_or_create_employee
     con = get_db()
-    _get_or_create_employee(con, user_id, name=username, email=f'{username}@popcore.internal')
+    if trainee_id is None:
+        _get_or_create_employee(con, user_id, name=username, email=f'{username}@popcore.internal')
+    else:
+        updated = con.execute('''UPDATE employees SET auth0_id = ?, email = ?, is_trainee = 0
+            WHERE id = ? AND is_active = 1 AND is_trainee = 1''',
+            (user_id, f'{username}@popcore.internal', trainee_id))
+        con.commit()
+        if updated.rowcount != 1:
+            con.close()
+            return jsonify({'error': 'Account created in Auth0, but trainee promotion was not saved. Contact an administrator before retrying.'}), 409
     con.close()
 
     # Assign the requested role, verifying the Auth0 response — a swallowed

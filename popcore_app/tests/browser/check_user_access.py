@@ -19,6 +19,7 @@ OUT = HERE.parents[2] / '.local' / 'user-access' / 'browser'
 
 async def check(browser, case):
     state = {'fail_read': False, 'fail_write': False}
+    case.client.post('/api/schedule/trainees', headers=case.headers('manager'), json={'name': 'Jessi'})
     context, page = await context_with_api(browser, {'mode': 'data'}, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     async def users(route):
@@ -39,11 +40,20 @@ async def check(browser, case):
         else:
             await route.fulfill(status=response.status_code, json=response.get_json())
     await page.route(BASE + '/api/users', users)
+    await page.route(BASE + '/api/schedule/trainees', api)
     await page.route(BASE + '/api/inventory/access', api)
     await page.route(BASE + '/api/today*', api)
     await page.goto(BASE + '/')
     await expect(page.get_by_text('Today store access denied', exact=True)).to_be_visible()
     await page.goto(BASE + '/users')
+    await page.get_by_role('button', name='新建用户', exact=True).click()
+    promote = page.get_by_role('combobox', name='Promote trainee (optional)')
+    await expect(promote).to_be_visible()
+    await promote.click()
+    await expect(page.get_by_text('Jessi', exact=True).last).to_be_visible()
+    await page.get_by_text('Jessi', exact=True).last.click()
+    await expect(page.get_by_role('dialog').locator('.ant-select-selection-item').filter(has_text='Jessi')).to_be_visible()
+    await page.get_by_role('button', name='取消', exact=True).click()
     dt = page.get_by_role('checkbox', name='Admin: DT operations access', exact=True)
     staff_dt = page.get_by_role('checkbox', name='Staff: DT operations access', exact=True)
     await expect(dt).not_to_be_checked()

@@ -13,10 +13,12 @@ import client from '../../api/client'
 import { useAppStore } from '../../store'
 import {
   getEmployeeStores,
+  getTrainees,
   renameEmployee,
   setEmployeeColor,
   setEmployeeSchedulable,
   setEmployeeStores,
+  type Employee,
 } from '../Schedule/scheduleApi'
 import {
   isEyeDropperCancellation,
@@ -198,6 +200,7 @@ export default function UsersPage() {
   const { stores: allStores } = useAppStore()
 
   const [users, setUsers]     = useState<User[]>([])
+  const [trainees, setTrainees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editUser, setEditUser]   = useState<User | null>(null)
@@ -302,7 +305,10 @@ export default function UsersPage() {
 
   const editingSelf = !!editUser && me?.sub === editUser.id
 
-  function openNew() { setEditUser(null); form.resetFields(); setModalOpen(true) }
+  function openNew() {
+    setEditUser(null); form.resetFields(); setModalOpen(true)
+    getTrainees().then(setTrainees).catch(() => message.error('Could not load trainees'))
+  }
   function openEdit(u: User) {
     setEditUser(u)
     // Reset first — otherwise a password typed for a previous user (or in the
@@ -350,6 +356,7 @@ export default function UsersPage() {
       }
       setModalOpen(false)
       load()
+      loadStores()
     } catch (err: any) {
       if (err?.errorFields) return
       message.error(err?.response?.data?.error ?? '操作失败')
@@ -727,6 +734,14 @@ export default function UsersPage() {
           </DialogHeader>
 
           <Form form={form} layout="vertical" size="small">
+            {!editUser && trainees.length > 0 && (
+              <Form.Item name="trainee_id" label="Promote trainee (optional)"
+                extra="Keeps their existing shifts and wage hours under the same employee record">
+                <Select allowClear placeholder="New employee (no trainee history)"
+                  getPopupContainer={(trigger) => trigger.parentElement!}
+                  options={trainees.map(t => ({ value: t.id, label: t.name || `Trainee ${t.id}` }))} />
+              </Form.Item>
+            )}
             <Form.Item
               name="username"
               label="用户名"
