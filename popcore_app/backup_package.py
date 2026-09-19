@@ -9,6 +9,12 @@ KINDS={
  'payment':('payment_evidence','object_id'),
  'condition':('condition_evidence','object_id'),
 }
+def _references(con,kind,table,column):
+    query=f'SELECT {column} FROM {table}'
+    if kind=='payment' and con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='checkout_evidence'").fetchone():
+        query+=' UNION SELECT object_id FROM checkout_evidence'
+    return con.execute(query)
+
 def _safe(root,value):
     relative=Path(value)
     if relative.is_absolute() or '..' in relative.parts: raise ValueError('unsafe attachment path')
@@ -27,7 +33,7 @@ def create_package(db_path,roots,output):
     manifest={'version':1,'database':'database.db','attachments':[]}
     with closing(sqlite3.connect(snapshot)) as con:
         for kind,(table,column) in KINDS.items():
-            for (value,) in con.execute(f'SELECT {column} FROM {table} ORDER BY id'):
+            for (value,) in _references(con,kind,table,column):
                 source,relative=_safe(roots[kind],value)
                 if not source.is_file():raise FileNotFoundError(f'missing referenced {kind} attachment')
                 destination=output/'attachments'/kind/relative;destination.parent.mkdir(parents=True,exist_ok=True)
@@ -52,7 +58,7 @@ def restore_package(package,target):
     with closing(sqlite3.connect(package/'database.db')) as con:
         required_refs=[]
         for kind,(table,column) in KINDS.items():
-            required_refs.extend((kind,_safe(package/'attachments'/kind,value)[1].as_posix()) for (value,) in con.execute(f'SELECT {column} FROM {table}'))
+            required_refs.extend((kind,_safe(package/'attachments'/kind,value)[1].as_posix()) for (value,) in _references(con,kind,table,column))
     if len(set(manifest_refs))!=len(manifest_refs) or set(manifest_refs)!=set(required_refs):
         raise ValueError('attachment manifest does not match database references')
     target.mkdir(parents=True)

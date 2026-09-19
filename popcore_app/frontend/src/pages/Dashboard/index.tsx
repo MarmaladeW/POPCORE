@@ -7,6 +7,7 @@ import { getToday, type TodayPayload, type TodayRow, type TodaySection } from '.
 import { useHasRole, useRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
 import MyShifts from './MyShifts'
+import PunchIn from '../Schedule/PunchIn'
 import { torontoDate } from './todayPresentation'
 
 const sectionLabels: Record<string, string> = {
@@ -105,6 +106,7 @@ export default function DashboardPage() {
       <Typography.Title level={2}>Today / 今日</Typography.Title>
       <Typography.Text type="secondary">{torontoDate()} · {store?.name || 'Choose a store'}</Typography.Text>
     </header>
+    <PunchIn home />
     {staff && <MyShifts key={`${user?.sub}:${role}`} />}
     {loading && !data ? <div className="pc-loading-panel"><Skeleton active /></div>
       : error && !data ? <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setAttempt(value => value + 1)}>Retry</Button>} />

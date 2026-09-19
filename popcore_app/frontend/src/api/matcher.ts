@@ -39,6 +39,7 @@ export interface BackendBaseItem {
   qty_pos: number
   qty_cash: number
   box_size: number | null
+  loose_qty?: number
   flagged: boolean
   note?: string
   warn_stock?: { instore: number } | null
@@ -64,7 +65,17 @@ export interface BackendFailedItem extends BackendBaseItem {
   candidates: BackendCandidate[]
 }
 
-export interface ParseReportResponse {
+export interface ReportAnnotations {
+  employee_discounts?: string[]
+  display_sales?: string[]
+  claw_prizes?: string[]
+  cash_exchanges?: string[]
+  claw_stock_in?: string[]
+  display_stock_in?: string[]
+  display_stock_out?: string[]
+}
+
+export interface ParseReportResponse extends ReportAnnotations {
   detected_date: string | null
   store: string
   confirmed: BackendConfirmedItem[]
@@ -72,8 +83,16 @@ export interface ParseReportResponse {
   failed: BackendFailedItem[]
   unknown_sections: string[]
   cash_total_reported?: number | null
+  cash_expected_reported?: number | null
+  metadata_errors?: string[]
   parser_engine?: 'llm' | 'rules'
   multi_day?: boolean
+}
+
+export interface ReportMetadata extends ReportAnnotations {
+  cash_actual: number | null
+  cash_expected: number | null
+  cash_difference?: number | null
 }
 
 export interface SectionAlias {

@@ -31,14 +31,14 @@ async def checks(browser):
         state={'mode':'data'};state['api_payload']=api_for(role,state)
         context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':role})
         await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
-        await page.goto(BASE+'/');await expect(page.get_by_text('Today / 今日')).to_be_visible()
+        await page.goto(BASE+'/today');await expect(page.get_by_text('Today / 今日')).to_be_visible()
         if role=='viewer': await expect(page.get_by_text('My shifts / 我的班次')).to_have_count(0)
         else:
             shifts=page.get_by_text('My shifts / 我的班次');await expect(shifts).to_be_visible()
             assert (await shifts.bounding_box())['y'] < (await page.get_by_text('My work',exact=False).bounding_box())['y']
             await expect(page.get_by_role('main').get_by_text('MK',exact=True)).to_be_visible()
             before=state['shift_reads'];await page.evaluate("window.dispatchEvent(new Event('focus'))");await page.wait_for_timeout(100);assert state['shift_reads']>before
-            await page.get_by_text('View Schedule',exact=True).click();await expect(page.get_by_text('Schedule',exact=True).first).to_be_visible();await page.goto(BASE+'/')
+            await page.get_by_text('View Schedule',exact=True).click();await expect(page.get_by_text('Schedule',exact=True).first).to_be_visible();await page.goto(BASE+'/today')
         if role!='viewer':
             await expect(page.get_by_role('link',name='Resume sale #41',exact=True)).to_have_attribute('href','/sales/documents/41')
             await expect(page.get_by_text('Store 1',exact=True)).to_have_count(0)
@@ -51,13 +51,13 @@ async def checks(browser):
     state['api_payload']=lambda path,query,request: [] if path=='/api/schedule/shifts/me' else normal(path,query,request)
     context,page=await context_with_api(browser,state,auth={'role':'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:0,code:'ALL',name:'All Stores',color:'#6366f1'}))")
-    await page.goto(BASE+'/');await expect(page.get_by_text('No shift today',exact=True)).to_be_visible()
+    await page.goto(BASE+'/today');await expect(page.get_by_text('No shift today',exact=True)).to_be_visible()
     selector=page.locator('select').first
     for code in ('DT','MK','ALL'):
         await selector.select_option(code);await expect(page.get_by_text('Today / 今日')).to_be_visible()
     await context.close()
     context,page=await context_with_api(browser,{'mode':'error'},auth={'role':'staff'})
-    await page.goto(BASE+'/');await expect(page.get_by_text('synthetic failure',exact=True)).to_be_visible();await context.close()
+    await page.goto(BASE+'/today');await expect(page.get_by_text('synthetic failure',exact=True)).to_be_visible();await context.close()
     state={'mode':'data','delay_first_today':True}
     def account_api(path,query,request):
         result=api_for('manager' if state.get('today_reads',0)>0 else 'staff',state)(path,query,request)
@@ -67,7 +67,7 @@ async def checks(browser):
     state['api_payload']=account_api
     context,page=await context_with_api(browser,state,auth={'role':'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
-    await page.goto(BASE+'/')
+    await page.goto(BASE+'/today')
     for _ in range(50):
         if state.get('today_reads',0)>=1: break
         await asyncio.sleep(.05)
@@ -83,7 +83,7 @@ async def checks(browser):
     state['api_payload']=downgrade_api
     context,page=await context_with_api(browser,state,auth={'role':'manager'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
-    await page.goto(BASE+'/')
+    await page.goto(BASE+'/today')
     for _ in range(50):
         if state.get('today_reads',0)>=1: break
         await asyncio.sleep(.05)

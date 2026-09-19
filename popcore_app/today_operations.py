@@ -1,3 +1,4 @@
+from checkout_access import require_checkout, require_linked_sale, require_checkout_history_store
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -46,6 +47,13 @@ def get_today(con, *, actor, store_code=None, business_date=None):
         marks = ','.join('?' for _ in ids)
         mine = [_row(r, 'sale', '/sales/documents/{}') for r in con.execute(
             f"SELECT id,store_id,status,version,created_at updated_at FROM sale_documents WHERE store_id IN ({marks}) AND created_by=? AND (status='draft' OR allocation_status!='allocated') ORDER BY business_date,id", (*ids, subject))]
+        if role in {'staff','manager','admin'}:
+            mine.extend(_row(r,'checkout','/checkout/{}') for r in con.execute(
+                f"""SELECT o.id,o.store_id,o.status,o.version,o.reference label,o.created_at updated_at
+                    FROM checkout_orders o WHERE o.store_id IN ({marks}) AND o.status='open'
+                    AND (o.created_by=? OR EXISTS(SELECT 1 FROM checkout_attempts a
+                        WHERE a.checkout_id=o.id AND a.assigned_to=? AND a.status!='cancelled'))
+                    ORDER BY o.business_date,o.id""",(*ids,subject,subject)))
         specs = (
             ('receipt','goods_receipts',"status='draft'",'/goods/receiving?receipt_id={}'),
             ('count','inventory_counts',"status IN ('draft','submitted','returned')",'/goods/counts?count_id={}'),
@@ -98,4 +106,26 @@ def get_today(con, *, actor, store_code=None, business_date=None):
                     WHERE c.store_id IN ({marks}) AND x.revision=(SELECT MAX(y.revision) FROM closing_cash_counts y WHERE y.closing_session_id=c.id)
                       AND x.variance_cents!=0 ORDER BY c.business_date,c.id""", ids))
         sections['financial'] = _section(financial)
+    def visible(row):
+        try:
+            kind, source = row['type'], row['source_id']
+            if kind == 'checkout':
+                order = con.execute('SELECT * FROM checkout_orders WHERE id=?', (source,)).fetchone()
+                require_checkout(con, order, actor)
+            elif kind in ('sale','financial_sale','allocation_exception'):
+                require_linked_sale(con, source, actor)
+            elif kind in ('payment_evidence','payment_exception'):
+                payment = con.execute('SELECT sale_id FROM sale_payments WHERE id=?', (source,)).fetchone()
+                if payment:
+                    require_linked_sale(con, payment['sale_id'], actor)
+            elif kind == 'cash_variance':
+                require_checkout_history_store(con, row['store_id'], actor)
+            return True
+        except PermissionError:
+            return False
+    # Filter before truncation so hidden rows cannot leak through total counts.
+    if role in {'staff','manager','admin'}:
+        sections['my_work'] = _section(row for row in mine if visible(row))
+    if role in {'manager','admin'}:
+        sections['financial'] = _section(row for row in financial if visible(row))
     return {'business_date':business_date,'generated_at':datetime.now(ZoneInfo('UTC')).isoformat(),'role':role,'scope':requested,'authorized_stores':authorized,'store_ids':ids,'sections':sections}

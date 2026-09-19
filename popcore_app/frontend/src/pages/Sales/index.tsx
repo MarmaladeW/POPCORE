@@ -17,6 +17,8 @@ import {
   BarChart as HBarChart,
 } from 'recharts'
 import client from '../../api/client'
+import type { ReportMetadata } from '../../api/matcher'
+import { cashDifference, hasReportNotes, REPORT_NOTE_SECTIONS } from './dailyReportReview'
 import RoleGuard from '../../components/RoleGuard'
 import { useAppStore } from '../../store'
 import DailyReportEntry from './DailyReportEntry'
@@ -51,7 +53,7 @@ interface SummaryRow {
 export default function SalesPage() {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
-  const { selectedStore } = useAppStore()
+  const { selectedStore, stores, setSelectedStore } = useAppStore()
   const sc = selectedStore?.code
   const isAll = sc === 'ALL'
 
@@ -59,6 +61,9 @@ export default function SalesPage() {
   const [sales,   setSales]   = useState<SaleRow[]>([])
   const [summary, setSummary] = useState<SummaryRow[]>([])
   const [loading, setLoading] = useState(false)
+  const [reportMetadata, setReportMetadata] = useState<ReportMetadata | null>(null)
+  const [metadataScope, setMetadataScope] = useState('')
+  const [metadataError, setMetadataError] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [lastSuccess, setLastSuccess] = useState<Date | null>(null)
   const [addSearch,    setAddSearch]    = useState('')
@@ -79,6 +84,11 @@ export default function SalesPage() {
   const salesScopeRef = useRef('')
 
   const dateStr = date.format('YYYY-MM-DD')
+  const metadataLoaded = metadataScope === `${sc}:${dateStr}` && reportMetadata !== null
+  const hasSavedReport = sales.length > 0 || (metadataLoaded && (
+    reportMetadata.cash_actual != null || reportMetadata.cash_expected != null
+    || hasReportNotes(reportMetadata)
+  ))
 
   const loadSales = useCallback(() => {
     if (!sc) return
@@ -92,6 +102,18 @@ export default function SalesPage() {
     }
     setLoading(true)
     setLoadError(null)
+    setReportMetadata(null)
+    setMetadataError(false)
+    setMetadataScope(scope)
+    if (sc !== 'ALL') {
+      client.get<ReportMetadata>('/sales/report-metadata', { params: { date: dateStr, store: sc } })
+        .then(response => {
+          if (requestId === salesRequestRef.current) setReportMetadata(response.data)
+        })
+        .catch(() => {
+          if (requestId === salesRequestRef.current) setMetadataError(true)
+        })
+    }
     Promise.all([
       client.get('/sales', { params: { date: dateStr, store_code: sc } }),
       client.get('/sales/summary', { params: { store_code: sc } }),
@@ -126,7 +148,10 @@ export default function SalesPage() {
       .catch(() => {})
   }, [sc])
 
-  useEffect(() => { loadSales() }, [loadSales])
+  useEffect(() => {
+    loadSales()
+    return () => { salesRequestRef.current += 1 }
+  }, [loadSales])
 
   // Load recorded dates whenever the visible month changes
   useEffect(() => {
@@ -244,7 +269,7 @@ export default function SalesPage() {
   const topProducts = [...sales]
     .sort((a, b) => b.qty_sold - a.qty_sold)
     .slice(0, 6)
-    .map(r => ({ name: r.jizhanming || r.sku, POS: r.qty_pos, Cash: r.qty_cash }))
+    .map(r => ({ name: r.jizhanming || r.sku, POS: r.qty_pos, 'Non-POS': r.qty_cash }))
 
   const entryColumns: ColumnsType<SaleRow> = [
     {
@@ -279,7 +304,7 @@ export default function SalesPage() {
       ),
     },
     {
-      title: 'Cash Qty', dataIndex: 'qty_cash', width: 100, align: 'center',
+      title: 'Non-POS Qty', dataIndex: 'qty_cash', width: 100, align: 'center',
       render: (v, r) => (
         <InputNumber
           size="small" min={0}
@@ -319,7 +344,7 @@ export default function SalesPage() {
     { title: 'Date', dataIndex: 'date', width: 110 },
     { title: 'Products', dataIndex: 'product_count', width: 90, align: 'center' },
     { title: 'POS', dataIndex: 'total_pos', width: 80, align: 'center', render: v => <Tag color="blue">{v}</Tag> },
-    { title: 'Cash', dataIndex: 'total_cash', width: 80, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
+    { title: 'Non-POS', dataIndex: 'total_cash', width: 80, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
     { title: 'Total Sold', dataIndex: 'total_sold', width: 90, align: 'center', render: v => <Tag color="green">{v}</Tag> },
   ]
 
@@ -404,7 +429,7 @@ export default function SalesPage() {
               </span>
               <span style={{ fontSize: 13, color: '#6b7280' }}>POS</span>
               <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
-              <span style={{ fontSize: 13, color: '#6b7280' }}>Cash</span>
+              <span style={{ fontSize: 13, color: '#6b7280' }}>Non-POS</span>
               <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
               <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
               <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
@@ -416,7 +441,7 @@ export default function SalesPage() {
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, gap: 12 }}>
           <div>
             <Title level={3} style={{ margin: 0 }}>Daily Sales</Title>
-            <Text style={{ color: '#6b7280' }}>Track POS and cash sales by product</Text>
+            <Text style={{ color: '#6b7280' }}>Track POS and Non-POS sales by product</Text>
           </div>
           <Space wrap size={[8, 8]}>
             <Button onClick={loadSales}>Refresh</Button>
@@ -466,7 +491,7 @@ export default function SalesPage() {
                   </span>
                   <span style={{ fontSize: 12, color: '#6b7280' }}>POS</span>
                   <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 60 }} />
-                  <span style={{ fontSize: 12, color: '#6b7280' }}>Cash</span>
+                  <span style={{ fontSize: 12, color: '#6b7280' }}>Non-POS</span>
                   <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 60 }} />
                   <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
                   <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
@@ -495,7 +520,7 @@ export default function SalesPage() {
             {[
               { label: 'Revenue',    value: `CA$${totalRevenue.toFixed(0)}`, color: '#6366F1' },
               { label: 'Units Sold', value: totalSold,                       color: '#10B981' },
-              { label: 'POS / Cash', value: `${totalPos} / ${totalCash}`,   color: '#f59e0b' },
+              { label: 'POS / Non-POS', value: `${totalPos} / ${totalCash}`,   color: '#f59e0b' },
             ].map(c => (
               <Col key={c.label} xs={8}>
                 <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '10px 12px' }}>
@@ -512,7 +537,7 @@ export default function SalesPage() {
               { label: 'Total Revenue',  value: `CA$${totalRevenue.toFixed(2)}`, color: '#6366F1' },
               { label: 'Units Sold',     value: totalSold,                       color: '#10B981' },
               { label: 'POS Sales',      value: `${totalPos} units`,             color: '#6366F1' },
-              { label: 'Cash Sales',     value: `${totalCash} units`,            color: '#10B981' },
+              { label: 'Non-POS Sales',     value: `${totalCash} units`,            color: '#10B981' },
             ].map(c => (
               <Col key={c.label} xs={12} sm={6}>
                 <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '14px 20px' }}>
@@ -524,6 +549,35 @@ export default function SalesPage() {
           </>
         )}
       </Row>
+
+      {!isAll && metadataScope === `${sc}:${dateStr}` && (
+        metadataError ? (
+          <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+            message="Unable to load physical cash and report notes."
+            action={<Button size="small" onClick={loadSales}>Retry</Button>} />
+        ) : reportMetadata && (
+          <Card size="small" title={`Report notes — ${dateStr} · ${sc}`} style={{ marginBottom: 16 }}>
+            <Space wrap>
+              <Text>Physical cash actual: {reportMetadata.cash_actual == null ? '—' : `CA$${reportMetadata.cash_actual.toFixed(2)}`}</Text>
+              <Text>Expected: {reportMetadata.cash_expected == null ? '—' : `CA$${reportMetadata.cash_expected.toFixed(2)}`}</Text>
+              <Text>Difference (actual − expected): {(() => {
+                const difference = reportMetadata.cash_difference ?? cashDifference(reportMetadata.cash_actual, reportMetadata.cash_expected)
+                return difference == null ? '—' : `CA$${difference.toFixed(2)}`
+              })()}</Text>
+            </Space>
+            <div style={{ marginTop: 8, color: '#6b7280' }}>
+              Non-POS includes cash, e-transfer, WeChat and Alipay; tender is unspecified per row.
+            </div>
+            {REPORT_NOTE_SECTIONS.map(({ key, label, description }) => !!reportMetadata[key]?.length && (
+              <div key={key} style={{ marginTop: 8 }}>
+                <Text strong>{label}</Text>
+                <div>{description}</div>
+                <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{reportMetadata[key]!.join('\n')}</div>
+              </div>
+            ))}
+          </Card>
+        )
+      )}
 
       {/* Charts */}
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
@@ -549,14 +603,14 @@ export default function SalesPage() {
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={60} />
                 <RechartTooltip />
                 <Bar dataKey="POS"  fill="#6366F1" radius={[0, 4, 4, 0]} stackId="a" />
-                <Bar dataKey="Cash" fill="#10B981" radius={[0, 4, 4, 0]} stackId="a" />
+                <Bar dataKey="Non-POS" fill="#10B981" radius={[0, 4, 4, 0]} stackId="a" />
               </HBarChart>
             </ResponsiveContainer>
           </Card>
         </Col>
       </Row>
 
-      {/* Daily Report Entry — shown when no sales yet OR user clicks Import; hidden in ALL mode */}
+      {/* Daily Report Entry — shown after confirming no saved report, or on explicit re-import */}
       {loadError && (
         <Alert
           role="alert"
@@ -569,19 +623,22 @@ export default function SalesPage() {
         />
       )}
 
-      {!isAll && !loadError && (importMode || (!loading && sales.length === 0)) && (
+      {!isAll && !loadError && (importMode || (!loading && metadataLoaded && !hasSavedReport)) && (
         <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px 20px', marginBottom: 20 }}>
-          {importMode && sales.length > 0 && (
+          {importMode && hasSavedReport && (
             <div style={{ marginBottom: 12 }}>
               <Button size="small" onClick={() => setImportMode(false)}>← Back to Sales View</Button>
             </div>
           )}
           <DailyReportEntry
+            key={`${dateStr}:${sc}`}
             date={dateStr}
-            onComplete={(d, _s) => {
+            onComplete={(d, storeCode) => {
               setImportMode(false)
               if (d !== dateStr) setDate(dayjs(d))
-              loadSales()
+              const reportStore = stores.find(store => store.code === storeCode)
+              if (reportStore && storeCode !== sc) setSelectedStore(reportStore)
+              if (d === dateStr && storeCode === sc) loadSales()
             }}
           />
         </div>
@@ -595,7 +652,7 @@ export default function SalesPage() {
       )}
 
       {/* Sales table + log */}
-      {(sales.length > 0 || loading) && !importMode && (
+      {(hasSavedReport || loading) && !importMode && (
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ fontWeight: 600, color: '#111827' }}>
@@ -617,7 +674,7 @@ export default function SalesPage() {
             </RoleGuard>
             <RoleGuard minRole="manager">
               {!isAll && (
-                <Popconfirm title={`Clear all sales for ${dateStr}?`} onConfirm={clearDay}>
+                <Popconfirm title={`Clear all sales and report notes for ${dateStr}?`} onConfirm={clearDay}>
                   <Button danger size="small">Clear Day</Button>
                 </Popconfirm>
               )}
@@ -675,7 +732,7 @@ export default function SalesPage() {
                     />
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 11, color: '#6b7280', width: 34 }}>Cash</span>
+                    <span style={{ fontSize: 11, color: '#6b7280', width: 50 }}>Non-POS</span>
                     <InputNumber
                       size="small" min={0}
                       disabled={isAll}

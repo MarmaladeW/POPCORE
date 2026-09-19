@@ -4,6 +4,7 @@ blueprints/schedule.py — employee profiles, availability, shifts, monthly hour
 import datetime as _dt
 import secrets
 import re as _re
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, request, jsonify, Response
 
@@ -708,6 +709,52 @@ def schedule_shifts_me():
     rows = con.execute(query, params).fetchall()
     con.close()
     return jsonify([dict(r) for r in rows])
+
+
+@bp.route('/api/schedule/attendance/today', methods=['GET', 'POST'])
+@role_required('staff')
+def schedule_attendance_today():
+    data = request.get_json(silent=True) if request.method == 'POST' else None
+    if request.method == 'POST' and (
+        not isinstance(data, dict) or set(data) != {'shift_id'}
+        or type(data['shift_id']) is not int or data['shift_id'] <= 0
+    ):
+        return jsonify({'error': 'A positive shift_id is required; time and employee are recorded automatically.'}), 400
+
+    con = get_db()
+    try:
+        # Serialize with shift edits and other punch requests before checking eligibility.
+        con.execute('BEGIN IMMEDIATE' if request.method == 'POST' else 'BEGIN')
+        now = _dt.datetime.now(_dt.timezone.utc)
+        today = now.astimezone(ZoneInfo('America/Toronto')).date().isoformat()
+        employee = con.execute(
+            'SELECT id FROM employees WHERE auth0_id=? AND is_active=1',
+            (request.jwt_payload['sub'],),
+        ).fetchone()
+        shift = attendance = None
+        if employee:
+            shift = con.execute('''SELECT s.id,s.date,s.start_time,s.end_time,s.store_id,
+                    st.code AS store_code,st.name AS store_name
+                FROM shifts s JOIN stores st ON st.id=s.store_id
+                WHERE s.employee_id=? AND s.date=? AND st.is_active=1''',
+                (employee['id'], today)).fetchone()
+            attendance = con.execute('''SELECT * FROM schedule_attendance
+                WHERE employee_id=? AND business_date=?''', (employee['id'], today)).fetchone()
+        if request.method == 'POST':
+            if not employee or not shift or data['shift_id'] != shift['id']:
+                return jsonify({'error': 'An active assigned shift for today is required. Refresh your schedule.'}), 403
+            if attendance is None:
+                con.execute('''INSERT INTO schedule_attendance
+                    (employee_id,business_date,store_id,shift_id,punched_in_at)
+                    VALUES (?,?,?,?,?)''',
+                    (employee['id'], today, shift['store_id'], shift['id'], now.isoformat()))
+                attendance = con.execute('''SELECT * FROM schedule_attendance
+                    WHERE employee_id=? AND business_date=?''', (employee['id'], today)).fetchone()
+        con.commit()
+        return jsonify({'business_date': today, 'shift': dict(shift) if shift else None,
+                        'attendance': dict(attendance) if attendance else None})
+    finally:
+        con.close()
 
 
 @bp.route('/api/schedule/shifts', methods=['POST'])

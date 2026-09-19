@@ -15,7 +15,7 @@ match_jzm(query, products, aliases, threshold=75)
   • Strips ALL whitespace  ("SA 草莓" == "SA草莓")
   • Length penalty: short queries ("SA") don't over-match long candidates
   • CJK coverage: "SA草莓" won't match "SA宇航员" (no shared Chinese chars)
-  • Alias exact lookup → score 100 always
+  • Exact catalog identity before fuzzy proposals; conflicting cues need review
 
 batch_match_jzm(queries, products, aliases, threshold=75)
   Same as match_jzm but for multiple queries at once (loads products once).
@@ -27,6 +27,8 @@ match_title(scraped_title, products, threshold=65)
   Uses space-preserving normalisation (better for English token matching).
 """
 
+import hashlib
+import json
 import re
 import unicodedata
 from collections import Counter
@@ -79,6 +81,11 @@ def normalize(s: str) -> str:
     if s.endswith('s') and len(s) > 1:
         s = s[:-1]
     return s
+
+
+def normalize_sku(s: str) -> str:
+    """Stable SKU identity retains punctuation, internal spacing and every letter."""
+    return unicodedata.normalize('NFKC', s or '').lower().strip()
 
 
 def normalize_spaced(s: str) -> str:
@@ -177,8 +184,7 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
             s = int(s * coverage)
 
     # Variant guard: differing digit/generation tokens → likely a different
-    # product variant. Cap below every auto-accept threshold (80 confirm,
-    # 95 sync-precheck) so a human always decides.
+    # product variant. A human must review it.
     if _variant_tokens(qn) != _variant_tokens(cn):
         s = min(s, 75)
 
@@ -187,7 +193,7 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
 
 def _score_product_jzm(qn: str, product: dict) -> int:
     """Best score of qn against a product's jizhanming, name_cn_en, and sku.
-    Kept for scraper/legacy use. Prefer the waterfall in match_jzm for batch import."""
+    Kept for legacy use. Batch imports use match_jzm."""
     jzm_n  = normalize(product.get('jizhanming') or '')
     name_n = normalize(product.get('name_cn_en') or '')
     sku    = (product.get('sku') or '').lower().replace('-', '')
@@ -203,6 +209,83 @@ def _score_product_jzm(qn: str, product: dict) -> int:
 
 # ─── Public API: jzm (batch import) ──────────────────────────────────────────
 
+def identity_conflicts(query: str, product: dict) -> bool:
+    """Explicit type/variant clues must survive shorthand and alias matching."""
+    qn = normalize(query)
+    name = normalize(product.get('name_cn_en') or product.get('jizhanming') or '')
+    pn = name + ' ' + normalize(product.get('product_type') or '')
+    types = (r'figure|figurine|手办', r'plush|毛绒|绒毛',
+             r'vinyl|搪胶', r'keychain|keyring|挂件|钥匙扣')
+    qt = {pattern for pattern in types if re.search(pattern, qn)}
+    pt = {pattern for pattern in types if re.search(pattern, pn)}
+    if qt and pt and qt != pt:
+        return True
+    if _variant_tokens(qn) != _variant_tokens(name):
+        return True
+    forms = (r'fullset|sealedset|整盒|整套|端(?:$|\s)', r'singlebox|单盒|單盒|散盒')
+    qf = {pattern for pattern in forms if re.search(pattern, qn)}
+    pf = {pattern for pattern in forms if re.search(pattern, pn)}
+    if qf and pf and qf != pf:
+        return True
+    secret = r'secret|隐藏|隱藏|秘密'
+    return bool(re.search(secret, qn)) != bool(re.search(secret, name))
+
+
+def _limit_hits(hits: list, limit: int) -> list:
+    """Keep every exact tie and at least the runner-up for ambiguity checks."""
+    hits.sort(key=lambda x: (-x[0], x[1]['id']))
+    count = max(2, limit, sum(score == 100 for score, _ in hits))
+    return hits[:count]
+
+
+def report_match_key(raw_name: str, notes: str = '') -> tuple[str, str]:
+    """Exact report identity: normalize typography, never remove meaningful letters."""
+    return tuple(' '.join(unicodedata.normalize('NFKC', value).casefold().split())
+                 for value in (raw_name, notes))
+
+
+def report_identity_signature(product: dict) -> str:
+    """Invalidate review when identity changes, not when price or shorthand changes."""
+    fields = ('sku', 'name_cn_en', 'product_type', 'ip_series', 'brand', 'series_id',
+              'stock_form', 'stock_unit', 'design_name', 'edition_size', 'hidden',
+              'style_notes', 'boxes_per_dan', 'identity_status')
+    values = [report_match_key(str(product.get(field) or ''))[0] for field in fields]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
+def load_report_match_choices(con) -> dict:
+    """A stale or disputed exact choice remains review-only, including exact hits."""
+    choices = {}
+    for row in con.execute("""SELECT p.*, c.name_key, c.note_key, c.identity_signature
+                            FROM report_match_choices c JOIN products p ON p.id=c.product_id"""):
+        product = dict(row)
+        key = (row['name_key'], row['note_key'])
+        if key in choices or row['identity_signature'] != report_identity_signature(product):
+            choices[key] = None
+        else:
+            choices[key] = row['id']
+    # Old corrections lack notes. They can veto an exact bare choice, never
+    # approve one or transfer a lossy normalized conflict to a different variant.
+    for row in con.execute('SELECT DISTINCT raw_name,norm_name,product_id FROM match_corrections'):
+        key = report_match_key(row['raw_name'])
+        if (key in choices and row['norm_name'] == normalize(clean_name(row['raw_name']))
+                and choices[key] != row['product_id']):
+            choices[key] = None
+    return choices
+
+
+def load_matching_aliases(con) -> dict:
+    """None marks disputed names: keep them reviewable in every matching entry point."""
+    aliases = {r['alias_norm']: r['product_id'] for r in
+               con.execute('SELECT alias_norm, product_id FROM product_aliases')}
+    for row in con.execute("""SELECT DISTINCT pa.alias_norm FROM product_aliases pa
+            JOIN match_corrections mc ON mc.norm_name=pa.alias_norm AND mc.product_id<>pa.product_id
+            UNION SELECT norm_name FROM match_corrections
+            GROUP BY norm_name HAVING COUNT(DISTINCT product_id)>1"""):
+        aliases[row[0]] = None
+    return aliases
+
+
 def match_jzm(
     query: str,
     products: list,
@@ -210,81 +293,32 @@ def match_jzm(
     threshold: int = 75,
     limit: int = 5,
 ) -> list:
+    """Exact names, shorthand, SKUs and aliases across the entire catalog first.
+
+    Return (score, product) hits; only a unique 100 is safe to auto-confirm.
+    Fuzzy matches and contradictory identity clues always require review.
+    limit is a soft limit: exact ties and the runner-up are never hidden.
     """
-    Match a raw 记账名 string against a product list using a strict waterfall.
-
-    Stages (stops at the first stage that yields results):
-      1. Jizhanming — score query against product.jizhanming
-      2. Name       — score query against product.name_cn_en
-      3. Alias      — exact lookup in the alias table (score 100)
-      4. Not found  — return []
-
-    This prevents cross-stage false matches (e.g. "哭娃度假" matching
-    "哭娃度假吸管杯") because each stage only returns results when the
-    similarity is clearly above the threshold.
-
-    Args:
-        query:     Raw input (may contain *, spaces, colons, etc.)
-        products:  List of product dicts (id, jizhanming, name_cn_en, sku, …)
-        aliases:   {alias_norm → product_id} for exact alias lookup (stage 3).
-        threshold: Minimum score to include (default 75).
-        limit:     Max results returned per stage, sorted by score desc.
-
-    Returns:
-        List of (score: int, product: dict) sorted by score descending.
-        Empty list if query is empty or no candidates meet threshold.
-    """
-    if aliases is None:
-        aliases = {}
-
-    cleaned = clean_name(query)
-    if not cleaned:
-        return []
-
-    qn = normalize(cleaned)
+    qn = normalize(clean_name(query))
     if not qn:
         return []
-
-    # Stage 1 — Jizhanming match
-    jzm_hits = []
+    aliases = aliases or {}
+    query_sku = normalize_sku(query)
+    hits = []
     for p in products:
-        jzm_n = normalize(p.get('jizhanming') or '')
-        if not jzm_n:
-            continue
-        # SKU exact hit: treat as jizhanming-level match
-        sku = (p.get('sku') or '').lower().replace('-', '')
-        if sku and sku in qn:
-            jzm_hits.append((95, p))
-            continue
-        s = _score_pair_jzm(qn, jzm_n)
-        if s >= threshold:
-            jzm_hits.append((s, p))
-    if jzm_hits:
-        jzm_hits.sort(key=lambda x: -x[0])
-        return jzm_hits[:limit]
-
-    # Stage 2 — Name (name_cn_en) match
-    name_hits = []
-    for p in products:
-        name_n = normalize(p.get('name_cn_en') or '')
-        if not name_n:
-            continue
-        s = _score_pair_jzm(qn, name_n)
-        if s >= threshold:
-            name_hits.append((s, p))
-    if name_hits:
-        name_hits.sort(key=lambda x: -x[0])
-        return name_hits[:limit]
-
-    # Stage 3 — Alias exact match
-    if qn in aliases:
-        pid = aliases[qn]
-        for p in products:
-            if p['id'] == pid:
-                return [(100, p)]
-
-    # Stage 4 — Not found
-    return []
+        fields = [normalize(clean_name(p.get(field) or ''))
+                  for field in ('jizhanming', 'name_cn_en')]
+        sku = normalize_sku(p.get('sku'))
+        sku_exact = bool(sku) and sku == query_sku
+        exact = sku_exact or qn in fields or aliases.get(qn) == p['id']
+        score = 100 if exact else max(_score_pair_jzm(qn, field) for field in fields)
+        if not sku_exact and identity_conflicts(query, p):
+            score = min(score, 75)
+        if qn in aliases and aliases[qn] is None:
+            score = min(score, 99)
+        if score >= threshold:
+            hits.append((score, p))
+    return _limit_hits(hits, limit)
 
 
 def match_name(
@@ -298,8 +332,7 @@ def match_name(
 
     Used by the sheet sync to anchor row identity on the sheet's product-name
     column: full names compare against full names, so exact rows score 100 and
-    the jizhanming waterfall in match_jzm can't hijack the match with a
-    shorthand hit on a different product.
+    shorthand hits on a different product cannot override this anchor.
 
     Returns [(score, product), ...] sorted by score desc; [] when nothing
     meets the threshold.
@@ -319,8 +352,7 @@ def match_name(
         s = _score_pair_jzm(qn, name_n)
         if s >= threshold:
             hits.append((s, p))
-    hits.sort(key=lambda x: -x[0])
-    return hits[:limit]
+    return _limit_hits(hits, limit)
 
 
 def batch_match_jzm(
@@ -358,16 +390,10 @@ def batch_match_jzm(
 
         if not hits:
             results.append({'query': raw, 'status': 'unmatched', 'candidates': []})
-        elif len(hits) == 1:
+        elif hits[0][0] == 100 and (len(hits) == 1 or hits[1][0] < 100):
             results.append({'query': raw, 'status': 'matched', 'candidates': [hits[0][1]]})
         else:
-            top_score = hits[0][0]
-            runner_up = hits[1][0]
-            # Clearly dominant result → treat as matched
-            if top_score == 100 or (top_score >= 90 and top_score - runner_up >= 15):
-                results.append({'query': raw, 'status': 'matched', 'candidates': [hits[0][1]]})
-            else:
-                results.append({'query': raw, 'status': 'fuzzy', 'candidates': [p for _, p in hits]})
+            results.append({'query': raw, 'status': 'fuzzy', 'candidates': [p for _, p in hits]})
 
     return results
 

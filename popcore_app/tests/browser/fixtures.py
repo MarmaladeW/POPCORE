@@ -47,11 +47,19 @@ def payload(path, query_string='', empty=False):
         }]
     if path == '/api/sales':
         return [] if empty else [{**item, 'date': today, 'qty_pos': 1, 'qty_cash': 0, 'qty_sold': 1}]
+    if path == '/api/sales/report-metadata':
+        return {'cash_actual': None, 'cash_expected': None, 'cash_difference': None,
+                'employee_discounts': [], 'display_sales': [], 'claw_prizes': []}
     if path == '/api/sales/summary':
         return [] if empty else [{'date': today, 'product_count': 1, 'total_sold': 1, 'total_pos': 1, 'total_cash': 0}]
     if path == '/api/sales/recorded-dates': return [] if empty else [today]
     if path in ('/api/insights', '/api/history/restock', '/api/history/inventory-check'): return []
     if path == '/api/insights/count': return {'count': 0}
+    if path == '/api/store-events':
+        return {'business_date': today, 'scope': 'personal', 'events': [], 'receipts': [],
+                'transfers': [], 'checkouts': {'pos': [], 'non_pos': [], 'split': []}, 'summary_text': ''}
+    if path == '/api/schedule/attendance/today':
+        return {'business_date': today, 'shift': None, 'attendance': None}
     if path == '/api/schedule/me':
         return {'id': 1, 'auth0_id': 'fixture|admin', 'name': 'Foundation User', 'email': 'foundation@example.invalid'}
     if path == '/api/schedule/employees':

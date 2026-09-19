@@ -88,7 +88,8 @@ async def run_checks(browser, case):
     await calendar.locator('button').nth(0).click()
     await page.get_by_label('Available until', exact=True).fill('18:00')
     await page.get_by_role('button', name='Apply to selected dates').click()
-    await page.get_by_role('link', name='Today', exact=True).click()
+    await page.get_by_role('button', name='More', exact=True).click()
+    await page.get_by_role('link', name='Store tasks', exact=True).click()
     await expect(page.get_by_text('Today / 今日', exact=True)).to_be_visible()
     assert await page.evaluate("""() => {
         const event = new Event('beforeunload', {cancelable: true});
@@ -120,7 +121,7 @@ async def run_checks(browser, case):
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Expand navigation', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
-    await page.get_by_role('link', name='Today', exact=True).click()
+    await page.get_by_role('link', name='Store tasks', exact=True).click()
     await expect(page.get_by_role('heading', name='Today / 今日', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
     await page.get_by_role('link', name='Schedule', exact=True).click()

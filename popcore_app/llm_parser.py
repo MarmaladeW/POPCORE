@@ -15,6 +15,8 @@ import os
 import re
 import requests
 
+from validation import SQLITE_INTEGER_MAX
+
 _API_URL = 'https://api.anthropic.com/v1/messages'
 _MODEL_DEFAULT = 'claude-haiku-4-5-20251001'
 
@@ -92,14 +94,14 @@ _SYSTEM = """你在为一家潮玩零售店解析每日交班报告。报告由�
 分区词汇 → section 值：
 - 卡机 / 卡机汇总（刷卡机销售）→ pos
 - 随手记 / 随手记汇总（现金或转账销售）→ cash
-- 娃娃机（claw machine 销售）→ claw
-- 卖display / 卖展示（卖出展示品）→ sell_display
+- 娃娃机（从独立娃娃机库存赢走的奖品，不是新增销售）→ skip；由本地规则保存原文
+- 卖display / 卖展示（已包含在销售汇总，不重复计数）→ skip；由本地规则保存原文
 - 拆display / 入display（拆开或放入展示，非销售）→ break_display
-- 员工折扣 → employee_discount
+- 员工折扣（已包含在销售汇总，不重复计数）→ skip；由本地规则保存原文
 - 入店（从楼上仓库进店补货，非销售；"名称 6*2" 表示 每箱6个×2箱，box_size=6, qty=2）→ stock_in
 - 出店（调货去其他门店，非销售）→ stock_out
 - 晚盘 / 博主探店 及其下的内容 → skip
-- 现金总额行（如 现金：$300）不是商品：把金额填入 cash_total
+- 现金总额行不是商品。现金：595/601.5 表示实收595，应收601.5；由本地规则保存，不从商品价格推算
 - 无法归类的分区：section=unknown，并把该分区标题原样填入 header_text
 
 规则：
@@ -146,9 +148,9 @@ def _validate(payload: dict) -> dict:
         if section not in _SECTIONS:
             section = 'unknown'
         qty = it.get('qty')
-        qty = int(qty) if isinstance(qty, (int, float)) and int(qty) > 0 else None
+        qty = qty if type(qty) is int and 0 < qty <= SQLITE_INTEGER_MAX else None
         box = it.get('box_size')
-        box = int(box) if isinstance(box, (int, float)) and int(box) > 0 else None
+        box = box if type(box) is int and 0 < box <= SQLITE_INTEGER_MAX else None
         note = it.get('note') if isinstance(it.get('note'), str) else ''
         hdr  = it.get('header_text') if isinstance(it.get('header_text'), str) else ''
         out['items'].append({
