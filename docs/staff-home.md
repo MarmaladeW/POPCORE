@@ -4,6 +4,8 @@ Implemented locally on `codex/staff-home`, based on `codex/catalog-sales-rework`
 
 The staff entrance `/` offers 买单 (`/checkout`), 入店 (`/incoming`), 娃娃机 (`/claw`), and 汇总 (`/summary`). Viewers retain the read-only Today screen. Home, Checkout and Schedule stay in mobile navigation. The existing Today task list remains available at `/today`, including older unfinished goods work.
 
+Special orders (`/special-orders`) is a separate Daily work page for customer-requested items. Staff record a free-text request, customer phone, total price, and each payment as a separate entry. Full payment is required before recording that the customer received the item. Managers and admins can always view the phone number; staff can view it only while assigned the `Cashier` position on that Toronto calendar day. Admins can correct creator/completer attribution and dates. These records do not post inventory, checkout, sale, closing, or Clover activity and are not tied to a store.
+
 The existing attendance component shows the employee's assigned shift and punch-in before the four choices. It disappears only after the server confirms punch-in for the Toronto business date. Schedule retains attendance and shift access. Home keeps recent events and personal shifts below the choices.
 
 入店 links the existing receipt and transfer workflows, lists today's authorized incoming documents, and provides display-arrival recording. Existing opening-count, inventory access, version, transit, and manager-draft safeguards remain in force.
@@ -18,4 +20,4 @@ Clover remains disconnected. This implementation does not verify live order sync
 
 ## Verification
 
-Run backend tests with `python -m unittest discover -s popcore_app/tests -v`. Run `npm test` and `npm run build -- --outDir ../../.local/frontend-build` from the frontend directory; the latter preserves committed release assets. Browser checks: `check_staff_home.py`, `check_checkout_focus.py`, `check_attendance.py`, and `check_foundation.py` under `popcore_app/tests/browser`. Home and checkout checks include actual Flask/SQLite flows with disposable data and test authentication. Never deploy test authentication.
+Run backend tests with `python -m unittest discover -s popcore_app/tests -v`. Run `npm test` and `npm run build -- --outDir ../../.local/frontend-build` from the frontend directory; the latter preserves committed release assets. Browser checks: `check_staff_home.py`, `check_checkout_focus.py`, `check_attendance.py`, `check_special_orders.py`, and `check_foundation.py` under `popcore_app/tests/browser`. Home and checkout checks include actual Flask/SQLite flows with disposable data and test authentication. Never deploy test authentication.
