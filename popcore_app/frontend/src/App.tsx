@@ -18,6 +18,7 @@ import SchedulePage    from './pages/Schedule'
 const HomePage=lazy(()=>import('./pages/Home'))
 const DashboardPage=lazy(()=>import('./pages/Dashboard'))
 const CheckoutPage=lazy(()=>import('./pages/Sales/Checkout'))
+const SpecialOrdersPage=lazy(()=>import('./pages/SpecialOrders'))
 const IncomingPage=lazy(()=>import('./pages/Home/Incoming'))
 const EventEntry=lazy(()=>import('./pages/Home/EventEntry'))
 const StoreSummary=lazy(()=>import('./pages/Home/StoreSummary'))
@@ -136,6 +137,7 @@ function AppInner() {
           <Route path="/today" element={<RoleRoute minRole="viewer" element={<DashboardPage />} />} />
           <Route path="/checkout" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
           <Route path="/checkout/:id" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
+          <Route path="/special-orders" element={<RoleRoute minRole="staff" element={<SpecialOrdersPage />} />} />
           <Route path="/incoming" element={<RoleRoute minRole="staff" element={<IncomingPage />} />} />
           <Route path="/incoming/display" element={<RoleRoute minRole="staff" element={<EventEntry display />} />} />
           <Route path="/claw" element={<RoleRoute minRole="staff" element={<EventEntry />} />} />

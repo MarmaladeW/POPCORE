@@ -3,7 +3,7 @@ import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Tag } from 'antd'
 import type { MenuProps } from 'antd'
 import {
   AppstoreOutlined, BarChartOutlined, CalendarOutlined, CheckCircleOutlined,
-  HomeOutlined, CameraOutlined, FileTextOutlined, GiftOutlined, HistoryOutlined, DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
+  HomeOutlined, CameraOutlined, FileSearchOutlined, FileTextOutlined, GiftOutlined, HistoryOutlined, DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
   LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined,
   ShopOutlined, SwapOutlined, UserOutlined,
 } from '@ant-design/icons'
@@ -104,6 +104,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     { key: '/', icon: <HomeOutlined />, label: 'Home' },
     ...(staff ? [
       { key: '/checkout', icon: <CameraOutlined />, label: '买单 / Checkout' },
+      { key: '/special-orders', icon: <FileSearchOutlined />, label: 'Special orders' },
       { key: '/incoming', icon: <InboxOutlined />, label: '入店 / Receive goods' },
       { key: '/claw', icon: <GiftOutlined />, label: '娃娃机 / Claw machine' },
       { key: '/summary', icon: <FileTextOutlined />, label: '汇总 / Summary' },

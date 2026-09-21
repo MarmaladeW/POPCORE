@@ -1685,6 +1685,33 @@ def _migration_report_match_choices(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('report_match_choices')")
 
 
+def _migration_special_orders(con, cur):
+    cur.execute("""CREATE TABLE special_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_name TEXT NOT NULL CHECK(length(trim(customer_name)) BETWEEN 1 AND 120),
+        customer_phone TEXT NOT NULL CHECK(length(trim(customer_phone)) BETWEEN 1 AND 80),
+        item_description TEXT NOT NULL CHECK(length(trim(item_description)) BETWEEN 1 AND 500),
+        total_cents INTEGER NOT NULL CHECK(total_cents > 0),
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','completed')),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        completed_by TEXT,
+        completed_at TEXT,
+        version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+        CHECK((status='open' AND completed_by IS NULL AND completed_at IS NULL)
+           OR (status='completed' AND completed_by IS NOT NULL AND completed_at IS NOT NULL))
+    )""")
+    cur.execute("""CREATE TABLE special_order_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        special_order_id INTEGER NOT NULL REFERENCES special_orders(id),
+        amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+        paid_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )""")
+    cur.execute('CREATE INDEX special_orders_status ON special_orders(status,id DESC)')
+    cur.execute('CREATE INDEX special_order_payments_order ON special_order_payments(special_order_id,id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('special_orders')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1732,6 +1759,7 @@ def _get_migrations():
         ('checkout_refunds', _migration_checkout_refunds),
         ('store_events', _migration_store_events),
         ('report_match_choices',                       _migration_report_match_choices),
+        ('special_orders',                             _migration_special_orders),
     ]
 
 
