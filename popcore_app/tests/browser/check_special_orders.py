@@ -1,5 +1,6 @@
 """Isolated Special Orders workflow checks; no live authentication."""
 import asyncio
+import re
 import subprocess
 from pathlib import Path
 
@@ -82,7 +83,7 @@ async def checks(browser):
     await page.get_by_label('Payment amount').fill('80.00')
     await page.get_by_role('button', name='Add payment', exact=True).click()
     await expect(page.locator('strong').filter(has_text='Paid in full')).to_be_visible()
-    complete = page.get_by_role('button', name='Mark customer received', exact=True)
+    complete = page.get_by_role('button', name=re.compile('Mark customer received'))
     await expect(complete).to_be_enabled()
     await complete.click()
     await expect(page.get_by_text('Customer received the item', exact=True)).to_be_visible()
