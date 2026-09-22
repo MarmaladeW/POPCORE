@@ -22,6 +22,12 @@ export function suggestPayable(totalCents: number): number {
   return Math.max(1, suggestion)
 }
 
+export function suggestPaymentTarget(totalCents: number, tender: string, mixedWithCard: boolean): number {
+  const discounted = suggestPayable(totalCents)
+  if (mixedWithCard) return totalCents < 1000 ? totalCents : totalCents - totalCents % 100
+  return tender === 'card' ? totalCents : discounted
+}
+
 export function discountQuote(
   subtotalCents: number,
   taxCents: number,

@@ -6,7 +6,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import { formatCents, parseMoneyToCents } from '../../lib/money'
-import { discountQuote, suggestPayable } from '../../lib/checkoutPricing'
+import { discountQuote, suggestPaymentTarget } from '../../lib/checkoutPricing'
 import { useHasRole, useRole } from '../../auth/useRole'
 import ManualCheckout from './ManualCheckout'
 import useCheckoutMutation from './useCheckoutMutation'
@@ -19,13 +19,18 @@ type Attempt = { id:number; tender:string; amount_cents:number; status:string; c
 type Order = { id:number; store_id:number; reference:string; register_name?:string; business_date:string; status:string; version:number; sale_id:number|null; cashier_name:string; cashier_sub:string; can_manage:boolean; can_process:boolean; can_refund:boolean; received_cents:number; remaining_cents:number; refunded_cents:number; refund_due_cents:number; abandoned_reason:string|null; attempts:Attempt[]; refunds:{id:number;amount_cents:number;reference:string;business_date:string;tender:string}[]; order:{ subtotal_cents:number;source_tax_cents:number;gross_cents:number;reduction_cents:number;collected_cents:number;lines:{product_name_snapshot:string;quantity:number;unit:string}[] } }
 type DraftUpdate = Partial<Draft> | ((draft:Draft)=>Draft)
 type Queue = { orders:Order[]; next_before_id:number|null; clover:{connected:boolean} }
-type Draft = { target:string; tender:string; split:string; photos?:Record<number,File> }
+type Draft = { target:string; tender:string; split:string; includesCard:boolean; photos?:Record<number,File> }
 const methods = [{value:'cash',label:'Cash',icon:<DollarOutlined/>},{value:'card',label:'Card',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer'},{value:'wechat',label:'WeChat Pay'},{value:'alipay',label:'Alipay'}]
 const electronic = (method:string) => ['e_transfer','wechat','alipay'].includes(method)
 const moneyInput = (cents:number) => (cents/100).toFixed(2)
 const label = (method:string) => methods.find(m=>m.value===method)?.label || method
 const errorMessage = (cause:unknown) => (cause as {_serverMessage?:string})?._serverMessage || 'Unable to load checkout. Please retry.'
-const initialDraft = (order:Order):Draft => ({target:moneyInput(order.attempts.length ? order.order.collected_cents : suggestPayable(order.order.gross_cents)),tender:order.attempts.find(a=>a.status==='pending')?.tender || '',split:''})
+const initialDraft = (order:Order):Draft => {
+  const active=order.attempts.filter(a=>a.status!=='cancelled'),tender=active.find(a=>a.status==='pending')?.tender || ''
+  const includesCard=active.some(a=>a.tender==='card')&&active.some(a=>a.tender!=='card')
+  const target=order.attempts.length||order.order.reduction_cents?order.order.collected_cents:suggestPaymentTarget(order.order.gross_cents,tender,includesCard)
+  return {target:moneyInput(target),tender,split:'',includesCard}
+}
 
 function PhotoCapture({order,attempt,draft,setDraft,updated,onBusy,primary,disabled}:{order:Order;attempt:Attempt;primary:boolean;disabled:boolean;draft:Draft;setDraft:(v:DraftUpdate)=>void;updated:()=>void;onBusy:(v:boolean)=>void}) {
   const fileInput=useRef<HTMLInputElement>(null)
@@ -94,6 +99,9 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy}:{order:Order
   const quote=target===null?null:discountQuote(order.order.subtotal_cents,order.order.source_tax_cents,target)
   const amountMatches=target===order.order.collected_cents
   const blocked=mutation.pending||photoBusy||refundBusy
+  const mixedWithCard=split&&draft.includesCard
+  const pricingLocked=order.received_cents>0||order.order.reduction_cents>0
+  const pricingTarget=(method:string,mixed:boolean)=>moneyInput(pricingLocked?order.order.collected_cents:suggestPaymentTarget(order.order.gross_cents,method,mixed))
   const action=(name:string,body:object={})=>mutation.run(`/checkouts/${order.id}/${name}`,{expected_version:order.version,...body})
   async function received() {
     if(!pending)return
@@ -101,7 +109,12 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy}:{order:Order
     if(result&&result.remaining_cents===0)await mutation.run(`/checkouts/${order.id}/finalize`,{expected_version:result.version})
   }
   function choose(method:string) {
-    setDraft({tender:method,...(method==='card'?{target:moneyInput(order.order.collected_cents)}:{})});setNotice('')
+    const includesCard=split&&(method==='card'||draft.includesCard)
+    setDraft({tender:method,includesCard,target:pricingTarget(method,includesCard)});setNotice('')
+  }
+  function chooseSplit(enabled:boolean) {
+    const includesCard=enabled&&(draft.tender==='card'||draft.includesCard)
+    setSplit(enabled);setDraft({includesCard,target:pricingTarget(draft.tender,includesCard)})
   }
   const photoAttempts=order.attempts.filter(a=>a.status!=='cancelled'&&electronic(a.tender))
   return <article className="co-order" aria-label={`Checkout ${order.reference}`}>
@@ -113,21 +126,22 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy}:{order:Order
     {order.can_process&&<>
 
       <div className="co-pricing">
-        <div className="co-payable"><label htmlFor="checkout-target">Customer pays</label><div className="co-money-input"><span aria-hidden="true">$</span><input id="checkout-target" aria-describedby="checkout-target-help" inputMode="decimal" value={draft.target} disabled={blocked||draft.tender==='card'||order.received_cents>0} onChange={e=>setDraft({target:e.target.value})}/><span>CAD</span></div><p id="checkout-target-help">{order.received_cents?'Payments already received. The order total is fixed.':draft.tender==='card'?'Use the recorded card total.':'Suggested amount · tap to adjust'}</p></div>
-        {draft.tender!=='card'&&<div className="co-discount"><span>Pre-tax discount to enter in Clover</span><strong>{quote?formatCents(quote.discountCents):'—'}</strong><small>Estimate from the original subtotal and tax. Check Clover’s resulting total.</small></div>}
+        <div className="co-payable"><label htmlFor="checkout-target">Customer pays</label><div className="co-money-input"><span aria-hidden="true">$</span><input id="checkout-target" aria-describedby="checkout-target-help" inputMode="decimal" value={draft.target} disabled={blocked||draft.tender==='card'||order.received_cents>0} onChange={e=>setDraft({target:e.target.value})}/><span>CAD</span></div><p id="checkout-target-help">{order.received_cents?'Payments already received. The order total is fixed.':mixedWithCard?'Whole-dollar split target · no cash discount':draft.tender==='card'?'Use the recorded card total.':'Suggested amount · tap to adjust'}</p></div>
+        {(draft.tender!=='card'||mixedWithCard)&&<div className="co-discount"><span>{mixedWithCard?'Pre-tax rounding adjustment to enter in Clover':'Pre-tax discount to enter in Clover'}</span><strong>{quote?formatCents(quote.discountCents):'—'}</strong><small>Estimate from the original subtotal and tax. Check Clover’s resulting total.</small></div>}
       </div>
       <fieldset className="co-methods" disabled={blocked}><legend>How is the customer paying?</legend><div>{methods.map(method=><button key={method.value} type="button" aria-pressed={draft.tender===method.value} onClick={()=>choose(method.value)}>{method.icon}{method.label}</button>)}</div></fieldset>
       {!quote&&<Alert type="error" showIcon message="Enter a positive amount no greater than the original total."/>}
       {quote?.warning&&<Alert type="warning" showIcon message="This discount is more than 20% of the order value. Check the amount before continuing."/>}
-      {quote&&quote.predictedTotalCents!==target&&draft.tender!=='card'&&<p className="co-muted">Estimated total after rounding: {formatCents(quote.predictedTotalCents)}. Clover may round differently.</p>}
+      {quote&&quote.predictedTotalCents!==target&&(draft.tender!=='card'||mixedWithCard)&&<p className="co-muted">Estimated total after rounding: {formatCents(quote.predictedTotalCents)}. Clover may round differently.</p>}
       {!amountMatches&&<div className="co-waiting" role="status"><strong>Waiting for confirmed Clover total</strong><p>The recorded order is {formatCents(order.order.collected_cents)}. The target above has not changed its payment total. Clover is disconnected.</p><Button type="link" disabled={blocked} onClick={()=>setDraft({target:moneyInput(order.order.collected_cents)})}>Use recorded total</Button></div>}
-      {draft.tender&&draft.tender!=='card'&&<p className="co-instruction">Enter the discount in Clover, then choose <strong>Cash</strong>. POPCORE records the actual method as <strong>{label(draft.tender)}</strong>.</p>}
+      {draft.tender&&mixedWithCard&&<p className="co-instruction">Confirm the whole-dollar total in Clover before the first payment, then split it between <strong>Card</strong> and the other method.</p>}
+      {draft.tender&&draft.tender!=='card'&&!mixedWithCard&&<p className="co-instruction">Enter the discount in Clover, then choose <strong>{label(draft.tender)}</strong>.</p>}
       {order.remaining_cents>0&&<>
         <div className="co-payment-action">
           {pending&&pending.tender===draft.tender?<Button type={electronic(pending.tender)&&!pending.photos.length?'default':'primary'} size="large" disabled={blocked||!amountMatches||!quote} loading={mutation.saving} onClick={received}>Record {formatCents(pending.amount_cents)} received</Button>:<Button type="primary" size="large" disabled={blocked||!draft.tender||!amountMatches||!quote} loading={mutation.saving} onClick={()=>{const amount=split?parseMoneyToCents(draft.split):order.remaining_cents;if(amount===null||amount<=0||amount>order.remaining_cents){setNotice('Enter an amount within the remaining balance.');return}action('attempts',{tender:draft.tender,amount_cents:amount})}}>{pending?'Change payment method':'Continue with '+(label(draft.tender)||'payment')}</Button>}
           <small>Manual recording while Clover is disconnected. Only confirm money actually received.</small>
         </div>
-        {(!pending||pending.tender!==draft.tender)&&<div className="co-split"><Checkbox disabled={blocked} checked={split} onChange={e=>setSplit(e.target.checked)}>Split payment</Checkbox>{split&&<label>Collect now ($)<Input value={draft.split} inputMode="decimal" disabled={blocked} onChange={e=>setDraft({split:e.target.value})}/></label>}</div>}
+        {(!pending||pending.tender!==draft.tender)&&<div className="co-split"><Checkbox disabled={blocked} checked={split} onChange={e=>chooseSplit(e.target.checked)}>Split payment</Checkbox>{split&&<><Checkbox disabled={blocked||order.received_cents>0||draft.tender==='card'} checked={draft.includesCard} onChange={e=>setDraft({includesCard:e.target.checked,target:pricingTarget(draft.tender,e.target.checked)})}>This split includes Card</Checkbox><label>Collect now ($)<Input value={draft.split} inputMode="decimal" disabled={blocked} onChange={e=>setDraft({split:e.target.value})}/></label></>}</div>}
       </>}
       {order.remaining_cents===0&&<Button type="primary" disabled={blocked} loading={mutation.saving} onClick={()=>action('finalize')}>Finish checkout</Button>}
     </>}
