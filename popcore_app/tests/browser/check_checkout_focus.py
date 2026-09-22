@@ -24,13 +24,18 @@ def checkout(number=1):
 async def checks(browser):
     state={'mode':'data'}
     orders={1:checkout(),2:checkout(2)}
+    pricing=checkout(3)
+    pricing.update(remaining_cents=4134,attempts=[])
+    pricing['order'].update(subtotal_cents=4134,source_tax_cents=0,gross_cents=4134,
+        collected_cents=4134)
+    orders[3]=pricing
     def api(path,query,request):
         if path=='/api/checkouts/access':
             stores=[dict(id=1,code='DT',name='Downtown')]
             return dict(business_date='2026-09-14',role='staff',live_stores=[] if state.get('off_duty') else stores,history_stores=stores)
         if path=='/api/checkouts':
             return dict(orders=list(orders.values()),staff=[],next_before_id=None,clover=dict(connected=False))
-        if path in ('/api/checkouts/1','/api/checkouts/2'):
+        if path in ('/api/checkouts/1','/api/checkouts/2','/api/checkouts/3'):
             return orders[int(path.rsplit('/',1)[1])]
         if path.endswith('/evidence'):
             number=int(path.split('/')[3]); photo=dict(id=99,uploader_sub='fixture|staff',created_at='2026-09-14',evidence_id=None)
@@ -63,6 +68,20 @@ async def checks(browser):
     await page.unroute('**/api/checkouts/2',slow_second)
     await page.get_by_role('button',name='Register 1',exact=False).click()
     await expect(page.get_by_label('Customer pays')).to_have_value('30.00')
+    await page.get_by_role('button',name='Register 3',exact=False).click()
+    await expect(page.get_by_role('article',name='Checkout ORDER-3',exact=True)).to_be_visible()
+    await page.get_by_role('button',name='Card',exact=False).click()
+    await expect(page.get_by_label('Customer pays')).to_have_value('41.34')
+    await page.get_by_role('checkbox',name='Split payment',exact=True).check()
+    await expect(page.get_by_role('checkbox',name='This split includes Card',exact=True)).to_be_checked()
+    await expect(page.get_by_label('Customer pays')).to_have_value('41.00')
+    await page.get_by_role('button',name='Cash',exact=False).click()
+    await expect(page.get_by_role('checkbox',name='This split includes Card',exact=True)).to_be_checked()
+    await expect(page.get_by_label('Customer pays')).to_have_value('41.00')
+    await page.get_by_role('checkbox',name='This split includes Card',exact=True).uncheck()
+    await expect(page.get_by_label('Customer pays')).to_have_value('40.00')
+    await page.get_by_role('button',name='Register 1',exact=False).click()
+    await expect(page.get_by_role('article',name='Checkout ORDER-1',exact=True)).to_be_visible()
     await page.get_by_label('Customer pays').fill('45.20')
     file=ROOT/'.local/checkout-focus/proof.png'
     from PIL import Image
@@ -106,6 +125,7 @@ async def checks(browser):
     await expect(page.get_by_alt_text('Payment evidence preview')).to_have_count(2)
     await page.get_by_role('button',name='Register 2',exact=False).click()
     await page.get_by_role('button',name='Register 1',exact=False).click()
+    await expect(page.get_by_role('article',name='Checkout ORDER-1',exact=True)).to_be_visible()
     await expect(page.get_by_alt_text('Payment evidence preview')).to_have_count(2)
     state['get_status_for_path']={'/api/checkouts/1':(503,{'error':'Temporary refresh failure'})}
     await page.get_by_role('button',name='Refresh orders').click()
