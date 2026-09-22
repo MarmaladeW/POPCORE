@@ -7,7 +7,7 @@ from pathlib import Path
 from playwright.async_api import async_playwright, expect
 
 from check_foundation import BASE, FRONTEND, HERE, context_with_api, wait_for_server
-from fixtures import payload
+from fixtures import STORES, payload
 
 
 async def checks(browser):
@@ -22,6 +22,8 @@ async def checks(browser):
             order = dict(
                 id=1, customer_name=data['customer_name'], customer_phone=None,
                 item_description=data['item_description'], total_cents=data['total_cents'],
+                pickup_store_id=data['pickup_store_id'], pickup_store_code='DT',
+                pickup_store_name='Downtown',
                 status='open', created_by='fixture|staff', created_by_name='Alex Chen',
                 created_at='2026-09-21T14:00:00Z', completed_by=None,
                 completed_by_name=None, completed_at=None, version=1,
@@ -30,6 +32,7 @@ async def checks(browser):
             if data['initial_paid_cents']:
                 order['payments'].append(dict(
                     id=1, amount_cents=data['initial_paid_cents'],
+                    tender=data['initial_tender'],
                     paid_at='2026-09-21T14:00:00Z',
                 ))
                 order['paid_cents'] = data['initial_paid_cents']
@@ -40,7 +43,7 @@ async def checks(browser):
             data = request.post_data_json
             order = orders[0]
             order['payments'].append(dict(
-                id=2, amount_cents=data['amount_cents'],
+                id=2, amount_cents=data['amount_cents'], tender=data['tender'],
                 paid_at='2026-09-21T15:00:00Z',
             ))
             order['paid_cents'] += data['amount_cents']
@@ -53,6 +56,14 @@ async def checks(browser):
                 status='completed', completed_by='fixture|staff',
                 completed_by_name='Alex Chen', completed_at='2026-09-21T15:05:00Z',
                 version=order['version'] + 1,
+            )
+            return order
+        if path == '/api/special-orders/1' and request.method == 'PATCH':
+            order = orders[0]
+            store = next(store for store in STORES if store['id'] == request.post_data_json['pickup_store_id'])
+            order.update(
+                pickup_store_id=store['id'], pickup_store_code=store['code'],
+                pickup_store_name=store['name'], version=order['version'] + 1,
             )
             return order
         if path == '/api/special-orders/1':
@@ -71,17 +82,27 @@ async def checks(browser):
     await page.get_by_label('Customer name').fill('Maya Chen')
     await page.get_by_label('Phone number').fill('416-555-0148')
     await page.get_by_label('Item description').fill('Smiski Museum Series - The Source')
+    await page.get_by_label('Pickup location').select_option('1')
     await page.get_by_label('Total price').fill('100.00')
     await page.get_by_label('Amount paid now').fill('20.00')
+    await page.get_by_label('Initial payment method').select_option('cash')
     await page.get_by_role('button', name='Create order', exact=True).click()
 
     await expect(page.get_by_role('heading', name='Maya Chen', exact=True)).to_be_visible()
     await expect(page.get_by_text('Phone hidden unless you are today\'s Cashier or a manager.')).to_be_visible()
+    await expect(page.locator('dd').get_by_text('Downtown · DT', exact=True)).to_be_visible()
     await expect(page.get_by_text('$80.00 remaining', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Mark customer received', exact=True)).to_be_disabled()
 
+    await page.get_by_label('Pickup location').select_option('2')
+    await page.get_by_role('button', name='Update pickup location', exact=True).click()
+    await expect(page.locator('dd').get_by_text('Markham · MK', exact=True)).to_be_visible()
+
     await page.get_by_label('Payment amount').fill('80.00')
+    await page.get_by_label('Payment method').select_option('wechat')
     await page.get_by_role('button', name='Add payment', exact=True).click()
+    await expect(page.locator('.so-payments b').get_by_text('Cash', exact=True)).to_be_visible()
+    await expect(page.locator('.so-payments b').get_by_text('WeChat Pay', exact=True)).to_be_visible()
     await expect(page.locator('strong').filter(has_text='Paid in full')).to_be_visible()
     complete = page.get_by_role('button', name=re.compile('Mark customer received'))
     await expect(complete).to_be_enabled()
@@ -104,6 +125,11 @@ async def checks(browser):
         '/api/special-orders/1/complete',
     ]
     assert all(request['idempotency_key'] for request in posts)
+    assert posts[0]['post_data']['pickup_store_id'] == 1
+    assert posts[0]['post_data']['initial_tender'] == 'cash'
+    assert posts[1]['post_data']['tender'] == 'wechat'
+    patches = [request for request in state['requests'] if request['method'] == 'PATCH']
+    assert patches[0]['post_data']['pickup_store_id'] == 2
     await context.close()
 
 
