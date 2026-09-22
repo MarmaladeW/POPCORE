@@ -1712,6 +1712,22 @@ def _migration_special_orders(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('special_orders')")
 
 
+def _migration_special_order_pickup_and_tender(con, cur):
+    cur.execute(
+        'ALTER TABLE special_orders ADD COLUMN pickup_store_id INTEGER REFERENCES stores(id)'
+    )
+    cur.execute(
+        """ALTER TABLE special_order_payments ADD COLUMN tender TEXT
+           CHECK(tender IS NULL OR tender IN ('cash','card','e_transfer','wechat','alipay'))"""
+    )
+    cur.execute(
+        'CREATE INDEX special_orders_pickup_store ON special_orders(pickup_store_id,status,id DESC)'
+    )
+    cur.execute(
+        "INSERT INTO _migrations(name) VALUES ('special_order_pickup_and_tender')"
+    )
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1760,6 +1776,7 @@ def _get_migrations():
         ('store_events', _migration_store_events),
         ('report_match_choices',                       _migration_report_match_choices),
         ('special_orders',                             _migration_special_orders),
+        ('special_order_pickup_and_tender',            _migration_special_order_pickup_and_tender),
     ]
 
 

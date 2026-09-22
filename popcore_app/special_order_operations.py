@@ -5,6 +5,7 @@ from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from checkout_access import business_date
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryConflict, InventoryValidationError
+from sales_operations import TENDERS
 from validation import read_int
 
 
@@ -43,6 +44,24 @@ def _employee_subject(con, value, field):
     return value
 
 
+def _pickup_store(con, value):
+    store_id = read_int(value, 'pickup_store_id', minimum=1)
+    row = con.execute(
+        'SELECT id FROM stores WHERE id=? AND is_active=1', (store_id,)
+    ).fetchone()
+    if row is None:
+        raise InventoryValidationError(
+            'pickup_store_id must identify an active store'
+        )
+    return row['id']
+
+
+def _tender(value, field='tender'):
+    if not isinstance(value, str) or value not in TENDERS:
+        raise InventoryValidationError(f'{field} must be a supported payment method')
+    return value
+
+
 def can_see_phone(con, actor):
     role = actor.get(ROLE_CLAIM)
     if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
@@ -59,10 +78,13 @@ def _order_row(con, order_id):
     order_id = read_int(order_id, 'order_id', minimum=1)
     row = con.execute(
         """SELECT o.*,
+                  store.code pickup_store_code,
+                  store.name pickup_store_name,
                   COALESCE(NULLIF(creator.name,''),o.created_by) created_by_name,
                   CASE WHEN o.completed_by IS NULL THEN NULL
                        ELSE COALESCE(NULLIF(completer.name,''),o.completed_by) END completed_by_name
            FROM special_orders o
+           LEFT JOIN stores store ON store.id=o.pickup_store_id
            LEFT JOIN employees creator ON creator.auth0_id=o.created_by
            LEFT JOIN employees completer ON completer.auth0_id=o.completed_by
            WHERE o.id=?""",
@@ -77,7 +99,7 @@ def _order_detail(con, row, show_phone):
     row = dict(row)
     row['payments'] = [
         dict(payment) for payment in con.execute(
-            """SELECT id,amount_cents,paid_at FROM special_order_payments
+            """SELECT id,amount_cents,tender,paid_at FROM special_order_payments
                WHERE special_order_id=? ORDER BY id""",
             (row['id'],),
         )
@@ -99,10 +121,13 @@ def list_orders(con, actor, status):
     show_phone = can_see_phone(con, actor)
     rows = con.execute(
         """SELECT o.*,
+                  store.code pickup_store_code,
+                  store.name pickup_store_name,
                   COALESCE(NULLIF(creator.name,''),o.created_by) created_by_name,
                   CASE WHEN o.completed_by IS NULL THEN NULL
                        ELSE COALESCE(NULLIF(completer.name,''),o.completed_by) END completed_by_name
            FROM special_orders o
+           LEFT JOIN stores store ON store.id=o.pickup_store_id
            LEFT JOIN employees creator ON creator.auth0_id=o.created_by
            LEFT JOIN employees completer ON completer.auth0_id=o.completed_by
            WHERE o.status=? ORDER BY o.id DESC""",
@@ -123,23 +148,30 @@ def create_order(con, data, actor, request_key):
         item_description = _text(
             data.get('item_description'), 'item_description', 500
         )
+        pickup_store_id = _pickup_store(con, data.get('pickup_store_id'))
         total_cents = read_int(data.get('total_cents'), 'total_cents', minimum=1)
         initial_paid = read_int(
             data.get('initial_paid_cents', 0), 'initial_paid_cents', minimum=0
         )
         if initial_paid > total_cents:
             raise InventoryValidationError('initial_paid_cents cannot exceed total_cents')
+        initial_tender = (
+            _tender(data.get('initial_tender'), 'initial_tender')
+            if initial_paid else None
+        )
         order_id = con.execute(
             """INSERT INTO special_orders
-               (customer_name,customer_phone,item_description,total_cents,created_by)
-               VALUES (?,?,?,?,?)""",
-            (customer_name, customer_phone, item_description, total_cents, actor['sub']),
+               (customer_name,customer_phone,item_description,total_cents,created_by,
+                pickup_store_id)
+               VALUES (?,?,?,?,?,?)""",
+            (customer_name, customer_phone, item_description, total_cents, actor['sub'],
+             pickup_store_id),
         ).lastrowid
         if initial_paid:
             con.execute(
-                """INSERT INTO special_order_payments(special_order_id,amount_cents)
-                   VALUES (?,?)""",
-                (order_id, initial_paid),
+                """INSERT INTO special_order_payments
+                   (special_order_id,amount_cents,tender) VALUES (?,?,?)""",
+                (order_id, initial_paid, initial_tender),
             )
         _remember(
             con, key, 'special_order_create', order_id, actor, digest, {'id': order_id}
@@ -180,10 +212,11 @@ def add_payment(con, order_id, data, actor, request_key):
         ).fetchone()[0]
         if amount > row['total_cents'] - paid:
             raise InventoryValidationError('amount_cents exceeds the remaining balance')
+        tender = _tender(data.get('tender'))
         payment_id = con.execute(
-            """INSERT INTO special_order_payments(special_order_id,amount_cents)
-               VALUES (?,?)""",
-            (row['id'], amount),
+            """INSERT INTO special_order_payments
+               (special_order_id,amount_cents,tender) VALUES (?,?,?)""",
+            (row['id'], amount, tender),
         ).lastrowid
         con.execute(
             'UPDATE special_orders SET version=version+1 WHERE id=?', (row['id'],)
@@ -247,8 +280,6 @@ def complete_order(con, order_id, data, actor, request_key):
 
 
 def correct_order(con, order_id, data, actor, request_key):
-    if not _admin(actor):
-        raise PermissionError('Admin access required')
     _begin(con)
     try:
         row = _order_row(con, order_id)
@@ -265,15 +296,24 @@ def correct_order(con, order_id, data, actor, request_key):
                 'Special order changed. Refresh before continuing.',
                 'special_order_state_conflict',
             )
-        allowed = {'expected_version', 'created_by', 'created_at',
+        admin = _admin(actor)
+        allowed = {'expected_version', 'pickup_store_id', 'created_by', 'created_at',
                    'completed_by', 'completed_at'}
+        changes = set(data) - {'expected_version'}
+        if not admin and (changes != {'pickup_store_id'} or row['status'] != 'open'):
+            raise PermissionError('Admin access required')
         if set(data) - allowed:
-            raise InventoryValidationError('Only attribution and dates can be corrected')
-        if not set(data) - {'expected_version'}:
+            raise InventoryValidationError(
+                'Only pickup location, attribution, and dates can be corrected'
+            )
+        if not changes:
             raise InventoryValidationError('Enter at least one correction')
         values = {field: row[field] for field in (
-            'created_by', 'created_at', 'completed_by', 'completed_at'
+            'pickup_store_id', 'created_by', 'created_at', 'completed_by',
+            'completed_at'
         )}
+        if 'pickup_store_id' in data:
+            values['pickup_store_id'] = _pickup_store(con, data['pickup_store_id'])
         if 'created_by' in data:
             values['created_by'] = _employee_subject(
                 con, data['created_by'], 'created_by'
@@ -298,10 +338,10 @@ def correct_order(con, order_id, data, actor, request_key):
                 'Completed orders require both completed_by and completed_at'
             )
         con.execute(
-            """UPDATE special_orders SET created_by=?,created_at=?,completed_by=?,
-               completed_at=?,version=version+1 WHERE id=?""",
-            (values['created_by'], values['created_at'], values['completed_by'],
-             values['completed_at'], row['id']),
+            """UPDATE special_orders SET pickup_store_id=?,created_by=?,created_at=?,
+               completed_by=?,completed_at=?,version=version+1 WHERE id=?""",
+            (values['pickup_store_id'], values['created_by'], values['created_at'],
+             values['completed_by'], values['completed_at'], row['id']),
         )
         _remember(
             con, key, 'special_order_correct', row['id'], actor, digest,

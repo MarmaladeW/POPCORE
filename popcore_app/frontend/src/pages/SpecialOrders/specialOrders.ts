@@ -1,6 +1,7 @@
 export type SpecialOrderPayment = {
   id: number
   amount_cents: number
+  tender: 'cash' | 'card' | 'e_transfer' | 'wechat' | 'alipay' | null
   paid_at: string
 }
 
@@ -10,6 +11,9 @@ export type SpecialOrder = {
   customer_phone: string | null
   item_description: string
   total_cents: number
+  pickup_store_id: number | null
+  pickup_store_code: string | null
+  pickup_store_name: string | null
   status: 'open' | 'completed'
   created_by: string
   created_by_name: string
