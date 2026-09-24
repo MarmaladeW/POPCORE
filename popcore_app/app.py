@@ -67,6 +67,7 @@ from blueprints.settings  import bp as settings_bp
 from blueprints.goods     import bp as goods_bp
 from blueprints.sale_documents import bp as sale_documents_bp
 from blueprints.checkout import bp as checkout_bp
+from blueprints.clover_sandbox import bp as clover_sandbox_bp
 from blueprints.store_events import bp as store_events_bp
 from blueprints.payments  import bp as payments_bp
 from blueprints.closing   import bp as closing_bp
@@ -89,6 +90,7 @@ app.register_blueprint(goods_bp)
 app.register_blueprint(sale_documents_bp)
 app.register_blueprint(payments_bp)
 app.register_blueprint(checkout_bp)
+app.register_blueprint(clover_sandbox_bp)
 app.register_blueprint(store_events_bp)
 app.register_blueprint(closing_bp)
 app.register_blueprint(trades_bp)

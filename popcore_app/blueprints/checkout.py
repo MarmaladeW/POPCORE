@@ -34,7 +34,8 @@ def body():
 @bp.get('/api/checkouts/access')
 @role_required('staff')
 def access():
-    return jsonify(checkout_access(get_db(), request.jwt_payload))
+    from blueprints.clover_sandbox import enabled
+    return jsonify(**checkout_access(get_db(), request.jwt_payload), clover_sandbox_enabled=enabled())
 
 
 @bp.get('/api/checkouts')

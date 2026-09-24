@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Tag } from 'antd'
 import type { MenuProps } from 'antd'
 import {
-  AppstoreOutlined, BarChartOutlined, CalendarOutlined, CheckCircleOutlined,
-  HomeOutlined, CameraOutlined, FileSearchOutlined, FileTextOutlined, GiftOutlined, HistoryOutlined, DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
+  AppstoreOutlined, BarChartOutlined, CalendarOutlined,
+  HomeOutlined, CameraOutlined, FileSearchOutlined, FileTextOutlined, GiftOutlined, DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
   LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined,
   ShopOutlined, SwapOutlined, UserOutlined,
 } from '@ant-design/icons'
@@ -60,19 +60,22 @@ function StoreSelect({ mobile = false, disabled = false }: { mobile?: boolean; d
 }
 
 function currentNav(pathname: string, manager: boolean) {
-  if (pathname === '/checkout/history') return '/checkout/history'
+  if (pathname === '/checkout/history' || pathname === '/sales/entry') return '/checkout'
+  if (pathname === '/closing') return '/summary'
+  if (pathname.startsWith('/goods/receiving') || pathname.startsWith('/goods/transfers')) return '/incoming'
   if (pathname.startsWith('/goods/')) return '/stock'
   if (pathname.startsWith('/trades/cases/')) return '/trades'
   if (pathname.startsWith('/sales/documents/') || pathname.startsWith('/sales/payments/')) {
-    return manager ? '/sales' : '/sales/entry'
+    return manager ? '/sales' : '/checkout'
   }
   if (pathname.startsWith('/sales/day/')) return '/sales'
-  if (pathname === '/sales/entry') return '/sales/entry'
   return pathname === '/' ? '/' : `/${pathname.split('/')[1]}`
 }
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {
-  return <Link to={item.key} aria-current={active ? 'page' : undefined}>{item.label}</Link>
+  const location = useLocation()
+  const sandbox = new URLSearchParams(location.search).get('source') === 'clover-sandbox'
+  return <Link to={item.key === '/checkout' && sandbox ? '/checkout?source=clover-sandbox' : item.key} aria-current={active ? 'page' : undefined}>{item.label}</Link>
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -85,6 +88,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [userCollapsed, setCollapsed] = useState(false)
   const [scheduleExpanded, setScheduleExpanded] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
+  const [openGroups, setOpenGroups] = useState<string[]>([])
   const moreButton = useRef<HTMLButtonElement>(null)
   const screens = useBreakpoint()
   const mobile = !screens.md
@@ -95,6 +99,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const manager = useHasRole('manager')
   const staff = useHasRole('staff')
   const active = currentNav(location.pathname, manager)
+  useEffect(() => {
+    const group = ['/stock', '/restock'].includes(active) ? 'inventory-tools'
+      : ['/special-orders', '/today', '/trades'].includes(active) ? 'other-tools' : ''
+    if (group) setOpenGroups(old => old.includes(group) ? old : [...old, group])
+  }, [active])
   const collapsed = active === '/schedule' ? !scheduleExpanded : userCollapsed
   useEffect(() => setScheduleExpanded(false), [location.pathname])
 
@@ -103,20 +112,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const daily: NavItem[] = [
     { key: '/', icon: <HomeOutlined />, label: 'Home' },
     ...(staff ? [
-      { key: '/checkout', icon: <CameraOutlined />, label: '买单 / Checkout' },
-      { key: '/special-orders', icon: <FileSearchOutlined />, label: 'Special orders' },
-      { key: '/incoming', icon: <InboxOutlined />, label: '入店 / Receive goods' },
-      { key: '/claw', icon: <GiftOutlined />, label: '娃娃机 / Claw machine' },
-      { key: '/summary', icon: <FileTextOutlined />, label: '汇总 / Summary' },
-      { key: '/checkout/history', icon: <HistoryOutlined />, label: 'Order history' },
-      { key: '/today', icon: <DashboardOutlined />, label: 'Store tasks' },
-      { key: '/stock', icon: <InboxOutlined />, label: 'Inventory' },
-      { key: '/restock', icon: <ShopOutlined />, label: 'Restock' },
-      { key: '/sales/entry', icon: <DollarOutlined />, label: 'Enter sale' },
-      { key: '/closing', icon: <CheckCircleOutlined />, label: 'Closing' },
-      { key: '/trades', icon: <SwapOutlined />, label: 'Trades' },
+      { key: '/checkout', icon: <CameraOutlined />, label: 'Checkout' },
+      { key: '/incoming', icon: <InboxOutlined />, label: 'Receive goods' },
+      { key: '/claw', icon: <GiftOutlined />, label: 'Claw machine' },
+      { key: '/summary', icon: <FileTextOutlined />, label: 'Summary' },
     ] : []),
   ]
+  const inventory: NavItem[] = staff ? [
+    { key: '/stock', icon: <InboxOutlined />, label: 'Stock & movements' },
+    { key: '/restock', icon: <ShopOutlined />, label: 'Restock' },
+  ] : []
+  const other: NavItem[] = staff ? [
+    { key: '/special-orders', icon: <FileSearchOutlined />, label: 'Special orders' },
+    { key: '/today', icon: <DashboardOutlined />, label: 'Store tasks' },
+    { key: '/trades', icon: <SwapOutlined />, label: 'Trades' },
+  ] : []
   const review: NavItem[] = manager ? [
     { key: '/sales', icon: <DollarOutlined />, label: 'Sales' },
     { key: '/reports', icon: <BarChartOutlined />, label: 'Reports' },
@@ -133,6 +143,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     { type: 'group', label: collapsed ? undefined : 'Daily work', children: daily.map(item => ({
       key: item.key, icon: item.icon, label: <NavLink item={item} active={active === item.key} />,
     })) },
+    ...(inventory.length ? [{ key: 'inventory-tools', icon: <InboxOutlined />, label: 'Inventory', children: inventory.map(item => ({
+      key: item.key, icon: item.icon, label: <NavLink item={item} active={active === item.key} />,
+    })) }, { key: 'other-tools', icon: <EllipsisOutlined />, label: 'More', children: other.map(item => ({
+      key: item.key, icon: item.icon, label: <NavLink item={item} active={active === item.key} />,
+    })) }] : []),
     ...(review.length ? [{ type: 'group' as const, label: collapsed ? undefined : 'Review', children: review.map(item => ({
       key: item.key, icon: item.icon, label: <NavLink item={item} active={active === item.key} />,
     })) }] : []),
@@ -146,7 +161,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     planning[0],
   ]
   const bottomKeys = new Set(bottom.map(item => item.key))
-  const more = [...daily, ...review, ...planning].filter(item => !bottomKeys.has(item.key))
+  const moreGroups = [
+    { label: 'Daily work', items: daily },
+    { label: 'Inventory', items: inventory },
+    { label: 'More store tools', items: other },
+    { label: 'Review', items: review },
+    { label: 'Planning & admin', items: planning },
+  ].map(group => ({ ...group, items: group.items.filter(item => !bottomKeys.has(item.key)) })).filter(group => group.items.length)
   const shellClass = 'pc-shell pc-shell-operations'
 
   const accountItems: MenuProps['items'] = [{
@@ -160,7 +181,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       collapsed={collapsed} trigger={null}
     >
       <Brand collapsed={collapsed} />
-      <Menu className="pc-sidebar-menu" theme="light" mode="inline" selectedKeys={[active]} items={groupedMenuItems} />
+      <Menu className="pc-sidebar-menu" theme="light" mode="inline" selectedKeys={[active]} openKeys={collapsed ? undefined : openGroups} onOpenChange={setOpenGroups} items={groupedMenuItems} />
       <Button
         className="pc-collapse" type="text"
         aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
@@ -190,7 +211,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     {mobile && <nav className="pc-bottom-nav" aria-label="Primary navigation">
       {bottom.map(item => <Link
-        key={item.key} to={item.key} className={active === item.key ? 'active' : undefined}
+        key={item.key} to={item.key==='/checkout'&&new URLSearchParams(location.search).get('source')==='clover-sandbox'?'/checkout?source=clover-sandbox':item.key} className={active === item.key ? 'active' : undefined}
         aria-current={active === item.key ? 'page' : undefined}
       ><span aria-hidden="true">{item.icon}</span><small>{item.label}</small></Link>)}
       <button ref={moreButton} type="button" className="pc-more-button" aria-label="More" onClick={() => setMoreOpen(true)}>
@@ -207,10 +228,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       className="pc-more-drawer"
     >
       <nav aria-label="More navigation">
-        {more.map(item => <Link
+        {moreGroups.map(group => <section key={group.label} aria-label={group.label}>
+          <h3>{group.label}</h3>
+          {group.items.map(item => <Link
           key={item.key} to={item.key} aria-current={active === item.key ? 'page' : undefined}
           onClick={() => setMoreOpen(false)}
         ><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}
+        </section>)}
       </nav>
       <div className="pc-more-account">
         <Avatar size={40} src={user?.picture} icon={!user?.picture ? <UserOutlined /> : undefined} />

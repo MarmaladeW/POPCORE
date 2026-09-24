@@ -9,6 +9,11 @@
 .co-toolbar a, .co-footer a, .co-next, .co-empty a { display: inline-flex; min-height: 44px; align-items: center; color: #4338ca; font-weight: 600; }
 .co-connection { display: inline-flex; align-items: center; gap: 8px; color: #69511d; font-size: 13px; }
 .co-connection > span { width: 7px; height: 7px; border-radius: 50%; background: #a97918; }
+.co-connected { color: #166534; }
+.co-connected > span { background: #16803c; }
+.co-sandbox-banner { margin-bottom: 16px; }
+.co-source-switch { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+.co-source-switch a { display: inline-flex; align-items: center; min-height: 44px; }
 .co-location { display: flex; align-items: center; gap: 12px; padding: 16px 0; flex-wrap: wrap; }
 .co-location > label { font-weight: 600; }
 .co-select { min-height: 44px; max-width: 100%; padding: 8px 12px; border: 1px solid #c3cbd8; border-radius: 8px; background: white; color: #20242d; }

@@ -32,6 +32,7 @@
 .pc-more-drawer .ant-drawer-content-wrapper { max-height: 72vh; }
 .pc-more-drawer .ant-drawer-body { padding: 8px 16px max(16px, env(safe-area-inset-bottom)); }
 .pc-more-drawer nav { display: grid; }
+.pc-more-drawer nav h3 { margin: 18px 0 4px; color: #687386; font-size: 12px; font-weight: 600; }
 .pc-more-drawer nav a { display: flex; min-height: 48px; align-items: center; gap: 12px; border-bottom: 1px solid #EDF0F4; color: #20242D; text-decoration: none; }
 .pc-more-drawer nav a[aria-current='page'] { color: #4F46E5; font-weight: 650; }
 .pc-more-account { display: flex; align-items: center; gap: 12px; padding-top: 16px; }
