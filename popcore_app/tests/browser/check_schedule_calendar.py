@@ -121,6 +121,7 @@ async def run_checks(browser, case):
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Expand navigation', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
+    await page.locator('.pc-sidebar .ant-menu-submenu-title').filter(has_text='More').click()
     await page.get_by_role('link', name='Store tasks', exact=True).click()
     await expect(page.get_by_role('heading', name='Today / 今日', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
