@@ -1,4 +1,4 @@
-"""Deferred offline check; intentionally not run during implementation."""
+"""Isolated offline checks for the sandbox checkout adapter."""
 import json
 import os
 import sys
@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
 from flask import Flask, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -15,6 +16,27 @@ from blueprints import clover_sandbox as adapter
 
 
 class SandboxAdapterTests(unittest.TestCase):
+    def test_blank_open_draft_does_not_block_priced_orders(self):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'environment': 'sandbox', 'orders': [
+            {'id': 'ABCDEFGHIJKLM', 'currency': 'CAD', 'total': 1130,
+             'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
+             'items': [{'name': 'Test item', 'price': 1000}], 'payments': []},
+            {'id': 'NOPQRSTUVWXYZ', 'currency': 'CAD', 'total': None,
+             'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
+             'items': [], 'payments': []},
+        ]}).encode()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            'CLOVER_SANDBOX_CHECKOUT_DIR': directory,
+            'CLOVER_SANDBOX_STORE_ID': '7',
+            'CLOVER_SANDBOX_PROBE_PASSWORD': 'test-only',
+        }), patch.object(adapter.requests, 'get', return_value=response):
+            with adapter.database() as con:
+                adapter.sync(con)
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM orders').fetchone()[0], 1)
+                self.assertEqual(con.execute('SELECT error FROM feed').fetchone()[0], '')
+
     def test_payment_confirmation_is_isolated_and_conservative(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             'CLOVER_SANDBOX_CHECKOUT_DIR': directory,
