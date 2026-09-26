@@ -17,7 +17,7 @@ from flask import Blueprint, jsonify, request, send_file
 from auth import role_required
 from checkout_access import checkout_access
 from db import get_db
-from inventory_commands import InventoryError, require_inventory_access
+from inventory_commands import InventoryError
 from payment_evidence import prepare_image
 from validation import read_date, read_int
 
@@ -310,7 +310,6 @@ def claim(order_id):
         actor = request.jwt_payload
         if not access['live_stores']:
             raise PermissionError('Checkout shift required')
-        require_inventory_access(get_db(), actor, (value['store_id'],), 'staff')
         if value['cashier_sub'] == actor['sub']:
             return jsonify(value)
         if not value['can_claim']:
@@ -333,7 +332,6 @@ def upload(order_id, payment_id):
         payment = next((p for p in value['attempts'] if p['id'] == payment_id), None)
         if not payment or not payment['can_upload']:
             raise PermissionError('Payment evidence access denied')
-        require_inventory_access(get_db(), request.jwt_payload, (value['store_id'],), 'staff')
         image = prepare_image(request.files.get('image'))
         with con:
             con.execute('''INSERT OR IGNORE INTO evidence(payment_id,content_hash,mime_type,content,uploader_sub)
