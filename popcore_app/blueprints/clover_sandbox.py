@@ -174,7 +174,7 @@ def sync(con):
             raise ValueError('Unexpected sandbox feed')
         rows = [validate_order(row) for row in rows if not (
             isinstance(row, dict) and row.get('paymentState') == 'OPEN'
-            and row.get('total') is None and row.get('items') == [] and row.get('payments') == [])]
+            and row.get('total') is None and row.get('payments') == [])]
         if len({row['id'] for row in rows}) != len(rows):
             raise ValueError('Duplicate sandbox order')
         fetched = time.time()
