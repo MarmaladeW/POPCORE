@@ -1,6 +1,6 @@
 # Clover checkout rehearsal (option 1)
 
-Status: local implementation; no tests, frontend build, deployment or provider verification performed for this change. Tests are deliberately reserved for a session with the user operating Android and their phone.
+Status: implementation and offline checks exist. The user-operated Android-to-phone timing rehearsal is still pending; confirm the current deployed app and probe versions before starting it.
 
 ## Boundaries
 
@@ -11,7 +11,7 @@ Order snapshots, stable payment IDs, cashier ownership and image bytes live in o
 ## Enable after deployment is authorized
 
 1. Release the application source and an intentional frontend build through the normal POPCORE release process. Do not enable the adapter with an old frontend build.
-2. Update the isolated probe with `scripts/clover_sandbox.py` from this branch. This incorporates the existing probe from the Clover worktree, preserving its OAuth/webhook/read-only behavior, and fetches payment details with four concurrent reads. Keep the existing private config and data untouched. Keep one Gunicorn worker for refresh-token rotation and bind only to `127.0.0.1:5055`.
+2. Update the isolated probe with `scripts/clover_sandbox.py` from this branch. This preserves its OAuth/webhook/read-only behavior, uses expanded order payments, and resolves at most one missing tender label per read to avoid payment-detail rate limits. Keep the existing private config and data untouched. Keep one Gunicorn worker for refresh-token rotation and bind only to `127.0.0.1:5055`.
 3. Confirm Midtown's exact active `stores.id` using a read-only lookup. Do not infer it from a numeric position or invent an ID. Set `CLOVER_SANDBOX_STORE_ID` to that ID in the application's private service environment.
 4. Create a dedicated directory owned by the POPCORE application service account, mode `0700`, outside the served/static/upload trees, for example `/var/lib/popcore-clover-checkout`. Set `CLOVER_SANDBOX_CHECKOUT_DIR` to its absolute path. The adapter creates only `clover-checkout-sandbox.sqlite3` plus SQLite journal sidecars there, with the database mode `0600`. It refuses to reuse that database for a different store.
 5. Set `CLOVER_SANDBOX_PROBE_PASSWORD` privately to the existing probe's `ADMIN_PASSWORD`. Never put it in `VITE_*`, git, a URL or client-side code. No production Clover credentials are needed. The source URL is fixed to the loopback sandbox probe, with redirects disabled.
@@ -31,7 +31,7 @@ The page targets a one-second poll cadence, without overlapping requests, and sh
 
 The target is **under three seconds end to end**, not a verified latency guarantee. Measure from the Android action to the phone update. Network time, Clover cloud delivery, OAuth refresh and provider rate limits count toward the result.
 
-The probe returns only its latest 20 modified orders. Observed orders remain in isolated history, but orders outside that window are not continuously reconciled. Missing orders are never interpreted as cancelled. Refunds, voids, deleted orders, weighted/complex-item pricing and historical imports require separate provider coverage; use Clover as the source of truth. This is not production ingestion and must not be enabled for a real merchant.
+The probe returns only its latest 20 modified orders. A blank open draft with no total, items or payments is not queueable and is skipped; other invalid orders still fail validation. Observed orders remain in isolated history, but orders outside that window are not continuously reconciled. Missing orders are never interpreted as cancelled. Refunds, voids, deleted orders, weighted/complex-item pricing and historical imports require separate provider coverage; use Clover as the source of truth. This is not production ingestion and must not be enabled for a real merchant.
 
 ## Navigation
 
@@ -51,4 +51,4 @@ No cleanup, credential change, production app creation or data deletion is perfo
 
 ## Deferred developer check
 
-`python -m unittest discover -s popcore_app/tests -p test_clover_sandbox_adapter.py -v` is a small offline check of failed/partial/successful/mismatched payments, stale permissions, tender labels and separate storage. It was written but **not executed**. It is not a replacement for the existing checkout regression suite, frontend build, permissions/evidence checks or the user-operated Android-to-phone rehearsal.
+`python -m unittest discover -s popcore_app/tests -p test_clover_sandbox_adapter.py -v` is a small offline check of failed/partial/successful/mismatched payments, stale permissions, tender labels, blank drafts and separate storage. It is not a replacement for the existing checkout regression suite, frontend build, permissions/evidence checks or the user-operated Android-to-phone rehearsal.

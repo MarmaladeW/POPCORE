@@ -1,7 +1,6 @@
 """Single-merchant sandbox probe. No POPCORE imports or Clover business-data writes."""
 import argparse
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor
 import hmac
 import json
 import logging
@@ -257,7 +256,12 @@ def create_app(config):
             'client_id': config['CLOVER_APP_ID'], 'client_secret': config['CLOVER_APP_SECRET'], 'code': code}))
         return redirect(PREFIX + '/')
 
+    tender_labels = {}
+    tender_lock = threading.Lock()
+    tender_retry_after = 0
+
     def read_orders():
+        nonlocal tender_retry_after
         merchant = config.get('CLOVER_MERCHANT_ID', '')
         if not IDENTIFIER.fullmatch(merchant):
             raise CloverError('Set the Canadian test merchant ID first.')
@@ -266,21 +270,13 @@ def create_app(config):
                         headers={'Authorization': 'Bearer ' + token},
                         params={'limit': 20, 'orderBy': 'modifiedTime DESC',
                                 'expand': 'lineItems,discounts,payments,employee'})
-        # Fetch tender details concurrently: a full queue must not cost one round trip per payment.
         payment_ids = {payment.get('id', '') for order in payload.get('elements', [])
                        for payment in (order.get('payments') or {}).get('elements', [])}
         if any(not IDENTIFIER.fullmatch(payment_id) for payment_id in payment_ids):
             raise CloverError('Clover sandbox returned an invalid payment identifier.')
-
-        def read_payment(payment_id):
-            return payment_id, clover('GET', '/v3/merchants/' + merchant + '/payments/' + payment_id,
-                                      headers={'Authorization': 'Bearer ' + token},
-                                      params={'expand': 'tender,employee,order'})
-
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            payment_details = dict(pool.map(read_payment, payment_ids))
         # Only show order facts needed for this probe, never raw customer/card/token data.
         rows = []
+        lookup_attempted = False
         for order in payload.get('elements', []):
             row = {k: order.get(k) for k in (
                 'id', 'total', 'currency', 'paymentState', 'state', 'testMode', 'createdTime',
@@ -297,15 +293,30 @@ def create_app(config):
             row['payments'] = []
             for payment in (order.get('payments') or {}).get('elements', []):
                 payment_id = payment.get('id', '')
-                if not IDENTIFIER.fullmatch(payment_id):
-                    raise CloverError('Clover sandbox returned an invalid payment identifier.')
-                detail = payment_details[payment_id]
-                safe_payment = {k: detail.get(k) for k in (
+                safe_payment = {k: payment.get(k) for k in (
                     'id', 'amount', 'tipAmount', 'taxAmount', 'result', 'createdTime',
                     'modifiedTime', 'offline')}
-                safe_payment['tenderId'] = (detail.get('tender') or {}).get('id')
-                safe_payment['tenderLabel'] = (detail.get('tender') or {}).get('label')
-                safe_payment['employeeId'] = (detail.get('employee') or {}).get('id')
+                tender = payment.get('tender') or {}
+                tender_id = tender.get('id')
+                safe_payment['tenderId'] = tender_id
+                safe_payment['tenderLabel'] = tender.get('label')
+                safe_payment['employeeId'] = (payment.get('employee') or {}).get('id')
+                if tender_id and not safe_payment['tenderLabel']:
+                    with tender_lock:
+                        if tender_id not in tender_labels and not lookup_attempted and time.monotonic() >= tender_retry_after:
+                            lookup_attempted = True
+                            try:
+                                detail = clover('GET', '/v3/merchants/' + merchant + '/payments/' + payment_id,
+                                                headers={'Authorization': 'Bearer ' + token},
+                                                params={'expand': 'tender,employee,order'})
+                                detail_tender = detail.get('tender') or {}
+                                if detail_tender.get('id') == tender_id and detail_tender.get('label'):
+                                    tender_labels[tender_id] = detail_tender['label']
+                                else:
+                                    tender_retry_after = time.monotonic() + 30
+                            except CloverError:
+                                tender_retry_after = time.monotonic() + 30
+                        safe_payment['tenderLabel'] = tender_labels.get(tender_id)
                 row['payments'].append(safe_payment)
             rows.append(row)
         return rows
