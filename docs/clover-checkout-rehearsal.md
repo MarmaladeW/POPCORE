@@ -31,7 +31,7 @@ The page targets a one-second poll cadence, without overlapping requests, and sh
 
 The target is **under three seconds end to end**, not a verified latency guarantee. Measure from the Android action to the phone update. Network time, Clover cloud delivery, OAuth refresh and provider rate limits count toward the result.
 
-The probe returns only its latest 20 modified orders. A blank open draft with no total, items or payments is not queueable and is skipped; other invalid orders still fail validation. Observed orders remain in isolated history, but orders outside that window are not continuously reconciled. Missing orders are never interpreted as cancelled. Refunds, voids, deleted orders, weighted/complex-item pricing and historical imports require separate provider coverage; use Clover as the source of truth. This is not production ingestion and must not be enabled for a real merchant.
+The probe returns only its latest 20 modified orders. An open draft with no total or payments is not queueable and is skipped, even if it already has items; it enters the queue when Clover provides a total. Other invalid orders still fail validation. Observed orders remain in isolated history, but orders outside that window are not continuously reconciled. Missing orders are never interpreted as cancelled. Refunds, voids, deleted orders, weighted/complex-item pricing and historical imports require separate provider coverage; use Clover as the source of truth. This is not production ingestion and must not be enabled for a real merchant.
 
 ## Navigation
 
@@ -51,4 +51,4 @@ No cleanup, credential change, production app creation or data deletion is perfo
 
 ## Deferred developer check
 
-`python -m unittest discover -s popcore_app/tests -p test_clover_sandbox_adapter.py -v` is a small offline check of failed/partial/successful/mismatched payments, stale permissions, tender labels, blank drafts and separate storage. It is not a replacement for the existing checkout regression suite, frontend build, permissions/evidence checks or the user-operated Android-to-phone rehearsal.
+`python -m unittest discover -s popcore_app/tests -p test_clover_sandbox_adapter.py -v` is a small offline check of failed/partial/successful/mismatched payments, stale permissions, tender labels, unpriced drafts and separate storage. It is not a replacement for the existing checkout regression suite, frontend build, permissions/evidence checks or the user-operated Android-to-phone rehearsal.

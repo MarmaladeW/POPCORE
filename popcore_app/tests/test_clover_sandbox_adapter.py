@@ -16,7 +16,7 @@ from blueprints import clover_sandbox as adapter
 
 
 class SandboxAdapterTests(unittest.TestCase):
-    def test_blank_open_draft_does_not_block_priced_orders(self):
+    def test_unpriced_open_draft_with_items_does_not_block_priced_orders(self):
         response = requests.Response()
         response.status_code = 200
         response._content = json.dumps({'environment': 'sandbox', 'orders': [
@@ -25,7 +25,7 @@ class SandboxAdapterTests(unittest.TestCase):
              'items': [{'name': 'Test item', 'price': 1000}], 'payments': []},
             {'id': 'NOPQRSTUVWXYZ', 'currency': 'CAD', 'total': None,
              'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
-             'items': [], 'payments': []},
+             'items': [{'name': 'Pending item'}], 'payments': []},
         ]}).encode()
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             'CLOVER_SANDBOX_CHECKOUT_DIR': directory,
