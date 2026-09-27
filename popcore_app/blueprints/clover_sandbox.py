@@ -215,6 +215,11 @@ def detail(con, row, access):
         raise PermissionError('Checkout history access denied')
     has_discount = bool(source.get('discounts')) or any(
         item.get('discountAmount') or item.get('orderLevelDiscountAmount') for item in source['items'])
+    cash_discount_applied = any(
+        type(discount.get('amount')) is int and discount['amount'] < 0
+        and discount.get('percentage') is None
+        and discount.get('name') == f"CA${-discount['amount'] // 100}.{(-discount['amount']) % 100:02d} Off"
+        for discount in source.get('discounts') or [] if isinstance(discount, dict))
     prices = [item.get('priceWithModifiersAndItemAndOrderDiscounts')
               if item.get('priceWithModifiersAndItemAndOrderDiscounts') is not None else item.get('price')
               for item in source['items']]
@@ -233,6 +238,7 @@ def detail(con, row, access):
         received_cents=received, remaining_cents=max(0, total - received), refunded_cents=0,
         refund_due_cents=0, abandoned_reason=None, refunds=[], quote_available=quote_available,
         totals_known=totals_known, source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
+        cash_discount_applied=cash_discount_applied,
         attempts=[dict(id=p['id'], tender=p['tender'], amount_cents=p['amount'],
             status=('completed' if p['result'] == 'SUCCESS' else 'failed') if p['active'] else 'cancelled',
             can_upload=writable and p['active'] and p['result'] == 'SUCCESS',

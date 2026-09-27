@@ -220,12 +220,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     </nav>}
 
     {mobile && <Drawer
-      title="More" placement="bottom" open={moreOpen} height="auto"
+      title="More" placement="bottom" open={moreOpen} height="72vh"
       onClose={() => {
         setMoreOpen(false)
         window.setTimeout(() => moreButton.current?.focus(), 350)
       }}
-      className="pc-more-drawer"
+      rootClassName="pc-more-drawer"
     >
       <nav aria-label="More navigation">
         {moreGroups.map(group => <section key={group.label} aria-label={group.label}>

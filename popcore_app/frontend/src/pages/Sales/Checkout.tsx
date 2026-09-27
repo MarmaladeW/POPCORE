@@ -16,10 +16,10 @@ type Store = { id:number; code:string; name:string }
 type Access = { business_date:string; role:string; live_stores:Store[]; history_stores:Store[]; clover_sandbox_enabled?:boolean }
 type Photo = { id:number }
 type Attempt = { id:number; tender:string; amount_cents:number; status:string; can_upload:boolean; photos:Photo[]; refundable_cents?:number }
-type Order = { id:number; source?:'clover-sandbox'; can_claim?:boolean; source_fresh?:boolean; source_seen_at?:number; quote_available?:boolean; totals_known?:boolean; has_discount?:boolean; store_id:number; reference:string; register_name?:string; business_date:string; status:string; version:number; sale_id:number|null; cashier_name:string; cashier_sub:string; can_manage:boolean; can_process:boolean; can_refund:boolean; received_cents:number; remaining_cents:number; refunded_cents:number; refund_due_cents:number; abandoned_reason:string|null; attempts:Attempt[]; refunds:{id:number;amount_cents:number;reference:string;business_date:string;tender:string}[]; order:{ subtotal_cents:number;source_tax_cents:number;gross_cents:number;reduction_cents:number;collected_cents:number;lines:{product_name_snapshot:string;quantity:number;unit:string}[] } }
+type Order = { id:number; source?:'clover-sandbox'; can_claim?:boolean; source_fresh?:boolean; source_seen_at?:number; quote_available?:boolean; totals_known?:boolean; has_discount?:boolean; cash_discount_applied?:boolean; store_id:number; reference:string; register_name?:string; business_date:string; status:string; version:number; sale_id:number|null; cashier_name:string; cashier_sub:string; can_manage:boolean; can_process:boolean; can_refund:boolean; received_cents:number; remaining_cents:number; refunded_cents:number; refund_due_cents:number; abandoned_reason:string|null; attempts:Attempt[]; refunds:{id:number;amount_cents:number;reference:string;business_date:string;tender:string}[]; order:{ subtotal_cents:number;source_tax_cents:number;gross_cents:number;reduction_cents:number;collected_cents:number;lines:{product_name_snapshot:string;quantity:number;unit:string}[] } }
 type DraftUpdate = Partial<Draft> | ((draft:Draft)=>Draft)
 type Queue = { orders:Order[]; next_before_id:number|null; clover:{connected:boolean; fetched_at?:number; message?:string} }
-type Draft = { target:string; tender:string; split:string; includesCard:boolean; sourceTotal?:number; photos?:Record<number,File> }
+type Draft = { target:string; tender:string; split:string; includesCard:boolean; cashDiscountApplied:boolean; sourceTotal?:number; photos?:Record<number,File> }
 const methods = [{value:'cash',label:'Cash',icon:<DollarOutlined/>},{value:'card',label:'Card',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer'},{value:'wechat',label:'WeChat Pay'},{value:'alipay',label:'Alipay'}]
 const electronic = (method:string) => ['e_transfer','wechat','alipay'].includes(method)
 const moneyInput = (cents:number) => (cents/100).toFixed(2)
@@ -32,7 +32,7 @@ const initialDraft = (order:Order):Draft => {
   const active=order.attempts.filter(a=>a.status!=='cancelled'),tender=active.find(a=>a.status==='pending')?.tender || ''
   const includesCard=active.some(a=>a.tender==='card')&&active.some(a=>a.tender!=='card')
   const target=order.attempts.length||order.order.reduction_cents||order.has_discount||order.quote_available===false?order.order.collected_cents:suggestPaymentTarget(order.order.gross_cents,tender,includesCard)
-  return {target:moneyInput(target),tender,split:'',includesCard,sourceTotal:order.order.gross_cents}
+  return {target:moneyInput(target),tender,split:'',includesCard,cashDiscountApplied:!!order.cash_discount_applied,sourceTotal:order.order.gross_cents}
 }
 
 function PhotoCapture({order,attempt,draft,setDraft,updated,onBusy,primary,disabled}:{order:Order;attempt:Attempt;primary:boolean;disabled:boolean;draft:Draft;setDraft:(v:DraftUpdate)=>void;updated:()=>void;onBusy:(v:boolean)=>void}) {
@@ -133,9 +133,9 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy}:{order:Order
 
       <div className="co-pricing">
         <div className="co-payable"><label htmlFor="checkout-target">Customer pays</label><div className="co-money-input"><span aria-hidden="true">$</span><input id="checkout-target" aria-describedby="checkout-target-help" inputMode="decimal" value={draft.target} disabled={blocked||draft.tender==='card'||order.received_cents>0||(sandbox&&pricingLocked)} onChange={e=>setDraft({target:e.target.value})}/><span>CAD</span></div><p id="checkout-target-help">{sandbox&&pricingLocked?'Using the recorded total. Make any remaining changes on Clover.':order.received_cents?'Payments already received. The order total is fixed.':mixedWithCard?'Whole-dollar split target · no cash discount':draft.tender==='card'?'Use the recorded card total.':'Suggested amount · tap to adjust'}</p></div>
-        {(draft.tender!=='card'||mixedWithCard)&&<div className="co-discount"><span>{mixedWithCard?'Pre-tax rounding adjustment to enter in Clover':'Pre-tax discount to enter in Clover'}</span><strong>{quote&&(!sandbox||!pricingLocked)?formatCents(quote.discountCents):'—'}</strong><small>{order.has_discount?'A discount is already on Clover. Do not apply it again.':order.quote_available===false?'A reliable discount estimate is unavailable for these items. Use Clover’s total.':'Estimate from the original subtotal and tax. Check Clover’s resulting total.'}</small></div>}
+        {(draft.tender!=='card'||mixedWithCard)&&<div className="co-discount"><span>{sandbox&&order.has_discount?'Discount already on Clover':mixedWithCard?'Pre-tax rounding adjustment to enter in Clover':'Pre-tax discount to enter in Clover'}</span><strong>{quote&&(!sandbox||!pricingLocked)?formatCents(quote.discountCents):'—'}</strong><small>{order.has_discount?'Do not apply it again.':order.quote_available===false?'A reliable discount estimate is unavailable for these items. Use Clover’s total.':'Estimate from the original subtotal and tax. Check Clover’s resulting total.'}</small></div>}
       </div>
-      <fieldset className="co-methods" disabled={blocked}><legend>How is the customer paying?</legend><div>{methods.map(method=><button key={method.value} type="button" aria-pressed={draft.tender===method.value} onClick={()=>choose(method.value)}>{method.icon}{method.label}</button>)}</div></fieldset>
+      <fieldset className="co-methods" disabled={blocked}><legend>How is the customer paying?</legend><div>{methods.map(method=><button key={method.value} type="button" aria-pressed={draft.tender===method.value} aria-describedby={sandbox&&order.cash_discount_applied&&method.value==='card'?'co-cash-discount-note':undefined} disabled={sandbox&&order.cash_discount_applied&&method.value==='card'} onClick={()=>choose(method.value)}>{method.icon}{method.label}</button>)}</div>{sandbox&&order.cash_discount_applied&&<p id="co-cash-discount-note" className="co-muted">Remove the cash discount on Clover to use Card.</p>}</fieldset>
       {!quote&&order.quote_available!==false&&<Alert type="error" showIcon message="Enter a positive amount no greater than the original total."/>}
       {quote?.warning&&<Alert type="warning" showIcon message="This discount is more than 20% of the order value. Check the amount before continuing."/>}
       {quote&&quote.predictedTotalCents!==target&&(draft.tender!=='card'||mixedWithCard)&&<p className="co-muted">Estimated total after rounding: {formatCents(quote.predictedTotalCents)}. Clover may round differently.</p>}
@@ -220,6 +220,10 @@ export default function CheckoutPage() {
         if(detail)setDrafts(old=>{
           const draft=old[detail.id]
           if(!draft)return {...old,[detail.id]:initialDraft(detail)}
+          if(sandbox&&!!detail.cash_discount_applied!==draft.cashDiscountApplied){
+            const cashDiscountApplied=!!detail.cash_discount_applied
+            return {...old,[detail.id]:{...draft,cashDiscountApplied,tender:cashDiscountApplied&&draft.tender==='card'?'':draft.tender,includesCard:cashDiscountApplied?false:draft.includesCard,target:moneyInput(detail.order.collected_cents),sourceTotal:detail.order.gross_cents}}
+          }
           // Keep tender choice and an unsaved camera photo while provider totals change.
           if(sandbox&&(detail.received_cents>0||detail.has_discount||detail.quote_available===false))return {...old,[detail.id]:{...draft,target:moneyInput(detail.order.collected_cents),sourceTotal:detail.order.gross_cents}}
           if(sandbox&&draft.sourceTotal!==detail.order.gross_cents){
