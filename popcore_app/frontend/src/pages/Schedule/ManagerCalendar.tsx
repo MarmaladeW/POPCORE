@@ -472,9 +472,9 @@ export default function ManagerCalendar() {
           </div>
           <div className="pc-shift-details">
             {halfTag && <span className="pc-shift-half">{halfTag}</span>}
-            {p.position && <span className="pc-shift-pos">{p.position}</span>}
             <span className="pc-shift-time">{range}</span>
           </div>
+          {p.position && <span className="pc-shift-pos">{p.position}</span>}
         </div>
       )
     }

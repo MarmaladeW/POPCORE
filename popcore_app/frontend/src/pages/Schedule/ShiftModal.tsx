@@ -54,7 +54,7 @@ interface ShiftFormValues {
   notes?:      string
 }
 
-type SavePhase = 'idle' | 'checking' | 'conflict' | 'error'
+type SavePhase = 'idle' | 'checking' | 'availability' | 'conflict' | 'error'
 /** Built-in presets, or `slot:<index>` for a custom fixed slot. */
 type Preset = 'full' | 'first' | 'second' | 'custom' | `slot:${number}`
 
@@ -122,7 +122,8 @@ export default function ShiftModal({
   const employee = employees.find(item => item.id === watchedEmployee)
   const requireAvailability = !existing && !!employee && !employee.is_trainee
   const issue = employee && !employee.is_trainee ? availabilityIssue(selectedAvailability, chosenStore, watchedStart || '', watchedEnd || '') : null
-  const blockingIssue = requireAvailability && selectedAvailability?.submitted_at ? issue : null
+  const unavailable = !existing && selectedAvailability?.status === 'unavailable'
+  const blockingIssue = requireAvailability && selectedAvailability?.submitted_at && !unavailable ? issue : null
   const openHours: OpenHoursConfig = hoursForStore(
     watchedStore || existing?.store_code || defaultStoreCode || '', storeHours,
   )
@@ -241,10 +242,10 @@ export default function ShiftModal({
     form.validateFields(['start_time', 'end_time']).catch(() => {})
   }
 
-  const doCreateShift = async (values: ShiftFormValues) => {
+  const doCreateShift = async (values: ShiftFormValues, confirmedUnavailable: boolean) => {
     await createShift({
       employee_id: values.employee_id,
-      require_availability: requireAvailability,
+      require_availability: requireAvailability && !confirmedUnavailable,
       date:        date!,
       start_time:  values.start_time,
       end_time:    values.end_time,
@@ -263,11 +264,16 @@ export default function ShiftModal({
     setSavePhase('idle')
   }
 
-  const handleSave = async () => {
+  const handleSave = async (confirmedUnavailable = false) => {
     try {
       const values = await form.validateFields() as ShiftFormValues
 
       if (blockingIssue) { msgApi.error(blockingIssue); return }
+      if (unavailable && !confirmedUnavailable) {
+        pendingValues.current = values
+        setSavePhase('availability')
+        return
+      }
       if (existing) {
         setSavePhase('checking')
         await updateShift(existing.id, {
@@ -303,7 +309,7 @@ export default function ShiftModal({
         setSavePhase('conflict')
       } else {
         try {
-          await doCreateShift(values)
+          await doCreateShift(values, confirmedUnavailable)
         } catch (error) {
           handleCreateError(error)
         }
@@ -319,6 +325,7 @@ export default function ShiftModal({
     if (pendingValues.current) {
       form.setFieldsValue(pendingValues.current)
     }
+    pendingValues.current = null
     setSavePhase('idle')
     setConflicts([])
   }
@@ -352,6 +359,13 @@ export default function ShiftModal({
           </DialogHeader>
 
           {/* Conflict warning panel */}
+          {savePhase === 'availability' && (
+            <div role="alert" className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold">Assign despite unavailable date</p>
+              <p>{employee?.name || 'This employee'} marked {date} unavailable. Confirm you want to assign this shift anyway.</p>
+            </div>
+          )}
+
           {savePhase === 'conflict' && (
             <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 space-y-2">
               <p className="font-semibold text-amber-900 text-sm">
@@ -403,7 +417,7 @@ export default function ShiftModal({
             </div>
           )}
 
-          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{!existing && !selectedAvailability?.submitted_at && ' You can still assign this shift.'}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
+          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{!existing && (!selectedAvailability?.submitted_at || unavailable) && ' You can still assign this shift.'}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
 
           {/* Form — kept mounted to preserve values; hidden during conflict/error */}
           <div style={showForm ? {} : { display: 'none' }}>
@@ -559,6 +573,12 @@ export default function ShiftModal({
           </div>
 
           <DialogFooter>
+            {savePhase === 'availability' && (
+              <>
+                <Button variant="outline" onClick={handleGoBack}>Go Back</Button>
+                <Button onClick={() => handleSave(true)}>Assign anyway</Button>
+              </>
+            )}
             {savePhase === 'conflict' && (
               <>
                 <Button variant="outline" onClick={handleGoBack}>Go Back</Button>
@@ -567,7 +587,7 @@ export default function ShiftModal({
             {savePhase === 'error' && (
               <>
                 <Button variant="outline" onClick={() => setSavePhase('idle')}>Cancel</Button>
-                <Button onClick={handleSave}>Retry check</Button>
+                <Button onClick={() => handleSave(unavailable && !!pendingValues.current)}>Retry check</Button>
               </>
             )}
             {showForm && (
@@ -581,7 +601,7 @@ export default function ShiftModal({
                   >Delete</Button>
                 )}
                 <Button variant="outline" onClick={onClose}>Cancel</Button>
-                <Button onClick={handleSave} disabled={savePhase === 'checking' || !!blockingIssue}>
+                <Button onClick={() => handleSave()} disabled={savePhase === 'checking' || !!blockingIssue}>
                   {savePhase === 'checking' ? 'Checking…' : 'Save'}
                 </Button>
               </>
