@@ -109,6 +109,25 @@ class SandboxAccessTests(IsolatedApiCase):
                         (self.order['id'], json.dumps(self.order), time.time()))
             con.commit()
 
+    def test_cash_discount_flag_clears_when_clover_removes_it(self):
+        cases = [
+            ([{'id': 'TESTDISCOUNT1', 'name': 'CA$0.89 Off', 'amount': -89, 'percentage': None}], True),
+            ([{'id': 'TESTDISCOUNT1', 'name': 'CA$0.89 Off', 'amount': -90, 'percentage': None}], False),
+            ([{'id': 'TESTDISCOUNT1', 'name': 'RewardUp Loyalty', 'amount': -89, 'percentage': None}], False),
+            (None, False),
+            ([], False),
+        ]
+        for discounts, expected in cases:
+            with self.subTest(discounts=discounts):
+                self.order['discounts'] = discounts
+                with adapter.database() as con:
+                    con.execute('UPDATE orders SET payload=?,seen_at=? WHERE id=1',
+                                (json.dumps(self.order), time.time()))
+                    con.commit()
+                response = self.client.get('/api/clover-sandbox/checkouts/1', headers=self.headers())
+                self.assertEqual(response.status_code, 200, response.get_json())
+                self.assertIs(response.get_json()['cash_discount_applied'], expected)
+
     def test_shifted_staff_can_claim_without_inventory_grant(self):
         response = self.client.post('/api/clover-sandbox/checkouts/1/claim', headers=self.headers())
         self.assertEqual(response.status_code, 200, response.get_json())

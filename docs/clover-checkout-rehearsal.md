@@ -21,7 +21,7 @@ Order snapshots, stable payment IDs, cashier ownership and image bytes live in o
 
 On the phone, open Checkout → Open Clover sandbox rehearsal. Midtown is the only available location. The amber banner distinguishes this from real operations.
 
-Create an order on Android. It should join the queue; tap it to claim it. New arrivals do not switch the selected order. Choose Cash, Card or E-transfer to see the existing pricing guidance. Enter discounts and take payment on Android. Once a discount or payment is present, use Clover's recorded total rather than suggesting another discount. Split amounts are entered in Clover, not recorded twice in POPCORE.
+Create an order on Android. It should join the queue; tap it to claim it. New arrivals do not switch the selected order. Choose Cash, Card or E-transfer to see the existing pricing guidance. Enter discounts and take payment on Android. Once a discount or payment is present, use Clover's recorded total rather than suggesting another discount. A Clover custom amount-off labelled like `CA$0.89 Off` disables Card; remove that discount on Clover and wait for a fresh sync to use Card again. Other discounts, including a separately labelled RewardUp discount, do not trigger this Card lock. Split amounts are entered in Clover, not recorded twice in POPCORE.
 
 E-transfer has already been added by the user. This adapter recognizes its label; it does not create tenders. WeChat Pay and Alipay must be actual matching custom tenders before use. Check is never remapped to either. Unknown labels remain visible as reported by Clover.
 

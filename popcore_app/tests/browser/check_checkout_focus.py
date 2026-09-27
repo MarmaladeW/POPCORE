@@ -2,6 +2,7 @@
 import asyncio
 import json
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import parse_qs
 from playwright.async_api import async_playwright, expect
@@ -20,6 +21,69 @@ def checkout(number=1):
             lines=[dict(quantity=2,unit='piece',product_name_snapshot='Smiski Museum Series' if number==1 else 'Mofusand Cat')]),
         attempts=[dict(id=number,tender='e_transfer',amount_cents=4520,status='pending',assigned_to='fixture|staff',
             can_upload=True,photos=[])])
+
+async def mobile_navigation(browser):
+    context,page=await context_with_api(browser,{'mode':'data'},viewport={'width':390,'height':844},auth={'role':'admin'})
+    try:
+        await page.goto(BASE+'/')
+        await page.get_by_role('navigation',name='Primary navigation').get_by_role('button',name='More').click()
+        drawer=page.get_by_role('dialog',name='More')
+        assert (await drawer.locator('.ant-drawer-header').bounding_box())['y'] >= 0, 'More header starts above the phone viewport'
+        await expect(drawer.get_by_role('button',name='Close')).to_be_in_viewport()
+        await drawer.get_by_role('button',name='Close').click()
+        await expect(drawer).to_have_count(0)
+        await page.get_by_role('navigation',name='Primary navigation').get_by_role('button',name='More').click()
+        await page.get_by_role('navigation',name='More navigation').get_by_role('link',name='Products').click()
+        await expect(page).to_have_url(BASE+'/products')
+        await expect(drawer).to_have_count(0)
+    finally:
+        await context.close()
+
+async def sandbox_card_discount(browser):
+    state={'mode':'data'}
+    order=checkout(4)
+    order.update(source='clover-sandbox',can_claim=False,source_fresh=True,source_seen_at=time.time(),
+                 quote_available=True,totals_known=True,has_discount=False,cash_discount_applied=False,
+                 remaining_cents=2110,attempts=[])
+    order['order'].update(subtotal_cents=2000,source_tax_cents=110,gross_cents=2110,collected_cents=2110)
+    def api(path,query,request):
+        if path=='/api/clover-sandbox/checkouts/access':
+            return dict(business_date='2026-09-26',role='staff',live_stores=[dict(id=1,code='DT',name='Downtown')],
+                        history_stores=[])
+        if path=='/api/clover-sandbox/checkouts':
+            return dict(orders=[order],next_before_id=None,clover=dict(connected=True,fetched_at=time.time()))
+        if path=='/api/clover-sandbox/checkouts/4':return order
+        return payload(path,query)
+    state['api_payload']=api
+    context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':'staff'})
+    try:
+        await page.goto(BASE+'/checkout/4?source=clover-sandbox')
+        card=page.get_by_role('button',name='Card',exact=False)
+        await expect(card).to_be_enabled()
+        await card.click()
+        await expect(card).to_have_attribute('aria-pressed','true')
+        order.update(has_discount=True,cash_discount_applied=True,quote_available=False,remaining_cents=1900)
+        order['order'].update(subtotal_cents=1770,source_tax_cents=130,gross_cents=1900,collected_cents=1900)
+        await page.get_by_role('button',name='Refresh orders').click()
+        await expect(card).to_be_disabled()
+        await expect(card).to_have_attribute('aria-pressed','false')
+        await expect(page.get_by_text('Remove the cash discount on Clover to use Card.')).to_be_visible()
+        await expect(page.locator('.co-discount > span')).not_to_contain_text('to enter')
+        OUT.mkdir(parents=True,exist_ok=True)
+        await card.scroll_into_view_if_needed()
+        await page.screenshot(path=str(OUT/'sandbox-cash-discount-phone.png'))
+        await page.reload()
+        await expect(card).to_be_disabled()
+        order.update(has_discount=False,cash_discount_applied=False,quote_available=True,remaining_cents=2110)
+        order['order'].update(subtotal_cents=2000,source_tax_cents=110,gross_cents=2110,collected_cents=2110)
+        await page.get_by_role('button',name='Refresh orders').click()
+        await expect(card).to_be_enabled()
+        await expect(page.get_by_label('Customer pays')).to_have_value('21.10')
+        order.update(has_discount=True,quote_available=False)
+        await page.get_by_role('button',name='Refresh orders').click()
+        await expect(card).to_be_enabled()
+    finally:
+        await context.close()
 
 async def checks(browser):
     state={'mode':'data'}
@@ -223,10 +287,12 @@ async def main():
         await wait_for_server(process)
         async with async_playwright() as p:
             browser=await p.chromium.launch()
+            await mobile_navigation(browser)
+            await sandbox_card_discount(browser)
             await checks(browser)
             await real_api_checks(browser)
             await browser.close()
-        print('PASS: checkout navigation, order switching, warning, scoped photo preview/upload, mobile width and access revocation. Actual Flask upload, payment, finalization, history, abandoned-checkout refund and stock posting also passed with disposable data; no provider/auth verification.')
+        print('PASS: checkout navigation, sandbox cash-discount Card lock and reversal, order switching, warning, scoped photo preview/upload, mobile width and access revocation. Actual Flask upload, payment, finalization, history, abandoned-checkout refund and stock posting also passed with disposable data; no provider/auth verification.')
     finally:
         process.terminate();process.wait(timeout=10)
 
