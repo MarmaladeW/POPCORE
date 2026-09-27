@@ -38,8 +38,8 @@ async def run_checks(browser, case):
         for offset, end in ((2, '22:00'), (3, '17:00')):
             con.execute('''INSERT INTO shifts(employee_id,store_id,date,start_time,end_time,assigned_by)
                 VALUES (101,1,?,'12:00',?,'fixture')''', (str(START + timedelta(days=offset)), end))
-        con.execute('''INSERT INTO shifts(employee_id,store_id,date,start_time,end_time,assigned_by)
-            VALUES (103,(SELECT id FROM stores WHERE code='MK'),?,'12:00','21:00','fixture')''', (str(START + timedelta(days=5)),))
+        con.execute('''INSERT INTO shifts(employee_id,store_id,date,start_time,end_time,assigned_by,position)
+            VALUES (103,(SELECT id FROM stores WHERE code='MK'),?,'12:00','21:00','fixture','Cashier')''', (str(START + timedelta(days=5)),))
         con.commit()
     days = [{'date': str(START + timedelta(days=i)), 'status': 'available', 'start_time': '12:00', 'end_time': '17:00', 'notes': ''} for i in range(14)]
     days[1].update(status='unavailable', start_time='', end_time='', notes='Class all day')
@@ -280,6 +280,25 @@ async def run_checks(browser, case):
     controls = await page.locator('.pc-assignment-store-switch').bounding_box()
     assert controls['y'] >= 64, controls
 
+    unavailable_date = START + timedelta(days=1)
+    await select_date(unavailable_date, 'DT')
+    unavailable_panel = page.get_by_role('region', name=f'Schedule details {unavailable_date} DT')
+    await unavailable_panel.locator('.pc-schedule-person').filter(has_text='Celia').get_by_role('button', name='Assign', exact=True).click()
+    await dialog.get_by_text('Full day (12:00–22:00)', exact=True).click()
+    await expect(dialog.get_by_role('alert')).to_contain_text('Employee marked this date unavailable')
+    await expect(dialog.get_by_role('button', name='Save', exact=True)).to_be_enabled()
+    await dialog.get_by_role('button', name='Save', exact=True).click()
+    await expect(dialog.get_by_text('Assign despite unavailable date', exact=True)).to_be_visible()
+    with closing(case.connect()) as con:
+        assert con.execute('SELECT id FROM shifts WHERE employee_id=102 AND date=?', (str(unavailable_date),)).fetchone() is None
+    await dialog.get_by_role('button', name='Go Back', exact=True).click()
+    await dialog.get_by_role('button', name='Save', exact=True).click()
+    await dialog.get_by_role('button', name='Assign anyway', exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    with closing(case.connect()) as con:
+        saved = con.execute('SELECT start_time,end_time FROM shifts WHERE employee_id=102 AND date=?', (str(unavailable_date),)).fetchone()
+        assert saved and (saved['start_time'], saved['end_time']) == ('12:00', '22:00')
+
     for width in (1440,768,390):
         await page.set_viewport_size({'width':width,'height':980})
         await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
@@ -314,6 +333,8 @@ async def run_checks(browser, case):
     await page.set_viewport_size({'width':1440,'height':900})
     await page.get_by_role('button', name='Month', exact=True).click()
     await page.get_by_role('button', name='Refresh', exact=True).click()
+    await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-pos').first).to_have_text('Cashier')
+    await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-pos').first).to_be_visible()
     for width, height in ((1440,900), (1280,800), (1366,768), (1920,1080), (3840,2160)):
         await page.set_viewport_size({'width':width,'height':height})
         await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendars .fc table')].every(table => table.getBoundingClientRect().width <= table.closest('.fc').getBoundingClientRect().width + 1)")

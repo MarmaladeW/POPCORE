@@ -122,6 +122,8 @@
 @media (pointer: coarse) { .pc-calendar-date { min-height: 44px; min-width: 44px; } .pc-coverage-list label { min-height: 44px; } }
 
 .pc-shift-heading, .pc-shift-details { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.pc-calendar-date-grid .pc-shift:not(.pc-shift-grid) { flex-wrap: wrap; }
+.pc-calendar-date-grid .pc-shift-pos { flex-basis: 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 
 @media (min-width: 1101px) {
   .pc-content:has(.pc-calendar-month) { padding-top: 8px; padding-bottom: 8px; }
@@ -144,7 +146,6 @@
     .pc-calendar-month .pc-shift:not(.pc-shift-grid) { display: flex; }
     .pc-calendar-month .pc-shift-heading { flex: 1; }
     .pc-calendar-month .pc-shift-details { display: flex; flex-shrink: 0; }
-    .pc-calendar-month .pc-shift-pos { display: none; }
   }
 }
 @media (pointer: coarse) { .pc-calendar-month .pc-calendar-date { min-height: 44px; height: 44px; } }
