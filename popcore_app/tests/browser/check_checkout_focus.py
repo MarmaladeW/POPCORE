@@ -85,6 +85,68 @@ async def sandbox_card_discount(browser):
     finally:
         await context.close()
 
+async def sandbox_order_detail_and_hide(browser):
+    state={'mode':'data','hidden':False}
+    fresh=checkout(1)
+    fresh.update(source='clover-sandbox',source_fresh=True,source_seen_at=time.time(),
+                 quote_available=True,totals_known=True,has_discount=False,can_hide=False,attempts=[])
+    stale=checkout(2)
+    stale.update(source='clover-sandbox',source_fresh=False,source_seen_at=0,
+                 quote_available=True,totals_known=True,has_discount=False,can_process=False,
+                 can_hide=True,attempts=[])
+    stores=[dict(id=1,code='DT',name='Downtown')]
+    def api(path,query,request):
+        if path=='/api/clover-sandbox/checkouts/access':
+            return dict(business_date='2026-09-28',role='staff',live_stores=stores,history_stores=stores)
+        if path=='/api/clover-sandbox/checkouts':
+            return dict(orders=[fresh]+([] if state['hidden'] else [stale]),next_before_id=None,
+                        clover=dict(connected=True,fetched_at=time.time()))
+        if path=='/api/clover-sandbox/checkouts/1':return fresh
+        if path=='/api/clover-sandbox/checkouts/2':return stale
+        if path=='/api/clover-sandbox/checkouts/2/hide':
+            state['hidden']=True
+            return dict(hidden=True)
+        return payload(path,query)
+    state['api_payload']=api
+    context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':'staff'})
+    try:
+        await page.goto(BASE+'/checkout?source=clover-sandbox')
+        await page.get_by_role('navigation',name='Current orders').get_by_role('button',name='ORDER-1',exact=False).click()
+        await expect(page).to_have_url(BASE+'/checkout/1?source=clover-sandbox')
+        await expect(page.get_by_role('navigation',name='Current orders')).to_have_count(0)
+        await expect(page.get_by_role('article',name='Checkout ORDER-1')).to_be_visible()
+        amounts=page.locator('.co-original dd')
+        await expect(amounts).to_have_count(3)
+        edges=[(box:=await amounts.nth(i).bounding_box())['x']+box['width'] for i in range(3)]
+        assert max(edges)-min(edges)<2, f'Order amounts do not align: {edges}'
+        discount=page.locator('.co-discount')
+        heading=await discount.locator('span').bounding_box()
+        amount=await discount.locator('strong').bounding_box()
+        assert amount['y']>=heading['y']+heading['height'], 'Discount amount overlaps its heading'
+        OUT.mkdir(parents=True,exist_ok=True)
+        await page.screenshot(path=str(OUT/'sandbox-order-detail-phone.png'))
+        await page.get_by_role('link',name='Back to current orders').click()
+        await expect(page.get_by_role('navigation',name='Current orders')).to_be_visible()
+        await page.goto(BASE+'/checkout/history?source=clover-sandbox')
+        await page.get_by_role('navigation',name='Order history').get_by_role('button',name='ORDER-2',exact=False).click()
+        await expect(page.get_by_role('navigation',name='Order history')).to_have_count(0)
+        await expect(page.get_by_role('article',name='Checkout ORDER-2')).to_be_visible()
+        await page.get_by_role('button',name='Remove from list').click()
+        await page.get_by_role('dialog').get_by_role('button',name='Remove from list').click()
+        await expect(page.get_by_role('navigation',name='Order history')).to_be_visible()
+        await expect(page.get_by_role('button',name='ORDER-2',exact=False)).to_have_count(0)
+    finally:
+        await context.close()
+    stores.append(dict(id=2,code='MK',name='Midtown'))
+    context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':'staff'})
+    try:
+        await page.goto(BASE+'/checkout/1?source=clover-sandbox')
+        await expect(page.get_by_label('Location')).to_be_visible()
+        await page.get_by_label('Location').select_option('1')
+        await expect(page.get_by_role('article',name='Checkout ORDER-1')).to_be_visible()
+    finally:
+        await context.close()
+
 async def checks(browser):
     state={'mode':'data'}
     orders={1:checkout(),2:checkout(2)}
@@ -122,17 +184,20 @@ async def checks(browser):
     await page.get_by_label('Customer pays').fill('30.00')
     await expect(page.get_by_role('alert').filter(has_text='20%')).to_be_visible()
     await expect(page.get_by_text('Waiting for confirmed Clover total',exact=False)).to_be_visible()
+    async def switch_order(number):
+        await page.get_by_role('link',name='Back to current orders').click()
+        await page.get_by_role('button',name=f'Register {number}',exact=False).click()
     async def slow_second(route):
         await asyncio.sleep(.4)
         await route.fulfill(json=orders[2])
     await page.route('**/api/checkouts/2',slow_second)
-    await page.get_by_role('button',name='Register 2',exact=False).click()
+    await switch_order(2)
     await expect(page.get_by_role('article',name='Checkout ORDER-1',exact=True)).to_have_count(0)
     await expect(page.get_by_role('article',name='Checkout ORDER-2',exact=True)).to_be_visible()
     await page.unroute('**/api/checkouts/2',slow_second)
-    await page.get_by_role('button',name='Register 1',exact=False).click()
+    await switch_order(1)
     await expect(page.get_by_label('Customer pays')).to_have_value('30.00')
-    await page.get_by_role('button',name='Register 3',exact=False).click()
+    await switch_order(3)
     await expect(page.get_by_role('article',name='Checkout ORDER-3',exact=True)).to_be_visible()
     await page.get_by_role('button',name='Card',exact=False).click()
     await expect(page.get_by_label('Customer pays')).to_have_value('41.34')
@@ -144,7 +209,7 @@ async def checks(browser):
     await expect(page.get_by_label('Customer pays')).to_have_value('41.00')
     await page.get_by_role('checkbox',name='This split includes Card',exact=True).uncheck()
     await expect(page.get_by_label('Customer pays')).to_have_value('40.00')
-    await page.get_by_role('button',name='Register 1',exact=False).click()
+    await switch_order(1)
     await expect(page.get_by_role('article',name='Checkout ORDER-1',exact=True)).to_be_visible()
     await page.get_by_label('Customer pays').fill('45.20')
     file=ROOT/'.local/checkout-focus/proof.png'
@@ -158,9 +223,9 @@ async def checks(browser):
         await page.get_by_role('button',name='Retake',exact=True).click()
     await (await chooser.value).set_files(str(file))
     before=len([r for r in state['requests'] if r['method']=='POST'])
-    await page.get_by_role('button',name='Register 2',exact=False).click()
+    await switch_order(2)
     await expect(page.get_by_role('button',name='Use photo',exact=True)).to_have_count(0)
-    await page.get_by_role('button',name='Register 1',exact=False).click()
+    await switch_order(1)
     await expect(page.get_by_role('button',name='Use photo',exact=True)).to_be_visible()
     state['status_for_path']={'/api/checkouts/1/attempts/1/evidence':(503,{'error':'Upload response interrupted'})}
     await page.get_by_role('button',name='Use photo',exact=True).click()
@@ -187,8 +252,8 @@ async def checks(browser):
     await page.locator('input[type=file]').nth(0).set_input_files(str(file))
     await page.locator('input[type=file]').nth(1).set_input_files(str(file))
     await expect(page.get_by_alt_text('Payment evidence preview')).to_have_count(2)
-    await page.get_by_role('button',name='Register 2',exact=False).click()
-    await page.get_by_role('button',name='Register 1',exact=False).click()
+    await switch_order(2)
+    await switch_order(1)
     await expect(page.get_by_role('article',name='Checkout ORDER-1',exact=True)).to_be_visible()
     await expect(page.get_by_alt_text('Payment evidence preview')).to_have_count(2)
     state['get_status_for_path']={'/api/checkouts/1':(503,{'error':'Temporary refresh failure'})}
@@ -250,6 +315,7 @@ async def real_api_checks(browser):
             assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==1
             assert con.execute('SELECT sum(amount_cents) FROM sale_payments').fetchone()[0]==4520
             assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(fixture.product_id,fixture.floor)).fetchone()[0]==3
+        await page.get_by_role('link',name='Back to current orders').click()
         await page.get_by_role('link',name='Order history',exact=True).first.click()
         await page.get_by_role('button',name='LOCAL-BROWSER-ONLY',exact=False).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
@@ -289,6 +355,7 @@ async def main():
             browser=await p.chromium.launch()
             await mobile_navigation(browser)
             await sandbox_card_discount(browser)
+            await sandbox_order_detail_and_hide(browser)
             await checks(browser)
             await real_api_checks(browser)
             await browser.close()

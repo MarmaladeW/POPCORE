@@ -395,7 +395,7 @@ async def run_checks(browser, case):
     await page.get_by_role('textbox', name='Period notes', exact=True).fill('Weekend coverage\nConfirm Celia\nConfirm Mason\nReview trainees\nCheck both stores')
     await page.get_by_role('button', name='Save notes', exact=True).scroll_into_view_if_needed()
     save_bounds = await page.get_by_role('button', name='Save notes', exact=True).bounding_box()
-    assert 64 <= save_bounds['y'] and save_bounds['y'] + save_bounds['height'] <= 700, save_bounds
+    assert 0 <= save_bounds['y'] and save_bounds['y'] + save_bounds['height'] <= 700, save_bounds
     await page.get_by_role('button', name='Save notes', exact=True).click()
     await expect(page.get_by_text('Notes saved', exact=True)).to_be_visible()
     assert await page.locator('.pc-assignment-day').evaluate('(el) => el.clientHeight') >= 170

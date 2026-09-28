@@ -135,6 +135,33 @@ class SandboxAccessTests(IsolatedApiCase):
         with adapter.database() as con:
             self.assertEqual(con.execute('SELECT cashier_sub FROM orders WHERE id=1').fetchone()[0], 'auth0|staff')
 
+    def test_stale_snapshot_can_be_removed_without_losing_evidence_and_returns_if_seen_again(self):
+        self.assertEqual(self.client.post('/api/clover-sandbox/checkouts/1/claim', headers=self.headers()).status_code, 200)
+        self.assertEqual(self.client.post('/api/clover-sandbox/checkouts/1/hide', headers=self.headers()).status_code, 409)
+        with adapter.database() as con:
+            con.execute('UPDATE orders SET seen_at=0 WHERE id=1')
+            con.execute('UPDATE feed SET next_poll=?', (time.time() + 60,))
+            payment_id = con.execute("INSERT INTO payments(order_id,source_id,tender,amount,result) VALUES (1,'NOPQRSTUVWXYZ','card',1130,'SUCCESS')").lastrowid
+            con.execute('INSERT INTO evidence(payment_id,content_hash,mime_type,content,uploader_sub) VALUES (?,?,?,?,?)',
+                        (payment_id, 'test-hash', 'image/png', b'photo', 'auth0|staff'))
+            con.commit()
+        removed = self.client.post('/api/clover-sandbox/checkouts/1/hide', headers=self.headers())
+        self.assertEqual(removed.status_code, 200, removed.get_json())
+        queue = self.client.get(f'/api/clover-sandbox/checkouts?store_id={self.store_id}&view=live', headers=self.headers())
+        self.assertEqual(queue.get_json()['orders'], [])
+        with adapter.database() as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM evidence').fetchone()[0], 1)
+            con.execute('UPDATE feed SET next_poll=0')
+            con.commit()
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'environment': 'sandbox', 'orders': [self.order]}).encode()
+        with patch.object(adapter.requests, 'get', return_value=response):
+            queue = self.client.get(f'/api/clover-sandbox/checkouts?store_id={self.store_id}&view=live', headers=self.headers())
+        self.assertEqual(len(queue.get_json()['orders']), 1)
+        with adapter.database() as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM evidence').fetchone()[0], 1)
+
     def test_owner_can_upload_sandbox_payment_evidence_without_inventory_grant(self):
         self.order['paymentState'] = 'PAID'
         self.order['payments'] = [{'id': 'NOPQRSTUVWXYZ', 'amount': 1130,
