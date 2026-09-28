@@ -92,6 +92,8 @@ def database():
                 id INTEGER PRIMARY KEY, payment_id INTEGER NOT NULL REFERENCES payments(id),
                 content_hash TEXT NOT NULL, mime_type TEXT NOT NULL, content BLOB NOT NULL,
                 uploader_sub TEXT NOT NULL, UNIQUE(payment_id,content_hash));
+            CREATE TABLE IF NOT EXISTS hidden_orders (
+                order_id INTEGER PRIMARY KEY REFERENCES orders(id));
         ''')
         store_id = int(os.environ['CLOVER_SANDBOX_STORE_ID'])
         con.execute('INSERT OR IGNORE INTO feed(id,store_id) VALUES (1,?)', (store_id,))
@@ -184,6 +186,7 @@ def sync(con):
                     ON CONFLICT(source_id) DO UPDATE SET payload=excluded.payload,seen_at=excluded.seen_at''',
                     (row['id'], json.dumps(row), fetched))
                 order_id = con.execute('SELECT id FROM orders WHERE source_id=?', (row['id'],)).fetchone()[0]
+                con.execute('DELETE FROM hidden_orders WHERE order_id=?', (order_id,))
                 con.execute('UPDATE payments SET active=0 WHERE order_id=?', (order_id,))
                 for payment in row['payments']:
                     prior = con.execute('SELECT order_id FROM payments WHERE source_id=?', (payment['id'],)).fetchone()
@@ -239,6 +242,7 @@ def detail(con, row, access):
         refund_due_cents=0, abandoned_reason=None, refunds=[], quote_available=quote_available,
         totals_known=totals_known, source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
         cash_discount_applied=cash_discount_applied,
+        can_hide=not fresh and (owner or access['role'] in ('manager', 'admin')),
         attempts=[dict(id=p['id'], tender=p['tender'], amount_cents=p['amount'],
             status=('completed' if p['result'] == 'SUCCESS' else 'failed') if p['active'] else 'cancelled',
             can_upload=writable and p['active'] and p['result'] == 'SUCCESS',
@@ -277,7 +281,7 @@ def queue():
         if store_id not in {s['id'] for s in access['history_stores' if history else 'live_stores']}:
             raise PermissionError('Store access denied')
         sync(con)
-        where, values = ['1=1'], []
+        where, values = ['id NOT IN (SELECT order_id FROM hidden_orders)'], []
         if history and access['role'] == 'staff':
             where.append('cashier_sub=?'); values.append(request.jwt_payload['sub'])
         if request.args.get('before_id'):
@@ -305,6 +309,18 @@ def queue():
 def get_order(order_id):
     with database() as con:
         return jsonify(detail(con, order_row(con, order_id), scope(con)))
+
+
+@bp.post('/<int:order_id>/hide')
+@role_required('staff')
+def hide(order_id):
+    with database() as con:
+        value = detail(con, order_row(con, order_id), scope(con))
+        if not value['can_hide']:
+            return jsonify(error='Only a stale sandbox snapshot you own can be removed'), 409
+        with con:
+            con.execute('INSERT OR IGNORE INTO hidden_orders(order_id) VALUES (?)', (order_id,))
+        return jsonify(hidden=True)
 
 
 @bp.post('/<int:order_id>/claim')

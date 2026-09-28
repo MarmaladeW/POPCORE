@@ -4,6 +4,7 @@ import json
 import tempfile
 import time
 import unittest
+from threading import Event
 from unittest.mock import patch
 
 import requests
@@ -59,33 +60,43 @@ class SandboxProbeTests(unittest.TestCase):
             return provider_response({'tender': {'id': 'T' * 13, 'label': 'E-transfer'}})
 
         with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
-            for _ in range(2):
+            for _ in range(20):
                 response = self.client.get('/clover-sandbox/orders', headers=self.headers)
                 self.assertEqual(response.status_code, 200)
                 payments = response.json['orders'][0]['payments']
-                self.assertEqual([payment['tenderLabel'] for payment in payments],
-                                 ['E-transfer', 'E-transfer'])
-                self.assertEqual([payment['amount'] for payment in payments], [1000, 1000])
+                if all(payment['tenderLabel'] == 'E-transfer' for payment in payments):
+                    break
+                time.sleep(.02)
+            self.assertEqual([payment['tenderLabel'] for payment in payments], ['E-transfer', 'E-transfer'])
+            self.assertEqual([payment['amount'] for payment in payments], [1000, 1000])
+            self.client.get('/clover-sandbox/orders', headers=self.headers)
         self.assertEqual(payment_reads, 1)
 
     def test_tender_lookup_rate_limit_does_not_hide_orders(self):
+        lookup_done = Event()
         def provider(method, url, **kwargs):
-            return provider_response(self.orders) if url.endswith('/orders') else provider_response({}, 429)
+            if url.endswith('/orders'):
+                return provider_response(self.orders)
+            lookup_done.set()
+            return provider_response({}, 429)
 
         with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
             response = self.client.get('/clover-sandbox/orders', headers=self.headers)
+            self.assertTrue(lookup_done.wait(1))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json['orders'][0]['payments']), 2)
         self.assertIsNone(response.json['orders'][0]['payments'][0]['tenderLabel'])
 
     def test_missing_tender_label_is_not_requested_every_refresh(self):
         payment_reads = 0
+        lookup_done = Event()
 
         def provider(method, url, **kwargs):
             nonlocal payment_reads
             if url.endswith('/orders'):
                 return provider_response(self.orders)
             payment_reads += 1
+            lookup_done.set()
             return provider_response({'tender': {'id': 'T' * 13}})
 
         with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
@@ -93,7 +104,33 @@ class SandboxProbeTests(unittest.TestCase):
                 response = self.client.get('/clover-sandbox/orders', headers=self.headers)
                 self.assertEqual(response.status_code, 200)
                 self.assertIsNone(response.json['orders'][0]['payments'][0]['tenderLabel'])
+            self.assertTrue(lookup_done.wait(1))
+            self.client.get('/clover-sandbox/orders', headers=self.headers)
         self.assertEqual(payment_reads, 1)
+
+    def test_slow_payment_label_lookup_does_not_delay_new_orders(self):
+        release = Event()
+
+        def provider(method, url, **kwargs):
+            if url.endswith('/orders'):
+                return provider_response(self.orders)
+            release.wait(1)
+            return provider_response({'tender': {'id': 'T' * 13, 'label': 'E-transfer'}})
+
+        with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
+            try:
+                started = time.monotonic()
+                response = self.client.get('/clover-sandbox/orders', headers=self.headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertLess(time.monotonic() - started, .3)
+            finally:
+                release.set()
+            for _ in range(20):
+                response = self.client.get('/clover-sandbox/orders', headers=self.headers)
+                if response.json['orders'][0]['payments'][0]['tenderLabel'] == 'E-transfer':
+                    break
+                time.sleep(.02)
+            self.assertEqual(response.json['orders'][0]['payments'][0]['tenderLabel'], 'E-transfer')
 
 
 if __name__ == '__main__':

@@ -259,9 +259,27 @@ def create_app(config):
     tender_labels = {}
     tender_lock = threading.Lock()
     tender_retry_after = 0
+    tender_lookup_running = False
+
+    def lookup_tender(token, merchant, payment_id, tender_id):
+        nonlocal tender_retry_after, tender_lookup_running
+        try:
+            detail = clover('GET', '/v3/merchants/' + merchant + '/payments/' + payment_id,
+                            headers={'Authorization': 'Bearer ' + token},
+                            params={'expand': 'tender,employee,order'})
+            tender = detail.get('tender')
+            label = tender.get('label') if isinstance(tender, dict) and tender.get('id') == tender_id else None
+        except CloverError:
+            label = None
+        with tender_lock:
+            if label:
+                tender_labels[tender_id] = label
+            else:
+                tender_retry_after = time.monotonic() + 30
+            tender_lookup_running = False
 
     def read_orders():
-        nonlocal tender_retry_after
+        nonlocal tender_lookup_running
         merchant = config.get('CLOVER_MERCHANT_ID', '')
         if not IDENTIFIER.fullmatch(merchant):
             raise CloverError('Set the Canadian test merchant ID first.')
@@ -303,19 +321,10 @@ def create_app(config):
                 safe_payment['employeeId'] = (payment.get('employee') or {}).get('id')
                 if tender_id and not safe_payment['tenderLabel']:
                     with tender_lock:
-                        if tender_id not in tender_labels and not lookup_attempted and time.monotonic() >= tender_retry_after:
+                        if tender_id not in tender_labels and not lookup_attempted and not tender_lookup_running and time.monotonic() >= tender_retry_after:
                             lookup_attempted = True
-                            try:
-                                detail = clover('GET', '/v3/merchants/' + merchant + '/payments/' + payment_id,
-                                                headers={'Authorization': 'Bearer ' + token},
-                                                params={'expand': 'tender,employee,order'})
-                                detail_tender = detail.get('tender') or {}
-                                if detail_tender.get('id') == tender_id and detail_tender.get('label'):
-                                    tender_labels[tender_id] = detail_tender['label']
-                                else:
-                                    tender_retry_after = time.monotonic() + 30
-                            except CloverError:
-                                tender_retry_after = time.monotonic() + 30
+                            tender_lookup_running = True
+                            threading.Thread(target=lookup_tender, args=(token, merchant, payment_id, tender_id), daemon=True).start()
                         safe_payment['tenderLabel'] = tender_labels.get(tender_id)
                 row['payments'].append(safe_payment)
             rows.append(row)
