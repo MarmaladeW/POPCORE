@@ -15,7 +15,7 @@ from flask import Flask, request
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from blueprints import clover_sandbox as adapter
+from blueprints import clover_sandbox as adapter, settings
 from checkout_access import business_date
 from support import IsolatedApiCase
 
@@ -88,6 +88,7 @@ class SandboxAccessTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
         self.app.register_blueprint(adapter.bp)
+        self.app.register_blueprint(settings.bp)
         environment = patch.dict(os.environ, {
             'CLOVER_SANDBOX_CHECKOUT_DIR': str(Path(self.tempdir.name) / 'sandbox'),
             'CLOVER_SANDBOX_STORE_ID': str(self.store_id),
@@ -127,6 +128,41 @@ class SandboxAccessTests(IsolatedApiCase):
                 response = self.client.get('/api/clover-sandbox/checkouts/1', headers=self.headers())
                 self.assertEqual(response.status_code, 200, response.get_json())
                 self.assertIs(response.get_json()['cash_discount_applied'], expected)
+
+    def test_cny_rate_is_admin_set_and_available_to_cashier(self):
+        self.assertEqual(self.client.get('/api/clover-sandbox/checkouts/access',
+                                         headers=self.headers()).get_json()['cny_per_cad'], '')
+        for rate in ('0', '5.12345', '100.0001', 'bad'):
+            response = self.client.put('/api/settings', json={'checkout_cny_per_cad':rate},
+                                       headers=self.headers('admin'))
+            self.assertEqual(response.status_code, 400, rate)
+        saved = self.client.put('/api/settings', json={'checkout_cny_per_cad':'5.2500'},
+                                headers=self.headers('admin'))
+        self.assertEqual(saved.status_code, 200, saved.get_json())
+        self.assertEqual(self.client.get('/api/clover-sandbox/checkouts/access',
+                                         headers=self.headers()).get_json()['cny_per_cad'], '5.2500')
+        self.assertEqual(self.client.put('/api/settings', json={'checkout_cny_per_cad':'6'},
+                                         headers=self.headers()).status_code, 403)
+
+    def test_note_stays_with_order_after_resync_and_rejects_other_cashier(self):
+        self.client.post('/api/clover-sandbox/checkouts/1/claim', headers=self.headers())
+        path = '/api/clover-sandbox/checkouts/1/notes'
+        self.assertEqual(self.client.post(path, json={'note':'Other','expected_note':''},
+                                          headers=self.headers('staff:other')).status_code, 403)
+        saved = self.client.post(path, json={'note':'Special CNY arrangement','expected_note':''},
+                                 headers=self.headers()).get_json()
+        self.assertEqual(saved['note'], 'Special CNY arrangement')
+        self.assertEqual(self.client.post(path, json={'note':'Overwrite','expected_note':''},
+                                          headers=self.headers()).status_code, 409)
+        with adapter.database() as con:
+            con.execute('UPDATE feed SET next_poll=0')
+            con.commit()
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'environment': 'sandbox', 'orders': [self.order]}).encode()
+        with patch.object(adapter.requests, 'get', return_value=response):
+            refreshed = self.client.get('/api/clover-sandbox/checkouts/1', headers=self.headers())
+        self.assertEqual(refreshed.get_json()['note'], 'Special CNY arrangement')
 
     def test_shifted_staff_can_claim_without_inventory_grant(self):
         response = self.client.post('/api/clover-sandbox/checkouts/1/claim', headers=self.headers())

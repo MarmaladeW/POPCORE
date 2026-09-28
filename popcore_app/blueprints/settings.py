@@ -3,6 +3,7 @@ blueprints/settings.py — App-wide settings (admin/manager only).
 """
 import json
 import re
+from decimal import Decimal
 
 from flask import Blueprint, request, jsonify
 from db import get_db
@@ -42,6 +43,7 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # In-store positions per store, JSON keyed by store code
     # (e.g. Downtown has Front / Cashier / End).
     'schedule_positions': '{"DT": ["Front", "Cashier", "End"]}',
+    'checkout_cny_per_cad': '',
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -172,6 +174,14 @@ def put_settings():
     unknown = [k for k in data if k not in SETTINGS_WHITELIST]
     if unknown:
         return jsonify({'error': f'Unknown settings keys: {", ".join(sorted(unknown))}'}), 400
+    if 'checkout_cny_per_cad' in data:
+        rate = data['checkout_cny_per_cad']
+        if not isinstance(rate, str):
+            return jsonify(error='checkout_cny_per_cad must be text'), 400
+        rate = rate.strip()
+        if rate and (not re.fullmatch(r'\d{1,3}(?:\.\d{1,4})?', rate) or not 0 < Decimal(rate) <= 100):
+            return jsonify(error='Enter a CNY rate above 0 and at most 100, with up to 4 decimal places'), 400
+        data['checkout_cny_per_cad'] = rate
     if 'schedule_required_staff' in data:
         err = _validate_required_staff(str(data['schedule_required_staff']))
         if err:

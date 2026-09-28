@@ -16,6 +16,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 from auth import role_required
 from checkout_access import checkout_access
+from checkout_operations import read_order_note
 from db import get_db
 from inventory_commands import InventoryError
 from payment_evidence import prepare_image
@@ -94,6 +95,8 @@ def database():
                 uploader_sub TEXT NOT NULL, UNIQUE(payment_id,content_hash));
             CREATE TABLE IF NOT EXISTS hidden_orders (
                 order_id INTEGER PRIMARY KEY REFERENCES orders(id));
+            CREATE TABLE IF NOT EXISTS order_notes (
+                order_id INTEGER PRIMARY KEY REFERENCES orders(id), note TEXT NOT NULL DEFAULT '');
         ''')
         store_id = int(os.environ['CLOVER_SANDBOX_STORE_ID'])
         con.execute('INSERT OR IGNORE INTO feed(id,store_id) VALUES (1,?)', (store_id,))
@@ -232,6 +235,7 @@ def detail(con, row, access):
     quote_available = simple and 0 < subtotal <= total and not has_discount
     totals_known = simple and subtotal <= total
     writable = live and (owner or access['role'] in ('admin', 'manager'))
+    note_row = con.execute('SELECT note FROM order_notes WHERE order_id=?', (row['id'],)).fetchone()
     return dict(id=row['id'], source='clover-sandbox', store_id=feed['store_id'],
         reference=source['id'], register_name='Clover sandbox', business_date=datetime.fromtimestamp(
             source['createdTime'] / 1000, ZoneInfo('America/Toronto')).date().isoformat(),
@@ -243,6 +247,7 @@ def detail(con, row, access):
         totals_known=totals_known, source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
         cash_discount_applied=cash_discount_applied,
         can_hide=not fresh and (owner or access['role'] in ('manager', 'admin')),
+        note=note_row['note'] if note_row else '', can_note=owner or access['role'] in ('manager', 'admin'),
         attempts=[dict(id=p['id'], tender=p['tender'], amount_cents=p['amount'],
             status=('completed' if p['result'] == 'SUCCESS' else 'failed') if p['active'] else 'cancelled',
             can_upload=writable and p['active'] and p['result'] == 'SUCCESS',
@@ -309,6 +314,25 @@ def queue():
 def get_order(order_id):
     with database() as con:
         return jsonify(detail(con, order_row(con, order_id), scope(con)))
+
+
+@bp.post('/<int:order_id>/notes')
+@role_required('staff')
+def save_note(order_id):
+    with database() as con:
+        access = scope(con)
+        value = detail(con, order_row(con, order_id), access)
+        if not value['can_note']:
+            raise PermissionError('Order note access denied')
+        note, expected = read_order_note(request.get_json(silent=True) or {})
+        with con:
+            con.execute('INSERT OR IGNORE INTO order_notes(order_id) VALUES (?)', (order_id,))
+            current = con.execute('SELECT note FROM order_notes WHERE order_id=?', (order_id,)).fetchone()['note']
+            if current != note:
+                if current != expected or not con.execute('UPDATE order_notes SET note=? WHERE order_id=? AND note=?',
+                                                          (note, order_id, expected)).rowcount:
+                    return jsonify(error='Order note changed. Refresh before saving.'), 409
+        return jsonify(detail(con, order_row(con, order_id), access))
 
 
 @bp.post('/<int:order_id>/hide')

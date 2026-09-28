@@ -1728,6 +1728,11 @@ def _migration_special_order_pickup_and_tender(con, cur):
     )
 
 
+def _migration_checkout_order_notes(con, cur):
+    cur.execute("ALTER TABLE checkout_orders ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('checkout_order_notes')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1777,6 +1782,7 @@ def _get_migrations():
         ('report_match_choices',                       _migration_report_match_choices),
         ('special_orders',                             _migration_special_orders),
         ('special_order_pickup_and_tender',            _migration_special_order_pickup_and_tender),
+        ('checkout_order_notes',                        _migration_checkout_order_notes),
     ]
 
 

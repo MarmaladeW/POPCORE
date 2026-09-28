@@ -89,7 +89,8 @@ async def sandbox_order_detail_and_hide(browser):
     state={'mode':'data','hidden':False}
     fresh=checkout(1)
     fresh.update(source='clover-sandbox',source_fresh=True,source_seen_at=time.time(),
-                 quote_available=True,totals_known=True,has_discount=False,can_hide=False,attempts=[])
+                 quote_available=True,totals_known=True,has_discount=False,can_hide=False,
+                 can_note=True,note='',attempts=[])
     stale=checkout(2)
     stale.update(source='clover-sandbox',source_fresh=False,source_seen_at=0,
                  quote_available=True,totals_known=True,has_discount=False,can_process=False,
@@ -97,11 +98,15 @@ async def sandbox_order_detail_and_hide(browser):
     stores=[dict(id=1,code='DT',name='Downtown')]
     def api(path,query,request):
         if path=='/api/clover-sandbox/checkouts/access':
-            return dict(business_date='2026-09-28',role='staff',live_stores=stores,history_stores=stores)
+            return dict(business_date='2026-09-28',role='staff',live_stores=stores,history_stores=stores,
+                        cny_per_cad='5.20')
         if path=='/api/clover-sandbox/checkouts':
             return dict(orders=[fresh]+([] if state['hidden'] else [stale]),next_before_id=None,
                         clover=dict(connected=True,fetched_at=time.time()))
         if path=='/api/clover-sandbox/checkouts/1':return fresh
+        if path=='/api/clover-sandbox/checkouts/1/notes':
+            fresh['note']=request.post_data_json['note']
+            return fresh
         if path=='/api/clover-sandbox/checkouts/2':return stale
         if path=='/api/clover-sandbox/checkouts/2/hide':
             state['hidden']=True
@@ -123,8 +128,20 @@ async def sandbox_order_detail_and_hide(browser):
         heading=await discount.locator('span').bounding_box()
         amount=await discount.locator('strong').bounding_box()
         assert amount['y']>=heading['y']+heading['height'], 'Discount amount overlaps its heading'
+        await page.get_by_role('textbox',name='Order note').fill('Customer will return later')
+        await page.get_by_role('button',name='Save note').click()
+        await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer will return later')
+        await page.get_by_role('button',name='WeChat Pay').click()
+        await page.get_by_role('button',name='Use recorded total').click()
+        await expect(page.get_by_label('Chinese yuan collection amount')).to_contain_text('¥235.04')
+        await page.get_by_role('checkbox',name='Split payment').check()
+        await page.get_by_role('button',name='Use recorded total').click()
+        await page.get_by_label('Collect now (CAD)').fill('10.00')
+        await expect(page.get_by_label('Chinese yuan collection amount')).to_contain_text('¥52.00')
         OUT.mkdir(parents=True,exist_ok=True)
-        await page.screenshot(path=str(OUT/'sandbox-order-detail-phone.png'))
+        await page.screenshot(path=str(OUT/'sandbox-order-detail-cny-phone.png'))
+        await page.reload()
+        await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer will return later')
         await page.get_by_role('link',name='Back to current orders').click()
         await expect(page.get_by_role('navigation',name='Current orders')).to_be_visible()
         await page.goto(BASE+'/checkout/history?source=clover-sandbox')
@@ -301,6 +318,9 @@ async def real_api_checks(browser):
         await page.route('**/*',local_only)
         await page.goto(f'http://127.0.0.1:5177/checkout/{order["id"]}')
         await expect(page.get_by_text('Staff Cashier',exact=True)).to_be_visible()
+        await page.get_by_role('textbox',name='Order note').fill('Customer requested a later pickup')
+        await page.get_by_role('button',name='Save note').click()
+        await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer requested a later pickup')
         await page.locator('input[type=file]').set_input_files(str(ROOT/'.local/checkout-focus/proof.png'))
         await page.get_by_role('button',name='Use photo',exact=True).click()
         await expect(page.get_by_text('Photo saved',exact=True)).to_be_visible()
@@ -319,6 +339,7 @@ async def real_api_checks(browser):
         await page.get_by_role('link',name='Order history',exact=True).first.click()
         await page.get_by_role('button',name='LOCAL-BROWSER-ONLY',exact=False).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
+        await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer requested a later pickup')
         partial,_=fixture.create_checkout(reference='LOCAL-REFUND-ONLY')
         partial=fixture.action(partial,'attempts','partial-attempt',tender='cash',amount_cents=1000)
         fixture.action(partial,'complete','partial-paid',attempt_id=partial['attempts'][0]['id'])
