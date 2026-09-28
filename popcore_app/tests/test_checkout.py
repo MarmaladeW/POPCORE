@@ -72,6 +72,23 @@ class CheckoutTests(ReceivingFixture):
             evidence = con.execute('SELECT uploader_sub,status FROM payment_evidence').fetchone()
             self.assertEqual(tuple(evidence),('auth0|helper','pending'))
 
+    def test_order_note_is_private_editable_in_history_and_rejects_stale_save(self):
+        order, _ = self.create_checkout()
+        path = f"/api/checkouts/{order['id']}/notes"
+        self.assertEqual(self.client.post(path, json={'note':'Other cashier note','expected_note':''},
+                                          headers=self.headers('staff:helper')).status_code, 403)
+        saved = self.client.post(path, json={'note':'Special pickup\nCall manager','expected_note':''},
+                                 headers=self.headers()).get_json()
+        self.assertEqual(saved['note'], 'Special pickup\nCall manager')
+        self.assertEqual(self.client.post(path, json={'note':'Overwrite','expected_note':''},
+                                          headers=self.headers()).status_code, 409)
+        self.action(saved, 'cancel', 'cancel-after-note')
+        history = self.client.get(f"/api/checkouts/{order['id']}", headers=self.headers()).get_json()
+        self.assertEqual(history['note'], 'Special pickup\nCall manager')
+        cleared = self.client.post(path, json={'note':'','expected_note':history['note']},
+                                   headers=self.headers()).get_json()
+        self.assertEqual(cleared['note'], '')
+
     def test_replaced_attempt_cannot_complete_or_carry_photos(self):
         order, _ = self.create_checkout()
         order = self.action(order,'attempts','old',tender='wechat',amount_cents=4520,assigned_to='auth0|helper')

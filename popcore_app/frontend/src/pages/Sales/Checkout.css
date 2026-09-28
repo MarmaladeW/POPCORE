@@ -45,6 +45,14 @@
 .co-original dt { color: #596273; }
 .co-original dd { margin: 0; color: #20242d; font-weight: 600; font-variant-numeric: tabular-nums; }
 .co-original > div:last-child { padding-top: 8px; border-top: 1px solid #e7eaf0; font-weight: 700; }
+.co-note { margin: 0 0 24px; padding: 16px 0; border-top: 1px solid #e7eaf0; border-bottom: 1px solid #e7eaf0; }
+.co-note h3 { margin: 0 0 10px; font-size: 16px; font-weight: 650; }
+.co-note p { margin: 0; color: #596273; white-space: pre-wrap; overflow-wrap: anywhere; }
+.co-note-actions { display: flex; gap: 8px; margin-top: 12px; }
+.co-cny { display: grid; gap: 5px; margin: -6px 0 20px; padding: 14px 16px; border-radius: 8px; background: #f4f5f8; }
+.co-cny span { font-size: 13px; font-weight: 650; }
+.co-cny strong { font-size: 32px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.co-cny small, .co-cny p { margin: 0; color: #596273; font-size: 12px; line-height: 1.5; }
 .co-methods { border: 0; margin: 0 0 22px; padding: 0; }
 .co-methods legend { margin-bottom: 10px; font-weight: 650; font-size: 15px; }
 .co-methods > div { display: flex; flex-wrap: wrap; gap: 8px; }

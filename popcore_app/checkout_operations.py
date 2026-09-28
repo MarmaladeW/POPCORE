@@ -19,6 +19,13 @@ def manager(actor):
     return ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM), 0) >= ROLE_HIERARCHY['manager']
 
 
+def read_order_note(data):
+    note, expected = data.get('note'), data.get('expected_note')
+    if not isinstance(note, str) or not isinstance(expected, str) or len(note) > 2000 or len(expected) > 2000:
+        raise InventoryValidationError('Order note must be text up to 2000 characters')
+    return note.strip(), expected
+
+
 def checkout_row(con, checkout_id, actor, *, cashier=False):
     checkout_id = read_int(checkout_id, 'checkout_id', minimum=1)
     row = con.execute('SELECT * FROM checkout_orders WHERE id=?', (checkout_id,)).fetchone()
@@ -43,6 +50,7 @@ def checkout_detail(con, checkout_id, actor):
     row['cashier_sub'] = row['created_by']
     row['cashier_name'] = (employee['name'].strip() if employee else '') or row['created_by']
     row['can_manage'] = writable and (row['created_by'] == actor['sub'] or manager(actor))
+    row['can_note'] = row['created_by'] == actor['sub'] or manager(actor)
     row['can_process'] = row['can_manage'] and row['status'] == 'open' and not row['abandoned_reason']
     row['can_refund'] = writable and manager(actor) and row['status'] == 'open' and bool(row['abandoned_reason'])
     row['refunds'] = [dict(refund) for refund in con.execute('''SELECT r.*,a.tender FROM checkout_refunds r
