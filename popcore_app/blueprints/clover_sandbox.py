@@ -137,7 +137,16 @@ def validate_order(value):
         raise ValueError('Clover returned an invalid order')
     if value.get('currency') != 'CAD':
         raise ValueError('Sandbox checkout requires CAD orders')
-    cents(value.get('total'))
+    source = value.get('source', 'cloud')
+    if source not in ('cloud', 'device'):
+        raise ValueError('Unknown Clover order source')
+    if value.get('total') is None:
+        if source != 'device':
+            raise ValueError('Clover returned an invalid amount')
+    else:
+        cents(value['total'])
+    if source == 'device' and (value.get('paymentState') != 'OPEN' or value.get('payments') != []):
+        raise ValueError('Device snapshots cannot confirm payments')
     created = value.get('createdTime')
     if type(created) is not int or not 0 < created < 32_503_680_000_000:
         raise ValueError('Clover returned an invalid order date')
@@ -165,29 +174,45 @@ def sync(con):
                                (now + 15, now)).rowcount
     if not acquired:
         return
+    retry_delay = 2
     try:
         response = requests.get('http://127.0.0.1:5055/clover-sandbox/orders',
                                 auth=('popcore', os.environ['CLOVER_SANDBOX_PROBE_PASSWORD']),
                                 timeout=(1, 10), allow_redirects=False)
         if response.status_code != 200:
+            try:
+                retry_delay = max(retry_delay, int(response.headers.get('Retry-After', '2')))
+            except ValueError:
+                pass
             raise ValueError('Sandbox probe unavailable')
         payload = response.json()
         if not isinstance(payload, dict) or payload.get('environment') != 'sandbox':
             raise ValueError('Sandbox source required')
+        cloud_unavailable = payload.get('cloud_unavailable', False)
+        if type(cloud_unavailable) is not bool:
+            raise ValueError('Unexpected sandbox cloud state')
         rows = payload.get('orders')
         if not isinstance(rows, list) or len(rows) > 20:
             raise ValueError('Unexpected sandbox feed')
         rows = [validate_order(row) for row in rows if not (
-            isinstance(row, dict) and row.get('paymentState') == 'OPEN'
+            isinstance(row, dict) and row.get('source') != 'device' and row.get('paymentState') == 'OPEN'
             and row.get('total') is None and row.get('payments') == [])]
         if len({row['id'] for row in rows}) != len(rows):
             raise ValueError('Duplicate sandbox order')
-        fetched = time.time()
+        fetched = payload.get('fetched_at')
+        if type(fetched) not in (int, float) or not 0 < fetched <= time.time() + 1:
+            raise ValueError('Sandbox probe returned an invalid fetch time')
+        seen = {}
+        for row in rows:
+            stamp = row.get('seen_at', fetched)
+            if type(stamp) not in (int, float) or not 0 < stamp <= time.time() + 1:
+                raise ValueError('Sandbox probe returned an invalid order time')
+            seen[row['id']] = stamp
         with con:
             for row in rows:
                 con.execute('''INSERT INTO orders(source_id,payload,seen_at) VALUES (?,?,?)
                     ON CONFLICT(source_id) DO UPDATE SET payload=excluded.payload,seen_at=excluded.seen_at''',
-                    (row['id'], json.dumps(row), fetched))
+                    (row['id'], json.dumps(row), seen[row['id']]))
                 order_id = con.execute('SELECT id FROM orders WHERE source_id=?', (row['id'],)).fetchone()[0]
                 con.execute('DELETE FROM hidden_orders WHERE order_id=?', (order_id,))
                 con.execute('UPDATE payments SET active=0 WHERE order_id=?', (order_id,))
@@ -199,11 +224,14 @@ def sync(con):
                         ON CONFLICT(source_id) DO UPDATE SET tender=excluded.tender,amount=excluded.amount,
                         result=excluded.result,active=1''', (order_id, payment['id'], tender(payment.get('tenderLabel')),
                         payment['amount'], str(payment.get('result', 'UNKNOWN'))))
-            con.execute("UPDATE feed SET fetched_at=?,next_poll=?,error='' WHERE id=1", (fetched, fetched + .5))
+            con.execute('UPDATE feed SET fetched_at=?,next_poll=?,error=? WHERE id=1',
+                        (max([fetched, *seen.values()]), time.time() + .5,
+                         'Clover cloud unavailable. Device items may still update; payment confirmation is delayed.'
+                         if cloud_unavailable else ''))
     except (requests.RequestException, ValueError):
         with con:
             con.execute('UPDATE feed SET next_poll=?,error=? WHERE id=1',
-                        (time.time() + 2, 'Clover sync unavailable. Showing the last received snapshot.'))
+                        (time.time() + retry_delay, 'Clover sync unavailable. Showing the last received snapshot.'))
 
 
 def detail(con, row, access):
@@ -211,11 +239,12 @@ def detail(con, row, access):
     live = bool(access['live_stores'])
     owner = row['cashier_sub'] == request.jwt_payload['sub']
     feed = con.execute('SELECT * FROM feed').fetchone()
-    fresh = not feed['error'] and time.time() - row['seen_at'] <= 5
+    device = source.get('source') == 'device'
+    fresh = (device or not feed['error']) and time.time() - row['seen_at'] <= 5
     payments = con.execute('SELECT * FROM payments WHERE order_id=? ORDER BY id', (row['id'],)).fetchall()
     received = sum(p['amount'] for p in payments if p['active'] and p['result'] == 'SUCCESS')
     total = source['total']
-    paid = source.get('paymentState') == 'PAID' and received == total and total > 0
+    paid = not device and source.get('paymentState') == 'PAID' and received == total and total > 0
     status = 'completed' if paid else 'open'
     if not (live and (access['role'] != 'staff' or status == 'open') or owner and access['role'] == 'staff'):
         raise PermissionError('Checkout history access denied')
@@ -232,19 +261,20 @@ def detail(con, row, access):
     simple = bool(prices) and all(type(p) is int and p >= 0 for p in prices) and all(
         item.get('unitQty') in (None, 0, 1000) and not item.get('refunded') for item in source['items'])
     subtotal = sum(prices) if simple else 0
-    quote_available = simple and 0 < subtotal <= total and not has_discount
-    totals_known = simple and subtotal <= total
+    quote_available = total is not None and simple and 0 < subtotal <= total and not has_discount
+    totals_known = total is not None and simple and subtotal <= total
     writable = live and (owner or access['role'] in ('admin', 'manager'))
     note_row = con.execute('SELECT note FROM order_notes WHERE order_id=?', (row['id'],)).fetchone()
     return dict(id=row['id'], source='clover-sandbox', store_id=feed['store_id'],
         reference=source['id'], register_name='Clover sandbox', business_date=datetime.fromtimestamp(
             source['createdTime'] / 1000, ZoneInfo('America/Toronto')).date().isoformat(),
         status=status, version=1, sale_id=None, cashier_name=row['cashier_name'], cashier_sub=row['cashier_sub'],
-        can_manage=False, can_refund=False, can_process=live and owner and status == 'open' and fresh,
+        can_manage=False, can_refund=False, can_process=live and owner and status == 'open' and fresh and total is not None,
         can_claim=live and not row['cashier_sub'] and status == 'open' and fresh,
-        received_cents=received, remaining_cents=max(0, total - received), refunded_cents=0,
+        received_cents=received, remaining_cents=max(0, (total or 0) - received), refunded_cents=0,
         refund_due_cents=0, abandoned_reason=None, refunds=[], quote_available=quote_available,
-        totals_known=totals_known, source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
+        totals_known=totals_known, total_pending=total is None, source_detail='device' if device else 'cloud',
+        source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
         cash_discount_applied=cash_discount_applied,
         can_hide=not fresh and (owner or access['role'] in ('manager', 'admin')),
         note=note_row['note'] if note_row else '', can_note=owner or access['role'] in ('manager', 'admin'),
@@ -254,7 +284,7 @@ def detail(con, row, access):
             photos=[dict(r) for r in con.execute('SELECT id FROM evidence WHERE payment_id=? ORDER BY id', (p['id'],))])
             for p in payments],
         order=dict(subtotal_cents=subtotal if totals_known else 0, source_tax_cents=total-subtotal if totals_known else 0,
-            gross_cents=total, reduction_cents=0, collected_cents=total,
+            gross_cents=total or 0, reduction_cents=0, collected_cents=total or 0,
             lines=[dict(product_name_snapshot=str(item.get('name') or 'Clover item')[:240],
                 quantity=(item['unitQty']/1000 if type(item.get('unitQty')) is int and item['unitQty'] > 0 else 1),
                 unit=str(item.get('unitName') or 'each')) for item in source['items']]))

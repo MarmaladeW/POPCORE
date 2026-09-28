@@ -1,6 +1,6 @@
 # Clover checkout rehearsal (option 1)
 
-Status: implementation and offline checks exist. The user-operated Android-to-phone timing rehearsal is still pending; confirm the current deployed app and probe versions before starting it.
+Status: the sandbox checkout is deployed. A read-only Android companion, device snapshot intake, and cloud-reader improvements are implemented locally. The companion debug APK built and installed on the sandbox emulator; its Clover listener registered. The new probe, adapter, and frontend changes are not deployed. End-to-end phone timing remains unverified.
 
 ## Boundaries
 
@@ -11,13 +11,14 @@ Order snapshots, stable payment IDs, cashier ownership and image bytes live in o
 ## Enable after deployment is authorized
 
 1. Release the application source and an intentional frontend build through the normal POPCORE release process. Do not enable the adapter with an old frontend build.
-2. Update the isolated probe with `scripts/clover_sandbox.py` from this branch. This preserves its OAuth/webhook/read-only behavior, uses expanded order payments, and resolves at most one missing tender label per read to avoid payment-detail rate limits. Keep the existing private config and data untouched. Keep one Gunicorn worker for refresh-token rotation and bind only to `127.0.0.1:5055`.
+2. Update the isolated probe with `scripts/clover_sandbox.py` from this branch. This preserves its OAuth/webhook/read-only behavior, uses expanded order payments, and resolves missing tender labels in the background. Order and review readers share one provider sample, with at most one order read starting per second. Provider throttling pauses requests for `Retry-After`, with exponential backoff when absent. Keep the existing private config and data untouched. Keep one Gunicorn worker for refresh-token rotation and shared pacing; bind only to `127.0.0.1:5055`.
+   To pair the sandbox companion, set `DEVICE_BRIDGE_ID` to its displayed device UUID and `DEVICE_BRIDGE_SECRET` to a new random key of at least 32 characters in that private probe config. Give that same key to the companion through its local setup screen. Keep the existing HTTPS reverse proxy route for `/clover-sandbox/device-snapshot`; it requires its own bearer key and must not be served over plain HTTP. The companion uses the exact merchant ID already configured for the probe.
 3. Confirm Midtown's exact active `stores.id` using a read-only lookup. Do not infer it from a numeric position or invent an ID. Set `CLOVER_SANDBOX_STORE_ID` to that ID in the application's private service environment.
 4. Create a dedicated directory owned by the POPCORE application service account, mode `0700`, outside the served/static/upload trees, for example `/var/lib/popcore-clover-checkout`. Set `CLOVER_SANDBOX_CHECKOUT_DIR` to its absolute path. The adapter creates only `clover-checkout-sandbox.sqlite3` plus SQLite journal sidecars there, with the database mode `0600`. It refuses to reuse that database for a different store.
 5. Set `CLOVER_SANDBOX_PROBE_PASSWORD` privately to the existing probe's `ADMIN_PASSWORD`. Never put it in `VITE_*`, git, a URL or client-side code. No production Clover credentials are needed. The source URL is fixed to the loopback sandbox probe, with redirects disabled.
 6. Restart through the approved release procedure. Checkout displays an **Open Clover sandbox rehearsal** link when configuration is enabled. Staff still need an active employee and a shift at Midtown today to claim orders or upload evidence. Sandbox-only claims and evidence do not require inventory access because they do not write real sales or stock. Admin permissions retain their existing meaning; real checkout and inventory permissions are unchanged.
 
-## User-operated rehearsal (not run yet)
+## User-operated rehearsal
 
 On the phone, open Checkout → Open Clover sandbox rehearsal. Midtown is the only available location. The amber banner distinguishes this from real operations.
 
@@ -31,9 +32,11 @@ Successful electronic payments expose the existing camera/upload control. Eviden
 
 The page targets a one-second poll cadence, without overlapping requests, and shares a half-second server cache across app workers. A slow request finishes before the next starts. Polling pauses when hidden or when a mutation is unresolved. Reads have a finite timeout. A missing payment tender label is looked up separately so it does not hold up the order feed; that label may appear on a later refresh. A stale/failed source retains the previous snapshot with a warning. An owner or manager can remove a stale snapshot from POPCORE lists without deleting Clover data or saved payment photos; it reappears if Clover sends it again. Five seconds without a fresh per-order snapshot disables checkout guidance/claiming independently of whether the next network request returns; evidence for an already recorded payment remains attachable under the usual permissions.
 
-The target is **under three seconds end to end**, not a verified latency guarantee. Measure from the Android action to the phone update. Network time, Clover cloud delivery, OAuth refresh and provider rate limits count toward the result.
+The adapter preserves the probe's actual fetch timestamp when reusing a sample and honors its retry delay. A cached read does not make the source appear freshly fetched.
 
-The probe returns only its latest 20 modified orders. An open draft with no total or payments is not queueable and is skipped, even if it already has items; it enters the queue when Clover provides a total. Other invalid orders still fail validation. Observed orders remain in isolated history, but orders outside that window are not continuously reconciled. Missing orders are never interpreted as cancelled. Refunds, voids, deleted orders, weighted/complex-item pricing and historical imports require separate provider coverage; use Clover as the source of truth. This is not production ingestion and must not be enabled for a real merchant.
+The target is **under three seconds end to end**, not a verified latency guarantee. On 2026-09-28, one authorized ADB addition to order `DFBK2GASNENFE` took **21.24 seconds** to reach POPCORE storage. Clover's device log showed an order batch released at an inactivity timeout; the cloud line-item timestamp preceded POPCORE storage by **0.343 seconds**. The order reached seven items and CAD 158.12. Phone rendering time was not captured. Faster cloud polling cannot remove this measured upload delay. The [device sync design](superpowers/specs/2026-09-28-clover-device-sync-design.md) and [companion source](../android/clover-sync/README.md) describe the local implementation; the new path still needs a paired release and timed end-to-end test.
+
+The probe returns its latest 20 modified cloud orders and up to 20 latest device orders. A device order with an unknown total can appear in the queue with its item IDs and names, but payment guidance waits for a known amount; a cloud-only draft with no total is skipped. Device items are provisional until a full matching cloud snapshot arrives. A fresh device snapshot never marks an order paid. Observed orders remain in isolated history, but orders outside these windows are not continuously reconciled. Missing orders are never interpreted as cancelled. Refunds, voids, deleted orders, weighted/complex-item pricing and historical imports require separate provider coverage; use Clover as the source of truth. This is not production ingestion and must not be enabled for a real merchant.
 
 ## Navigation
 
