@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import hmac
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -24,7 +25,9 @@ MAX_SAFE_INTEGER = 2**53 - 1
 
 
 class CloverError(Exception):
-    pass
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _safe_cents(value):
@@ -68,6 +71,67 @@ def money(cents):
     return '${}.{:02d}'.format(cents // 100, cents % 100) if _safe_cents(cents) else '—'
 
 
+def device_order(value):
+    if (not isinstance(value, dict) or not IDENTIFIER.fullmatch(str(value.get('id', '')))
+            or value.get('currency') != 'CAD'
+            or type(value.get('createdTime')) is not int
+            or not 0 < value['createdTime'] < 32_503_680_000_000
+            or (value.get('total') is not None and not _safe_cents(value['total']))):
+        raise ValueError('Invalid device order')
+    items = value.get('items')
+    discounts = value.get('discounts')
+    if not isinstance(items, list) or len(items) > 200 or not isinstance(discounts, list) or len(discounts) > 100:
+        raise ValueError('Invalid device order contents')
+    safe_items, ids = [], set()
+    for item in items:
+        if (not isinstance(item, dict) or not IDENTIFIER.fullmatch(str(item.get('id', '')))
+                or item['id'] in ids or not isinstance(item.get('name'), str)
+                or not 0 < len(item['name']) <= 240):
+            raise ValueError('Invalid device line item')
+        ids.add(item['id'])
+        safe = {key: item.get(key) for key in ('id', 'name', 'price',
+                'priceWithModifiersAndItemAndOrderDiscounts', 'unitQty',
+                'unitName', 'discountAmount', 'orderLevelDiscountAmount')}
+        if any(safe[key] is not None and not _safe_cents(safe[key]) for key in (
+                'price', 'priceWithModifiersAndItemAndOrderDiscounts', 'discountAmount',
+                'orderLevelDiscountAmount')):
+            raise ValueError('Invalid device line-item amount')
+        if safe['unitQty'] is not None and (type(safe['unitQty']) is not int or
+                                            not 0 <= safe['unitQty'] <= 1_000_000_000):
+            raise ValueError('Invalid device quantity')
+        if safe['unitName'] is not None and (not isinstance(safe['unitName'], str) or
+                                             len(safe['unitName']) > 40):
+            raise ValueError('Invalid device unit')
+        safe_items.append(safe)
+    safe_discounts = []
+    for discount in discounts:
+        if (not isinstance(discount, dict) or not IDENTIFIER.fullmatch(str(discount.get('id', '')))
+                or not isinstance(discount.get('name'), str)
+                or len(discount['name']) > 240):
+            raise ValueError('Invalid device discount')
+        amount, percentage = discount.get('amount'), discount.get('percentage')
+        if (amount is not None and (type(amount) is not int or abs(amount) > MAX_SAFE_INTEGER)
+                or percentage is not None and (type(percentage) is not int or abs(percentage) > 1_000_000)):
+            raise ValueError('Invalid device discount amount')
+        safe_discounts.append({key: discount.get(key) for key in ('id', 'name', 'amount', 'percentage')})
+    return dict(id=value['id'], currency='CAD', createdTime=value['createdTime'],
+                total=value.get('total'), items=safe_items, discounts=safe_discounts)
+
+
+def cloud_matches_device(cloud, device):
+    if device['total'] is not None and cloud.get('total') != device['total']:
+        return False
+    def item_key(item):
+        return (item.get('id'), item.get('unitQty'), item.get('price'),
+                item.get('priceWithModifiersAndItemAndOrderDiscounts'))
+    return ({item_key(item) for item in cloud['items']} ==
+            {item_key(item) for item in device['items']} and
+            {(item.get('id'), item.get('amount'), item.get('percentage'))
+             for item in cloud['discounts']} ==
+            {(item.get('id'), item.get('amount'), item.get('percentage'))
+             for item in device['discounts']})
+
+
 def create_app(config):
     config = dict(config)
     public = config['PUBLIC_URL'].rstrip('/')
@@ -104,6 +168,12 @@ def create_app(config):
             CREATE TABLE IF NOT EXISTS events (
                 merchant TEXT, object_id TEXT, kind TEXT, source_time INTEGER,
                 received REAL NOT NULL, PRIMARY KEY(merchant, object_id, kind, source_time));
+            CREATE TABLE IF NOT EXISTS device_cursor (
+                id INTEGER PRIMARY KEY CHECK(id=1), sequence INTEGER NOT NULL,
+                payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS device_orders (
+                order_id TEXT PRIMARY KEY, payload TEXT NOT NULL, received REAL NOT NULL,
+                reconciled INTEGER NOT NULL DEFAULT 0);
         ''')
 
     def setting(key):
@@ -122,18 +192,41 @@ def create_app(config):
             'access_token', 'refresh_token', 'access_token_expiration', 'refresh_token_expiration')
             if k in tokens}))
 
+    rate_lock = threading.Lock()
+    retry_at = 0
+    rate_failures = 0
+
     def clover(method, path, **kwargs):
+        nonlocal retry_at, rate_failures
         # Only token exchanges may POST. There is deliberately no generic write API.
         if method != 'GET' and path not in ('/oauth/v2/token', '/oauth/v2/refresh'):
             raise ValueError('Sandbox probe does not write Clover orders, payments or stock.')
+        with rate_lock:
+            remaining = retry_at - time.monotonic()
+            if remaining > 0:
+                raise CloverError('Clover is limiting requests. Waiting before retrying.', math.ceil(remaining))
         try:
             result = requests.request(method, API + path, timeout=(5, 15), allow_redirects=False, **kwargs)
+            if result.status_code == 429:
+                with rate_lock:
+                    rate_failures = min(rate_failures + 1, 6)
+                    delay = min(30, 2 ** (rate_failures - 1))
+                    try:
+                        delay = max(delay, int(result.headers.get('Retry-After', '1')))
+                    except ValueError:
+                        pass
+                    retry_at = max(retry_at, time.monotonic() + delay)
+                    delay = math.ceil(retry_at - time.monotonic())
+                raise CloverError('Clover is limiting requests. Waiting before retrying.', delay)
             if result.status_code != 200:
                 raise CloverError('Clover sandbox returned HTTP ' + str(result.status_code) +
                                   '. Check permissions or reconnect; provider response is not displayed.')
             payload = result.json()
             if not isinstance(payload, dict):
                 raise ValueError('Expected an object')
+            with rate_lock:
+                if time.monotonic() >= retry_at:
+                    rate_failures = 0
             return payload
         except (requests.RequestException, ValueError):
             raise CloverError('Clover sandbox could not be read. Retry or reconnect.') from None
@@ -164,7 +257,7 @@ def create_app(config):
 
     @app.before_request
     def protect():
-        if request.endpoint in ('webhook', 'health'):
+        if request.endpoint in ('webhook', 'health', 'device_snapshot'):
             return None
         auth = request.authorization
         if not (auth and auth.type == 'basic' and auth.username == 'popcore'
@@ -181,7 +274,11 @@ def create_app(config):
 
     @app.errorhandler(CloverError)
     def provider_error(error):
-        return jsonify(error=str(error)), 502
+        response = jsonify(error=str(error))
+        response.status_code = 502
+        if error.retry_after is not None:
+            response.headers['Retry-After'] = str(error.retry_after)
+        return response
 
     def missing():
         return [k for k in ('CLOVER_APP_ID', 'CLOVER_APP_SECRET', 'CLOVER_MERCHANT_ID') if not config.get(k)]
@@ -189,6 +286,45 @@ def create_app(config):
     @app.get(PREFIX + '/health')
     def health():
         return jsonify(status='ok', environment='sandbox')
+
+    @app.post(PREFIX + '/device-snapshot')
+    def device_snapshot():
+        secret = config.get('DEVICE_BRIDGE_SECRET', '')
+        device_id = config.get('DEVICE_BRIDGE_ID', '')
+        if len(secret) < 32 or not device_id:
+            abort(404)
+        supplied = request.headers.get('Authorization', '')
+        if not supplied.startswith('Bearer ') or not hmac.compare_digest(supplied[7:], secret):
+            abort(401)
+        value = request.get_json(silent=True)
+        if not isinstance(value, dict):
+            abort(400)
+        if value.get('merchantId') != config.get('CLOVER_MERCHANT_ID') or value.get('deviceId') != device_id:
+            abort(403)
+        sequence = value.get('sequence')
+        if type(sequence) is not int or not 0 < sequence <= MAX_SAFE_INTEGER:
+            abort(400)
+        try:
+            order = device_order(value.get('order'))
+        except ValueError:
+            abort(400)
+        body = json.dumps(order, sort_keys=True, separators=(',', ':'))
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            cursor = db.execute('SELECT sequence,payload FROM device_cursor WHERE id=1').fetchone()
+            if cursor and sequence <= cursor['sequence']:
+                if sequence == cursor['sequence'] and body == cursor['payload']:
+                    return jsonify(accepted=True, replay=True)
+                abort(409)
+            db.execute('INSERT INTO device_cursor(id,sequence,payload) VALUES (1,?,?) '
+                       'ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence,payload=excluded.payload',
+                       (sequence, body))
+            db.execute('INSERT INTO device_orders(order_id,payload,received) VALUES (?,?,?) '
+                       'ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload,received=excluded.received,'
+                       'reconciled=CASE WHEN device_orders.payload=excluded.payload '
+                       'THEN device_orders.reconciled ELSE 0 END',
+                       (order['id'], body, time.time()))
+        return jsonify(accepted=True, replay=False)
 
     @app.get(PREFIX + '/')
     def home():
@@ -260,6 +396,16 @@ def create_app(config):
     tender_lock = threading.Lock()
     tender_retry_after = 0
     tender_lookup_running = False
+    # One probe worker shares the same sample across checkout, review and diagnostics.
+    orders_lock = threading.Lock()
+    orders_condition = threading.Condition(orders_lock)
+    orders_payload = None
+    orders_fetched_at = 0
+    orders_next_read = 0
+    orders_error = False
+    orders_failure = None
+    orders_running = False
+    orders_token = None
 
     def lookup_tender(token, merchant, payment_id, tender_id):
         nonlocal tender_retry_after, tender_lookup_running
@@ -278,16 +424,52 @@ def create_app(config):
                 tender_retry_after = time.monotonic() + 30
             tender_lookup_running = False
 
+    def refresh_cloud(merchant):
+        nonlocal orders_payload, orders_fetched_at, orders_next_read, orders_error
+        nonlocal orders_failure, orders_running, orders_token
+        try:
+            token = access_token()
+            payload = clover('GET', '/v3/merchants/' + merchant + '/orders',
+                             headers={'Authorization': 'Bearer ' + token},
+                             params={'limit': 20, 'orderBy': 'modifiedTime DESC',
+                                     'expand': 'lineItems,discounts,payments,employee'})
+            with orders_condition:
+                orders_payload, orders_fetched_at, orders_token = payload, time.time(), token
+                orders_next_read = time.monotonic() + 1
+                orders_error, orders_failure = False, None
+        except CloverError as error:
+            with orders_condition:
+                orders_next_read = time.monotonic() + (error.retry_after or 2)
+                orders_error, orders_failure = True, error
+        finally:
+            with orders_condition:
+                orders_running = False
+                orders_condition.notify_all()
+
     def read_orders():
-        nonlocal tender_lookup_running
+        nonlocal tender_lookup_running, orders_running, orders_next_read
         merchant = config.get('CLOVER_MERCHANT_ID', '')
         if not IDENTIFIER.fullmatch(merchant):
             raise CloverError('Set the Canadian test merchant ID first.')
-        token = access_token()
-        payload = clover('GET', '/v3/merchants/' + merchant + '/orders',
-                        headers={'Authorization': 'Bearer ' + token},
-                        params={'limit': 20, 'orderBy': 'modifiedTime DESC',
-                                'expand': 'lineItems,discounts,payments,employee'})
+        with database() as db:
+            device_rows = db.execute('SELECT order_id,payload,received,reconciled '
+                                     'FROM device_orders ORDER BY received DESC LIMIT 20').fetchall()
+        with orders_condition:
+            start = not orders_running and time.monotonic() >= orders_next_read
+            if start:
+                orders_running = True
+                if device_rows:
+                    threading.Thread(target=refresh_cloud, args=(merchant,), daemon=True).start()
+            elif orders_running and not device_rows:
+                orders_condition.wait_for(lambda: not orders_running, timeout=20)
+        if start and not device_rows:
+            refresh_cloud(merchant)
+        with orders_condition:
+            if orders_payload is None and not device_rows:
+                raise orders_failure or CloverError('Clover sandbox could not be read. Retry or reconnect.')
+            payload = orders_payload or {'elements': []}
+            fetched_at, token = orders_fetched_at, orders_token
+            cloud_unavailable = orders_error or orders_payload is None
         payment_ids = {payment.get('id', '') for order in payload.get('elements', [])
                        for payment in (order.get('payments') or {}).get('elements', [])}
         if any(not IDENTIFIER.fullmatch(payment_id) for payment_id in payment_ids):
@@ -319,7 +501,7 @@ def create_app(config):
                 safe_payment['tenderId'] = tender_id
                 safe_payment['tenderLabel'] = tender.get('label')
                 safe_payment['employeeId'] = (payment.get('employee') or {}).get('id')
-                if tender_id and not safe_payment['tenderLabel']:
+                if token and tender_id and not safe_payment['tenderLabel']:
                     with tender_lock:
                         if tender_id not in tender_labels and not lookup_attempted and not tender_lookup_running and time.monotonic() >= tender_retry_after:
                             lookup_attempted = True
@@ -328,17 +510,41 @@ def create_app(config):
                         safe_payment['tenderLabel'] = tender_labels.get(tender_id)
                 row['payments'].append(safe_payment)
             rows.append(row)
-        return rows
+        by_id = {row['id']: row for row in rows}
+        for device_row in device_rows:
+            device = json.loads(device_row['payload'])
+            cloud = by_id.get(device['id'])
+            if cloud and cloud_matches_device(cloud, device):
+                if not device_row['reconciled']:
+                    with database() as db:
+                        db.execute('UPDATE device_orders SET reconciled=1 WHERE order_id=? AND payload=?',
+                                   (device['id'], device_row['payload']))
+                cloud['source'] = 'cloud'
+                cloud['seen_at'] = fetched_at
+                cloud['reconciled'] = True
+                continue
+            if cloud and device_row['reconciled']:
+                continue
+            by_id[device['id']] = {**device, 'paymentState': 'OPEN', 'payments': [],
+                                   'source': 'device', 'seen_at': device_row['received'],
+                                   'reconciled': False}
+        rows = sorted(by_id.values(), key=lambda row: row.get('seen_at', fetched_at), reverse=True)[:20]
+        for row in rows:
+            row.setdefault('source', 'cloud')
+            row.setdefault('seen_at', fetched_at)
+            row.setdefault('reconciled', True)
+        return rows, max([fetched_at, *[row['received'] for row in device_rows]]), cloud_unavailable
 
     @app.get(PREFIX + '/orders')
     def orders():
-        rows = read_orders()
-        return jsonify(environment='sandbox', fetched_at=time.time(), orders=rows,
+        rows, fetched_at, cloud_unavailable = read_orders()
+        return jsonify(environment='sandbox', fetched_at=fetched_at, orders=rows,
+                       cloud_unavailable=cloud_unavailable,
                        note='Up to 20 current orders; amounts are Clover minor units. Refresh to read lifecycle changes. No Clover or POPCORE data is written.')
 
     @app.get(PREFIX + '/review')
     def review():
-        rows = read_orders()
+        rows, _, _ = read_orders()
         for order in rows:
             prices = []
             line_discount = 0

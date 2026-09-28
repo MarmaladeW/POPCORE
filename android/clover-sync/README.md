@@ -1,0 +1,13 @@
+# POPCORE Clover sandbox sync companion
+
+This Android app listens for local Clover order changes and sends full, allowlisted order snapshots to the isolated POPCORE sandbox probe. It never writes orders or payments. Clover cloud data remains the source for confirmed payments.
+
+## Build and pair
+
+Open this directory as an Android Studio project and build the `app` debug variant. It uses the official `com.clover.sdk:clover-android-sdk:334` dependency from Maven Central and Gradle 9.4.1 with Android Gradle Plugin 9.2.0. The source tree does not contain downloaded dependencies or a Gradle wrapper executable; use a local Gradle installation or generate a wrapper before a CLI build.
+
+Install the debug APK on the sandbox Clover emulator with Clover's **Read Orders** app permission granted for this package. Configure the probe's private `DEVICE_BRIDGE_ID` with the UUID displayed in the app, and `DEVICE_BRIDGE_SECRET` with a random key at least 32 characters long. Enter the probe's exact sandbox merchant ID and that key in the app, then tap **Start device sync**. Keep its foreground service running while testing. The key is stored in Android app-private preferences and is not embedded in the APK. The HTTPS destination is `https://popcore.store/clover-sandbox/device-snapshot`.
+
+The emulator must have a Clover merchant account and order service available. A debug APK built and installed on the sandbox emulator on 2026-09-28, and the local listener registered. Order callback, local read, bridge delivery, and phone timing remain unverified until the paired sandbox release. The app stops if an order's local merchant does not match the paired sandbox merchant. A rejected pairing stops the service and shows an HTTP status; connection failures retry with the newest pending snapshot. Up to five observed orders are reread every two seconds to recover from missed callbacks and process restarts. Android 15 limits this `dataSync` foreground service to six hours per day; this companion is for short sandbox timing sessions, not all-day store use. Orders deleted on Clover and complex pricing are outside this rehearsal; verify them directly in Clover.
+
+For the pure Java coalescing check, run `javac -d .local/clover-android-test android/clover-sync/app/src/main/java/ca/popcore/cloversync/PendingOrders.java android/clover-sync/app/src/test/java/ca/popcore/cloversync/PendingOrdersTest.java` from the repository root, then `java -cp .local/clover-android-test ca.popcore.cloversync.PendingOrdersTest`.

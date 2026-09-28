@@ -21,10 +21,94 @@ from support import IsolatedApiCase
 
 
 class SandboxAdapterTests(unittest.TestCase):
+    def test_device_snapshot_keeps_distinct_items_and_never_confirms_payment(self):
+        device = {'id': 'ABCDEFGHIJKLM', 'currency': 'CAD', 'total': 3000,
+                  'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
+                  'source': 'device', 'reconciled': False, 'seen_at': time.time(),
+                  'items': [{'id': str(i) * 13, 'name': 'Test item', 'price': 1000}
+                            for i in range(3)], 'discounts': [], 'payments': []}
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'environment': 'sandbox', 'fetched_at': time.time(),
+                                        'cloud_unavailable': True,
+                                        'orders': [device]}).encode()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            'CLOVER_SANDBOX_CHECKOUT_DIR': directory, 'CLOVER_SANDBOX_STORE_ID': '7',
+            'CLOVER_SANDBOX_PROBE_PASSWORD': 'test-only',
+        }), patch.object(adapter.requests, 'get', return_value=response), \
+                Flask(__name__).test_request_context():
+            request.jwt_payload = {'sub': 'cashier'}
+            access = {'live_stores': [{'id': 7}], 'role': 'staff'}
+            with adapter.database() as con:
+                adapter.sync(con)
+                row = adapter.order_row(con, 1)
+                value = adapter.detail(con, row, access)
+                self.assertEqual(len(value['order']['lines']), 3)
+                self.assertEqual(value['order']['gross_cents'], 3000)
+                self.assertEqual(value['status'], 'open')
+                self.assertEqual(value['source_detail'], 'device')
+                self.assertTrue(value['source_fresh'])
+                self.assertFalse(value['can_process'])
+                self.assertEqual(con.execute('SELECT seen_at FROM orders').fetchone()[0], device['seen_at'])
+                self.assertIn('Clover cloud unavailable', con.execute('SELECT error FROM feed').fetchone()[0])
+
+    def test_device_order_without_total_is_visible_without_payment_guidance(self):
+        device = {'id': 'ABCDEFGHIJKLM', 'currency': 'CAD', 'total': None,
+                  'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
+                  'source': 'device', 'reconciled': False, 'seen_at': time.time(),
+                  'items': [{'id': 'I' * 13, 'name': 'Test item', 'price': 1000}],
+                  'discounts': [], 'payments': []}
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'environment': 'sandbox', 'fetched_at': time.time(),
+                                        'orders': [device]}).encode()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            'CLOVER_SANDBOX_CHECKOUT_DIR': directory, 'CLOVER_SANDBOX_STORE_ID': '7',
+            'CLOVER_SANDBOX_PROBE_PASSWORD': 'test-only',
+        }), patch.object(adapter.requests, 'get', return_value=response), \
+                Flask(__name__).test_request_context():
+            request.jwt_payload = {'sub': 'cashier'}
+            access = {'live_stores': [{'id': 7}], 'role': 'staff'}
+            with adapter.database() as con:
+                adapter.sync(con)
+                value = adapter.detail(con, adapter.order_row(con, 1), access)
+                self.assertEqual(len(value['order']['lines']), 1)
+                self.assertTrue(value['total_pending'])
+                self.assertFalse(value['can_process'])
+                self.assertFalse(value['quote_available'])
+
+    def test_cached_probe_snapshot_keeps_its_age_and_rate_limit_wait(self):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'environment': 'sandbox', 'fetched_at': 995,
+            'orders': [{'id': 'ABCDEFGHIJKLM', 'currency': 'CAD', 'total': 1130,
+                        'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
+                        'items': [{'name': 'Test item', 'price': 1000}], 'payments': []}]}).encode()
+        limited = requests.Response()
+        limited.status_code = 502
+        limited.headers['Retry-After'] = '7'
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            'CLOVER_SANDBOX_CHECKOUT_DIR': directory, 'CLOVER_SANDBOX_STORE_ID': '7',
+            'CLOVER_SANDBOX_PROBE_PASSWORD': 'test-only',
+        }), patch.object(adapter.time, 'time', return_value=1000) as clock, \
+                patch.object(adapter.requests, 'get', side_effect=[response, limited]) as provider:
+            with adapter.database() as con:
+                adapter.sync(con)
+                self.assertEqual(con.execute('SELECT seen_at FROM orders').fetchone()[0], 995)
+                self.assertEqual(con.execute('SELECT fetched_at FROM feed').fetchone()[0], 995)
+                clock.return_value = 1001
+                adapter.sync(con)
+                clock.return_value = 1003
+                adapter.sync(con)
+                self.assertEqual(provider.call_count, 2)
+                feed = con.execute('SELECT * FROM feed').fetchone()
+                self.assertEqual(feed['next_poll'], 1008)
+                self.assertTrue(feed['error'])
+
     def test_unpriced_open_draft_with_items_does_not_block_priced_orders(self):
         response = requests.Response()
         response.status_code = 200
-        response._content = json.dumps({'environment': 'sandbox', 'orders': [
+        response._content = json.dumps({'environment': 'sandbox', 'fetched_at': time.time(), 'orders': [
             {'id': 'ABCDEFGHIJKLM', 'currency': 'CAD', 'total': 1130,
              'createdTime': 1_790_000_000_000, 'paymentState': 'OPEN',
              'items': [{'name': 'Test item', 'price': 1000}], 'payments': []},
@@ -159,7 +243,7 @@ class SandboxAccessTests(IsolatedApiCase):
             con.commit()
         response = requests.Response()
         response.status_code = 200
-        response._content = json.dumps({'environment': 'sandbox', 'orders': [self.order]}).encode()
+        response._content = json.dumps({'environment': 'sandbox', 'fetched_at': time.time(), 'orders': [self.order]}).encode()
         with patch.object(adapter.requests, 'get', return_value=response):
             refreshed = self.client.get('/api/clover-sandbox/checkouts/1', headers=self.headers())
         self.assertEqual(refreshed.get_json()['note'], 'Special CNY arrangement')
@@ -191,7 +275,7 @@ class SandboxAccessTests(IsolatedApiCase):
             con.commit()
         response = requests.Response()
         response.status_code = 200
-        response._content = json.dumps({'environment': 'sandbox', 'orders': [self.order]}).encode()
+        response._content = json.dumps({'environment': 'sandbox', 'fetched_at': time.time(), 'orders': [self.order]}).encode()
         with patch.object(adapter.requests, 'get', return_value=response):
             queue = self.client.get(f'/api/clover-sandbox/checkouts?store_id={self.store_id}&view=live', headers=self.headers())
         self.assertEqual(len(queue.get_json()['orders']), 1)
