@@ -3,10 +3,11 @@ plugins { id 'com.android.application' }
 android {
     namespace 'ca.popcore.cloversync'
     compileSdk 37
+    lint { disable 'ExpiredTargetSdkVersion' }
     defaultConfig {
         applicationId 'ca.popcore.cloversync'
         minSdk 26
-        targetSdk 35
+        targetSdk 29
         versionCode 1
         versionName '0.1-sandbox'
     }
