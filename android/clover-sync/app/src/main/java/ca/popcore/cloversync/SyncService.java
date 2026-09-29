@@ -39,6 +39,7 @@ public final class SyncService extends Service {
     private final Map<String, ScheduledFuture<?>> scheduled = new ConcurrentHashMap<>();
     private final PendingOrders pending = new PendingOrders();
     private final AtomicBoolean draining = new AtomicBoolean();
+    private ScheduledFuture<?> sessionCutoff;
     private volatile boolean stopping;
     private final Set<String> knownIds = new LinkedHashSet<>();
     private OrderConnector connector;
@@ -103,6 +104,20 @@ public final class SyncService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        long remaining = SyncSession.remainingMillis(
+                prefs.getLong("session_started", 0), System.currentTimeMillis());
+        if (remaining == 0) {
+            status("Six-hour sandbox sync session ended; tap Start to resume.");
+            stopping = true;
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (sessionCutoff != null) sessionCutoff.cancel(false);
+        sessionCutoff = scheduler.schedule(() -> {
+            status("Six-hour sandbox sync session ended; tap Start to resume.");
+            stopping = true;
+            stopSelf();
+        }, remaining, TimeUnit.MILLISECONDS);
         return START_STICKY;
     }
 
