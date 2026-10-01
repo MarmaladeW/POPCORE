@@ -363,7 +363,14 @@ async def real_api_checks(browser):
         await page.locator('input[type=file]').set_input_files(str(ROOT/'.local/checkout-focus/proof.png'))
         await page.get_by_role('button',name='Use photo',exact=True).click()
         await expect(page.get_by_text('Photo saved',exact=True)).to_be_visible()
-        await expect(page.get_by_role('button',name='Record $45.20 received',exact=True)).to_be_enabled()
+        try:
+            await expect(page.get_by_role('button',name='Record $45.20 received',exact=True)).to_be_enabled()
+        except AssertionError:
+            OUT.mkdir(parents=True,exist_ok=True)
+            await page.screenshot(path=str(OUT/'real-api-record-missing.png'),full_page=True)
+            print('DIAGNOSTIC buttons:',await page.get_by_role('button').evaluate_all("els=>els.map(e=>[e.getAttribute('aria-label'),e.innerText,e.disabled,e.className])"))
+            print('DIAGNOSTIC text:',(await page.locator('.co-workspace').inner_text())[:3000])
+            raise
         await page.get_by_role('button',name='Record $45.20 received',exact=True).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
         detail=fixture.client.get(f'/api/checkouts/{order["id"]}',headers=fixture.headers()).get_json()
