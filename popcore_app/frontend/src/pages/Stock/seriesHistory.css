@@ -1,0 +1,22 @@
+.pc-history { color: #26382e; overflow-wrap: anywhere; }
+.pc-history [hidden] { display: none !important; }
+.pc-history-filters { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; margin-bottom: 24px; }
+.pc-history-filters label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 13px; font-weight: 600; }
+.pc-history-filters input, .pc-history-filters select { min-height: 44px; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; background: #fff; border: 1px solid #d8ddd6; border-radius: 6px; padding: 8px 10px; font: inherit; font-size: 16px; color: inherit; }
+.pc-history-product, .pc-history-range-error { grid-column: 1 / -1; }
+.pc-history-range-error { color: #aa3d2e; margin: 0; }
+.pc-history .ant-btn { min-height: 44px; height: auto; }
+.pc-history-movements, .pc-history-lines { padding: 0; margin: 0 0 20px; list-style: none; }
+.pc-history-movements li, .pc-history-lines li { display: flex; flex-direction: column; gap: 5px; padding: 16px 0; border-bottom: 1px solid #e5e9e2; font-size: 13px; }
+.pc-history-movement-title { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
+.pc-history-movement-title strong:last-child { flex-shrink: 0; }
+.pc-history-link { display: inline; min-height: 44px; border: 0; padding: 8px 0; background: none; color: #365b42; font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.pc-history-link:focus-visible { outline: 2px solid #365b42; outline-offset: 3px; }
+.pc-history-document h3 { margin: 20px 0; font-size: 21px; }
+.pc-history-document h4 { margin: 24px 0 0; font-size: 15px; }
+.pc-history-document dl { display: grid; grid-template-columns: 100px minmax(0,1fr); gap: 10px 16px; margin: 0; font-size: 14px; }
+.pc-history-document dt { color: #69756c; }
+.pc-history-document dd { margin: 0; }
+.pc-history-corrections p { margin: 0; }
+.pc-history-drawer .ant-drawer-close { width: 44px; height: 44px; }
+@media (max-width: 420px) { .pc-history-document dl { grid-template-columns: 82px minmax(0,1fr); gap: 10px; } }

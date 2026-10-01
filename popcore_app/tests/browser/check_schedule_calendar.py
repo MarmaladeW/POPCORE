@@ -88,7 +88,7 @@ async def run_checks(browser, case):
     await calendar.locator('button').nth(0).click()
     await page.get_by_label('Available until', exact=True).fill('18:00')
     await page.get_by_role('button', name='Apply to selected dates').click()
-    await page.get_by_role('button', name='More', exact=True).click()
+    await page.get_by_role('link', name='Home', exact=True).click()
     await page.get_by_role('link', name='Store tasks', exact=True).click()
     await expect(page.get_by_text('Today / 今日', exact=True)).to_be_visible()
     assert await page.evaluate("""() => {
@@ -394,8 +394,12 @@ async def run_checks(browser, case):
     await page.locator('.pc-coverage-notes summary').click()
     await page.get_by_role('textbox', name='Period notes', exact=True).fill('Weekend coverage\nConfirm Celia\nConfirm Mason\nReview trainees\nCheck both stores')
     await page.get_by_role('button', name='Save notes', exact=True).scroll_into_view_if_needed()
-    save_bounds = await page.get_by_role('button', name='Save notes', exact=True).bounding_box()
-    assert 0 <= save_bounds['y'] and save_bounds['y'] + save_bounds['height'] <= 700, save_bounds
+    save_notes = page.get_by_role('button', name='Save notes', exact=True)
+    await expect(save_notes).to_be_in_viewport(ratio=1)
+    assert await save_notes.evaluate('''button => {
+        const box = button.getBoundingClientRect()
+        return button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+    }'''), 'Save notes must not be covered by the header or another panel'
     await page.get_by_role('button', name='Save notes', exact=True).click()
     await expect(page.get_by_text('Notes saved', exact=True)).to_be_visible()
     assert await page.locator('.pc-assignment-day').evaluate('(el) => el.clientHeight') >= 170

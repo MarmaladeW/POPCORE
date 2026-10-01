@@ -4,13 +4,31 @@ Build 2 adds a local inventory core. It does not activate real store inventory, 
 
 ## Catalog identity
 
-Every authoritative product has a stable existing `products.id` plus reviewed metadata: `series_id`, `stock_form`, `stock_unit`, optional `design_name`, and `identity_status=verified`. Supported forms are sealed set, random box, confirmed design, and piece. Native units are set, box, and piece. Set-to-box conversions are versioned and become immutable once used.
+Every authoritative product has a stable existing `products.id` plus reviewed metadata: `series_id`, `stock_form`, `stock_unit`, optional `design_name`, and `identity_status=verified`. Supported forms are sealed set, random box, confirmed design, and ordinary item. Native units are set, box, and piece. Set-to-box conversions are versioned and become immutable once used.
 
 Manufacturer barcodes may intentionally resolve to multiple confirmed designs. Internal barcodes remain unique. Barcode text is never converted to a number, so leading zeroes are preserved. Ambiguous confirmed-design results require an explicit selection.
 
 Products → Import accepts catalog CSV or tab-separated rows with a header and an explicit SKU, including the columns from Products → Export. Managers review proposed creations and metadata updates before confirming. Existing products are identified by exact SKU; omitted columns stay unchanged, while blank supplied cells clear those catalog values. Stock/quantity columns and inventory identity fields are rejected. Confirmation is atomic, checks the preview against current catalog values, and never changes stock, inventory balances, or stock history.
 
 Products → Sync from Google Sheet is available to managers and admins on desktop and mobile. It retains its separate preview and confirmation steps. Catalog controls remain available when the selected store's stock cannot be read; unavailable stock is shown as unknown.
+
+## Series and confirmed designs
+
+`/stock` groups explicit `product_series` membership. Each confirmed design is its own stable product ID, stocked in pieces. Blind boxes and sealed sets remain separate products in boxes and sets; the series has no additional stock balance. Existing unassigned products remain accessible in `/stock/products` and Products for reviewed identity assignment. Names and legacy `ip_series` text never silently map products into a reviewed series.
+
+Managers can create a series with a named roster or add names to an existing series. The 6/9/12 name-entry presets do not imply a conversion factor, pack contents, or stock quantity; extra named designs are supported. Setup uses a single transaction and request key, rejects Unicode/case/whitespace-equivalent duplicate names, and writes no stock. Existing product IDs and history are not merged or rewritten.
+
+`GET /api/inventory/series?store_code=DT` (or `ALL`) starts with the complete roster, including designs with no balance row. Quantities are trustworthy only in authoritative mode for a reviewed product at an active location with reviewed opening counts. Missing trusted balances are zero/version zero; all other quantities and versions are null. Saleable, hold, damaged, trade, display, and transit stay distinct. `ALL` includes only active authorized stores and offers no stock actions.
+
+Series history filters immutable ledger movements by exact product and business-date range within the authorized store scope. It loads 100 rows per page with a movement-ID cursor. Document details include recorded actor, reason, source, native units and correction links; viewing a document requires access to every store it touches. New documents retain the posting reason; explicit consumed opened-set selections remain linked on document lines. The additive `add_inventory_audit_context` migration leaves historical fields null, since missing historical reasons or tray selections cannot be reconstructed safely. No prior movements or balances are rewritten.
+
+The stock view filters unknown, out-of-stock, floor replenishment, and held/damaged products. Unknown quantities never match out-of-stock, and replenishment requires positive saleable back stock in the same store. Exact-product reference photos prefer the existing general image and load through authenticated requests, with retry for missing or unreadable images. Photos remain managed in Products.
+
+Count series and Receive series collect quantities across confirmed designs at one reviewed location, then open the existing saved draft for review. Blank rows are omitted; an explicit zero count is retained. Stock details offer same-store saleable moves and set opening through an explicitly reviewed conversion. Loose-box moves exclude retained opened-set quantities. No action infers a conversion from a 6/9/12 design roster.
+
+Product search, receiving, counts, transfers, checkout choices, and new sale snapshots use the named design identity. Receiving an already identified item adds stock to that design. Identifying an existing blind box instead consumes the source box and receives the chosen design atomically; see `goods-handling.md`. A refund or returned blind box never silently becomes an arbitrary confirmed design.
+
+Local checks: `test_inventory_series.py`, `test_design_identification.py`, `test_design_inventory_flow.py`, `test_design_search.py`, and the `check_design_inventory.py`, `check_design_inventory_live.py`, `check_design_labels.py` browser scripts. Operations checks: `test_series_history.py`, `test_counts.py`, `inventoryAttention.test.ts`, and browser scripts `check_series_worksheet.py`, `check_series_stock_actions.py`, `check_series_history.py`, and `check_inventory_attention.py`. The live-named browser script uses a real local Flask API, disposable SQLite, and mocked authentication; it does not contact production.
 
 ## Locations and access
 

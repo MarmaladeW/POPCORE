@@ -44,8 +44,10 @@ def _score_product(product, tokens, q_full):
     jzm  = (product.get('jizhanming') or '').lower()
     sku  = (product.get('sku') or '').lower()
     name = (product.get('name_cn_en') or '').lower()
+    design = (product.get('design_name') or '').lower()
+    series = (product.get('series_name') or '').lower()
 
-    score = 0
+    score = 150 if q_full == design else 100 if q_full == series else 0
 
     if q_full in jzm:  score += 100
     if q_full in sku:  score += 80
@@ -138,6 +140,10 @@ def search_products():
     con = get_db()
     cur = con.cursor()
 
+    search_source = """(SELECT p.*, ps.name AS series_name,
+        LOWER(COALESCE(p.search_blob,'') || ' ' || COALESCE(p.design_name,'') || ' ' || COALESCE(ps.name,'')) AS inventory_search_blob
+        FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id)"""
+
     filter_clauses = []
     filter_params  = []
     if series:
@@ -154,9 +160,9 @@ def search_products():
         limit_param  = [limit] if limit else []
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob, is_bestseller,
-                   stock_form, stock_unit, design_name, identity_status
-            FROM products
+                   brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name
+            FROM {search_source}
             {where}
             ORDER BY sku DESC
             {limit_clause}
@@ -177,39 +183,39 @@ def search_products():
 
     tokens = q.split()
 
-    and_conditions = " AND ".join("search_blob LIKE ?" for _ in tokens)
+    and_conditions = " AND ".join("inventory_search_blob LIKE ?" for _ in tokens)
     and_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-               brand, notes, release_date, search_blob, is_bestseller,
-               stock_form, stock_unit, design_name, identity_status
-        FROM products
+               brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name
+        FROM {search_source}
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
     ''', and_params)
     and_rows = [dict(r) for r in cur.fetchall()]
 
-    or_conditions = " OR ".join("search_blob LIKE ?" for _ in tokens)
+    or_conditions = " OR ".join("inventory_search_blob LIKE ?" for _ in tokens)
     or_params = [f'%{t}%' for t in tokens] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-               brand, notes, release_date, search_blob, is_bestseller,
-               stock_form, stock_unit, design_name, identity_status
-        FROM products
+               brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name
+        FROM {search_source}
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
     ''', or_params)
     or_rows = [dict(r) for r in cur.fetchall()]
 
-    char_conditions = " AND ".join("search_blob LIKE ?" for ch in q if ch.strip())
+    char_conditions = " AND ".join("inventory_search_blob LIKE ?" for ch in q if ch.strip())
     char_params = [f'%{ch}%' for ch in q if ch.strip()] + filter_params
     char_rows = []
     if char_conditions:
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob,
-                   stock_form, stock_unit, design_name, identity_status
-            FROM products
+                   brand, notes, release_date, inventory_search_blob AS search_blob,
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name
+            FROM {search_source}
             WHERE {char_conditions} {filter_sql}
             LIMIT 200
         ''', char_params)
@@ -218,13 +224,13 @@ def search_products():
     bigrams = [q[i:i+2] for i in range(len(q) - 1) if not q[i:i+2].isspace()]
     bi_rows = []
     if bigrams:
-        bi_cond   = " OR ".join("search_blob LIKE ?" for _ in bigrams)
+        bi_cond   = " OR ".join("inventory_search_blob LIKE ?" for _ in bigrams)
         bi_params = [f'%{b}%' for b in bigrams] + filter_params
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, search_blob,
-                   stock_form, stock_unit, design_name, identity_status
-            FROM products
+                   brand, notes, release_date, inventory_search_blob AS search_blob,
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name
+            FROM {search_source}
             WHERE ({bi_cond}) {filter_sql}
             LIMIT 200
         ''', bi_params)
@@ -276,7 +282,7 @@ def products_count():
 def get_product(pid):
     con = get_db()
     cur = con.cursor()
-    cur.execute('SELECT * FROM products WHERE id = ?', (pid,))
+    cur.execute('SELECT p.*, ps.name AS series_name FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id WHERE p.id = ?', (pid,))
     row = cur.fetchone()
     if not row:
         con.close()
@@ -543,6 +549,7 @@ def update_product(pid):
 
     con = get_db()
     try:
+        con.execute('BEGIN IMMEDIATE')
         cur = con.cursor()
         cur.execute('SELECT * FROM products WHERE id = ?', (pid,))
         row = cur.fetchone()
@@ -799,6 +806,7 @@ def patch_product_inventory_identity(pid):
         return jsonify({'error': 'Nothing to update', 'code': 'invalid_input'}), 400
     con = get_db()
     try:
+        con.execute('BEGIN IMMEDIATE')
         update_product_identity(con, pid, updates)
         con.commit()
     except CatalogConflict as exc:
@@ -1567,3 +1575,20 @@ def bulk_delete_products():
     con.commit()
     con.close()
     return jsonify({'ok': True, 'deleted': deleted})
+
+
+@bp.post('/api/product-series/setup')
+@role_required('manager')
+def setup_product_series():
+    from inventory_catalog import setup_series
+    from inventory_commands import InventoryError
+    con = get_db()
+    try:
+        return jsonify(setup_series(con, request.get_json(silent=True), actor=request.jwt_payload,
+                                    request_key=request.headers.get('Idempotency-Key'))), 201
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()

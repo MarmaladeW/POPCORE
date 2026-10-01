@@ -234,7 +234,7 @@ def get_inventory_document(document_id):
     try:
         document = con.execute(
             """SELECT id, kind, source_type, source_id, actor_sub,
-                      business_date, posted_at, correction_of, status
+                      business_date, posted_at, correction_of, reason, status
                FROM inventory_documents WHERE id=? AND status='posted'""",
             (document_id,),
         ).fetchone()
@@ -259,7 +259,7 @@ def get_inventory_document(document_id):
                       from_location_id, from_disposition,
                       to_location_id, to_disposition,
                       from_version, to_version,
-                      conversion_id, conversion_factor
+                      conversion_id, conversion_factor, open_set_id
                FROM inventory_document_lines WHERE document_id=?
                ORDER BY line_no""", (document_id,)
         )]
@@ -346,7 +346,7 @@ def get_all_stock():
         params.append(series)
     if q:
         for token in q.split():
-            filters.append("p.search_blob LIKE ?")
+            filters.append("LOWER(COALESCE(p.search_blob,'') || ' ' || COALESCE(p.design_name,'') || ' ' || COALESCE((SELECT name FROM product_series WHERE id=p.series_id),'')) LIKE ?")
             params.append(f'%{token}%')
 
     where = ('AND ' + ' AND '.join(filters)) if filters else ''
@@ -360,7 +360,8 @@ def get_all_stock():
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan,
-                   p.stock_unit, p.identity_status,
+                   p.stock_unit, p.identity_status, p.stock_form, p.design_name, p.series_id,
+                   (SELECT name FROM product_series WHERE id=p.series_id) AS series_name,
                    COALESCE(SUM(s.upstairs_qty), 0) AS upstairs_qty,
                    COALESCE(SUM(s.instore_qty),  0) AS instore_qty,
                    COALESCE(MAX(s.last_updated), '') AS last_updated,
@@ -384,7 +385,8 @@ def get_all_stock():
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan,
-                   p.stock_unit, p.identity_status,
+                   p.stock_unit, p.identity_status, p.stock_form, p.design_name, p.series_id,
+                   (SELECT name FROM product_series WHERE id=p.series_id) AS series_name,
                    COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                    COALESCE(s.instore_qty,  0) AS instore_qty,
                    COALESCE(s.last_updated, '') AS last_updated,
@@ -405,7 +407,8 @@ def get_all_stock():
         cur.execute(f'''
             SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.price,
                    p.ip_series, p.product_type, p.boxes_per_dan,
-                   p.stock_unit, p.identity_status,
+                   p.stock_unit, p.identity_status, p.stock_form, p.design_name, p.series_id,
+                   (SELECT name FROM product_series WHERE id=p.series_id) AS series_name,
                    s.upstairs_qty, s.instore_qty,
                    s.last_updated, COALESCE(s.notes, '') AS stock_notes
             FROM stock s
@@ -1009,3 +1012,41 @@ def delete_stock_rows():
     con.commit()
     con.close()
     return jsonify({'ok': True, 'deleted': deleted})
+
+
+@bp.get('/api/inventory/series')
+@login_required
+def get_inventory_series():
+    from inventory_catalog import series_inventory
+    con = get_db()
+    try:
+        return jsonify(series_inventory(con, request.jwt_payload, request.args.get('store_code'),
+                                        request.args.get('q', ''), request.args.get('series_id')))
+    except PermissionError:
+        return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
+    except InventoryError as exc:
+        return _inventory_error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    finally:
+        con.close()
+
+
+@bp.get('/api/inventory/series/<int:series_id>/history')
+@login_required
+def get_inventory_series_history(series_id):
+    from inventory_catalog import series_history
+    con = get_db()
+    try:
+        return jsonify(series_history(con, request.jwt_payload, request.args.get('store_code'), series_id,
+            product_id=request.args.get('product_id'), date_from=request.args.get('date_from'),
+            date_to=request.args.get('date_to'), before_id=request.args.get('before_id'),
+            limit=request.args.get('limit', 100)))
+    except PermissionError:
+        return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
+    except InventoryError as exc:
+        return _inventory_error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    finally:
+        con.close()
