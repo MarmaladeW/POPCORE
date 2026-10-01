@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>POPCORE · Checkout rehearsal</title>
+  <style>
+    :root{font-family:system-ui,sans-serif;color:#17213b;background:#f7f8fa;font-size:16px;line-height:1.5;color-scheme:light}
+    *{box-sizing:border-box}body{margin:0}header,main{max-width:1100px;margin:auto;padding:24px}
+    header{padding-bottom:12px}h1{font-size:1.65rem;margin:0}h2{font-size:1.25rem;margin:0 0 16px}h3{font-size:1rem;margin:0}
+    p{max-width:72ch;margin:8px 0 16px}.muted{color:#526077}.notice{padding:12px 16px;background:#eef1ff;border-left:4px solid #4f46e5;margin:16px 0}
+    nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}button,input,select{font:inherit;border-radius:5px;min-height:44px}
+    button{border:1px solid #b4bece;background:white;color:#17213b;padding:8px 14px;cursor:pointer}
+    button:hover{background:#edf0f6}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #4f46e5;outline-offset:3px}
+    button:disabled{opacity:.55;cursor:wait}.primary,nav button[aria-pressed=true]{color:white;background:#4f46e5;border-color:#4f46e5}.primary:hover{background:#3730a3}
+    main{padding-top:8px}.layout{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:28px;align-items:start}
+    section{min-width:0}.panel{padding:20px;background:white;border:1px solid #d9deea;border-radius:8px}
+    .fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:.875rem;font-weight:600;margin-bottom:12px}
+    input,select{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #97a3b8;background:white;color:#17213b}
+    input[type=file]{padding:8px;font-size:.875rem;max-width:100%}details{margin:16px 0}summary{cursor:pointer;min-height:36px;color:#3b4260}
+    .order,.task{border-top:1px solid #d9deea;padding:20px 0}.order:first-child,.task:first-child{border-top:0;padding-top:0}
+    .row{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+    .amount{font-size:1.3rem;font-weight:650;font-variant-numeric:tabular-nums}.ref{font-size:.8rem;overflow-wrap:anywhere;color:#526077}
+    .status{font-size:.875rem;font-weight:600}.missing{color:#8f3e09}.ok{color:#17613f}.warning{color:#9c2532}
+    .attempt{padding:10px 0;border-bottom:1px dashed #d9deea}.attempt .actions{margin:8px 0 0}.phone{max-width:620px;margin:auto}
+    .stats{padding:12px 0;display:flex;gap:16px;align-items:baseline}.stats strong{font-size:1.7rem;font-variant-numeric:tabular-nums}
+    #feedback{margin:8px 0;min-height:24px;color:#8d2031}#feedback.success{color:#17613f}[hidden]{display:none!important}
+    small{display:block;color:#526077;font-size:.8rem}.photo-links{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}a{color:#3932a9}
+    @media(max-width:700px){header,main{padding:16px}.layout{grid-template-columns:1fr;gap:24px}.panel{padding:16px}h1{font-size:1.4rem}.phone{max-width:none}.fields{gap:10px}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Checkout rehearsal</h1>
+  <p class="muted">POPCORE · Canadian store test</p>
+  <div class="notice"><strong>Simulated Clover · disposable data</strong><br>Real POPCORE ledger operations, synthetic payments and employees. No Clover connection or payment processing.</div>
+  <nav aria-label="Test views">
+    <button id="register-tab" aria-pressed="true">Simulated register</button>
+    <button id="phone-tab" aria-pressed="false">Phone evidence</button>
+  </nav>
+  <div id="feedback" role="status" aria-live="polite"></div>
+</header>
+<main>
+  <div id="register" class="layout">
+    <section class="panel">
+      <h2>Create a test order</h2>
+      <p class="muted">Start with 12 demo units. The default order sells 3 for CAD $40.00.</p>
+      <form id="order-form">
+        <label>Product<select name="item"><option value="BOX-DEMO">Demo item · mapped to one piece</option><option value="UNKNOWN">Unmapped item · test an exception</option></select></label>
+        <label>Quantity<input name="quantity" type="number" min="1" max="1000" step="1" value="3" required></label>
+        <div class="fields">
+          <label>Final subtotal (cents)<input name="subtotal_cents" type="number" min="0" max="100000000" step="1" value="3540" required></label>
+          <label>Final tax (cents)<input name="tax_cents" type="number" min="0" max="100000000" step="1" value="460" required></label>
+        </div>
+        <small>These are supplied test facts. This rehearsal does not calculate tax or choose a discount.</small>
+        <details><summary>Original amount and suggestion</summary>
+          <label>Original total (cents)<input name="original_cents" type="number" min="0" step="1" value="4134" required></label>
+          <label>Suggested payable (cents)<input name="suggested_cents" type="number" min="0" step="1" value="4000" required></label>
+        </details>
+        <button type="submit" class="primary">Create test order</button>
+      </form>
+    </section>
+    <section aria-label="Register orders">
+      <div class="row"><h2>Test orders</h2><button id="reconcile">Replay completed orders</button></div>
+      <div class="stats"><span>Demo floor stock</span><strong id="stock">12</strong><span>pieces</span></div>
+      <div id="orders"><p class="muted">Loading local test data…</p></div>
+    </section>
+  </div>
+  <section id="phone" class="phone" hidden>
+    <div class="row"><h2>Payment evidence</h2><button id="refresh">Refresh payments</button></div>
+    <label>Simulated employee<select id="actor">
+      <option value="photo">Assigned photo employee · Downtown</option>
+      <option value="staff">Cashier · Downtown</option>
+      <option value="manager">Manager · Downtown</option>
+      <option value="other_staff">Unassigned employee · Downtown</option>
+      <option value="other_store">Employee · Markham</option>
+    </select></label>
+    <p class="muted">E-transfer, WeChat Pay and Alipay need a photo. Cash and card do not. Checkout may finish while evidence is missing.</p>
+    <div id="tasks"><p class="muted empty">Loading payment tasks…</p></div>
+    <p class="muted">A photo records what staff saw. It does not verify receipt of money.</p>
+  </section>
+</main>
+<script>
+const csrf = {{ csrf|tojson }};
+const $ = id => document.getElementById(id);
+const money = cents => new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format(cents/100);
+const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const names = {cash:'Cash',card:'Card',e_transfer:'E-transfer',wechat:'WeChat Pay',alipay:'Alipay'};
+let busy = false, lastOrders = '', currentActor = 'photo';
+let pendingOrderId = null;
+const pendingAttempts = new Map();
+function feedback(message, success=false){$('feedback').textContent=message;$('feedback').className=success?'success':'';}
+async function action(name, data, button){
+  if(busy)return;busy=true;if(button)button.disabled=true;
+  try{
+    const multipart = data instanceof FormData;
+    const response = await fetch('/action/'+name,{method:'POST',headers:{'X-Rehearsal-CSRF':csrf,...(multipart?{}:{'Content-Type':'application/json'})},body:multipart?data:JSON.stringify(data)});
+    const result = await response.json().catch(()=>({error:'Request failed: HTTP '+response.status}));
+    if(!response.ok)throw Error(result.error);
+    feedback(name==='upload'?'Photo saved to this payment. Money verification is unchanged.':'Test action saved.',true);
+    return true;
+  }catch(error){feedback(error.message);return false;}
+  finally{busy=false;if(button)button.disabled=false;await refresh();}
+}
+function renderOrders(state){
+  $('stock').textContent=state.stock;
+  const signature=JSON.stringify(state.orders);
+  if(signature===lastOrders)return;
+  if($('orders').contains(document.activeElement)&&!['BUTTON','BODY'].includes(document.activeElement.tagName))return;
+  lastOrders=signature;
+  $('orders').innerHTML=state.orders.length?'':'<p class="muted">Create an order, then choose a tender. Open Phone evidence in another tab to watch the handoff.</p>';
+  state.orders.forEach(order=>{
+    const remaining=order.total_cents-order.paid_cents;
+    const element=document.createElement('article');element.className='order';
+    element.innerHTML=`<div class="row"><h3>${esc(order.quantity)} × ${order.item==='UNKNOWN'?'Unmapped item':'Demo item'}</h3><span class="amount">${money(order.total_cents)}</span></div>
+      <p class="ref">Order ${esc(order.id)}</p>
+      <p class="muted">Original ${money(order.original_cents)} · Suggested ${money(order.suggested_cents)} · Final ${money(order.total_cents)}</p>
+      <p class="status">${remaining?money(remaining)+' still unpaid':'Fully paid in simulation'}${order.sale_id?' · POPCORE sale '+order.sale_id:''}</p>
+      ${order.allocation?`<p class="status ${order.allocation==='allocated'?'ok':'warning'}">${order.allocation==='allocated'?'Stock allocated once':'Inventory allocation needs review'}</p>`:''}
+      ${order.error?`<p class="warning">Import needs retry: ${esc(order.error)}</p>`:''}
+      <div class="attempts"></div>
+      ${remaining>0?`<form class="tender-form"><div class="fields"><label>Payment method<select name="tender">${Object.entries(names).map(([k,v])=>`<option value="${k}" ${k==='e_transfer'?'selected':''}>${v}</option>`).join('')}</select></label><label>Payment (cents)<input name="amount_cents" type="number" min="1" max="${remaining}" step="1" value="${remaining}" required></label></div><button type="submit">Select tender / replace pending</button></form>`:''}`;
+    order.attempts.forEach(attempt=>{
+      const row=document.createElement('div');row.className='attempt';
+      row.innerHTML=`<strong>${names[attempt.tender]} · ${money(attempt.amount_cents)}</strong> <span>${esc(attempt.status)}</span><small>Attempt ${esc(attempt.id)}</small>`;
+      if(attempt.status!=='cancelled'){
+        const buttons=document.createElement('div');buttons.className='actions';
+        const done=document.createElement('button');done.textContent=attempt.status==='completed'?'Replay payment completion':'Simulate successful payment';done.className=attempt.status==='pending'?'primary':'';
+        done.onclick=()=>action('complete',{id:attempt.id},done);buttons.append(done);
+        if(attempt.status==='pending'){const cancel=document.createElement('button');cancel.textContent='Cancel attempt';cancel.onclick=()=>action('cancel',{id:attempt.id},cancel);buttons.append(cancel);}
+        row.append(buttons);
+      }
+      element.querySelector('.attempts').append(row);
+    });
+    const form=element.querySelector('.tender-form');
+    if(form)form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form);if(!pendingAttempts.has(order.id))pendingAttempts.set(order.id,crypto.randomUUID());if(await action('start',{id:pendingAttempts.get(order.id),order_id:order.id,tender:data.get('tender'),amount_cents:Number(data.get('amount_cents'))},form.querySelector('button')))pendingAttempts.delete(order.id);};
+    $('orders').append(element);
+  });
+}
+function renderTasks(state){
+  const tasks=$('tasks');
+  if(currentActor!==$('actor').value){tasks.replaceChildren();currentActor=$('actor').value;}
+  tasks.querySelectorAll('[data-attempt]').forEach(node=>{if(!state.tasks.some(t=>t.id===node.dataset.attempt))node.remove();});
+  tasks.querySelector('.empty')?.remove();
+  if(!state.tasks.length){const empty=document.createElement('p');empty.className='muted empty';empty.textContent='No evidence tasks for this employee. Select an electronic tender at the simulated register to create one.';tasks.append(empty);}
+  state.tasks.forEach(task=>{
+    let row=[...tasks.querySelectorAll('[data-attempt]')].find(n=>n.dataset.attempt===task.id);
+    if(!row){
+      row=document.createElement('article');row.className='task';row.dataset.attempt=task.id;
+      row.innerHTML=`<div class="row"><h3>${names[task.tender]}</h3><span class="amount">${money(task.amount_cents)}</span></div><p>${esc(task.quantity)} × ${task.item==='UNKNOWN'?'Unmapped item':'Demo item'}</p><p class="ref">Order ${esc(task.order_id)}<br>Attempt ${esc(task.id)}</p><small>Cashier: ${esc(task.cashier)} · Assigned photo employee: ${esc(task.assigned_to)}</small><p class="status evidence-state"></p><p class="payment-state muted"></p><form><label>Payment evidence photo<input type="file" name="image" accept="image/jpeg,image/png,image/webp" capture="environment" required></label><button class="primary" type="submit">Save evidence</button></form><div class="photo-links"></div>`;
+      const form=row.querySelector('form');form.onsubmit=async event=>{event.preventDefault();const data=new FormData(form);data.set('id',task.id);data.set('actor',$('actor').value);if(await action('upload',data,form.querySelector('button')))form.reset();};
+      tasks.append(row);
+    }
+    const status=row.querySelector('.evidence-state');status.textContent=task.evidence_status==='missing'?'Evidence missing':'Evidence '+task.evidence_status;status.className='status evidence-state '+(task.evidence_status==='missing'?'missing':'ok');
+    row.querySelector('.payment-state').textContent=task.status==='completed'?'Payment completed in simulation. Evidence review and money verification are separate.':'Payment attempt in progress. You can save its photo now.';
+    row.querySelector('.photo-links').innerHTML=task.photos.filter(p=>p.uploader_sub==='auth0|'+$('actor').value||$('actor').value==='manager').map(p=>`<a href="/photo/${p.id}?actor=${encodeURIComponent($('actor').value)}" target="_blank" rel="noopener">View saved photo ${p.id}</a>`).join('');
+  });
+}
+async function refresh(){
+  try{
+    const actor=$('phone').hidden?'staff':$('actor').value;
+    const response=await fetch('/state?actor='+encodeURIComponent(actor));
+    if(!response.ok)throw Error('Cannot read local test state. HTTP '+response.status);
+    const state=await response.json();
+    if($('phone').hidden)renderOrders(state);else renderTasks(state);
+  }catch(error){feedback(error.message);}
+}
+function view(phone){$('register').hidden=phone;$('phone').hidden=!phone;$('register-tab').setAttribute('aria-pressed',String(!phone));$('phone-tab').setAttribute('aria-pressed',String(phone));history.replaceState(null,'',phone?'/?view=phone':'/');refresh();}
+$('register-tab').onclick=()=>view(false);$('phone-tab').onclick=()=>view(true);
+$('refresh').onclick=refresh;$('actor').onchange=refresh;$('reconcile').onclick=()=>action('reconcile',{},$('reconcile'));
+$('order-form').onsubmit=async event=>{event.preventDefault();const form=event.currentTarget;const data=Object.fromEntries(new FormData(form));for(const key of Object.keys(data))if(key!=='item')data[key]=Number(data[key]);pendingOrderId??=crypto.randomUUID();data.id=pendingOrderId;if(await action('order',data,form.querySelector('button')))pendingOrderId=null;};
+view(new URLSearchParams(location.search).get('view')==='phone');
+setInterval(()=>{if(!busy&&!document.hidden)refresh();},2000);
+</script>
+</body>
+</html>
