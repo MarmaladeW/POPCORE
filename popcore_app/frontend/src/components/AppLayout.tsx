@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Tag } from 'antd'
 import type { MenuProps } from 'antd'
 import {
-  AppstoreOutlined, BarChartOutlined, CalendarOutlined, CheckCircleOutlined,
-  HomeOutlined, CameraOutlined, FileTextOutlined, GiftOutlined, HistoryOutlined, DashboardOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
+  AppstoreOutlined, BarChartOutlined, CalendarOutlined,
+  HomeOutlined, CameraOutlined, FileTextOutlined, GiftOutlined, DollarOutlined, EllipsisOutlined, InboxOutlined,
   LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined,
-  ShopOutlined, SwapOutlined, UserOutlined,
+  UserOutlined,
 } from '@ant-design/icons'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
@@ -59,15 +59,15 @@ function StoreSelect({ mobile = false, disabled = false }: { mobile?: boolean; d
   </select>
 }
 
-function currentNav(pathname: string, manager: boolean) {
-  if (pathname === '/checkout/history') return '/checkout/history'
-  if (pathname.startsWith('/goods/')) return '/stock'
-  if (pathname.startsWith('/trades/cases/')) return '/trades'
+function currentNav(pathname: string, manager: boolean, staff: boolean) {
+  if (pathname === '/today') return '/'
+  if (pathname === '/closing') return '/summary'
+  if (pathname.startsWith('/goods/') || pathname.startsWith('/trades') || pathname === '/restock' || (staff && pathname === '/products')) return '/stock'
   if (pathname.startsWith('/sales/documents/') || pathname.startsWith('/sales/payments/')) {
-    return manager ? '/sales' : '/sales/entry'
+    return manager ? '/sales' : '/checkout'
   }
   if (pathname.startsWith('/sales/day/')) return '/sales'
-  if (pathname === '/sales/entry') return '/sales/entry'
+  if (pathname === '/sales/entry') return '/checkout'
   return pathname === '/' ? '/' : `/${pathname.split('/')[1]}`
 }
 
@@ -94,7 +94,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const admin = useHasRole('admin')
   const manager = useHasRole('manager')
   const staff = useHasRole('staff')
-  const active = currentNav(location.pathname, manager)
+  const active = currentNav(location.pathname, manager, staff)
   const collapsed = active === '/schedule' ? !scheduleExpanded : userCollapsed
   useEffect(() => setScheduleExpanded(false), [location.pathname])
 
@@ -107,22 +107,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       { key: '/incoming', icon: <InboxOutlined />, label: '入店 / Receive goods' },
       { key: '/claw', icon: <GiftOutlined />, label: '娃娃机 / Claw machine' },
       { key: '/summary', icon: <FileTextOutlined />, label: '汇总 / Summary' },
-      { key: '/checkout/history', icon: <HistoryOutlined />, label: 'Order history' },
-      { key: '/today', icon: <DashboardOutlined />, label: 'Store tasks' },
       { key: '/stock', icon: <InboxOutlined />, label: 'Inventory' },
-      { key: '/restock', icon: <ShopOutlined />, label: 'Restock' },
-      { key: '/sales/entry', icon: <DollarOutlined />, label: 'Enter sale' },
-      { key: '/closing', icon: <CheckCircleOutlined />, label: 'Closing' },
-      { key: '/trades', icon: <SwapOutlined />, label: 'Trades' },
     ] : []),
   ]
   const review: NavItem[] = manager ? [
     { key: '/sales', icon: <DollarOutlined />, label: 'Sales' },
-    { key: '/reports', icon: <BarChartOutlined />, label: 'Reports' },
+    { key: '/reports', icon: <BarChartOutlined />, label: 'Insights' },
   ] : []
   const planning: NavItem[] = [
     { key: '/schedule', icon: <CalendarOutlined />, label: 'Schedule' },
-    { key: '/products', icon: <AppstoreOutlined />, label: 'Products' },
+    ...(!staff ? [{ key: '/products', icon: <AppstoreOutlined />, label: 'Products' }] : []),
     ...(admin ? [
       { key: '/users', icon: <UserOutlined />, label: 'Users' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },

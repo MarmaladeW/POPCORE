@@ -14,7 +14,7 @@ import client from './api/client'
 import { operationsTheme } from './theme/operations'
 import './styles/operations.css'
 
-import SchedulePage    from './pages/Schedule'
+const SchedulePage=lazy(()=>import('./pages/Schedule'))
 const HomePage=lazy(()=>import('./pages/Home'))
 const DashboardPage=lazy(()=>import('./pages/Dashboard'))
 const CheckoutPage=lazy(()=>import('./pages/Sales/Checkout'))
@@ -23,8 +23,10 @@ const EventEntry=lazy(()=>import('./pages/Home/EventEntry'))
 const StoreSummary=lazy(()=>import('./pages/Home/StoreSummary'))
 const ProductsPage=lazy(()=>import('./pages/Products'))
 const StockPage=lazy(()=>import('./pages/Stock'))
+const SeriesInventory=lazy(()=>import('./pages/Stock/SeriesInventory'))
 const GoodsPage=lazy(()=>import('./pages/Stock/Goods'))
 const RestockPage=lazy(()=>import('./pages/Restock'))
+const HistoricalMatchReview=lazy(()=>import('./pages/Sales/HistoricalMatchReview'))
 const SalesPage=lazy(()=>import('./pages/Sales'))
 const DayDetailPage=lazy(()=>import('./pages/Sales/DayDetail'))
 const SaleEntryPage=lazy(()=>import('./pages/Sales/Entry'))
@@ -141,7 +143,8 @@ function AppInner() {
           <Route path="/claw" element={<RoleRoute minRole="staff" element={<EventEntry />} />} />
           <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
-          <Route path="/stock"          element={<RoleRoute minRole="staff"   element={<StockPage />} />} />
+          <Route path="/stock"          element={<RoleRoute minRole="staff"   element={<SeriesInventory />} />} />
+          <Route path="/stock/products" element={<RoleRoute minRole="staff" element={<StockPage />} />} />
           <Route path="/goods/receiving" element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="receiving" />} />} />
           <Route path="/goods/transfers" element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="transfers" />} />} />
           <Route path="/goods/counts"    element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="counts" />} />} />
@@ -154,6 +157,7 @@ function AppInner() {
           <Route path="/trades/cases/:id" element={<RoleRoute minRole="staff" element={<TradeCasePage />} />} />
           <Route path="/reports"        element={<RoleRoute minRole="manager" element={<ReportsPage />} />} />
           <Route path="/sales"          element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
+          <Route path="/sales/matching" element={<RoleRoute minRole="manager" element={<HistoricalMatchReview />} />} />
           <Route path="/sales/day/:date" element={<RoleRoute minRole="manager" element={<DayDetailPage />} />} />
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
           <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />

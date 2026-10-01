@@ -1,6 +1,7 @@
 """Explicit product identity, barcode, and fixed pack-conversion rules."""
 import json
 import sqlite3
+import unicodedata
 
 from validation import read_int
 
@@ -77,6 +78,10 @@ def _has_product_reference(con, product_id):
     return False
 
 
+def normalize_design_name(value):
+    return unicodedata.normalize('NFKC', ' '.join(value.split())).casefold()
+
+
 def _validate_identity(con, product):
     status = product.get('identity_status') or 'unverified'
     form = product.get('stock_form')
@@ -94,8 +99,16 @@ def _validate_identity(con, product):
     if status == 'verified':
         if form is None or unit is None:
             raise ValueError('verified identity requires stock_form and stock_unit')
-        if form == 'confirmed_design' and not design_name:
-            raise ValueError('verified confirmed_design requires design_name')
+        if form == 'confirmed_design':
+            if not design_name or product.get('series_id') is None:
+                raise ValueError('verified confirmed_design requires a series and design_name')
+            named = normalize_design_name(design_name)
+            for other in con.execute(
+                "SELECT design_name FROM products WHERE series_id=? AND stock_form='confirmed_design' AND id!=?",
+                (product['series_id'], product['id']),
+            ):
+                if other['design_name'] and normalize_design_name(other['design_name']) == named:
+                    raise CatalogConflict('This series already contains that named design', 'design_conflict')
         if form == 'sealed_set':
             exists = con.execute(
                 'SELECT 1 FROM product_conversions WHERE source_product_id=? LIMIT 1',

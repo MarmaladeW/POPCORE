@@ -28,3 +28,10 @@ def export(name):
         for row in data['items']:output.write(','.join(esc_csv(row.get(c)) for c in cols)+'\r\n')
         response=Response(output.getvalue(),content_type='text/csv; charset=utf-8');response.headers['Content-Disposition']=f'attachment; filename="{name}.csv"';response.headers['Cache-Control']='private, no-store';return response
     except (KeyError,PermissionError,InventoryError,ValueError) as exc:return _error(exc)
+
+@bp.get('/api/reports/overview')
+@login_required
+def overview():
+    from store_insights import query_overview
+    try:return jsonify(query_overview(get_db(),actor=request.jwt_payload,filters=request.args.to_dict()))
+    except (PermissionError,InventoryError,ValueError) as exc:return _error(exc)

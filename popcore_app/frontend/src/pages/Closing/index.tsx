@@ -16,24 +16,24 @@ const responseStatus = (cause: unknown) => (cause as {response?:{status?:number}
 const inputDollars = (cents: number | null | undefined) => cents == null ? '' : formatCents(cents).replace('$', '')
 type PendingMutation = { name: string; key: string; run: (key: string) => Promise<unknown> }
 
-function issueLabel(code: string) {
+function issueLabel(code: string, subject?: string) {
   const [kind, id] = code.split(':')
   const labels: Record<string,string> = {
     sales_intake_incomplete: 'Sales intake declaration is incomplete.', cash_count_missing: 'A deliberate cash count is required.',
     retained_float_shortfall: 'Counted cash is below the retained float; no removal can be calculated.',
-    checkout_unresolved: `Checkout #${id} is still open. Complete or cancel it before closing.`,
-    pending_allocation: `Sale #${id} still needs stock allocation.`, cash_payment_unresolved: `Cash payment #${id} has an unknown or unverified amount.`,
-    delivery_unresolved: `Delivery #${id} is still open.`, restock_unresolved: `Restock #${id} is still open.`,
-    hot_item_count_missing: `Required hot-item count for product #${id} is missing.`, payment_unverified: `Payment #${id} is not verified.`,
-    evidence_pending: `Evidence #${id} is pending review.`, evidence_rejected: `Evidence #${id} was rejected.`,
+    checkout_unresolved: `${subject || `Checkout #${id}`} is still open. Complete or cancel it before closing.`,
+    checkout_cash_unresolved: `${subject || `Checkout payment #${id}`} needs cash payment review.`,
+    pending_allocation: `${subject || `Sale #${id}`} still needs stock allocation.`, cash_payment_unresolved: `${subject || `Cash payment #${id}`} has an unknown or unverified amount.`,
+    delivery_unresolved: `${subject || `Delivery #${id}`} is still open.`, restock_unresolved: `${subject || `Restock #${id}`} is still open.`,
+    hot_item_count_missing: `Required hot-item count for ${subject || `product #${id}`} is missing.`, payment_unverified: `${subject || `Payment #${id}`} is not verified.`,
+    evidence_pending: `${subject || `Evidence #${id}`} is pending review.`, evidence_rejected: `${subject || `Evidence #${id}`} was rejected.`,
   }
   return labels[kind] || code
 }
-function Issue({ code }: { code: string }) {
-  const [kind, id] = code.split(':'), label = issueLabel(code)
-  if (kind === 'checkout_unresolved') return <Link to={`/checkout/${id}`}>{label}</Link>
-  if (kind === 'pending_allocation') return <Link to={`/sales/documents/${id}`}>{label}</Link>
-  if (kind === 'restock_unresolved') return <Link to={`/restock?session_id=${id}`}>{label}</Link>
+function Issue({ code, target }: { code: string; target?: {href: string; label?: string} }) {
+  const label = issueLabel(code, target?.label)
+  if (target?.href.startsWith('#')) return <a href={target.href}>{label}</a>
+  if (target) return <Link to={target.href}>{label}</Link>
   return <Text>{label}</Text>
 }
 
@@ -78,7 +78,7 @@ export default function ClosingPage() {
     load(closingId, controller.signal).catch(cause => { if ((cause as {code?:string})?.code !== 'ERR_CANCELED') setError('Unable to resume this closing session.') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [closingId, store?.code]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [closingId, store?.code, isManager]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function refresh() {
     if (!session) return false
@@ -135,14 +135,15 @@ export default function ClosingPage() {
   const count = session?.latest_cash_count
   const initialCount = count ? { opening_coin: inputDollars(count.opening_coin_cents), retained_coin: inputDollars(count.retained_coin_cents), ...Object.fromEntries(denominations.map(([key]) => [`d_${key}`, count.denomination_counts[key]])) } : undefined
 
+  const visibleBlockers = isManager ? session?.hard_blockers : session?.actionable_blockers
   return <div className="pc-page" style={{ maxWidth: 940, margin: '0 auto' }}>
-    <div className="pc-page-heading"><Title level={3}>{closed ? 'Store day closed' : 'Store closing'}</Title><Text type="secondary">{session ? `Store reference ${session.store_id} · ${session.business_date}` : store?.name}</Text></div>
+    <div className="pc-page-heading"><Title level={3}>{closed ? 'Store day closed' : 'Store closing'}</Title><Text type="secondary">{session ? `${session.store_name || (store?.id === session.store_id ? store.name : `Store #${session.store_id}`)} · ${session.business_date}` : store?.name}</Text></div>
     {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={pendingMutation.current ? <Button onClick={() => mutate(pendingMutation.current!.name, pendingMutation.current!.run)}>Retry identical request</Button> : refreshNeeded ? <Button onClick={refresh}>Retry refresh</Button> : undefined} />}
     {session && store && store.code !== 'ALL' && store.id !== session.store_id && <Alert type="warning" showIcon message="Select the closing document's store to make changes." style={{ marginBottom: 16 }} />}
     {session && store && store.code !== 'ALL' && store.id !== session.store_id && <Alert type="warning" showIcon message="Selected store does not match this closing document. Switch to the document store before making changes." style={{ marginBottom: 16 }} />}
     {!session ? <Card><Form layout="vertical" onFinish={start} initialValues={{ business_date: dayjs(torontoDate()) }}><Form.Item name="business_date" label="Business date" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item><Button type="primary" htmlType="submit" loading={working}>Start closing</Button></Form></Card> : <>
       <Card><Space wrap><Tag color={closed ? 'green' : session.status === 'submitted' ? 'orange' : 'blue'}>{session.status}</Tag><Text>Version {session.version}</Text><Text>{session.intake_complete ? 'Sales intake declared complete' : 'Sales intake still incomplete'}</Text></Space></Card>
-      <Card title="Source completeness" style={{ marginTop: 16 }}>
+      <Card id="closing-sources" title="Source completeness" style={{ marginTop: 16 }}>
         {session.status === 'draft' && mutableScope ? <Checkbox checked={Boolean(session.intake_complete)} disabled={busy} onChange={event => { const checked = event.target.checked; mutate('intake', key => updateClosing(session.closing_id, session.version, checked, key)) }}>All completed POS sales and missing transactions for this day have been entered.</Checkbox> : <Text>{session.intake_complete ? 'Sales intake was declared complete.' : 'Sales intake declaration is unavailable.'}</Text>}
         <List size="small" locale={{ emptyText: 'No linked documents for this business date.' }} dataSource={[
           ...(session.source_documents?.sales ?? []).map(item => ({ key: `sale-${item.id}`, node: <Link to={`/sales/documents/${item.id}`}>Sale #{item.id}: {item.status}, {item.allocation_status}, {item.financial_status}</Link> })),
@@ -154,15 +155,16 @@ export default function ClosingPage() {
         <Descriptions size="small" column={{ xs: 1, sm: 2 }}><Descriptions.Item label="Opening bills">$650.00 fixed float</Descriptions.Item><Descriptions.Item label="Opening cash">{formatCents(session.cash.opening_cash_cents)}</Descriptions.Item><Descriptions.Item label="Verified cash receipts">{formatCents(session.cash.verified_cash_receipts_cents)}</Descriptions.Item><Descriptions.Item label="Expected drawer">{formatCents(session.cash.expected_drawer_cents)}</Descriptions.Item>{Object.entries(session.cash.event_totals_cents).map(([name, value]) => <Descriptions.Item key={name} label={name.replace('_', ' ')}>{formatCents(value)}</Descriptions.Item>)}</Descriptions>
         {session.status === 'draft' && mutableScope && <Space wrap><Select aria-label="Cash event type" disabled={busy} value={cashEventType} options={[['paid_in', 'Paid in'], ['refund', 'Cash refund'], ['payout', 'Paid out']].map(([value, label]) => ({ value, label }))} onChange={setCashEventType} /><Input aria-label="Cash event amount ($)" disabled={busy} prefix="$" inputMode="decimal" value={cashEventAmount} onChange={event => setCashEventAmount(event.target.value)} /><Input aria-label="Cash event reason" disabled={busy} placeholder="Required cash-event reason" value={cashEventReason} onChange={event => setCashEventReason(event.target.value)} /><Button disabled={busy || !cashEventAmount || !cashEventReason.trim()} onClick={saveCashEvent}>Record cash event</Button></Space>}
       </Card>
-      <Card title="Cash count" style={{ marginTop: 16 }}>
+      <Card id="closing-cash-count" title="Cash count" style={{ marginTop: 16 }}>
         {count && <Descriptions size="small" column={{ xs: 1, sm: 2 }}><Descriptions.Item label="Expected">{formatCents(count.expected_cents)}</Descriptions.Item><Descriptions.Item label="Counted">{formatCents(count.counted_cents)}</Descriptions.Item><Descriptions.Item label="Variance">{formatCents(count.variance_cents)}</Descriptions.Item><Descriptions.Item label="Retained float">{formatCents(count.retained_cents)}</Descriptions.Item><Descriptions.Item label="Removal">{count.removal_cents == null ? 'No removal: counted cash is below the retained float.' : formatCents(count.removal_cents)}</Descriptions.Item></Descriptions>}
         {session.status === 'draft' && mutableScope && <Form key={`${session.closing_id}-${count?.revision ?? 0}`} layout="vertical" onFinish={saveCount} initialValues={initialCount}><Space wrap align="start"><Form.Item name="opening_coin" label="Opening coins ($)" rules={[{ required: true }]}><Input prefix="$" inputMode="decimal" disabled={busy} /></Form.Item><Form.Item name="retained_coin" label="Retained coins ($)" rules={[{ required: true }]}><Input prefix="$" inputMode="decimal" disabled={busy} /></Form.Item>{denominations.map(([key, label]) => <Form.Item key={key} name={`d_${key}`} label={`${label} count`} rules={[{ required: true }]}><InputNumber min={0} precision={0} disabled={busy} /></Form.Item>)}</Space><Button type="primary" htmlType="submit" loading={working} disabled={busy}>Save cash count</Button></Form>}
       </Card>
       {isManager && session.tender_totals_cents && <Card title="Tender review" style={{ marginTop: 16 }}><Descriptions size="small" column={{ xs: 1, sm: 2 }}>{Object.entries(session.tender_totals_cents).map(([name, value]) => <Descriptions.Item key={name} label={name.replace('_', ' ')}>{formatCents(value)}</Descriptions.Item>)}</Descriptions>{session.unknown_payment_ids?.length ? <Alert type="warning" showIcon message="Unknown payment amounts" description={session.unknown_payment_ids.map(id => `Payment #${id}`).join(', ')} /> : <Text>No unknown manager-visible payment amounts.</Text>}</Card>}
       {!closed && mutableScope && <Card title={session.status === 'submitted' ? 'Manager review' : 'Blockers and review'} style={{ marginTop: 16 }}>
-        {session.hard_blockers === undefined ? <Alert type="info" showIcon message="Manager-only blocker details are not available for this view." /> : session.hard_blockers.length ? <List dataSource={session.hard_blockers} renderItem={code => <List.Item><Issue code={code} /></List.Item>} /> : <Text>No current hard blockers.</Text>}
+        {(visibleBlockers ?? []).length ? <List dataSource={visibleBlockers} renderItem={code => <List.Item><Issue code={code} target={session.issue_targets?.[code]} /></List.Item>} /> : isManager && session.hard_blockers !== undefined && <Text>No current hard blockers.</Text>}
+        {!isManager && <Alert type="info" showIcon message="A manager reviews any remaining payment or evidence blockers." />}
         {session.status === 'draft' && mutableScope && count && <Space wrap><Button disabled={busy} onClick={refresh}>Refresh sources</Button><Button type="primary" disabled={busy || Boolean(session.hard_blockers?.length)} onClick={() => mutate('submit', key => submitClosing(session, key))}>Submit for manager review</Button></Space>}
-        {session.status === 'submitted' && isManager && <><List dataSource={session.review_exceptions ?? []} locale={{ emptyText: 'No review exceptions.' }} renderItem={code => <List.Item><Space direction="vertical" style={{ width: '100%' }}><Issue code={code} /><Input aria-label={`${code} acceptance reason`} disabled={busy} value={exceptionReasons[code] ?? ''} onChange={event => setExceptionReasons({ ...exceptionReasons, [code]: event.target.value })} placeholder="Separate acceptance reason" /></Space></List.Item>} /><Input aria-label="Return-for-changes reason" disabled={busy} value={reviewReason} onChange={event => setReviewReason(event.target.value)} placeholder="Separate reason for returning this closing" /><Space wrap style={{ marginTop: 12 }}><Button disabled={busy} onClick={refresh}>Refresh sources</Button><Button danger disabled={busy || !reviewReason.trim()} onClick={() => mutate('return', key => returnClosing(session, reviewReason.trim(), key))}>Return for changes</Button><Button type="primary" disabled={busy || (session.review_exceptions ?? []).some(code => !exceptionReasons[code]?.trim())} onClick={() => mutate('close', key => closeClosing(session, exceptionReasons, key))}>Close store day</Button></Space></>}
+        {session.status === 'submitted' && isManager && <><List dataSource={session.review_exceptions ?? []} locale={{ emptyText: 'No review exceptions.' }} renderItem={code => <List.Item><Space direction="vertical" style={{ width: '100%' }}><Issue code={code} target={session.issue_targets?.[code]} /><Input aria-label={`${code} acceptance reason`} disabled={busy} value={exceptionReasons[code] ?? ''} onChange={event => setExceptionReasons({ ...exceptionReasons, [code]: event.target.value })} placeholder="Separate acceptance reason" /></Space></List.Item>} /><Input aria-label="Return-for-changes reason" disabled={busy} value={reviewReason} onChange={event => setReviewReason(event.target.value)} placeholder="Separate reason for returning this closing" /><Space wrap style={{ marginTop: 12 }}><Button disabled={busy} onClick={refresh}>Refresh sources</Button><Button danger disabled={busy || !reviewReason.trim()} onClick={() => mutate('return', key => returnClosing(session, reviewReason.trim(), key))}>Return for changes</Button><Button type="primary" disabled={busy || (session.review_exceptions ?? []).some(code => !exceptionReasons[code]?.trim())} onClick={() => mutate('close', key => closeClosing(session, exceptionReasons, key))}>Close store day</Button></Space></>}
       </Card>}
       {closed && isManager && session.snapshot && <Card title="Immutable closing snapshot" style={{ marginTop: 16 }}>
         <Descriptions size="small" column={{ xs: 1, sm: 2 }}><Descriptions.Item label="Expected">{formatCents(session.snapshot.expected_cents)}</Descriptions.Item><Descriptions.Item label="Counted">{formatCents(session.snapshot.counted_cents)}</Descriptions.Item><Descriptions.Item label="Variance">{formatCents(session.snapshot.variance_cents)}</Descriptions.Item><Descriptions.Item label="Retained float">{formatCents(session.snapshot.retained_cents)}</Descriptions.Item><Descriptions.Item label="Removal">{session.snapshot.removal_cents == null ? 'No removal' : formatCents(session.snapshot.removal_cents)}</Descriptions.Item>{Object.entries(session.snapshot.tender_totals_cents ?? {}).map(([name, value]) => <Descriptions.Item key={name} label={`Saved ${name.replace('_', ' ')}`}>{formatCents(value)}</Descriptions.Item>)}</Descriptions>

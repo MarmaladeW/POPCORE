@@ -12,6 +12,8 @@ Build 4 records individual completed/manual sales, their actual tender component
 - Source links require exact identifiers and manager review. Summary reconciliation records a comparison only. It never fabricates receipts, tender amounts, or stock movements from legacy quantities.
 - Monetary corrections and recorded refunds are append-only payment events. Physical returns use a separate reviewed inventory receipt and cannot exceed the original allocated quantity.
 
+Sale create/update retry keys now compare normalized user intent, excluding server-captured product labels, locations, and stock versions. An identical request still resolves to its original saved response after another inventory transaction or after posting; it does not recapture stock or deduct twice. Changed inputs, actors, source ownership, and revoked access remain rejected. Existing request keys retain compatibility when their original captured facts are unchanged; a delayed pre-change key whose facts already changed may still return `idempotency_conflict`. Inspect the saved sale by its source reference instead of creating a replacement key blindly.
+
 ## Handwritten daily reports
 
 The legacy sales log imports one store and date at a time. `卡机汇总` contains POS quantities. `随手记汇总` (including the historical spelling `随手机汇总`) contains non-POS quantities (cash, e-transfer, WeChat Pay, or Alipay); its historical `qty_cash` column does not identify the tender. `现金:595/601.5` means physical cash actually received 595.00, expected 601.50, a shortage of 6.50. These amounts are stored separately in integer cents, never calculated from product prices.

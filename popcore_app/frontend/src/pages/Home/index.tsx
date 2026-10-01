@@ -10,7 +10,9 @@ import { eventNames, useStoreDay } from './storeDay'
 import './Home.css'
 
 export default function HomePage() {
-  return useHasRole('staff') ? <StaffHome /> : <Dashboard />
+  const staff = useHasRole('staff')
+  const manager = useHasRole('manager')
+  return manager ? <Dashboard key="manager" home /> : staff ? <StaffHome /> : <Dashboard key="viewer" />
 }
 
 function StaffHome() {
@@ -27,6 +29,7 @@ function StaffHome() {
       <Link to="/claw"><GiftOutlined aria-hidden="true" /><span><strong>娃娃机</strong><span>Claw machine</span><small>出奖 · 补货 · 换现金</small></span><ArrowRightOutlined aria-hidden="true" /></Link>
       <Link to="/summary"><FileTextOutlined aria-hidden="true" /><span><strong>汇总</strong><span>Daily summary</span><small>当日记录 · 对账 · 历史汇总</small></span><ArrowRightOutlined aria-hidden="true" /></Link>
     </nav>
+    <p className="pc-home-work-link"><Link to="/today">Store tasks</Link><span>Continue unfinished orders, receiving and counts.</span></p>
     <section className="pc-home-records" aria-label="Recent records">
       <div className="pc-home-section-heading"><h2>今日记录 <small>Recent records</small></h2><Link to="/summary">View records</Link></div>
       {!store || store.code === 'ALL' ? <p>Choose one store to view its records.</p>

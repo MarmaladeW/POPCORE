@@ -129,7 +129,7 @@ async def flow(browser, width):
         await page.get_by_role('link', name='Home', exact=True).click()
         await actions.get_by_role('link', name='入店', exact=False).click()
         await expect(page.get_by_role('link', name='收货 / Receive shipment', exact=False)).to_be_visible()
-        await expect(page.get_by_role('link', name='调入 / Transfer goods', exact=False)).to_be_visible()
+        await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 / Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
         await page.get_by_role('link', name='Home', exact=True).click()
         await actions.get_by_role('link', name='娃娃机', exact=False).click()
         await page.get_by_role('button', name='出奖 / Prize won', exact=True).click()

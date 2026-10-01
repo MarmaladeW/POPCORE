@@ -1685,6 +1685,38 @@ def _migration_report_match_choices(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('report_match_choices')")
 
 
+def _migration_add_inventory_audit_context(con, cur):
+    for table, column, definition in (
+        ('inventory_documents', 'reason', 'TEXT'),
+        ('inventory_document_lines', 'open_set_id', 'INTEGER REFERENCES inventory_open_sets(id) ON DELETE RESTRICT'),
+    ):
+        columns = {row['name'] for row in cur.execute(f'PRAGMA table_info({table})')}
+        if column not in columns:
+            cur.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('add_inventory_audit_context')")
+
+
+def _migration_daily_sales_match_audits(con, cur):
+    cur.execute('''CREATE TABLE IF NOT EXISTS daily_sales_match_audits (
+        id INTEGER PRIMARY KEY,
+        daily_sales_id INTEGER NOT NULL,
+        store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        from_product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        to_product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        actor_sub TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        before_data TEXT NOT NULL,
+        after_data TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )''')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_daily_sales_match_audit_record ON daily_sales_match_audits(daily_sales_id,id)')
+    for action in ('UPDATE', 'DELETE'):
+        cur.execute(f'''CREATE TRIGGER IF NOT EXISTS daily_sales_match_audits_no_{action.lower()}
+            BEFORE {action} ON daily_sales_match_audits BEGIN
+            SELECT RAISE(ABORT,'Historical sales match audit is immutable'); END''')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('daily_sales_match_audits')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1732,6 +1764,8 @@ def _get_migrations():
         ('checkout_refunds', _migration_checkout_refunds),
         ('store_events', _migration_store_events),
         ('report_match_choices',                       _migration_report_match_choices),
+        ('add_inventory_audit_context',                _migration_add_inventory_audit_context),
+        ('daily_sales_match_audits',                   _migration_daily_sales_match_audits),
     ]
 
 

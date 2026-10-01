@@ -144,7 +144,7 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy}:{order:Order
 export default function CheckoutPage() {
   const {id}=useParams(),[params]=useSearchParams(),navigate=useNavigate(),{user}=useAuth0()
   const role=useRole()
-  const history=id==='history'||params.get('view')==='history'
+  const history=id==='history'||(id!=='new'&&params.get('view')==='history')
   const selectedStore=useAppStore(s=>s.selectedStore),setSelectedStore=useAppStore(s=>s.setSelectedStore)
   const [access,setAccess]=useState<Access>(),[queue,setQueue]=useState<Queue>(),[order,setOrder]=useState<Order>(),[error,setError]=useState('')
   const [refresh,setRefresh]=useState(0),[date,setDate]=useState(''),[cursor,setCursor]=useState<number|null>(null),[busy,setBusy]=useState(false)
@@ -160,7 +160,7 @@ export default function CheckoutPage() {
   useEffect(()=>{setCursor(null)},[selectedStore?.id,history,date])
   useEffect(()=>{setDrafts({});setQueue(undefined);setOrder(undefined)},[user?.sub,role,selectedStore?.id])
   useEffect(()=>{
-    if(manual||busy)return
+    if(busy)return
     const controller=new AbortController()
     const load=async()=>{
       try {
@@ -169,6 +169,7 @@ export default function CheckoutPage() {
         if(day.current&&day.current!==scope.business_date)setDrafts({})
         day.current=scope.business_date
         setAccess(scope)
+        if(manual){setError('');return}
         const stores=history?scope.history_stores:scope.live_stores
         let store=stores.find(s=>s.id===selectedStore?.id)
         if(!store&&stores.length===1){chooseStore(stores[0]);return}
@@ -199,17 +200,18 @@ export default function CheckoutPage() {
   const scoped=stores?.some(s=>s.id===selectedStore?.id)
   function select(next:Order){if(busy)return;navigate(`/checkout/${next.id}${history?'?view=history':''}`)}
   function updated(value?:Order){if(value)setOrder(value);setRefresh(n=>n+1)}
-  if(manual)return <div className="co-workspace"><ManualCheckout key={`${user?.sub}|${role}`}/></div>
+  if(manual&&access?.live_stores.length)return <div className="co-workspace"><ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)}/></div>
   return <div className="co-workspace">
-    <header className="co-heading"><div><h1>{history?'Order history':'Checkout'}</h1><p>{history?(access?.role==='staff'?'Your orders, including previous shifts.':'Orders at the locations you can access today.'):'The order, the amount, the payment photo.'}</p></div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
+    <header className="co-heading"><div><h1>{history?'Order history':'Checkout'}</h1><p>{history?(access?.role==='staff'?'Your orders, including previous shifts.':'Orders at the locations you can access today.'):'Start a manual checkout or continue an open order.'}</p></div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
     <div className="co-toolbar"><span className="co-connection"><span aria-hidden="true"/>Clover disconnected</span><Link to={history?'/checkout':'/checkout/history'}>{history?'Current orders':'Order history'}</Link></div>
     {error&&<Alert type="error" showIcon message={error} action={<Button disabled={busy} onClick={()=>setRefresh(n=>n+1)}>Retry</Button>}/>}
     {!access?(!error&&<Skeleton active paragraph={{rows:4}}/>):<>
       {!!stores?.length&&(stores.length>1||history)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);navigate(history?'/checkout/history':'/checkout')}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>}
+      {!history&&scoped&&<div className="co-location"><Button type="primary" disabled={busy} onClick={()=>navigate('/checkout/new')}>Start manual checkout</Button><Link to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>Record completed sale</Link></div>}
       {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={history?'/checkout':'/checkout/history'}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>:!scoped?<p className="co-muted">Choose a location to see its orders.</p>:!queue||queueScope!==scopeKey?<Skeleton active/>:<>
         {!!queue.orders.length&&<nav className={'co-order-switcher'+(history?' co-history-list':'')} aria-label={history?'Order history':'Current orders'}>{queue.orders.map(item=><button type="button" key={item.id} disabled={busy} aria-pressed={orderId===item.id} onClick={()=>select(item)}><span className="co-switch-top"><strong>{item.register_name||'POPCORE order'}</strong><b>{formatCents(item.order.collected_cents)}</b></span><span className="co-switch-items">{item.order.lines.map(l=>`${l.quantity}× ${l.product_name_snapshot}`).join(' · ')}</span><span className="co-switch-meta">{item.reference}{history?` · ${item.business_date} · ${item.cashier_name}`:''}</span></button>)}</nav>}
         {queue.next_before_id&&<Button disabled={busy} onClick={()=>setCursor(queue.next_before_id)}>Older orders</Button>}{cursor&&<Button disabled={busy} onClick={()=>setCursor(null)}>Newest orders</Button>}
-        {order&&order.id===orderId&&order.store_id===selectedStore?.id&&drafts[order.id]?<CurrentOrder key={order.id} order={order} draft={drafts[order.id]} setDraft={value=>setDrafts(old=>({...old,[order.id]:typeof value==='function'?value(old[order.id]):{...old[order.id],...value}}))} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>:!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Register, amount and items help you pick the right customer.':history?'Try another date, or return to current orders.':'Orders will appear here after Clover is connected. Automatic order sync is not active yet.'}</p>{!history&&<span className="co-muted">No customer details to re-enter once connected.</span>}</div>}
+        {order&&order.id===orderId&&order.store_id===selectedStore?.id&&drafts[order.id]?<CurrentOrder key={order.id} order={order} draft={drafts[order.id]} setDraft={value=>setDrafts(old=>({...old,[order.id]:typeof value==='function'?value(old[order.id]):{...old[order.id],...value}}))} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>:!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Register, amount and items help you pick the right customer.':history?'Try another date, or return to current orders.':'Clover is disconnected. Start a manual checkout to enter the items and record payment.'}</p>{!history&&<span className="co-muted">Automatic order sync is not active.</span>}</div>}
         {orderId&&order?.id!==orderId&&<Skeleton active paragraph={{rows:5}}/>}
       </>}
     </>}

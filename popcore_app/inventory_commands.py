@@ -694,11 +694,11 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
         cur = con.execute(
             """INSERT INTO inventory_documents
                (kind, request_key, payload_hash, source_type, source_id,
-                actor_sub, business_date, correction_of, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'building')""",
+                actor_sub, business_date, correction_of, reason, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'building')""",
             (normalized['kind'], request_key, digest,
              normalized['source_type'], normalized['source_id'], actor_sub,
-             normalized['business_date'], normalized['correction_of']),
+             normalized['business_date'], normalized['correction_of'], normalized['reason']),
         )
         document_id = cur.lastrowid
         affected = set()
@@ -710,23 +710,23 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
                 receipt_units(line['conversion_factor'], line['quantity'])
                 if normalized['kind'] == 'open_set' else line['quantity']
             )
+            if line['from_location_id'] is not None and normalized['kind'] != 'open_set':
+                _consume_provenance(con, line, normalized['kind'])
             con.execute(
                 """INSERT INTO inventory_document_lines
                    (document_id, line_no, product_id, native_unit, quantity,
                     from_location_id, from_disposition, to_location_id,
                     to_disposition, from_version, to_version,
-                    conversion_id, conversion_factor)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    conversion_id, conversion_factor, open_set_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (document_id, line_no, line['product_id'], line['unit'],
                  line['quantity'], line['from_location_id'],
                  line['from_disposition'], line['to_location_id'],
                  line['to_disposition'], expected.get('from'),
                  expected.get('to'), line.get('conversion_id'),
-                 line.get('conversion_factor')),
+                 line.get('conversion_factor'), line.get('open_set_id')),
             )
             if line['from_location_id'] is not None:
-                if normalized['kind'] != 'open_set':
-                    _consume_provenance(con, line, normalized['kind'])
                 _apply_negative(
                     con, line['product_id'], line['from_location_id'],
                     line['from_disposition'], line['quantity'], expected['from'],

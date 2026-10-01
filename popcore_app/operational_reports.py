@@ -5,6 +5,22 @@ from checkout_operations import checkout_funds
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_commands import InventoryValidationError
 
+from catalog_identity import FORMS_TO_UNITS
+
+
+def _inventory_identity_valid(product):
+    return (product['identity_status']=='verified' and product['stock_unit'] is not None
+            and FORMS_TO_UNITS.get(product['stock_form'])==product['stock_unit']
+            and (product['stock_form']!='confirmed_design' or (product['series_id'] is not None
+                 and bool((product['design_name'] or '').strip()))))
+
+
+def _product_name(product):
+    if product['stock_form']=='confirmed_design' and product['design_name']:
+        return ' · '.join(value for value in (product['series_name'],product['design_name']) if value)
+    return product['jizhanming'] or product['name_cn_en'] or product['sku'] or f"Product #{product['id']}"
+
+
 REPORTS={'inventory','movements','goods-exceptions','sales','tenders','evidence-exceptions','cash-variance','count-discrepancies','closed-days'}
 FINANCIAL={'sales','tenders','evidence-exceptions','cash-variance','closed-days'}
 
@@ -34,13 +50,33 @@ def query_report(con,name,*,actor,filters):
     if ids:
         marks=','.join('?' for _ in ids)
         if name=='inventory':
-            items=[dict(r) for r in con.execute(f"""SELECT b.product_id,p.sku,p.stock_unit,l.store_id,l.id location_id,l.name location,b.disposition,b.quantity,b.version
+            mode=con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
+            rows=con.execute(f"""SELECT b.product_id,p.id,p.sku,p.jizhanming,p.name_cn_en,p.design_name,p.stock_form,p.identity_status,p.stock_unit,p.series_id,ps.name series_name,
+              l.store_id,l.id location_id,l.name location,b.disposition,b.quantity,b.version,COALESCE(ss.opening_verified,0) opening_verified
               FROM inventory_balances b JOIN products p ON p.id=b.product_id JOIN inventory_locations l ON l.id=b.location_id
-              WHERE l.store_id IN ({marks}) ORDER BY l.store_id,p.sku,l.id,b.disposition""",ids)]
+              LEFT JOIN product_series ps ON ps.id=p.series_id LEFT JOIN inventory_scope_state ss ON ss.location_id=l.id
+              WHERE l.is_active=1 AND l.store_id IN ({marks}) ORDER BY l.store_id,p.sku,l.id,b.disposition""",ids)
+            for row in rows:
+                verified=mode=='authoritative' and bool(row['opening_verified']) and _inventory_identity_valid(row)
+                items.append({**{key:row[key] for key in ('product_id','sku','stock_unit','store_id','location_id','location','disposition')},
+                    'product_name':_product_name(row),'quantity':row['quantity'] if verified else None,
+                    'version':row['version'] if verified else None,'inventory_verified':verified})
         elif name=='movements':
-            items=[dict(r) for r in con.execute(f"""SELECT m.id,m.document_id,d.business_date,d.kind,d.status,m.product_id,p.stock_unit native_unit,m.quantity,m.location_id,m.disposition,l.from_location_id,l.to_location_id,l.from_disposition,l.to_disposition
-              FROM inventory_movements m JOIN products p ON p.id=m.product_id JOIN inventory_documents d ON d.id=m.document_id JOIN inventory_document_lines l ON l.document_id=m.document_id AND l.line_no=m.line_no
-              WHERE d.business_date BETWEEN ? AND ? AND m.location_id IN (SELECT id FROM inventory_locations WHERE store_id IN ({marks})) ORDER BY d.business_date,m.id""",(start,end,*ids))]
+            location_names={row['id']:row['name'] for row in con.execute(f'SELECT id,name FROM inventory_locations WHERE store_id IN ({marks})',ids)}
+            items=[dict(r) for r in con.execute(f"""SELECT m.id,m.document_id,d.business_date,d.kind,d.status,m.product_id,
+              CASE WHEN m.product_id=l.product_id THEN l.native_unit
+                   WHEN d.kind='open_set' AND m.product_id=conversion.target_product_id THEN 'box' END native_unit,
+              CASE WHEN p.stock_form='confirmed_design' AND NULLIF(p.design_name,'') IS NOT NULL
+                   THEN COALESCE(ps.name || ' · ','') || p.design_name
+                   ELSE COALESCE(NULLIF(p.jizhanming,''),NULLIF(p.name_cn_en,''),p.sku) END product_name,
+              m.quantity,m.location_id,location.name location,m.disposition,l.from_location_id,l.to_location_id,l.from_disposition,l.to_disposition
+              FROM inventory_movements m JOIN products p ON p.id=m.product_id LEFT JOIN product_series ps ON ps.id=p.series_id
+              JOIN inventory_documents d ON d.id=m.document_id JOIN inventory_document_lines l ON l.document_id=m.document_id AND l.line_no=m.line_no
+              LEFT JOIN product_conversions conversion ON conversion.id=l.conversion_id JOIN inventory_locations location ON location.id=m.location_id
+              WHERE d.business_date BETWEEN ? AND ? AND location.store_id IN ({marks}) ORDER BY d.business_date,m.id""",(start,end,*ids))]
+            for item in items:
+                item['from_location']=location_names.get(item['from_location_id'])
+                item['to_location']=location_names.get(item['to_location_id'])
         elif name=='goods-exceptions':
             items=[dict(r) for r in con.execute(f"SELECT id,store_id,business_date,status,version,shipment_reference FROM goods_receipts WHERE store_id IN ({marks}) AND business_date BETWEEN ? AND ? AND (status!='posted' OR EXISTS(SELECT 1 FROM goods_receipt_lines l WHERE l.receipt_id=goods_receipts.id AND (l.damaged_quantity>0 OR l.hold_quantity>0 OR l.discrepancy_note IS NOT NULL))) ORDER BY business_date,id",(*ids,start,end))]
         elif name=='sales':
@@ -89,8 +125,15 @@ def query_report(con,name,*,actor,filters):
             items=[dict(r) for r in con.execute(f"""SELECT c.id closing_id,c.store_id,c.business_date,c.status,c.version,x.variance_cents,x.counted_cents,x.expected_cents
               FROM closing_sessions c JOIN closing_cash_counts x ON x.closing_session_id=c.id WHERE c.store_id IN ({marks}) AND c.business_date BETWEEN ? AND ? AND x.revision=(SELECT MAX(y.revision) FROM closing_cash_counts y WHERE y.closing_session_id=c.id) ORDER BY c.business_date,c.id""",(*ids,start,end))]
         elif name=='count-discrepancies':
-            items=[dict(r) for r in con.execute(f"""SELECT c.id count_id,c.store_id,c.business_date,c.status,c.version,l.product_id,l.native_unit,l.expected_quantity,l.observed_quantity,(l.observed_quantity-l.expected_quantity) discrepancy
-              FROM inventory_counts c JOIN inventory_count_lines l ON l.count_id=c.id WHERE c.store_id IN ({marks}) AND c.business_date BETWEEN ? AND ? AND l.observed_quantity!=l.expected_quantity ORDER BY c.business_date,c.id,l.line_no""",(*ids,start,end))]
+            items=[dict(r) for r in con.execute(f"""SELECT c.id count_id,c.store_id,c.business_date,c.status,c.version,l.product_id,l.native_unit,l.expected_quantity,l.observed_quantity,(l.observed_quantity-l.expected_quantity) discrepancy,
+              c.location_id,location.name location,
+              CASE WHEN p.stock_form='confirmed_design' AND NULLIF(p.design_name,'') IS NOT NULL
+                   THEN COALESCE(ps.name || ' · ','') || p.design_name
+                   ELSE COALESCE(NULLIF(p.jizhanming,''),NULLIF(p.name_cn_en,''),p.sku) END product_name
+              FROM inventory_counts c JOIN inventory_count_lines l ON l.count_id=c.id
+              JOIN products p ON p.id=l.product_id LEFT JOIN product_series ps ON ps.id=p.series_id
+              JOIN inventory_locations location ON location.id=c.location_id
+              WHERE c.store_id IN ({marks}) AND c.business_date BETWEEN ? AND ? AND l.observed_quantity!=l.expected_quantity ORDER BY c.business_date,c.id,l.line_no""",(*ids,start,end))]
         elif name=='closed-days':
             items=[dict(r) for r in con.execute(f"""SELECT c.id closing_id,c.store_id,c.business_date,c.version,s.snapshot_json,s.created_at,
               (SELECT COUNT(*) FROM closing_adjustments a WHERE a.closing_session_id=c.id) later_adjustment_count FROM closing_sessions c JOIN closing_snapshots s ON s.closing_session_id=c.id WHERE c.store_id IN ({marks}) AND c.business_date BETWEEN ? AND ? ORDER BY c.business_date,c.id""",(*ids,start,end))]
