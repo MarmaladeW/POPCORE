@@ -21,7 +21,7 @@ import auth  # noqa: E402
 import db  # noqa: E402
 import payment_evidence  # noqa: E402
 import condition_evidence  # noqa: E402
-from blueprints import checkout, closing as closing_blueprint, goods, inventory, payments, products, reports, restock, sale_documents, sales, schedule, stock, store_events, stores, trades, today  # noqa: E402
+from blueprints import checkout, closing as closing_blueprint, goods, inventory, payments, products, reports, restock, sale_documents, sales, schedule, special_orders, stock, store_events, stores, trades, today  # noqa: E402
 
 
 class IsolatedApiCase(unittest.TestCase):
@@ -79,6 +79,7 @@ class IsolatedApiCase(unittest.TestCase):
             today.bp,
             schedule.bp,
             reports.bp,
+            special_orders.bp,
         ):
             app.register_blueprint(blueprint)
         app.teardown_appcontext(db.close_db)

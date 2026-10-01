@@ -21,7 +21,9 @@ def checkout_access(con, actor):
     live = stores if role == 'admin' else [s for s in stores if s['id'] in assigned]
     own = {r[0] for r in con.execute('SELECT DISTINCT store_id FROM checkout_orders WHERE created_by=?', (actor['sub'],))}
     history = [s for s in stores if s['id'] in own] if role == 'staff' else live
-    return dict(business_date=today, role=role, live_stores=live, history_stores=history)
+    rate = con.execute("SELECT value FROM app_settings WHERE key='checkout_cny_per_cad'").fetchone()
+    return dict(business_date=today, role=role, live_stores=live, history_stores=history,
+                cny_per_cad=rate['value'] if rate else '')
 
 
 def can_read(row, actor, access):

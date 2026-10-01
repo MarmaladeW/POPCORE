@@ -44,6 +44,7 @@ interface RawSettings {
   schedule_open_hours?:         string
   schedule_shift_presets?:      string
   schedule_positions?:          string
+  checkout_cny_per_cad?:        string
 }
 
 interface StoreRow {
@@ -87,6 +88,8 @@ export default function SettingsPage() {
   const [shiftPresets,  setShiftPresets]  = useState<ShiftPreset[]>([])
   const [positions,     setPositions]     = useState<PositionsMap>({})
   const [saving3,       setSaving3]       = useState(false)
+  const [cnyPerCad,     setCnyPerCad]     = useState('')
+  const [savingCheckout,setSavingCheckout] = useState(false)
 
   // ── Stores tab ────────────────────────────────────────────────────────────
   const [stores,        setStores]        = useState<StoreRow[]>([])
@@ -115,6 +118,7 @@ export default function SettingsPage() {
         setMonthStartDay(Number(s.schedule_month_start_day) || 4)
         setShiftPresets(parseShiftPresets(s.schedule_shift_presets))
         setPositions(parsePositions(s.schedule_positions))
+        setCnyPerCad(s.checkout_cny_per_cad || '')
       })
       .catch(() => message.error('加载设置失败 / Failed to load settings'))
       .finally(() => setSettingsLoading(false))
@@ -190,6 +194,19 @@ export default function SettingsPage() {
       message.error('保存失败 / Save failed')
     } finally {
       setSaving2(false)
+    }
+  }
+
+  async function saveCheckoutRate() {
+    setSavingCheckout(true)
+    try {
+      await client.put('/settings', { checkout_cny_per_cad: cnyPerCad.trim() })
+      setCnyPerCad(cnyPerCad.trim())
+      message.success('CNY rate saved')
+    } catch (err: any) {
+      message.error(err?._serverMessage ?? 'Unable to save CNY rate')
+    } finally {
+      setSavingCheckout(false)
     }
   }
 
@@ -681,10 +698,25 @@ export default function SettingsPage() {
     </div>
   )
 
+  const checkoutTab = (
+    <div style={INNER}>
+      <Card loading={settingsLoading}>
+        <label htmlFor="checkout-cny-rate" style={{ display: 'block', fontWeight: 600, marginBottom: 8 }}>CNY per 1 CAD</label>
+        <Input id="checkout-cny-rate" value={cnyPerCad} onChange={e => setCnyPerCad(e.target.value)}
+          inputMode="decimal" maxLength={8} placeholder="For example, 5.20" style={{ maxWidth: 180 }} />
+        <p style={{ color: '#596273', fontSize: 13, margin: '8px 0 16px' }}>
+          Used for WeChat Pay and Alipay collection guidance. Clover and POPCORE order totals stay in CAD. Leave blank to hide the CNY quote.
+        </p>
+        <Button type="primary" onClick={saveCheckoutRate} loading={savingCheckout}>Save rate</Button>
+      </Card>
+    </div>
+  )
+
   const tabs: TabsProps['items'] = [
     { key: 'insights',   label: '洞察设置 / Insights',   children: insightTab    },
     { key: 'reports',    label: '报表计划 / Reports',    children: reportTab     },
     { key: 'scheduling', label: '排班设置 / Scheduling', children: schedulingTab },
+    { key: 'checkout',   label: 'Checkout', children: checkoutTab },
     { key: 'stores',     label: '门店管理 / Stores',     children: storesTab     },
     { key: 'users',      label: '用户管理 / Users',      children: <UsersPage /> },
   ]

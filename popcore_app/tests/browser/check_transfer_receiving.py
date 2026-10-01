@@ -99,7 +99,7 @@ async def draft_resume_checks(browser):
     await page.goto(BASE+'/goods/transfers?create=1')
     await select_option(page,0,'MK · Markham Warehouse')
     await select_option(page,1,'DT · Downtown Floor')
-    await select_option(page,2,'00123 Long bilingual product 商品名称')
+    await select_option(page,2,'Long bilingual product 商品名称')
     state['status_for_path']={'/api/goods/transfers':(503,{'error':'Transfer save unconfirmed'})}
     await page.get_by_role('button',name='Create transfer',exact=True).click()
     await expect(page.get_by_text('Transfer save unconfirmed',exact=True)).to_be_visible()

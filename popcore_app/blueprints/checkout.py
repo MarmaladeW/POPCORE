@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request, send_file
 from auth import role_required
 from checkout_access import checkout_access, require_checkout
 from checkout_operations import (attach_photo, change_checkout, checkout_detail,
-    checkout_row, create_checkout, manager)
+    checkout_row, create_checkout, manager, read_order_note)
 from db import get_db
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryError, InventoryConflict
@@ -34,7 +34,8 @@ def body():
 @bp.get('/api/checkouts/access')
 @role_required('staff')
 def access():
-    return jsonify(checkout_access(get_db(), request.jwt_payload))
+    from blueprints.clover_sandbox import enabled
+    return jsonify(**checkout_access(get_db(), request.jwt_payload), clover_sandbox_enabled=enabled())
 
 
 @bp.get('/api/checkouts')
@@ -79,6 +80,25 @@ def create():
 @role_required('staff')
 def detail(checkout_id):
     return jsonify(checkout_detail(get_db(),checkout_id,request.jwt_payload))
+
+
+@bp.post('/api/checkouts/<int:checkout_id>/notes')
+@role_required('staff')
+def save_note(checkout_id):
+    con = get_db(); actor = request.jwt_payload
+    row = checkout_row(con, checkout_id, actor)
+    if row['created_by'] != actor['sub'] and not manager(actor):
+        raise PermissionError('Order note access denied')
+    note, expected = read_order_note(body())
+    if row['note'] != note:
+        if row['note'] != expected:
+            raise InventoryConflict('Order note changed. Refresh before saving.', 'checkout_note_conflict')
+        with con:
+            changed = con.execute('UPDATE checkout_orders SET note=? WHERE id=? AND note=?',
+                                  (note, checkout_id, expected)).rowcount
+            if not changed:
+                raise InventoryConflict('Order note changed. Refresh before saving.', 'checkout_note_conflict')
+    return jsonify(checkout_detail(con, checkout_id, actor))
 
 
 @bp.post('/api/checkouts/<int:checkout_id>/<action>')

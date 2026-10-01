@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { discountQuote, suggestPayable } from './checkoutPricing.ts'
+import { convertCadCentsToCnyFen, discountQuote, suggestPayable, suggestPaymentTarget } from './checkoutPricing.ts'
+
+test('CNY quote uses the configured rate with exact cent rounding', () => {
+  assert.equal(convertCadCentsToCnyFen(3200, '5.20'), 16640)
+  assert.equal(convertCadCentsToCnyFen(1, '5.5'), 6)
+  assert.equal(convertCadCentsToCnyFen(1, '0.5'), 1)
+  for (const rate of ['', '0', '5.12345', 'bad']) {
+    assert.equal(convertCadCentsToCnyFen(3200, rate), null)
+  }
+  assert.equal(convertCadCentsToCnyFen(-1, '5.2'), null)
+})
 
 test('suggestPayable rounds a 2.5% reduction to whole dollars, with ties down', () => {
   assert.equal(suggestPayable(4134), 4000)
@@ -21,6 +31,29 @@ test('suggestPayable keeps tiny positive totals positive', () => {
 test('suggestPayable rejects malformed cent values', () => {
   for (const value of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => suggestPayable(value), RangeError)
+  }
+})
+
+test('suggestPaymentTarget applies the tender pricing matrix', () => {
+  assert.equal(suggestPaymentTarget(2831, 'card', false), 2831)
+  for (const tender of ['cash', 'e_transfer', 'wechat', 'alipay']) {
+    assert.equal(suggestPaymentTarget(2000, tender, false), 1900)
+  }
+
+  assert.equal(suggestPaymentTarget(2831, 'cash', true), 2800)
+  assert.equal(suggestPaymentTarget(3191, 'alipay', true), 3100)
+})
+
+test('suggestPaymentTarget keeps small Card-inclusive splits exact', () => {
+  assert.equal(suggestPaymentTarget(999, 'cash', true), 999)
+  assert.equal(suggestPaymentTarget(1000, 'card', true), 1000)
+  assert.equal(suggestPaymentTarget(1099, 'wechat', true), 1000)
+})
+
+test('suggestPaymentTarget rejects malformed cent values for every pricing path', () => {
+  for (const value of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => suggestPaymentTarget(value, 'card', false), RangeError)
+    assert.throws(() => suggestPaymentTarget(value, 'cash', true), RangeError)
   }
 })
 

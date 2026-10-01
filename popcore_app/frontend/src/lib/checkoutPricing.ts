@@ -10,6 +10,15 @@ const safeNonnegative = (value: number) => Number.isSafeInteger(value) && value 
 const roundRatio = (numerator: bigint, denominator: bigint) =>
   (numerator * 2n + denominator) / (denominator * 2n)
 
+export function convertCadCentsToCnyFen(cadCents: number, rate: string): number | null {
+  if (!safeNonnegative(cadCents) || !/^\d{1,3}(?:\.\d{1,4})?$/.test(rate)) return null
+  const [whole, fraction = ''] = rate.split('.')
+  const scaled = BigInt(whole) * 10_000n + BigInt(fraction.padEnd(4, '0') || '0')
+  if (scaled === 0n || scaled > 1_000_000n) return null
+  const fen = (BigInt(cadCents) * scaled + 5_000n) / 10_000n
+  return fen <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(fen) : null
+}
+
 export function suggestPayable(totalCents: number): number {
   if (!safeNonnegative(totalCents)) throw new RangeError('Total cents must be a nonnegative safe integer.')
   if (totalCents === 0) return 0
@@ -20,6 +29,12 @@ export function suggestPayable(totalCents: number): number {
   let suggestion = Number((total * 1950n + 99_999n) / 200_000n) * 100
   if (suggestion >= totalCents) suggestion -= 100
   return Math.max(1, suggestion)
+}
+
+export function suggestPaymentTarget(totalCents: number, tender: string, mixedWithCard: boolean): number {
+  const discounted = suggestPayable(totalCents)
+  if (mixedWithCard) return totalCents < 1000 ? totalCents : totalCents - totalCents % 100
+  return tender === 'card' ? totalCents : discounted
 }
 
 export function discountQuote(
