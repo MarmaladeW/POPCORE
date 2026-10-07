@@ -1,68 +1,62 @@
 import json
 from flask import Blueprint, jsonify, request
-from auth import login_required, role_required
+from auth import role_required
 from db import get_db
+from operational_reports import _scope
 
 bp = Blueprint('insights', __name__)
 
 
+def _authorized_codes(db, code=None):
+    stores, _ = _scope(db, request.jwt_payload, code)
+    if not stores:
+        raise PermissionError('Insight store access denied')
+    return [store['code'] for store in stores]
+
+
 @bp.route('/api/insights', methods=['GET'])
-@login_required
+@role_required('manager')
 def list_insights():
-    store             = request.args.get('store')
+    db = get_db()
+    try: codes = _authorized_codes(db, request.args.get('store'))
+    except PermissionError: return jsonify({'error':'Insight access denied'}),403
+    marks = ','.join('?' for _ in codes)
     include_dismissed = request.args.get('include_dismissed', 'false').lower() == 'true'
-
-    db     = get_db()
-    params = []
-    q      = '''
-        SELECT i.*, p.jizhanming, p.sku
-        FROM insights i
-        LEFT JOIN products p ON p.id = i.product_id
-        WHERE 1=1
-    '''
-    if store and store != 'ALL':
-        q += ' AND i.store = ?'
-        params.append(store)
-    if not include_dismissed:
-        q += ' AND i.dismissed_at IS NULL'
-    q += ' ORDER BY i.generated_at DESC LIMIT 100'
-
-    result = []
-    for row in db.execute(q, params).fetchall():
-        d = dict(row)
-        try:
-            d['meta'] = json.loads(d.get('meta') or '{}')
-        except Exception:
-            d['meta'] = {}
-        result.append(d)
+    query = f'''SELECT i.*,p.jizhanming,p.sku FROM insights i LEFT JOIN products p ON p.id=i.product_id
+                 WHERE i.store IN ({marks})'''
+    if not include_dismissed: query += ' AND i.dismissed_at IS NULL'
+    query += ' ORDER BY i.generated_at DESC,i.id DESC LIMIT 100'
+    result=[]
+    for row in db.execute(query,codes):
+        item=dict(row)
+        try:item['meta']=json.loads(item.get('meta') or '{}')
+        except (ValueError,TypeError):item['meta']={}
+        result.append(item)
     return jsonify(result)
 
 
 @bp.route('/api/insights/count', methods=['GET'])
-@login_required
+@role_required('manager')
 def insight_count():
-    store  = request.args.get('store')
-    db     = get_db()
-    params = []
-    q      = 'SELECT COUNT(*) AS cnt FROM insights WHERE dismissed_at IS NULL'
-    if store and store != 'ALL':
-        q += ' AND store = ?'
-        params.append(store)
-    cnt = db.execute(q, params).fetchone()['cnt']
-    return jsonify({'count': cnt})
+    db = get_db()
+    try: codes = _authorized_codes(db, request.args.get('store'))
+    except PermissionError: return jsonify({'error':'Insight access denied'}),403
+    marks = ','.join('?' for _ in codes)
+    count=db.execute(f'SELECT COUNT(*) FROM insights WHERE dismissed_at IS NULL AND store IN ({marks})',codes).fetchone()[0]
+    return jsonify({'count':count})
 
 
 @bp.route('/api/insights/<int:insight_id>/dismiss', methods=['POST'])
-@login_required
+@role_required('manager')
 def dismiss_insight(insight_id):
-    sub = getattr(request, 'jwt_payload', {}).get('sub', 'unknown')
-    db  = get_db()
-    db.execute(
-        "UPDATE insights SET dismissed_at = datetime('now'), dismissed_by = ? WHERE id = ?",
-        (sub, insight_id),
-    )
+    db=get_db()
+    insight=db.execute('SELECT store FROM insights WHERE id=?',(insight_id,)).fetchone()
+    if insight is None:return jsonify({'error':'Insight not found'}),404
+    try:_authorized_codes(db,insight['store'])
+    except PermissionError:return jsonify({'error':'Insight access denied'}),403
+    db.execute("UPDATE insights SET dismissed_at=datetime('now'),dismissed_by=? WHERE id=?",(request.jwt_payload['sub'],insight_id))
     db.commit()
-    return jsonify({'ok': True})
+    return jsonify({'ok':True})
 
 
 @bp.route('/api/insights/generate', methods=['POST'])

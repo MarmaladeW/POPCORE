@@ -129,7 +129,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   ] : []
   const review: NavItem[] = manager ? [
     { key: '/sales', icon: <DollarOutlined />, label: 'Sales' },
-    { key: '/reports', icon: <BarChartOutlined />, label: 'Reports' },
+    { key: '/reports', icon: <BarChartOutlined />, label: 'Insights' },
   ] : []
   const planning: NavItem[] = [
     { key: '/schedule', icon: <CalendarOutlined />, label: 'Schedule' },

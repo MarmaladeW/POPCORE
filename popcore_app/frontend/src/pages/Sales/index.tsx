@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { useAuth0 } from '@auth0/auth0-react'
+import { useRole } from '../../auth/useRole'
+import { productLabel } from '../../lib/productLabel'
+import { savedLineValue, savedPriceSummary } from './historicalSales'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
   Typography, Row, Col, InputNumber, Card,
@@ -38,7 +42,7 @@ interface SaleRow {
   sku: string
   jizhanming: string
   name_cn_en: string
-  price: number | null
+  unit_price: number | null
   ip_series: string
 }
 
@@ -51,13 +55,24 @@ interface SummaryRow {
 }
 
 export default function SalesPage() {
+  const { user } = useAuth0(), role = useRole()
+  const selectedStore = useAppStore(state => state.selectedStore)
+  const [params, setParams] = useSearchParams()
+  const requestedDate = params.get('date')
+  const date = requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) && dayjs(requestedDate).format('YYYY-MM-DD') === requestedDate ? dayjs(requestedDate) : dayjs()
+  const setDate = (next:Dayjs|((current:Dayjs)=>Dayjs)) => {
+    const value = typeof next === 'function' ? next(date) : next
+    const query = new URLSearchParams(params); query.set('date', value.format('YYYY-MM-DD')); setParams(query)
+  }
+  return <SalesScope key={`${user?.sub}|${role}|${selectedStore?.code}|${date.format('YYYY-MM-DD')}`} date={date} setDate={setDate} />
+}
+
+function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Dayjs)=>Dayjs))=>void}) {
   const isMobile = useIsMobile()
-  const navigate = useNavigate()
   const { selectedStore, stores, setSelectedStore } = useAppStore()
   const sc = selectedStore?.code
   const isAll = sc === 'ALL'
 
-  const [date,    setDate]    = useState<Dayjs>(dayjs())
   const [sales,   setSales]   = useState<SaleRow[]>([])
   const [summary, setSummary] = useState<SummaryRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -82,6 +97,30 @@ export default function SalesPage() {
   const recordedRequestRef = useRef(0)
   const salesRequestRef = useRef(0)
   const salesScopeRef = useRef('')
+  const searchRequestRef = useRef(0)
+  const mounted = useRef(true)
+  const savingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
+  const [aliasSaving, setAliasSaving] = useState(false)
+  const busy = saving || aliasSaving
+  const [mutationError, setMutationError] = useState('')
+  const [denied, setDenied] = useState(false)
+  const editing = Object.keys(localEdits).length > 0
+  const readOnly = !sc || isAll || loading || busy || denied
+
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; searchRequestRef.current += 1; window.dispatchEvent(new CustomEvent('popcore:checkout-busy', {detail:false})) }
+  }, [])
+
+  async function mutate(action:()=>Promise<unknown>, onSaved:()=>void) {
+    if (savingRef.current || readOnly) return
+    savingRef.current = true; setSaving(true); setMutationError('')
+    window.dispatchEvent(new CustomEvent('popcore:checkout-busy', {detail:true}))
+    try { await action(); if (mounted.current) onSaved() }
+    catch (cause:any) { if (mounted.current) { setMutationError(cause?._serverMessage || 'Unable to save this historical report. Your changes are still here.'); if (cause?.response?.status === 403) setDenied(true) } }
+    finally { if (mounted.current) { savingRef.current = false; setSaving(false); window.dispatchEvent(new CustomEvent('popcore:checkout-busy', {detail:false})) } }
+  }
 
   const dateStr = date.format('YYYY-MM-DD')
   const metadataLoaded = metadataScope === `${sc}:${dateStr}` && reportMetadata !== null
@@ -145,7 +184,7 @@ export default function SalesPage() {
           setRecordedDates(new Set(r.data as string[]))
         }
       })
-      .catch(() => {})
+      .catch(() => { if (requestId === recordedRequestRef.current) recordedFetchRef.current = '' })
   }, [sc])
 
   useEffect(() => {
@@ -159,39 +198,21 @@ export default function SalesPage() {
   }, [date, fetchRecordedDates])
 
   async function searchToAdd(v: string) {
-    setAddSearch(v)
-    if (!v) { setAddOptions([]); return }
-    const r = await client.get('/products/search', { params: { q: v, limit: 8 } })
-    setAddOptions(r.data.map((p: any) => ({
-      value: String(p.id),
-      label: `${p.jizhanming} (${p.sku})`,
-    })))
-  }
-
-  async function addProduct(pid: number) {
-    if (isAll) return
+    setAddSearch(v); setPendingAdd(null); setAddOptions([])
+    const requestId = ++searchRequestRef.current
+    if (!v.trim()) return
     try {
-      await client.post('/sales/add_product', { product_id: pid, date: dateStr, store_code: sc })
-      setAddSearch(''); setAddOptions([])
-      loadSales()
-    } catch { message.error('Failed to add product') }
+      const response = await client.get('/products/search', { params: { q: v, limit: 8 } })
+      if (mounted.current && requestId === searchRequestRef.current) setAddOptions(response.data.map((product:any) => ({value:String(product.id),label:`${productLabel(product)} (${product.sku})`})))
+    } catch { if (mounted.current && requestId === searchRequestRef.current) setMutationError('Unable to search products. Try again.') }
   }
 
   async function confirmAdd() {
-    if (!pendingAdd || isAll) return
-    try {
-      await client.post('/sales/upsert', {
-        product_id: pendingAdd.id,
-        date: dateStr,
-        qty_pos: pendingPos,
-        qty_cash: pendingCash,
-        notes: '',
-        store_code: sc,
-      })
-      setPendingAdd(null); setAddSearch(''); setAddOptions([])
-      setPendingPos(0); setPendingCash(0)
-      loadSales()
-    } catch { message.error('Failed to add product') }
+    if (!pendingAdd || editing) return
+    const body = {product_id:pendingAdd.id,date:dateStr,qty_pos:pendingPos,qty_cash:pendingCash,notes:'',store_code:sc}
+    await mutate(() => client.post('/sales/upsert', body), () => {
+      setPendingAdd(null); setAddSearch(''); setAddOptions([]); setPendingPos(0); setPendingCash(0); loadSales()
+    })
   }
 
   async function doExport() {
@@ -222,39 +243,36 @@ export default function SalesPage() {
     }))
   }
 
-  async function upsert(row: SaleRow, field: 'qty_pos' | 'qty_cash', val: number) {
-    if (isAll) return
-    const local   = localEdits[row.id]
-    const newPos  = field === 'qty_pos'  ? val : (local?.pos  ?? row.qty_pos)
-    const newCash = field === 'qty_cash' ? val : (local?.cash ?? row.qty_cash)
-    setSales(prev => prev.map(s =>
-      s.id === row.id ? { ...s, qty_pos: newPos, qty_cash: newCash, qty_sold: newPos + newCash } : s
-    ))
-    setLocalEdits(prev => { const n = { ...prev }; delete n[row.id]; return n })
-    try {
-      await client.post('/sales/upsert', { product_id: row.product_id, date: dateStr, qty_pos: newPos, qty_cash: newCash, notes: row.notes, store_code: sc })
-    } catch { message.error('Update failed'); loadSales() }
+  async function saveRow(row: SaleRow) {
+    const local = localEdits[row.id]
+    if (!local) return
+    if (local.pos === row.qty_pos && local.cash === row.qty_cash) { cancelRow(row.id); return }
+    const body = {product_id:row.product_id,date:dateStr,qty_pos:local.pos,qty_cash:local.cash,notes:row.notes,store_code:sc}
+    await mutate(() => client.post('/sales/upsert', body), () => {
+      setSales(previous => previous.map(item => item.id === row.id ? {...item,qty_pos:local.pos,qty_cash:local.cash,qty_sold:local.pos+local.cash} : item))
+      setSummary(previous => previous.map(item => item.date === dateStr ? {...item,total_pos:item.total_pos+local.pos-row.qty_pos,total_cash:item.total_cash+local.cash-row.qty_cash,total_sold:item.total_sold+local.pos+local.cash-row.qty_sold} : item))
+      setLocalEdits(previous => {const next = {...previous}; delete next[row.id]; return next})
+    })
   }
 
+  const cancelRow = (id:number) => { setLocalEdits(previous => {const next={...previous};delete next[id];return next});setMutationError('') }
+  const rowActions = (row:SaleRow) => localEdits[row.id] ? <Space wrap>
+    <Button size="small" aria-label={`Save ${row.jizhanming}`} disabled={readOnly} onClick={() => saveRow(row)}>Save</Button>
+    <Button size="small" aria-label={`Cancel changes to ${row.jizhanming}`} disabled={busy} onClick={() => cancelRow(row.id)}>Cancel</Button>
+  </Space> : null
+
   async function deleteRecord(id: number) {
-    if (isAll) return
-    try {
-      await client.delete(`/sales/record/${id}`)
-      message.success('Deleted')
-      loadSales()
-    } catch { message.error('Delete failed') }
+    if (editing) return
+    await mutate(() => client.delete(`/sales/record/${id}`), () => {message.success('Deleted');loadSales()})
   }
 
   async function clearDay() {
-    if (isAll) return
-    try {
-      await client.delete('/sales/clear_day', { params: { date: dateStr, store_code: sc } })
-      message.success('Cleared')
-      loadSales()
-    } catch { message.error('Failed') }
+    if (editing) return
+    await mutate(() => client.delete('/sales/clear_day', {params:{date:dateStr,store_code:sc}}), () => {message.success('Cleared');loadSales()})
   }
 
-  const totalRevenue = sales.reduce((s, r) => s + (r.price ?? 0) * r.qty_sold, 0)
+  const estimate = savedPriceSummary(sales)
+  const estimateValue = !sales.length ? '—' : estimate.knownRows ? `CA$${estimate.knownValue.toFixed(2)}` : 'Unknown'
   const totalPos     = sales.reduce((s, r) => s + r.qty_pos, 0)
   const totalCash    = sales.reduce((s, r) => s + r.qty_cash, 0)
   const totalSold    = sales.reduce((s, r) => s + r.qty_sold, 0)
@@ -286,19 +304,19 @@ export default function SalesPage() {
       render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—',
     },
     {
-      title: 'Price', dataIndex: 'price', width: 80, align: 'right',
-      render: v => v != null ? <Text style={{ fontSize: 12 }}>CA${v}</Text> : '—',
+      title: 'Saved unit price', dataIndex: 'unit_price', width: 80, align: 'right',
+      render: v => v != null ? <Text style={{ fontSize: 12 }}>CA${v}</Text> : 'Unknown',
     },
     {
       title: 'POS Qty', dataIndex: 'qty_pos', width: 100, align: 'center',
       render: (v, r) => (
         <InputNumber
           size="small" min={0}
-          disabled={isAll}
+          disabled={readOnly}
           value={localEdits[r.id]?.pos ?? v}
           onChange={val => { if (!isAll) setLocalQty(r.id, 'pos', val ?? 0) }}
-          onBlur={() => { if (!isAll) upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v) }}
-          onPressEnter={() => { if (!isAll) upsert(r, 'qty_pos', localEdits[r.id]?.pos ?? v) }}
+          aria-label={`POS quantity for ${r.jizhanming}`}
+          onPressEnter={() => saveRow(r)}
           style={{ width: 65 }}
         />
       ),
@@ -308,11 +326,11 @@ export default function SalesPage() {
       render: (v, r) => (
         <InputNumber
           size="small" min={0}
-          disabled={isAll}
+          disabled={readOnly}
           value={localEdits[r.id]?.cash ?? v}
           onChange={val => { if (!isAll) setLocalQty(r.id, 'cash', val ?? 0) }}
-          onBlur={() => { if (!isAll) upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v) }}
-          onPressEnter={() => { if (!isAll) upsert(r, 'qty_cash', localEdits[r.id]?.cash ?? v) }}
+          aria-label={`Non-POS quantity for ${r.jizhanming}`}
+          onPressEnter={() => saveRow(r)}
           style={{ width: 65 }}
         />
       ),
@@ -322,18 +340,19 @@ export default function SalesPage() {
       render: v => <Text style={{ fontWeight: 600, color: v > 0 ? '#10B981' : '#9ca3af' }}>{v}</Text>,
     },
     {
-      title: 'Revenue', width: 90, align: 'right',
+      title: 'Saved-price estimate', width: 110, align: 'right',
       render: (_, r) => {
-        const rev = (r.price ?? 0) * r.qty_sold
-        return <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${rev.toFixed(2)}</Text>
+        const value = savedLineValue(r)
+        return <Text style={{ color: '#6366F1', fontSize: 12 }}>{value == null ? 'Unknown' : `CA$${value.toFixed(2)}`}</Text>
       },
     },
+    { title:'Changes',key:'changes',width:140,render:(_,row)=>rowActions(row) },
     {
       title: '', key: 'del', width: 50,
       render: (_, r) => isAll ? null : (
         <RoleGuard minRole="manager">
           <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(r.id)}>
-            <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+            <Button size="small" danger type="text" disabled={readOnly || editing} aria-label="Delete historical row" icon={<DeleteOutlined />} />
           </Popconfirm>
         </RoleGuard>
       ),
@@ -341,7 +360,7 @@ export default function SalesPage() {
   ]
 
   const summaryColumns: ColumnsType<SummaryRow> = [
-    { title: 'Date', dataIndex: 'date', width: 110 },
+    { title: 'Date', dataIndex: 'date', width: 110, render:value=><Link to={`/sales/day/${value}`}>{value}</Link> },
     { title: 'Products', dataIndex: 'product_count', width: 90, align: 'center' },
     { title: 'POS', dataIndex: 'total_pos', width: 80, align: 'center', render: v => <Tag color="blue">{v}</Tag> },
     { title: 'Non-POS', dataIndex: 'total_cash', width: 80, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
@@ -355,6 +374,23 @@ export default function SalesPage() {
 
   return (
     <div>
+      <div style={{marginBottom:16}}>
+        <Title level={3} style={{margin:0}}>Historical reports</Title>
+        <p style={{margin:'6px 0'}}>Review pasted daily summaries for {selectedStore?.name}. Saved report prices estimate product value; payment totals and refunds are in Insights &amp; reports.</p>
+        <Space wrap>
+          <Link to="/sales/matching">Review past names</Link>
+          <Link to="/reports">Insights &amp; reports</Link>
+          <Button disabled={busy} onClick={() => setAliasMode(value => !value)}>{aliasMode ? 'Hide name mappings' : 'Manage name mappings'}</Button>
+        </Space>
+      </div>
+      {/* Alias Manager panel */}
+      {aliasMode && (
+        <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px', marginBottom: 20 }}>
+          <AliasManager onBusyChange={setAliasSaving} />
+        </div>
+      )}
+
+      {mutationError && <Alert role="alert" type="error" showIcon message={mutationError} style={{marginBottom:16}} />}
       {/* Header */}
       {isMobile ? (
         /* Mobile: Day-navigator with ‹ prev / date / next › */
@@ -364,11 +400,14 @@ export default function SalesPage() {
               <Button
                 type="text"
                 icon={<LeftOutlined />}
+                aria-label="Previous report date"
+                disabled={busy}
                 onClick={() => setDate(d => d.subtract(1, 'day'))}
                 style={{ color: '#374151', padding: '0 8px' }}
               />
               <DatePicker
                 value={date}
+                disabled={busy}
                 onChange={d => setDate(d ?? dayjs())}
                 allowClear={false}
                 style={{ width: 128, fontWeight: 600, fontSize: 14 }}
@@ -394,24 +433,28 @@ export default function SalesPage() {
               <Button
                 type="text"
                 icon={<RightOutlined />}
+                aria-label="Next report date"
                 onClick={() => setDate(d => d.add(1, 'day'))}
-                disabled={date.isSame(dayjs(), 'day')}
+                disabled={busy || date.isSame(dayjs(), 'day')}
                 style={{ color: '#374151', padding: '0 8px' }}
               />
             </div>
             {!isAll && (
               <RoleGuard minRole="staff">
                 <AutoComplete
+                  aria-label="Add historical product"
+                  disabled={readOnly || editing}
                   placeholder="Add product..."
                   value={addSearch}
                   options={addOptions}
                   onSearch={searchToAdd}
                   onSelect={(val, opt) => {
+                    searchRequestRef.current += 1
                     setPendingAdd({ id: Number(val), label: opt.label as string })
                     setPendingPos(0); setPendingCash(0)
                     setAddSearch(opt.label as string); setAddOptions([])
                   }}
-                  onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
+                  onClear={() => { searchRequestRef.current += 1; setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
                   allowClear
                   style={{ width: 150 }}
                 />
@@ -428,11 +471,11 @@ export default function SalesPage() {
                 {pendingAdd.label}
               </span>
               <span style={{ fontSize: 13, color: '#6b7280' }}>POS</span>
-              <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
+              <InputNumber size="small" min={0} disabled={readOnly} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
               <span style={{ fontSize: 13, color: '#6b7280' }}>Non-POS</span>
-              <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
-              <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
-              <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
+              <InputNumber size="small" min={0} disabled={readOnly} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 70, fontSize: 16 }} />
+              <Button size="small" type="primary" disabled={readOnly} onClick={confirmAdd}>Add</Button>
+              <Button size="small" disabled={busy} onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
             </div>
           )}
         </div>
@@ -440,13 +483,14 @@ export default function SalesPage() {
         /* Desktop: original header */
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, gap: 12 }}>
           <div>
-            <Title level={3} style={{ margin: 0 }}>Daily Sales</Title>
-            <Text style={{ color: '#6b7280' }}>Track POS and Non-POS sales by product</Text>
+            <Title level={4} style={{ margin: 0 }}>Report date</Title>
+            <Text style={{ color: '#6b7280' }}>Review quantities, then save each changed row.</Text>
           </div>
           <Space wrap size={[8, 8]}>
-            <Button onClick={loadSales}>Refresh</Button>
+            <Button disabled={busy || editing || !!pendingAdd} onClick={loadSales}>Refresh</Button>
             <DatePicker
               value={date}
+                disabled={busy}
               onChange={d => setDate(d ?? dayjs())}
               allowClear={false}
               style={{ width: 140 }}
@@ -471,16 +515,19 @@ export default function SalesPage() {
             {!isAll && (
               <RoleGuard minRole="staff">
               <AutoComplete
+                  aria-label="Add historical product"
+                  disabled={readOnly || editing}
                 placeholder="Search & add product..."
                 value={addSearch}
                 options={addOptions}
                 onSearch={searchToAdd}
                 onSelect={(val, opt) => {
-                  setPendingAdd({ id: Number(val), label: opt.label as string })
+                  searchRequestRef.current += 1
+                    setPendingAdd({ id: Number(val), label: opt.label as string })
                   setPendingPos(0); setPendingCash(0)
                   setAddSearch(opt.label as string); setAddOptions([])
                 }}
-                onClear={() => { setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
+                onClear={() => { searchRequestRef.current += 1; setAddSearch(''); setAddOptions([]); setPendingAdd(null) }}
                 allowClear
                 style={{ width: 240 }}
               />
@@ -490,11 +537,11 @@ export default function SalesPage() {
                     {pendingAdd.label}
                   </span>
                   <span style={{ fontSize: 12, color: '#6b7280' }}>POS</span>
-                  <InputNumber size="small" min={0} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 60 }} />
+                  <InputNumber size="small" min={0} disabled={readOnly} value={pendingPos} onChange={v => setPendingPos(v ?? 0)} style={{ width: 60 }} />
                   <span style={{ fontSize: 12, color: '#6b7280' }}>Non-POS</span>
-                  <InputNumber size="small" min={0} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 60 }} />
-                  <Button size="small" type="primary" onClick={confirmAdd}>Add</Button>
-                  <Button size="small" onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
+                  <InputNumber size="small" min={0} disabled={readOnly} value={pendingCash} onChange={v => setPendingCash(v ?? 0)} style={{ width: 60 }} />
+                  <Button size="small" type="primary" disabled={readOnly} onClick={confirmAdd}>Add</Button>
+                  <Button size="small" disabled={busy} onClick={() => { setPendingAdd(null); setAddSearch(''); setAddOptions([]) }}>✕</Button>
                 </Space>
               )}
             </RoleGuard>
@@ -512,13 +559,14 @@ export default function SalesPage() {
         </div>
       )}
 
+      {!!estimate.unknownRows && <p>{estimate.unknownRows} {estimate.unknownRows === 1 ? 'product has' : 'products have'} no saved price. The estimate includes only products with a saved price.</p>}
       {/* Stat cards — 3-col KPI strip on mobile, 4-col on desktop */}
       <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
         {isMobile ? (
           // 3-column KPI strip on mobile: Revenue, Units, POS
           <>
             {[
-              { label: 'Revenue',    value: `CA$${totalRevenue.toFixed(0)}`, color: '#6366F1' },
+              { label: 'Saved-price estimate', value: estimateValue, color: '#6366F1' },
               { label: 'Units Sold', value: totalSold,                       color: '#10B981' },
               { label: 'POS / Non-POS', value: `${totalPos} / ${totalCash}`,   color: '#f59e0b' },
             ].map(c => (
@@ -534,7 +582,7 @@ export default function SalesPage() {
           // 4-column on desktop
           <>
             {[
-              { label: 'Total Revenue',  value: `CA$${totalRevenue.toFixed(2)}`, color: '#6366F1' },
+              { label: 'Saved-price estimate', value: estimateValue, color: '#6366F1' },
               { label: 'Units Sold',     value: totalSold,                       color: '#10B981' },
               { label: 'POS Sales',      value: `${totalPos} units`,             color: '#6366F1' },
               { label: 'Non-POS Sales',     value: `${totalCash} units`,            color: '#10B981' },
@@ -582,7 +630,7 @@ export default function SalesPage() {
       {/* Charts */}
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         <Col xs={24} lg={12}>
-          <Card title="Weekly Units Sold (Last 7 Days)" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
+          <Card title="Latest 7 recorded dates" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
@@ -627,7 +675,7 @@ export default function SalesPage() {
         <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px 20px', marginBottom: 20 }}>
           {importMode && hasSavedReport && (
             <div style={{ marginBottom: 12 }}>
-              <Button size="small" onClick={() => setImportMode(false)}>← Back to Sales View</Button>
+              <Button size="small" onClick={() => setImportMode(false)}>← Back to historical report</Button>
             </div>
           )}
           <DailyReportEntry
@@ -644,38 +692,26 @@ export default function SalesPage() {
         </div>
       )}
 
-      {/* Alias Manager panel */}
-      {aliasMode && (
-        <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px', marginBottom: 20 }}>
-          <AliasManager />
-        </div>
-      )}
-
       {/* Sales table + log */}
       {(hasSavedReport || loading) && !importMode && (
       <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ fontWeight: 600, color: '#111827' }}>
-            Sales for {date.format(isMobile ? 'MMM D, YYYY' : 'dddd, MMMM D, YYYY')}
+            Report quantities for {date.format(isMobile ? 'MMM D, YYYY' : 'dddd, MMMM D, YYYY')}
             <Text style={{ color: '#9ca3af', fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
               {sales.length} products
             </Text>
           </div>
           <Space size={8}>
             {!isAll && (
-              <Button size="small" icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
+              <Button size="small" disabled={busy || editing} icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
                 Re-import
               </Button>
             )}
             <RoleGuard minRole="manager">
-              <Button size="small" onClick={() => setAliasMode(m => !m)}>
-                {aliasMode ? 'Hide Aliases' : 'Manage Aliases'}
-              </Button>
-            </RoleGuard>
-            <RoleGuard minRole="manager">
               {!isAll && (
                 <Popconfirm title={`Clear all sales and report notes for ${dateStr}?`} onConfirm={clearDay}>
-                  <Button danger size="small">Clear Day</Button>
+                  <Button danger size="small" disabled={readOnly || editing}>Clear Day</Button>
                 </Popconfirm>
               )}
               <Button
@@ -711,7 +747,7 @@ export default function SalesPage() {
                     {!isAll && (
                       <RoleGuard minRole="manager">
                         <Popconfirm title="Delete this record?" onConfirm={() => deleteRecord(row.id)}>
-                          <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+                          <Button size="small" danger type="text" disabled={readOnly || editing} aria-label="Delete historical row" icon={<DeleteOutlined />} />
                         </Popconfirm>
                       </RoleGuard>
                     )}
@@ -723,11 +759,11 @@ export default function SalesPage() {
                     <span style={{ fontSize: 11, color: '#6b7280', width: 28 }}>POS</span>
                     <InputNumber
                       size="small" min={0}
-                      disabled={isAll}
+                      disabled={readOnly}
                       value={localEdits[row.id]?.pos ?? row.qty_pos}
                       onChange={val => { if (!isAll) setLocalQty(row.id, 'pos', val ?? 0) }}
-                      onBlur={() => { if (!isAll) upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos) }}
-                      onPressEnter={() => { if (!isAll) upsert(row, 'qty_pos', localEdits[row.id]?.pos ?? row.qty_pos) }}
+                      aria-label={`POS quantity for ${row.jizhanming}`}
+                      onPressEnter={() => saveRow(row)}
                       style={{ width: 65 }}
                     />
                   </div>
@@ -735,20 +771,17 @@ export default function SalesPage() {
                     <span style={{ fontSize: 11, color: '#6b7280', width: 50 }}>Non-POS</span>
                     <InputNumber
                       size="small" min={0}
-                      disabled={isAll}
+                      disabled={readOnly}
                       value={localEdits[row.id]?.cash ?? row.qty_cash}
                       onChange={val => { if (!isAll) setLocalQty(row.id, 'cash', val ?? 0) }}
-                      onBlur={() => { if (!isAll) upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash) }}
-                      onPressEnter={() => { if (!isAll) upsert(row, 'qty_cash', localEdits[row.id]?.cash ?? row.qty_cash) }}
+                      aria-label={`Non-POS quantity for ${row.jizhanming}`}
+                      onPressEnter={() => saveRow(row)}
                       style={{ width: 65 }}
                     />
                   </div>
-                  {row.price != null && (
-                    <Text style={{ fontSize: 11, color: '#6366F1', marginLeft: 'auto' }}>
-                      CA${((row.price ?? 0) * row.qty_sold).toFixed(2)}
-                    </Text>
-                  )}
+                  <Text style={{ fontSize: 11, color: '#6366F1', marginLeft: 'auto' }}>{savedLineValue(row) == null ? 'Price unknown' : `CA$${savedLineValue(row)!.toFixed(2)}`}</Text>
                 </div>
+                {rowActions(row)}
               </div>
             ))}
           </Spin>
@@ -791,10 +824,6 @@ export default function SalesPage() {
           columns={summaryColumns}
           pagination={{ pageSize: 30, showTotal: t => `${t} days` }}
           scroll={{ x: 'max-content' }}
-          onRow={(record) => ({
-            onClick: () => navigate(`/sales/day/${record.date}`),
-            style: { cursor: 'pointer' },
-          })}
         />
       </div>
     </div>

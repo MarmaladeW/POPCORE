@@ -30,8 +30,9 @@ class OperationalReportTests(IsolatedApiCase):
             location=con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'",(self.store_id,)).fetchone()[0]
             set_product=con.execute("INSERT INTO products(sku,name_cn_en,jizhanming,product_type,boxes_per_dan,stock_unit) VALUES ('SET-1','Set','Set','ordinary',1,'set')").lastrowid
             box_product=con.execute("INSERT INTO products(sku,name_cn_en,jizhanming,product_type,boxes_per_dan,stock_unit) VALUES ('BOX-1','Box','Box','ordinary',1,'box')").lastrowid
-            document=con.execute("INSERT INTO inventory_documents(kind,request_key,payload_hash,actor_sub,business_date,status) VALUES ('opening','report-movement','hash','auth0|staff','2026-09-08','building')").lastrowid
-            con.execute("INSERT INTO inventory_document_lines(document_id,line_no,product_id,native_unit,quantity,to_location_id,to_disposition,to_version) VALUES (?,1,?,'set',1,?,'saleable',0)",(document,set_product,location))
+            document=con.execute("INSERT INTO inventory_documents(kind,request_key,payload_hash,actor_sub,business_date,status) VALUES ('open_set','report-movement','hash','auth0|staff','2026-09-08','building')").lastrowid
+            conversion=con.execute('INSERT INTO product_conversions(source_product_id,target_product_id,output_per_input,version) VALUES (?,?,12,1)',(set_product,box_product)).lastrowid
+            con.execute("INSERT INTO inventory_document_lines(document_id,line_no,product_id,native_unit,quantity,to_location_id,to_disposition,to_version,conversion_id,conversion_factor) VALUES (?,1,?,'set',1,?,'saleable',0,?,12)",(document,set_product,location,conversion))
             con.execute("INSERT INTO inventory_movements(document_id,line_no,product_id,location_id,disposition,quantity) VALUES (?,1,?,?,'saleable',-1)",(document,set_product,location))
             con.execute("INSERT INTO inventory_movements(document_id,line_no,product_id,location_id,disposition,quantity) VALUES (?,1,?,?,'saleable',12)",(document,box_product,location));con.commit()
         response=self.client.get('/api/reports/movements?store_code=DT&from=2026-09-08&to=2026-09-08',headers=self.headers('staff'))

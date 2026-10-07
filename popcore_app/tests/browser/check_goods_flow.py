@@ -76,6 +76,8 @@ def api_payload(path, query, request):
                            'received_quantity': 2, 'returned_quantity': 0,
                            'loss_quantity': 0, 'short_quantity': 0,
                            'outstanding_transit': 3}]}
+    if path == '/api/goods/transfers' and request.method == 'GET':
+        return []
     if path == '/api/goods/transfers':
         return {'id': 51, 'version': 1, 'status': 'planned'}
     if path == '/api/goods/transfers/51/dispatch':
@@ -159,7 +161,7 @@ async def checks(browser, viewport):
     await page.get_by_role('button', name='Post receipt').click()
 
     await page.goto(BASE + '/goods/transfers')
-    await expect(page.get_by_text('Transfer stock', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Incoming transfers', exact=True)).to_be_visible()
     await page.goto(BASE + '/goods/counts')
     await expect(page.get_by_text('Physical count', exact=True)).to_be_visible()
     await context.close()

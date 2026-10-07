@@ -204,7 +204,7 @@ export default function CheckoutPage() {
   const api=sandbox?'/clover-sandbox/checkouts':'/checkouts'
   const link=(path:string,historyView=false)=>checkoutLink(path,sandbox,historyView)
   const role=useRole()
-  const history=id==='history'||params.get('view')==='history'
+  const history=id==='history'||(id!=='new'&&params.get('view')==='history')
   const selectedStore=useAppStore(s=>s.selectedStore),setSelectedStore=useAppStore(s=>s.setSelectedStore)
   const [access,setAccess]=useState<Access>(),[queue,setQueue]=useState<Queue>(),[order,setOrder]=useState<Order>(),[error,setError]=useState('')
   const [now,setNow]=useState(Date.now)
@@ -227,7 +227,7 @@ export default function CheckoutPage() {
   useEffect(()=>{setAccess(undefined);setDrafts({});setQueue(undefined);setOrder(undefined);setError('')},[user?.sub,role,selectedStore?.id,sandbox])
   useEffect(()=>{if(!sandbox)return;setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer)},[sandbox])
   useEffect(()=>{
-    if(manual||busy)return
+    if(busy)return
     const controller=new AbortController()
     let timer:ReturnType<typeof setTimeout>|undefined,loading=false
     const load=async()=>{
@@ -241,6 +241,7 @@ export default function CheckoutPage() {
         if(day.current&&day.current!==scope.business_date)setDrafts({})
         day.current=scope.business_date
         setAccess(scope)
+        if(manual){setError('');return}
         const stores=history?scope.history_stores:scope.live_stores
         let store=stores.find(s=>s.id===selectedStore?.id)
         if(!store&&stores.length===1){chooseStore(stores[0]);return}
@@ -284,22 +285,23 @@ export default function CheckoutPage() {
   const scoped=stores?.some(s=>s.id===selectedStore?.id)
   function select(next:Order){if(busy)return;if(sandbox&&freshOrder(next,Date.now()).can_claim&&!history){claimMutation.run(`${api}/${next.id}/claim`,{});return}navigate(link(`/checkout/${next.id}`,history))}
   function updated(value?:Order){if(value)setOrder(value);setRefresh(n=>n+1)}
-  if(manual)return <div className="co-workspace"><ManualCheckout key={`${user?.sub}|${role}`}/></div>
+  if(manual&&access?.live_stores.length)return <div className="co-workspace"><ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)}/></div>
   return <div className="co-workspace">
-    <header className="co-heading"><div><h1>{orderId?'Order details':history?'Order history':'Checkout'}</h1>{!orderId&&<p>{history?(access?.role==='staff'?'Your orders, including previous shifts.':'Orders at the locations you can access today.'):'The order, the amount, the payment photo.'}</p>}</div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
+    <header className="co-heading"><div><h1>{orderId?'Order details':history?'Order history':'Checkout'}</h1>{!orderId&&<p>{history?(access?.role==='staff'?'Your orders, including previous shifts.':'Orders at the locations you can access today.'):sandbox?'The order, the amount, the payment photo.':'Start a manual checkout or continue an open order.'}</p>}</div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
     {sandbox&&<Alert className="co-sandbox-banner" type="warning" showIcon message={orderId?'Clover sandbox test · no real sales or stock changes':'Sandbox rehearsal · no real sales or stock changes'} description={orderId?undefined:'Use Android Clover as the register. Orders and payment photos here are disposable. Device items may appear before Clover confirms the total and payment. The 3-second target still needs a timed device test.'}/>}
     {!orderId&&<div className="co-toolbar"><span className={'co-connection'+(connected||deviceConnected?' co-connected':'')}><span aria-hidden="true"/>{sandbox?(connected?'Clover sandbox syncing':deviceConnected?'Device items syncing · Clover cloud delayed':'Clover sandbox · waiting for sync'):'Clover disconnected'}</span><Link to={link(history?'/checkout':'/checkout/history')}>{history?'Current orders':'Order history'}</Link></div>}
     {sandbox&&!!queue?.clover.fetched_at&&<p className="co-muted">Last snapshot: {new Date(queue.clover.fetched_at*1000).toLocaleTimeString()}. {queue.clover.message}</p>}
-    {!orderId&&<div className="co-source-switch">{sandbox?<Link to="/checkout">Exit sandbox</Link>:access?.clover_sandbox_enabled&&<Link to="/checkout?source=clover-sandbox">Open Clover sandbox rehearsal</Link>}{!sandbox&&<Link to="/sales/entry">Manual sale entry</Link>}</div>}
+    {!orderId&&<div className="co-source-switch">{sandbox?<Link to="/checkout">Exit sandbox</Link>:access?.clover_sandbox_enabled&&<Link to="/checkout?source=clover-sandbox">Open Clover sandbox rehearsal</Link>}</div>}
     {claimMutation.notice}
     {error&&<Alert type="error" showIcon message={error} action={<Button disabled={busy} onClick={()=>setRefresh(n=>n+1)}>Retry</Button>}/>}
     {!access?(!error&&<Skeleton active paragraph={{rows:4}}/>):<>
       {!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history||sandbox)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(link(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>}
+      {!history&&!sandbox&&!orderId&&scoped&&<div className="co-location"><Button type="primary" disabled={busy} onClick={()=>navigate('/checkout/new')}>Start manual checkout</Button><Link to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>Record completed sale</Link></div>}
       {orderId&&<Link className="co-back" to={link(history?'/checkout/history':'/checkout')}>← Back to {history?'order history':'current orders'}</Link>}
       {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={link(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>:!scoped?<p className="co-muted">Choose a location to see its orders.</p>:!queue||queueScope!==scopeKey?<Skeleton active/>:<>
         {!orderId&&!!queue.orders.length&&<nav className={'co-order-switcher'+(history?' co-history-list':'')} aria-label={history?'Order history':'Current orders'}>{queue.orders.map(item=><button type="button" key={item.id} disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong>{item.register_name||'POPCORE order'}</strong><b>{item.total_pending?'Total pending':formatCents(item.order.collected_cents)}</b></span><span className="co-switch-items">{item.order.lines.map(l=>`${l.quantity}× ${l.product_name_snapshot}`).join(' · ')}</span><span className="co-switch-meta">{item.reference}{history?` · ${item.business_date} · ${item.cashier_name}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Complete':'In progress'}{sandbox&&!freshOrder(item,now).source_fresh?' · Not freshly synced':''}</span></button>)}</nav>}
         {!orderId&&queue.next_before_id&&<Button disabled={busy} onClick={()=>setCursor(queue.next_before_id)}>Older orders</Button>}{!orderId&&cursor&&<Button disabled={busy} onClick={()=>setCursor(null)}>Newest orders</Button>}
-        {currentOrder&&currentOrder.id===orderId&&currentOrder.store_id===selectedStore?.id&&drafts[currentOrder.id]?<CurrentOrder key={`${sandbox}|${currentOrder.id}`} order={currentOrder} draft={drafts[currentOrder.id]} cnyPerCad={access.cny_per_cad||''} setDraft={value=>setDrafts(old=>({...old,[currentOrder.id]:typeof value==='function'?value(old[currentOrder.id]):{...old[currentOrder.id],...value}}))} updated={updated} removed={()=>{setOrder(undefined);navigate(link(history?'/checkout/history':'/checkout'))}} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>:!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Tap your customer’s order. New arrivals will not switch your current order.':history?'Try another date, or return to current orders.':sandbox?'Create an order on Android Clover. Leave this queue open to receive it automatically.':'Orders will appear here after Clover is connected. Automatic order sync is not active yet.'}</p>{!history&&<span className="co-muted">No customer details to re-enter once connected.</span>}</div>}
+        {currentOrder&&currentOrder.id===orderId&&currentOrder.store_id===selectedStore?.id&&drafts[currentOrder.id]?<CurrentOrder key={`${sandbox}|${currentOrder.id}`} order={currentOrder} draft={drafts[currentOrder.id]} cnyPerCad={access.cny_per_cad||''} setDraft={value=>setDrafts(old=>({...old,[currentOrder.id]:typeof value==='function'?value(old[currentOrder.id]):{...old[currentOrder.id],...value}}))} updated={updated} removed={()=>{setOrder(undefined);navigate(link(history?'/checkout/history':'/checkout'))}} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>:!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Tap your customer’s order. New arrivals will not switch your current order.':history?'Try another date, or return to current orders.':sandbox?'Create an order on Android Clover. Leave this queue open to receive it automatically.':'Clover is disconnected. Start a manual checkout to enter the items and record payment.'}</p>{!history&&<span className="co-muted">{sandbox?'No customer details to re-enter once connected.':'Automatic order sync is not active.'}</span>}</div>}
         {orderId&&order?.id!==orderId&&<Skeleton active paragraph={{rows:5}}/>}
       </>}
     </>}

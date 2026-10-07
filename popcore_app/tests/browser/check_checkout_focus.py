@@ -165,7 +165,7 @@ async def sandbox_order_detail_and_hide(browser):
         await context.close()
 
 async def checks(browser):
-    state={'mode':'data'}
+    state={'mode':'data','empty_queue':True}
     orders={1:checkout(),2:checkout(2)}
     pricing=checkout(3)
     pricing.update(remaining_cents=4134,attempts=[])
@@ -177,7 +177,7 @@ async def checks(browser):
             stores=[dict(id=1,code='DT',name='Downtown')]
             return dict(business_date='2026-09-14',role='staff',live_stores=[] if state.get('off_duty') else stores,history_stores=stores)
         if path=='/api/checkouts':
-            return dict(orders=list(orders.values()),staff=[],next_before_id=None,clover=dict(connected=False))
+            return dict(orders=[] if state.get('empty_queue') else list(orders.values()),staff=[],next_before_id=None,clover=dict(connected=False))
         if path in ('/api/checkouts/1','/api/checkouts/2','/api/checkouts/3'):
             return orders[int(path.rsplit('/',1)[1])]
         if path.endswith('/evidence'):
@@ -192,6 +192,21 @@ async def checks(browser):
     await expect(page).to_have_url(BASE+'/checkout')
     await expect(page.get_by_role('link',name='Today',exact=True)).to_have_count(0)
     await expect(page.get_by_role('heading',name='Checkout',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='Ready for your next customer',exact=True)).to_be_visible()
+    await expect(page.get_by_role('link',name='Record completed sale',exact=True)).to_have_attribute('href','/sales/entry')
+    await page.get_by_role('button',name='Start manual checkout',exact=True).click()
+    await expect(page).to_have_url(BASE+'/checkout/new')
+    await expect(page.get_by_role('heading',name='New manual checkout · Downtown',exact=True)).to_be_visible()
+    await expect(page.get_by_role('button',name='Create pending checkout',exact=True)).to_be_enabled()
+    await page.get_by_label('Operations store').select_option('MK')
+    await expect(page.get_by_role('button',name='Create pending checkout',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('alert')).to_contain_text('Choose a store where you have checkout access today.')
+    await page.get_by_label('Operations store').select_option('DT')
+    await expect(page.get_by_role('button',name='Create pending checkout',exact=True)).to_be_enabled()
+    assert not [r for r in state['requests'] if r['method']=='POST']
+    state['empty_queue']=False
+    await page.get_by_role('link',name='Back to checkouts',exact=True).click()
+    await expect(page.get_by_role('button',name='Start manual checkout',exact=True)).to_be_visible()
     await page.get_by_role('button',name='Register 1',exact=False).click()
     await expect(page.get_by_text('Alex Chen',exact=False).first).to_be_visible()
     await expect(page.get_by_text('Smiski Museum Series',exact=False).last).to_be_visible()
@@ -283,8 +298,15 @@ async def checks(browser):
     state['get_status_for_path']={};state['off_duty']=True
     await page.get_by_role('button',name='Refresh orders').click()
     await expect(page.get_by_role('heading',name='No checkout shift today',exact=True)).to_be_visible()
+    await expect(page.get_by_role('button',name='Start manual checkout',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('link',name='Record completed sale',exact=True)).to_have_count(0)
     await page.get_by_role('link',name='View your order history',exact=True).click()
     await expect(page.get_by_role('heading',name='Order history',exact=True)).to_be_visible()
+    await expect(page.get_by_role('button',name='Register 1',exact=False)).to_be_visible()
+    await expect(page.get_by_role('button',name='Start manual checkout',exact=True)).to_have_count(0)
+    await page.goto(BASE+'/checkout/new?view=history')
+    await expect(page.get_by_role('heading',name='No checkout shift today',exact=True)).to_be_visible()
+    await expect(page.get_by_role('button',name='Create pending checkout',exact=True)).to_have_count(0)
     await context.close()
 
 async def real_api_checks(browser):
@@ -306,8 +328,6 @@ async def real_api_checks(browser):
                 _,writer=await asyncio.open_connection('127.0.0.1',5177);writer.close();await writer.wait_closed();break
             except OSError:await asyncio.sleep(.1)
         else:raise RuntimeError('Real API test Vite did not start')
-        order,_=fixture.create_checkout(reference='LOCAL-BROWSER-ONLY')
-        fixture.action(order,'attempts','browser-attempt',tender='e_transfer',amount_cents=4520)
         context=await browser.new_context(viewport={'width':390,'height':844})
         await context.add_init_script("window.__FOUNDATION_AUTH={role:'staff',token:'staff'}")
         page=await context.new_page()
@@ -316,21 +336,46 @@ async def real_api_checks(browser):
             if urlsplit(route.request.url).hostname not in ('127.0.0.1','localhost'):await route.abort()
             else:await route.continue_()
         await page.route('**/*',local_only)
-        await page.goto(f'http://127.0.0.1:5177/checkout/{order["id"]}')
+        await page.goto('http://127.0.0.1:5177/checkout')
+        await page.get_by_role('button',name='Start manual checkout',exact=True).click()
+        await page.get_by_label('Order reference',exact=True).fill('LOCAL-BROWSER-ONLY')
+        await page.get_by_label('Business date',exact=True).fill('2026-09-08')
+        await page.get_by_label('Item 1',exact=True).click()
+        await page.locator('.ant-select-item-option-content',has_text='Test Product').click()
+        await page.get_by_label('Quantity',exact=True).fill('2')
+        await page.get_by_label('Unit price ($)',exact=True).fill('20.00')
+        await page.get_by_label('Agreed tax total ($)',exact=True).fill('5.20')
+        async with page.expect_response(lambda response: response.url.endswith('/api/checkouts') and response.request.method=='POST') as creation:
+            await page.get_by_role('button',name='Create pending checkout',exact=True).click()
+        order=await (await creation.value).json()
+        assert order['status']=='open' and order['received_cents']==0 and order['sale_id'] is None
+        from contextlib import closing
+        with closing(fixture.connect()) as con:
+            assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==0
+            assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(fixture.product_id,fixture.floor)).fetchone()[0]==5
         await expect(page.get_by_text('Staff Cashier',exact=True)).to_be_visible()
         await page.get_by_role('textbox',name='Order note').fill('Customer requested a later pickup')
         await page.get_by_role('button',name='Save note').click()
         await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer requested a later pickup')
+        await page.get_by_role('button',name='E-transfer',exact=True).click()
+        await page.get_by_label('Customer pays').fill('45.20')
+        await page.get_by_role('button',name='Continue with E-transfer',exact=True).click()
         await page.locator('input[type=file]').set_input_files(str(ROOT/'.local/checkout-focus/proof.png'))
         await page.get_by_role('button',name='Use photo',exact=True).click()
         await expect(page.get_by_text('Photo saved',exact=True)).to_be_visible()
-        await expect(page.get_by_role('button',name='Record $45.20 received',exact=True)).to_be_enabled()
+        try:
+            await expect(page.get_by_role('button',name='Record $45.20 received',exact=True)).to_be_enabled()
+        except AssertionError:
+            OUT.mkdir(parents=True,exist_ok=True)
+            await page.screenshot(path=str(OUT/'real-api-record-missing.png'),full_page=True)
+            print('DIAGNOSTIC buttons:',await page.get_by_role('button').evaluate_all("els=>els.map(e=>[e.getAttribute('aria-label'),e.innerText,e.disabled,e.className])"))
+            print('DIAGNOSTIC text:',(await page.locator('.co-workspace').inner_text())[:3000])
+            raise
         await page.get_by_role('button',name='Record $45.20 received',exact=True).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
         detail=fixture.client.get(f'/api/checkouts/{order["id"]}',headers=fixture.headers()).get_json()
         assert detail['status']=='completed' and detail['received_cents']==4520 and detail['sale_id']
         assert len(detail['attempts'][0]['photos'])==1
-        from contextlib import closing
         with closing(fixture.connect()) as con:
             assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==1
             assert con.execute('SELECT sum(amount_cents) FROM sale_payments').fetchone()[0]==4520
@@ -380,7 +425,7 @@ async def main():
             await checks(browser)
             await real_api_checks(browser)
             await browser.close()
-        print('PASS: checkout navigation, sandbox cash-discount Card lock and reversal, order switching, warning, scoped photo preview/upload, mobile width and access revocation. Actual Flask upload, payment, finalization, history, abandoned-checkout refund and stock posting also passed with disposable data; no provider/auth verification.')
+        print('PASS: checkout navigation, scoped manual checkout and off-duty history, sandbox cash-discount Card lock and reversal, order switching, warning, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund and stock posting also passed with disposable data; no provider/auth verification.')
     finally:
         process.terminate();process.wait(timeout=10)
 

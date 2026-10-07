@@ -139,7 +139,7 @@ async def checks(browser):
     assert resolution['requires_selection'] is True
     assert len(resolution['candidates']) == 2
 
-    await page.goto(BASE + '/stock')
+    await page.goto(BASE + '/stock/products')
     await page.locator('select').first.select_option('DT')
     await expect(page.get_by_role('heading', name='Inventory', exact=True)).to_be_visible()
     await expect(page.get_by_text('Authoritative inventory', exact=True)).to_be_visible()
@@ -163,6 +163,16 @@ async def checks(browser):
     assert opening_commands == []
     await context.close()
 
+    context,page=await context_with_api(browser,{
+        'mode':'data','api_payload':api_payload,
+        'get_status_for_path':{'/api/inventory/balances':(503,{'error':'Balance read failed'})},
+    })
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/stock/products')
+    await expect(page.get_by_text('Unable to load stock data.',exact=True)).to_be_visible()
+    await expect(page.get_by_text('Authoritative inventory',exact=True)).to_have_count(0)
+    await context.close()
+
     def legacy_api(path, query, request):
         if path == '/api/stock/summary':
             return {**api_payload(path, query, request), 'mode': 'legacy', 'complete': False}
@@ -175,7 +185,7 @@ async def checks(browser):
         },
     })
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
-    await page.goto(BASE+'/stock')
+    await page.goto(BASE+'/stock/products')
     await expect(page.get_by_text('Legacy inventory view',exact=True)).to_be_visible()
     await context.close()
 
@@ -186,7 +196,7 @@ async def checks(browser):
         return result
     context,page=await context_with_api(browser,{'mode':'data','api_payload':unopened_api})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
-    await page.goto(BASE+'/stock')
+    await page.goto(BASE+'/stock/products')
     await expect(page.get_by_text('Opening review incomplete',exact=True)).to_be_visible()
     await context.close()
 

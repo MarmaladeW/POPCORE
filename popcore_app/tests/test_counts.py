@@ -19,6 +19,28 @@ class CountTests(ReceivingFixture):
             )
             con.commit()
 
+    def test_create_retry_keeps_original_capture_after_stock_changes(self):
+        body = {'location_id': self.floor, 'business_date': '2026-09-30',
+                'lines': [{'product_id': self.product_id, 'unit': 'piece', 'observed_quantity': 0}]}
+        headers = {**self.headers(), 'Idempotency-Key': 'stable-count-create'}
+        first = self.client.post('/api/goods/counts', headers=headers, json=body)
+        self.assertEqual(first.status_code, 201, first.get_json())
+        with closing(self.connect()) as con:
+            con.execute("UPDATE inventory_balances SET quantity=8, version=2 WHERE product_id=? AND location_id=? AND disposition='saleable'", (self.product_id, self.floor))
+            con.commit()
+        retry = self.client.post('/api/goods/counts', headers=headers, json=body)
+        self.assertEqual(retry.status_code, 201, retry.get_json())
+        self.assertEqual(retry.get_json(), first.get_json())
+        detail = self.client.get(f"/api/goods/counts/{first.get_json()['id']}", headers=self.headers()).get_json()
+        self.assertEqual((detail['lines'][0]['observed_quantity'], detail['lines'][0]['expected_quantity'], detail['lines'][0]['captured_balance_version']), (0, 10, 1))
+        changed = {**body, 'lines': [{**body['lines'][0], 'observed_quantity': 1}]}
+        self.assertEqual(self.client.post('/api/goods/counts', headers=headers, json=changed).status_code, 409)
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM inventory_counts').fetchone()[0], 1)
+            con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|staff'")
+            con.commit()
+        self.assertEqual(self.client.post('/api/goods/counts', headers=headers, json=body).status_code, 403)
+
     def test_approved_count_posts_observed_minus_captured_expected_once(self):
         created = self.client.post('/api/goods/counts', headers={
             **self.headers(), 'Idempotency-Key': 'count-create-1'
@@ -116,6 +138,33 @@ class CountTests(ReceivingFixture):
                 (returned.get_json()['recount_id'],),
             ).fetchone()['status']
         self.assertEqual((original, replacement), ('returned', 'draft'))
+        recount_id = returned.get_json()['recount_id']
+        original_detail = self.client.get(f"/api/goods/counts/{created['id']}", headers=self.headers()).get_json()
+        self.assertEqual(original_detail['recount_id'], recount_id)
+        url = f'/api/goods/counts/{recount_id}'
+        update = {'expected_version': 1, 'lines': [{'line_no': 1, 'observed_quantity': 9}]}
+        headers = {**self.headers(), 'Idempotency-Key': 'recount-edit'}
+        self.assertEqual(self.client.patch(url, headers={**self.headers('staff:other'), 'Idempotency-Key': 'denied-edit'}, json=update).status_code, 403)
+        before = self.snapshot(('inventory_balances', 'inventory_movements'))
+        edited = self.client.patch(url, headers=headers, json=update)
+        self.assertEqual(edited.status_code, 200, edited.get_json())
+        self.assertEqual(self.client.patch(url, headers=headers, json=update).get_json(), edited.get_json())
+        stale = self.client.patch(url, headers={**self.headers(), 'Idempotency-Key': 'stale-edit'}, json=update)
+        self.assertEqual(stale.status_code, 409, stale.get_json())
+        self.assertEqual(self.snapshot(('inventory_balances', 'inventory_movements')), before)
+        detail = self.client.get(url, headers=self.headers()).get_json()
+        self.assertEqual((detail['lines'][0]['observed_quantity'], detail['lines'][0]['captured_balance_version']), (9, 1))
+        self.assertEqual(original_detail['lines'][0]['observed_quantity'], 8)
+        bad_line = self.client.patch(url, headers={**self.headers(), 'Idempotency-Key': 'wrong-count-line'}, json={'expected_version': 2, 'lines': [{'line_no': 2, 'observed_quantity': 9}]})
+        self.assertEqual(bad_line.status_code, 400, bad_line.get_json())
+        negative = self.client.patch(url, headers={**self.headers(), 'Idempotency-Key': 'negative-count'}, json={'expected_version': 2, 'lines': [{'line_no': 1, 'observed_quantity': -1}]})
+        self.assertEqual(negative.status_code, 400, negative.get_json())
+        submitted_recount = self.client.post(url+'/submit', headers={**self.headers(), 'Idempotency-Key': 'recount-submit'}, json={'expected_version': 2})
+        self.assertEqual(submitted_recount.status_code, 200, submitted_recount.get_json())
+        for count_id, version in ((created['id'], returned.get_json()['version']), (recount_id, 3)):
+            frozen = self.client.patch(f'/api/goods/counts/{count_id}', headers={**self.headers(), 'Idempotency-Key': f'frozen-{count_id}'}, json={**update, 'expected_version': version})
+            self.assertEqual(frozen.status_code, 409, frozen.get_json())
+
 
     def test_count_cannot_erase_protected_opened_set_units(self):
         with closing(self.connect()) as con:
