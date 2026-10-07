@@ -85,6 +85,7 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
                 date TEXT NOT NULL,
                 start_time TEXT NOT NULL,
                 end_time TEXT NOT NULL,
+                actual_end_time TEXT,
                 assigned_by TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL DEFAULT '',
                 store_id INTEGER,

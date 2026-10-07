@@ -87,6 +87,7 @@ public final class MainActivity extends Activity {
             return;
         }
         prefs.edit().putString("merchant_id", merchant).putString("secret", secret)
+                .putLong("session_started", System.currentTimeMillis())
                 .putString("status", "Connecting to local Clover orders…").apply();
         secretInput.setText("");
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
