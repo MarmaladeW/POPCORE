@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Form, Select, Row, Col, Input, Radio, message } from 'antd'
-import dayjs from 'dayjs'
+import { Form, Select, Row, Col, Input, Radio, TimePicker, message } from 'antd'
+import dayjs, { type Dayjs } from 'dayjs'
 import {
   createShift,
   updateShift,
@@ -17,6 +17,8 @@ import {
 } from './openHours'
 import { scheduleApiErrorMessage } from './employeeScheduling'
 import { availabilityIssue } from './availabilityPeriod'
+import { finishesNextDay } from './schedulePresentation'
+import { torontoDate } from '../Dashboard/todayPresentation'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -50,6 +52,7 @@ interface ShiftFormValues {
   store_code:  string
   start_time:  string
   end_time:    string
+  actual_end_time?: string
   position?:   string
   notes?:      string
 }
@@ -117,6 +120,7 @@ export default function ShiftModal({
   const watchedEmployee: number | undefined = Form.useWatch('employee_id', form)
   const watchedStart: string | undefined = Form.useWatch('start_time', form)
   const watchedEnd: string | undefined = Form.useWatch('end_time', form)
+  const watchedActualEnd: string | undefined = Form.useWatch('actual_end_time', form)
   const chosenStore = watchedStore || existing?.store_code || defaultStoreCode || ''
   const selectedAvailability = availForDate.find(day => day.employee_id === watchedEmployee && day.store_code === chosenStore)
   const employee = employees.find(item => item.id === watchedEmployee)
@@ -134,6 +138,8 @@ export default function ShiftModal({
   const pendingValues = useRef<ShiftFormValues | null>(null)
 
   const realStores = stores.filter((s) => s.code !== 'ALL')
+  // The actual finish can only be recorded once the shift's day has arrived.
+  const canRecordFinish = !!existing && existing.date <= torontoDate()
 
   const schedulableEmployeeIds = new Set(
     employees.filter((employee) => employee.is_schedulable !== 0).map((employee) => employee.id),
@@ -189,6 +195,7 @@ export default function ShiftModal({
           || (selectedStore && selectedStore.code !== 'ALL' ? selectedStore.code : undefined),
         start_time:  existing.start_time,
         end_time:    existing.end_time,
+        actual_end_time: existing.actual_end_time || '',
         position:    existing.position || undefined,
         notes:       existing.notes,
       })
@@ -279,6 +286,7 @@ export default function ShiftModal({
         await updateShift(existing.id, {
           start_time: values.start_time,
           end_time:   values.end_time,
+          ...(canRecordFinish ? { actual_end_time: values.actual_end_time || null } : {}),
           notes:      values.notes ?? '',
           position:   values.position ?? '',
           store_code: values.store_code,
@@ -550,6 +558,37 @@ export default function ShiftModal({
                   </Form.Item>
                 </Col>
               </Row>
+
+              {canRecordFinish && (
+                <Form.Item
+                  name="actual_end_time"
+                  label="Actual finish (optional)"
+                  dependencies={['start_time']}
+                  extra={watchedActualEnd && watchedStart && finishesNextDay(watchedStart, watchedActualEnd)
+                    ? `Counted as ${watchedActualEnd} the next day.`
+                    : 'Set when they finished earlier or later than scheduled, up to 01:00 the next day. Hours are counted to this time.'}
+                  rules={[
+                    ({ getFieldValue }) => ({
+                      validator(_, value) {
+                        if (!value || !getFieldValue('start_time')) return Promise.resolve()
+                        if (value > getFieldValue('start_time') || finishesNextDay(getFieldValue('start_time'), value)) return Promise.resolve()
+                        return Promise.reject(new Error('Must be after start, or by 01:00 the next day'))
+                      },
+                    }),
+                  ]}
+                  getValueProps={(value?: string) => ({ value: value ? dayjs(value, 'HH:mm') : null })}
+                  normalize={(value: Dayjs | null) => (value ? value.format('HH:mm') : '')}
+                  style={{ marginBottom: 12 }}
+                >
+                  <TimePicker
+                    format="HH:mm"
+                    needConfirm={false}
+                    placeholder="e.g. 21:25"
+                    style={{ width: '100%' }}
+                    getPopupContainer={(trigger) => trigger.parentElement!}
+                  />
+                </Form.Item>
+              )}
 
               {(positionSelectOptions.length > 0) && (
                 <Form.Item

@@ -1,7 +1,7 @@
 """Schedule UI against real Flask APIs and a disposable SQLite database; no Auth0/network."""
 import asyncio
 from contextlib import closing
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 import socket
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from playwright.async_api import async_playwright, expect
 from check_foundation import BASE, FRONTEND, HERE, context_with_api, wait_for_server
@@ -265,6 +266,41 @@ async def run_checks(browser, case):
     await dialog.get_by_text('Full day (12:00–22:00)', exact=True).click()
     await dialog.get_by_role('button', name='Save', exact=True).click()
     await expect(dialog).not_to_be_visible()
+    # Actual finish: recorded by the manager once the shift's Toronto day has arrived.
+    mason = panel.locator('.pc-schedule-person').filter(has_text='Mason')
+    await mason.get_by_role('button', name='Edit', exact=True).click()
+    finish = dialog.get_by_label('Actual finish (optional)')
+    if START <= datetime.now(ZoneInfo('America/Toronto')).date():
+        await finish.fill('21:25')
+        await finish.press('Enter')
+        await dialog.get_by_role('button', name='Save', exact=True).click()
+        await expect(dialog).not_to_be_visible()
+        await expect(mason).to_contain_text('12:00–22:00 · finished 21:25')
+        await expect(mason.locator('.pc-assignment-kind')).to_have_text('Full day')
+        with closing(case.connect()) as con:
+            saved = con.execute('SELECT end_time,actual_end_time FROM shifts WHERE employee_id=103 AND date=?', (str(START),)).fetchone()
+            assert tuple(saved) == ('22:00', '21:25'), tuple(saved)
+        await page.screenshot(path=OUT / 'actual-finish-1440.png', full_page=True, animations='disabled')
+        # A finish up to 01:00 belongs to the next day.
+        await mason.get_by_role('button', name='Edit', exact=True).click()
+        await expect(finish).to_have_value('21:25')
+        await finish.fill('02:00')
+        await finish.press('Enter')
+        await expect(dialog.get_by_text('Must be after start, or by 01:00 the next day', exact=True)).to_be_visible()
+        await finish.fill('00:45')
+        await finish.press('Enter')
+        await expect(dialog.get_by_text('Counted as 00:45 the next day.', exact=True)).to_be_visible()
+        await expect(dialog.get_by_text('Must be after start, or by 01:00 the next day', exact=True)).to_have_count(0)
+        await expect(page.locator('.ant-message-notice')).to_have_count(0)
+        await dialog.screenshot(path=OUT / 'actual-finish-dialog.png', animations='disabled')
+        await dialog.get_by_role('button', name='Save', exact=True).click()
+        await expect(dialog).not_to_be_visible()
+        await expect(mason).to_contain_text('12:00–22:00 · finished 00:45 (next day)')
+        await mason.screenshot(path=OUT / 'actual-finish-panel.png', animations='disabled')
+    else:
+        await expect(finish).to_have_count(0)
+        await dialog.get_by_role('button', name='Cancel', exact=True).click()
+        await expect(dialog).not_to_be_visible()
     await page.get_by_role('button', name='Close day details', exact=True).click()
     await expect(checklist).to_be_visible()
     await expect(checklist.get_by_role('checkbox', name='Checked: Jessi', exact=True)).to_be_checked()

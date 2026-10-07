@@ -56,6 +56,8 @@ export interface Shift {
   date: string        // YYYY-MM-DD
   start_time: string  // HH:MM
   end_time: string    // HH:MM
+  /** Recorded by a manager once the shift is worked; hours count to this time. */
+  actual_end_time?: string | null
   assigned_by: string
   notes: string
   position?: string
@@ -258,7 +260,7 @@ export const createShift = (data: {
 
 export const updateShift = (
   id: number,
-  data: { start_time?: string; end_time?: string; notes?: string; position?: string; store_code?: string; require_availability?: boolean }
+  data: { start_time?: string; end_time?: string; actual_end_time?: string | null; notes?: string; position?: string; store_code?: string; require_availability?: boolean }
 ) => client.patch<Shift>(`/schedule/shifts/${id}`, data).then((r) => r.data)
 
 export const deleteShift = (id: number) =>

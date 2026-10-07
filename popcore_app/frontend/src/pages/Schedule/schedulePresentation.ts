@@ -40,6 +40,18 @@ export function mobileShiftAccessibleLabel({
   ].filter(Boolean).join(' · ')
 }
 
+/** An actual finish at or before the start, up to 01:00, is on the next day. */
+export function finishesNextDay(startTime: string, actualEndTime: string): boolean {
+  return actualEndTime <= startTime && actualEndTime <= '01:00'
+}
+
+/** Planned range, plus the recorded actual finish when a manager has set one. */
+export function shiftTimeRange(startTime: string, endTime: string, actualEndTime?: string | null): string {
+  const range = `${startTime}–${endTime}`
+  if (!actualEndTime) return range
+  return `${range} · finished ${actualEndTime}${finishesNextDay(startTime, actualEndTime) ? ' (next day)' : ''}`
+}
+
 export function shiftColorPresentation(employeeColor: string, _kind: string) {
   return {
     backgroundColor: employeeColor,
