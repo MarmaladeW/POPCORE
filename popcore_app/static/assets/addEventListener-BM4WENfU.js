@@ -1,0 +1,1 @@
+import{r as e}from"./rolldown-runtime-hePW80VL.js";import{qt as t}from"./client-BTZWQ6Xq.js";var n=e(t());function r(e,t,r,i){var a=n.unstable_batchedUpdates?function(e){n.unstable_batchedUpdates(r,e)}:r;return e!=null&&e.addEventListener&&e.addEventListener(t,a,i),{remove:function(){e!=null&&e.removeEventListener&&e.removeEventListener(t,a,i)}}}export{r as t};

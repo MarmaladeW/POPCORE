@@ -1,0 +1,1 @@
+import{t as e}from"./client-BTZWQ6Xq.js";var t=(t,n)=>e.get(`/sales/history-matches`,{params:t,signal:n}).then(e=>e.data),n=(t,n)=>e.get(`/reports/overview`,{params:t,signal:n}).then(e=>e.data);export{n,t};

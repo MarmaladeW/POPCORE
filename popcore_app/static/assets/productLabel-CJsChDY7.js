@@ -1,0 +1,1 @@
+function e(e){if(!e)return`Unknown product`;let t=e.stock_form===`confirmed_design`&&e.design_name?[e.series_name||e.ip_series,e.design_name].filter(Boolean).join(` · `):e.jizhanming||e.name_cn_en||e.sku||`Product #${e.id}`,n={confirmed_design:`Confirmed`,random_box:`Blind box`,sealed_set:`Sealed set`}[e.stock_form||``];return n?`${t} · ${n}`:t}export{e as t};
