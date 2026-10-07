@@ -49,6 +49,12 @@ async def checks(browser, fixture):
     receive = modal.get_by_role('button',name='Receive quantities')
     return_to_source = modal.get_by_role('button',name='Return quantities to source')
     await expect(amount).to_have_value('4')
+    async def reopen_receive():
+        # Every saved action reloads the session, which switches back to the picking tab.
+        # Wait for that switch before returning to Receive, or it lands after the click.
+        await expect(modal.get_by_role('tab',name='仓库拣货',exact=False)).to_have_attribute('aria-selected','true')
+        await modal.get_by_role('tab',name='Receive',exact=True).click()
+        await expect(modal.get_by_role('tab',name='Receive',exact=True)).to_have_attribute('aria-selected','true')
     await amount.fill('0')
     await expect(receive).to_be_disabled()
     await amount.fill('5')
@@ -67,8 +73,7 @@ async def checks(browser, fixture):
     assert detail['delivery']['lines'][0]['received_quantity']==2
     assert detail['delivery']['lines'][0]['outstanding_transit']==2
     await modal.get_by_role('button',name='Retry',exact=True).click()
-    await expect(modal.get_by_role('tab',name='Receive',exact=True)).to_be_enabled()
-    await modal.get_by_role('tab',name='Receive',exact=True).click()
+    await reopen_receive()
     await expect(amount).to_have_value('2')
     assert len(requests)==2 and requests[0]==requests[1] and requests[0][1]
     assert requests[0][0]['lines']==[{'line_no':1,'quantity':2}]
@@ -76,15 +81,15 @@ async def checks(browser, fixture):
     await page.screenshot(path=str(OUT/'partial-received.png'),full_page=True)
     await amount.fill('1')
     await return_to_source.click()
-    await modal.get_by_role('tab',name='Receive',exact=True).click()
+    await reopen_receive()
     await expect(amount).to_have_value('1')
     await receive.click()
-    await modal.get_by_role('tab',name='Receive',exact=True).click()
+    await reopen_receive()
     close = modal.get_by_role('button',name='Close unfilled quantities')
     await expect(close).to_be_disabled()
     await modal.get_by_placeholder('Shortage reason').fill('One requested item unavailable')
     await close.click()
-    await modal.get_by_role('tab',name='Receive',exact=True).click()
+    await reopen_receive()
     await expect(modal.get_by_text('Restock delivery is complete.',exact=True)).to_be_visible()
     detail = fixture.client.get(path,headers=fixture.headers()).get_json()
     line = detail['delivery']['lines'][0]
