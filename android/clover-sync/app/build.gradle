@@ -8,8 +8,8 @@ android {
         applicationId 'ca.popcore.cloversync'
         minSdk 26
         targetSdk 29
-        versionCode 1
-        versionName '0.1-sandbox'
+        versionCode 2
+        versionName '0.2-sandbox'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

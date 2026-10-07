@@ -19,6 +19,7 @@ Schedule uses the current operations navigation and theme. Managers open Team sc
 - Managers and admins can assign shifts when the employee has not submitted availability. The editor explains this and permits saving. If availability was submitted, new non-trainee assignments must fit those hours; the server rechecks atomically when saving. Existing same-day assignments, including another store, cannot be silently replaced.
 - Mobile team and personal calendars show Full day, Half day (AM/PM), or Custom labels rather than initials or dots alone.
 - Existing shifts may still be edited or deleted. Availability changes that no longer cover a shift show a Review warning. Trainee assignment retains its existing behavior.
+- Actual finish: once a shift's Toronto date has arrived, the shift editor shows an optional Actual finish time (exact minute) for managers and admins. A time up to 01:00 that is not after the start counts as the next day and is labelled `(next day)`. The planned start and end are kept; the day panel and calendar tooltip show `finished HH:MM`. Employees cannot record it.
 
 ## Persistence and compatibility
 
@@ -27,6 +28,8 @@ The `availability_period_submissions` migration preserves existing availability 
 `GET /api/schedule/availability/period` reads the authenticated employee's period. `PUT` takes `period_start`, `store_code`, `version` and exactly 14 explicit daily responses. Writes are atomic and reject stale versions with HTTP 409. Team availability reads remain manager-only. Legacy daily endpoints remain compatible and invalidate the affected period's submission marker. Shift callers using `require_availability: true` receive the server-side submission/hours check; legacy callers retain their existing assignment policy.
 
 After correcting the cycle from September 21 to September 14, existing daily hours and assigned shifts are preserved. Old cycle submission markers do not confirm the new split: employees must complete and resubmit the corrected periods. Managers can assign shifts while those submissions are pending. `require_availability: true` now checks submitted hours when a submission exists; missing submissions do not block assignment.
+
+The `add_actual_end_time_to_shifts` migration adds a nullable `shifts.actual_end_time` (`HH:MM`; `NULL` means not recorded). `PATCH /api/schedule/shifts/<id>` (manager and admin) accepts `actual_end_time` as a time after the shift start or up to `01:00` the next day, or `null` to clear it, and rejects it for future-dated shifts. The monthly report and per-employee hours count each shift from its planned start to the actual finish when one is recorded, otherwise to the planned end. Calendar layout, Full/Half labels, understaffing overlays, availability checks and the iCal feed keep using the planned end. A finish later than 01:00 the next day cannot be recorded, a next-day finish's hours are counted on the shift's own date, and deleting a shift deletes its recorded finish.
 
 ## Local verification
 

@@ -57,6 +57,7 @@ import {
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
   shiftKindLabel,
+  shiftTimeRange,
 } from './schedulePresentation'
 import {
   assignableEmployees as getAssignableEmployees,
@@ -259,6 +260,7 @@ export default function ManagerCalendar() {
             kind, is_trainee: isTrainee, position: s.position || '',
             emp_name: s.employee_name ?? 'Employee', emp_color: empColor,
             start_time: s.start_time, end_time: s.end_time,
+            actual_end_time: s.actual_end_time ?? null,
           },
         })
       }
@@ -427,6 +429,7 @@ export default function ManagerCalendar() {
     const p = arg.event.extendedProps as {
       type?: string; kind?: ShiftKind; is_trainee?: boolean; position?: string
       emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
+      actual_end_time?: string | null
     }
     if (p.type !== 'shift' && p.type !== 'availability') return true   // default rendering for backgrounds
     const kind    = p.kind ?? 'custom'
@@ -434,7 +437,7 @@ export default function ManagerCalendar() {
     const range   = compactRange(p.start_time ?? '', p.end_time ?? '')
     const tip = [
       p.emp_name,
-      `${p.start_time}–${p.end_time}`,
+      shiftTimeRange(p.start_time ?? '', p.end_time ?? '', p.actual_end_time),
       kind === 'full' ? 'Full day' : kind === 'custom' ? 'Custom slot' : `Half day (${halfTag})`,
       p.position && `Position: ${p.position}`,
       p.is_trainee && 'TRAINEE',
