@@ -3,10 +3,12 @@ import test from 'node:test'
 
 import {
   compactEmployeeLabel,
+  finishesNextDay,
   manualChecklistPresentation,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
   shiftKindLabel,
+  shiftTimeRange,
 } from './schedulePresentation.ts'
 
 test('shift types are readable on mobile', () => {
@@ -14,6 +16,21 @@ test('shift types are readable on mobile', () => {
   assert.equal(shiftKindLabel('first'), 'Half day (AM)')
   assert.equal(shiftKindLabel('second'), 'Half day (PM)')
   assert.equal(shiftKindLabel('custom'), 'Custom')
+})
+
+test('shift time ranges keep the plan and add a recorded finish', () => {
+  assert.equal(shiftTimeRange('12:00', '20:00'), '12:00–20:00')
+  assert.equal(shiftTimeRange('12:00', '20:00', null), '12:00–20:00')
+  assert.equal(shiftTimeRange('12:00', '20:00', '20:25'), '12:00–20:00 · finished 20:25')
+  assert.equal(shiftTimeRange('12:00', '22:00', '00:45'), '12:00–22:00 · finished 00:45 (next day)')
+})
+
+test('a finish up to 01:00 counts as the next day', () => {
+  assert.equal(finishesNextDay('12:00', '00:00'), true)
+  assert.equal(finishesNextDay('12:00', '01:00'), true)
+  assert.equal(finishesNextDay('12:00', '01:01'), false)
+  assert.equal(finishesNextDay('12:00', '21:25'), false)
+  assert.equal(finishesNextDay('00:30', '00:45'), false)
 })
 
 test('mobile employee labels stay recognizable inside narrow month cells', () => {

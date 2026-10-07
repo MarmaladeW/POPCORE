@@ -1733,6 +1733,15 @@ def _migration_checkout_order_notes(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('checkout_order_notes')")
 
 
+def _migration_add_actual_end_time_to_shifts(con, cur):
+    """Managers record when a worker actually finished; NULL means not recorded."""
+    cur.execute("PRAGMA table_info(shifts)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'actual_end_time' not in cols:
+        cur.execute("ALTER TABLE shifts ADD COLUMN actual_end_time TEXT")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_actual_end_time_to_shifts')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1783,6 +1792,7 @@ def _get_migrations():
         ('special_orders',                             _migration_special_orders),
         ('special_order_pickup_and_tender',            _migration_special_order_pickup_and_tender),
         ('checkout_order_notes',                        _migration_checkout_order_notes),
+        ('add_actual_end_time_to_shifts',               _migration_add_actual_end_time_to_shifts),
     ]
 
 

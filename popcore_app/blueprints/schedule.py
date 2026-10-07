@@ -64,6 +64,19 @@ def _hours_between(start_time: str, end_time: str) -> float:
         return 0.0
 
 
+# An actual finish at or before the start, up to this time, is on the next day.
+_LATEST_NEXT_DAY_FINISH = '01:00'
+
+
+def _shift_hours(shift) -> float:
+    """Worked hours for a shift: to the recorded actual finish, else the planned end."""
+    start, actual = shift['start_time'], shift['actual_end_time']
+    hours = _hours_between(start, actual or shift['end_time'])
+    if actual and actual <= start and actual <= _LATEST_NEXT_DAY_FINISH:
+        hours = _hours_between(start, '24:00') + _hours_between('00:00', actual)
+    return hours
+
+
 def _month_start_day(con) -> int:
     """Day of month the wage period starts on (app setting, default 4)."""
     try:
@@ -842,8 +855,20 @@ def schedule_shifts_update(shift_id):
             con.close()
             return err
         updates['store_id'] = store_id
+    if 'actual_end_time' in data:
+        updates['actual_end_time'] = data['actual_end_time']
     try:
-        _schedule_times(updates.get('start_time', row['start_time']), updates.get('end_time', row['end_time']))
+        start_time = updates.get('start_time', row['start_time'])
+        _schedule_times(start_time, updates.get('end_time', row['end_time']))
+        actual_end = updates.get('actual_end_time', row['actual_end_time'])
+        if actual_end is not None and ('actual_end_time' in updates or 'start_time' in updates):
+            if not isinstance(actual_end, str) or not _re.fullmatch(r'([01][0-9]|2[0-3]):[0-5][0-9]', actual_end) \
+                    or (actual_end <= start_time and actual_end > _LATEST_NEXT_DAY_FINISH):
+                raise ValueError('Use an HH:MM actual finish after the start time, or by 01:00 the next day')
+        if updates.get('actual_end_time') is not None:
+            today = _dt.datetime.now(_dt.timezone.utc).astimezone(ZoneInfo('America/Toronto')).date().isoformat()
+            if row['date'] > today:
+                raise ValueError('Actual finish cannot be recorded before the shift date')
         if not isinstance(data.get('notes', ''), str):
             raise ValueError('Notes must be text')
         if 'require_availability' in data and type(data['require_availability']) is not bool:
@@ -1097,7 +1122,7 @@ def schedule_report_monthly():
         total_hours = 0.0
         weeks: dict = {}
         for s in emp_shifts:
-            h  = _hours_between(s['start_time'], s['end_time'])
+            h  = _shift_hours(s)
             total_hours += h
             d  = dt.date.fromisoformat(s['date'])
             wk = f'{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}'
@@ -1160,7 +1185,7 @@ def schedule_employee_hours(emp_id):
     total = 0.0
     by_store: dict = {}
     for r in rows:
-        h = _hours_between(r['start_time'], r['end_time'])
+        h = _shift_hours(r)
         total += h
         code = r['store_code'] or '?'
         by_store[code] = round(by_store.get(code, 0.0) + h, 2)
