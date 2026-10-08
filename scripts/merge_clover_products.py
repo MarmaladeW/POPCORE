@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'popcore_app'))
-from matcher import _score_pair_jzm, clean_name, normalize, normalize_spaced  # noqa: E402
+from matcher import _score_pair_jzm, _variant_tokens, clean_name, identity_conflicts, normalize, normalize_spaced  # noqa: E402
 
 CONFIDENT, CHECK = 88, 55
 # Carried to the Clover product when its own value is empty; never overwrites.
@@ -60,21 +60,42 @@ def reference_count(con, product_id, pairs):
                            (product_id,)).fetchone()[0] for table, column in pairs)
 
 
+FILLER = {'series', 'figure', 'figures', 'the', 'a', 'of', 'and', 'blind', 'box', 'x', 'pop', 'mart'}
+
+
 def _tokens(text):
-    return set(re.findall(r'[a-z0-9]+|[一-鿿]', normalize_spaced(text)))
+    return set(re.findall(r'[a-z0-9]+|[\u4e00-\u9fff]', normalize_spaced(text)))
+
+
+def _latin_tokens(text):
+    """Latin/digit words of a name, minus filler; legacy names mix Chinese and English."""
+    return {w for w in re.findall(r'[a-z0-9%.]+', normalize_spaced(text)) if w not in FILLER}
 
 
 def score(legacy, clover):
     """0-100 similarity between a legacy product and a Clover product."""
     cn = normalize(clover['name_cn_en'])
+    candidate_latin = _latin_tokens(clover['name_cn_en'])
     best = 0
     for field in ('name_cn_en', 'jizhanming'):
         value = legacy[field] or ''
-        if value:
-            best = max(best, _score_pair_jzm(normalize(value), cn))
-            tokens, candidate = _tokens(value), _tokens(clover['name_cn_en'])
-            if tokens and candidate:
-                best = max(best, int(100 * len(tokens & candidate) / len(tokens | candidate)))
+        if not value:
+            continue
+        best = max(best, _score_pair_jzm(normalize(value), cn))
+        tokens, candidate = _tokens(value), _tokens(clover['name_cn_en'])
+        if tokens and candidate:
+            best = max(best, int(100 * len(tokens & candidate) / len(tokens | candidate)))
+        # The English part of a mixed legacy name, contained in the Clover name.
+        latin = _latin_tokens(value)
+        if latin and candidate_latin:
+            contained = int(100 * len(latin & candidate_latin) / len(latin))
+            if len(latin) == 1:
+                contained = min(contained, 70)
+            if _variant_tokens(normalize(value)) != _variant_tokens(cn):
+                contained = min(contained, 75)
+            if identity_conflicts(value, {'name_cn_en': clover['name_cn_en']}):
+                contained = min(contained, 75)
+            best = max(best, contained)
     if best and legacy['price'] is not None and clover['price'] is not None:
         if abs(legacy['price'] - clover['price']) < 0.005:
             best = min(99, best + 5)

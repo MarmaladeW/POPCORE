@@ -33,6 +33,26 @@ class CloverProductMergeTests(IsolatedApiCase):
                          (self.clover_id, 'confident', self.clover_id, 1))
         self.assertGreater(row['score'], row['runner_up_score'])
 
+    def test_mixed_language_legacy_names_match_on_their_english_part(self):
+        with closing(self.connect()) as con:
+            importer.import_items(con, [
+                {'clover_item_name': 'THE MONSTERS Lazy Yoga Series Figures', 'price': 26.99, 'category': 'POPMART', 'clover_item_id': None, 'product_code': None},
+                {'clover_item_name': 'THE MONSTERS Lazy Yoga Series - Vinyl Plush Pendant', 'price': 34.99, 'category': 'POPMART', 'clover_item_id': None, 'product_code': None},
+                {'clover_item_name': 'MEGA JUST DIMOO 400% Mickey Mouse', 'price': 299.0, 'category': 'POPMART', 'clover_item_id': None, 'product_code': None},
+                {'clover_item_name': 'MEGA JUST DIMOO 1000% Mickey Mouse', 'price': 899.0, 'category': 'POPMART', 'clover_item_id': None, 'product_code': None},
+            ])
+            for sku, jzm, name, price in (('L-1', '慵懒瑜伽', 'Lazy Yoga 慵懒瑜伽 figure', 26.99),
+                                          ('L-2', 'Dimoo 迪士尼 400%', 'Dimoo 迪士尼 400% Mega Just DIMOO Mickey Mouse', None),
+                                          ('L-3', '毛球派对', '毛球派对', 119.0)):
+                con.execute('INSERT INTO products(sku, jizhanming, name_cn_en, price) VALUES (?,?,?,?)', (sku, jzm, name, price))
+            con.commit()
+            rows = {r['legacy_sku']: r for r in merger.review(con)}
+        self.assertEqual((rows['L-1']['verdict'], rows['L-1']['suggested_name']),
+                         ('confident', 'THE MONSTERS Lazy Yoga Series Figures'))
+        self.assertEqual((rows['L-2']['verdict'], rows['L-2']['suggested_name']),
+                         ('confident', 'MEGA JUST DIMOO 400% Mickey Mouse'))
+        self.assertEqual(rows['L-3']['verdict'], 'none')
+
     def test_merge_repoints_stock_adds_aliases_carries_identity_and_deletes_legacy(self):
         with closing(self.connect()) as con:
             con.execute("INSERT INTO product_aliases(product_id, alias, alias_norm) VALUES (?, 'TP', 'tp')", (self.product_id,))
