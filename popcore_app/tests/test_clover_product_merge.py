@@ -59,8 +59,9 @@ class CloverProductMergeTests(IsolatedApiCase):
             con.execute("INSERT INTO product_barcodes(code, product_id, code_kind, input_unit, quantity_per_scan) VALUES ('111', ?, 'manufacturer', 'piece', 1)",
                         (self.product_id,))
             con.commit()
-            results = merger.apply(con, [{'legacy_id': self.product_id, 'decision': str(self.clover_id)}])
+            results = merger.apply(con, [{'legacy_id': self.product_id, 'decision': 'test product'}])
             self.assertEqual(results[0][1], 'ok', results)
+            self.assertIn('Test Product', results[0][2])
             self.assertIsNone(con.execute('SELECT 1 FROM products WHERE id=?', (self.product_id,)).fetchone())
             stock = con.execute('SELECT product_id, instore_qty FROM stock WHERE store_id=?', (self.store_id,)).fetchall()
             self.assertEqual([tuple(r) for r in stock], [(self.clover_id, 2)])
@@ -94,8 +95,9 @@ class CloverProductMergeTests(IsolatedApiCase):
             results = merger.apply(con, [{'legacy_id': self.product_id, 'decision': 'delete'},
                                          {'legacy_id': spare, 'decision': 'delete'},
                                          {'legacy_id': self.other_id, 'decision': 'keep'},
-                                         {'legacy_id': spare, 'decision': 'nonsense'}])
-            self.assertEqual([r[1] for r in results], ['refused', 'ok', 'ok', 'refused'])
+                                         {'legacy_id': spare, 'decision': 'No Such Clover Item'},
+                                         {'legacy_id': self.product_id, 'decision': str(self.product_id)}])
+            self.assertEqual([r[1] for r in results], ['refused', 'ok', 'ok', 'refused', 'refused'])
             self.assertIsNotNone(con.execute('SELECT 1 FROM products WHERE id=?', (self.product_id,)).fetchone())
             self.assertIsNone(con.execute('SELECT 1 FROM products WHERE id=?', (spare,)).fetchone())
 
@@ -107,6 +109,7 @@ class CloverProductMergeTests(IsolatedApiCase):
                 with open(path, encoding='utf-8') as handle:
                     rows = list(csv.DictReader(handle))
                 self.assertEqual(list(rows[0]), list(merger.REVIEW_COLUMNS))
+                self.assertTrue(rows[0]['runner_up_name'])
                 results = merger.apply(con, rows, dry_run=True)
                 self.assertEqual(results[0][1], 'ok')
                 self.assertIsNotNone(con.execute('SELECT 1 FROM products WHERE id=?', (self.product_id,)).fetchone())

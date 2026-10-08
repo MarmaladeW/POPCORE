@@ -34,7 +34,8 @@ CARRY_FIELDS = ('jizhanming', 'ip_series', 'product_type', 'series_id', 'stock_f
 DUPLICATE_OK = {'product_aliases', 'report_match_choices', 'product_barcodes'}
 REVIEW_COLUMNS = ('legacy_id', 'legacy_sku', 'jizhanming', 'legacy_name', 'legacy_price', 'references',
                   'suggested_clover_id', 'suggested_name', 'suggested_price', 'score',
-                  'runner_up_id', 'runner_up_score', 'verdict', 'decision')
+                  'runner_up_id', 'runner_up_name', 'runner_up_score', 'third_id', 'third_name', 'third_score',
+                  'verdict', 'decision')
 
 
 def connect(path):
@@ -111,7 +112,8 @@ def review(con):
     rows = []
     for legacy in con.execute('SELECT * FROM products WHERE clover_item_name IS NULL ORDER BY id'):
         ranked = sorted(((score(legacy, c), c) for c in clover), key=lambda x: (-x[0], x[1]['id']))
-        top, second = (ranked[0] if ranked else (0, None)), (ranked[1] if len(ranked) > 1 else (0, None))
+        ranked += [(0, None)] * 3
+        top, second, third = ranked[0], ranked[1], ranked[2]
         verdict = ('confident' if top[0] >= CONFIDENT and top[0] - second[0] >= 8
                    else 'check' if top[0] >= CHECK else 'none')
         rows.append({
@@ -122,7 +124,9 @@ def review(con):
             'suggested_name': top[1]['name_cn_en'] if top[1] and top[0] >= CHECK else '',
             'suggested_price': top[1]['price'] if top[1] and top[0] >= CHECK else '',
             'score': top[0], 'runner_up_id': second[1]['id'] if second[1] else '',
-            'runner_up_score': second[0], 'verdict': verdict,
+            'runner_up_name': second[1]['name_cn_en'] if second[1] else '', 'runner_up_score': second[0],
+            'third_id': third[1]['id'] if third[1] else '', 'third_name': third[1]['name_cn_en'] if third[1] else '',
+            'third_score': third[0], 'verdict': verdict,
             'decision': top[1]['id'] if verdict == 'confident' else '',
         })
     return rows
@@ -176,6 +180,22 @@ def merge(con, legacy_id, clover_id):
     return {'legacy_id': legacy_id, 'clover_id': clover_id, 'carried': sorted(k for k in updates if k != 'search_blob')}
 
 
+def resolve_target(con, decision):
+    """A decision is a Clover product id or the exact Clover item name (case-insensitive)."""
+    if decision.isdigit():
+        row = con.execute('SELECT id, clover_item_name FROM products WHERE id=? AND clover_item_name IS NOT NULL',
+                          (int(decision),)).fetchone()
+    else:
+        rows = con.execute('SELECT id, clover_item_name FROM products WHERE clover_item_name=? COLLATE NOCASE',
+                           (decision,)).fetchall()
+        if len(rows) > 1:
+            raise ValueError('decision matches more than one Clover item; use its id')
+        row = rows[0] if rows else None
+    if row is None:
+        raise ValueError('decision must be a Clover product id or exact Clover item name, keep, or delete')
+    return row
+
+
 def apply(con, rows, dry_run=False):
     pairs = references(con)
     results = []
@@ -193,10 +213,11 @@ def apply(con, rows, dry_run=False):
                     raise ValueError('still referenced; merge it instead of deleting')
                 deleted = con.execute('DELETE FROM products WHERE id=? AND clover_item_name IS NULL', (legacy_id,)).rowcount
                 outcome = 'deleted' if deleted else 'already gone'
-            elif decision.isdigit():
-                outcome = 'merged into %d (carried: %s)' % (int(decision), ', '.join(merge(con, legacy_id, int(decision))['carried']) or 'nothing')
             else:
-                raise ValueError('decision must be a Clover product id, keep or delete')
+                target = resolve_target(con, decision)
+                outcome = 'merged into %d %s (carried: %s)' % (
+                    target['id'], target['clover_item_name'],
+                    ', '.join(merge(con, legacy_id, target['id'])['carried']) or 'nothing')
             if dry_run:
                 con.rollback()
             else:

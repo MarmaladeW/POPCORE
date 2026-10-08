@@ -23,7 +23,8 @@ by item ID when present, else by exact name, so a later rename is recognised by 
 - `scripts/merge_clover_products.py review --out review.csv` scores every legacy product (no
   `clover_item_name`) against the Clover products on 记账名, name and price and writes a review sheet
   with a `decision` column: confident matches are prefilled with the Clover product id; `check` rows
-  need a human choice; `none` rows need a new Clover item or `keep`/`delete`.
+  need a human choice; `none` rows need a new Clover item or `keep`/`delete`. A decision may be the
+  Clover product id or the exact Clover item name; the sheet lists the top three candidates per row.
 - `scripts/merge_clover_products.py apply --csv review.csv [--dry-run]` applies each decided row in
   its own transaction: every table referencing the legacy product is re-pointed to the Clover
   product (stock, balances, sale lines, inventory documents, barcodes, report choices…), the legacy
