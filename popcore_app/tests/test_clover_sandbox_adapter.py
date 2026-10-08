@@ -282,6 +282,125 @@ class SandboxAccessTests(IsolatedApiCase):
         with adapter.database() as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM evidence').fetchone()[0], 1)
 
+    def freeze_feed(self):
+        with adapter.database() as con:
+            con.execute('UPDATE feed SET next_poll=?', (time.time() + 60,))
+            con.commit()
+
+    def test_cash_order_left_open_on_clover_settles_in_popcore(self):
+        path = '/api/clover-sandbox/checkouts/1'
+        self.assertEqual(self.client.post(path + '/claim', headers=self.headers()).status_code, 200)
+        self.assertEqual(self.client.post(path + '/attempts', headers=self.headers(), json={
+            'tender': 'card', 'amount_cents': 1130, 'payable_cents': 1130, 'expected_version': 1}).status_code, 400)
+        for bad in ({'payable_cents': 1200, 'amount_cents': 1200}, {'payable_cents': 1100, 'amount_cents': 1200}):
+            self.assertEqual(self.client.post(path + '/attempts', headers=self.headers(), json={
+                'tender': 'cash', 'expected_version': 1, **bad}).status_code, 400, bad)
+        started = self.client.post(path + '/attempts', headers=self.headers(), json={
+            'tender': 'cash', 'amount_cents': 1100, 'payable_cents': 1100, 'expected_version': 1})
+        self.assertEqual(started.status_code, 200, started.get_json())
+        value = started.get_json()
+        self.assertEqual((value['version'], value['order']['collected_cents'], value['order']['reduction_cents'],
+                          value['remaining_cents'], value['status']), (2, 1100, 30, 1100, 'open'))
+        attempt = value['attempts'][0]
+        self.assertEqual((attempt['source'], attempt['status'], attempt['amount_cents']), ('popcore', 'pending', 1100))
+        stale = self.client.post(path + '/complete', headers=self.headers(),
+                                 json={'attempt_id': attempt['id'], 'expected_version': 1})
+        self.assertEqual(stale.status_code, 409, stale.get_json())
+        done = self.client.post(path + '/complete', headers=self.headers(),
+                                json={'attempt_id': attempt['id'], 'expected_version': 2})
+        self.assertEqual(done.status_code, 200, done.get_json())
+        value = done.get_json()
+        self.assertEqual((value['status'], value['received_cents'], value['remaining_cents']), ('completed', 1100, 0))
+        self.assertTrue(value['settled_in_popcore'])
+        self.assertFalse(value['changed_after_settlement'])
+        self.assertFalse(value['can_hide'])
+        # Clover still shows the order OPEN with no payments; it may drop out of the latest-20 window.
+        with adapter.database() as con:
+            con.execute("UPDATE orders SET seen_at=0 WHERE id=1")
+            con.execute("UPDATE feed SET error='Clover sync unavailable. Showing the last received snapshot.'")
+            con.commit()
+        self.freeze_feed()
+        later = self.client.get(path, headers=self.headers()).get_json()
+        self.assertEqual(later['status'], 'completed')
+        live = self.client.get(f'/api/clover-sandbox/checkouts?store_id={self.store_id}&view=live', headers=self.headers())
+        self.assertEqual(live.get_json()['orders'], [])
+        history = self.client.get(f'/api/clover-sandbox/checkouts?store_id={self.store_id}&view=history', headers=self.headers())
+        self.assertEqual([o['status'] for o in history.get_json()['orders']], ['completed'])
+        self.assertEqual(self.client.post(path + '/attempts', headers=self.headers(), json={
+            'tender': 'cash', 'amount_cents': 1, 'payable_cents': 1100, 'expected_version': 3}).status_code, 409)
+        # A card payment taken on Clover by mistake after settlement is flagged, never silently absorbed.
+        with adapter.database() as con:
+            con.execute("INSERT INTO payments(order_id,source_id,tender,amount,result) VALUES (1,'NOPQRSTUVWXYZ','card',1130,'SUCCESS')")
+            con.commit()
+        flagged = self.client.get(path, headers=self.headers()).get_json()
+        self.assertEqual(flagged['status'], 'completed')
+        self.assertTrue(flagged['changed_after_settlement'])
+        self.assertEqual(flagged['clover_received_cents'], 1130)
+
+    def test_card_and_cash_split_settles_from_both_sources(self):
+        path = '/api/clover-sandbox/checkouts/1'
+        self.client.post(path + '/claim', headers=self.headers())
+        started = self.client.post(path + '/attempts', headers=self.headers(), json={
+            'tender': 'cash', 'amount_cents': 500, 'payable_cents': 1130, 'expected_version': 1}).get_json()
+        done = self.client.post(path + '/complete', headers=self.headers(),
+                                json={'attempt_id': started['attempts'][0]['id'], 'expected_version': 2}).get_json()
+        self.assertEqual((done['status'], done['remaining_cents'], done['settled_in_popcore']), ('open', 630, False))
+        with adapter.database() as con:
+            con.execute("INSERT INTO payments(order_id,source_id,tender,amount,result) VALUES (1,'NOPQRSTUVWXYZ','card',630,'SUCCESS')")
+            con.commit()
+        value = self.client.get(path, headers=self.headers()).get_json()
+        self.assertEqual((value['status'], value['received_cents'], value['remaining_cents']), ('completed', 1130, 0))
+        self.assertEqual(sorted(a['source'] for a in value['attempts'] if a['status'] == 'completed'), ['clover', 'popcore'])
+        self.assertTrue(value['settled_in_popcore'])
+
+    def test_manual_payment_evidence_follows_cashier_rules(self):
+        path = '/api/clover-sandbox/checkouts/1'
+        self.client.post(path + '/claim', headers=self.headers())
+        started = self.client.post(path + '/attempts', headers=self.headers(), json={
+            'tender': 'e_transfer', 'amount_cents': 1100, 'payable_cents': 1100, 'expected_version': 1}).get_json()
+        attempt_id = started['attempts'][0]['id']
+
+        def photo():
+            image = io.BytesIO()
+            Image.new('RGB', (2, 2), 'blue').save(image, format='PNG')
+            image.seek(0)
+            return {'image': (image, 'proof.png')}
+
+        self.assertEqual(self.client.post(f'{path}/manual/{attempt_id}/evidence', headers=self.headers('staff:other'),
+                                          data=photo()).status_code, 403)
+        saved = self.client.post(f'{path}/manual/{attempt_id}/evidence', headers=self.headers(), data=photo())
+        self.assertEqual(saved.status_code, 201, saved.get_json())
+        photo_id = saved.get_json()['id']
+        self.assertEqual(self.client.post(f'{path}/manual/{attempt_id}/evidence', headers=self.headers(),
+                                          data=photo()).get_json()['id'], photo_id)
+        value = self.client.get(path, headers=self.headers()).get_json()
+        self.assertEqual(value['attempts'][0]['photos'], [{'id': photo_id}])
+        self.assertEqual(self.client.get(f'{path}/manual-evidence/{photo_id}', headers=self.headers()).status_code, 200)
+        self.assertEqual(self.client.get(f'{path}/manual-evidence/{photo_id}', headers=self.headers('staff:other')).status_code, 403)
+
+    def test_lines_match_products_by_exact_barcode(self):
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO product_barcodes(code,product_id,code_kind,input_unit,quantity_per_scan) VALUES ('00123',?,'manufacturer','piece',1)",
+                        (self.product_id,))
+            for sku in ('DUP-1', 'DUP-2'):
+                product = con.execute("INSERT INTO products(sku,name_cn_en) VALUES (?,'Duplicate code')", (sku,)).lastrowid
+                con.execute("INSERT INTO product_barcodes(code,product_id,code_kind,input_unit,quantity_per_scan) VALUES ('DUP',?,'manufacturer','piece',1)",
+                            (product,))
+            con.execute("UPDATE products SET clover_item_id=? WHERE id=?", ('I' * 13, self.product_id))
+            con.commit()
+        self.order['items'] = [{'name': 'Scanned', 'price': 500, 'itemCode': '00123'},
+                               {'name': 'Ambiguous', 'price': 300, 'itemCode': 'DUP'},
+                               {'name': 'Custom item', 'price': 200},
+                               {'name': 'By Clover item ID', 'price': 0, 'itemId': 'I' * 13, 'itemCode': 'DUP'}]
+        with adapter.database() as con:
+            con.execute('UPDATE orders SET payload=? WHERE id=1', (json.dumps(self.order),))
+            con.commit()
+        lines = self.client.get('/api/clover-sandbox/checkouts/1', headers=self.headers()).get_json()['order']['lines']
+        self.assertEqual([(l['mapped'], l['product_id'], l['item_code']) for l in lines],
+                         [(True, self.product_id, '00123'), (False, None, 'DUP'), (False, None, None),
+                          (True, self.product_id, 'DUP')])
+        self.assertEqual(lines[0]['product_name'], 'Test Product')
+
     def test_owner_can_upload_sandbox_payment_evidence_without_inventory_grant(self):
         self.order['paymentState'] = 'PAID'
         self.order['payments'] = [{'id': 'NOPQRSTUVWXYZ', 'amount': 1130,

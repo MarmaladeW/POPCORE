@@ -30,7 +30,9 @@ final class SnapshotEncoder {
                     .put("unitQty", item.getUnitQty())
                     .put("unitName", item.getUnitName())
                     .put("discountAmount", item.getDiscountAmount())
-                    .put("orderLevelDiscountAmount", item.getOrderLevelDiscountAmount()));
+                    .put("orderLevelDiscountAmount", item.getOrderLevelDiscountAmount())
+                    .put("itemCode", item.getItemCode())
+                    .put("itemId", item.getItem() == null ? null : item.getItem().getId()));
         }
         result.put("items", items);
         JSONArray discounts = new JSONArray();
