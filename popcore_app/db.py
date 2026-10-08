@@ -1845,10 +1845,17 @@ def migrate_db():
         ('hidden_prob_small', "TEXT    NOT NULL DEFAULT ''"),
         ('hidden_prob_large', "TEXT    NOT NULL DEFAULT ''"),
         ('is_bestseller',     'INTEGER NOT NULL DEFAULT 0'),
+        # Clover is the product master: its item ID (once the API is connected) and official name.
+        ('clover_item_id',    'TEXT'),
+        ('clover_item_name',  'TEXT'),
     ]
     for col, defn in new_cols:
         if col not in existing:
             cur.execute(f'ALTER TABLE products ADD COLUMN {col} {defn}')
+    cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_clover_item_id '
+                'ON products(clover_item_id) WHERE clover_item_id IS NOT NULL')
+    cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_clover_item_name '
+                'ON products(clover_item_name) WHERE clover_item_name IS NOT NULL')
 
     # Add claw_qty to stock table if missing.
     cur.execute("PRAGMA table_info(stock)")
