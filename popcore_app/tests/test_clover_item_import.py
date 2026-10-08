@@ -84,6 +84,21 @@ class CloverItemImportTests(IsolatedApiCase):
                 self.assertEqual(con.execute('SELECT name_cn_en FROM products WHERE id=?', (product_id,)).fetchone()[0],
                                  'Zsiga × Care Bears Series')
 
+    def test_ligature_names_are_cleaned_and_earlier_imports_renamed_in_place(self):
+        with tempfile.TemporaryDirectory(dir=self.tempdir.name) as directory:
+            path = Path(directory) / 'items.csv'
+            with closing(self.connect()) as con:
+                con.execute("INSERT INTO products(sku, name_cn_en, clover_item_name, brand) VALUES ('CL00001', 'CRYBABY X Powerpu\ufb00 Girls Series Figures', 'CRYBABY X Powerpu\ufb00 Girls Series Figures', 'POPMART')")
+                con.commit()
+                write_csv(path, [{'clover_item_name': 'CRYBABY X Powerpu\ufb00 Girls Series Figures', 'price': '26.99', 'category': 'POPMART'}])
+                rows = importer.read_rows(path)
+                self.assertEqual(rows[0]['clover_item_name'], 'CRYBABY X Powerpuff Girls Series Figures')
+                self.assertEqual(importer.import_items(con, rows)['updated'], 1)
+                names = [r[0] for r in con.execute("SELECT clover_item_name FROM products WHERE clover_item_name IS NOT NULL")]
+                self.assertEqual(names, ['CRYBABY X Powerpuff Girls Series Figures'])
+                self.assertEqual(con.execute("SELECT name_cn_en FROM products WHERE sku='CL00001'").fetchone()[0],
+                                 'CRYBABY X Powerpuff Girls Series Figures')
+
     def test_invalid_rows_are_rejected_before_any_write(self):
         with tempfile.TemporaryDirectory(dir=self.tempdir.name) as directory:
             path = Path(directory) / 'items.csv'

@@ -23,6 +23,12 @@ REQUIRED = ('clover_item_name', 'price', 'category')
 OPTIONAL = ('clover_item_id', 'product_code')
 IDENTIFIER = re.compile(r'^[A-Za-z0-9]{13}$')
 SKU_PREFIX = 'CL'
+# PDF text extraction turns "ff"/"fi"/"fl" into single ligature characters; Clover's names use plain letters.
+LIGATURES = str.maketrans({'\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl', '\ufb03': 'ffi', '\ufb04': 'ffl'})
+
+
+def clean_name(name):
+    return ' '.join(name.translate(LIGATURES).split())
 
 
 def read_rows(path):
@@ -33,7 +39,7 @@ def read_rows(path):
             raise ValueError('CSV is missing columns: ' + ', '.join(sorted(missing)))
         rows, names = [], set()
         for line, raw in enumerate(reader, start=2):
-            name = (raw.get('clover_item_name') or '').strip()
+            name = clean_name(raw.get('clover_item_name') or '')
             if not name:
                 raise ValueError(f'Row {line}: clover_item_name is empty')
             if name in names:
@@ -80,7 +86,14 @@ def _existing(con, row):
         found = con.execute('SELECT * FROM products WHERE clover_item_id=?', (row['clover_item_id'],)).fetchone()
         if found:
             return found
-    return con.execute('SELECT * FROM products WHERE clover_item_name=?', (row['clover_item_name'],)).fetchone()
+    found = con.execute('SELECT * FROM products WHERE clover_item_name=?', (row['clover_item_name'],)).fetchone()
+    if found:
+        return found
+    # A name imported before ligature cleaning matches by its cleaned form and is renamed in place.
+    for candidate in con.execute('SELECT * FROM products WHERE clover_item_name IS NOT NULL'):
+        if clean_name(candidate['clover_item_name']) == row['clover_item_name']:
+            return candidate
+    return None
 
 
 def import_items(con, rows):

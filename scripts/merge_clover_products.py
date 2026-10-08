@@ -22,6 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'popcore_app'))
 from matcher import _score_pair_jzm, _variant_tokens, clean_name, identity_conflicts, normalize, normalize_spaced  # noqa: E402
+sys.path.insert(0, str(ROOT / 'scripts'))
+from import_clover_items import clean_name as importer_clean  # noqa: E402
 
 CONFIDENT, CHECK = 88, 55
 # Carried to the Clover product when its own value is empty; never overwrites.
@@ -187,7 +189,7 @@ def resolve_target(con, decision):
                           (int(decision),)).fetchone()
     else:
         rows = con.execute('SELECT id, clover_item_name FROM products WHERE clover_item_name=? COLLATE NOCASE',
-                           (decision,)).fetchall()
+                           (importer_clean(decision),)).fetchall()
         if len(rows) > 1:
             raise ValueError('decision matches more than one Clover item; use its id')
         row = rows[0] if rows else None
