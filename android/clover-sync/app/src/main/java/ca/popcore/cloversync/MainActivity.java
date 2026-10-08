@@ -20,6 +20,7 @@ public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private EditText merchantInput;
     private EditText secretInput;
+    private EditText endpointInput;
     private TextView status;
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
@@ -48,9 +49,15 @@ public final class MainActivity extends Activity {
         title.setTextSize(22);
         layout.addView(title);
         TextView info = new TextView(this);
-        info.setText("Read-only order updates to popcore.store. Pair this device in the sandbox probe first.\nDevice ID: " + deviceId);
+        info.setText("Read-only order updates to the POPCORE sandbox probe. Pair this device in the probe first.\nDevice ID: " + deviceId);
         info.setTextIsSelectable(true);
         layout.addView(info);
+        endpointInput = new EditText(this);
+        endpointInput.setHint("Probe URL (blank = popcore.store)");
+        endpointInput.setSingleLine(true);
+        endpointInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        endpointInput.setText(prefs.getString("endpoint", ""));
+        layout.addView(endpointInput);
         merchantInput = new EditText(this);
         merchantInput.setHint("Sandbox merchant ID");
         merchantInput.setSingleLine(true);
@@ -75,6 +82,13 @@ public final class MainActivity extends Activity {
         });
         layout.addView(stop);
         setContentView(layout);
+        // Sandbox convenience for emulator scripting: `am start ... --es endpoint <url> --es merchant <id>
+        // --es secret <key> --ez autostart true` fills the pairing fields and starts sync.
+        Intent intent = getIntent();
+        if (intent.hasExtra("endpoint")) endpointInput.setText(intent.getStringExtra("endpoint"));
+        if (intent.hasExtra("merchant")) merchantInput.setText(intent.getStringExtra("merchant"));
+        if (intent.hasExtra("secret")) secretInput.setText(intent.getStringExtra("secret"));
+        if (intent.getBooleanExtra("autostart", false)) startSync(start);
     }
 
     private void startSync(View view) {
@@ -86,7 +100,15 @@ public final class MainActivity extends Activity {
             status.setText("Enter the 13-character merchant ID and bridge key.");
             return;
         }
-        prefs.edit().putString("merchant_id", merchant).putString("secret", secret)
+        String endpoint = endpointInput.getText().toString().trim();
+        if (endpoint.isEmpty()) endpoint = SyncService.DEFAULT_ENDPOINT;
+        // Plain HTTP is allowed only to the emulator's own loopback (adb reverse / host alias).
+        if (!(endpoint.startsWith("https://") || endpoint.startsWith("http://127.0.0.1:")
+                || endpoint.startsWith("http://10.0.2.2:"))) {
+            status.setText("Probe URL must use HTTPS, or plain HTTP only to 127.0.0.1 or 10.0.2.2 on this emulator.");
+            return;
+        }
+        prefs.edit().putString("merchant_id", merchant).putString("secret", secret).putString("endpoint", endpoint)
                 .putLong("session_started", System.currentTimeMillis())
                 .putString("status", "Connecting to local Clover orders…").apply();
         secretInput.setText("");
