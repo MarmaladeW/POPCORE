@@ -19,7 +19,7 @@ Schedule uses the current operations navigation and theme. Managers open Team sc
 - Managers and admins can assign shifts when the employee has not submitted availability. The editor explains this and permits saving. If availability was submitted, new non-trainee assignments must fit those hours; the server rechecks atomically when saving. Existing same-day assignments, including another store, cannot be silently replaced.
 - Mobile team and personal calendars show Full day, Half day (AM/PM), or Custom labels rather than initials or dots alone.
 - Existing shifts may still be edited or deleted. Availability changes that no longer cover a shift show a Review warning. Trainee assignment retains its existing behavior.
-- Actual finish: once a shift's Toronto date has arrived, the shift editor shows an optional Actual finish time (exact minute) for managers and admins. A time up to 01:00 that is not after the start counts as the next day and is labelled `(next day)`. The planned start and end are kept; the day panel and calendar tooltip show `finished HH:MM`. Employees cannot record it.
+- Actual finish: once a shift's Toronto date has arrived, the shift editor shows an optional Actual finish time (exact minute) for managers and admins. A time up to 01:00 that is not after the start counts as the next day and is labelled `(next day)`. The planned start and end are kept; the day panel and calendar tooltip show `finished HH:MM`, and the manager calendar marks the shift block itself with `✓ HH:MM` (`+1` for a next-day finish; a `✓` beside the name on phones). Employees cannot record it.
 
 ## Persistence and compatibility
 
