@@ -312,6 +312,15 @@ async def run_checks(browser, case):
     await select_date(START, 'DT')
     await page.get_by_role('button', name='Assigned shifts', exact=True).click()
     await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason')).to_be_visible()
+    if START <= datetime.now(ZoneInfo('America/Toronto')).date():
+        # The recorded finish is marked on the calendar block itself.
+        await expect(calendars.nth(0).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-finished')).to_have_text('✓ 00:45 +1')
+        await page.screenshot(path=OUT / 'actual-finish-calendar-1440.png', full_page=True, animations='disabled')
+        await page.get_by_role('button', name='Week', exact=True).click()
+        await expect(calendars.nth(0).locator('.pc-shift-grid').filter(has_text='Mason').locator('.pc-shift-finished')).to_have_text('✓ 00:45 +1')
+        await page.screenshot(path=OUT / 'actual-finish-week-1440.png', full_page=True, animations='disabled')
+        await page.get_by_role('button', name='Two weeks', exact=True).click()
+        await select_date(START, 'DT')
     await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
     controls = await page.locator('.pc-assignment-store-switch').bounding_box()
     assert controls['y'] >= 64, controls
@@ -340,6 +349,8 @@ async def run_checks(browser, case):
         await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
         if width == 390:
             await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Full day').first).to_be_visible()
+            if START <= datetime.now(ZoneInfo('America/Toronto')).date():
+                await expect(page.locator('.pc-mobile-shift[title*="finished 00:45 (next day)"]')).to_contain_text('✓')
             await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Half day (AM)').first).to_be_visible()
         assert await page.evaluate('document.body.scrollWidth') <= width + 2
         await page.screenshot(path=OUT / f'manager-{width}.png', full_page=True, animations='disabled')

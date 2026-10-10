@@ -53,6 +53,7 @@ import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
+  actualFinishChip,
   compactEmployeeLabel,
   mobileShiftAccessibleLabel,
   shiftColorPresentation,
@@ -435,6 +436,8 @@ export default function ManagerCalendar() {
     const kind    = p.kind ?? 'custom'
     const halfTag = p.type === 'availability' ? '' : kind === 'first' ? 'AM' : kind === 'second' ? 'PM' : ''
     const range   = compactRange(p.start_time ?? '', p.end_time ?? '')
+    // A recorded actual finish stays visible on the block, not only in the tooltip.
+    const finished = p.type === 'shift' ? actualFinishChip(p.start_time ?? '', p.actual_end_time) : ''
     const tip = [
       p.emp_name,
       shiftTimeRange(p.start_time ?? '', p.end_time ?? '', p.actual_end_time),
@@ -451,6 +454,7 @@ export default function ManagerCalendar() {
           employeeName,
           startTime: p.start_time ?? '',
           endTime: p.end_time ?? '',
+          actualEndTime: p.type === 'shift' ? p.actual_end_time : null,
           position: p.position ?? '',
           isTrainee: !!p.is_trainee,
           shiftType: p.type === 'shift' ? shiftKindLabel(kind) : 'Available',
@@ -462,7 +466,7 @@ export default function ManagerCalendar() {
             title={accessibleLabel}
             style={{ background: employeeColor, color: textColorOn(employeeColor) }}
           >
-            <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}</span>
+            <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}{finished && ' ✓'}</span>
             <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
           </div>
         )
@@ -472,6 +476,7 @@ export default function ManagerCalendar() {
           <div className="pc-shift-heading">
             {p.is_trainee && <span className="pc-shift-t">T</span>}
             <span className="pc-shift-name">{p.emp_name}</span>
+            {finished && <span className="pc-shift-finished">{finished}</span>}
           </div>
           <div className="pc-shift-details">
             {halfTag && <span className="pc-shift-half">{halfTag}</span>}
@@ -490,6 +495,7 @@ export default function ManagerCalendar() {
           {p.is_trainee && <span className="pc-shift-t">T</span>}
         </div>
         <div className="pc-shift-name">{p.emp_name}</div>
+        {finished && <div><span className="pc-shift-finished">{finished}</span></div>}
         {p.position && <div className="pc-shift-pos">{p.position}</div>}
       </div>
     )

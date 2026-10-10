@@ -8,6 +8,7 @@ interface ShiftAccessibleLabelInput {
   employeeName: string
   startTime: string
   endTime: string
+  actualEndTime?: string | null
   position: string
   isTrainee: boolean
   shiftType?: string
@@ -27,13 +28,14 @@ export function mobileShiftAccessibleLabel({
   employeeName,
   startTime,
   endTime,
+  actualEndTime,
   position,
   isTrainee,
   shiftType,
 }: ShiftAccessibleLabelInput): string {
   return [
     employeeName,
-    `${startTime}–${endTime}`,
+    shiftTimeRange(startTime, endTime, actualEndTime),
     shiftType,
     position || null,
     isTrainee ? 'Trainee' : null,
@@ -50,6 +52,12 @@ export function shiftTimeRange(startTime: string, endTime: string, actualEndTime
   const range = `${startTime}–${endTime}`
   if (!actualEndTime) return range
   return `${range} · finished ${actualEndTime}${finishesNextDay(startTime, actualEndTime) ? ' (next day)' : ''}`
+}
+
+/** Compact calendar marker for a recorded actual finish: "✓ 21:25", or "✓ 00:45 +1" the next day. */
+export function actualFinishChip(startTime: string, actualEndTime?: string | null): string {
+  if (!actualEndTime) return ''
+  return `✓ ${actualEndTime}${finishesNextDay(startTime, actualEndTime) ? ' +1' : ''}`
 }
 
 export function shiftColorPresentation(employeeColor: string, _kind: string) {
