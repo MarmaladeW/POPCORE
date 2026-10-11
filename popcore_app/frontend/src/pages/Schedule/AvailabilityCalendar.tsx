@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
-import { Alert, Button, Input, Select, Space, Spin } from 'antd'
+import { Alert, Button, Input, Radio, Select, Space, Spin } from 'antd'
 import dayjs from 'dayjs'
 import { useAppStore } from '../../store'
-import { getAvailabilityPeriod, submitAvailabilityPeriod } from './scheduleApi'
+import { getAvailabilityPeriod, getScheduleConfig, submitAvailabilityPeriod } from './scheduleApi'
+import { DEFAULT_STORE_HOURS, hoursForStore, parseStoreOpenHours, presetTimes } from './openHours'
 import { scheduleApiErrorMessage } from './employeeScheduling'
 import { cycleStart, cycleDates, emptyDays, repeatFirstWeek, finishSubmission, type AvailabilityDraft } from './availabilityPeriod'
+
+/** Full and half days take each date's own hours, so weekend halves split at 16:30. */
+type HoursChoice = 'full' | 'first' | 'second' | 'custom'
+const HOURS_CHOICES: { value: HoursChoice; label: string }[] = [
+  { value: 'full', label: 'Full day' }, { value: 'first', label: 'Half day (AM)' },
+  { value: 'second', label: 'Half day (PM)' }, { value: 'custom', label: 'Custom hours' },
+]
 
 export default function AvailabilityCalendar() {
   const { stores, selectedStore, setSelectedStore, availabilityDrafts: drafts, setAvailabilityDrafts: setDrafts } = useAppStore()
@@ -16,6 +24,8 @@ export default function AvailabilityCalendar() {
   const draft = drafts[scope]
   const [selected, setSelected] = useState<string[]>([])
   const [status, setStatus] = useState<'available' | 'unavailable'>('available')
+  const [hours, setHours] = useState<HoursChoice>('full')
+  const [storeHours, setStoreHours] = useState(DEFAULT_STORE_HOURS)
   const [start, setStart] = useState('12:00')
   const [end, setEnd] = useState('22:00')
   const [notes, setNotes] = useState('')
@@ -25,6 +35,10 @@ export default function AvailabilityCalendar() {
   const draftCache = useRef(drafts)
   draftCache.current = drafts
   const dates = cycleDates(period)
+  const openHours = hoursForStore(storeCode ?? '', storeHours)
+  useEffect(() => {
+    getScheduleConfig().then(cfg => setStoreHours(parseStoreOpenHours(cfg.schedule_open_hours))).catch(() => {})
+  }, [])
   const completed = draft?.days.filter(day => day.status !== 'unset').length ?? 0
   useEffect(() => {
     setSelected([])
@@ -54,13 +68,15 @@ export default function AvailabilityCalendar() {
   }
   const apply = () => {
     if (!draft) return
-    if (status === 'available' && (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || start >= end)) {
+    if (status === 'available' && hours === 'custom' && (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || start >= end)) {
       setErrors(previous => ({ ...previous, [scope]: 'Choose valid hours. End time must be after start time.' }))
       return
     }
-    update(draft.days.map(day => selected.includes(day.date) ? {
-      ...day, status, start_time: status === 'available' ? start : '', end_time: status === 'available' ? end : '', notes,
-    } : day))
+    update(draft.days.map(day => {
+      if (!selected.includes(day.date)) return day
+      const times = hours === 'custom' ? { start, end } : presetTimes(day.date, openHours)[hours]
+      return { ...day, status, start_time: status === 'available' ? times.start : '', end_time: status === 'available' ? times.end : '', notes }
+    }))
     setSelected([])
   }
   const submit = async () => {
@@ -108,7 +124,11 @@ export default function AvailabilityCalendar() {
             aria-pressed={selected.includes(day.date)}
             aria-label={`${dayjs(day.date).format('dddd, MMM D')}: ${day.status === 'unset' ? 'Not set' : day.status === 'unavailable' ? 'Unavailable' : `Available ${day.start_time}–${day.end_time}`}`}
             onClick={() => {
-              if (selected.length === 0) { setStatus(day.status === 'unavailable' ? 'unavailable' : 'available'); setStart(day.start_time || '12:00'); setEnd(day.end_time || '22:00'); setNotes(day.notes) }
+              if (selected.length === 0) {
+                const presets = presetTimes(day.date, openHours)
+                setStatus(day.status === 'unavailable' ? 'unavailable' : 'available'); setStart(day.start_time || '12:00'); setEnd(day.end_time || '22:00'); setNotes(day.notes)
+                setHours(!day.start_time ? 'full' : (['full', 'first', 'second'] as const).find(key => presets[key].start === day.start_time && presets[key].end === day.end_time) ?? 'custom')
+              }
               setSelected(previous => previous.includes(day.date) ? previous.filter(date => date !== day.date) : [...previous, day.date])
             }}>
             <strong>{dayjs(day.date).format('D')}{day.date.endsWith('-01') ? ` ${dayjs(day.date).format('MMM')}` : ''}</strong>
@@ -120,7 +140,14 @@ export default function AvailabilityCalendar() {
           <h4>{selected.length === 1 ? dayjs(selected[0]).format('dddd, MMM D') : `${selected.length} dates selected`}</h4>
           <div className="pc-availability-editor">
             <label>Availability <Select aria-label="Availability response" value={status} disabled={busy} onChange={setStatus} options={[{ value: 'available', label: 'Available' }, { value: 'unavailable', label: 'Unavailable' }]} /></label>
-            {status === 'available' && <>
+            {status === 'available' && <div>
+              <Radio.Group aria-label="Available hours" optionType="button" buttonStyle="solid" size="small" className="pc-shift-types"
+                value={hours} disabled={busy} onChange={event => setHours(event.target.value as HoursChoice)} options={HOURS_CHOICES} />
+              {hours !== 'custom' && <small className="text-muted-foreground" style={{ display: 'block', marginTop: 4 }}>
+                Mon–Fri {presetTimes(dates[0], openHours)[hours].start}–{presetTimes(dates[0], openHours)[hours].end} · Sat–Sun {presetTimes(dates[5], openHours)[hours].start}–{presetTimes(dates[5], openHours)[hours].end}
+              </small>}
+            </div>}
+            {status === 'available' && hours === 'custom' && <>
               <label>From <input aria-label="Available from" type="time" value={start} disabled={busy} onChange={event => setStart(event.target.value)} /></label>
               <label>Until <input aria-label="Available until" type="time" value={end} disabled={busy} onChange={event => setEnd(event.target.value)} /></label>
             </>}
