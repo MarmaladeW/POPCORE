@@ -39,6 +39,7 @@ import {
   parseStoreOpenHours,
   parseStaffRequirements,
   shiftKindFor,
+  shiftSpan,
   understaffedIntervals,
   type PositionsMap,
   type ShiftKind,
@@ -224,7 +225,7 @@ export default function ManagerCalendar() {
           borderColor:     empColor,
           textColor:       textColorOn(empColor),
           display:         'block',
-          extendedProps:   { type: 'availability', employee_id: a.employee_id, date: a.date, store_code: code, emp_name: a.employee_name, emp_color: empColor, start_time: a.start_time, end_time: a.end_time },
+          extendedProps:   { type: 'availability', employee_id: a.employee_id, date: a.date, store_code: code, emp_name: a.employee_name, emp_color: empColor, start_time: a.start_time, end_time: a.end_time, span: shiftSpan(a.date, hoursForStore(code, storeHours), a.start_time, a.end_time) },
         })
       }
 
@@ -262,6 +263,7 @@ export default function ManagerCalendar() {
             emp_name: s.employee_name ?? 'Employee', emp_color: empColor,
             start_time: s.start_time, end_time: s.end_time,
             actual_end_time: s.actual_end_time ?? null,
+            span: shiftSpan(s.date, hoursForStore(code, storeHours), s.start_time, s.end_time),
           },
         })
       }
@@ -431,6 +433,7 @@ export default function ManagerCalendar() {
       type?: string; kind?: ShiftKind; is_trainee?: boolean; position?: string
       emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
       actual_end_time?: string | null
+      span?: { left: number; width: number }
     }
     if (p.type !== 'shift' && p.type !== 'availability') return true   // default rendering for backgrounds
     const kind    = p.kind ?? 'custom'
@@ -471,8 +474,11 @@ export default function ManagerCalendar() {
           </div>
         )
       }
+      // The bar itself is drawn here so its length and position follow the hours.
+      const span = p.span ?? { left: 0, width: 1 }
       return (
-        <div className="pc-shift" title={tip} aria-label={tip}>
+        <div className={cn('pc-shift pc-shift-bar', p.is_trainee && 'pc-shift-bar-trainee', !!halfTag && 'pc-shift-bar-half')} title={tip} aria-label={tip}
+          style={{ marginLeft: `${span.left * 100}%`, width: `${span.width * 100}%`, background: p.emp_color }}>
           <div className="pc-shift-heading">
             {p.is_trainee && <span className="pc-shift-t">T</span>}
             <span className="pc-shift-name">{p.emp_name}</span>
@@ -800,15 +806,20 @@ export default function ManagerCalendar() {
       {/* Legend: shift styles */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground px-1">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-6 h-3 rounded-sm" style={{ background: '#6366f1' }} />
+          <span className="inline-block w-8 h-3 rounded-sm" style={{ background: '#6366f1' }} />
           Full day
         </span>
         <span className="flex items-center gap-1.5">
-          <span
-            className="inline-flex w-6 h-3 items-center justify-center rounded-sm text-[7px] font-bold text-white"
-            style={{ background: '#6366f1' }}
-          >AM</span>
-          Half day / custom slot
+          <span className="inline-block w-8 h-3 rounded-sm bg-muted">
+            <span className="block w-1/2 h-3 rounded-sm" style={{ background: '#6366f1' }} />
+          </span>
+          Half day (AM)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-8 h-3 rounded-sm bg-muted">
+            <span className="block w-1/2 h-3 rounded-sm ml-auto" style={{ background: '#6366f1' }} />
+          </span>
+          Half day (PM)
         </span>
         <span className="flex items-center gap-1.5">
           <span
@@ -882,10 +893,6 @@ export default function ManagerCalendar() {
       ))}
       </div>
       <aside ref={assignmentRef} className="pc-assignment-sidebar" aria-label="Shift assignment panel">
-        {periodKey && schedulableEmployees.length > 0 && <CoveragePanel
-          periodKey={periodKey} periodLabel={viewTitle}
-          employees={schedulableEmployees} employeeColors={empColors}
-        />}
         {selectedDate && modalStoreCode ? <div className="pc-assignment-day">
           <div className="pc-assignment-store-switch" aria-label="Assignment store">
             {realStores.map(store => <Button key={store.code}
@@ -914,6 +921,11 @@ export default function ManagerCalendar() {
           the store needs (labelled scheduled/required) — click one to assign a shift.
         </p>
       )}
+
+      {periodKey && schedulableEmployees.length > 0 && <CoveragePanel
+        periodKey={periodKey} periodLabel={viewTitle}
+        employees={schedulableEmployees} employeeColors={empColors}
+      />}
 
       <ShiftModal
         open={modalOpen}

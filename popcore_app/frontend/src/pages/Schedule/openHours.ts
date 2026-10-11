@@ -118,6 +118,22 @@ export function halfSplitFor(date: string): string {
   return (dow === 0 || dow === 6) ? '16:30' : '17:00'
 }
 
+/** Full-day and half-day times for `date`: they follow the store's opening
+ *  hours and split at 17:00 on weekdays, 16:30 on weekends. */
+export function presetTimes(
+  date: string | null,
+  hours: OpenHoursConfig,
+): Record<'full' | 'first' | 'second', { start: string; end: string }> {
+  const d = date ?? dayjs().format('YYYY-MM-DD')
+  const { start: open, end: close } = openHoursFor(d, hours)
+  const mid = halfSplitFor(d)
+  return {
+    full:   { start: open, end: close },
+    first:  { start: open, end: mid },
+    second: { start: mid,  end: close },
+  }
+}
+
 // ── Custom fixed shift slots (Settings → Scheduling) ─────────────────────────
 
 export interface ShiftPreset { label: string; start: string; end: string }
@@ -190,6 +206,27 @@ export function shiftKindFor(
   if (start <= open && end < close)  return 'first'
   if (start > open  && end >= close) return 'second'
   return 'custom'
+}
+
+/** Where a shift sits within the day's opening hours, as fractions of the day
+ *  cell's width. Calendar bars drawn this way show their length: a full day
+ *  spans the cell and half days fill its morning or evening half. Short
+ *  shifts keep `minWidth` so the name stays readable. */
+export function shiftSpan(
+  date: string,
+  hours: OpenHoursConfig,
+  start: string,
+  end: string,
+  minWidth = 0.4,
+): { left: number; width: number } {
+  const { start: openAt, end: closeAt } = openHoursFor(date, hours)
+  const open = toMin(openAt)
+  const length = toMin(closeAt) - open
+  const from = Math.min(Math.max(toMin(start) - open, 0), length)
+  const to   = Math.min(Math.max(toMin(end) - open, 0), length)
+  if (!(length > 0) || !(to >= from)) return { left: 0, width: 1 }
+  const width = Math.max((to - from) / length, minWidth)
+  return { left: Math.min(from / length, 1 - width), width }
 }
 
 /** Compact time for calendar chips: "12:00" → "12", "16:30" → "16:30". */

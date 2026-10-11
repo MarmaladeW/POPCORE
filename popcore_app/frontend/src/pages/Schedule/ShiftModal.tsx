@@ -12,7 +12,7 @@ import {
   type Shift,
 } from './scheduleApi'
 import {
-  DEFAULT_STORE_HOURS, halfSplitFor, hoursForStore, openHoursFor, positionsForStore,
+  DEFAULT_STORE_HOURS, hoursForStore, positionsForStore, presetTimes,
   type OpenHoursConfig, type PositionsMap, type ShiftPreset, type StoreHoursMap,
 } from './openHours'
 import { scheduleApiErrorMessage } from './employeeScheduling'
@@ -73,22 +73,6 @@ function buildTimeOptions() {
 }
 const TIME_OPTIONS = buildTimeOptions()
 
-/** Default shift times follow store opening hours (from the schedule config);
- *  half shifts split at 17:00 weekdays, 16:30 weekends. */
-function presetTimes(
-  date: string | null,
-  hours: OpenHoursConfig,
-): Record<Exclude<Preset, 'custom'>, { start: string; end: string }> {
-  const d = date ?? dayjs().format('YYYY-MM-DD')
-  const { start: open, end: close } = openHoursFor(d, hours)
-  const mid = halfSplitFor(d)
-  return {
-    full:   { start: open, end: close },
-    first:  { start: open, end: mid },
-    second: { start: mid,  end: close },
-  }
-}
-
 function matchPreset(
   date: string | null,
   hours: OpenHoursConfig,
@@ -127,7 +111,11 @@ export default function ShiftModal({
   const requireAvailability = !existing && !!employee && !employee.is_trainee
   const issue = employee && !employee.is_trainee ? availabilityIssue(selectedAvailability, chosenStore, watchedStart || '', watchedEnd || '') : null
   const unavailable = !existing && selectedAvailability?.status === 'unavailable'
-  const blockingIssue = requireAvailability && selectedAvailability?.submitted_at && !unavailable ? issue : null
+  // Submitted hours that do not cover the chosen times: assignable after the same confirmation as an unavailable date.
+  const outsideHours = requireAvailability && !!selectedAvailability?.submitted_at && !unavailable
+    && !!issue && !!watchedStart && !!watchedEnd && watchedEnd > watchedStart
+  const needsConfirmation = unavailable || outsideHours
+  const blockingIssue = requireAvailability && selectedAvailability?.submitted_at && !needsConfirmation ? issue : null
   const openHours: OpenHoursConfig = hoursForStore(
     watchedStore || existing?.store_code || defaultStoreCode || '', storeHours,
   )
@@ -276,7 +264,7 @@ export default function ShiftModal({
       const values = await form.validateFields() as ShiftFormValues
 
       if (blockingIssue) { msgApi.error(blockingIssue); return }
-      if (unavailable && !confirmedUnavailable) {
+      if (needsConfirmation && !confirmedUnavailable) {
         pendingValues.current = values
         setSavePhase('availability')
         return
@@ -369,8 +357,10 @@ export default function ShiftModal({
           {/* Conflict warning panel */}
           {savePhase === 'availability' && (
             <div role="alert" className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
-              <p className="font-semibold">Assign despite unavailable date</p>
-              <p>{employee?.name || 'This employee'} marked {date} unavailable. Confirm you want to assign this shift anyway.</p>
+              <p className="font-semibold">{unavailable ? 'Assign despite unavailable date' : 'Assign outside submitted availability'}</p>
+              <p>{unavailable
+                ? `${employee?.name || 'This employee'} marked ${date} unavailable.`
+                : `${employee?.name || 'This employee'} submitted ${selectedAvailability?.start_time}–${selectedAvailability?.end_time} for ${date}; this shift is ${watchedStart}–${watchedEnd}.`} Confirm you want to assign this shift anyway.</p>
             </div>
           )}
 
@@ -425,7 +415,7 @@ export default function ShiftModal({
             </div>
           )}
 
-          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{!existing && (!selectedAvailability?.submitted_at || unavailable) && ' You can still assign this shift.'}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
+          {showForm && issue && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{existing ? 'Review: ' : ''}{issue}{!existing && (!selectedAvailability?.submitted_at || needsConfirmation) && ' You can still assign this shift.'}{existing && ' Existing shift is preserved; review changes with the employee.'}</div>}
 
           {/* Form — kept mounted to preserve values; hidden during conflict/error */}
           <div style={showForm ? {} : { display: 'none' }}>
@@ -626,7 +616,7 @@ export default function ShiftModal({
             {savePhase === 'error' && (
               <>
                 <Button variant="outline" onClick={() => setSavePhase('idle')}>Cancel</Button>
-                <Button onClick={() => handleSave(unavailable && !!pendingValues.current)}>Retry check</Button>
+                <Button onClick={() => handleSave(needsConfirmation && !!pendingValues.current)}>Retry check</Button>
               </>
             )}
             {showForm && (
