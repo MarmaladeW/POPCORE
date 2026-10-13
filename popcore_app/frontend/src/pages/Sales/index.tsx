@@ -69,6 +69,7 @@ export default function SalesPage() {
 
 function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Dayjs)=>Dayjs))=>void}) {
   const isMobile = useIsMobile()
+  const mobileTap = isMobile ? { minHeight: 44 } : undefined
   const { selectedStore, stores, setSelectedStore } = useAppStore()
   const sc = selectedStore?.code
   const isAll = sc === 'ALL'
@@ -406,6 +407,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
                 style={{ color: '#374151', padding: '0 8px' }}
               />
               <DatePicker
+                aria-label="Report date"
                 value={date}
                 disabled={busy}
                 onChange={d => setDate(d ?? dayjs())}
@@ -489,6 +491,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
           <Space wrap size={[8, 8]}>
             <Button disabled={busy || editing || !!pendingAdd} onClick={loadSales}>Refresh</Button>
             <DatePicker
+              aria-label="Report date"
               value={date}
                 disabled={busy}
               onChange={d => setDate(d ?? dayjs())}
@@ -632,7 +635,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
         <Col xs={24} lg={12}>
           <Card title="Latest 7 recorded dates" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
+              <BarChart aria-label="Bar chart of units sold on the latest 7 recorded dates" data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} />
@@ -645,7 +648,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
         <Col xs={24} lg={12}>
           <Card title={`Top Products — ${date.format('MMM D')}`} style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
             <ResponsiveContainer width="100%" height={200}>
-              <HBarChart data={topProducts} layout="vertical" margin={{ top: 0, right: 10, left: 60, bottom: 0 }}>
+              <HBarChart aria-label={`Bar chart of top products by POS and non-POS units sold on ${date.format('MMM D')}`} data={topProducts} layout="vertical" margin={{ top: 0, right: 10, left: 60, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 10 }} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={60} />
@@ -704,18 +707,19 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
           </div>
           <Space size={8}>
             {!isAll && (
-              <Button size="small" disabled={busy || editing} icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
+              <Button size="small" style={mobileTap} disabled={busy || editing} icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
                 Re-import
               </Button>
             )}
             <RoleGuard minRole="manager">
               {!isAll && (
                 <Popconfirm title={`Clear all sales and report notes for ${dateStr}?`} onConfirm={clearDay}>
-                  <Button danger size="small" disabled={readOnly || editing}>Clear Day</Button>
+                  <Button danger size="small" style={mobileTap} disabled={readOnly || editing}>Clear Day</Button>
                 </Popconfirm>
               )}
               <Button
                 size="small"
+                style={mobileTap}
                 icon={<ExportOutlined />}
                 onClick={doExport}
               >
@@ -811,6 +815,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
               {!isMobile && <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 130 }} />}
               <Button
                 size="small"
+                style={mobileTap}
                 icon={<ExportOutlined />}
                 onClick={doExport}
               >Export</Button>
