@@ -103,6 +103,78 @@ def _balance(con, product_id, location_id, disposition):
     }
 
 
+def identify_design(con, data, *, actor, request_key):
+    """Identify saleable boxes atomically; see docs/goods-handling.md."""
+    if not isinstance(data, dict):
+        raise InventoryValidationError('body must be an object')
+    reason = data.get('reason')
+    if not isinstance(reason, str) or not reason.strip():
+        raise InventoryValidationError('reason is required')
+    intent = {
+        'source_product_id': read_int(data.get('source_product_id'), 'source_product_id', minimum=1),
+        'design_product_id': read_int(data.get('design_product_id'), 'design_product_id', minimum=1),
+        'location_id': read_int(data.get('location_id'), 'location_id', minimum=1),
+        'quantity': _quantity(data.get('quantity'), 'quantity'),
+        'source_version': read_int(data.get('source_version'), 'source_version', minimum=0),
+        'target_version': read_int(data.get('target_version'), 'target_version', minimum=0),
+        'business_date': read_date(data.get('business_date'), 'business_date'),
+        'reason': reason.strip(),
+        'open_set_id': None if data.get('open_set_id') is None else read_int(
+            data['open_set_id'], 'open_set_id', minimum=1),
+    }
+    _begin(con)
+    try:
+        location = _location(con, intent['location_id'])
+        require_inventory_access(con, actor, (location['store_id'],), 'staff')
+        key, digest, prior = _replay(con, request_key, 'design_identification', actor, intent)
+        if prior is not None:
+            con.commit()
+            return prior
+        source, target = [con.execute(
+            'SELECT series_id,stock_form,stock_unit,identity_status,design_name FROM products WHERE id=?',
+            (intent[field],),
+        ).fetchone() for field in ('source_product_id', 'design_product_id')]
+        if (source is None or target is None
+                or source['identity_status'] != 'verified' or target['identity_status'] != 'verified'
+                or source['stock_form'] != 'random_box' or source['stock_unit'] != 'box'
+                or target['stock_form'] != 'confirmed_design' or target['stock_unit'] != 'piece'
+                or not (target['design_name'] or '').strip()
+                or source['series_id'] is None or source['series_id'] != target['series_id']):
+            raise InventoryConflict(
+                'Select a verified random box and confirmed design from the same series',
+                'design_identity_mismatch',
+            )
+        common = {name: intent[name] for name in ('business_date', 'reason')}
+        consumed = _post_inventory_in_transaction(con, {
+            **common, 'kind': 'consume', 'source_type': 'design_identification',
+            'source_id': f'{key}:consume', 'lines': [{
+                'product_id': intent['source_product_id'], 'unit': 'box',
+                'quantity': intent['quantity'], 'from_location_id': location['id'],
+                'from_disposition': 'saleable',
+                **({'open_set_id': intent['open_set_id']} if intent['open_set_id'] is not None else {}),
+                'expected_versions': {'from': intent['source_version']},
+            }],
+        }, actor=actor, request_key=f'{key}:consume', access_store_ids=(location['store_id'],))
+        received = _post_inventory_in_transaction(con, {
+            **common, 'kind': 'receipt', 'source_type': 'design_identification',
+            'source_id': f'{key}:receipt', 'lines': [{
+                'product_id': intent['design_product_id'], 'unit': 'piece',
+                'quantity': intent['quantity'], 'to_location_id': location['id'],
+                'to_disposition': 'saleable',
+                'expected_versions': {'to': intent['target_version']},
+            }],
+        }, actor=actor, request_key=f'{key}:receipt', access_store_ids=(location['store_id'],))
+        result = {'consume_document_id': consumed['document_id'],
+                  'receipt_document_id': received['document_id']}
+        _remember(con, key, 'design_identification', received['document_id'], actor, digest, result)
+        con.commit()
+        return result
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        raise
+
+
 def _selected_open_set(con, open_set_id, product_id, location_id):
     if open_set_id is None:
         return None
@@ -700,7 +772,7 @@ def create_count(con, data, *, actor, request_key):
     if disposition not in {'saleable', 'trade', 'display', 'hold', 'damaged'}:
         raise InventoryValidationError('disposition is invalid')
     raw_lines = data.get('lines')
-    if not isinstance(raw_lines, list) or not raw_lines:
+    if not isinstance(raw_lines, list) or not raw_lines or any(not isinstance(line, dict) for line in raw_lines):
         raise InventoryValidationError('lines must be a non-empty list')
     lines = []
     seen_products = set()
@@ -725,7 +797,17 @@ def create_count(con, data, *, actor, request_key):
     }
     _begin(con)
     try:
-        key, digest, prior = _replay(con, request_key, 'count_create', actor, intent)
+        request_intent = {**intent, 'lines': [
+            {field: line[field] for field in ('product_id', 'unit', 'observed_quantity')}
+            for line in lines
+        ]}
+        try:
+            key, digest, prior = _replay(con, request_key, 'count_create', actor, request_intent)
+        except InventoryConflict as exc:
+            if exc.code != 'idempotency_conflict':
+                raise
+            # Existing request keys also hashed the captured stock facts.
+            key, digest, prior = _replay(con, request_key, 'count_create', actor, intent)
         if prior:
             con.commit()
             return prior
@@ -748,6 +830,45 @@ def create_count(con, data, *, actor, request_key):
             )
         response = {'id': count_id, 'version': 1, 'status': 'draft'}
         _remember(con, key, 'count_create', count_id, actor, digest, response)
+        con.commit()
+        return response
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        raise
+
+
+def update_count(con, count_id, data, *, actor, request_key):
+    count_id = read_int(count_id, 'count_id', minimum=1)
+    expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
+    raw_lines = data.get('lines')
+    if not isinstance(raw_lines, list) or not raw_lines or any(not isinstance(line, dict) for line in raw_lines):
+        raise InventoryValidationError('lines must be a non-empty list of observations')
+    lines = [{'line_no': read_int(line.get('line_no'), 'line_no', minimum=1),
+              'observed_quantity': _quantity(line.get('observed_quantity'), 'observed_quantity', allow_zero=True)}
+             for line in raw_lines]
+    intent = {'count_id': count_id, 'expected_version': expected_version, 'lines': lines}
+    _begin(con)
+    try:
+        row = con.execute('SELECT * FROM inventory_counts WHERE id=?', (count_id,)).fetchone()
+        if row is None:
+            raise InventoryValidationError('count does not exist')
+        require_inventory_access(con, actor, (row['store_id'],), 'staff')
+        key, digest, prior = _replay(con, request_key, 'count_update', actor, intent)
+        if prior:
+            con.commit()
+            return prior
+        if row['status'] != 'draft' or row['version'] != expected_version:
+            raise InventoryConflict('Count changed before save', 'count_state_conflict')
+        saved_lines = {line['line_no'] for line in con.execute('SELECT line_no FROM inventory_count_lines WHERE count_id=?', (count_id,))}
+        if len(lines) != len(saved_lines) or {line['line_no'] for line in lines} != saved_lines:
+            raise InventoryValidationError('Save one observation for every existing count line')
+        for line in lines:
+            con.execute('UPDATE inventory_count_lines SET observed_quantity=? WHERE count_id=? AND line_no=?',
+                        (line['observed_quantity'], count_id, line['line_no']))
+        con.execute('UPDATE inventory_counts SET version=version+1 WHERE id=? AND version=?', (count_id, expected_version))
+        response = {'id': count_id, 'version': expected_version + 1, 'status': 'draft'}
+        _remember(con, key, 'count_update', count_id, actor, digest, response)
         con.commit()
         return response
     except Exception:

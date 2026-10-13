@@ -6,6 +6,12 @@ export interface GoodsProduct {
   id: number
   sku: string
   jizhanming: string
+  name_cn_en?: string | null
+  series_id?: number | null
+  series_name?: string | null
+  ip_series?: string | null
+  stock_form?: string | null
+  design_name?: string | null
   stock_unit?: NativeUnit | null
   identity_status?: 'verified' | 'unverified'
 }
@@ -29,8 +35,19 @@ export interface ReceiptLine {line_no:number;product_id:number;native_unit:Nativ
 export interface ReceiptDetail extends WorkflowResult {store_id:number;destination_location_id:number;business_date:string;shipment_reference:string|null;supplier:string|null;lines:ReceiptLine[]}
 export interface TransferLine {line_no:number;product_id:number;native_unit:NativeUnit;requested_quantity:number;dispatched_quantity:number;received_quantity:number;returned_quantity:number;loss_quantity:number;short_quantity:number;outstanding_transit:number}
 export interface TransferDetail extends WorkflowResult {kind:'transfer'|'restock';source_location_id:number;destination_location_id:number;business_date:string;restock_session_id:number|null;lines:TransferLine[]}
+export interface IncomingTransfer {
+  id: number
+  status: 'planned' | 'active'
+  business_date: string
+  source_store_name: string
+  source_location_name: string
+  destination_location_name: string
+  lines: Array<{ line_no:number; product_id:number; product_name:string; sku:string; native_unit:NativeUnit; outstanding_transit:number; awaiting_dispatch:number }>
+}
+export const getIncomingTransfers=(storeId:number,signal?:AbortSignal)=>client.get<IncomingTransfer[]>('/goods/transfers',{params:{store_id:storeId},signal}).then(response=>response.data)
+
 export interface CountLine {line_no:number;product_id:number;native_unit:NativeUnit;expected_quantity:number;observed_quantity:number;captured_balance_version:number}
-export interface CountDetail extends WorkflowResult {store_id:number;location_id:number;disposition:string;business_date:string;lines:CountLine[]}
+export interface CountDetail extends WorkflowResult {recount_id?:number;store_id:number;location_id:number;disposition:string;business_date:string;lines:CountLine[]}
 export interface CountResult extends WorkflowResult {recount_id?:number}
 
 export const getReceipt=(id:number,signal?:AbortSignal)=>client.get<ReceiptDetail>(`/goods/receipts/${id}`,{signal}).then(response=>response.data)
@@ -78,6 +95,8 @@ export async function actOnTransfer(
   })).data as WorkflowResult
 }
 
+export async function updateCount(id:number,body:object,key:string){return (await client.patch(`/goods/counts/${id}`,body,{headers:{'Idempotency-Key':key}})).data as CountResult}
+
 export async function createCount(body: object, key: string) {
   return (await client.post('/goods/counts', body, {
     headers: { 'Idempotency-Key': key },
@@ -90,4 +109,10 @@ export async function actOnCount(
   return (await client.post(`/goods/counts/${id}/${action}`, body, {
     headers: { 'Idempotency-Key': key },
   })).data as CountResult
+}
+
+export async function loadGoodsProductsById(products:GoodsProduct[], ids:number[], signal?:AbortSignal) {
+  const missing=[...new Set(ids)].filter(id=>!products.some(product=>product.id===id))
+  const resolved=await Promise.all(missing.map(id=>client.get<GoodsProduct>(`/products/${id}`,{signal}).then(response=>response.data)))
+  return [...products,...resolved]
 }

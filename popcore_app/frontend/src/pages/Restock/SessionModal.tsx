@@ -31,6 +31,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('request')
   const [error, setError] = useState('')
+  const [receivingBusy, setReceivingBusy] = useState(false)
   const request = useRef(0)
 
   const loadSession = useCallback(async () => {
@@ -75,20 +76,21 @@ export default function SessionModal({ sessionId, onClose }: Props) {
   const tabItems = [
     {
       key:      'request',
+      disabled: receivingBusy,
       label:    <span><InboxOutlined /> 录入补货</span>,
       children: session && !error && !loading ? <RequestStep session={session} onRefresh={loadSession} /> : null,
     },
     {
       key:      'picking',
       label:    <span><CheckSquareOutlined /> 仓库拣货</span>,
-      disabled: status === 'pending',
+      disabled: status === 'pending' || receivingBusy,
       children: session && !error && !loading ? <PickingStep session={session} onRefresh={loadSession} /> : null,
     },
     {
       key: 'receiving',
       label: 'Receive',
       disabled: !session?.delivery,
-      children: session && !error && !loading ? <ReceivingStep session={session} onRefresh={loadSession} /> : null,
+      children: session && !error && !loading ? <ReceivingStep session={session} onRefresh={loadSession} onBusy={setReceivingBusy} /> : null,
     },
   ]
 
@@ -111,6 +113,9 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     <Modal
       open={!!sessionId}
       onCancel={onClose}
+      closable={!receivingBusy}
+      maskClosable={!receivingBusy}
+      keyboard={!receivingBusy}
       footer={null}
       title={title}
       width={900}

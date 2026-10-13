@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
+import { useAuth0 } from '@auth0/auth0-react'
+import { useRole } from '../../auth/useRole'
+import { savedLineValue, savedPriceSummary } from './historicalSales'
 import {
-  Button, Card, Col, Row, Spin, Table, Tag, Typography,
+  Alert, Button, Card, Col, Row, Spin, Table, Tag, Typography,
 } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -26,7 +29,7 @@ interface SaleRow {
   sku: string
   jizhanming: string
   name_cn_en: string
-  price: number | null
+  unit_price: number | null
   ip_series: string
 }
 
@@ -34,24 +37,33 @@ const SIDEBAR_BG = '#0D1B2A'
 
 export default function DayDetailPage() {
   const { date }  = useParams<{ date: string }>()
-  const navigate  = useNavigate()
-  const isMobile  = useIsMobile()
   const { selectedStore } = useAppStore()
+  const { user } = useAuth0(), role = useRole()
+  if (!date || !selectedStore) return <Alert type="info" message="Select a store and date to review a historical report." />
+  return <DayDetail key={`${user?.sub}|${role}|${selectedStore.code}|${date}`} date={date} storeCode={selectedStore.code} storeName={selectedStore.name} />
+}
+
+function DayDetail({date,storeCode,storeName}:{date:string;storeCode:string;storeName:string}) {
+  const isMobile = useIsMobile()
 
   const [rows,    setRows]    = useState<SaleRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [refresh, setRefresh] = useState(0)
 
   const canvasRef      = useRef<HTMLCanvasElement>(null)
   const chartInstance  = useRef<any>(null)
 
   // Fetch sales for this date
   useEffect(() => {
-    if (!date || !selectedStore?.code) return
-    setLoading(true)
-    client.get('/sales', { params: { date, store_code: selectedStore.code } })
-      .then(r => setRows(r.data))
-      .finally(() => setLoading(false))
-  }, [date])
+    const controller = new AbortController()
+    setLoading(true); setError(''); setRows([])
+    client.get('/sales', { params: { date, store_code: storeCode }, signal: controller.signal })
+      .then(r => { if (!controller.signal.aborted) setRows(r.data) })
+      .catch(cause => { if (!controller.signal.aborted) setError(cause?._serverMessage || 'Unable to load this historical report.') })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [date, storeCode, refresh])
 
   // Build / rebuild Chart.js bar chart whenever rows change
   useEffect(() => {
@@ -121,7 +133,8 @@ export default function DayDetailPage() {
   }, [rows])
 
   // KPIs
-  const totalRevenue = rows.reduce((s, r) => s + (r.price ?? 0) * r.qty_sold, 0)
+  const estimate = savedPriceSummary(rows)
+  const estimateValue = estimate.knownRows ? `CA$${estimate.knownValue.toFixed(2)}` : 'Unknown'
   const totalUnits   = rows.reduce((s, r) => s + r.qty_sold, 0)
   const productCount = rows.length
 
@@ -147,7 +160,7 @@ export default function DayDetailPage() {
       render: v => <Tag color="blue">{v}</Tag>,
     },
     {
-      title: 'Cash', dataIndex: 'qty_cash', width: 70, align: 'center',
+      title: 'Non-POS', dataIndex: 'qty_cash', width: 70, align: 'center',
       render: v => <Tag color="cyan">{v}</Tag>,
     },
     {
@@ -157,20 +170,20 @@ export default function DayDetailPage() {
       ),
     },
     {
-      title: 'Unit Price', dataIndex: 'price', width: 90, align: 'right',
-      render: v => v != null ? <Text style={{ fontSize: 12 }}>CA${v}</Text> : '—',
+      title: 'Saved unit price', dataIndex: 'unit_price', width: 90, align: 'right',
+      render: v => v != null ? <Text style={{ fontSize: 12 }}>CA${v}</Text> : 'Unknown',
     },
     {
-      title: 'Line Total', width: 100, align: 'right',
+      title: 'Saved-price estimate', width: 100, align: 'right',
       render: (_, r) => {
-        const rev = (r.price ?? 0) * r.qty_sold
-        return <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${rev.toFixed(2)}</Text>
+        const value = savedLineValue(r)
+        return <Text style={{ color: '#6366F1', fontSize: 12 }}>{value == null ? 'Unknown' : `CA$${value.toFixed(2)}`}</Text>
       },
     },
   ]
 
   const kpis = [
-    { label: 'Total Revenue',   value: `CA$${totalRevenue.toFixed(2)}`, color: '#6366F1' },
+    { label: 'Saved-price estimate', value: estimateValue, color: '#6366F1' },
     { label: 'Units Sold',      value: totalUnits,                       color: '#10B981' },
     { label: 'Products Tracked', value: productCount,                    color: '#f59e0b' },
   ]
@@ -184,37 +197,33 @@ export default function DayDetailPage() {
         marginBottom: isMobile ? 16 : 24,
         flexWrap: 'wrap',
       }}>
-        <Button
-          icon={<ArrowLeftOutlined />}
-          onClick={() => navigate('/sales')}
-          style={{ flexShrink: 0 }}
-        >
-          Sales Log
-        </Button>
+        <Link aria-label="Historical reports" to={`/sales?date=${date}`}><ArrowLeftOutlined /> Historical reports</Link>
         <div>
           <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>
             {formattedDate}
           </Title>
           {!isMobile && (
             <Text style={{ color: '#6b7280', fontSize: 13 }}>
-              Daily sales breakdown
+              {storeName} · Historical pasted report
             </Text>
           )}
         </div>
       </div>
 
-      {loading ? (
+      <p>Saved report prices estimate product value. Payment totals and refunds are in <Link to="/reports">Insights &amp; reports</Link>.</p>
+      {error ? <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setRefresh(value => value + 1)}>Retry</Button>} /> : loading ? (
         <div style={{ textAlign: 'center', padding: 60 }}>
           <Spin size="large" />
         </div>
       ) : rows.length === 0 ? (
         <Card style={{ borderRadius: 10, textAlign: 'center', padding: '40px 0' }}>
           <Text style={{ color: '#9ca3af', fontSize: 15 }}>
-            No sales recorded for this date.
+            No historical product quantities saved for this date.
           </Text>
         </Card>
       ) : (
         <>
+          {!!estimate.unknownRows && <p>{estimate.unknownRows} {estimate.unknownRows === 1 ? 'product has' : 'products have'} no saved price. The estimate includes only products with a saved price.</p>}
           {/* KPI strip */}
           <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
             {kpis.map(k => (
@@ -282,15 +291,13 @@ export default function DayDetailPage() {
                       <Text style={{ fontWeight: 700, fontSize: 18, color: row.qty_sold > 0 ? '#10B981' : '#d1d5db' }}>
                         {row.qty_sold}
                       </Text>
-                      {row.price != null && (
-                        <div style={{ fontSize: 11, color: '#6366F1' }}>
-                          CA${((row.price ?? 0) * row.qty_sold).toFixed(2)}
-                        </div>
-                      )}
+                      <div style={{ fontSize: 11, color: '#6366F1' }}>
+                        {savedLineValue(row) == null ? 'Price unknown' : `CA$${savedLineValue(row)!.toFixed(2)}`}
+                      </div>
                     </div>
                   </div>
                   <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280' }}>
-                    POS: <strong>{row.qty_pos}</strong> &nbsp;·&nbsp; Cash: <strong>{row.qty_cash}</strong>
+                    POS: <strong>{row.qty_pos}</strong> &nbsp;·&nbsp; Non-POS: <strong>{row.qty_cash}</strong>
                     {row.ip_series ? <>&nbsp;·&nbsp;<Tag color="blue" style={{ fontSize: 10, margin: 0 }}>{row.ip_series}</Tag></> : null}
                   </div>
                 </div>

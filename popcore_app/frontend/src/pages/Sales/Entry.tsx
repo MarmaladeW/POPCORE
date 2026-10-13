@@ -1,3 +1,4 @@
+import { productLabel } from '../../lib/productLabel'
 import { Alert, Button, Card, DatePicker, Descriptions, Form, Input, InputNumber, List, Select, Space, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
@@ -177,7 +178,7 @@ export default function SaleEntryPage() {
       <Descriptions column={1} size="small" style={{ marginTop: 16 }}>
         <Descriptions.Item label="Source">{submitted.body.source.account} / {submitted.body.source.reference}</Descriptions.Item>
         <Descriptions.Item label="Store and date">{scope.name} · {submitted.body.business_date}</Descriptions.Item>
-        <Descriptions.Item label="Item">{submitted.body.lines[0].quantity} {submitted.product.stock_unit}s · {submitted.product.jizhanming || submitted.product.sku}</Descriptions.Item>
+        <Descriptions.Item label="Item">{submitted.body.lines[0].quantity} {submitted.product.stock_unit}s · {productLabel(submitted.product)}</Descriptions.Item>
         <Descriptions.Item label="Subtotal">{formatCents(submitted.body.subtotal_cents)}</Descriptions.Item>
         <Descriptions.Item label="Gross">{formatCents(submitted.body.gross_cents)}</Descriptions.Item>
         <Descriptions.Item label="Collected">{formatCents(submitted.body.collected_cents)}</Descriptions.Item>
@@ -192,7 +193,7 @@ export default function SaleEntryPage() {
         <Form.Item name="entry_mode" label="Sale state" rules={[{ required: true }]}><Select options={[{ value: 'already_paid', label: 'Already paid in the POS' }, { value: 'planned_entry', label: 'Check stock before recording' }]} /></Form.Item>
         <Form.Item name="source_reference" label="Receipt or order reference" rules={[{ required: true, whitespace: true }]}><Input autoComplete="off" /></Form.Item>
         <Title level={5}>Product and quantity</Title>
-        <Form.Item name="product_id" label="Product" rules={[{ required: true }]}><Select showSearch filterOption={false} onSearch={searchProducts} options={products.map(product => ({ value: product.id, label: product.jizhanming || product.sku }))} /></Form.Item>
+        <Form.Item name="product_id" label="Product" rules={[{ required: true }]}><Select showSearch filterOption={false} onSearch={searchProducts} options={products.map(product => ({ value: product.id, label: productLabel(product) }))} /></Form.Item>
         <Form.Item name="quantity" label="Quantity" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
         <Title level={5}>Actual money</Title>
         {[['unit_price', 'Actual unit price ($)'], ['source_tax', 'Actual tax ($)'], ['collected', 'Actual collected total ($)'], ['cash', 'Cash ($)'], ['card', 'Card ($)'], ['e_transfer', 'E-transfer ($)'], ['wechat', 'WeChat Pay ($)'], ['alipay', 'Alipay ($)']].map(([name, label]) =>

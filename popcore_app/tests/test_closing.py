@@ -75,6 +75,42 @@ class ClosingTests(PaymentTests):
         return [{'code': code, 'reason': 'Manager reviewed source'}
                 for code in detail['review_exceptions']]
 
+    def test_blockers_link_related_documents_without_confusing_their_ids(self):
+        sale = self.posted_sale('STORE-ORDER-104')
+        session = self.create_session().get_json()
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET is_bestseller=1 WHERE id=?", (self.product_id,))
+            con.execute("INSERT INTO sale_payments(id,sale_id,tender,amount_cents,recorded_by) VALUES (91,?,'cash',100,'auth0|staff')", (sale['sale_id'],))
+            con.execute("INSERT INTO payment_evidence(id,payment_id,object_id,mime_type,byte_size,uploader_sub) VALUES (81,91,'proof.png','image/png',1,'auth0|staff')")
+            con.execute("INSERT INTO inventory_counts(id,store_id,location_id,business_date,created_by) VALUES (71,?,?,'2026-09-08','auth0|staff')", (self.store_id,self.floor))
+            con.execute("INSERT INTO inventory_count_lines(count_id,line_no,product_id,native_unit,expected_quantity,observed_quantity,captured_balance_version) VALUES (71,1,?,'piece',3,3,1)", (self.product_id,))
+            con.commit()
+        response = self.client.get(f"/api/closing/{session['closing_id']}", headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        detail = response.get_json()
+        targets = detail['issue_targets']
+        self.assertEqual(targets['cash_payment_unresolved:91']['href'], f"/sales/documents/{sale['sale_id']}")
+        self.assertEqual(targets['evidence_pending:81']['href'], f"/sales/documents/{sale['sale_id']}")
+        self.assertIn('STORE-ORDER-104', targets['cash_payment_unresolved:91']['label'])
+        self.assertEqual(targets[f'hot_item_count_missing:{self.product_id}']['href'], '/goods/counts?count_id=71')
+        self.assertIn('Test Product', targets[f'hot_item_count_missing:{self.product_id}']['label'])
+        self.assertTrue(detail['store_name'])
+        staff = self.client.get(f"/api/closing/{session['closing_id']}", headers=self.headers()).get_json()
+        self.assertNotIn('hard_blockers', staff)
+        self.assertNotIn('cash_payment_unresolved:91', staff['issue_targets'])
+        self.assertNotIn('evidence_pending:81', staff['issue_targets'])
+        self.assertIn(f'hot_item_count_missing:{self.product_id}', staff['actionable_blockers'])
+        with closing(self.connect()) as con:
+            con.execute('DELETE FROM inventory_count_lines WHERE count_id=71')
+            con.execute('DELETE FROM inventory_counts WHERE id=71')
+            upstairs = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='upstairs'", (self.store_id,)).fetchone()[0]
+            con.execute("INSERT INTO restock_sessions(id,store_id,date,status) VALUES (51,?,'2026-09-08','submitted')", (self.store_id,))
+            con.execute("INSERT INTO inventory_deliveries(id,kind,restock_session_id,source_location_id,destination_location_id,business_date,created_by) VALUES (61,'restock',51,?,?,'2026-09-08','auth0|staff')", (upstairs,self.floor))
+            con.commit()
+        detail = self.client.get(f"/api/closing/{session['closing_id']}", headers=self.headers('manager')).get_json()
+        self.assertEqual(detail['issue_targets'][f'hot_item_count_missing:{self.product_id}']['href'], f'/goods/counts?product_id={self.product_id}&business_date=2026-09-08')
+        self.assertEqual(detail['issue_targets']['delivery_unresolved:61']['href'], '/restock?session_id=51')
+
     def test_exact_cash_fixture_and_non_cash_exclusion(self):
         session = self.cash_fixture()
         self.assertIn('sales', session['source_documents'])

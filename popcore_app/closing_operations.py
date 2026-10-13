@@ -1,4 +1,4 @@
-from checkout_access import require_checkout_history_store
+from checkout_access import require_checkout, require_checkout_history_store, require_linked_sale
 """Versioned store-day closing and exact cash arithmetic."""
 import hashlib
 import json
@@ -231,6 +231,74 @@ def _tender_summary(payments, funds):
     return totals,unknown
 
 
+def _issue_targets(con, session, codes, actor):
+    targets = {}
+    for code in codes:
+        kind, _, value = code.partition(':')
+        if kind in {'sales_intake_incomplete', 'cash_count_missing', 'retained_float_shortfall'}:
+            targets[code] = {'href': '#closing-sources' if kind == 'sales_intake_incomplete' else '#closing-cash-count'}
+            continue
+        item_id = int(value)
+        row = None
+        if kind in {'checkout_unresolved', 'checkout_cash_unresolved'}:
+            query = 'SELECT o.* FROM checkout_orders o WHERE o.id=?'
+            if kind == 'checkout_cash_unresolved':
+                query = 'SELECT o.* FROM checkout_attempts a JOIN checkout_orders o ON o.id=a.checkout_id WHERE a.id=?'
+            row = con.execute(query, (item_id,)).fetchone()
+            if row:
+                try:
+                    require_checkout(con, row, actor)
+                except PermissionError:
+                    continue
+                targets[code] = {'href': f"/checkout/{row['id']}", 'label': row['reference'] or f"Checkout #{row['id']}"}
+        elif kind in {'pending_allocation', 'cash_payment_unresolved', 'payment_unverified', 'evidence_pending', 'evidence_rejected'}:
+            sale_id = item_id
+            if kind != 'pending_allocation':
+                query = 'SELECT sale_id FROM sale_payments WHERE id=?'
+                if kind.startswith('evidence_'):
+                    query = 'SELECT p.sale_id FROM payment_evidence e JOIN sale_payments p ON p.id=e.payment_id WHERE e.id=?'
+                row = con.execute(query, (item_id,)).fetchone()
+                if row is None:
+                    continue
+                sale_id = row['sale_id']
+            row = con.execute('''SELECT s.id, (SELECT source_reference FROM sale_sources
+                WHERE sale_id=s.id ORDER BY id LIMIT 1) AS reference FROM sale_documents s
+                WHERE s.id=? AND s.store_id=? AND s.business_date=?''',
+                (sale_id, session['store_id'], session['business_date'])).fetchone()
+            if row:
+                try:
+                    require_linked_sale(con, sale_id, actor)
+                except PermissionError:
+                    continue
+                label = row['reference'] or f'Sale #{sale_id}'
+                if kind != 'pending_allocation':
+                    label = f"{'Evidence' if kind.startswith('evidence_') else 'Payment'} #{item_id} · {label}"
+                targets[code] = {'href': f'/sales/documents/{sale_id}', 'label': label}
+        elif kind == 'delivery_unresolved':
+            row = con.execute('''SELECT d.id, d.kind, d.restock_session_id, ss.code AS source_store, ds.code AS destination_store,
+                sl.name AS source_name, dl.name AS destination_name FROM inventory_deliveries d
+                JOIN inventory_locations sl ON sl.id=d.source_location_id JOIN stores ss ON ss.id=sl.store_id
+                JOIN inventory_locations dl ON dl.id=d.destination_location_id JOIN stores ds ON ds.id=dl.store_id
+                WHERE d.id=? AND (sl.store_id=? OR dl.store_id=?)''',
+                (item_id, session['store_id'], session['store_id'])).fetchone()
+            if row:
+                targets[code] = {'href': f"/restock?session_id={row['restock_session_id']}" if row['kind'] == 'restock' and row['restock_session_id'] else f'/goods/transfers?transfer_id={item_id}',
+                    'label': f"Delivery #{item_id} · {row['source_store']} {row['source_name']} → {row['destination_store']} {row['destination_name']}"}
+        elif kind == 'restock_unresolved':
+            row = con.execute('SELECT id FROM restock_sessions WHERE id=? AND store_id=?', (item_id, session['store_id'])).fetchone()
+            if row:
+                targets[code] = {'href': f'/restock?session_id={item_id}', 'label': f'Restock #{item_id}'}
+        elif kind == 'hot_item_count_missing':
+            row = con.execute('SELECT sku, name_cn_en, jizhanming FROM products WHERE id=?', (item_id,)).fetchone()
+            if row:
+                count = con.execute('''SELECT c.id FROM inventory_counts c JOIN inventory_count_lines l ON l.count_id=c.id
+                    WHERE c.store_id=? AND c.business_date=? AND l.product_id=? AND c.status IN ('draft','submitted')
+                    ORDER BY c.id DESC LIMIT 1''', (session['store_id'], session['business_date'], item_id)).fetchone()
+                href = f"/goods/counts?count_id={count['id']}" if count else f"/goods/counts?product_id={item_id}&business_date={session['business_date']}"
+                targets[code] = {'href': href, 'label': row['name_cn_en'] or row['jizhanming'] or row['sku'] or f'Product #{item_id}'}
+    return targets
+
+
 def closing_detail(con, closing_id, *, actor):
     session = _closing(con, closing_id)
     require_checkout_history_store(con, session['store_id'], actor, session['business_date'], session['business_date'])
@@ -243,6 +311,7 @@ def closing_detail(con, closing_id, *, actor):
     opening_coin = count['opening_coin_cents'] if count else 0
     result = {
         **session, 'closing_id': session['id'], 'source_token': token,
+        'store_name': con.execute('SELECT name FROM stores WHERE id=?', (session['store_id'],)).fetchone()['name'],
         'cash': cash_summary(con, session['store_id'], session['business_date'], opening_coin),
         'latest_cash_count': dict(count) if count else None,
         'source_documents': {
@@ -266,13 +335,20 @@ def closing_detail(con, closing_id, *, actor):
         result['latest_cash_count']['denomination_counts'] = json.loads(
             result['latest_cash_count'].pop('denomination_counts_json')
         )
-    if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['manager']:
+    hard, exceptions = closing_issues(con, session)
+    is_manager = ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['manager']
+    actionable = [code for code in hard if code.split(':')[0] in {
+        'sales_intake_incomplete', 'cash_count_missing', 'retained_float_shortfall',
+        'checkout_unresolved', 'delivery_unresolved', 'restock_unresolved', 'hot_item_count_missing',
+    }]
+    result['issue_targets'] = _issue_targets(con, session, hard + exceptions if is_manager else actionable, actor)
+    result['actionable_blockers'] = [code for code in actionable if code in result['issue_targets']]
+    if is_manager:
         funds = checkout_funds(con,session['store_id'],session['business_date'])
         totals,unknown = _tender_summary(_payment_rows(con,session['store_id'],session['business_date']),funds)
         result['checkout_funds'] = funds
         result['tender_totals_cents'] = totals
         result['unknown_payment_ids'] = unknown
-        hard, exceptions = closing_issues(con, session)
         result['hard_blockers'] = hard
         result['review_exceptions'] = exceptions
         snapshot = con.execute(

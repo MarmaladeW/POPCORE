@@ -1,0 +1,19 @@
+.pc-worksheet-title { margin: 0 0 8px; font-size: 20px; color: #20242d; overflow-wrap: anywhere; }
+.pc-series-worksheet .pc-series-form > p { color: #596273; line-height: 1.6; }
+.pc-series-worksheet .pc-worksheet-draft-note { margin: 0 0 24px; font-size: 13px; }
+.pc-worksheet-table { width: 100%; border-collapse: collapse; text-align: left; }
+.pc-worksheet-table thead th { padding: 10px 0; color: #596273; font-size: 12px; font-weight: 500; }
+.pc-worksheet-table th:last-child { text-align: right; }
+.pc-worksheet-table tbody tr { border-top: 1px solid #e9ecf1; }
+.pc-worksheet-table tbody th { padding: 12px 12px 12px 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.pc-worksheet-table small { display: block; margin-top: 4px; color: #596273; font-size: 11px; font-weight: 400; }
+.pc-worksheet-table td { width: 116px; padding: 10px 0; text-align: right; }
+.pc-worksheet-table td input { text-align: right; font-variant-numeric: tabular-nums; }
+.pc-worksheet-table td > span { display: block; margin-top: 3px; color: #596273; font-size: 11px; }
+.pc-worksheet-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.pc-worksheet-footer p { margin: 0; color: #596273; font-size: 13px; }
+@media (max-width: 767px) {
+  .pc-worksheet-table td { width: 100px; }
+  .pc-worksheet-footer { gap: 8px; }
+  .pc-worksheet-footer p { width: 100%; }
+}

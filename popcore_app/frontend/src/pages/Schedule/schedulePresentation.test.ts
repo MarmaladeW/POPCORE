@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  actualFinishChip,
   compactEmployeeLabel,
   finishesNextDay,
   manualChecklistPresentation,
@@ -23,6 +24,16 @@ test('shift time ranges keep the plan and add a recorded finish', () => {
   assert.equal(shiftTimeRange('12:00', '20:00', null), '12:00–20:00')
   assert.equal(shiftTimeRange('12:00', '20:00', '20:25'), '12:00–20:00 · finished 20:25')
   assert.equal(shiftTimeRange('12:00', '22:00', '00:45'), '12:00–22:00 · finished 00:45 (next day)')
+})
+
+test('calendar blocks mark a recorded actual finish', () => {
+  assert.equal(actualFinishChip('12:00', null), '')
+  assert.equal(actualFinishChip('12:00', '21:25'), '✓ 21:25')
+  assert.equal(actualFinishChip('12:00', '00:45'), '✓ 00:45 +1')
+  assert.equal(
+    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', actualEndTime: '21:25', position: '', isTrainee: false }),
+    'Celia · 12:00–22:00 · finished 21:25',
+  )
 })
 
 test('a finish up to 01:00 counts as the next day', () => {

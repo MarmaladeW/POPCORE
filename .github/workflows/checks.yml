@@ -64,15 +64,27 @@ jobs:
         working-directory: popcore_app/frontend
       - run: python -m playwright install --with-deps chromium
       - run: python popcore_app/tests/browser/check_foundation.py
+      - run: python popcore_app/tests/browser/check_historical_sales.py
+      - run: python popcore_app/tests/browser/check_store_insights_matching.py
       - run: python popcore_app/tests/browser/check_daily_report.py
       - run: python popcore_app/tests/browser/check_catalog_import.py
       - run: python popcore_app/tests/browser/check_schedule_calendar.py
       - run: python popcore_app/tests/browser/check_attendance.py
       - run: python popcore_app/tests/browser/check_checkout_focus.py
       - run: python popcore_app/tests/browser/check_staff_home.py
+      - run: python popcore_app/tests/browser/check_store_navigation.py
       - run: python popcore_app/tests/browser/check_user_access.py
       - run: python popcore_app/tests/browser/check_inventory_core.py
+      - run: python popcore_app/tests/browser/check_design_inventory.py
+      - run: python popcore_app/tests/browser/check_design_inventory_live.py
+      - run: python popcore_app/tests/browser/check_design_labels.py
+      - run: python popcore_app/tests/browser/check_series_worksheet.py
+      - run: python popcore_app/tests/browser/check_series_stock_actions.py
+      - run: python popcore_app/tests/browser/check_series_history.py
+      - run: python popcore_app/tests/browser/check_inventory_attention.py
       - run: python popcore_app/tests/browser/check_goods_flow.py
+      - run: python popcore_app/tests/browser/check_transfer_receiving.py
+      - run: python popcore_app/tests/browser/check_restock_receiving.py
       - run: python popcore_app/tests/browser/check_store_day.py
       - run: python popcore_app/tests/browser/check_trades_today.py
       - run: python popcore_app/tests/browser/check_release_pilot.py

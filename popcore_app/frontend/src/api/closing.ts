@@ -6,6 +6,7 @@ export { newRequestKey }
 export interface ClosingSession {
   closing_id: number
   store_id: number
+  store_name?: string
   business_date: string
   status: 'draft' | 'submitted' | 'closed'
   version: number
@@ -44,6 +45,8 @@ export interface ClosingSession {
     unknown_payment_ids?: number[]
   }
   late_adjustments?: Array<{id:number;source_type:string;source_id:string;reason:string;created_at?:string}>
+  actionable_blockers?: string[]
+  issue_targets?: Record<string, {href: string; label?: string}>
   hard_blockers?: string[]
   review_exceptions?: string[]
   source_documents?: {

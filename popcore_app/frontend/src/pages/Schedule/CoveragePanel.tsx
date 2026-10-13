@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Input, message } from 'antd'
 import dayjs from 'dayjs'
+import { ListChecks } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { EMPLOYEE_PALETTE, textColorOn } from '@/lib/palette'
 import {
@@ -22,8 +25,23 @@ interface Props {
   employeeColors: Record<number, string>
 }
 
+/** Where the floating checklist was left, per browser. */
+const PLACEMENT_KEY = 'popcore_schedule_checklist'
+const EDGE = 8
+
+function savedPlacement(): { x: number; y: number; open: boolean } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PLACEMENT_KEY) || '') as { x?: unknown; y?: unknown; open?: unknown }
+    if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x as number, y: saved.y as number, open: saved.open === true }
+  } catch { /* first visit or storage unavailable */ }
+  // Bottom right, clear of the phone navigation bar.
+  return { x: window.innerWidth, y: window.innerHeight - 140, open: false }
+}
+
 /** A deliberately manual checklist for the visible schedule period. Shift
- *  assignments never change these ticks; managers confirm each person. */
+ *  assignments never change these ticks; managers confirm each person.
+ *  It floats over the schedule: drag its header to move it, click the header
+ *  to collapse it to an icon or open it again. */
 export default function CoveragePanel({
   periodKey, periodLabel, employees, employeeColors,
 }: Props) {
@@ -33,6 +51,62 @@ export default function CoveragePanel({
   const [noteSavedAt, setNoteSavedAt] = useState<string | null>(null)
   const [savingNote, setSavingNote] = useState(false)
   const [msgApi, msgCtx] = message.useMessage()
+  const [placement, setPlacement] = useState(savedPlacement)
+  const [size, setSize] = useState({ width: 0, height: 0 })
+  const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight })
+  const floatRef = useRef<HTMLElement>(null)
+  const drag = useRef<{ pointerX: number; pointerY: number; x: number; y: number; moved: boolean } | null>(null)
+  const { open } = placement
+  // The saved spot is where the icon rests; an open panel is nudged back on screen without moving that spot.
+  const shown = {
+    x: Math.max(EDGE, Math.min(placement.x, viewport.width - size.width - EDGE)),
+    y: Math.max(EDGE, Math.min(placement.y, viewport.height - size.height - EDGE)),
+  }
+
+  useLayoutEffect(() => {
+    const element = floatRef.current
+    if (!element) return
+    const measure = () => setSize(previous => previous.width === element.offsetWidth && previous.height === element.offsetHeight
+      ? previous : { width: element.offsetWidth, height: element.offsetHeight })
+    const resize = () => setViewport({ width: window.innerWidth, height: window.innerHeight })
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    window.addEventListener('resize', resize)
+    return () => { observer.disconnect(); window.removeEventListener('resize', resize) }
+  }, [])
+
+  const place = (next: { x: number; y: number; open: boolean }) => {
+    setPlacement(next)
+    try { localStorage.setItem(PLACEMENT_KEY, JSON.stringify(next)) } catch { /* placement is a convenience */ }
+  }
+  const startDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    drag.current = { pointerX: event.clientX, pointerY: event.clientY, x: shown.x, y: shown.y, moved: false }
+  }
+  const moveDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    const from = drag.current
+    if (!from) return
+    const dx = event.clientX - from.pointerX
+    const dy = event.clientY - from.pointerY
+    if (!from.moved && Math.hypot(dx, dy) < 5) return
+    from.moved = true
+    setPlacement(previous => ({ ...previous, x: from.x + dx, y: from.y + dy }))
+  }
+  const endDrag = () => {
+    if (!drag.current?.moved) return
+    place({ ...placement, x: shown.x, y: shown.y })
+    // The click that follows this release is ignored by toggle; clear the mark in case none follows.
+    setTimeout(() => { drag.current = null })
+  }
+  const toggle = () => {
+    // A drag ends with a click on the same header; only a plain click toggles.
+    const dragged = drag.current?.moved
+    drag.current = null
+    if (!dragged) place({ ...placement, open: !open })
+  }
+
   // Ignore late responses after the period changed
   const keyRef = useRef(periodKey)
   keyRef.current = periodKey
@@ -106,15 +180,20 @@ export default function CoveragePanel({
     }
   }
 
-  return (
-    <section className="pc-coverage-panel" aria-label="Period employee checklist">
+  return createPortal(
+    <section ref={floatRef} className={cn('pc-coverage-float', open && 'pc-coverage-float-open')}
+      style={{ left: shown.x, top: shown.y }} aria-label="Period employee checklist">
       {msgCtx}
-      <header className="pc-coverage-header">
-        <h4>Employee checklist</h4>
-        <span role="status">{checkedCount}/{people.length} reviewed</span>
-        <small>{periodLabel} · Both stores</small>
-      </header>
-        <div className="space-y-2">
+      <button type="button" className="pc-coverage-toggle" aria-expanded={open}
+        aria-label={`Employee checklist, ${checkedCount}/${people.length} reviewed`}
+        title={open ? 'Drag to move · click to collapse' : 'Employee checklist — drag to move · click to open'}
+        onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={() => { drag.current = null }} onClick={toggle}>
+        <ListChecks className="size-4 shrink-0" aria-hidden />
+        {open && <strong>Employee checklist</strong>}
+        <span role="status">{checkedCount}/{people.length}{open && ' reviewed'}</span>
+      </button>
+        <div className="pc-coverage-panel space-y-2" hidden={!open}>
+          <small className="pc-coverage-period">{periodLabel} · Both stores</small>
           {/* Small manual checks wrap naturally; shift data never controls them. */}
           <ul
             className="pc-coverage-list"
@@ -181,6 +260,7 @@ export default function CoveragePanel({
             </div>
           </details>
         </div>
-    </section>
+    </section>,
+    document.body,
   )
 }

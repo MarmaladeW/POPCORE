@@ -1,0 +1,1 @@
+function e(e){return e.unit_price==null?null:e.unit_price*e.qty_sold}function t(t){return t.reduce((t,n)=>{let r=e(n);return r==null?t.unknownRows+=1:(t.knownValue+=r,t.knownRows+=1),t},{knownValue:0,unknownRows:0,knownRows:0})}export{t as n,e as t};

@@ -54,14 +54,19 @@
 .pc-assignment-workspace.pc-assignment-open { grid-template-columns: minmax(0, 1fr) 280px; }
 .pc-store-calendars { display: grid; gap: 12px; min-width: 0; min-height: 0; }
 .pc-assignment-sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: 100%; overflow: hidden; scroll-margin-top: 80px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; }
-.pc-assignment-day { min-height: 0; overflow-y: auto; border-top: 1px solid #DDE2EA; }
-.pc-assignment-placeholder { margin: 0; padding: 12px; border-top: 1px solid #DDE2EA; color: #596273; font-size: 12px; }
-.pc-coverage-panel { flex-shrink: 0; padding: 10px; border-top: 3px solid #4F46E5; }
-.pc-coverage-header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.pc-coverage-header h4 { font-size: 14px; font-weight: 600; }
-.pc-coverage-header > span { margin-left: auto; color: #4F46E5; font-size: 11px; }
-.pc-coverage-header small { flex-basis: 100%; color: #596273; font-size: 11px; }
-.pc-coverage-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 6px; max-height: 168px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.pc-assignment-day { min-height: 0; overflow-y: auto; }
+.pc-assignment-placeholder { margin: 0; padding: 12px; color: #596273; font-size: 12px; }
+/* Employee checklist: floats over the schedule, dragged by its header and collapsed to an icon by clicking it. */
+.pc-coverage-float { position: fixed; z-index: 40; max-width: calc(100vw - 16px); border: 1px solid #DDE2EA; border-radius: 999px; background: white; box-shadow: 0 6px 24px #20242D26; }
+.pc-coverage-float-open { width: 300px; border-radius: 12px; }
+.pc-coverage-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 44px; padding: 0 14px; border: 0; background: none; color: #4F46E5; font-size: 12px; font-weight: 600; cursor: grab; touch-action: none; user-select: none; }
+.pc-coverage-toggle:active { cursor: grabbing; }
+.pc-coverage-toggle strong { color: #20242D; font-size: 14px; font-weight: 600; }
+.pc-coverage-float-open .pc-coverage-toggle { border-bottom: 1px solid #DDE2EA; }
+.pc-coverage-float-open .pc-coverage-toggle > span { margin-left: auto; }
+.pc-coverage-panel { max-height: min(60vh, 440px); padding: 10px; overflow-y: auto; }
+.pc-coverage-period { display: block; color: #596273; font-size: 11px; }
+.pc-coverage-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 6px; margin: 0; padding: 0; list-style: none; }
 .pc-coverage-list label { display: flex; align-items: center; gap: 5px; min-height: 24px; cursor: pointer; font-size: 12px; }
 .pc-employee-name { display: inline-block; max-width: 100%; padding: 2px 5px; border-radius: 4px; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .pc-coverage-list .pc-employee-name { min-width: 0; }
@@ -92,9 +97,11 @@
   .pc-manager-calendar.pc-calendar-date-grid { height: auto; min-height: 0; }
   .pc-calendar-date-grid .pc-store-calendar-body { flex: none; }
   .pc-calendar-date-grid .pc-store-calendars { align-self: start; grid-template-columns: minmax(0, 1fr); }
-  .pc-assignment-sidebar { --pc-sidebar-offset: 306px; }
-  .pc-coverage-panel { max-height: max(100px, calc(100dvh - var(--pc-sidebar-offset) - 180px)); overflow-y: auto; }
-  .pc-calendar-date-grid .pc-assignment-sidebar { align-self: start; position: sticky; top: 80px; max-height: calc(100dvh - var(--pc-sidebar-offset)); }
+  /* Two-week and month views give the calendars the full width so shift bars can show their length;
+     the day details sit below them. */
+  .pc-calendar-date-grid .pc-assignment-workspace.pc-assignment-open { grid-template-columns: minmax(0, 1fr); }
+  .pc-calendar-date-grid .pc-assignment-sidebar { max-height: none; }
+  .pc-calendar-date-grid .pc-assignment-sidebar .pc-schedule-people { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .pc-assignment-workspace { flex: 1; }
   .pc-store-calendars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pc-store-calendars > section { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -122,6 +129,13 @@
 @media (pointer: coarse) { .pc-calendar-date { min-height: 44px; min-width: 44px; } .pc-coverage-list label { min-height: 44px; } }
 
 .pc-shift-heading, .pc-shift-details { display: flex; align-items: center; gap: 3px; min-width: 0; }
+/* Two-week and month grids draw each shift as its own bar (ManagerCalendar renderEvent), sized to its
+   hours, so FullCalendar's full-width event box stays invisible behind it. */
+.pc-calendar-date-grid .pc-store-calendar-body:not(.pc-mobile-month) .fc-daygrid-event { border-width: 0 !important; background: transparent !important; outline: 0; }
+.pc-shift-bar { box-sizing: border-box; border-radius: 4px; overflow: hidden; }
+.pc-shift-bar-trainee { outline: 1.5px dashed #F59E0B; outline-offset: -1.5px; }
+/* A month-view half bar is one short line: its side and AM/PM tag give the hours, so the name gets the room. */
+.pc-calendar-month .pc-shift-bar-half .pc-shift-time { display: none; }
 .pc-calendar-date-grid .pc-shift:not(.pc-shift-grid) { flex-wrap: wrap; }
 .pc-calendar-date-grid .pc-shift-pos { flex-basis: 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 
@@ -137,7 +151,6 @@
   .pc-calendar-month .pc-calendar-date { min-height: 28px; height: 28px; padding: 3px 6px; }
   .pc-calendar-month .fc-daygrid-day-number { padding: 0 4px; line-height: 28px; }
   .pc-calendar-month .fc .fc-daygrid-body .fc-daygrid-day-events { margin-bottom: 3px; }
-  .pc-calendar-month .pc-assignment-sidebar { --pc-sidebar-offset: 230px; }
   .pc-calendar-month .fc-daygrid-event { border: 0; margin-top: 1px; }
   .pc-calendar-month .pc-shift { padding: 3px 4px; font-size: 12px; line-height: 18px; }
   .pc-calendar-month .pc-shift-name { white-space: nowrap; font-weight: 600; }

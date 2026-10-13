@@ -16,8 +16,9 @@ from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
 from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm,
                      clean_name as _clean_jzm, report_match_key, report_identity_signature,
-                     load_report_match_choices)
-from inventory_commands import InventoryError, post_inventory
+                     load_report_match_choices, report_match_query)
+from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
+from goods_operations import _begin, _hash, _replay, _remember
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
 bp = Blueprint('sales', __name__)
@@ -65,7 +66,7 @@ def get_sales():
                    ds.qty_claw, ds.qty_display, ds.qty_employee, ds.raw_name, ds.notes,
                    ds.store,
                    p.sku, p.name_cn_en, p.jizhanming,
-                   COALESCE(ds.unit_price, p.price) AS price, p.ip_series
+                   ds.unit_price AS price, ds.unit_price, p.ip_series
             FROM daily_sales ds
             JOIN products p ON p.id = ds.product_id
             WHERE ds.date = ?
@@ -78,7 +79,7 @@ def get_sales():
                    ds.qty_claw, ds.qty_display, ds.qty_employee, ds.raw_name, ds.notes,
                    ds.store,
                    p.sku, p.name_cn_en, p.jizhanming,
-                   COALESCE(ds.unit_price, p.price) AS price, p.ip_series
+                   ds.unit_price AS price, ds.unit_price, p.ip_series
             FROM daily_sales ds
             JOIN products p ON p.id = ds.product_id
             WHERE ds.date = ? AND ds.store = ?
@@ -88,6 +89,176 @@ def get_sales():
     rows = [dict(r) for r in cur.fetchall()]
     con.close()
     return jsonify(rows)
+
+
+# Historical summaries are corrected separately from sale and stock documents.
+def _history_product(product):
+    fields = ('id', 'sku', 'name_cn_en', 'jizhanming', 'series_id', 'series_name',
+              'stock_form', 'stock_unit', 'design_name', 'identity_status',
+              'product_type', 'ip_series', 'edition_size', 'hidden', 'boxes_per_dan')
+    return {**{field: product.get(field) for field in fields},
+            'target_identity_token': report_identity_signature(product)}
+
+
+def _history_catalog(con):
+    return {row['id']: dict(row) for row in con.execute(
+        'SELECT p.*, s.name AS series_name FROM products p LEFT JOIN product_series s ON s.id=p.series_id')}
+
+
+def _history_row_token(row, product):
+    return _hash({'row': row, 'identity': report_identity_signature(product)})
+
+
+def _history_stores(con, code):
+    if not isinstance(code, str) or not code.strip():
+        raise ValueError('store_code is required')
+    code = code.strip().upper()
+    stores = [dict(row) for row in con.execute('''
+        SELECT s.id,s.code FROM stores s JOIN inventory_access a ON a.store_id=s.id
+        WHERE a.auth0_sub=? AND s.is_active=1
+          AND EXISTS (SELECT 1 FROM inventory_locations l WHERE l.store_id=s.id AND l.is_active=1)
+    ''', (request.jwt_payload['sub'],)) if code == 'ALL' or row['code'] == code]
+    require_inventory_access(con, request.jwt_payload, [row['id'] for row in stores], 'manager')
+    return stores
+
+
+def _history_stock_linked(con, day, store_id):
+    return bool(con.execute(f'''SELECT 1 FROM stock_transactions WHERE date=? AND store_id=?
+        AND txn_type IN ({','.join('?' * len(_REPORT_TXN_TYPES))}) LIMIT 1''',
+        (day, store_id, *_REPORT_TXN_TYPES)).fetchone())
+
+
+@bp.get('/api/sales/history-matches')
+@role_required('manager')
+def history_matches():
+    con = get_db()
+    try:
+        stores = _history_stores(con, request.args.get('store_code'))
+        start = read_date(request.args.get('date_from', str(date.today() - timedelta(days=30))), 'date_from')
+        end = read_date(request.args.get('date_to', str(date.today())), 'date_to')
+        if start > end:
+            raise ValueError('date_from must be on or before date_to')
+        page = read_int(request.args.get('page', '1'), 'page', minimum=1)
+        size = min(read_int(request.args.get('page_size', '25'), 'page_size', minimum=1), 100)
+        where = ['ds.date BETWEEN ? AND ?', f"ds.store IN ({','.join('?' * len(stores))})"]
+        args = [start, end, *[store['code'] for store in stores]]
+        if request.args.get('record_id'):
+            where.append('ds.id=?'); args.append(read_int(request.args['record_id'], 'record_id', minimum=1))
+        query = request.args.get('q', '').strip()
+        if query:
+            where.append("(instr(lower(ds.raw_name),lower(?))>0 OR instr(lower(ds.notes),lower(?))>0 OR instr(lower(p.jizhanming),lower(?))>0 OR instr(lower(p.name_cn_en),lower(?))>0 OR instr(lower(p.sku),lower(?))>0)")
+            args.extend([query] * 5)
+        source = 'FROM daily_sales ds JOIN products p ON p.id=ds.product_id WHERE ' + ' AND '.join(where)
+        total = con.execute('SELECT COUNT(*) ' + source, args).fetchone()[0]
+        rows = [dict(row) for row in con.execute('SELECT ds.* ' + source + ' ORDER BY ds.date DESC,ds.id DESC LIMIT ? OFFSET ?', [*args, size, read_int((page-1)*size, 'page offset')])]
+        catalog = _history_catalog(con)
+        target_id = read_int(request.args['target_product_id'], 'target_product_id', minimum=1) if request.args.get('target_product_id') else None
+        if target_id is not None and target_id not in catalog:
+            raise ValueError('target_product_id does not exist')
+        aliases, choices = load_matching_aliases(con), load_report_match_choices(con)
+        store_ids = {store['code']: store['id'] for store in stores}
+        items = []
+        for row in rows:
+            product = catalog[row['product_id']]
+            raw, note = row['raw_name'] or '', row['notes'] or ''
+            key = report_match_key(raw, note)
+            choice = choices.get(key)
+            hits = [(100, catalog[choice])] if choice in catalog else match_jzm(report_match_query(raw, note), list(catalog.values()), aliases, threshold=60, limit=5) if raw.strip() else []
+            if choice not in catalog and (key in choices or report_match_query(raw, note) != raw):
+                hits = [(min(score, 99), candidate) for score, candidate in hits]
+            if not hits:
+                status = 'unmatched'
+            elif len(hits)>1 and hits[0][0] == hits[1][0]:
+                status = 'ambiguous'
+            elif hits[0][0] == 100:
+                status = 'matched_current' if hits[0][1]['id'] == row['product_id'] else 'suggested_change'
+            else:
+                status = 'review'
+            candidates = [{**_history_product(candidate), 'score': score,
+                           'reason': 'Previously reviewed name and note' if choice == candidate['id'] else 'Exact name or alias' if score == 100 else 'Name similarity; review required'} for score, candidate in hits]
+            if target_id is not None:
+                candidates = [candidate for candidate in candidates if candidate['id'] != target_id]
+                candidates.append({**_history_product(catalog[target_id]), 'score': None, 'reason': 'Selected for review'})
+            blocked = _history_stock_linked(con, row['date'], store_ids[row['store']])
+            review = con.execute('''SELECT actor_sub,reason,created_at,from_product_id,to_product_id
+                FROM daily_sales_match_audits WHERE daily_sales_id=? ORDER BY id DESC LIMIT 1''', (row['id'],)).fetchone()
+            items.append({**row, 'price': row['unit_price'], 'row_token': _history_row_token(row, product),
+                          'current_product': _history_product(product), 'candidates': candidates,
+                          'match_status': status, 'match_label': {'unmatched':'No name candidate', 'ambiguous':'Multiple possible products', 'review':'Review name suggestions', 'matched_current':'Name matches current product', 'suggested_change':'Name suggests another product'}[status],
+                          'blocked_code': 'reconciliation_required' if blocked else None,
+                          'blocked_reason': 'This report day has stock history and requires reconciliation.' if blocked else None,
+                          'last_review': dict(review) if review else None})
+        return jsonify({'items': items, 'total_rows': total, 'page': page, 'page_size': size})
+    except PermissionError:
+        return jsonify({'error': 'Historical sales access denied', 'code': 'inventory_forbidden'}), 403
+    except (ValueError, InventoryError) as exc:
+        return _inventory_error(exc) if isinstance(exc, InventoryError) else (jsonify(invalid_input(exc)), 400)
+    finally:
+        con.close()
+
+
+@bp.post('/api/sales/record/<int:record_id>/remap')
+@role_required('manager')
+def remap_historical_sale(record_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(invalid_input('body must be an object')), 400
+    con = get_db()
+    try:
+        code = data.get('store_code')
+        if not isinstance(code, str) or code.strip().upper() == 'ALL':
+            raise ValueError('store_code must be one store')
+        product_id = read_int(data.get('product_id'), 'product_id', minimum=1)
+        for field in ('row_token', 'target_identity_token', 'reason'):
+            if not isinstance(data.get(field), str) or not data[field].strip():
+                raise ValueError(f'{field} is required')
+        intent = {'record_id': record_id, 'store_code': code.strip().upper(), 'product_id': product_id,
+                  **{field: data[field].strip() for field in ('row_token', 'target_identity_token', 'reason')}}
+        _begin(con)
+        store = _history_stores(con, code)[0]
+        key, digest, prior = _replay(con, request.headers.get('Idempotency-Key'), 'sales_history_remap', request.jwt_payload, intent)
+        if prior:
+            con.commit(); return jsonify(prior)
+        row = con.execute('SELECT * FROM daily_sales WHERE id=? AND store=?', (record_id, store['code'])).fetchone()
+        if row is None:
+            raise InventoryConflict('Historical row is no longer available. Refresh before reviewing.', 'stale_row')
+        row = dict(row)
+        catalog = _history_catalog(con)
+        current, target = catalog[row['product_id']], catalog.get(product_id)
+        if _history_row_token(row, current) != intent['row_token']:
+            raise InventoryConflict('Historical row changed. Refresh before reviewing.', 'stale_row')
+        if target is None or report_identity_signature(target) != intent['target_identity_token']:
+            raise InventoryConflict('Target product identity changed. Choose it again.', 'stale_target')
+        if product_id == row['product_id']:
+            raise InventoryConflict('This row already uses the selected product.', 'unchanged_product')
+        if _history_stock_linked(con, row['date'], store['id']):
+            raise InventoryConflict('This report has stock history and requires reconciliation', 'reconciliation_required')
+        if con.execute('SELECT 1 FROM daily_sales WHERE product_id=? AND date=? AND store=?', (product_id, row['date'], row['store'])).fetchone():
+            raise InventoryConflict('That product already has a row for this day. Review both rows without merging them.', 'target_row_exists')
+        if current.get('stock_unit') and target.get('stock_unit') and current['stock_unit'] != target['stock_unit']:
+            raise InventoryConflict('Product units differ. Historical quantities cannot be converted by a name correction.', 'unit_mismatch')
+        after = {**row, 'product_id': product_id}
+        con.execute('UPDATE daily_sales SET product_id=? WHERE id=?', (product_id, record_id))
+        audit_id = con.execute('''INSERT INTO daily_sales_match_audits
+            (daily_sales_id,store_id,from_product_id,to_product_id,actor_sub,reason,before_data,after_data)
+            VALUES (?,?,?,?,?,?,?,?)''', (record_id, store['id'], row['product_id'], product_id, request.jwt_payload['sub'], intent['reason'],
+            json.dumps({'row': row, 'product': _history_product(current)}, ensure_ascii=False),
+            json.dumps({'row': after, 'product': _history_product(target)}, ensure_ascii=False))).lastrowid
+        result = {'id': record_id, 'audit_id': audit_id, 'row_token': _history_row_token(after, target), 'current_product': _history_product(target)}
+        _remember(con, key, 'sales_history_remap', audit_id, request.jwt_payload, digest, result)
+        con.commit()
+        return jsonify(result)
+    except PermissionError:
+        con.rollback()
+        return jsonify({'error': 'Historical sales access denied', 'code': 'inventory_forbidden'}), 403
+    except (ValueError, InventoryError) as exc:
+        con.rollback()
+        return _inventory_error(exc) if isinstance(exc, InventoryError) else (jsonify(invalid_input(exc)), 400)
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 @bp.route('/api/sales/upsert', methods=['POST'])
@@ -1125,7 +1296,7 @@ def export_sales():
     cur = con.cursor()
     cur.execute('''
         SELECT ds.date, p.jizhanming, p.sku, p.ip_series, p.product_type,
-               COALESCE(ds.unit_price, p.price) AS price,
+               ds.unit_price AS price, ds.unit_price,
                ds.qty_pos, ds.qty_cash, ds.qty_claw, ds.qty_display, ds.qty_employee,
                ds.qty_sold, ds.raw_name, ds.notes
         FROM daily_sales ds
@@ -1736,14 +1907,14 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
 
         # Secret/hidden variants in notes are part of product identity.
         qualifier = item.get('note', '')
-        query = raw_name + ' ' + qualifier if re.search(r'秘密|隐藏|secret|hidden', qualifier, re.I) else raw_name
+        query = report_match_query(raw_name, qualifier)
         key = report_match_key(raw_name, qualifier)
         chosen = choices.get(key)
         if chosen in products_by_id:
             hits = [(100, products_by_id[chosen])]
         else:
             hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
-            if key[0] in reviewed_names:
+            if key[0] in reviewed_names or query != raw_name:
                 # Stale/disputed choice or a changed note must be reviewed again.
                 hits = [(min(score, 99), product) for score, product in hits]
         _bucket(item, hits)

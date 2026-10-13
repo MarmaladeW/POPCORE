@@ -1,3 +1,4 @@
+import { productLabel } from '../../lib/productLabel'
 import {useEffect,useRef,useState} from 'react'
 import {Alert,Button,Form,Input,InputNumber,Select,Space,Typography} from 'antd'
 import {Link,useBeforeUnload,useNavigate} from 'react-router-dom'
@@ -7,7 +8,7 @@ import {useAppStore} from '../../store'
 import {torontoDate} from '../Dashboard/todayPresentation'
 import useCheckoutMutation from './useCheckoutMutation'
 const {Title,Paragraph}=Typography
-export default function ManualCheckout() {
+export default function ManualCheckout({allowedStoreIds}:{allowedStoreIds:number[]}) {
   const selectedStore = useAppStore(state => state.selectedStore), setSelectedStore = useAppStore(state => state.setSelectedStore), navigate = useNavigate()
   const [store,setScope] = useState(selectedStore), [dirty,setDirty] = useState(false)
   const [form] = Form.useForm(), [products,setProducts] = useState<GoodsProduct[]>([]), [searchError,setSearchError] = useState('')
@@ -27,7 +28,7 @@ export default function ManualCheckout() {
       setSearchError('Finish this checkout or reset the form before changing stores.')
     } else setScope(selectedStore)
   },[selectedStore,store,mutation.pending,dirty,setSelectedStore])
-  if (!store?.id || store.code === 'ALL') return <Alert type="info" message="Choose one store to begin a checkout." />
+  if (!store?.id || !allowedStoreIds.includes(store.id)) return <><Link to="/checkout">Back to checkouts</Link><Alert type="info" message="Choose a store where you have checkout access today." /></>
   function submit(values:any) {
     try {
       const cents = (value:string) => { const n = parseMoneyToCents(value); if (n === null || n < 0) throw new Error('Enter a nonnegative amount in every money field.'); return n }
@@ -39,15 +40,15 @@ export default function ManualCheckout() {
     } catch (cause) { setSearchError((cause as Error).message) }
   }
   return <>
-    <Link to="/checkout">Back to checkouts</Link><Title level={3}>New checkout · {store.name}</Title>
-    <Paragraph>Enter the agreed prices and tax. Saving starts a pending checkout; stock moves when the sale is recorded.</Paragraph>
+    <Link to="/checkout">Back to checkouts</Link><Title level={3}>New manual checkout · {store.name}</Title>
+    <Paragraph>Clover is disconnected. Enter the agreed prices and tax. Saving starts a pending checkout; record payment after money is received. Stock moves when checkout is completed.</Paragraph>
     {mutation.notice}{searchError && <Alert type="error" message={searchError} />}
     <Form form={form} layout="vertical" onFinish={submit} onValuesChange={()=>setDirty(true)} disabled={mutation.pending} initialValues={{date:torontoDate(),tax:'0.00',reduction:'0.00',lines:[{quantity:1}]}}>
       <Form.Item name="reference" label="Order reference" rules={[{required:true,whitespace:true,max:120}]}><Input autoComplete="off" /></Form.Item>
       <Form.Item name="date" label="Business date" rules={[{required:true}]}><Input type="date" /></Form.Item>
       <Form.List name="lines">{(fields,{add,remove}) => <>
         {fields.map(field => <section key={field.key} style={{borderBottom:'1px solid #d9d9d9',marginBottom:20}}>
-          <Form.Item name={[field.name,'product_id']} label={`Item ${field.name+1}`} rules={[{required:true}]}><Select showSearch filterOption={false} onSearch={search} options={products.map(p=>({value:p.id,label:p.jizhanming || p.sku}))} /></Form.Item>
+          <Form.Item name={[field.name,'product_id']} label={`Item ${field.name+1}`} rules={[{required:true}]}><Select showSearch filterOption={false} onSearch={search} options={products.map(p=>({value:p.id,label:productLabel(p)}))} /></Form.Item>
           <Space wrap align="start"><Form.Item name={[field.name,'quantity']} label="Quantity" rules={[{required:true}]}><InputNumber min={1} precision={0} /></Form.Item><Form.Item name={[field.name,'price']} label="Unit price ($)" rules={[{required:true}]}><Input inputMode="decimal" /></Form.Item></Space>
           {fields.length>1 && <Button type="text" danger onClick={()=>remove(field.name)}>Remove item {field.name+1}</Button>}
         </section>)}

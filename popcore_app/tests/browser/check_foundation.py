@@ -105,7 +105,7 @@ async def context_with_api(browser, state, viewport=None, auth=None):
 
 async def page_state_checks(browser):
     pages = (
-        ('/stock', 'Unable to load stock data.', 'Foundation Item', 'No data'),
+        ('/stock/products', 'Unable to load stock data.', 'Foundation Item', 'No data'),
         ('/products', 'Unable to load products.', 'Foundation Item', 'No data'),
         ('/sales', 'Unable to load sales data.', 'Foundation Item', 'Sales Log'),
     )
@@ -167,14 +167,14 @@ async def auth_checks(browser):
     await context.close()
 
     context, page = await context_with_api(browser, {'mode': 'unauthorized'})
-    await page.goto(BASE + '/stock')
+    await page.goto(BASE + '/stock/products')
     await expect(page.locator('.ant-modal-confirm-title:visible', has_text='Sign-in rejected')).to_have_count(1)
     await expect(page.get_by_role('button', name='Sign in again', exact=True)).to_have_count(1)
     assert await page.evaluate('window.__FOUNDATION_REDIRECTS') == 0
     await context.close()
 
     context, page = await context_with_api(browser, {'mode': 'forbidden'})
-    await page.goto(BASE + '/stock')
+    await page.goto(BASE + '/stock/products')
     await expect(page.get_by_role('alert')).to_be_visible()
     assert await page.evaluate('window.__FOUNDATION_REDIRECTS') == 0
     await context.close()
@@ -183,7 +183,7 @@ async def auth_checks(browser):
 async def wrong_store_check(browser):
     state = {'mode': 'data', 'delay_dt': True}
     context, page = await context_with_api(browser, state)
-    await page.goto(BASE + '/stock')
+    await page.goto(BASE + '/stock/products')
     selector = page.locator('select').first
     await selector.select_option('DT')
     await selector.select_option('MK')

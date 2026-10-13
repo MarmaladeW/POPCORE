@@ -248,7 +248,8 @@
   opacity: 0.85;
 }
 .pc-shift-half,
-.pc-shift-t {
+.pc-shift-t,
+.pc-shift-finished {
   flex-shrink: 0;
   font-size: 8.5px;
   font-weight: 800;
@@ -262,6 +263,20 @@
 .pc-shift-t {
   background: #F59E0B;
   color: #fff;
+}
+/* Recorded actual finish: readable on any employee color */
+.pc-shift-finished {
+  background: rgba(255, 255, 255, 0.92);
+  color: #14532D;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Week/day blocks can be narrower than the marker: clip it inside the block */
+.pc-shift-grid .pc-shift-finished {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: top;
 }
 /* Week/day (timegrid): stack the lines */
 .pc-shift.pc-shift-grid {

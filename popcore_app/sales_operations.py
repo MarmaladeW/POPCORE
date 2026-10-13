@@ -145,7 +145,8 @@ def _sale_input(con, data, actor):
             raise InventoryValidationError('sale lines must not repeat a product')
         product_ids.add(product_id)
         product = con.execute(
-            """SELECT id, jizhanming, name_cn_en, stock_form, stock_unit,
+            """SELECT id, jizhanming, name_cn_en, stock_form, stock_unit, design_name,
+                      (SELECT name FROM product_series WHERE id=products.series_id) AS series_name,
                       identity_status FROM products WHERE id=?""", (product_id,)
         ).fetchone()
         if product is None:
@@ -221,7 +222,7 @@ def _sale_input(con, data, actor):
             }
         lines.append({
             'product_id': product_id, 'raw_product_text': raw_text,
-            'product_name_snapshot': product['jizhanming'] or product['name_cn_en'],
+            'product_name_snapshot': (' · '.join(value for value in (product['series_name'], product['design_name']) if value) if product['stock_form'] == 'confirmed_design' else product['jizhanming'] or product['name_cn_en']),
             'stock_form_snapshot': product['stock_form'], 'unit': unit,
             'quantity': quantity,
             'unit_price_cents': _optional_cents(
@@ -291,12 +292,28 @@ def _reject_checkout_source(system):
         raise InventoryValidationError('Checkout source identities are assigned by the checkout workflow')
 
 
+def _replay_sale_input(con, request_key, operation, actor, intent):
+    captured = {'product_name_snapshot', 'stock_form_snapshot', 'location_id',
+                'captured_balance_version', 'fresh_set_balance_version'}
+    request_intent = {**intent, 'lines': [
+        {key: value for key, value in line.items() if key not in captured}
+        for line in intent['lines']
+    ]}
+    try:
+        return _replay(con, request_key, operation, actor, request_intent)
+    except InventoryConflict as exc:
+        if exc.code != 'idempotency_conflict':
+            raise
+        # Pre-existing keys hashed captured facts too; preserve unchanged legacy retries.
+        return _replay(con, request_key, operation, actor, intent)
+
+
 def create_sale(con, data, *, actor, request_key):
     intent = _sale_input(con, data, actor)
     _reject_checkout_source(intent['source']['system'])
     _begin(con)
     try:
-        key, digest, prior = _replay(con, request_key, 'sale_create', actor, intent)
+        key, digest, prior = _replay_sale_input(con, request_key, 'sale_create', actor, intent)
         if prior:
             con.commit()
             return prior
@@ -325,7 +342,7 @@ def update_sale(con, sale_id, data, *, actor, request_key):
         require_linked_sale(con, sale_id, actor, write=True)
         sale = _sale_row(con, sale_id)
         _require_sale_owner(sale, actor)
-        key, digest, prior = _replay(con, request_key, 'sale_update', actor, intent)
+        key, digest, prior = _replay_sale_input(con, request_key, 'sale_update', actor, intent)
         if prior:
             con.commit()
             return prior

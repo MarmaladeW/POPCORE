@@ -190,7 +190,7 @@ async def manager_review_checks(browser):
     await expect(page.get_by_role('button', name='Return for changes')).to_be_visible()
     await expect(page.get_by_label('payment_unverified:61 acceptance reason')).to_be_visible()
     await expect(page.get_by_label('evidence_pending:81 acceptance reason')).to_be_visible()
-    await page.goto(BASE + '/reports')
+    await page.goto(BASE + '/reports?report=inventory')
     await expect(page.get_by_text('Operational reports', exact=True)).to_be_visible()
     assert await page.evaluate('document.body.scrollWidth') <= 392
     BUILD6_UI.mkdir(parents=True, exist_ok=True)
@@ -375,8 +375,8 @@ async def sale_safety_checks(browser):
     await page.goto(BASE + '/sales/documents/41')
     product = page.get_by_role('combobox', name='Line 1 verified product')
     await product.fill('Choice')
-    await expect(page.get_by_text('SALE-1 Verified Choice', exact=True).last).to_be_visible()
-    await expect(page.get_by_text('SALE-1 Unverified Choice', exact=True)).to_have_count(0)
+    await expect(page.get_by_text('Verified Choice', exact=True).last).to_be_visible()
+    await expect(page.get_by_text('Unverified Choice', exact=True)).to_have_count(0)
     await context.close()
 
     def allocation_payload(path, query, request):
@@ -628,6 +628,88 @@ async def report_checks(browser):
     await context.close()
 
 
+async def closing_target_checks(browser):
+    count_state = {'version': 1, 'status': 'draft', 'observed': 4}
+    targets = {
+        'checkout_cash_unresolved:901': {'href': '/checkout/51', 'label': 'ORDER-51'},
+        'cash_payment_unresolved:91': {'href': '/sales/documents/41', 'label': 'Payment #91 · STORE-ORDER'},
+        'delivery_unresolved:61': {'href': '/goods/transfers?transfer_id=61', 'label': 'DT → MK'},
+        'restock_unresolved:31': {'href': '/restock?session_id=31', 'label': 'Restock #31'},
+        'hot_item_count_missing:19': {'href': '/goods/counts?product_id=19&business_date=2026-09-08', 'label': 'Required Product'},
+    }
+    def payload(path, query, request):
+        if path == '/api/closing/71':
+            data = closing_detail()
+            data.update(store_name='Downtown', hard_blockers=[*targets, 'delivery_unresolved:99'], issue_targets=targets)
+            return data
+        if path == '/api/inventory/locations':
+            return [{'id': 1, 'store_id': 1, 'store_code': 'DT', 'code': 'floor', 'name': 'Shop floor', 'opening_verified': True}]
+        if path == '/api/products/19':
+            return {**PRODUCT, 'id': 19, 'sku': 'REQUIRED-19', 'jizhanming': 'Required Product'}
+        if path == '/api/goods/counts':
+            return {'id': 101, 'version': 1, 'status': 'draft'}
+        if path == '/api/goods/counts/102':
+            return {'id': 102, 'version': 3, 'status': 'returned', 'store_id': 1, 'location_id': 1,
+                    'business_date': '2026-09-08', 'disposition': 'saleable', 'lines': [], 'recount_id': 101}
+        if path == '/api/goods/counts/101/submit':
+            count_state.update(version=3, status='submitted')
+            return {'id': 101, **count_state}
+        if path == '/api/goods/counts/101':
+            if request.method == 'PATCH':
+                count_state.update(version=2, observed=6)
+            return {'id': 101, 'version': count_state['version'], 'status': count_state['status'],
+                    'store_id': 1, 'location_id': 1, 'business_date': '2026-09-08', 'disposition': 'saleable',
+                    'lines': [{'line_no': 1, 'product_id': 19, 'native_unit': 'piece', 'expected_quantity': 5,
+                               'observed_quantity': count_state['observed'], 'captured_balance_version': 1}]}
+        return api_payload(path, query, request)
+    state = {'mode': 'data', 'api_payload': payload}
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    await page.goto(BASE + '/closing?closing_id=71')
+    await expect(page.get_by_text('Downtown · 2026-09-08', exact=True)).to_be_visible()
+    for target in targets.values():
+        await expect(page.get_by_role('link').filter(has_text=target['label'])).to_have_attribute('href', target['href'])
+    await expect(page.locator('a[href="/goods/transfers?transfer_id=99"]')).to_have_count(0)
+    await page.get_by_role('link').filter(has_text='Required Product').click()
+    await expect(page.get_by_text('Business date: 2026-09-08', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Required Product', exact=True)).to_be_visible()
+    await page.locator('.ant-form-item').filter(has_text='Location').get_by_role('combobox').click()
+    await page.get_by_text('Shop floor', exact=True).last.click()
+    await page.get_by_role('button', name='Save observation').click()
+    await expect(page.get_by_text('Count #101', exact=True)).to_be_visible()
+    posted = [item for item in state['requests'] if item['path'] == '/api/goods/counts' and item['method'] == 'POST']
+    assert len(posted) == 1 and posted[0]['post_data']['business_date'] == '2026-09-08'
+    assert posted[0]['post_data']['lines'][0]['product_id'] == 19
+    await expect(page).to_have_url(BASE + '/goods/counts?count_id=101')
+    await page.reload()
+    await expect(page.get_by_text('Count #101', exact=True)).to_be_visible()
+    await page.goto(BASE + '/goods/counts?count_id=102')
+    await page.get_by_role('link', name='Open recount #101', exact=True).click()
+    await expect(page).to_have_url(BASE + '/goods/counts?count_id=101')
+    await page.get_by_label('Line 1 observed quantity').fill('6')
+    await expect(page.get_by_role('button', name='Submit for review', exact=True)).to_be_disabled()
+    state['status_for_path'] = {'/api/goods/counts/101': (503, {})}
+    await page.get_by_role('button', name='Save observations', exact=True).click()
+    await expect(page.get_by_role('button', name='Retry identical request', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Line 1 observed quantity')).to_be_disabled()
+    await expect(page.get_by_text('Count result is unconfirmed. Retry sends the identical request.', exact=True)).to_be_visible()
+    state['status_for_path'] = {}
+    await page.get_by_role('button', name='Retry identical request', exact=True).click()
+    await expect(page.get_by_role('button', name='Submit for review', exact=True)).to_be_enabled()
+    updates = [item for item in state['requests'] if item['path'] == '/api/goods/counts/101' and item['method'] == 'PATCH']
+    assert len(updates) == 2 and updates[0]['post_data'] == updates[1]['post_data']
+    assert updates[0]['idempotency_key'] == updates[1]['idempotency_key']
+    assert updates[0]['post_data'] == {'expected_version': 1, 'lines': [{'line_no': 1, 'observed_quantity': 6}]}
+    await page.get_by_role('button', name='Submit for review', exact=True).click()
+    await expect(page.get_by_text('Submitted for review', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Line 1 observed quantity')).to_have_count(0)
+    await page.goto(BASE + '/goods/counts?product_id=19&business_date=2026-02-30')
+    await expect(page.get_by_role('button', name='Save observation', exact=True)).to_be_disabled()
+    await expect(page.get_by_text('Business date is invalid. Open this count from the closing session again.', exact=True)).to_be_visible()
+    await context.close()
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
@@ -644,6 +726,7 @@ async def main():
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
             try:
+                await closing_target_checks(browser)
                 for viewport in ({'width': 390, 'height': 844},
                                  {'width': 768, 'height': 900},
                                  {'width': 1440, 'height': 1000}):

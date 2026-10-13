@@ -10,7 +10,7 @@ export default function IncomingPage() {
     <header className="pc-home-heading"><h1>入店 / Receive goods</h1><p>{store?.name} · Choose where the goods came from.</p></header>
     {!store || store.code === 'ALL' ? <Alert type="info" showIcon message="Choose one store before receiving goods." /> : <nav className="pc-home-choices" aria-label="Receiving options">
       <Link to="/goods/receiving"><strong>收货 / Receive shipment</strong><span>Goods arriving from a supplier. Check quantities and condition.</span></Link>
-      <Link to="/goods/transfers"><strong>调入 / Transfer goods</strong><span>Goods from upstairs or another location. Receive the existing transfer.</span></Link>
+      <Link to="/goods/transfers"><strong>调入 / Receive transfer</strong><span>Choose an incoming transfer from upstairs or another location, including earlier days.</span></Link>
       <Link to="/incoming/display"><strong>入 display / Display arrival</strong><span>Record an opened display entering the store.</span></Link>
     </nav>}
     {store && store.code !== 'ALL' && <section className="pc-home-records" aria-label="Incoming records">

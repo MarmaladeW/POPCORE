@@ -1,14 +1,17 @@
 """Scoped goods receiving, delivery, and physical count APIs."""
+import json
+
 from flask import Blueprint, jsonify, request
 
 from auth import login_required, role_required
 from db import get_db
 from goods_operations import (
     act_on_delivery, cancel_receipt, create_count, create_delivery, create_receipt,
-    delivery_detail, post_receipt, transition_count,
-    restock_suggestions, save_target, update_receipt,
+    delivery_detail, identify_design, post_receipt, transition_count,
+    restock_suggestions, save_target, update_count, update_receipt,
 )
-from inventory_commands import InventoryError
+from inventory_commands import InventoryError, require_inventory_access
+from validation import invalid_input, read_int
 from catalog_identity import resolve_barcode
 
 
@@ -36,6 +39,19 @@ def barcode_resolve():
         ))
     except ValueError as exc:
         return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+
+
+@bp.post('/api/goods/identify')
+@role_required('staff')
+def design_identify():
+    try:
+        return jsonify(identify_design(
+            get_db(), _body(), actor=request.jwt_payload,
+            request_key=request.headers.get('Idempotency-Key')))
+    except (InventoryError, PermissionError) as exc:
+        return _error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
 
 
 @bp.post('/api/goods/receipts')
@@ -102,6 +118,47 @@ def receipt_cancel(receipt_id):
         return _error(exc)
 
 
+@bp.get('/api/goods/transfers')
+@role_required('staff')
+def incoming_transfers():
+    con = get_db()
+    try:
+        store_id = read_int(request.args.get('store_id'), 'store_id', minimum=1)
+        require_inventory_access(con, request.jwt_payload, (store_id,), 'staff')
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    except PermissionError as exc:
+        return _error(exc)
+    transfers = {}
+    for row in con.execute(
+        """SELECT d.id,d.status,d.business_date,ss.name AS source_store_name,
+                  src.name AS source_location_name,dst.name AS destination_location_name,
+                  line.line_no,line.product_id,line.native_unit,p.sku,
+                  COALESCE(NULLIF(TRIM(p.jizhanming),''),NULLIF(TRIM(p.name_cn_en),''),p.sku) AS product_name,
+                  line.dispatched_quantity-line.received_quantity-line.returned_quantity-line.loss_quantity AS outstanding_transit,
+                  line.requested_quantity-line.dispatched_quantity-line.short_quantity AS awaiting_dispatch
+           FROM inventory_deliveries d
+           JOIN inventory_locations src ON src.id=d.source_location_id
+           JOIN stores ss ON ss.id=src.store_id
+           JOIN inventory_locations dst ON dst.id=d.destination_location_id
+           JOIN inventory_delivery_lines line ON line.delivery_id=d.id
+           JOIN products p ON p.id=line.product_id
+           WHERE dst.store_id=? AND d.kind='transfer'
+             AND d.status IN ('planned','active')
+           ORDER BY d.business_date,d.id,line.line_no""", (store_id,)
+    ):
+        transfer = transfers.setdefault(row['id'], {
+            key: row[key] for key in ('id','status','business_date',
+                                     'source_store_name','source_location_name',
+                                     'destination_location_name')
+        })
+        transfer.setdefault('lines', []).append({
+            key: row[key] for key in ('line_no','product_id','product_name','sku','native_unit',
+                                     'outstanding_transit','awaiting_dispatch')
+        })
+    return jsonify(list(transfers.values()))
+
+
 @bp.post('/api/goods/transfers')
 @role_required('manager')
 def transfer_create():
@@ -146,6 +203,18 @@ def count_create():
         return _error(exc)
 
 
+@bp.patch('/api/goods/counts/<int:count_id>')
+@role_required('staff')
+def count_update(count_id):
+    try:
+        return jsonify(update_count(get_db(), count_id, _body(), actor=request.jwt_payload,
+                                    request_key=request.headers.get('Idempotency-Key')))
+    except (InventoryError, PermissionError) as exc:
+        return _error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+
+
 @bp.get('/api/goods/counts/<int:count_id>')
 @login_required
 def count_detail(count_id):
@@ -159,6 +228,13 @@ def count_detail(count_id):
     if row is None:
         return jsonify({'error': 'Count not found'}), 404
     result = dict(row)
+    if row['status'] == 'returned':
+        returned = con.execute(
+            "SELECT stored_result FROM operation_requests WHERE operation='count_return' AND resource_id=?",
+            (count_id,),
+        ).fetchone()
+        if returned:
+            result['recount_id'] = json.loads(returned['stored_result'])['recount_id']
     result['lines'] = [dict(line) for line in con.execute(
         'SELECT * FROM inventory_count_lines WHERE count_id=? ORDER BY line_no',
         (count_id,),

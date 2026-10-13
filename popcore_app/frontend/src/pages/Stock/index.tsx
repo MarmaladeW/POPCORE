@@ -1,3 +1,4 @@
+import { productLabel } from '../../lib/productLabel'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Table, Input, Select, Button, Space, Tag, Popconfirm,
@@ -15,7 +16,7 @@ import RoleGuard from '../../components/RoleGuard'
 import RestockModal from './RestockModal'
 import BatchStockModal from './BatchStockModal'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 const { Search } = Input
 const { Text, Title } = Typography
@@ -33,6 +34,9 @@ interface StockRow {
   last_updated: string
   stock_notes: string
   price: number | null
+  series_name?: string | null
+  stock_form?: string | null
+  design_name?: string | null
   stock_unit?: 'set' | 'box' | 'piece' | null
   identity_status?: 'unverified' | 'verified'
 }
@@ -171,13 +175,16 @@ export default function StockPage() {
       client.get('/stock', { params }),
       client.get('/stock/summary', { params: { store_code: sc } }),
       client.get('/inventory/locations', { params: isAll ? {} : { store_code: sc } })
-        .catch(() => ({ data: [] })),
+        .catch(() => ({ data: null })),
       isAll
         ? Promise.resolve({ data: { items: [] } })
         : client.get('/inventory/balances', { params: { store_code: sc } })
-            .catch(() => ({ data: { items: [] } })),
+            .catch(() => ({ data: null })),
     ]).then(([sResp, sumResp, locationResp, balanceResp]) => {
       if (requestId !== requestRef.current) return
+      if (sumResp.data.mode === 'authoritative' && (locationResp.data === null || balanceResp.data === null)) {
+        throw new Error('Inventory balances unavailable')
+      }
       setStock(sResp.data.items)
       setTotal(sResp.data.total)
       setSummary(sumResp.data)
@@ -261,7 +268,7 @@ export default function StockPage() {
       title: 'Product',
       render: (_, r) => (
         <div>
-          <div style={{ fontWeight: 500, color: '#111827', fontSize: 13 }}>{r.jizhanming || '—'}</div>
+          <div style={{ fontWeight: 500, color: '#111827', fontSize: 13 }}>{productLabel(r)}</div>
           {r.product_type && <div style={{ fontSize: 11, color: '#9ca3af' }}>{r.product_type}</div>}
           {r.identity_status && (
             <Tag color={r.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 10 }}>
@@ -388,6 +395,12 @@ export default function StockPage() {
 
   return (
     <div>
+      <nav className="pc-inventory-tools" aria-label="Inventory tools">
+        <Link to="/stock">Series inventory</Link>
+        <Link to="/products">Products</Link>
+        <Link to="/restock">Restock</Link>
+        <Link to="/trades">Trades</Link>
+      </nav>
       {/* Header */}
       <div className="pc-page-actions" style={{ marginBottom: 20 }}>
         <div>
@@ -587,7 +600,7 @@ export default function StockPage() {
                       <div key={row.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: 14, color: '#20242D', overflowWrap: 'anywhere' }}>{row.jizhanming || row.name_cn_en || 'Unnamed product'}</div>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: '#20242D', overflowWrap: 'anywhere' }}>{productLabel(row)}</div>
                             {row.name_cn_en && row.name_cn_en !== row.jizhanming && <div style={{ fontSize: 12, color: '#596273', marginTop: 2, overflowWrap: 'anywhere' }}>{row.name_cn_en}</div>}
                             <div style={{ fontSize: 11, color: '#687386', fontFamily: 'monospace', marginTop: 2 }}>{row.sku}</div>
                             {row.ip_series && <Tag color="blue" style={{ fontSize: 10, marginTop: 4 }}>{row.ip_series}</Tag>}

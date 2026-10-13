@@ -14,7 +14,7 @@ Staff choose the actual payment method. E-transfer, WeChat Pay and Alipay provid
 
 The cashier or an authorized manager explicitly records money actually received. Split payments remain separate. Once the received total matches the order, the screen finalizes the existing sale/payment/stock flow. Failed finalization retains received money and offers retry; it never records the receipt again. Managers can expand the secondary cancel/refund section to abandon a partially paid checkout and record actual refunds. Entirely unpaid checkouts can be cancelled by their authorized cashier.
 
-The compatibility form at `/checkout/new` still creates native orders using exact catalog items and captured prices/tax/discount. It is not a substitute for the pending Clover order feed. Captured totals/items are immutable; cancel an entirely unpaid native checkout and create a replacement to correct them. Unpaid orders do not reserve stock. An inventory shortage preserves the financial sale with pending allocation for manager resolution.
+Start manual checkout opens `/checkout/new` for an authorized live store and creates native orders using exact catalog items and captured prices/tax/discount. Record completed sale remains a separate intake action. Clover synchronization remains disconnected; the manual form is the available entry path until that integration is implemented and verified. Captured totals/items are immutable; cancel an entirely unpaid native checkout and create a replacement to correct them. Unpaid orders do not reserve stock. An inventory shortage preserves the financial sale with pending allocation for manager resolution.
 
 ## Access
 

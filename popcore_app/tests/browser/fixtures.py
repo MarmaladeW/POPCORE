@@ -29,6 +29,7 @@ def payload(path, query_string='', empty=False):
     if path == '/api/series': return ['Foundation']
     if path == '/api/product_types': return ['Figure']
     if path == '/api/stores': return STORES
+    if path == '/api/inventory/series': return {'mode':'legacy','locations':[],'unassigned_count':len(rows),'series':[]}
     if path == '/api/products/count': return {'count': 0 if empty else 1}
     if path == '/api/products/search': return rows
     if path == '/api/products/sync-sheet/last-sync': return {'last_sync_at': None, 'last_sync_count': None}
@@ -58,6 +59,9 @@ def payload(path, query_string='', empty=False):
     if path == '/api/store-events':
         return {'business_date': today, 'scope': 'personal', 'events': [], 'receipts': [],
                 'transfers': [], 'checkouts': {'pos': [], 'non_pos': [], 'split': []}, 'summary_text': ''}
+    if path == '/api/today':
+        return {'business_date': today, 'generated_at': today, 'role': 'admin',
+                'scope': 'ALL', 'store_ids': [], 'authorized_stores': [], 'sections': {}}
     if path == '/api/schedule/attendance/today':
         return {'business_date': today, 'shift': None, 'attendance': None}
     if path == '/api/schedule/me':

@@ -1,208 +1,89 @@
-import { useState, useEffect, useCallback } from 'react'
-import {
-  Table, Button, Space, Tag, Popconfirm, message,
-  AutoComplete, Input, Typography, Alert,
-} from 'antd'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Table, Button, Space, Tag, Popconfirm, AutoComplete, Input, Typography, Alert } from 'antd'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
+import { productLabel } from '../../lib/productLabel'
 
 const { Text } = Typography
-
 interface AliasRow {
-  id: number
-  alias: string
-  alias_norm: string
-  created_by: string | null
-  created_at: string
-  product_id: number
-  jizhanming: string
-  sku: string
+  id:number; alias:string; created_by:string|null; product_id:number; jizhanming:string; sku:string
+  series_name?:string; design_name?:string; stock_form?:string
 }
+interface ProductOption {value:string;label:string;product:{id:number}}
 
-interface ProductOption {
-  value: string
-  label: string
-  product: { id: number; jizhanming: string; sku: string }
-}
-
-export default function AliasManager() {
-  const [aliases,      setAliases]      = useState<AliasRow[]>([])
-  const [loading,      setLoading]      = useState(false)
-  const [aliasInput,   setAliasInput]   = useState('')
-  const [productOpts,  setProductOpts]  = useState<ProductOption[]>([])
-  const [selectedPid,  setSelectedPid]  = useState<number | null>(null)
-  const [selectedJzm,  setSelectedJzm]  = useState('')
-  const [productSearch, setProductSearch] = useState('')
-  const [saving,       setSaving]       = useState(false)
+export default function AliasManager({onBusyChange}:{onBusyChange?:(busy:boolean)=>void}) {
+  const [aliases,setAliases] = useState<AliasRow[]>([])
+  const [loading,setLoading] = useState(false)
+  const [loadError,setLoadError] = useState('')
+  const [error,setError] = useState('')
+  const [aliasInput,setAliasInput] = useState('')
+  const [productOpts,setProductOpts] = useState<ProductOption[]>([])
+  const [selectedPid,setSelectedPid] = useState<number|null>(null)
+  const [productSearch,setProductSearch] = useState('')
+  const [saving,setSaving] = useState(false)
+  const [denied,setDenied] = useState(false)
+  const mounted = useRef(true), searchRequest = useRef(0), loadRequest = useRef(0), savingRef = useRef(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
+    const request = ++loadRequest.current
+    setLoading(true); setLoadError('')
     try {
-      const r = await client.get('/products/aliases')
-      setAliases(r.data)
-    } catch {
-      message.error('Failed to load aliases')
-    } finally {
-      setLoading(false)
-    }
+      const response = await client.get('/products/aliases')
+      if (mounted.current && request === loadRequest.current) setAliases(response.data)
+    } catch (cause:any) {
+      if (mounted.current && request === loadRequest.current) setLoadError(cause?._serverMessage || 'Unable to load saved name mappings.')
+    } finally { if (mounted.current && request === loadRequest.current) setLoading(false) }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    mounted.current = true; load()
+    return () => { mounted.current = false; searchRequest.current += 1; loadRequest.current += 1; window.dispatchEvent(new CustomEvent('popcore:checkout-busy',{detail:false})) }
+  }, [load])
 
-  async function searchProducts(q: string) {
-    setProductSearch(q)
-    setSelectedPid(null)
-    setSelectedJzm('')
-    if (!q) { setProductOpts([]); return }
-    const r = await client.get('/products/search', { params: { q, limit: 10 } })
-    setProductOpts(r.data.map((p: any) => ({
-      value: String(p.id),
-      label: `${p.jizhanming || p.name_cn_en || p.sku} (${p.sku})`,
-      product: p,
-    })))
+  async function searchProducts(query:string) {
+    setProductSearch(query); setSelectedPid(null); setProductOpts([])
+    const request = ++searchRequest.current
+    if (!query.trim()) return
+    try {
+      const response = await client.get('/products/search',{params:{q:query,limit:10}})
+      if (mounted.current && request === searchRequest.current) setProductOpts(response.data.map((product:any) => ({value:String(product.id),label:`${productLabel(product)} (${product.sku})`,product})))
+    } catch { if (mounted.current && request === searchRequest.current) setError('Unable to search products. Try again.') }
+  }
+
+  async function mutate(action:()=>Promise<unknown>,afterSave?:()=>void) {
+    if (savingRef.current || denied) return
+    savingRef.current = true; setSaving(true); setError(''); onBusyChange?.(true)
+    window.dispatchEvent(new CustomEvent('popcore:checkout-busy',{detail:true}))
+    try { await action(); if (mounted.current) { afterSave?.(); load() } }
+    catch (cause:any) { if (mounted.current) { setError(cause?._serverMessage || 'Unable to save the name mapping. Your entries are still here.'); if (cause?.response?.status===403) setDenied(true) } }
+    finally { if (mounted.current) { savingRef.current=false;setSaving(false);onBusyChange?.(false);window.dispatchEvent(new CustomEvent('popcore:checkout-busy',{detail:false})) } }
   }
 
   async function handleAdd() {
-    const alias = aliasInput.trim()
-    if (!alias) { message.warning('请输入别名'); return }
-    if (!selectedPid) { message.warning('请选择对应产品'); return }
-    setSaving(true)
-    try {
-      await client.post('/products/aliases', { product_id: selectedPid, alias })
-      message.success('Alias saved')
-      setAliasInput('')
-      setProductSearch('')
-      setSelectedPid(null)
-      setSelectedJzm('')
-      setProductOpts([])
-      load()
-    } catch (err: any) {
-      message.error(err?._serverMessage ?? 'Failed to save alias')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleDelete(row: AliasRow) {
-    try {
-      await client.delete(`/products/${row.product_id}/aliases/${row.id}`)
-      message.success('Alias deleted')
-      load()
-    } catch {
-      message.error('Failed to delete alias')
-    }
+    const alias=aliasInput.trim(), productId=selectedPid
+    if (!alias || !productId) return
+    await mutate(() => client.post('/products/aliases',{product_id:productId,alias}),() => {
+      setAliasInput('');setProductSearch('');setSelectedPid(null);setProductOpts([]);searchRequest.current+=1
+    })
   }
 
   const columns = [
-    {
-      title: '别名 (staff types)',
-      dataIndex: 'alias',
-      width: 180,
-      render: (v: string) => <Text code>{v}</Text>,
-    },
-    {
-      title: '→ 产品记账名',
-      key: 'product',
-      render: (_: any, r: AliasRow) => (
-        <Space size={4}>
-          <span style={{ fontWeight: 500 }}>{r.jizhanming}</span>
-          <Tag style={{ fontSize: 11 }}>{r.sku}</Tag>
-        </Space>
-      ),
-    },
-    {
-      title: '来源',
-      dataIndex: 'created_by',
-      width: 100,
-      render: (v: string | null) => (
-        <Tag color={v === 'system_seed' ? 'blue' : 'default'} style={{ fontSize: 11 }}>
-          {v === 'system_seed' ? '预置' : (v || '手动')}
-        </Tag>
-      ),
-    },
-    {
-      title: '',
-      key: 'del',
-      width: 60,
-      render: (_: any, r: AliasRow) => (
-        <RoleGuard minRole="manager">
-          <Popconfirm
-            title={`Delete alias "${r.alias}"?`}
-            onConfirm={() => handleDelete(r)}>
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </RoleGuard>
-      ),
-    },
+    {title:'Staff name',dataIndex:'alias',width:180,render:(value:string)=><Text>{value}</Text>},
+    {title:'Mapped product',key:'product',render:(_:unknown,row:AliasRow)=><Space wrap size={4}><span>{productLabel({...row,id:row.product_id})}</span><Tag>{row.sku}</Tag></Space>},
+    {title:'Source',dataIndex:'created_by',width:110,render:(value:string|null)=><Tag>{value==='system_seed'?'Preset':'Staff saved'}</Tag>},
+    {title:'',key:'delete',width:60,render:(_:unknown,row:AliasRow)=><Popconfirm title={`Delete mapping for "${row.alias}"?`} onConfirm={()=>mutate(()=>client.delete(`/products/${row.product_id}/aliases/${row.id}`))}><Button aria-label={`Delete mapping for ${row.alias}`} disabled={saving||denied} type="text" danger icon={<DeleteOutlined/>}/></Popconfirm>},
   ]
 
-  return (
-    <div>
-      <RoleGuard minRole="manager">
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12, borderRadius: 8 }}
-          message="Product Alias Manager"
-          description="Aliases map what staff type (e.g. 'smiski hipper') to the canonical jizhanming. Exact alias matches always score 100 — they take priority over fuzzy matching."
-        />
-
-        {/* Add new alias */}
-        <div style={{
-          background: '#f9fafb', borderRadius: 8, padding: '12px 16px', marginBottom: 16,
-          display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 10,
-        }}>
-          <div>
-            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>
-              Staff shorthand (alias)
-            </div>
-            <Input
-              value={aliasInput}
-              onChange={e => setAliasInput(e.target.value)}
-              placeholder="e.g. smiski hipper"
-              style={{ width: 180 }}
-              onPressEnter={handleAdd}
-            />
-          </div>
-          <div style={{ fontSize: 13, color: '#9ca3af', alignSelf: 'center', paddingBottom: 2 }}>→</div>
-          <div>
-            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>
-              Canonical product (搜索记账名)
-            </div>
-            <AutoComplete
-              value={selectedJzm || productSearch}
-              style={{ width: 240 }}
-              options={productOpts}
-              onSearch={searchProducts}
-              placeholder="Search product..."
-              onSelect={(val: string, opt: any) => {
-                setSelectedPid(opt.product.id)
-                setSelectedJzm(opt.label)
-                setProductSearch(opt.label)
-              }}
-            />
-          </div>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            loading={saving}
-            onClick={handleAdd}
-            disabled={!aliasInput.trim() || !selectedPid}>
-            Add Alias
-          </Button>
-        </div>
-
-        {/* Alias table */}
-        <Table
-          rowKey="id"
-          size="small"
-          loading={loading}
-          dataSource={aliases}
-          columns={columns}
-          pagination={{ pageSize: 20, showTotal: t => `${t} aliases` }}
-        />
-      </RoleGuard>
+  return <RoleGuard minRole="manager"><div>
+    <Typography.Title level={4}>Saved name mappings</Typography.Title>
+    <p>Choose the exact product for a name staff type in pasted reports. This mapping applies across stores to future matching. Use Review past names to review existing report rows.</p>
+    {(error||loadError)&&<Alert role="alert" type="error" showIcon message={error||loadError} action={loadError?<Button onClick={load} disabled={saving}>Retry name mappings</Button>:undefined} style={{marginBottom:12}}/>}
+    <div style={{background:'#f9fafb',borderRadius:8,padding:12,marginBottom:16,display:'flex',flexWrap:'wrap',alignItems:'flex-end',gap:10}}>
+      <label style={{maxWidth:'100%'}}>Staff name<Input aria-label="Staff name" value={aliasInput} disabled={saving||denied} onChange={event=>setAliasInput(event.target.value)} placeholder="e.g. smiski hipper" style={{width:180,maxWidth:'100%'}} onPressEnter={handleAdd}/></label>
+      <label style={{maxWidth:'100%'}}>Mapped product<AutoComplete aria-label="Mapped product" value={productSearch} disabled={saving||denied} options={productOpts} onSearch={searchProducts} placeholder="Search exact product..." style={{display:'block',width:250,maxWidth:'100%'}} onSelect={(_:string,option:any)=>{searchRequest.current+=1;setSelectedPid(option.product.id);setProductSearch(option.label);setProductOpts([])}}/></label>
+      <Button type="primary" aria-label="Save name mapping" icon={<PlusOutlined/>} loading={saving} disabled={saving||denied||!aliasInput.trim()||!selectedPid} onClick={handleAdd}>Save name mapping</Button>
     </div>
-  )
+    <Table rowKey="id" size="small" loading={loading} dataSource={aliases} columns={columns} scroll={{x:500}} pagination={{pageSize:20,showTotal:total=>`${total} mappings`}}/>
+  </div></RoleGuard>
 }
