@@ -488,7 +488,7 @@ export default function ProductsPage() {
             </div>
           </RoleGuard>
           <RoleGuard minRole="manager">
-            <Button type="primary" icon={<PlusOutlined />} onClick={openNew}>
+            <Button type="primary" aria-label="Add Product" icon={<PlusOutlined />} onClick={openNew}>
               {isMobile ? '' : 'Add Product'}
             </Button>
           </RoleGuard>
@@ -566,8 +566,8 @@ export default function ProductsPage() {
                   </div>
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
                     {stockBadge(stockMap ? stockMap.get(p.id) ?? 0 : null)}
-                    <Button type="text" size="small" aria-label={`View images for ${p.jizhanming || p.sku}`} icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280' }} />
-                    <RoleGuard minRole="manager"><Button type="text" size="small" aria-label={`Edit ${p.jizhanming || p.sku}`} icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1' }} /></RoleGuard>
+                    <Button type="text" size="small" aria-label={`View images for ${p.jizhanming || p.sku}`} icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280', minWidth: 44, minHeight: 44 }} />
+                    <RoleGuard minRole="manager"><Button type="text" size="small" aria-label={`Edit ${p.jizhanming || p.sku}`} icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1', minWidth: 44, minHeight: 44 }} /></RoleGuard>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>

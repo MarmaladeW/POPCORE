@@ -539,7 +539,7 @@ export default function ManagerCalendar() {
                 key={v.value}
                 aria-pressed={viewType === v.value}
                 className={cn(
-                  'flex-1 px-2 h-8 transition-colors sm:flex-none sm:px-3',
+                  'flex-1 px-2 h-11 transition-colors sm:flex-none sm:px-3 md:h-8',
                   i > 0 && 'border-l border-border',
                   viewType === v.value
                     ? 'bg-primary text-primary-foreground'

@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Tabs } from 'antd'
+import { EllipsisOutlined } from '@ant-design/icons'
 import { useHasRole } from '../../auth/useRole'
 import EmployeeView from './EmployeeView'
 import ManagerView from './ManagerView'
@@ -14,7 +15,7 @@ export default function SchedulePage() {
   return <div className="pc-schedule-page">
     <h2>Schedule</h2>
     <PunchIn />
-    {isManager ? <ManagerView /> : <Tabs defaultActiveKey="availability" items={[
+    {isManager ? <ManagerView /> : <Tabs defaultActiveKey="availability" more={{ icon: <EllipsisOutlined aria-label="More tabs" /> }} items={[
       { key: 'availability', label: 'My availability', children: <AvailabilityCalendar /> },
       { key: 'shifts', label: 'My shifts', children: <EmployeeView /> },
     ]} />}

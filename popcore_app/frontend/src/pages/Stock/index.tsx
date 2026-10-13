@@ -556,6 +556,7 @@ export default function StockPage() {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14, padding: isMobile ? '0 16px' : 0 }}>
                 <Search
                   placeholder="Search products"
+                  aria-label="Search products"
                   allowClear
                   style={{ width: isMobile ? '100%' : 220 }}
                   onSearch={setQ}
@@ -563,6 +564,7 @@ export default function StockPage() {
                 />
                 <Select
                   placeholder="All Series"
+                  aria-label="Filter by series"
                   allowClear
                   style={{ width: isMobile ? '100%' : 140 }}
                   options={series.map(s => ({ value: s, label: s }))}
