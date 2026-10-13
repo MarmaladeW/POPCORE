@@ -91,7 +91,8 @@ def device_order(value):
         ids.add(item['id'])
         safe = {key: item.get(key) for key in ('id', 'name', 'price',
                 'priceWithModifiersAndItemAndOrderDiscounts', 'unitQty',
-                'unitName', 'discountAmount', 'orderLevelDiscountAmount')}
+                'unitName', 'discountAmount', 'orderLevelDiscountAmount',
+                'itemCode', 'itemId')}
         if any(safe[key] is not None and not _safe_cents(safe[key]) for key in (
                 'price', 'priceWithModifiersAndItemAndOrderDiscounts', 'discountAmount',
                 'orderLevelDiscountAmount')):
@@ -102,6 +103,12 @@ def device_order(value):
         if safe['unitName'] is not None and (not isinstance(safe['unitName'], str) or
                                              len(safe['unitName']) > 40):
             raise ValueError('Invalid device unit')
+        # Barcode and catalogue item reference identify the product; never customer data.
+        if safe['itemCode'] is not None and (not isinstance(safe['itemCode'], str) or
+                                             len(safe['itemCode']) > 80):
+            raise ValueError('Invalid device item code')
+        if safe['itemId'] is not None and not IDENTIFIER.fullmatch(str(safe['itemId'])):
+            raise ValueError('Invalid device item reference')
         safe_items.append(safe)
     safe_discounts = []
     for discount in discounts:

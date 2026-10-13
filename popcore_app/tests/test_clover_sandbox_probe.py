@@ -92,6 +92,33 @@ class SandboxProbeTests(unittest.TestCase):
         self.assertEqual([item['id'] for item in rows[0]['items']],
                          [item['id'] for item in removed['items']])
 
+    def test_device_line_item_codes_are_kept_and_validated(self):
+        app = create_app({**self.app.config, 'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox',
+                          'SESSION_SECRET': 's' * 32, 'ADMIN_PASSWORD': 'p' * 32,
+                          'WEBHOOK_PATH_KEY': 'w' * 32, 'DATA_DIR': self.directory.name,
+                          'CLOVER_MERCHANT_ID': 'M' * 13,
+                          'DEVICE_BRIDGE_SECRET': 'b' * 32, 'DEVICE_BRIDGE_ID': 'device-1'})
+        client = app.test_client()
+        item = {'id': '1' * 13, 'name': 'Scanned item', 'price': 1000,
+                'itemCode': '00123', 'itemId': 'I' * 13}
+        order = {'id': 'O' * 13, 'currency': 'CAD', 'createdTime': 1790000000000,
+                 'total': 1000, 'items': [item], 'discounts': []}
+
+        def submit(sequence, value):
+            return client.post('/clover-sandbox/device-snapshot', json={
+                'merchantId': 'M' * 13, 'deviceId': 'device-1', 'sequence': sequence, 'order': value},
+                headers={'Authorization': 'Bearer ' + 'b' * 32})
+
+        self.assertEqual(submit(1, order).status_code, 200)
+        with patch('scripts.clover_sandbox.requests.request',
+                   return_value=provider_response({'elements': []})):
+            rows = client.get('/clover-sandbox/orders', headers=self.headers).json['orders']
+        self.assertEqual(rows[0]['items'][0]['itemCode'], '00123')
+        self.assertEqual(rows[0]['items'][0]['itemId'], 'I' * 13)
+        self.assertEqual(submit(2, {**order, 'items': [{**item, 'itemCode': 'x' * 81}]}).status_code, 400)
+        self.assertEqual(submit(2, {**order, 'items': [{**item, 'itemId': 'short'}]}).status_code, 400)
+        self.assertEqual(submit(2, {**order, 'items': [{**item, 'itemCode': None, 'itemId': None}]}).status_code, 200)
+
     def test_device_cloud_reconciliation_needs_matching_items_and_total(self):
         app = create_app({'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox',
                           'SESSION_SECRET': 's' * 32, 'ADMIN_PASSWORD': 'p' * 32,

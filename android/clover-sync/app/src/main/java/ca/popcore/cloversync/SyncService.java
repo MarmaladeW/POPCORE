@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONObject;
 
 public final class SyncService extends Service {
-    private static final String ENDPOINT = "https://popcore.store/clover-sandbox/device-snapshot";
+    static final String DEFAULT_ENDPOINT = "https://popcore.store/clover-sandbox/device-snapshot";
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final ExecutorService reads = Executors.newSingleThreadExecutor();
     private final ExecutorService sender = Executors.newSingleThreadExecutor();
@@ -142,9 +142,10 @@ public final class SyncService extends Service {
     private void read(String id, int attempt) {
         try {
             Order order = connector.getOrder(id);
-            if (order != null && (order.getMerchant() == null ||
-                    !prefs.getString("merchant_id", "").equals(order.getMerchant().getId()))) {
-                status("Local Clover order belongs to a different or unknown merchant.");
+            // Locally read orders usually omit the merchant reference; only an explicit mismatch stops sync.
+            if (order != null && order.getMerchant() != null && order.getMerchant().getId() != null &&
+                    !prefs.getString("merchant_id", "").equals(order.getMerchant().getId())) {
+                status("Local Clover order belongs to a different merchant.");
                 stopping = true;
                 stopSelf();
                 return;
@@ -153,6 +154,7 @@ public final class SyncService extends Service {
             pending.offer(id, snapshot.toString());
             drain();
         } catch (Exception error) {
+            android.util.Log.w("PopcoreSync", "Local order read failed for " + id, error);
             if (attempt < 3) scheduler.schedule(() -> reads.execute(() -> read(id, attempt + 1)),
                     250, TimeUnit.MILLISECONDS);
             else status("Local Clover order is unavailable; waiting for the next update.");
@@ -208,7 +210,7 @@ public final class SyncService extends Service {
     private int send(String body) {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(ENDPOINT).openConnection();
+            connection = (HttpURLConnection) new URL(prefs.getString("endpoint", DEFAULT_ENDPOINT)).openConnection();
             connection.setRequestMethod("POST");
             connection.setDoOutput(true);
             connection.setConnectTimeout(1200);
@@ -228,6 +230,7 @@ public final class SyncService extends Service {
                     .putString("status", "Connected; sending local order changes").apply();
             return 200;
         } catch (Exception error) {
+            android.util.Log.w("PopcoreSync", "Snapshot send failed", error);
             return -1;
         } finally {
             if (connection != null) connection.disconnect();

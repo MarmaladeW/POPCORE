@@ -40,6 +40,7 @@
 .co-items { list-style: none; margin: 20px 0 0; padding: 0; border-top: 1px solid #e7eaf0; }
 .co-items li { display: flex; gap: 12px; align-items: baseline; padding: 13px 0; border-bottom: 1px solid #e7eaf0; }
 .co-quantity { min-width: 24px; color: #596273; font-variant-numeric: tabular-nums; }
+.co-unmapped { color: #b45309; font-weight: 600; }
 .co-original { display: grid; gap: 8px; margin: 16px 0 24px; font-size: 14px; }
 .co-original > div { display: flex; justify-content: space-between; gap: 16px; }
 .co-original dt { color: #596273; }

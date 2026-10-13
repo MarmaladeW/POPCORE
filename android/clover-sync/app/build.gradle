@@ -5,16 +5,38 @@ android {
     compileSdk 37
     lint { disable 'ExpiredTargetSdkVersion' }
     defaultConfig {
-        applicationId 'ca.popcore.cloversync'
+        // Clover package names are platform-unique; 'ca.popcore.cloversync' was already taken on upload.
+        applicationId 'ca.popcore.cloversync.sandbox'
         minSdk 26
         targetSdk 29
-        versionCode 2
-        versionName '0.2-sandbox'
+        versionCode 3
+        versionName '0.3-sandbox'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    // Release signing comes from an ignored properties file (see README); without it, release is unsigned.
+    def keystoreFile = rootProject.file('../../.local/clover-android/keystore.properties')
+    if (keystoreFile.exists()) {
+        def props = new Properties()
+        keystoreFile.withInputStream { props.load(it) }
+        signingConfigs {
+            release {
+                storeFile file(props['storeFile'])
+                storePassword props['storePassword']
+                keyAlias props['keyAlias']
+                keyPassword props['keyPassword']
+                // Clover's APK upload accepts only the V1 (JAR) signature scheme.
+                enableV1Signing true
+                enableV2Signing false
+                enableV3Signing false
+                enableV4Signing false
+            }
+        }
+        buildTypes.release.signingConfig signingConfigs.release
+    }
+    buildTypes { release { minifyEnabled false } }
 }
 
 dependencies { implementation 'com.clover.sdk:clover-android-sdk:334' }

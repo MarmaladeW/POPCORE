@@ -1,10 +1,16 @@
 # Clover checkout rehearsal (option 1)
 
-Status: the sandbox checkout is deployed. A read-only Android companion, device snapshot intake, and cloud-reader improvements are implemented locally. The companion debug APK built and installed on the sandbox emulator; its Clover listener registered. The new probe, adapter, and frontend changes are not deployed. End-to-end phone timing remains unverified.
+Status: the sandbox checkout is deployed. A read-only Android companion, device snapshot intake, and cloud-reader improvements are implemented locally. The companion debug APK built and installed on the sandbox emulator; its Clover listener registered. Hybrid settlement (non-card tenders recorded in POPCORE while the Clover order stays open) and barcode matching were added locally on 2026-10-07. The same day, on this Mac, the device path ran end to end: the sandbox Flex emulator's Register order `ANX52ECHFRJ8R` (2 items, CA$42.59) reached the local probe through the release companion, appeared in the Midtown sandbox queue, was claimed, and was settled as CA$42.00 cash in POPCORE with the Clover order left open. The local probe has no Clover OAuth tokens, so the cloud/card path and the webhook path were not exercised locally; sandbox items carry no item codes, so barcode matching showed 0 of 2 matched as expected. The new probe, adapter, companion and frontend changes are not deployed. End-to-end phone timing remains unverified.
 
 ## Boundaries
 
-`/checkout?source=clover-sandbox` uses the same checkout components as normal checkout. Its requests go exclusively to `/api/clover-sandbox/checkouts`. It cannot finalize a real sale, post stock, record a manual payment, cancel or refund Clover transactions. Payment completion comes from Clover's `PAID` state plus matching successful payment amounts. Partial or failed payments do not complete checkout. Zero-total orders and payment-total discrepancies remain open for review on Clover.
+`/checkout?source=clover-sandbox` uses the same checkout components as normal checkout. Its requests go exclusively to `/api/clover-sandbox/checkouts`. It cannot finalize a real sale, post stock, or cancel or refund Clover transactions.
+
+Clover is the card terminal and the item scanner; POPCORE is the record. Card payments complete from Clover's successful payment facts. Cash, e-transfer, WeChat Pay and Alipay are never rung on Clover: the cashier confirms the amount the customer pays (whole-dollar rounding included) in POPCORE, records each such payment there, and the Clover order stays open on the device. An order is settled when Clover card payments plus POPCORE-recorded payments equal that confirmed amount; otherwise today's rule applies (Clover `PAID` with matching successful payments). A settled order stays completed when it leaves Clover's latest-20 window. If Clover's total or payments change after settlement, for example a card payment taken on an already settled order, the order is flagged for review and nothing is counted twice. A card + cash split leaves a part-paid open order on Clover permanently, because Clover refuses to delete orders with payments.
+
+Each line item is matched to a POPCORE product by exact barcode (`itemCode` against `product_barcodes`). No match, or more than one product for a code, stays visibly unmapped; names are never guessed.
+
+Clover app review constraint (owner, 2026-10-07): Clover does not approve API apps with checkout attributes. The Clover app (the REST probe and the Android companion) stays strictly read-only: no tender creation, payment entry, order edits or order deletion. All checkout behaviour lives in POPCORE's own web app, which is not part of the submission. Ask Clover in writing before the production submission whether settling non-card sales outside Clover is acceptable; the fallback is ringing those tenders on Clover as cash or custom tenders, which the earlier sandbox design already supported.
 
 Order snapshots, stable payment IDs, cashier ownership and image bytes live in one separate SQLite database. The real POPCORE database is only read for identity, roles, stores, shifts and existing inventory-access permissions. Its sales, inventory and checkout tables are not written. The adapter requires the existing sandbox probe on loopback and refuses non-sandbox responses; OAuth tokens remain with the probe.
 
@@ -22,9 +28,13 @@ Order snapshots, stable payment IDs, cashier ownership and image bytes live in o
 
 On the phone, open Checkout → Open Clover sandbox rehearsal. Midtown is the only available location. The amber banner distinguishes this from real operations.
 
-Create an order on Android. It should join the queue; tap it to open that order's own page and claim it. Use the back link to return to the order list. Choose Cash, Card or E-transfer to see the existing pricing guidance. Enter discounts and take payment on Android. Once a discount or payment is present, use Clover's recorded total rather than suggesting another discount. A Clover custom amount-off labelled like `CA$0.89 Off` disables Card; remove that discount on Clover and wait for a fresh sync to use Card again. Other discounts, including a separately labelled RewardUp discount, do not trigger this Card lock. Split amounts are entered in Clover, not recorded twice in POPCORE.
+Scan the items on Android. The order joins the queue with each line marked matched or not matched by barcode; tap it to open that order's own page and claim it. Use the back link to return to the order list.
 
-E-transfer has already been added by the user. This adapter recognizes its label; it does not create tenders. WeChat Pay and Alipay must be actual matching custom tenders before use. Check is never remapped to either. Unknown labels remain visible as reported by Clover.
+- Card: choose Card, charge Clover's total on the device. The successful payment appears here automatically and completes the order.
+- Cash, e-transfer, WeChat Pay, Alipay: choose the tender, adjust **Customer pays** if rounding applies (nothing is entered on Clover), tap **Continue with …**, collect the money, then **Record … received**. Electronic tenders take a payment photo on the same page. The Clover order stays open on the device; leave it or remove it there.
+- Split with card: record the non-card part first; the page then shows the remaining amount to charge by card on Clover.
+
+Once a Clover discount or any payment is present, the confirmed amount is fixed. A Clover custom amount-off labelled like `CA$0.89 Off` still disables Card; other discounts, including a separately labelled RewardUp discount, do not. Clover tender labels on card payments are still recognised; custom tenders on Clover are no longer needed for this flow.
 
 An admin can set the checkout rate in Settings as CNY per 1 CAD. When WeChat Pay or Alipay is selected, Checkout shows the CNY amount for the confirmed CAD balance or entered split amount. The order and Clover total remain in CAD; this quote does not send a conversion to Clover. Each order also has an internal note that its cashier or a manager can edit, including after completion. Sandbox notes stay in the isolated checkout database and are not sent to Clover.
 
@@ -44,6 +54,21 @@ Daily work now has Home, Checkout, Receive goods, Claw machine and Summary. Inve
 
 Order history is inside Checkout; manual sale entry is an explicit fallback there. Closing is inside Summary. Existing URLs remain valid and select the appropriate parent navigation item.
 
+## Posting settled orders as real sales (step 3, off by default)
+
+The sandbox adapter still writes nothing to real sales or stock. Posting is a separate, explicitly enabled step: `POST /api/clover-sandbox/checkouts/<id>/post`, served by `popcore_app/blueprints/clover_posting.py` and implemented in `popcore_app/clover_posting.py`. It answers 404 unless both the adapter is enabled and `CLOVER_SANDBOX_POST_SALES=1` plus `CLOVER_SANDBOX_MERCHANT_ID` (the 13-character Clover merchant ID the probe is pinned to) are set in the application's private service environment. Do not set them until posting real Clover-sourced sales is approved. The Clover app, probe and Android companion are untouched and remain read-only.
+
+What one call does, in a single transaction on the real POPCORE database:
+
+- Requires an order that is settled in POPCORE (`settled_in_popcore`), fully recorded, and not flagged `changed_after_settlement`; otherwise it answers 409 (`clover_not_settled`, `clover_changed_after_settlement`) and writes nothing. Orders completed only from Clover's `PAID` state with no POPCORE-recorded payment have no settlement row and are not posted by this step.
+- Caller must be the order's cashier, or a manager/admin with live access to the Midtown store, and must hold an inventory grant for that store, as for any real sale. The sale's owner (`created_by`) is the cashier who settled the order.
+- Creates one `already_paid` sale with source `{system: clover, account: <merchant ID>, reference: <Clover order ID>}`. Gross is Clover's total, `reduction_cents` is the whole-dollar rounding the cashier confirmed, `collected_cents` is the confirmed amount; subtotal and tax are copied only when Clover's line prices make them known.
+- Lines matched by exact barcode become product lines (repeated scans of one product merge into one line with the summed quantity). Unmatched, ambiguous or fractional-quantity lines keep the money fact as `raw_product_text` with allocation pending (`product_mapping_required`), to be mapped through the existing sale allocation review. The sale is posted immediately: stock allocates when the store is authoritative with verified opening counts and sufficient stock, otherwise allocation lands pending (`inventory_legacy_mode`, `insufficient_stock`, ...). As with every real sale, the store's floor location needs a verified opening count before the sale can be created at all.
+- Adds one `sale_payments` row per completed attempt: Clover card payments with source reference = Clover payment ID, POPCORE-recorded cash/e-transfer/WeChat Pay/Alipay with reference `<order ID>/popcore/<attempt ID>`, all under system `clover` and the merchant account. Card payments are recorded under the cashier; manual ones keep their recorder.
+- Copies each sandbox payment photo (manual-payment evidence and Clover-payment evidence) into `payment_evidence` through the existing private evidence helpers, keeping the original uploader, with status `pending` for the usual manager review. Files use a deterministic object name per sandbox photo, so a retry recognises what is already copied.
+
+Idempotency: the sale is keyed by its `sale_sources` row, payments by their unique source references, photos by object name. Repeating the call returns the same sale (200 instead of 201) without posting stock or payments again; a photo added in the sandbox after posting is copied once on the next call. The sandbox database is only read; the sandbox order keeps showing `sale_id: null`, and the real sale is found through its source reference.
+
 ## Cutover and cleanup (do not execute during implementation)
 
 1. Disable the adapter by removing its three environment values and restart the application; stop the isolated sandbox probe. Confirm no process is writing either sandbox database before cleanup.
@@ -56,4 +81,4 @@ No cleanup, credential change, production app creation or data deletion is perfo
 
 ## Deferred developer check
 
-`python -m unittest discover -s popcore_app/tests -p test_clover_sandbox_adapter.py -v` is a small offline check of failed/partial/successful/mismatched payments, stale permissions, tender labels, unpriced drafts and separate storage. It is not a replacement for the existing checkout regression suite, frontend build, permissions/evidence checks or the user-operated Android-to-phone rehearsal.
+`python -m unittest discover -s popcore_app/tests -p test_clover_sandbox_adapter.py -v` is a small offline check of failed/partial/successful/mismatched payments, stale permissions, tender labels, unpriced drafts, separate storage, POPCORE-recorded cash/e-transfer settlement with the Clover order left open, card + cash splits, late Clover payments after settlement, manual-payment evidence and barcode matching. It is not a replacement for the existing checkout regression suite, frontend build, permissions/evidence checks or the user-operated Android-to-phone rehearsal.

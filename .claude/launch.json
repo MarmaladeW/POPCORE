@@ -14,6 +14,27 @@
       "runtimeArgs": ["run", "dev"],
       "cwd": "D:\\hello\\popcore_app\\popcore_app\\frontend",
       "port": 5173
+    },
+    {
+      "name": "clover-probe-mac",
+      "runtimeExecutable": ".local/frontend-venv/bin/python",
+      "runtimeArgs": ["scripts/clover_sandbox.py", "--config", ".local/clover-sandbox/config.json"],
+      "cwd": "/Users/marmalale/Developer/POPCORE",
+      "port": 5055
+    },
+    {
+      "name": "popcore-backend-mac",
+      "runtimeExecutable": ".local/frontend-venv/bin/python",
+      "runtimeArgs": ["-m", "flask", "--app", "popcore_app/app.py", "--env-file", "popcore_app/.env", "run", "--host", "127.0.0.1", "--port", "5001"],
+      "cwd": "/Users/marmalale/Developer/POPCORE",
+      "port": 5001
+    },
+    {
+      "name": "popcore-frontend-mac",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--host", "localhost", "--port", "5173", "--strictPort", "--config", "/Users/marmalale/Developer/POPCORE/.local/vite.mac.config.mjs"],
+      "cwd": "/Users/marmalale/Developer/POPCORE/popcore_app/frontend",
+      "port": 5173
     }
   ]
 }

@@ -18,7 +18,7 @@ from auth import role_required
 from checkout_access import checkout_access
 from checkout_operations import read_order_note
 from db import get_db
-from inventory_commands import InventoryError
+from inventory_commands import InventoryConflict, InventoryError
 from payment_evidence import prepare_image
 from validation import read_date, read_int
 
@@ -26,6 +26,9 @@ bp = Blueprint('clover_sandbox_checkout', __name__, url_prefix='/api/clover-sand
 IDENTIFIER = re.compile(r'^[A-Za-z0-9]{13}$')
 TENDERS = {'cash': 'cash', 'card': 'card', 'creditcard': 'card', 'debitcard': 'card',
            'etransfer': 'e_transfer', 'wechatpay': 'wechat', 'alipay': 'alipay'}
+# Card is taken on Clover; every other tender is received and recorded here while the
+# Clover order stays open. The Clover app itself never writes payments or tenders.
+MANUAL_TENDERS = ('cash', 'e_transfer', 'wechat', 'alipay')
 
 
 def enabled():
@@ -97,6 +100,19 @@ def database():
                 order_id INTEGER PRIMARY KEY REFERENCES orders(id));
             CREATE TABLE IF NOT EXISTS order_notes (
                 order_id INTEGER PRIMARY KEY REFERENCES orders(id), note TEXT NOT NULL DEFAULT '');
+            CREATE TABLE IF NOT EXISTS order_state (
+                order_id INTEGER PRIMARY KEY REFERENCES orders(id), version INTEGER NOT NULL DEFAULT 1,
+                payable INTEGER, settled_at REAL, settled_total INTEGER, settled_clover INTEGER);
+            CREATE TABLE IF NOT EXISTS manual_payments (
+                id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id),
+                tender TEXT NOT NULL CHECK(tender IN ('cash','e_transfer','wechat','alipay')),
+                amount INTEGER NOT NULL CHECK(amount>0),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','cancelled')),
+                recorded_by TEXT NOT NULL, created_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS manual_evidence (
+                id INTEGER PRIMARY KEY, payment_id INTEGER NOT NULL REFERENCES manual_payments(id),
+                content_hash TEXT NOT NULL, mime_type TEXT NOT NULL, content BLOB NOT NULL,
+                uploader_sub TEXT NOT NULL, UNIQUE(payment_id,content_hash));
         ''')
         store_id = int(os.environ['CLOVER_SANDBOX_STORE_ID'])
         con.execute('INSERT OR IGNORE INTO feed(id,store_id) VALUES (1,?)', (store_id,))
@@ -234,6 +250,27 @@ def sync(con):
                         (time.time() + retry_delay, 'Clover sync unavailable. Showing the last received snapshot.'))
 
 
+def product_for_code(code):
+    """Exact barcode match in the POPCORE catalogue, read-only. Ambiguous codes stay unmapped."""
+    if not isinstance(code, str) or not code.strip():
+        return None
+    rows = get_db().execute('''SELECT DISTINCT b.product_id AS id,
+        COALESCE(NULLIF(p.jizhanming,''),p.name_cn_en) AS name
+        FROM product_barcodes b JOIN products p ON p.id=b.product_id WHERE b.code=?''',
+        (code.strip(),)).fetchall()
+    return dict(rows[0]) if len(rows) == 1 else None
+
+
+def product_for_item(item_id, code):
+    """Clover item ID first (set by the item import once the API is connected), barcode second."""
+    if isinstance(item_id, str) and IDENTIFIER.fullmatch(item_id):
+        row = get_db().execute('''SELECT id, COALESCE(NULLIF(jizhanming,''),name_cn_en) AS name
+            FROM products WHERE clover_item_id=?''', (item_id,)).fetchone()
+        if row:
+            return dict(row)
+    return product_for_code(code)
+
+
 def detail(con, row, access):
     source = json.loads(row['payload'])
     live = bool(access['live_stores'])
@@ -241,13 +278,32 @@ def detail(con, row, access):
     feed = con.execute('SELECT * FROM feed').fetchone()
     device = source.get('source') == 'device'
     fresh = (device or not feed['error']) and time.time() - row['seen_at'] <= 5
+    state = con.execute('SELECT * FROM order_state WHERE order_id=?', (row['id'],)).fetchone()
     payments = con.execute('SELECT * FROM payments WHERE order_id=? ORDER BY id', (row['id'],)).fetchall()
-    received = sum(p['amount'] for p in payments if p['active'] and p['result'] == 'SUCCESS')
+    manual = con.execute('SELECT * FROM manual_payments WHERE order_id=? ORDER BY id', (row['id'],)).fetchall()
+    clover_received = sum(p['amount'] for p in payments if p['active'] and p['result'] == 'SUCCESS')
+    manual_received = sum(p['amount'] for p in manual if p['status'] == 'completed')
+    received = clover_received + manual_received
     total = source['total']
-    paid = not device and source.get('paymentState') == 'PAID' and received == total and total > 0
-    status = 'completed' if paid else 'open'
+    # Customer pays `payable`: the Clover total, or the rounded amount the cashier confirmed here.
+    payable = state['payable'] if state and state['payable'] is not None else total
+    settled = bool(state and state['settled_at'])
+    if manual_received:
+        paid = received == payable and payable > 0
+        if paid and not settled:
+            # Money recorded here is POPCORE's record: fix the settlement so a later Clover change is flagged.
+            with con:
+                con.execute('INSERT OR IGNORE INTO order_state(order_id) VALUES (?)', (row['id'],))
+                con.execute('''UPDATE order_state SET settled_at=?,settled_total=?,settled_clover=?
+                    WHERE order_id=? AND settled_at IS NULL''', (time.time(), total, clover_received, row['id']))
+            state = con.execute('SELECT * FROM order_state WHERE order_id=?', (row['id'],)).fetchone()
+            settled = True
+    else:
+        paid = not device and source.get('paymentState') == 'PAID' and received == total and total > 0
+    status = 'completed' if settled or paid else 'open'
     if not (live and (access['role'] != 'staff' or status == 'open') or owner and access['role'] == 'staff'):
         raise PermissionError('Checkout history access denied')
+    changed_after_settlement = settled and (total != state['settled_total'] or clover_received != state['settled_clover'])
     has_discount = bool(source.get('discounts')) or any(
         item.get('discountAmount') or item.get('orderLevelDiscountAmount') for item in source['items'])
     cash_discount_applied = any(
@@ -265,29 +321,44 @@ def detail(con, row, access):
     totals_known = total is not None and simple and subtotal <= total
     writable = live and (owner or access['role'] in ('admin', 'manager'))
     note_row = con.execute('SELECT note FROM order_notes WHERE order_id=?', (row['id'],)).fetchone()
-    return dict(id=row['id'], source='clover-sandbox', store_id=feed['store_id'],
-        reference=source['id'], register_name='Clover sandbox', business_date=datetime.fromtimestamp(
-            source['createdTime'] / 1000, ZoneInfo('America/Toronto')).date().isoformat(),
-        status=status, version=1, sale_id=None, cashier_name=row['cashier_name'], cashier_sub=row['cashier_sub'],
-        can_manage=False, can_refund=False, can_process=live and owner and status == 'open' and fresh and total is not None,
-        can_claim=live and not row['cashier_sub'] and status == 'open' and fresh,
-        received_cents=received, remaining_cents=max(0, (total or 0) - received), refunded_cents=0,
-        refund_due_cents=0, abandoned_reason=None, refunds=[], quote_available=quote_available,
-        totals_known=totals_known, total_pending=total is None, source_detail='device' if device else 'cloud',
-        source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
-        cash_discount_applied=cash_discount_applied,
-        can_hide=not fresh and (owner or access['role'] in ('manager', 'admin')),
-        note=note_row['note'] if note_row else '', can_note=owner or access['role'] in ('manager', 'admin'),
-        attempts=[dict(id=p['id'], tender=p['tender'], amount_cents=p['amount'],
+    lines = []
+    for item in source['items']:
+        product = product_for_item(item.get('itemId'), item.get('itemCode'))
+        lines.append(dict(product_name_snapshot=str(item.get('name') or 'Clover item')[:240],
+            quantity=(item['unitQty']/1000 if type(item.get('unitQty')) is int and item['unitQty'] > 0 else 1),
+            unit=str(item.get('unitName') or 'each'), item_code=str(item.get('itemCode') or '')[:80] or None,
+            product_id=product['id'] if product else None, product_name=product['name'] if product else None,
+            mapped=product is not None))
+    attempts = [dict(id=p['id'], source='clover', tender=p['tender'], amount_cents=p['amount'],
             status=('completed' if p['result'] == 'SUCCESS' else 'failed') if p['active'] else 'cancelled',
             can_upload=writable and p['active'] and p['result'] == 'SUCCESS',
             photos=[dict(r) for r in con.execute('SELECT id FROM evidence WHERE payment_id=? ORDER BY id', (p['id'],))])
-            for p in payments],
+            for p in payments]
+    attempts += [dict(id=p['id'], source='popcore', tender=p['tender'], amount_cents=p['amount'], status=p['status'],
+            can_upload=writable and p['status'] != 'cancelled',
+            photos=[dict(r) for r in con.execute('SELECT id FROM manual_evidence WHERE payment_id=? ORDER BY id', (p['id'],))])
+            for p in manual]
+    return dict(id=row['id'], source='clover-sandbox', store_id=feed['store_id'],
+        reference=source['id'], register_name='Clover sandbox', business_date=datetime.fromtimestamp(
+            source['createdTime'] / 1000, ZoneInfo('America/Toronto')).date().isoformat(),
+        status=status, version=state['version'] if state else 1, sale_id=None,
+        cashier_name=row['cashier_name'], cashier_sub=row['cashier_sub'],
+        can_manage=False, can_refund=False, can_process=live and owner and status == 'open' and fresh and total is not None,
+        can_record=writable and status == 'open' and total is not None,
+        can_claim=live and not row['cashier_sub'] and status == 'open' and fresh,
+        received_cents=received, clover_received_cents=clover_received,
+        remaining_cents=max(0, (payable or 0) - received), refunded_cents=0,
+        refund_due_cents=0, abandoned_reason=None, refunds=[], quote_available=quote_available,
+        totals_known=totals_known, total_pending=total is None, source_detail='device' if device else 'cloud',
+        source_fresh=fresh, source_seen_at=row['seen_at'], has_discount=has_discount,
+        cash_discount_applied=cash_discount_applied, settled_in_popcore=settled,
+        changed_after_settlement=changed_after_settlement,
+        can_hide=not fresh and status == 'open' and (owner or access['role'] in ('manager', 'admin')),
+        note=note_row['note'] if note_row else '', can_note=owner or access['role'] in ('manager', 'admin'),
+        attempts=attempts,
         order=dict(subtotal_cents=subtotal if totals_known else 0, source_tax_cents=total-subtotal if totals_known else 0,
-            gross_cents=total or 0, reduction_cents=0, collected_cents=total or 0,
-            lines=[dict(product_name_snapshot=str(item.get('name') or 'Clover item')[:240],
-                quantity=(item['unitQty']/1000 if type(item.get('unitQty')) is int and item['unitQty'] > 0 else 1),
-                unit=str(item.get('unitName') or 'each')) for item in source['items']]))
+            gross_cents=total or 0, reduction_cents=max(0, total - payable) if total is not None and payable is not None else 0,
+            collected_cents=payable or 0, lines=lines))
 
 
 def order_row(con, order_id):
@@ -398,6 +469,110 @@ def claim(order_id):
         if not changed:
             return jsonify(error='Another cashier has picked up this order'), 409
         return jsonify(detail(con, order_row(con, order_id), access))
+
+
+def body():
+    value = request.get_json(silent=True)
+    return value if isinstance(value, dict) else {}
+
+
+def bump_version(con, order_id, data):
+    """Inside the caller's transaction: check expected_version, then advance it."""
+    expected = read_int(data.get('expected_version'), 'expected_version', minimum=1)
+    con.execute('INSERT OR IGNORE INTO order_state(order_id) VALUES (?)', (order_id,))
+    changed = con.execute('UPDATE order_state SET version=version+1 WHERE order_id=? AND version=?',
+                          (order_id, expected)).rowcount
+    if not changed:
+        raise InventoryConflict('Checkout changed. Refresh before continuing.', 'checkout_state_conflict')
+
+
+@bp.post('/<int:order_id>/attempts')
+@role_required('staff')
+def start_attempt(order_id):
+    with database() as con:
+        access = scope(con)
+        data = body()
+        value = detail(con, order_row(con, order_id), access)
+        if not value['can_process']:
+            raise InventoryConflict('This order cannot take a payment right now', 'checkout_state_conflict')
+        tender = data.get('tender')
+        if tender == 'card':
+            raise ValueError('Card is taken on Clover. Choose the tender received in POPCORE.')
+        if tender not in MANUAL_TENDERS:
+            raise ValueError('Choose cash, e-transfer, WeChat Pay or Alipay')
+        total = value['order']['gross_cents']
+        payable = read_int(data.get('payable_cents'), 'payable_cents', minimum=1)
+        manual_done = any(a['source'] == 'popcore' and a['status'] == 'completed' for a in value['attempts'])
+        if manual_done and payable != value['order']['collected_cents']:
+            raise ValueError('The amount is fixed once a payment is recorded')
+        if payable > total or payable < value['received_cents']:
+            raise ValueError('Customer pays must be between the money already received and the Clover total')
+        amount = read_int(data.get('amount_cents'), 'amount_cents', minimum=1)
+        if amount > payable - value['received_cents']:
+            raise ValueError('Amount must be within the remaining balance')
+        with con:
+            bump_version(con, order_id, data)
+            con.execute("UPDATE manual_payments SET status='cancelled' WHERE order_id=? AND status='pending'", (order_id,))
+            con.execute('INSERT INTO manual_payments(order_id,tender,amount,recorded_by,created_at) VALUES (?,?,?,?,?)',
+                        (order_id, tender, amount, request.jwt_payload['sub'], time.time()))
+            con.execute('UPDATE order_state SET payable=? WHERE order_id=?', (payable, order_id))
+        return jsonify(detail(con, order_row(con, order_id), access))
+
+
+@bp.post('/<int:order_id>/complete')
+@role_required('staff')
+def complete(order_id):
+    with database() as con:
+        access = scope(con)
+        data = body()
+        value = detail(con, order_row(con, order_id), access)
+        if not value['can_record']:
+            raise PermissionError('Checkout cashier access denied')
+        attempt_id = read_int(data.get('attempt_id'), 'attempt_id', minimum=1)
+        attempt = next((a for a in value['attempts'] if a['source'] == 'popcore' and a['id'] == attempt_id
+                        and a['status'] == 'pending'), None)
+        if attempt is None:
+            raise InventoryConflict('This payment attempt is no longer pending', 'attempt_state_conflict')
+        total, payable = value['order']['gross_cents'], value['order']['collected_cents']
+        if payable > total or attempt['amount_cents'] > payable - value['received_cents']:
+            raise InventoryConflict('Clover total changed. Start the payment again.', 'checkout_state_conflict')
+        with con:
+            bump_version(con, order_id, data)
+            con.execute("UPDATE manual_payments SET status='completed' WHERE id=? AND status='pending'", (attempt_id,))
+        # detail() fixes the settlement itself once recorded money equals the confirmed amount.
+        return jsonify(detail(con, order_row(con, order_id), access))
+
+
+@bp.post('/<int:order_id>/manual/<int:payment_id>/evidence')
+@role_required('staff')
+def upload_manual(order_id, payment_id):
+    with database() as con:
+        value = detail(con, order_row(con, order_id), scope(con))
+        payment = next((p for p in value['attempts'] if p['source'] == 'popcore' and p['id'] == payment_id), None)
+        if not payment or not payment['can_upload']:
+            raise PermissionError('Payment evidence access denied')
+        image = prepare_image(request.files.get('image'))
+        with con:
+            con.execute('''INSERT OR IGNORE INTO manual_evidence(payment_id,content_hash,mime_type,content,uploader_sub)
+                VALUES (?,?,?,?,?)''', (payment_id,image['content_hash'],image['mime_type'],image['content'],request.jwt_payload['sub']))
+        photo = con.execute('SELECT id FROM manual_evidence WHERE payment_id=? AND content_hash=?',
+                            (payment_id,image['content_hash'])).fetchone()
+        return jsonify(id=photo['id'], attempt_id=payment_id), 201
+
+
+@bp.get('/<int:order_id>/manual-evidence/<int:photo_id>')
+@role_required('staff')
+def manual_content(order_id, photo_id):
+    with database() as con:
+        access = scope(con)
+        value = detail(con, order_row(con, order_id), access)
+        if value['cashier_sub'] != request.jwt_payload['sub'] and access['role'] == 'staff':
+            raise PermissionError('Payment evidence access denied')
+        photo = con.execute('''SELECT e.* FROM manual_evidence e JOIN manual_payments p ON p.id=e.payment_id
+            WHERE e.id=? AND p.order_id=?''', (photo_id, order_id)).fetchone()
+        if photo is None:
+            raise ValueError('Photo does not belong to this sandbox order')
+        return send_file(io.BytesIO(photo['content']), mimetype=photo['mime_type'])
 
 
 @bp.post('/<int:order_id>/attempts/<int:payment_id>/evidence')
