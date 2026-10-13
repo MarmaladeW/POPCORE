@@ -11,7 +11,7 @@ import import_clover_items as importer  # noqa: E402
 
 
 def write_csv(path, rows, headers=('clover_item_name', 'price', 'category', 'clover_item_id', 'product_code')):
-    with open(path, 'w', newline='') as handle:
+    with open(path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=headers)
         writer.writeheader()
         writer.writerows(rows)
