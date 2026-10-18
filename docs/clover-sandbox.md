@@ -238,6 +238,49 @@ Custom Item appeared while open, the review page suggested a `$1.00` discount an
 order returned as `PAID` with a successful `$29.00` Cash payment. Authenticated order
 updates and a payment-create notification also reached the receiver.
 
+#### Taxable checkout and edge-case matrix, 2026-09-22 14:05–14:22 EDT
+
+_Recorded before the 2026-10-15 decision that cash, e-transfer, WeChat Pay and Alipay never go through Clover. The Cash and Check steps below are historical sandbox evidence, not a supported checkout path._
+
+The user operated the Clover Flex 3rd Gen Android emulator while the hosted probe
+was refreshed after each step. Dashboard item `9JBA3GS6Q58PY`, **Taxable Sandbox
+Item**, was set to `$17.70`, visible on POS, and assigned only the 13% **Ontario HST
+(sandbox)** rate. The already-running emulator did not show the new item until its
+top-left sync action completed.
+
+- Taxed order `PP121VE44DAEC` appeared `OPEN` at `$20.00` (`$17.70` subtotal and
+  `$2.30` HST). The review suggested a `$0.89` pre-tax discount and `$19.00`
+  customer payment. Clover recalculated the discounted tax to `$2.19` and the
+  actual total to `$19.00`; the review's pre-application estimate had been `$18.99`.
+  The order then appeared `PAID` with Cash `$19.00` `SUCCESS`. Payment
+  `WTPK9VD33V4K2` and matching authenticated order/payment events were visible.
+  The one-cent estimate difference is a real limit of reconstructing a tax rate
+  from already-rounded subtotal/tax facts; the page remains advisory and requires
+  confirmation of Clover's displayed total before payment.
+- Order `KCCDZTKE6CQNY` proved pre-payment quantity and removal behavior. One item
+  was `$20.00`; increasing to two produced `$35.40` subtotal, `$4.60` HST and
+  `$40.00` total, exposed by the API as two line-item rows. Removing one returned
+  the same order to `$20.00`. Removing the last item made the emulator show `$0`
+  immediately, while the first API read briefly returned `OPEN`, `$20.00` with no
+  items. A bounded five-second re-read converged to `OPEN`, `$0.00` and a later
+  `UPDATE`. Explicit deletion then removed the order from current reads and sent
+  `DELETE` at Clover source timestamp `1790101041008` (14:17:21 EDT).
+- Order `BN25BEM1TJV5P` proved partial and mixed-tender payment. After the first
+  `$10.00` Cash component it appeared `PARTIALLY_PAID`, retained total `$20.00`,
+  showed Cash `$10.00` `SUCCESS`, and stopped offering a discount. Payment
+  `E85KY319BJ08Y` sent `CREATE` at `1790101207250`. A second `$10.00` Check payment
+  completed the same order as `PAID`; payment `S8EHR0M96BPSP` sent `CREATE` at
+  `1790101324107`. Two subsequent review/status refreshes preserved identical
+  order facts and webhook rows.
+
+All live webhook rows in this pass had distinct object/type/source-time keys; no
+provider redelivery of an identical event was observed. The local receiver check
+separately replays an identical event and verifies one stored row. Malformed provider
+money was not injected into Clover; the local review check verifies that such facts
+suppress a discount quote. These results are Canadian sandbox/emulator evidence,
+not Station Duo, production merchant, real-money, production inventory or automatic
+checkout-write evidence.
+
 ## User inputs and next steps
 
 1. Confirm the test merchant uses Canada/CAD, then set its 13-character ID in
