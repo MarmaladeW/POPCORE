@@ -1538,17 +1538,23 @@ def _parse_token(token: str, section: str) -> dict | None:
     raw_name = raw_name.strip()
     qty, flagged, loose_qty = 0, True, 0
     box_size = 1 if section == 'stock_in' else None
+    out_pack = None
     if star:
-        if section == 'stock_in':
+        if section in ('stock_in', 'stock_out'):
             pack = re.match(r'^(.*?)(\d+)$', raw_name)
             if pack and pack.group(1).strip() and not re.search(
                 r'(?<![A-Za-z])(?:s|ver|version|series)\s*$', pack.group(1), re.I
             ):
                 raw_name = pack.group(1).strip().rstrip(':').strip()
                 try:
-                    box_size = read_int(pack.group(2), 'box_size', minimum=1)
+                    size = read_int(pack.group(2), 'box_size', minimum=1)
                 except ValueError:
-                    box_size = None
+                    size = None
+                if section == 'stock_in':
+                    box_size = size
+                else:
+                    # "出店：最初的伙伴9*1" is one pack of 9; stock-out lines carry units only.
+                    out_pack = size if size is not None else 0
         try:
             quantities = re.split(r'\s*[+➕]\s*', qty_str.strip()) if section == 'stock_in' else [qty_str.strip()]
             if len(quantities) > 2:
@@ -1556,6 +1562,9 @@ def _parse_token(token: str, section: str) -> dict | None:
             qty = read_int(quantities[0], 'qty', minimum=1)
             loose_qty = read_int(quantities[1], 'loose_qty') if len(quantities) == 2 else 0
             read_int(qty * (box_size or 1) + loose_qty, 'total_units', minimum=1)
+            if out_pack is not None:
+                qty = read_int(qty * out_pack, 'qty', minimum=1)
+                note = '；'.join(filter(None, [note, '原文: ' + token.strip()]))
             flagged = section == 'stock_in' and box_size is None
         except ValueError:
             pass
@@ -1747,6 +1756,22 @@ def parse_daily_report():
                         raw_items.append(sealed)
                         report_notes['display_stock_in'].append(token)
                         continue
+                # "芭比*11+1(display)": 11 received into stock plus 1 opened for display.
+                trailing = re.fullmatch(
+                    r'(.+?)\s*\*\s*(\d+)\s*[+➕]\s*(\d+)\s*\((?:display|展示)\)', token, re.I
+                )
+                if sec == 'stock_in' and trailing:
+                    try:
+                        read_int(trailing.group(3), 'display_qty', minimum=1)
+                    except ValueError:
+                        pass
+                    else:
+                        sealed = _parse_token(f'{trailing.group(1)}*{trailing.group(2)}', sec)
+                        if not sealed['flagged']:
+                            sealed['note'] = '原文: ' + token
+                            raw_items.append(sealed)
+                            report_notes['display_stock_in'].append(token)
+                            continue
                 item = _parse_token(token, sec)
                 if item['flagged'] or re.search(r'[+➕]|^[^*]*\d\s*\(', token):
                     # Unsupported mixed arithmetic must not disappear into notes.
