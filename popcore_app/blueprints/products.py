@@ -20,6 +20,10 @@ from catalog_identity import (
     CatalogConflict, add_conversion, assign_barcode, resolve_barcode,
     update_product_identity,
 )
+from inventory_commands import require_inventory_access
+from inventory_opening import (
+    OpeningCountError, count_sheet_csv, count_sheet_rows, find_location,
+)
 
 bp = Blueprint('products', __name__)
 
@@ -909,6 +913,35 @@ def export_products():
     fname = f'products_{date.today()}.csv'
     return Response(
         '\n'.join(lines),
+        mimetype='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{fname}"'}
+    )
+
+
+@bp.route('/api/products/count-sheet')
+@role_required('manager')
+def export_count_sheet():
+    """Blind opening-count sheet for one inventory location (no quantities)."""
+    store_code = request.args.get('store_code', '')
+    location_code = request.args.get('location', '')
+    scope = request.args.get('scope', 'legacy')
+    con = get_db()
+    location = find_location(con, store_code, location_code)
+    if location is None:
+        return jsonify({'error': 'store_code and location must name an active inventory location',
+                        'code': 'location_unknown'}), 400
+    try:
+        require_inventory_access(con, request.jwt_payload, (location['store_id'],), 'manager')
+    except PermissionError:
+        return jsonify({'error': 'Inventory access denied', 'code': 'inventory_access_denied'}), 403
+    try:
+        rows = count_sheet_rows(con, store_code, location_code, scope)
+    except OpeningCountError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), 400
+    fname = (f"count_sheet_{location['store_code']}_{location['code']}_{scope}_"
+             f"{date.today()}.csv")
+    return Response(
+        count_sheet_csv(rows),
         mimetype='text/csv; charset=utf-8',
         headers={'Content-Disposition': f'attachment; filename="{fname}"'}
     )
