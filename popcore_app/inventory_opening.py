@@ -163,6 +163,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
     errors = []
     warnings = []
     submitted = set()
+    counted = set()
     accepted = {}
 
     def error(row, code, message, **extra):
@@ -177,6 +178,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             error(None, 'location_unknown', f'--empty-location {value} is not an active location')
         else:
             submitted.add(location['id'])
+            counted.add(location['id'])
 
     for row in rows:
         location = by_code.get((row.get('store', '').upper(), row.get('location', '').lower()))
@@ -192,6 +194,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             continue
         if count is None:
             continue
+        counted.add(location['id'])
 
         raw_id = row.get('product_id', '')
         sku = _unsheeted(row.get('sku', ''))
@@ -262,6 +265,12 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             error(None, 'location_not_counted',
                   f'{_key(location)} has no count rows; count it or pass '
                   f'--empty-location {_key(location)}')
+            continue
+        if location['id'] not in counted:
+            # A sheet of blanks is not a count; never open it as an authoritative zero.
+            error(None, 'location_not_counted',
+                  f'{_key(location)} has count rows but every count is blank; enter the '
+                  f'counts (0 where none was found) or pass --empty-location {_key(location)}')
             continue
         column = legacy_column(location['code'])
         for legacy in con.execute(

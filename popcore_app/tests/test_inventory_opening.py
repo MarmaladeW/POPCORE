@@ -224,6 +224,16 @@ class OpeningCountTests(IsolatedApiCase):
                      if e['code'] == 'uncounted_legacy_stock'}
         self.assertEqual(uncounted, {self.set, self.design})
 
+    def test_sheet_with_only_blank_counts_is_not_an_empty_location(self):
+        blank = self._row(store='MK', location='warehouse', sku='OPEN-DESIGN', count='')
+        report = self._review(self._complete_rows() + [blank])
+        self.assertFalse(report['ready_to_apply'])
+        blocked = [e['message'] for e in report['errors'] if e['code'] == 'location_not_counted']
+        self.assertEqual(len(blocked), 1)
+        self.assertIn('MK-warehouse has count rows but every count is blank', blocked[0])
+        declared = self._review(self._complete_rows() + [blank], empty_locations=['MK-warehouse'])
+        self.assertNotIn('location_not_counted', self._codes(declared))
+
     def test_review_reports_actor_without_access_and_closed_opening(self):
         report = self._review(self._complete_rows(), empty_locations=['MK-warehouse'],
                               actor_sub='auth0|nobody')
