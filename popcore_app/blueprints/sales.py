@@ -1552,9 +1552,12 @@ def _parse_token(token: str, section: str) -> dict | None:
                     size = None
                 if section == 'stock_in':
                     box_size = size
-                else:
+                elif re.search(r'[㐀-鿿]$', pack.group(1)):
                     # "出店：最初的伙伴9*1" is one pack of 9; stock-out lines carry units only.
+                    # Other trailing digits ("Alpha 12*2") may be part of the product name.
                     out_pack = size if size is not None else 0
+                else:
+                    raw_name = t.partition('*')[0].strip()
         try:
             quantities = re.split(r'\s*[+➕]\s*', qty_str.strip()) if section == 'stock_in' else [qty_str.strip()]
             if len(quantities) > 2:

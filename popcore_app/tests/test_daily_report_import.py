@@ -116,18 +116,18 @@ Test Product*1 （秘密）
     def test_trailing_display_receipts_and_stock_out_packs_from_dt_reports(self):
         parsed = self.parse('2026.10.16 DT\n入店：\nTest Product*11+1（display）\n'
                             'Test Product 12*1+1（display）\nTest Product *4 +1\n'
-                            '出店：\nTest Product9*1\nTest Product*2', engine='rules')
+                            '出店：\n测试公仔9*1\nTest Product*2', engine='rules')
         self.assertFalse(parsed['metadata_errors'] or parsed['confirmed'])
         rows = parsed['review'] + parsed['failed']
         self.assertEqual([(r['section'], r['qty'], r['box_size'], r['loose_qty'], r['flagged'])
                           for r in rows],
                          [('stock_in', 11, 1, 0, False), ('stock_in', 1, 12, 0, False),
-                          ('stock_in', 4, 1, 1, False), ('stock_out', 9, None, 0, False),
-                          ('stock_out', 2, None, 0, False)])
+                          ('stock_in', 4, 1, 1, False), ('stock_out', 2, None, 0, False),
+                          ('stock_out', 9, None, 0, False)])
         self.assertEqual(parsed['display_stock_in'],
                          ['Test Product*11+1(display)', 'Test Product 12*1+1(display)'])
-        self.assertIn('Test Product9*1', rows[3]['note'])
-        for name in ('sa animal ver2', 'smiski球s3', 'Smiski series1'):
+        self.assertIn('测试公仔9*1', rows[4]['note'])
+        for name in ('sa animal ver2', 'smiski球s3', 'Smiski series1', 'Alpha 12', 'Molly100'):
             with self.subTest(name=name):
                 item = _parse_token(name + '*2', 'stock_out')
                 self.assertEqual((item['raw_name'], item['qty'], item['flagged']), (name, 2, False))
@@ -139,7 +139,7 @@ Test Product*1 （秘密）
         with closing(self.connect()) as con:
             con.execute('UPDATE stock SET instore_qty=20 WHERE product_id=?', (self.product_id,))
             con.commit()
-        result = self.submit([{**rows[3], 'product_id': self.product_id}])
+        result = self.submit([{**rows[4], 'product_id': self.product_id}])
         self.assertEqual(result.status_code, 200, result.get_json())
         with closing(self.connect()) as con:
             row = con.execute('SELECT instore_qty FROM stock WHERE product_id=?',
