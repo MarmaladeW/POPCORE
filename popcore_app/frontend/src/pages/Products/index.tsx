@@ -7,7 +7,7 @@ import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
   EditOutlined, PictureOutlined, FilterOutlined,
-  SyncOutlined, ExclamationCircleOutlined,
+  SyncOutlined, ExclamationCircleOutlined, FileTextOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -15,6 +15,7 @@ import RoleGuard from '../../components/RoleGuard'
 import ProductModal from './ProductModal'
 import HiddenImagesModal from './HiddenImagesModal'
 import PasteImportModal from './PasteImportModal'
+import CountSheetModal from './CountSheetModal'
 import ProductSearchBar from './ProductSearchBar'
 import ProductDetailDrawer from './ProductDetailDrawer'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -167,6 +168,7 @@ export default function ProductsPage() {
   const [modalOpen,      setModalOpen]      = useState(false)
   const [imagesProduct,  setImagesProduct]  = useState<Product | null>(null)
   const [pasteOpen,      setPasteOpen]      = useState(false)
+  const [countSheetOpen, setCountSheetOpen] = useState(false)
   const [detailId,       setDetailId]       = useState<number | null>(null)
   const [filtersVisible, setFiltersVisible] = useState(false)
 
@@ -530,6 +532,7 @@ export default function ProductsPage() {
               <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto', flexWrap: 'wrap' }}>
                 <Button onClick={() => setPasteOpen(true)}>Import</Button>
                 <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>
+                <Button icon={<FileTextOutlined />} onClick={() => setCountSheetOpen(true)}>Count sheet</Button>
                 {selected.length > 0 && (
                   <Popconfirm
                     title={`Delete ${selected.length} products? This cannot be undone.`}
@@ -622,6 +625,13 @@ export default function ProductsPage() {
         onClose={() => setPasteOpen(false)}
         onDone={() => { setPasteOpen(false); load() }}
       />
+      <RoleGuard minRole="manager">
+        <CountSheetModal
+          open={countSheetOpen}
+          storeCode={selectedStore?.code}
+          onClose={() => setCountSheetOpen(false)}
+        />
+      </RoleGuard>
       <ProductDetailDrawer
         productId={detailId}
         stockTotal={stockMap ? stockMap.get(detailId ?? 0) ?? 0 : null}
