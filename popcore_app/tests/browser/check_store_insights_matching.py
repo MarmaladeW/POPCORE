@@ -44,10 +44,15 @@ async def mount(browser, fixture, width, prefixes):
 
 
 async def check_layout(page):
-    assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    # Wait out closing dropdown/modal animations; a persistent overflow still fails.
+    await page.wait_for_function('document.documentElement.scrollWidth <= innerWidth', timeout=5000)
     dialog = page.get_by_role('dialog')
     if await dialog.count():
-        assert await dialog.evaluate('element => element.scrollWidth <= element.clientWidth')
+        await page.wait_for_function(
+            "() => [...document.querySelectorAll('[role=dialog]')]"
+            ".every(element => element.scrollWidth <= element.clientWidth)",
+            timeout=5000,
+        )
         await expect(dialog).to_be_in_viewport(ratio=.99)
 
 
