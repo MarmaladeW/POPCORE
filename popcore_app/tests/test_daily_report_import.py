@@ -113,6 +113,39 @@ Test Product*1 （秘密）
                                 headers=self.headers('manager')).get_json()
         self.assertEqual(saved['display_stock_in'], ['Test Product:7 + (DISPLAY)*2'])
 
+    def test_trailing_display_receipts_and_stock_out_packs_from_dt_reports(self):
+        parsed = self.parse('2026.10.16 DT\n入店：\nTest Product*11+1（display）\n'
+                            'Test Product 12*1+1（display）\nTest Product *4 +1\n'
+                            '出店：\n测试公仔9*1\nTest Product*2', engine='rules')
+        self.assertFalse(parsed['metadata_errors'] or parsed['confirmed'])
+        rows = parsed['review'] + parsed['failed']
+        self.assertEqual([(r['section'], r['qty'], r['box_size'], r['loose_qty'], r['flagged'])
+                          for r in rows],
+                         [('stock_in', 11, 1, 0, False), ('stock_in', 1, 12, 0, False),
+                          ('stock_in', 4, 1, 1, False), ('stock_out', 2, None, 0, False),
+                          ('stock_out', 9, None, 0, False)])
+        self.assertEqual(parsed['display_stock_in'],
+                         ['Test Product*11+1(display)', 'Test Product 12*1+1(display)'])
+        self.assertIn('测试公仔9*1', rows[4]['note'])
+        for name in ('sa animal ver2', 'smiski球s3', 'Smiski series1', 'Alpha 12', 'Molly100'):
+            with self.subTest(name=name):
+                item = _parse_token(name + '*2', 'stock_out')
+                self.assertEqual((item['raw_name'], item['qty'], item['flagged']), (name, 2, False))
+        for line in ('Test Product*11+0(display)', 'Test Product*0+1(display)'):
+            with self.subTest(line=line):
+                parsed = self.parse('2026.10.16 DT\n入店：' + line, engine='rules')
+                self.assertTrue(parsed['metadata_errors'])
+                self.assertFalse(parsed['display_stock_in'])
+        with closing(self.connect()) as con:
+            con.execute('UPDATE stock SET instore_qty=20 WHERE product_id=?', (self.product_id,))
+            con.commit()
+        result = self.submit([{**rows[4], 'product_id': self.product_id}])
+        self.assertEqual(result.status_code, 200, result.get_json())
+        with closing(self.connect()) as con:
+            row = con.execute('SELECT instore_qty FROM stock WHERE product_id=?',
+                              (self.product_id,)).fetchone()
+            self.assertEqual(row[0], 11)
+
     def test_malformed_mixed_receipts_cannot_disappear_into_display_metadata(self):
         for expression in ('7+(display)*', '7+(display)*0', '0+(display)*1',
                            '-2+(display)*1', '7.5+(display)*1', '7+(display)*1oops',
