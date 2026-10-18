@@ -202,6 +202,13 @@ class IdentitySheetTests(IsolatedApiCase):
         # A fresh key finds the rows already applied: no writes, nothing reported as updated.
         again = self.confirm(accepted[:1], key='identity-2')
         self.assertEqual(again.get_json(), {'ok': True, 'updated': 0, 'unchanged': 1, 'series_created': []})
+        # A second manager confirming the same preview, including the rows that created
+        # "New Series", finds every row already at its target.
+        second = self.confirm(accepted, key='identity-3')
+        self.assertEqual((second.status_code, second.get_json()),
+                         (200, {'ok': True, 'updated': 0, 'unchanged': 3, 'series_created': []}))
+        self.assertEqual(self.all_tables(exclude=('operation_requests',)),
+                         {k: v for k, v in after.items() if k != 'operation_requests'})
 
     def test_stale_row_rolls_back_every_row(self):
         result = self.preview_ok('\n'.join([

@@ -302,7 +302,14 @@ def confirm(con, rows, *, actor, request_key):
                 raise InventoryConflict(f'{label} no longer exists; preview again', 'stale_preview')
             current = dict(current)
             target = row['values']
-            if not target['new_series'] and current == {key: target[key] for key in SNAPSHOT}:
+            series_id = target['series_id']
+            if target['new_series']:
+                # Another confirmation may already have created the series and applied this row.
+                existing = con.execute('SELECT id FROM product_series WHERE name=?',
+                                       (target['series_name'],)).fetchone()
+                series_id = existing['id'] if existing else None
+            if ((not target['new_series'] or series_id is not None)
+                    and current == {**{key: target[key] for key in SNAPSHOT}, 'series_id': series_id}):
                 unchanged += 1
                 continue
             if current != row['before']:
