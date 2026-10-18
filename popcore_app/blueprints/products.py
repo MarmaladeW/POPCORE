@@ -1083,6 +1083,63 @@ def catalog_import_confirm():
     return jsonify({'ok': True, 'created': created, 'updated': updated})
 
 
+# ─── Bulk inventory-identity review sheet ────────────────────────────────────
+
+@bp.route('/api/products/identity-sheet')
+@role_required('manager')
+def export_identity_sheet():
+    import identity_sheet
+    store_code = request.args.get('store_code', '').strip().upper()
+    unverified = request.args.get('unverified', '') in ('1', 'true')
+    con = get_db()
+    try:
+        text, _ = identity_sheet.export_csv(con, store_code or None, unverified)
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+    parts = ['identity_sheet', store_code or 'all'] + (['unverified'] if unverified else [])
+    fname = '_'.join(parts) + f'_{date.today()}.csv'
+    return Response(text, mimetype='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{fname}"'})
+
+
+@bp.route('/api/products/identity-import/preview', methods=['POST'])
+@role_required('manager')
+def identity_import_preview():
+    import identity_sheet
+    from inventory_commands import InventoryError
+    data = request.get_json(silent=True)
+    con = get_db()
+    try:
+        return jsonify(identity_sheet.preview(con, data.get('text') if isinstance(data, dict) else None))
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except (ValueError, csv.Error) as exc:
+        return jsonify({'error': str(exc) or 'Invalid identity sheet', 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
+@bp.route('/api/products/identity-import/confirm', methods=['POST'])
+@role_required('manager')
+def identity_import_confirm():
+    import identity_sheet
+    from inventory_commands import InventoryError
+    data = request.get_json(silent=True)
+    con = get_db()
+    try:
+        return jsonify(identity_sheet.confirm(
+            con, data.get('rows') if isinstance(data, dict) else None,
+            actor=request.jwt_payload, request_key=request.headers.get('Idempotency-Key')))
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
 # ─── Google Sheet Sync ────────────────────────────────────────────────────────
 
 _SHEET_ID = '1bUXTNiFH0iGd4YLrhQ1KJjeGTsbtAyDwp7hVEGFWFwM'

@@ -15,6 +15,7 @@ import RoleGuard from '../../components/RoleGuard'
 import ProductModal from './ProductModal'
 import HiddenImagesModal from './HiddenImagesModal'
 import PasteImportModal from './PasteImportModal'
+import { IdentityExportModal, IdentityImportModal } from './IdentitySheetModals'
 import ProductSearchBar from './ProductSearchBar'
 import ProductDetailDrawer from './ProductDetailDrawer'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -167,6 +168,8 @@ export default function ProductsPage() {
   const [modalOpen,      setModalOpen]      = useState(false)
   const [imagesProduct,  setImagesProduct]  = useState<Product | null>(null)
   const [pasteOpen,      setPasteOpen]      = useState(false)
+  const [identityExportOpen, setIdentityExportOpen] = useState(false)
+  const [identityImportOpen, setIdentityImportOpen] = useState(false)
   const [detailId,       setDetailId]       = useState<number | null>(null)
   const [filtersVisible, setFiltersVisible] = useState(false)
 
@@ -530,6 +533,8 @@ export default function ProductsPage() {
               <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto', flexWrap: 'wrap' }}>
                 <Button onClick={() => setPasteOpen(true)}>Import</Button>
                 <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>
+                <Button onClick={() => setIdentityExportOpen(true)}>Export identity sheet</Button>
+                <Button onClick={() => setIdentityImportOpen(true)}>Import identity sheet</Button>
                 {selected.length > 0 && (
                   <Popconfirm
                     title={`Delete ${selected.length} products? This cannot be undone.`}
@@ -621,6 +626,12 @@ export default function ProductsPage() {
         open={pasteOpen}
         onClose={() => setPasteOpen(false)}
         onDone={() => { setPasteOpen(false); load() }}
+      />
+      <IdentityExportModal open={identityExportOpen} onClose={() => setIdentityExportOpen(false)} />
+      <IdentityImportModal
+        open={identityImportOpen}
+        onClose={() => setIdentityImportOpen(false)}
+        onDone={() => { setIdentityImportOpen(false); load() }}
       />
       <ProductDetailDrawer
         productId={detailId}

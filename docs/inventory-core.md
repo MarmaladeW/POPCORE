@@ -10,6 +10,19 @@ Manufacturer barcodes may intentionally resolve to multiple confirmed designs. I
 
 Products → Import accepts catalog CSV or tab-separated rows with a header and an explicit SKU, including the columns from Products → Export. Managers review proposed creations and metadata updates before confirming. Existing products are identified by exact SKU; omitted columns stay unchanged, while blank supplied cells clear those catalog values. Stock/quantity columns and inventory identity fields are rejected. Confirmation is atomic, checks the preview against current catalog values, and never changes stock, inventory balances, or stock history.
 
+### Bulk identity review sheet
+
+Products → Export identity sheet and Import identity sheet (managers and admins, desktop and mobile) review identity in bulk before opening counts. They change identity fields only.
+
+- `GET /api/products/identity-sheet` returns a CSV with `product_id, SKU, name, 记账名, legacy_series, series_id, series, stock_form, stock_unit, design_name, identity_status`. `store_code=DT` limits it to products with legacy stock at that store (`stock.instore_qty` or `upstairs_qty` above zero); `unverified=1` leaves out verified products.
+- `POST /api/products/identity-import/preview` takes the edited sheet as CSV or tab-separated `text`. Rows match by `product_id` or exact SKU; when both are given they must agree. `name`, `记账名`, `legacy_series` and `identity_status` are reference-only and ignored; any other unknown column (including stock quantities) rejects the whole sheet. Omitted identity columns keep their current values; blank supplied cells clear them. A blank `stock_unit` takes the unit fixed by `stock_form`. A row with no identity entered is skipped. Every other row is marked `identity_status=verified`, so remove or blank rows you have not reviewed.
+- Series are chosen by `series_id` or exact `series` name. A name that does not exist yet is proposed as a new series and listed in the preview; a name that differs from an existing or proposed series only by case, width or spacing is rejected (the same rule as series setup).
+- The preview runs each row through `update_product_identity` in a transaction that is always rolled back, so rows are rejected with the same messages and codes as the single-product editor (`identity_locked`, `design_conflict`, missing conversion for a sealed set, form/unit mismatch). Later rows are checked against earlier accepted rows, as confirm will apply them. Rejected rows show their reason and are not sent to confirm.
+- `POST /api/products/identity-import/confirm` requires an `Idempotency-Key` and the accepted preview rows. It re-checks each row's preview snapshot against current values (`stale_preview` otherwise; a row already at its target is counted unchanged), creates any new series, applies every row through `update_product_identity`, and commits all or nothing. The same key and rows return the stored result; the same key with different rows returns `idempotency_conflict`.
+- Sealed sets still need a reviewed conversion before they can be verified, so verify them in the product editor after adding the conversion. The import never writes stock, balances, movements or stock history.
+
+Local checks: `test_identity_sheet.py` and `tests/browser/check_identity_sheet.py` (real Flask API, disposable SQLite, mocked authentication).
+
 Products → Sync from Google Sheet is available to managers and admins on desktop and mobile. It retains its separate preview and confirmation steps. Catalog controls remain available when the selected store's stock cannot be read; unavailable stock is shown as unknown.
 
 ## Series and confirmed designs
