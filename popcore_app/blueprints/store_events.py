@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, jsonify, request
 
 from auth import role_required
-from checkout_access import business_date, checkout_access
+from checkout_access import REGISTER_NAME, REGISTER_SUB, business_date, checkout_access
 from db import get_db
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryConflict, InventoryError, require_inventory_access
@@ -134,12 +134,13 @@ def summary():
         (store_id,date,int(personal),subject))]
     events = [_event(con,event_id) for event_id in event_ids]
     orders = con.execute('''SELECT o.id,o.reference,o.status,o.sale_id,o.created_by,o.created_at,o.payload,
-        COALESCE(NULLIF(emp.name,''),o.created_by) AS actor_name,a.tender,a.amount_cents
+        CASE WHEN o.created_by=? THEN ? ELSE COALESCE(NULLIF(emp.name,''),o.created_by) END AS actor_name,
+        a.tender,a.amount_cents
         FROM checkout_orders o JOIN checkout_attempts a ON a.checkout_id=o.id
         LEFT JOIN employees emp ON emp.auth0_id=o.created_by
         WHERE o.store_id=? AND o.business_date=? AND o.status='completed'
         AND a.status='completed' AND (?=0 OR o.created_by=?) ORDER BY o.id,a.id''',
-        (store_id,date,int(personal),subject)).fetchall()
+        (REGISTER_SUB,REGISTER_NAME,store_id,date,int(personal),subject)).fetchall()
     by_order = {}
     for row in orders:
         checkout = by_order.setdefault(row['id'],dict(id=row['id'],reference=row['reference'],

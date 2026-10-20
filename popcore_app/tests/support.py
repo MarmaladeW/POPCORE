@@ -19,6 +19,7 @@ os.environ.setdefault('DISABLE_SCHEDULER', '1')
 
 import auth  # noqa: E402
 import db  # noqa: E402
+import exchange_rates  # noqa: E402,F401
 import payment_evidence  # noqa: E402
 import condition_evidence  # noqa: E402
 from blueprints import checkout, closing as closing_blueprint, goods, inventory, payments, products, reports, restock, sale_documents, sales, schedule, special_orders, stock, store_events, stores, trades, today  # noqa: E402
@@ -89,6 +90,10 @@ class IsolatedApiCase(unittest.TestCase):
             auth, '_decode_token', side_effect=self._decode_test_token
         )
         self.auth_patch.start()
+        # Tests never look up a live exchange rate; a test that needs one patches it.
+        live_rate = patch('exchange_rates.cny_per_cad', return_value=None)
+        live_rate.start()
+        self.addCleanup(live_rate.stop)
         self.network_patch = patch(
             'requests.sessions.Session.request',
             side_effect=AssertionError('Unexpected external request in isolated test'),

@@ -6,11 +6,29 @@ from closing_operations import (
     add_cash_count, add_cash_event, add_closing_adjustment, close_closing,
     closing_detail, create_closing, return_closing, submit_closing, update_closing,
 )
+import clover_checkout
 from db import get_db
 from inventory_commands import InventoryError
+from validation import read_date, read_int
 
 
 bp = Blueprint('closing', __name__)
+
+
+def _clover_day(con, *, closing_id=None, store_id=None, business_date=None):
+    """Before closing looks at a store day, make sure every Clover order of that day is in POPCORE."""
+    try:
+        if closing_id is not None:
+            session = con.execute('SELECT store_id,business_date FROM closing_sessions WHERE id=?',
+                                  (closing_id,)).fetchone()
+            if session is None:
+                return
+            store_id, business_date = session['store_id'], session['business_date']
+        cfg = clover_checkout.store_config(read_int(store_id, 'store_id', minimum=1))
+        if cfg:
+            clover_checkout.sync_day(con, cfg, read_date(business_date, 'business_date'))
+    except (InventoryError, PermissionError, ValueError, clover_checkout.ConnectorError):
+        pass  # closing then shows "Clover orders not checked" until a scan succeeds
 
 
 def _body():
@@ -30,8 +48,10 @@ def _error(exc):
 @role_required('staff')
 def create():
     try:
+        data = _body()
+        _clover_day(get_db(), store_id=data.get('store_id'), business_date=data.get('business_date'))
         return jsonify(create_closing(
-            get_db(), _body(), actor=request.jwt_payload,
+            get_db(), data, actor=request.jwt_payload,
             request_key=request.headers.get('Idempotency-Key'))), 201
     except (InventoryError, PermissionError, ValueError) as exc:
         return _error(exc)
@@ -41,6 +61,7 @@ def create():
 @role_required('staff')
 def detail(closing_id):
     try:
+        _clover_day(get_db(), closing_id=closing_id)
         return jsonify(closing_detail(get_db(), closing_id, actor=request.jwt_payload))
     except (InventoryError, PermissionError, ValueError) as exc:
         return _error(exc)
@@ -81,6 +102,8 @@ def cash_count(closing_id):
 
 def _action(closing_id, operation):
     try:
+        if operation in (submit_closing, close_closing):
+            _clover_day(get_db(), closing_id=closing_id)
         return jsonify(operation(
             get_db(), closing_id, _body(), actor=request.jwt_payload,
             request_key=request.headers.get('Idempotency-Key')))

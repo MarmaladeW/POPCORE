@@ -5,6 +5,15 @@ from zoneinfo import ZoneInfo
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_commands import require_inventory_access
 
+# Owner of Clover orders nobody has picked up yet, and of sales paid entirely on Clover.
+# It never comes from a login: Auth0 subjects always contain '|'.
+REGISTER_SUB = 'popcore:clover-register'
+REGISTER_NAME = 'Clover register'
+
+
+def register_actor():
+    return {'sub': REGISTER_SUB, ROLE_CLAIM: 'manager'}
+
 
 def business_date():
     return datetime.now(ZoneInfo('America/Toronto')).date().isoformat()
@@ -31,7 +40,10 @@ def can_read(row, actor, access):
         return row['store_id'] in {s['id'] for s in access['live_stores']}
     if access['role'] == 'staff' and row['created_by'] == actor['sub']:
         return True
-    return row['store_id'] in {s['id'] for s in access['live_stores']} and (access['role'] == 'manager' or row['status'] == 'open')
+    # Today's Clover register sales belong to whoever is on shift at that store.
+    register_today = row['created_by'] == REGISTER_SUB and row['business_date'] == access['business_date']
+    return row['store_id'] in {s['id'] for s in access['live_stores']} and (
+        access['role'] == 'manager' or row['status'] == 'open' or register_today)
 
 
 def require_checkout(con, row, actor, *, write=False):
@@ -63,7 +75,10 @@ def require_checkout_history_store(con, store_id, actor, start_date='0001-01-01'
     if rows:
         access = checkout_access(con, actor)
         if access['role'] == 'staff':
-            if any(row['created_by'] != actor['sub'] for row in rows):
+            # Register-owned Clover sales belong to whoever is on shift at that store.
+            on_shift = store_id in {s['id'] for s in access['live_stores']}
+            if any(row['created_by'] != actor['sub'] and not (on_shift and row['created_by'] == REGISTER_SUB)
+                   for row in rows):
                 raise PermissionError('Checkout history store access denied')
         elif store_id not in {s['id'] for s in access['history_stores']}:
             raise PermissionError('Checkout history store access denied')

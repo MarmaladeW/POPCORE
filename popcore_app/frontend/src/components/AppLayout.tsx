@@ -73,9 +73,7 @@ function currentNav(pathname: string, manager: boolean) {
 }
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {
-  const location = useLocation()
-  const sandbox = new URLSearchParams(location.search).get('source') === 'clover-sandbox'
-  return <Link to={item.key === '/checkout' && sandbox ? '/checkout?source=clover-sandbox' : item.key} aria-current={active ? 'page' : undefined}>{item.label}</Link>
+  return <Link to={item.key} aria-current={active ? 'page' : undefined}>{item.label}</Link>
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -211,7 +209,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     {mobile && <nav className="pc-bottom-nav" aria-label="Primary navigation">
       {bottom.map(item => <Link
-        key={item.key} to={item.key==='/checkout'&&new URLSearchParams(location.search).get('source')==='clover-sandbox'?'/checkout?source=clover-sandbox':item.key} className={active === item.key ? 'active' : undefined}
+        key={item.key} to={item.key} className={active === item.key ? 'active' : undefined}
         aria-current={active === item.key ? 'page' : undefined}
       ><span aria-hidden="true">{item.icon}</span><small>{item.label}</small></Link>)}
       <button ref={moreButton} type="button" className="pc-more-button" aria-label="More" onClick={() => setMoreOpen(true)}>

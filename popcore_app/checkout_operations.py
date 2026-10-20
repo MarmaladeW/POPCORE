@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import clover_pricing as pricing
+import exchange_rates
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from checkout_access import require_checkout
 from goods_operations import _begin, _remember, _replay
@@ -17,6 +19,25 @@ from validation import read_date, read_int
 
 def manager(actor):
     return ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM), 0) >= ROLE_HIERARCHY['manager']
+
+
+CNY_TENDERS = ('wechat', 'alipay')
+
+
+def cny_charge(tender, amount_cents, data):
+    """(fen, rate) a WeChat Pay or Alipay customer was charged, or (None, None) for other tenders.
+
+    The rate is the one the screen showed at that moment. The yuan are worked out again here,
+    so the payment keeps exactly the amount the cashier asked for."""
+    if tender not in CNY_TENDERS:
+        return None, None
+    rate = data.get('cny_per_cad')
+    fen = exchange_rates.cad_to_fen(amount_cents, rate)
+    if fen is None:
+        raise InventoryValidationError('WeChat Pay and Alipay need a CNY rate. Ask an admin to set one in Settings.')
+    if type(data.get('cny_fen')) is not int or data['cny_fen'] != fen:
+        raise InventoryValidationError('The CNY amount does not match its rate. Check the amount and try again.')
+    return fen, rate
 
 
 def read_order_note(data):
@@ -68,6 +89,14 @@ def checkout_detail(con, checkout_id, actor):
     row['refunded_cents'] = sum(r['amount_cents'] for r in row['refunds'])
     row['refund_due_cents'] = row['received_cents'] - row['refunded_cents'] if row['abandoned_reason'] else 0
     row['remaining_cents'] = row['order']['collected_cents'] - row['received_cents']
+    row['clover'] = None
+    row['pricing'] = None if is_clover(con, checkout_id) else manual_block(row, actor)
+    if is_clover(con, checkout_id):
+        from clover_checkout import clover_block  # avoids a circular import
+        row['clover'] = clover_block(con, row, actor, writable=writable)
+        if row['clover']['register']:
+            row['cashier_name'] = row['clover']['register_name']
+        row['remaining_cents'] = row['clover']['remaining_cents']
     return row
 
 
@@ -89,6 +118,19 @@ def checkout_funds(con, store_id, start_date, end_date=None):
     return {'receipts':receipts,'refunds':refunds}
 
 
+def manual_reference(con, store_id, business_date):
+    """The next free reference for a manual order without one, numbered per store and day: MK-20261020-001."""
+    store = con.execute('SELECT code FROM stores WHERE id=?', (store_id,)).fetchone()
+    prefix = f"{store['code'] if store else store_id}-{business_date.replace('-', '')}-"
+    taken = {row['reference'] for row in con.execute(
+        'SELECT reference FROM checkout_orders WHERE store_id=? AND substr(reference,1,?)=?',
+        (store_id, len(prefix), prefix))}
+    number = len(taken) + 1
+    while f'{prefix}{number:03d}' in taken:
+        number += 1
+    return f'{prefix}{number:03d}'
+
+
 def create_checkout(con, data, actor, request_key):
     store_id = read_int(data.get('store_id'), 'store_id', minimum=1)
     require_checkout(con, {'store_id':store_id}, actor, write=True)
@@ -100,11 +142,14 @@ def create_checkout(con, data, actor, request_key):
             con.commit()
             return checkout_detail(con, prior['id'], actor)
         reference = data.get('reference')
+        if reference is None or isinstance(reference, str) and not reference.strip():
+            # A phone order or an item another store is sending has no Clover order to refer to.
+            reference = manual_reference(con, store_id, read_date(data.get('business_date'), 'business_date'))
         if not isinstance(reference, str):
             raise InventoryValidationError('Reference must be text')
         reference = reference.strip()
-        if not reference or len(reference) > 120:
-            raise InventoryValidationError('Reference must contain 1 to 120 characters')
+        if len(reference) > 120:
+            raise InventoryValidationError('Reference must contain at most 120 characters')
         intent = _sale_input(con, {**data, 'entry_mode': 'planned_entry',
             'source': {'system':'popcore_checkout','account':str(store_id),'reference':reference}}, actor)
         if any(intent[field] is None for field in ('subtotal_cents','source_tax_cents','gross_cents','reduction_cents','rounding_cents','collected_cents')) or intent['collected_cents'] <= 0:
@@ -131,6 +176,160 @@ def attach_photo(con, photo, payment_id):
     con.execute('UPDATE checkout_evidence SET evidence_id=? WHERE id=?', (evidence_id,photo['id']))
 
 
+def finalize_sale(con, row, intent, *, actor, key):
+    """Inside the caller's transaction: create, post and pay the sale of a fully paid checkout.
+
+    The original cashier owns the sale even when a manager or the Clover register finalizes it.
+    Card payments Clover confirmed are recorded as verified; everything else stays recorded."""
+    intent = {**intent, 'entry_mode': 'already_paid'}
+    owner = {**actor, 'sub': row['created_by']}
+    sale_id = _create_sale_in_transaction(con, intent, owner)
+    _post_sale_in_transaction(con, _sale_row(con, sale_id), 1, actor, key)
+    attempts = con.execute("SELECT * FROM checkout_attempts WHERE checkout_id=? AND status='completed' ORDER BY id",
+                           (row['id'],)).fetchall()
+    for attempt in attempts:
+        confirmed = attempt['origin'] == 'clover' and attempt['tender'] == 'card'
+        payment_id = con.execute('''INSERT INTO sale_payments(sale_id,tender,amount_cents,source_system,source_account,source_reference,recorded_by,state)
+            VALUES (?,?,?,'popcore_checkout',?,?,?,?)''',(sale_id,attempt['tender'],attempt['amount_cents'],str(row['store_id']),
+            str(attempt['id']),attempt['recorded_by'],'verified' if confirmed else 'recorded')).lastrowid
+        if confirmed:
+            con.execute('''INSERT INTO payment_events(payment_id,event_type,direction,amount_cents,reason,actor_sub)
+                VALUES (?,'verify','none',NULL,?,?)''',(payment_id,f"Confirmed by Clover payment {attempt['provider_payment_id']}",actor['sub']))
+        con.execute('UPDATE checkout_attempts SET payment_id=? WHERE id=?',(payment_id,attempt['id']))
+        for photo in con.execute('SELECT * FROM checkout_evidence WHERE attempt_id=?',(attempt['id'],)).fetchall():
+            attach_photo(con,photo,payment_id)
+    con.execute('UPDATE sale_documents SET version=version+1 WHERE id=?',(sale_id,))
+    con.execute("UPDATE checkout_orders SET status='completed',sale_id=?,payload=? WHERE id=?",
+                (sale_id,json.dumps(intent),row['id']))
+    return sale_id
+
+
+# ── Manual orders paid like Clover orders ────────────────────────────────────
+# The same prices as at the Clover counter: card pays the order total, other tenders alone get the
+# cash discount, and a split with card rounds down to the dollar. Card is recorded in POPCORE here,
+# because a manual order has no Clover order behind it.
+
+def manual_summary(intent):
+    """A manual order's pricing facts; an agreed discount entered on the order is kept, like a Clover discount."""
+    return {'total': intent['collected_cents'], 'simple': True, 'subtotal': intent['subtotal_cents'],
+            'external_discount_cents': intent['reduction_cents'], 'ext_discount': intent['reduction_cents'] > 0,
+            'cash_priced': False, 'popcore_discount': None}
+
+
+def manual_due(summary, *, card_cents, other_cents, plan):
+    if other_cents == 0 and plan != 'split_card':
+        return summary['total'], None  # card alone
+    return pricing.amount_due(summary, clover_cents=card_cents, popcore_cents=other_cents, plan=plan, verified=True)
+
+
+def _manual_money(con, checkout_id):
+    card = other = 0
+    for attempt in con.execute("SELECT tender,amount_cents FROM checkout_attempts WHERE checkout_id=? AND status='completed'",
+                               (checkout_id,)):
+        if attempt['tender'] == 'card':
+            card += attempt['amount_cents']
+        else:
+            other += attempt['amount_cents']
+    return card, other
+
+
+def manual_block(row, actor):
+    summary = manual_summary(row['order'])
+    paid = [a for a in row['attempts'] if a['status'] == 'completed']
+    card = sum(a['amount_cents'] for a in paid if a['tender'] == 'card')
+    other = sum(a['amount_cents'] for a in paid if a['tender'] != 'card')
+    is_open = row['status'] == 'open' and not row['abandoned_reason']
+    return {'total_cents': summary['total'], 'card_cents': card, 'other_cents': other,
+            'collect': pricing.collect(summary, clover_cents=card, popcore_cents=other, verified=True) if is_open else None,
+            'can_receive': bool(row['can_process']),
+            'undo_attempt_ids': [a['id'] for a in paid if is_open and row['can_process']
+                                 and (a['recorded_by'] == actor['sub'] or manager(actor))]}
+
+
+def receive_manual(con, checkout_id, data, actor, request_key):
+    """Record money received for a manual order at its automatic price; record the sale once it is all in."""
+    tender, plan = data.get('tender'), data.get('plan', 'pay')
+    if tender not in TENDERS or plan not in ('pay', 'split_card'):
+        raise InventoryValidationError('Choose card, cash, e-transfer, WeChat Pay or Alipay')
+    amount = read_int(data.get('amount_cents'), 'amount_cents', minimum=1)
+    expected = read_int(data.get('expected_version'), 'expected_version', minimum=1)
+    fen, rate = cny_charge(tender, amount, data)
+    _begin(con)
+    try:
+        row = checkout_row(con, checkout_id, actor, cashier=True)
+        key, digest, prior = _replay(con, request_key, 'checkout_receive', actor, {**data, 'checkout_id': row['id']})
+        if prior:
+            con.commit()
+            return checkout_detail(con, row['id'], actor)
+        if is_clover(con, row['id']):
+            raise InventoryConflict('Clover orders are paid from their Clover screen', 'clover_order')
+        if row['status'] != 'open' or row['version'] != expected:
+            raise InventoryConflict('Checkout changed. Refresh before continuing.', 'checkout_state_conflict')
+        if row['abandoned_reason']:
+            raise InventoryConflict('Abandoned checkouts can only be refunded', 'checkout_abandoned')
+        intent = json.loads(row['payload'])
+        summary = manual_summary(intent)
+        card, other = _manual_money(con, row['id'])
+        due, _ = manual_due(summary, card_cents=card + (amount if tender == 'card' else 0),
+                            other_cents=other + (0 if tender == 'card' else amount), plan=plan)
+        if data.get('expected_due_cents') is not None and data['expected_due_cents'] != due:
+            raise InventoryConflict('The amount due changed. Check the new amount.', 'price_changed')
+        if amount > due - card - other:
+            raise InventoryValidationError('That is more than the amount still to collect')
+        # A payment started on the old screen and never received is replaced by this one.
+        con.execute("UPDATE checkout_attempts SET status='cancelled' WHERE checkout_id=? AND status='pending'", (row['id'],))
+        con.execute('''INSERT INTO checkout_attempts(checkout_id,tender,amount_cents,assigned_to,status,recorded_by,
+            cny_fen,cny_per_cad) VALUES (?,?,?,?,'completed',?,?,?)''',
+            (row['id'], tender, amount, actor['sub'], actor['sub'], fen, rate))
+        if card + other + amount == due:
+            final = {**intent, 'reduction_cents': intent['gross_cents'] - due, 'rounding_cents': 0, 'collected_cents': due}
+            finalize_sale(con, row, final, actor=actor, key=key)
+        con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?', (row['id'],))
+        record_late_adjustment(con, row['store_id'], row['business_date'], 'checkout', row['id'],
+                               'Checkout changed after store-day close', actor['sub'])
+        _remember(con, key, 'checkout_receive', row['id'], actor, digest, {'id': row['id']})
+        con.commit()
+        return checkout_detail(con, row['id'], actor)
+    except Exception:
+        con.rollback()
+        raise
+
+
+def undo_manual(con, checkout_id, data, actor, request_key):
+    """Take back a payment recorded on a manual order before its sale exists (money handed back, mistyped)."""
+    attempt_id = read_int(data.get('attempt_id'), 'attempt_id', minimum=1)
+    reason = data.get('reason')
+    if not isinstance(reason, str) or not reason.strip():
+        raise InventoryValidationError('Enter why this payment is taken back')
+    _begin(con)
+    try:
+        row = checkout_row(con, checkout_id, actor, cashier=True)
+        key, digest, prior = _replay(con, request_key, 'checkout_undo', actor, {**data, 'checkout_id': row['id']})
+        if prior:
+            con.commit()
+            return checkout_detail(con, row['id'], actor)
+        attempt = con.execute('SELECT * FROM checkout_attempts WHERE id=? AND checkout_id=?', (attempt_id, row['id'])).fetchone()
+        if (is_clover(con, row['id']) or row['status'] != 'open' or row['abandoned_reason'] or attempt is None
+                or attempt['status'] != 'completed'):
+            raise InventoryConflict('Only a payment on an unfinished manual order can be taken back', 'checkout_state_conflict')
+        if attempt['recorded_by'] != actor['sub'] and not manager(actor):
+            raise PermissionError('Only the cashier who recorded this payment or a manager can take it back')
+        con.execute("UPDATE checkout_attempts SET status='cancelled',cancel_reason=? WHERE id=?", (reason.strip()[:300], attempt_id))
+        con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?', (row['id'],))
+        record_late_adjustment(con, row['store_id'], row['business_date'], 'checkout', row['id'],
+                               'Checkout changed after store-day close', actor['sub'])
+        _remember(con, key, 'checkout_undo', row['id'], actor, digest, {'id': row['id']})
+        con.commit()
+        return checkout_detail(con, row['id'], actor)
+    except Exception:
+        con.rollback()
+        raise
+
+
+def is_clover(con, checkout_id):
+    return con.execute('SELECT 1 FROM clover_orders WHERE checkout_id=?', (checkout_id,)).fetchone() is not None
+
+
 def change_checkout(con, checkout_id, action, data, actor, request_key):
     _begin(con)
     try:
@@ -145,6 +344,8 @@ def change_checkout(con, checkout_id, action, data, actor, request_key):
         if row['status'] != 'open' or row['version'] != expected:
             raise InventoryConflict('Checkout changed. Refresh before continuing.', 'checkout_state_conflict')
         detail = checkout_detail(con,checkout_id,actor)
+        if action in ('attempts','complete','finalize','cancel') and is_clover(con,checkout_id):
+            raise InventoryConflict('Clover orders are paid with Received, Card on Clover or Cancel order','clover_order')
         if row['abandoned_reason'] and action in ('attempts','complete','finalize'):
             raise InventoryConflict('Abandoned checkouts can only be refunded','checkout_abandoned')
         if action == 'abandon':
@@ -212,22 +413,7 @@ def change_checkout(con, checkout_id, action, data, actor, request_key):
         elif action == 'finalize':
             if detail['remaining_cents'] != 0:
                 raise InventoryConflict('Record all received payments before recording the sale','checkout_unpaid')
-            intent = detail['order']
-            intent['entry_mode'] = 'already_paid'
-            # Keep the original cashier as the owner, even when a scoped manager resolves it.
-            owner = {**actor, 'sub':row['created_by']}
-            sale_id = _create_sale_in_transaction(con,intent,owner)
-            _post_sale_in_transaction(con,_sale_row(con,sale_id),1,actor,key)
-            for attempt in detail['attempts']:
-                if attempt['status'] != 'completed':
-                    continue
-                payment_id = con.execute('''INSERT INTO sale_payments(sale_id,tender,amount_cents,source_system,source_account,source_reference,recorded_by)
-                    VALUES (?,?,?,'popcore_checkout',?,?,?)''',(sale_id,attempt['tender'],attempt['amount_cents'],str(row['store_id']),str(attempt['id']),attempt['recorded_by'])).lastrowid
-                con.execute('UPDATE checkout_attempts SET payment_id=? WHERE id=?',(payment_id,attempt['id']))
-                for photo in con.execute('SELECT * FROM checkout_evidence WHERE attempt_id=?',(attempt['id'],)).fetchall():
-                    attach_photo(con,photo,payment_id)
-            con.execute('UPDATE sale_documents SET version=version+1 WHERE id=?',(sale_id,))
-            con.execute("UPDATE checkout_orders SET status='completed',sale_id=? WHERE id=?",(sale_id,checkout_id))
+            finalize_sale(con,row,detail['order'],actor=actor,key=key)
         else:
             raise InventoryValidationError('Unknown checkout action')
         con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?',(checkout_id,))

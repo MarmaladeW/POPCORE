@@ -67,8 +67,6 @@ from blueprints.settings  import bp as settings_bp
 from blueprints.goods     import bp as goods_bp
 from blueprints.sale_documents import bp as sale_documents_bp
 from blueprints.checkout import bp as checkout_bp
-from blueprints.clover_sandbox import bp as clover_sandbox_bp
-from blueprints.clover_posting import bp as clover_posting_bp
 from blueprints.store_events import bp as store_events_bp
 from blueprints.payments  import bp as payments_bp
 from blueprints.closing   import bp as closing_bp
@@ -91,8 +89,6 @@ app.register_blueprint(goods_bp)
 app.register_blueprint(sale_documents_bp)
 app.register_blueprint(payments_bp)
 app.register_blueprint(checkout_bp)
-app.register_blueprint(clover_sandbox_bp)
-app.register_blueprint(clover_posting_bp)
 app.register_blueprint(store_events_bp)
 app.register_blueprint(closing_bp)
 app.register_blueprint(trades_bp)
@@ -120,6 +116,32 @@ if not os.environ.get('DISABLE_SCHEDULER'):
     _scheduler.add_job(_insights_job, 'interval', minutes=1, id='nightly_insights')
     _scheduler.start()
     atexit.register(lambda: _scheduler.shutdown(wait=False))
+
+# ─── Clover checkout sync ─────────────────────────────────────────────────────
+# Records sales paid entirely on Clover and retries Clover write-backs even when no checkout
+# screen is open. Runs with the scheduler, or alone with CLOVER_BACKGROUND_SYNC=1 in development.
+if not os.environ.get('DISABLE_SCHEDULER') or os.environ.get('CLOVER_BACKGROUND_SYNC') == '1':
+    import atexit
+    from apscheduler.schedulers.background import BackgroundScheduler
+    import clover_checkout
+
+    def _clover_job():
+        try:
+            clover_checkout.background_sync()
+        except Exception:
+            app.logger.exception('Clover checkout sync failed')
+
+    try:
+        _clover_enabled = clover_checkout.config() is not None
+    except ValueError:
+        app.logger.error('Clover checkout settings are invalid; Clover sync is off')
+        _clover_enabled = False
+    if _clover_enabled:
+        _clover_scheduler = BackgroundScheduler(daemon=True)
+        _clover_scheduler.add_job(_clover_job, 'interval', seconds=5, id='clover_sync',
+                                  max_instances=1, coalesce=True)
+        _clover_scheduler.start()
+        atexit.register(lambda: _clover_scheduler.shutdown(wait=False))
 
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
 @app.errorhandler(404)

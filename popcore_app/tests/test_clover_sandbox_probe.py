@@ -1,4 +1,4 @@
-"""The sandbox order feed must not depend on repeated payment-detail reads."""
+"""The Clover connector: order feed, device bridge, exact totals and POPCORE writes."""
 import base64
 import json
 import tempfile
@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import requests
 
-from scripts.clover_sandbox import create_app
+from scripts.clover_sandbox import Unsupported, clover_calc, create_app
 
 
 def provider_response(payload, status=200):
@@ -158,6 +158,51 @@ class SandboxProbeTests(unittest.TestCase):
         self.assertEqual(row['source'], 'cloud')
         self.assertEqual(len(row['items']), 2)
 
+    def test_one_order_read_keeps_the_fresher_device_items(self):
+        app = create_app({'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox',
+                          'SESSION_SECRET': 's' * 32, 'ADMIN_PASSWORD': 'p' * 32,
+                          'WEBHOOK_PATH_KEY': 'w' * 32, 'DATA_DIR': self.directory.name,
+                          'CLOVER_MERCHANT_ID': 'M' * 13,
+                          'DEVICE_BRIDGE_SECRET': 'b' * 32, 'DEVICE_BRIDGE_ID': 'device-1'})
+        app.extensions['clover_save_tokens']({'access_token': 'token', 'access_token_expiration': time.time() + 3600})
+        client = app.test_client()
+        first = {'id': 'I' * 13, 'name': 'Test item', 'price': 1000, 'unitQty': 1000}
+        second = {'id': 'J' * 13, 'name': 'Second item', 'price': 1000, 'unitQty': 1000}
+        client.post('/clover-sandbox/device-snapshot', json={
+            'merchantId': 'M' * 13, 'deviceId': 'device-1', 'sequence': 1,
+            'order': {'id': 'O' * 13, 'currency': 'CAD', 'createdTime': 1790000000000, 'total': 2000,
+                      'items': [first, second], 'discounts': []}},
+            headers={'Authorization': 'Bearer ' + 'b' * 32})
+        cloud = {'id': 'O' * 13, 'currency': 'CAD', 'total': 1000, 'paymentState': 'OPEN',
+                 'createdTime': 1790000000000, 'lineItems': {'elements': [first]}, 'payments': {'elements': []}}
+
+        def clover(method, url, **kwargs):
+            if url.endswith('/line_items'):
+                return provider_response({'elements': [{**first, 'taxRates': {'elements': TAX}}]})
+            if url.endswith('/tenders'):
+                return provider_response({'elements': []})
+            return provider_response(cloud)
+        url = '/clover-sandbox/orders/' + 'O' * 13
+        # Clover's cloud copy still has one item; the device already has two, so the device copy wins,
+        # exactly as in the order list, and nothing flips back to the shorter cloud order.
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            ahead = client.get(url, headers=self.headers).json
+        self.assertEqual((ahead['order']['source'], len(ahead['order']['items']), ahead['pricing']['verified']),
+                         ('device', 2, False))
+        # A device copy nobody re-sent for over 30 s no longer hides the cloud order.
+        later = time.time() + 60
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover), \
+                patch('scripts.clover_sandbox.time.time', return_value=later):
+            stale = client.get(url, headers=self.headers).json
+        self.assertEqual((stale['order']['source'], len(stale['order']['items'])), ('cloud', 1))
+        # Once the cloud catches up (after the connector's 2 s read cache), the cloud copy is used again.
+        cloud['lineItems']['elements'].append(second)
+        cloud['total'] = 2000
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover), \
+                patch('scripts.clover_sandbox.time.monotonic', return_value=999999999):
+            caught_up = client.get(url, headers=self.headers).json
+        self.assertEqual((caught_up['order']['source'], len(caught_up['order']['items'])), ('cloud', 2))
+
     def test_unknown_device_total_reconciles_only_matching_cloud_items(self):
         app = create_app({'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox',
                           'SESSION_SECRET': 's' * 32, 'ADMIN_PASSWORD': 'p' * 32,
@@ -296,7 +341,7 @@ class SandboxProbeTests(unittest.TestCase):
             self.assertEqual(response.status_code, 502)
             self.assertEqual(response.headers.get('Retry-After'), '7')
             clock.return_value = 106
-            retry = self.client.get('/clover-sandbox/review', headers=self.headers)
+            retry = self.client.get('/clover-sandbox/orders/' + 'O' * 13, headers=self.headers)
             self.assertEqual(retry.status_code, 502)
             self.assertEqual(provider.call_count, 1)
             clock.return_value = 107.01
@@ -304,20 +349,20 @@ class SandboxProbeTests(unittest.TestCase):
             self.assertEqual(recovered.status_code, 200)
             self.assertEqual(provider.call_count, 2)
 
-    def test_repeated_reads_reuse_tender_label_without_rate_limiting_orders(self):
-        payment_reads = 0
+    def test_tender_labels_come_from_one_cached_list(self):
+        tender_reads = 0
 
         def provider(method, url, **kwargs):
-            nonlocal payment_reads
+            nonlocal tender_reads
             if url.endswith('/orders'):
                 return provider_response(self.orders)
-            payment_reads += 1
-            if payment_reads > 1:
+            tender_reads += 1
+            if tender_reads > 1:
                 return provider_response({}, 429)
-            return provider_response({'tender': {'id': 'T' * 13, 'label': 'E-transfer'}})
+            return provider_response({'elements': [{'id': 'T' * 13, 'label': 'E-transfer'}]})
 
         with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
-            for _ in range(20):
+            for _ in range(50):
                 response = self.client.get('/clover-sandbox/orders', headers=self.headers)
                 self.assertEqual(response.status_code, 200)
                 payments = response.json['orders'][0]['payments']
@@ -327,67 +372,334 @@ class SandboxProbeTests(unittest.TestCase):
             self.assertEqual([payment['tenderLabel'] for payment in payments], ['E-transfer', 'E-transfer'])
             self.assertEqual([payment['amount'] for payment in payments], [1000, 1000])
             self.client.get('/clover-sandbox/orders', headers=self.headers)
-        self.assertEqual(payment_reads, 1)
+        self.assertEqual(tender_reads, 1)
 
-    def test_tender_lookup_rate_limit_does_not_hide_orders(self):
-        lookup_done = Event()
-        def provider(method, url, **kwargs):
-            if url.endswith('/orders'):
-                return provider_response(self.orders)
-            lookup_done.set()
-            return provider_response({}, 429)
-
-        with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
-            response = self.client.get('/clover-sandbox/orders', headers=self.headers)
-            self.assertTrue(lookup_done.wait(1))
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.json['orders'][0]['payments']), 2)
-        self.assertIsNone(response.json['orders'][0]['payments'][0]['tenderLabel'])
-
-    def test_missing_tender_label_is_not_requested_every_refresh(self):
-        payment_reads = 0
-        lookup_done = Event()
-
-        def provider(method, url, **kwargs):
-            nonlocal payment_reads
-            if url.endswith('/orders'):
-                return provider_response(self.orders)
-            payment_reads += 1
-            lookup_done.set()
-            return provider_response({'tender': {'id': 'T' * 13}})
-
-        with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
-            for _ in range(2):
-                response = self.client.get('/clover-sandbox/orders', headers=self.headers)
-                self.assertEqual(response.status_code, 200)
-                self.assertIsNone(response.json['orders'][0]['payments'][0]['tenderLabel'])
-            self.assertTrue(lookup_done.wait(1))
-            self.client.get('/clover-sandbox/orders', headers=self.headers)
-        self.assertEqual(payment_reads, 1)
-
-    def test_slow_payment_label_lookup_does_not_delay_new_orders(self):
+    def test_tender_list_failures_never_hide_or_delay_orders(self):
         release = Event()
 
         def provider(method, url, **kwargs):
             if url.endswith('/orders'):
                 return provider_response(self.orders)
             release.wait(1)
-            return provider_response({'tender': {'id': 'T' * 13, 'label': 'E-transfer'}})
+            return provider_response({}, 429)
 
         with patch('scripts.clover_sandbox.requests.request', side_effect=provider):
             try:
                 started = time.monotonic()
                 response = self.client.get('/clover-sandbox/orders', headers=self.headers)
-                self.assertEqual(response.status_code, 200)
                 self.assertLess(time.monotonic() - started, .3)
             finally:
                 release.set()
-            for _ in range(20):
-                response = self.client.get('/clover-sandbox/orders', headers=self.headers)
-                if response.json['orders'][0]['payments'][0]['tenderLabel'] == 'E-transfer':
-                    break
-                time.sleep(.02)
-            self.assertEqual(response.json['orders'][0]['payments'][0]['tenderLabel'], 'E-transfer')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json['orders'][0]['payments']), 2)
+        self.assertIsNone(response.json['orders'][0]['payments'][0]['tenderLabel'])
+
+    def test_one_malformed_order_does_not_hide_the_others(self):
+        bad = {'id': 'X' * 13, 'total': 100, 'currency': 'CAD',
+               'payments': {'elements': [{'id': 'short', 'amount': 100, 'result': 'SUCCESS'}]}}
+        good = {'id': 'O' * 13, 'total': 100, 'currency': 'CAD', 'lineItems': {'elements': []}}
+        with patch('scripts.clover_sandbox.requests.request',
+                   return_value=provider_response({'elements': [bad, good]})):
+            response = self.client.get('/clover-sandbox/orders', headers=self.headers)
+        self.assertEqual([row['id'] for row in response.json['orders']], ['O' * 13])
+
+
+TAX = [{'id': 'HST000000013', 'rate': 1300000}]
+
+
+class CloverCalcTests(unittest.TestCase):
+    """Clover's documented order total, reproduced exactly."""
+
+    def test_matches_clover_on_the_sandbox_and_documented_examples(self):
+        lines = [{'price': 1770, 'taxRates': TAX}, {'price': 1999, 'taxRates': TAX}]
+        self.assertEqual(clover_calc(lines, []), (4259, 490, 3769))
+        self.assertEqual(clover_calc(lines, [], 52), (4200, 483, 3717))
+        self.assertEqual(clover_calc([{'price': 1000, 'taxRates': TAX}], [], 27), (1099, 126, 973))
+        rewardup = [{'name': 'RewardUp', 'amount': -200}]
+        self.assertEqual(clover_calc([{'price': 1770, 'taxRates': TAX}], rewardup), (1774, 204, 1570))
+        self.assertEqual(clover_calc([{'price': 1770, 'taxRates': TAX}], rewardup, 66)[0], 1700)
+        # docs.clover.com "Calculate order totals": line discounts, 15% order discount, two rates.
+        documented = [
+            {'price': 1400, 'taxRates': [{'id': 'TENPERCENT01', 'rate': 1000000}],
+             'discounts': [{'name': 'Lunch deal', 'amount': -100}]},
+            {'price': 1200, 'taxRates': [{'id': 'FIVEPERCENT1', 'rate': 500000}],
+             'discounts': [{'name': '25%', 'percentage': 25}]},
+        ]
+        self.assertEqual(clover_calc(documented, [{'name': '15%', 'percentage': 15}]), (2019, 149, 1870))
+        self.assertEqual(clover_calc([{'price': 500}], []), (500, 0, 500))
+
+    def test_refuses_what_it_cannot_reproduce(self):
+        for line in ({'price': 1000, 'unitQty': 1500}, {'price': 1000, 'refunded': True},
+                     {'price': 1000, 'modifications': [{'id': 'M' * 13}]}, {'price': None}):
+            with self.assertRaises(Unsupported):
+                clover_calc([line], [])
+        with self.assertRaises(Unsupported):
+            clover_calc([{'price': 1000}], [{'percentage': 10}, {'percentage': 5}])
+
+
+class FakeClover:
+    """Just enough of Clover's REST API: totals are stored, never recalculated, as on Clover."""
+
+    def __init__(self, test, *, prices=(1770, 1999), total=None, payments=(), tenders=None):
+        self.test = test
+        self.writes = []
+        self.lines = [{'id': f'LINE{n:09d}', 'name': f'Item {n}', 'price': price,
+                       'taxRates': {'elements': TAX}} for n, price in enumerate(prices)]
+        self.order = {'id': 'O' * 13, 'currency': 'CAD', 'paymentState': 'OPEN', 'state': 'open',
+                      'total': total if total is not None else clover_calc(
+                          [{'price': p, 'taxRates': TAX} for p in prices], [])[0],
+                      'lineItems': {'elements': [{k: v for k, v in line.items() if k != 'taxRates'}
+                                                 for line in self.lines]},
+                      'discounts': {'elements': []}, 'payments': {'elements': list(payments)}}
+        self.tenders = tenders if tenders is not None else [
+            {'id': 'CASH000000001', 'label': 'Cash', 'labelKey': 'com.clover.tender.cash'},
+            {'id': 'ETRANSFER0001', 'label': 'E-transfer'}]
+        self.deleted = False
+        self.refuse_note = False
+        self.count = 0
+
+    def __call__(self, method, url, **kwargs):
+        path = url.split('clover.com', 1)[1]
+        base = '/v3/merchants/' + 'M' * 13 + '/orders/' + 'O' * 13
+        if self.deleted and path.startswith(base):
+            return provider_response({}, 404)
+        if method == 'GET' and path == base:
+            return provider_response(self.order)
+        if method == 'GET' and path == base + '/line_items':
+            return provider_response({'elements': self.lines})
+        if method == 'GET' and path.endswith('/tenders'):
+            return provider_response({'elements': self.tenders})
+        self.writes.append((method, path, kwargs.get('json')))
+        self.count += 1
+        if method == 'POST' and path == base + '/discounts':
+            created = {'id': f'DISC{self.count:09d}', **kwargs['json']}
+            self.order['discounts']['elements'].append(created)
+            return provider_response(created)
+        if method == 'DELETE' and path.startswith(base + '/discounts/'):
+            self.order['discounts']['elements'] = [d for d in self.order['discounts']['elements']
+                                                   if d['id'] != path.rsplit('/', 1)[1]]
+            return provider_response({})
+        if method == 'POST' and path == base:
+            if self.refuse_note and 'note' in kwargs['json']:
+                return provider_response({'message': 'Cannot update note on order.'}, 400)
+            if 'externalReferenceId' in kwargs['json'] and any(
+                    p['result'] == 'SUCCESS' for p in self.order['payments']['elements']):
+                return provider_response({'message': 'Cannot update external reference id on order.'}, 400)
+            self.order.update(kwargs['json'])
+            return provider_response(self.order)
+        if method == 'POST' and path == base + '/payments':
+            created = {'id': f'PAY{self.count:010d}', **kwargs['json']}
+            self.order['payments']['elements'].append(created)
+            paid = sum(p['amount'] for p in self.order['payments']['elements'] if p['result'] == 'SUCCESS')
+            self.order['paymentState'] = 'PAID' if paid == self.order['total'] else 'PARTIALLY_PAID'
+            return provider_response(created)
+        if method == 'DELETE' and path == base:
+            self.deleted = True
+            return provider_response({})
+        self.test.fail(f'Unexpected Clover write {method} {path}')
+
+    def expected(self):
+        return {'items': [[line['id'], line['price'], line.get('unitQty')]
+                          for line in self.order['lineItems']['elements']],
+                'discounts': [[d['id'], d.get('amount'), d.get('percentage')]
+                              for d in self.order['discounts']['elements']
+                              if d.get('name') not in ('Cash discount', 'Rounding')],
+                'payments': [[p['id'], p['amount']] for p in self.order['payments']['elements']
+                             if not str(p.get('externalPaymentId') or '').startswith('popcore-')
+                             and p['result'] == 'SUCCESS']}
+
+
+class ConnectorWriteTests(unittest.TestCase):
+    """The connector's only writes: completing an order POPCORE settled, deleting an unpaid one."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.config = {'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox', 'SESSION_SECRET': 's' * 32,
+                       'ADMIN_PASSWORD': 'p' * 32, 'WEBHOOK_PATH_KEY': 'w' * 32,
+                       'DATA_DIR': self.directory.name, 'CLOVER_MERCHANT_ID': 'M' * 13,
+                       'POPCORE_WRITER_KEY': 'k' * 32}
+        self.app = create_app(self.config)
+        self.app.extensions['clover_save_tokens']({'access_token': 'token',
+                                                   'access_token_expiration': time.time() + 3600})
+        self.client = self.app.test_client()
+        credentials = base64.b64encode(('popcore:' + 'p' * 32).encode()).decode()
+        self.headers = {'Authorization': 'Basic ' + credentials, 'X-Popcore-Writer': 'k' * 32}
+        self.url = '/clover-sandbox/orders/' + 'O' * 13
+
+    def settle(self, clover, **body):
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            return self.client.post(self.url + '/settle', headers=self.headers, json={
+                'expected': clover.expected(), 'reference': {'title': 'Paid 2026-10-20 11:23'}, **body})
+
+    def test_rounded_cash_writes_discount_total_reference_and_one_tender_once(self):
+        clover = FakeClover(self, prices=(1000,))
+        body = {'target_total': 1100, 'discount_name': 'Cash discount',
+                'payments': [{'key': 'popcore-pc-7-9', 'tender': 'cash', 'amount': 1100}]}
+        response = self.settle(clover, **body)
+        self.assertEqual(response.status_code, 200, response.json)
+        # $11.00 is unreachable with 13% HST: Clover lands on $10.99 and the cash tender says so.
+        self.assertEqual(clover.writes, [
+            ('POST', '/v3/merchants/MMMMMMMMMMMMM/orders/OOOOOOOOOOOOO/discounts', {'name': 'Cash discount', 'amount': -27}),
+            ('POST', '/v3/merchants/MMMMMMMMMMMMM/orders/OOOOOOOOOOOOO', {'total': 1099}),
+            ('POST', '/v3/merchants/MMMMMMMMMMMMM/orders/OOOOOOOOOOOOO', {'title': 'Paid 2026-10-20 11:23'}),
+            ('POST', '/v3/merchants/MMMMMMMMMMMMM/orders/OOOOOOOOOOOOO/payments',
+             {'amount': 1099, 'tender': {'id': 'CASH000000001'}, 'externalPaymentId': 'popcore-pc-7-9',
+              'result': 'SUCCESS', 'note': 'Paid 2026-10-20 11:23', 'taxAmount': 126})])
+        self.assertEqual((response.json['total'], response.json['paid'], response.json['difference_cents']),
+                         (1099, True, 1))
+        again = self.settle(clover, **body)
+        self.assertEqual(again.status_code, 200, again.json)
+        self.assertEqual(len(clover.writes), 4)
+        self.assertEqual(again.json['payments'][0]['id'], response.json['payments'][0]['id'])
+
+    def test_split_completes_after_the_card_and_shares_the_tax(self):
+        card = {'id': 'CARDPAYMENT01', 'amount': 2200, 'result': 'SUCCESS', 'taxAmount': 253,
+                'tender': {'id': 'CREDITCARD001'}}
+        clover = FakeClover(self, payments=[card])
+        response = self.settle(clover, target_total=4200, discount_name='Rounding',
+                               payments=[{'key': 'popcore-pc-7-10', 'tender': 'cash', 'amount': 2000}])
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual([w[2] for w in clover.writes[:3]], [{'name': 'Rounding', 'amount': -52}, {'total': 4200},
+                                                             {'title': 'Paid 2026-10-20 11:23'}])
+        self.assertEqual((clover.writes[3][2]['amount'], clover.writes[3][2]['taxAmount']), (2000, 483 - 253))
+        self.assertEqual(clover.writes[3][2]['note'], 'Paid 2026-10-20 11:23')
+        self.assertEqual(clover.order['paymentState'], 'PAID')
+
+    def test_a_clover_refusal_shows_only_its_short_reason(self):
+        card = {'id': 'CARDPAYMENT01', 'amount': 2200, 'result': 'SUCCESS', 'taxAmount': 253,
+                'tender': {'id': 'CREDITCARD001'}}
+        clover = FakeClover(self, payments=[card])
+
+        def refusing(method, url, **kwargs):
+            if method == 'POST' and url.endswith('/discounts'):
+                return provider_response({'message': 'Order is locked  by payments', 'trace': 'internal-123'}, 400)
+            return clover(method, url, **kwargs)
+        with patch('scripts.clover_sandbox.requests.request', side_effect=refusing):
+            response = self.client.post(self.url + '/settle', headers=self.headers, json={
+                'expected': clover.expected(), 'target_total': 4200, 'discount_name': 'Rounding',
+                'payments': [{'key': 'popcore-pc-7-10', 'tender': 'cash', 'amount': 2000}]})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('Clover says: Order is locked by payments', response.json['error'])
+        self.assertNotIn('internal-123', response.json['error'])
+
+    def test_card_only_order_is_only_stamped(self):
+        clover = FakeClover(self, payments=[{'id': 'CARDPAYMENT01', 'amount': 4259, 'result': 'SUCCESS'}])
+        clover.order['paymentState'] = 'PAID'
+        response = self.settle(clover, target_total=4259, discount_name=None, payments=[])
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(clover.writes, [('POST', '/v3/merchants/MMMMMMMMMMMMM/orders/OOOOOOOOOOOOO',
+                                          {'title': 'Paid 2026-10-20 11:23'})])
+
+    def test_refusals_write_nothing(self):
+        clover = FakeClover(self, prices=(1000,))
+        changed = dict(target_total=1100, discount_name='Cash discount',
+                       payments=[{'key': 'popcore-pc-7-9', 'tender': 'cash', 'amount': 1100}])
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            stale = self.client.post(self.url + '/settle', headers=self.headers, json={
+                **changed, 'expected': {'items': [], 'discounts': [], 'payments': []}})
+        self.assertEqual((stale.status_code, stale.json['code']), (409, 'clover_changed'))
+        missing = FakeClover(self, prices=(1000,), tenders=[{'id': 'CASH000000001', 'labelKey': 'com.clover.tender.cash'}])
+        wechat = self.settle(missing, target_total=1100, discount_name='Cash discount',
+                             payments=[{'key': 'popcore-pc-7-9', 'tender': 'wechat', 'amount': 1100}])
+        self.assertEqual((wechat.status_code, wechat.json['code']), (409, 'tender_missing'))
+        self.assertIn('Wechat Pay', wechat.json['error'])
+        over = self.settle(FakeClover(self, prices=(1000,)), target_total=1200, discount_name=None,
+                           payments=[{'key': 'popcore-pc-7-9', 'tender': 'cash', 'amount': 1200}])
+        self.assertEqual((over.status_code, over.json['code']), (409, 'overpaid'))
+        weighted = FakeClover(self, prices=(1000,))
+        weighted.lines[0]['unitQty'] = 1500
+        weighted.order['lineItems']['elements'][0]['unitQty'] = 1500
+        refused = self.settle(weighted, target_total=1600, discount_name='Cash discount',
+                              payments=[{'key': 'popcore-pc-7-9', 'tender': 'cash', 'amount': 1600}])
+        self.assertEqual((refused.status_code, refused.json['code']), (409, 'calc_unverified'))
+        for clover_ in (clover, missing, weighted):
+            self.assertEqual(clover_.writes, [])
+
+    def test_writes_need_the_writer_key_and_valid_bodies(self):
+        clover = FakeClover(self, prices=(1000,))
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            no_key = self.client.post(self.url + '/settle', headers={**self.headers, 'X-Popcore-Writer': 'x'},
+                                      json={})
+            self.assertEqual(no_key.status_code, 403)
+            for bad in ({'target_total': 1100, 'expected': {}, 'payments': [{'key': 'other', 'tender': 'cash',
+                                                                              'amount': 1}]},
+                        {'target_total': 1100, 'expected': {}, 'payments': [{'key': 'popcore-pc-1-2',
+                                                                              'tender': 'card', 'amount': 1}]},
+                        {'target_total': -1, 'expected': {}, 'payments': []},
+                        {'target_total': 1100, 'expected': {}, 'payments': [], 'discount_name': 'Other'}):
+                self.assertEqual(self.client.post(self.url + '/settle', headers=self.headers,
+                                                  json=bad).status_code, 400, bad)
+        app = create_app({**self.config, 'POPCORE_WRITER_KEY': ''})
+        app.extensions['clover_save_tokens']({'access_token': 'token', 'access_token_expiration': time.time() + 3600})
+        self.assertEqual(app.test_client().post(self.url + '/settle', headers=self.headers,
+                                                json={}).status_code, 404)
+        self.assertEqual(clover.writes, [])
+
+    def test_label_marks_an_open_order_paid_without_paying_it(self):
+        clover = FakeClover(self, prices=(1000,))
+        clover.order['note'] = 'Gift wrap'
+        label = {'label': 'Paid 2026-10-20 11:23'}
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            first = self.client.post(self.url + '/label', headers=self.headers, json=label)
+            again = self.client.post(self.url + '/label', headers=self.headers, json=label)
+        self.assertEqual((first.status_code, first.json['written']), (200, ['note', 'title']))
+        self.assertEqual((again.status_code, again.json['written']), (200, []))
+        self.assertEqual(clover.writes, [('POST', '/v3/merchants/MMMMMMMMMMMMM/orders/OOOOOOOOOOOOO',
+                                          {'title': 'Paid 2026-10-20 11:23', 'note': 'Gift wrap\nPaid 2026-10-20 11:23'})])
+        self.assertEqual((clover.order['paymentState'], clover.order['payments']['elements']), ('OPEN', []))
+        # Clover keeping its note never stops the title from marking the order.
+        refusing = FakeClover(self, prices=(1000,))
+        refusing.refuse_note = True
+        with patch('scripts.clover_sandbox.requests.request', side_effect=refusing):
+            titled = self.client.post(self.url + '/label', headers=self.headers, json=label)
+        self.assertEqual(titled.status_code, 200, titled.json)
+        self.assertEqual(refusing.order['title'], 'Paid 2026-10-20 11:23')
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            for bad in ({}, {'label': ''}, {'label': 'x' * 41}, {'label': 'Paid\u2028today'}, {'label': 7}):
+                self.assertEqual(self.client.post(self.url + '/label', headers=self.headers, json=bad).status_code,
+                                 400, bad)
+            self.assertEqual(self.client.post(self.url + '/label', headers={**self.headers, 'X-Popcore-Writer': 'x'},
+                                              json=label).status_code, 403)
+
+    def test_references_are_a_popcore_number_a_title_or_both(self):
+        from scripts.clover_sandbox import valid_reference
+        self.assertTrue(valid_reference(None))
+        self.assertTrue(valid_reference({'title': 'Paid 2026-10-20 11:23'}))
+        self.assertTrue(valid_reference({'external_reference_id': 'POPCORE-7', 'title': 'POPCORE 7'}))
+        for bad in ({}, {'external_reference_id': 'CLOVER-7'}, {'title': 'x' * 41}, {'title': 5}, 'POPCORE-7'):
+            self.assertFalse(valid_reference(bad), bad)
+
+    def test_delete_only_removes_an_unpaid_order(self):
+        paid = FakeClover(self, payments=[{'id': 'CARDPAYMENT01', 'amount': 100, 'result': 'SUCCESS'}])
+        with patch('scripts.clover_sandbox.requests.request', side_effect=paid):
+            refused = self.client.delete(self.url, headers=self.headers)
+        self.assertEqual((refused.status_code, refused.json['code']), (409, 'has_payments'))
+        self.assertEqual(paid.writes, [])
+        unpaid = FakeClover(self)
+        with patch('scripts.clover_sandbox.requests.request', side_effect=unpaid):
+            deleted = self.client.delete(self.url, headers=self.headers)
+            again = self.client.delete(self.url, headers=self.headers)
+        self.assertEqual(deleted.json, {'deleted': True, 'missing': False})
+        self.assertEqual(again.json, {'deleted': True, 'missing': True})
+
+    def test_single_order_reports_whether_its_total_can_be_reproduced(self):
+        clover = FakeClover(self)
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            response = self.client.get(self.url, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(response.json['order']['total'], 4259)
+        self.assertEqual(response.json['pricing'], {'verified': True, 'tax_cents': 490})
+        drifted = FakeClover(self, total=4300)
+        with patch('scripts.clover_sandbox.requests.request', side_effect=drifted), \
+                patch('scripts.clover_sandbox.time.monotonic', return_value=999999999):
+            response = self.client.get(self.url, headers=self.headers)
+        self.assertFalse(response.json['pricing']['verified'])
+        drifted.deleted = True
+        with patch('scripts.clover_sandbox.requests.request', side_effect=drifted), \
+                patch('scripts.clover_sandbox.time.monotonic', return_value=999999999 * 2):
+            gone = self.client.get(self.url, headers=self.headers)
+        self.assertEqual((gone.status_code, gone.json['code']), (404, 'not_found'))
 
 
 if __name__ == '__main__':

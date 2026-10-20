@@ -1,10 +1,17 @@
 # Clover sandbox connection test
 
-This is an isolated, single-test-merchant probe, authorized on 2026-09-13. It runs
+This is an isolated, single-merchant connector, first authorized on 2026-09-13. It runs
 separately from the POPCORE Flask application. It never imports `popcore_app/app.py`,
-opens the inventory database, posts stock, or changes Clover orders/payments.
-All Clover requests are pinned to the sandbox hosts. POST requests are limited to
-OAuth token exchange/refresh. There is no production-mode switch.
+opens the inventory database or posts stock.
+
+Since 2026-10-20 it is the Clover side of [Clover checkout](clover-checkout.md): POPCORE reads
+`/orders`, `/orders/scan` and `/orders/<id>` from it. When `POPCORE_WRITER_KEY` (at least 32
+characters) is set in its configuration and POPCORE sends the same key, it also titles orders POPCORE
+recorded as paid (`POST /orders/<id>/label`), completes them on Clover in pay mode
+(`POST /orders/<id>/settle`) and deletes unpaid open orders (`DELETE /orders/<id>`), only
+for the configured merchant. Without the key those routes answer 404. `CLOVER_ENVIRONMENT`
+selects the sandbox (default) or production hosts; it stays sandbox until the owner approves
+production. The read-only `/review` page described below has been removed.
 
 ## Local setup prepared in this task
 

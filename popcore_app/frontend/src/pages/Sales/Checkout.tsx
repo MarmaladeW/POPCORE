@@ -1,257 +1,119 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Checkbox, Form, Input, Modal, Skeleton } from 'antd'
-import { CameraOutlined, CheckCircleOutlined, CreditCardOutlined, DollarOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Alert, Button, Input, Skeleton, Switch } from 'antd'
+import { CameraOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
-import { formatCents, parseMoneyToCents } from '../../lib/money'
-import { convertCadCentsToCnyFen, discountQuote, suggestPaymentTarget } from '../../lib/checkoutPricing'
-import { useHasRole, useRole } from '../../auth/useRole'
+import { formatCents } from '../../lib/money'
+import { useRole } from '../../auth/useRole'
 import ManualCheckout from './ManualCheckout'
+import CloverOrder from './CloverOrder'
+import ManualPayment from './ManualPayment'
 import useCheckoutMutation from './useCheckoutMutation'
+import { autoOpenCandidate, groupLines } from './cloverOrderView'
+import { cnyCharged, historyQuery, missingPhotos, paymentSummary, TENDER_FILTERS } from './checkoutHistory'
+import { electronic, errorMessage, label, OrderNotes, PhotoCapture, RefundTools, TakeBack, type Access, type Draft, type DraftUpdate, type Order, type Queue, type Store } from './checkoutParts'
 import './Checkout.css'
 
-type Store = { id:number; code:string; name:string }
-type Access = { business_date:string; role:string; live_stores:Store[]; history_stores:Store[]; cny_per_cad:string; clover_sandbox_enabled?:boolean }
-type Photo = { id:number }
-type Attempt = { id:number; source?:'clover'|'popcore'; tender:string; amount_cents:number; status:string; can_upload:boolean; photos:Photo[]; refundable_cents?:number }
-type Line = { product_name_snapshot:string; quantity:number; unit:string; mapped?:boolean; product_name?:string|null; item_code?:string|null }
-type Order = { id:number; source?:'clover-sandbox'; source_detail?:'device'|'cloud'; total_pending?:boolean; can_claim?:boolean; can_hide?:boolean; can_record?:boolean; settled_in_popcore?:boolean; changed_after_settlement?:boolean; can_note:boolean; note:string; source_fresh?:boolean; source_seen_at?:number; quote_available?:boolean; totals_known?:boolean; has_discount?:boolean; cash_discount_applied?:boolean; store_id:number; reference:string; register_name?:string; business_date:string; status:string; version:number; sale_id:number|null; cashier_name:string; cashier_sub:string; can_manage:boolean; can_process:boolean; can_refund:boolean; received_cents:number; remaining_cents:number; refunded_cents:number; refund_due_cents:number; abandoned_reason:string|null; attempts:Attempt[]; refunds:{id:number;amount_cents:number;reference:string;business_date:string;tender:string}[]; order:{ subtotal_cents:number;source_tax_cents:number;gross_cents:number;reduction_cents:number;collected_cents:number;lines:Line[] } }
-type DraftUpdate = Partial<Draft> | ((draft:Draft)=>Draft)
-type Queue = { orders:Order[]; next_before_id:number|null; clover:{connected:boolean; fetched_at?:number; message?:string} }
-type Draft = { target:string; tender:string; split:string; includesCard:boolean; cashDiscountApplied:boolean; sourceTotal?:number; photos?:Record<number,File> }
-const methods = [{value:'cash',label:'Cash',icon:<DollarOutlined/>},{value:'card',label:'Card',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer'},{value:'wechat',label:'WeChat Pay'},{value:'alipay',label:'Alipay'}]
-const electronic = (method:string) => ['e_transfer','wechat','alipay'].includes(method)
-const moneyInput = (cents:number) => (cents/100).toFixed(2)
-const label = (method:string) => methods.find(m=>m.value===method)?.label || method
-const cnyMoney = new Intl.NumberFormat('zh-CN',{style:'currency',currency:'CNY'})
-const errorMessage = (cause:unknown) => (cause as {_serverMessage?:string})?._serverMessage || 'Unable to load checkout. Please retry.'
-const orderApi = (order:Order) => `${order.source?'/clover-sandbox':''}/checkouts/${order.id}`
-const freshOrder = (order:Order,now:number):Order => order.source&&now-(order.source_seen_at||0)*1000>5000?{...order,source_fresh:false,can_claim:false,can_process:false}:order
-const checkoutLink = (path:string,sandbox:boolean,history=false) => `${path}${sandbox||history?'?'+new URLSearchParams({... (sandbox?{source:'clover-sandbox'}:{}),... (history?{view:'history'}:{})}).toString():''}`
-const initialDraft = (order:Order):Draft => {
-  const active=order.attempts.filter(a=>a.status!=='cancelled'),tender=active.find(a=>a.status==='pending')?.tender || ''
-  const includesCard=active.some(a=>a.tender==='card')&&active.some(a=>a.tender!=='card')
-  const target=order.attempts.length||order.order.reduction_cents||order.has_discount||order.quote_available===false?order.order.collected_cents:suggestPaymentTarget(order.order.gross_cents,tender,includesCard)
-  return {target:moneyInput(target),tender,split:'',includesCard,cashDiscountApplied:!!order.cash_discount_applied,sourceTotal:order.order.gross_cents}
-}
+const AUTO_OPEN_KEY = 'popcore.checkout.cloverAutoOpen'
+const readAutoOpen = () => { try { return localStorage.getItem(AUTO_OPEN_KEY) !== '0' } catch { return true } }
+const clock = (ms:number) => new Date(ms).toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',timeZone:'America/Toronto'})
+const checkoutLink = (path:string,history=false) => history?`${path}?view=history`:path
+// A finished order still waiting for its payment photo keeps the screen busy.
+const needsPhoto = (order:Order) => order.attempts.some(a=>a.status==='completed'&&electronic(a.tender)&&a.can_upload&&!a.photos.length)
+const initialDraft = (_order:Order):Draft => ({target:'',tender:'',split:'',includesCard:false})
 
-function PhotoCapture({order,attempt,draft,setDraft,updated,onBusy,primary,disabled}:{order:Order;attempt:Attempt;primary:boolean;disabled:boolean;draft:Draft;setDraft:(v:DraftUpdate)=>void;updated:()=>void;onBusy:(v:boolean)=>void}) {
-  const fileInput=useRef<HTMLInputElement>(null)
-  const [preview,setPreview]=useState(''),[viewing,setViewing]=useState(''),[readError,setReadError]=useState('')
-  const file=draft.photos?.[attempt.id]
-  const viewingRequest=useRef<AbortController|null>(null)
-  useEffect(()=>()=>viewingRequest.current?.abort(),[])
-  const mutation=useCheckoutMutation(()=>{setDraft(old=>{const photos={...old.photos};delete photos[attempt.id];return {...old,photos}});updated()})
-  useEffect(()=>{onBusy(mutation.pending);return()=>onBusy(false)},[mutation.pending])
-  useEffect(()=>{if(!file){setPreview('');return}const url=URL.createObjectURL(file);setPreview(url);return()=>URL.revokeObjectURL(url)},[file])
-  useEffect(()=>()=>{if(viewing)URL.revokeObjectURL(viewing)},[viewing])
-  async function view(photo:Photo) {
-    viewingRequest.current?.abort();const controller=new AbortController();viewingRequest.current=controller
-    try {const response=await client.get(`${orderApi(order)}/${attempt.source==='popcore'?'manual-evidence':'evidence'}/${photo.id}`,{responseType:'blob',signal:controller.signal});if(controller.signal.aborted)return;setViewing(URL.createObjectURL(response.data));setReadError('')}
-    catch(cause){if(controller.signal.aborted)return;setViewing('');setReadError(errorMessage(cause));const status=(cause as {response?:{status:number}})?.response?.status;if(status===401||status===403)window.dispatchEvent(new Event('popcore:checkout-access-denied'))}
-  }
-  return <section className="co-photo" aria-label={`Payment evidence for ${label(attempt.tender)}`}>
-    <div className="co-section-title"><h3>Payment photo</h3><span>{label(attempt.tender)} · {formatCents(attempt.amount_cents)}</span></div>
-    {mutation.notice}{readError&&<Alert type="error" message={readError}/>}
-    {attempt.photos.length>0&&<div className="co-saved" role="status"><CheckCircleOutlined/> <strong>Photo saved</strong>{attempt.photos.map((photo,i)=><Button type="link" key={photo.id} onClick={()=>view(photo)}>View{i?' '+(i+1):''}</Button>)}</div>}
-    {attempt.can_upload&&<>
-      <input ref={fileInput} className="co-file-input" type="file" aria-label="Payment evidence photo" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={disabled||mutation.pending} onChange={e=>{const selected=e.target.files?.[0];if(selected)setDraft(old=>({...old,photos:{...old.photos,[attempt.id]:selected}}));e.target.value=''}}/>
-      {preview?<div className="co-preview">
-        <img src={preview} alt="Payment evidence preview"/>
-        <p>{order.reference} · {label(attempt.tender)} · {formatCents(attempt.amount_cents)}</p>
-        <div className="co-action-pair"><Button disabled={disabled||mutation.pending} onClick={()=>fileInput.current?.click()}>Retake</Button><Button type="primary" loading={mutation.saving} disabled={disabled||mutation.pending&&!mutation.saving} onClick={()=>{if(!file)return;const body=new FormData();body.append('image',file);mutation.run(`${orderApi(order)}/${attempt.source==='popcore'?'manual':'attempts'}/${attempt.id}/evidence`,body)}}>Use photo</Button></div>
-      </div>:<Button aria-label={attempt.photos.length?'Add another photo':'Take photo'} className={'co-camera'+(primary&&!attempt.photos.length?' co-camera-primary':'')} type={attempt.photos.length?'default':'primary'} icon={<CameraOutlined/>} disabled={disabled||mutation.pending} onClick={()=>fileInput.current?.click()}>{attempt.photos.length?'Add another photo':'Take photo'}</Button>}
-    </>}
-    {!attempt.can_upload&&!attempt.photos.length&&<p className="co-muted">Photo missing. Checkout access is required to add evidence.</p>}
-    <Modal title="Saved payment evidence" open={Boolean(viewing)} onCancel={()=>setViewing('')} footer={null} destroyOnClose><img src={viewing} alt="Saved payment evidence" style={{width:'100%'}}/></Modal>
-  </section>
-}
-
-function OrderNotes({order,updated,onBusy,disabled}:{order:Order;updated:(o?:Order)=>void;onBusy:(v:boolean)=>void;disabled:boolean}) {
-  const [note,setNote]=useState(order.note||''),[base,setBase]=useState(order.note||''),[dirty,setDirty]=useState(false)
-  const mutation=useCheckoutMutation((value:Order)=>{setNote(value.note);setBase(value.note);setDirty(false);updated(value)})
-  useEffect(()=>{if(!dirty){setNote(order.note||'');setBase(order.note||'')}},[order.note,dirty])
-  useEffect(()=>{onBusy(mutation.pending);return()=>onBusy(false)},[mutation.pending])
-  return <section className="co-note" aria-label="Order note">
-    <h3>Order note</h3>
-    {order.can_note?<>
-      <Input.TextArea aria-label="Order note" value={note} rows={3} maxLength={2000} showCount
-        placeholder="Special payment, pickup, or customer circumstances" disabled={disabled}
-        onChange={e=>{setNote(e.target.value);setDirty(e.target.value!==base)}}/>
-      <div className="co-note-actions"><Button type="primary" disabled={disabled||!dirty} loading={mutation.saving}
-        onClick={()=>mutation.run(`${orderApi(order)}/notes`,{note,expected_note:base})}>Save note</Button>
-        {dirty&&<Button disabled={disabled} onClick={()=>{setNote(order.note||'');setBase(order.note||'');setDirty(false)}}>Discard changes</Button>}</div>
-      {mutation.notice}
-    </>:<p>{order.note||'No note added.'}</p>}
-  </section>
-}
-
-function RefundTools({order,updated,onBusy,disabled}:{order:Order;updated:(o?:Order)=>void;onBusy:(v:boolean)=>void;disabled:boolean}) {
-  const manager=useHasRole('manager')
+/** A manual order (a phone order, an item from another store): paid the same way as a Clover order. */
+function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy,cnyPerCad,cnyRateSource}:{order:Order;draft:Draft;setDraft:(v:DraftUpdate)=>void;updated:(o?:Order)=>void;refresh:()=>void;onBusy:(v:boolean)=>void;cnyPerCad:string;cnyRateSource?:string|null}) {
   const mutation=useCheckoutMutation((data:Order)=>updated(data))
-  useEffect(()=>{onBusy(mutation.pending);return()=>onBusy(false)},[mutation.pending])
-  if(!manager || !order.can_manage || order.status!=='open')return null
-  const action=(name:string,body:object)=>mutation.run(`/checkouts/${order.id}/${name}`,{expected_version:order.version,...body})
-  return <details className="co-secondary"><summary>Cancel or refund this order</summary>{mutation.notice}
-    {!order.abandoned_reason?<Form layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action(order.received_cents?'abandon':'cancel',{reason:v.reason})}>
-      <p>{order.received_cents?'Mark this checkout abandoned, then record the money actually refunded.':'Cancel this unpaid checkout.'}</p>
-      {!!order.received_cents&&<Form.Item name="reason" label="Reason" rules={[{required:true,whitespace:true}]}><Input.TextArea rows={2}/></Form.Item>}
-      <Button danger htmlType="submit" loading={mutation.saving}>{order.received_cents?'Abandon checkout':'Cancel checkout'}</Button>
-    </Form>:<Form key={order.version} layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action('refund',{...v,attempt_id:Number(v.attempt_id),amount_cents:parseMoneyToCents(v.amount)})}>
-      <p><strong>{formatCents(order.refund_due_cents)}</strong> still to refund. Record refunds after returning the money.</p>
-      <Form.Item name="attempt_id" label="Original payment" rules={[{required:true}]}><select className="co-select" defaultValue=""><option value="" disabled>Select payment</option>{order.attempts.filter(a=>(a.refundable_cents||0)>0).map(a=><option key={a.id} value={a.id}>{label(a.tender)} · {formatCents(a.refundable_cents||0)} refundable</option>)}</select></Form.Item>
-      <div className="co-action-pair"><Form.Item name="amount" label="Refund amount ($)" rules={[{required:true}]}><Input inputMode="decimal"/></Form.Item><Form.Item name="business_date" label="Refund date" rules={[{required:true}]}><Input type="date"/></Form.Item></div>
-      <Form.Item name="reference" label="Refund reference" rules={[{required:true,whitespace:true,max:120}]}><Input/></Form.Item>
-      <Form.Item name="reason" label="Reason" rules={[{required:true,whitespace:true}]}><Input.TextArea rows={2}/></Form.Item>
-      <Form.Item name="confirmed_received_and_refunded" valuePropName="checked" rules={[{validator:(_,value)=>value===true?Promise.resolve():Promise.reject(new Error('Confirm the receipt and actual refund.'))}]}><Checkbox>I checked the original receipt and returned this money.</Checkbox></Form.Item>
-      <Button danger htmlType="submit" loading={mutation.saving}>Record refund</Button>
-    </Form>}
-  </details>
-}
-
-function CurrentOrder({order,draft,setDraft,updated,removed,refresh,onBusy,cnyPerCad}:{order:Order;draft:Draft;setDraft:(v:DraftUpdate)=>void;updated:(o?:Order)=>void;removed:()=>void;refresh:()=>void;onBusy:(v:boolean)=>void;cnyPerCad:string}) {
-  const sandbox=order.source==='clover-sandbox'
-  const [split,setSplit]=useState(false),[notice,setNotice]=useState('')
-  const mutation=useCheckoutMutation((data:Order|{hidden:true})=>'hidden' in data?removed():updated(data))
   const [photoStates,setPhotoStates]=useState<Record<number,boolean>>({})
-  const photoBusy=Object.values(photoStates).some(Boolean)
-  const [refundBusy,setRefundBusy]=useState(false)
-  const [noteBusy,setNoteBusy]=useState(false)
-  useEffect(()=>{onBusy(mutation.pending||photoBusy||refundBusy||noteBusy);return()=>onBusy(false)},[mutation.pending,photoBusy,refundBusy,noteBusy])
-  const pending=order.attempts.find(a=>a.status==='pending')
-  const target=parseMoneyToCents(draft.target)
-  const quote=target===null||order.quote_available===false?null:discountQuote(order.order.subtotal_cents,order.order.source_tax_cents,target)
-  const amountMatches=target===order.order.collected_cents
-  const blocked=mutation.pending||photoBusy||refundBusy||noteBusy
-  const mixedWithCard=split&&draft.includesCard
-  const pricingLocked=order.received_cents>0||order.order.reduction_cents>0||!!order.has_discount||order.quote_available===false
-  const pricingTarget=(method:string,mixed:boolean)=>moneyInput(pricingLocked?order.order.collected_cents:suggestPaymentTarget(order.order.gross_cents,method,mixed))
-  const cnyMethod=draft.tender==='wechat'||draft.tender==='alipay'
-  // Sandbox: card is charged on Clover; other tenders are recorded here against the rounded amount the cashier confirms.
-  const sandboxManual=sandbox&&!!draft.tender&&draft.tender!=='card'
-  const hasManual=order.attempts.some(a=>a.source==='popcore'&&a.status!=='cancelled')
-  const payableNow=sandbox&&!hasManual&&order.received_cents===0&&target!==null?target:order.order.collected_cents
-  const remainingNow=sandbox?Math.max(0,payableNow-order.received_cents):order.remaining_cents
-  const amountOk=sandboxManual?target!==null&&target>0&&target<=order.order.gross_cents&&target>=order.received_cents:amountMatches
-  const collectionCad=pending&&pending.tender===draft.tender?pending.amount_cents:split?parseMoneyToCents(draft.split):remainingNow
-  const cnyFen=cnyMethod&&amountOk&&collectionCad!==null&&collectionCad>0&&collectionCad<=remainingNow
-    ?convertCadCentsToCnyFen(collectionCad,cnyPerCad):null
-  const action=(name:string,body:object={})=>mutation.run(`${orderApi(order)}/${name}`,{expected_version:order.version,...body})
-  async function received() {
-    if(!pending)return
-    const result=await action('complete',{attempt_id:pending.id}) as Order|undefined
-    if(!sandbox&&result&&result.remaining_cents===0)await mutation.run(`/checkouts/${order.id}/finalize`,{expected_version:result.version})
-  }
-  function startAttempt() {
-    const amount=split?parseMoneyToCents(draft.split):remainingNow
-    if(amount===null||amount<=0||amount>remainingNow){setNotice('Enter an amount within the remaining balance.');return}
-    action('attempts',{tender:draft.tender,amount_cents:amount,...(sandbox?{payable_cents:payableNow}:{})})
-  }
-  function choose(method:string) {
-    const includesCard=split&&(method==='card'||draft.includesCard)
-    setDraft({tender:method,includesCard,target:pricingTarget(method,includesCard)});setNotice('')
-  }
-  function chooseSplit(enabled:boolean) {
-    const includesCard=enabled&&(draft.tender==='card'||draft.includesCard)
-    setSplit(enabled);setDraft({includesCard,target:pricingTarget(draft.tender,includesCard)})
-  }
+  const [refundBusy,setRefundBusy]=useState(false),[noteBusy,setNoteBusy]=useState(false)
+  const blocked=mutation.pending||refundBusy||noteBusy||Object.values(photoStates).some(Boolean)
+  useEffect(()=>{onBusy(blocked);return()=>onBusy(false)},[blocked])
+  const run=(name:string,body:object)=>mutation.run(`/checkouts/${order.id}/${name}`,{expected_version:order.version,...body})
+  const pricing=order.pricing
   const photoAttempts=order.attempts.filter(a=>a.status!=='cancelled'&&electronic(a.tender))
+  const payments=order.attempts.filter(a=>a.status==='completed')
   return <article className="co-order" aria-label={`Checkout ${order.reference}`}>
     <header className="co-order-heading"><div><span className="co-muted">{order.register_name||'POPCORE order'} · {order.reference}</span><h2>{order.status==='cancelled'?'Checkout cancelled':order.status==='completed'?'Checkout complete':'Current order'}</h2></div><span className={'co-status co-status-'+order.status}>{order.abandoned_reason&&order.status==='open'?'Refund due':order.status==='open'?'In progress':order.status}</span></header>
     <dl className="co-facts"><div><dt>Cashier</dt><dd>{order.cashier_name}</dd></div><div><dt>Order date</dt><dd>{order.business_date}</dd></div></dl>
-    {sandbox&&!order.source_fresh&&order.status==='open'&&<Alert type="warning" showIcon message="This order is not freshly synced" description="Keep using Clover. This snapshot may be outside the latest 20 orders or the connection may be delayed. Do not rely on it to confirm payment."/>}
-    {sandbox&&order.source_detail==='device'&&order.source_fresh&&order.status==='open'&&<Alert type="info" showIcon message="Items updated from Clover device" description="Card payments still wait for Clover's cloud confirmation."/>}
-    {sandbox&&order.total_pending&&<Alert type="warning" showIcon message="Waiting for Clover total" description="The scanned items are visible. Confirm the amount on Clover before using payment guidance."/>}
-    {sandbox&&order.settled_in_popcore&&<Alert type="success" showIcon message="Settled in POPCORE" description="The Clover order stays open. Leave it, or remove it on the device."/>}
-    {sandbox&&order.changed_after_settlement&&<Alert type="warning" showIcon message="Clover changed after this order was settled" description="The Clover total or its payments no longer match what was settled here. Review the order on Clover; nothing was counted twice."/>}
-    {sandbox&&!order.source_fresh&&order.can_hide&&<Button danger disabled={blocked} loading={mutation.saving} onClick={()=>Modal.confirm({title:'Remove stale snapshot?',content:'This hides the order from POPCORE lists. Clover and saved payment photos are unchanged. The order will reappear if Clover sends it again.',okText:'Remove from list',okButtonProps:{danger:true},onOk:()=>{void action('hide')}})}>Remove from list</Button>}
-    <ul className="co-items">{order.order.lines.map((line,i)=><li key={i}><span className="co-quantity">{line.quantity}×</span><span>{line.product_name_snapshot}{sandbox&&line.mapped===false&&<small className="co-unmapped"> · Not matched by barcode</small>}{sandbox&&line.mapped&&line.product_name&&line.product_name!==line.product_name_snapshot&&<small className="co-muted"> · {line.product_name}</small>}</span></li>)}</ul>
-    {sandbox&&!!order.order.lines.length&&<p className="co-muted">{order.order.lines.filter(l=>l.mapped).length} of {order.order.lines.length} items matched to POPCORE products by barcode.</p>}
-    <dl className="co-original">{order.totals_known!==false&&<><div><dt>Subtotal</dt><dd>{formatCents(order.order.subtotal_cents)}</dd></div><div><dt>Tax</dt><dd>{formatCents(order.order.source_tax_cents)}</dd></div></>}<div><dt>{sandbox?'Clover total':'Original total'}</dt><dd>{order.total_pending?'Pending':formatCents(order.order.gross_cents)}</dd></div></dl>
+    <ul className="co-items">{order.order.lines.map((line,i)=><li key={i}><span className="co-quantity">{line.quantity}×</span><span className="co-line-name">{line.product_name_snapshot}</span></li>)}</ul>
+    <dl className="co-original"><div><dt>Subtotal</dt><dd>{formatCents(order.order.subtotal_cents)}</dd></div><div><dt>Tax</dt><dd>{formatCents(order.order.source_tax_cents)}</dd></div>{order.status!=='completed'&&order.order.reduction_cents>0&&<div><dt>Agreed discount</dt><dd>−{formatCents(order.order.reduction_cents)}</dd></div>}{order.status==='completed'?<div><dt>Customer paid</dt><dd>{formatCents(order.order.collected_cents)}</dd></div>:<div><dt>Order total</dt><dd>{formatCents(pricing?.total_cents??order.order.collected_cents)}</dd></div>}</dl>
     <OrderNotes order={order} updated={updated} disabled={blocked} onBusy={setNoteBusy}/>
-    {mutation.notice}{notice&&<Alert type="error" message={notice}/>}
-    {order.can_claim&&<Button type="primary" disabled={blocked} loading={mutation.saving} onClick={()=>action('claim')}>Pick up this order</Button>}
-    {order.can_process&&<>
-
-      <div className="co-pricing">
-        <div className="co-payable"><label htmlFor="checkout-target">Customer pays</label><div className="co-money-input"><span aria-hidden="true">$</span><input id="checkout-target" aria-describedby="checkout-target-help" inputMode="decimal" value={draft.target} disabled={blocked||draft.tender==='card'||order.received_cents>0||(sandbox&&(order.has_discount||order.quote_available===false))} onChange={e=>setDraft({target:e.target.value})}/><span>CAD</span></div><p id="checkout-target-help">{sandbox&&(order.has_discount||order.quote_available===false)?'Using Clover’s total.':order.received_cents?'Payments already received. The amount is fixed.':mixedWithCard?'Whole-dollar split target · no cash discount':draft.tender==='card'?sandbox?'Card is charged at Clover’s total.':'Use the recorded card total.':sandbox?'Rounded amount · tap to adjust · nothing to enter on Clover':'Suggested amount · tap to adjust'}</p></div>
-        {(draft.tender!=='card'||mixedWithCard)&&<div className="co-discount"><span>{sandbox&&order.has_discount?'Discount already on Clover':sandbox?'Rounding kept in POPCORE':mixedWithCard?'Pre-tax rounding adjustment to enter in Clover':'Pre-tax discount to enter in Clover'}</span><strong>{sandbox?(quote&&!order.has_discount?formatCents(quote.savingsCents):'—'):quote?formatCents(quote.discountCents):'—'}</strong><small>{order.has_discount?'Do not apply it again.':sandbox?'Taken off the Clover total here. Do not enter it on Clover.':order.quote_available===false?'A reliable discount estimate is unavailable for these items. Use Clover’s total.':'Estimate from the original subtotal and tax. Check Clover’s resulting total.'}</small></div>}
-      </div>
-      <fieldset className="co-methods" disabled={blocked}><legend>How is the customer paying?</legend><div>{methods.map(method=><button key={method.value} type="button" aria-pressed={draft.tender===method.value} aria-describedby={sandbox&&order.cash_discount_applied&&method.value==='card'?'co-cash-discount-note':undefined} disabled={sandbox&&order.cash_discount_applied&&method.value==='card'} onClick={()=>choose(method.value)}>{method.icon}{method.label}</button>)}</div>{sandbox&&order.cash_discount_applied&&<p id="co-cash-discount-note" className="co-muted">Remove the cash discount on Clover to use Card.</p>}</fieldset>
-      {cnyMethod&&<section className="co-cny" aria-label="Chinese yuan collection amount"><span>{label(draft.tender)} · CNY to collect</span>
-        {cnyFen!==null?<><strong>{cnyMoney.format(cnyFen/100)}</strong><small>{formatCents(collectionCad!)} CAD at 1 CAD = {cnyPerCad} CNY. Confirm the final CAD total and the amount shown by the payment provider.</small></>
-          :<p>{!cnyPerCad?'Ask an admin to set the CNY rate in Settings.':!amountMatches?'Wait for the confirmed CAD total before converting.':'Enter the CAD amount to collect with this method.'}</p>}
-      </section>}
-      {!quote&&order.quote_available!==false&&<Alert type="error" showIcon message="Enter a positive amount no greater than the original total."/>}
-      {quote?.warning&&<Alert type="warning" showIcon message="This discount is more than 20% of the order value. Check the amount before continuing."/>}
-      {!sandbox&&quote&&quote.predictedTotalCents!==target&&(draft.tender!=='card'||mixedWithCard)&&<p className="co-muted">Estimated total after rounding: {formatCents(quote.predictedTotalCents)}. Clover may round differently.</p>}
-      {!amountMatches&&<div className="co-waiting" role="status"><strong>{sandbox?'Customer pays a different amount than Clover shows':'Waiting for confirmed Clover total'}</strong><p>{sandbox?`Clover shows ${formatCents(order.order.collected_cents)}. The rounded amount is recorded here and the Clover order stays open.`:`The recorded order is ${formatCents(order.order.collected_cents)}. The target above has not changed its payment total. Clover is disconnected.`}</p><Button type="link" disabled={blocked} onClick={()=>setDraft({target:moneyInput(order.order.collected_cents)})}>Use recorded total</Button></div>}
-      {draft.tender&&mixedWithCard&&<p className="co-instruction">{sandbox?<>Record the {label(draft.tender)==='Card'?'other':label(draft.tender)} part here first, then charge the rest by <strong>Card</strong> on Clover.</>:<>Confirm the whole-dollar total in Clover before the first payment, then split it between <strong>Card</strong> and the other method.</>}</p>}
-      {draft.tender&&draft.tender!=='card'&&!mixedWithCard&&<p className="co-instruction">{sandbox?<>Collect <strong>{label(draft.tender)}</strong> and record it below. Nothing to enter on Clover.</>:<>Enter the discount in Clover, then choose <strong>{label(draft.tender)}</strong>.</>}</p>}
-      {sandbox&&<div className="co-waiting" role="status"><strong>{order.received_cents>order.order.collected_cents?'Payment total differs from the order. Review on Clover.':remainingNow>0?`${formatCents(remainingNow)} still to collect`:order.status==='completed'?'Settled':'Waiting for Clover to confirm the card payment'}</strong><p>{draft.tender==='card'?'Charge this on Clover. Successful card payments appear here automatically.':'Cash, e-transfer, WeChat Pay and Alipay are recorded here. The Clover order stays open on the device.'}</p></div>}
-      {sandbox&&['wechat','alipay'].includes(draft.tender)&&<p className="co-muted">Confirm the payment in the provider app before recording it here.</p>}
-      {remainingNow>0&&<>
-        {(!sandbox||draft.tender!=='card')&&<div className="co-payment-action">
-          {pending&&pending.tender===draft.tender?<Button type={electronic(pending.tender)&&!pending.photos.length?'default':'primary'} size="large" disabled={blocked||!amountOk||(!sandbox&&!quote)} loading={mutation.saving} onClick={received}>Record {formatCents(pending.amount_cents)} received</Button>:<Button type="primary" size="large" disabled={blocked||!draft.tender||!amountOk||(!sandbox&&!quote)||(cnyMethod&&cnyFen===null)} loading={mutation.saving} onClick={startAttempt}>{pending?'Change payment method':'Continue with '+(label(draft.tender)||'payment')}</Button>}
-          <small>{sandbox?'Only confirm money actually received. Nothing is sent to Clover.':'Manual recording while Clover is disconnected. Only confirm money actually received.'}</small>
-        </div>}
-        {sandbox&&draft.tender==='card'&&<p className="co-instruction">Charge <strong>{formatCents(remainingNow)}</strong> by card on Clover.</p>}
-        {(!pending||pending.tender!==draft.tender)&&<div className="co-split"><Checkbox disabled={blocked} checked={split} onChange={e=>chooseSplit(e.target.checked)}>Split payment</Checkbox>{split&&<><Checkbox disabled={blocked||order.received_cents>0||draft.tender==='card'||(sandbox&&(order.has_discount||order.quote_available===false))} checked={draft.includesCard} onChange={e=>setDraft({includesCard:e.target.checked,target:pricingTarget(draft.tender,e.target.checked)})}>This split includes Card</Checkbox><label>Collect now ({sandbox?'CAD':'$'})<Input value={draft.split} inputMode="decimal" disabled={blocked} onChange={e=>setDraft({split:e.target.value})}/></label></>}</div>}
-      </>}
-      {!sandbox&&order.remaining_cents===0&&<Button type="primary" disabled={blocked} loading={mutation.saving} onClick={()=>action('finalize')}>Finish checkout</Button>}
-    </>}
-    {sandbox&&!order.can_process&&order.can_record&&pending&&<div className="co-payment-action"><Button type="primary" size="large" disabled={blocked} loading={mutation.saving} onClick={received}>Record {formatCents(pending.amount_cents)} received</Button><small>The Clover snapshot is not fresh, but money already in hand can still be recorded.</small></div>}
+    {mutation.notice}
+    {pricing?.can_receive&&pricing.collect&&<ManualPayment order={order} draft={draft} setDraft={setDraft} busy={blocked} saving={mutation.saving} run={run} cnyPerCad={cnyPerCad} cnyRateSource={cnyRateSource}/>}
     {order.abandoned_reason&&<Alert type="warning" message={`${formatCents(order.refund_due_cents)} still to refund`} description={order.abandoned_reason}/>}
-    {!order.can_process&&!order.can_claim&&order.status==='open'&&!order.abandoned_reason&&<p className="co-muted">View only. Processing requires the cashier’s account, an assigned shift at this location today{sandbox?' and a fresh Clover snapshot':''}.</p>}
+    {!order.can_process&&order.status==='open'&&!order.abandoned_reason&&<p className="co-muted">View only. Recording payments needs the cashier’s account and an assigned shift at this location today.</p>}
+    {!!payments.length&&<section className="co-receipts"><h3>Payments</h3>{payments.map(a=><div key={a.id} className="co-receipt"><p><span>{label(a.tender)}</span><strong>{formatCents(a.amount_cents)}</strong></p>{cnyCharged(a)&&<small className="co-receipt-cny">{cnyCharged(a)}</small>}{pricing?.undo_attempt_ids.includes(a.id)&&<TakeBack attempt={a} disabled={blocked} run={body=>mutation.run(`/checkouts/${order.id}/undo`,body)}/>}</div>)}{order.refunded_cents>0&&<p><span>Refunded</span><strong>{formatCents(order.refunded_cents)}</strong></p>}</section>}
     {photoAttempts.map(attempt=><PhotoCapture key={attempt.id} disabled={blocked} primary={attempt.id===(photoAttempts.find(a=>a.can_upload&&!a.photos.length)?.id)} order={order} attempt={attempt} draft={draft} setDraft={setDraft} updated={refresh} onBusy={value=>setPhotoStates(old=>({...old,[attempt.id]:value}))}/>)}
-    {order.attempts.some(a=>a.status==='completed')&&<section className="co-receipts"><h3>Recorded payments</h3>{order.attempts.filter(a=>a.status==='completed').map(a=><p key={`${a.source||'popcore'}-${a.id}`}><span>{label(a.tender)}{sandbox&&<small className="co-muted"> · {a.source==='popcore'?'recorded in POPCORE':'via Clover'}</small>}</span><strong>{formatCents(a.amount_cents)}</strong></p>)}{order.refunded_cents>0&&<p><span>Refunded</span><strong>{formatCents(order.refunded_cents)}</strong></p>}</section>}
-    <RefundTools order={order} disabled={blocked} updated={updated} onBusy={setRefundBusy}/>
-    {!useHasRole('manager')&&order.can_manage&&order.status==='open'&&order.received_cents===0&&<details className="co-secondary"><summary>Cancel this order</summary><Button danger disabled={blocked} onClick={()=>action('cancel')}>Cancel unpaid checkout</Button></details>}
+    {order.received_cents>0&&<RefundTools order={order} disabled={blocked} updated={updated} onBusy={setRefundBusy}/>}
+    {order.can_manage&&order.status==='open'&&order.received_cents===0&&<details className="co-secondary"><summary>Cancel this order</summary><Button danger disabled={blocked} loading={mutation.saving} onClick={()=>run('cancel',{})}>Cancel unpaid order</Button></details>}
   </article>
+}
+
+function QueueRow({item,history,busy,select,me}:{item:Order;history:boolean;busy:boolean;select:(o:Order)=>void;me?:string}) {
+  const clover=item.clover
+  const total=clover?clover.total_cents:item.order.collected_cents
+  const paid=paymentSummary(item.attempts)
+  // History says what the customer actually paid and how; current orders say what the order comes to.
+  const amount=history&&item.status==='cancelled'?'Cancelled':history&&item.status==='completed'?formatCents(paid.cents):total===null?'Total pending':formatCents(total)
+  const money=!history||item.status==='cancelled'?null:item.status==='completed'
+    ?[paid.methods.join(' + '),item.refunded_cents?`refunded ${formatCents(item.refunded_cents)}`:'',total!==null&&total!==paid.cents?`${clover?'Clover':'Order'} total ${formatCents(total)}`:''].filter(Boolean).join(' · ')
+    :paid.cents?`${formatCents(paid.cents)} paid so far · ${paid.methods.join(' + ')}`:'Not paid yet'
+  const who=item.cashier_sub===me?'You':item.cashier_name
+  const missing=missingPhotos(item.attempts)
+  const paidLine=<>{money&&<span className="co-switch-paid">{money}</span>}{missing>0&&<span className="co-switch-alert">{missing>1?`${missing} payment photos missing`:'Payment photo missing'}</span>}</>
+  if(!clover)return <button type="button" disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong>{item.register_name||'POPCORE order'}</strong><b>{amount}</b></span>{paidLine}<span className="co-switch-items">{item.order.lines.map(l=>`${l.quantity}× ${l.product_name_snapshot}`).join(' · ')}</span><span className="co-switch-meta">{item.reference}{history?` · ${item.business_date} · ${who}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Complete':item.status==='cancelled'?'Cancelled':'In progress'}</span></button>
+  return <button type="button" disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong className="co-clover-id">{clover.order_id}</strong><b>{amount}</b></span>{paidLine}<span className="co-switch-items">{groupLines(clover.lines).map(l=>`${l.quantity}× ${l.name}`).join(' · ')}</span><span className="co-switch-meta">{clock(clover.created_ms)} · {clover.register?'Not picked up':who}{history?` · ${item.business_date}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Sale recorded':item.status==='cancelled'?'Cancelled':'In progress'} · Clover: {clover.state_label}</span></button>
 }
 
 export default function CheckoutPage() {
   const {id}=useParams(),[params]=useSearchParams(),navigate=useNavigate(),{user}=useAuth0()
-  const sandbox=params.get('source')==='clover-sandbox'
-  const api=sandbox?'/clover-sandbox/checkouts':'/checkouts'
-  const link=(path:string,historyView=false)=>checkoutLink(path,sandbox,historyView)
   const role=useRole()
   const history=id==='history'||(id!=='new'&&params.get('view')==='history')
   const selectedStore=useAppStore(s=>s.selectedStore),setSelectedStore=useAppStore(s=>s.setSelectedStore)
   const [access,setAccess]=useState<Access>(),[queue,setQueue]=useState<Queue>(),[order,setOrder]=useState<Order>(),[error,setError]=useState('')
-  const [now,setNow]=useState(Date.now)
-  const [refresh,setRefresh]=useState(0),[date,setDate]=useState(''),[cursor,setCursor]=useState<number|null>(null),[childBusy,setBusy]=useState(false)
-  const claimMutation=useCheckoutMutation((value:Order)=>{setOrder(value);navigate(link(`/checkout/${value.id}`))})
-  const busy=childBusy||claimMutation.pending
-  const currentOrder=order?freshOrder(order,now):undefined
-  const connected=!!(sandbox&&queue?.clover.connected&&!error&&now-(queue.clover.fetched_at||0)*1000<=5000)
-  const deviceConnected=!!(sandbox&&!error&&queue?.clover.message?.startsWith('Clover cloud unavailable')&&queue.orders.some(item=>item.source_detail==='device'&&freshOrder(item,now).source_fresh))
+  const [refresh,setRefresh]=useState(0),[date,setDate]=useState(''),[cursor,setCursor]=useState<number|null>(null),[busy,setBusy]=useState(false)
+  const [autoOpen,setAutoOpen]=useState(readAutoOpen),[findText,setFindText]=useState(''),[findError,setFindError]=useState('')
+  const [tender,setTender]=useState(''),[search,setSearch]=useState(''),[query,setQuery]=useState('')
+  useEffect(()=>{const timer=setTimeout(()=>setQuery(historyQuery(search)),300);return()=>clearTimeout(timer)},[search])
+  const autoOpenNow=useRef(autoOpen)
+  autoOpenNow.current=autoOpen
   const [queueScope,setQueueScope]=useState('')
-  const day=useRef('')
-  const scopeKey=[user?.sub,role,selectedStore?.id,sandbox,history,date,cursor].join('|')
+  const day=useRef(''),cachedAccess=useRef<{scope:Access;at:number}|null>(null)
+  // Orders this screen has already seen or opened are never picked up automatically.
+  const known=useRef<{scope:string;ids:Set<number>}>({scope:'',ids:new Set()})
+  const scopeKey=[user?.sub,role,selectedStore?.id,history,date,cursor,tender,query].join('|')
   const [drafts,setDrafts]=useState<Record<number,Draft>>({})
-  const manual=id==='new'&&!sandbox, orderId=id&&/^\d+$/.test(id)?Number(id):null
+  const manual=id==='new', orderId=id&&/^\d+$/.test(id)?Number(id):null
+  const cloverStore=!!queue?.clover.enabled, cloverOn=cloverStore&&!history
+  const connected=cloverStore&&!!queue?.clover.connected&&!error
+  const filtered=history&&!!(tender||query)
   const chooseStore=(store:Store)=>setSelectedStore(useAppStore.getState().stores.find(s=>s.id===store.id)||{...store,color:'#4F46E5'})
-  const invalidate=()=>{setAccess(undefined);setQueue(undefined);setOrder(undefined);setDrafts({})}
+  const invalidate=()=>{cachedAccess.current=null;setAccess(undefined);setQueue(undefined);setOrder(undefined);setDrafts({})}
   useEffect(()=>{const denied=()=>{invalidate();setError('Checkout access changed. Refresh to continue.')};window.addEventListener('popcore:checkout-access-denied',denied);return()=>window.removeEventListener('popcore:checkout-access-denied',denied)},[])
   useEffect(()=>{window.dispatchEvent(new CustomEvent('popcore:checkout-busy',{detail:busy}));return()=>{window.dispatchEvent(new CustomEvent('popcore:checkout-busy',{detail:false}))}},[busy])
-  useEffect(()=>{setCursor(null)},[selectedStore?.id,history,date,sandbox])
-  useEffect(()=>{setAccess(undefined);setDrafts({});setQueue(undefined);setOrder(undefined);setError('')},[user?.sub,role,selectedStore?.id,sandbox])
-  useEffect(()=>{if(!sandbox)return;setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer)},[sandbox])
+  useEffect(()=>{setCursor(null)},[selectedStore?.id,history,date,tender,query])
+  useEffect(()=>{cachedAccess.current=null;setAccess(undefined);setDrafts({});setQueue(undefined);setOrder(undefined);setError('')},[user?.sub,role,selectedStore?.id])
+  useEffect(()=>{if(orderId)known.current.ids.add(orderId)},[orderId])
   useEffect(()=>{
     if(busy)return
     const controller=new AbortController()
-    let timer:ReturnType<typeof setTimeout>|undefined,loading=false
+    let timer:ReturnType<typeof setTimeout>|undefined,loading=false,fast=false
     const load=async()=>{
       if(loading)return
       clearTimeout(timer);loading=true
       const started=Date.now()
       try {
         if(document.visibilityState!=='visible')return
-        const {data:scope}=await client.get<Access>(`${api}/access`,{signal:controller.signal,timeout:15000})
-        if(controller.signal.aborted)return
+        // Fast Clover polling rechecks shift access every 15 seconds; every other load checks it now.
+        let scope=fast&&cachedAccess.current&&Date.now()-cachedAccess.current.at<15000?cachedAccess.current.scope:null
+        if(!scope){
+          scope=(await client.get<Access>('/checkouts/access',{signal:controller.signal,timeout:15000})).data
+          if(controller.signal.aborted)return
+          cachedAccess.current={scope,at:Date.now()}
+        }
         if(day.current&&day.current!==scope.business_date)setDrafts({})
         day.current=scope.business_date
         setAccess(scope)
@@ -260,62 +122,80 @@ export default function CheckoutPage() {
         let store=stores.find(s=>s.id===selectedStore?.id)
         if(!store&&stores.length===1){chooseStore(stores[0]);return}
         if(!store){setQueue(undefined);setOrder(undefined);setError('');return}
-        const {data:rows}=await client.get<Queue>(api,{params:{store_id:store.id,view:history?'history':'live',...(history&&date?{business_date:date}:{}),...(cursor?{before_id:cursor}:{})},signal:controller.signal,timeout:15000})
-        const detail=orderId?(await client.get<Order>(`${api}/${orderId}`,{signal:controller.signal,timeout:15000})).data:undefined
+        const {data:rows}=await client.get<Queue>('/checkouts',{params:{store_id:store.id,view:history?'history':'live',...(history&&date?{business_date:date}:{}),...(history&&tender?{tender}:{}),...(history&&query?{q:query}:{}),...(cursor?{before_id:cursor}:{})},signal:controller.signal,timeout:15000})
+        const detail=orderId?(await client.get<Order>(`/checkouts/${orderId}`,{signal:controller.signal,timeout:15000})).data:undefined
         if(controller.signal.aborted)return
-        if(detail&&detail.store_id!==store.id){setOrder(undefined);navigate(link(history?'/checkout/history':'/checkout'),{replace:true});return}
+        if(detail&&detail.store_id!==store.id){setOrder(undefined);navigate(checkoutLink(history?'/checkout/history':'/checkout'),{replace:true});return}
         setQueue(rows);setQueueScope(scopeKey);setOrder(detail);setError('')
-        if(detail)setDrafts(old=>{
-          const draft=old[detail.id]
-          if(!draft)return {...old,[detail.id]:initialDraft(detail)}
-          if(sandbox&&!!detail.cash_discount_applied!==draft.cashDiscountApplied){
-            const cashDiscountApplied=!!detail.cash_discount_applied
-            return {...old,[detail.id]:{...draft,cashDiscountApplied,tender:cashDiscountApplied&&draft.tender==='card'?'':draft.tender,includesCard:cashDiscountApplied?false:draft.includesCard,target:moneyInput(detail.order.collected_cents),sourceTotal:detail.order.gross_cents}}
+        if(detail)setDrafts(old=>old[detail.id]?old:{...old,[detail.id]:initialDraft(detail)})
+        fast=!history&&!!rows.clover?.enabled
+        if(fast){
+          const scopeId=`${user?.sub}|${store.id}`
+          if(known.current.scope!==scopeId)known.current={scope:scopeId,ids:new Set(rows.orders.map(o=>o.id))}
+          const idle=!orderId||(!!detail&&detail.status!=='open'&&!needsPhoto(detail))
+          const next=autoOpenCandidate({enabled:autoOpenNow.current,idle,visible:document.visibilityState==='visible',known:known.current.ids,orders:rows.orders})
+          if(next!==null){
+            known.current.ids.add(next)
+            try {
+              await client.post(`/checkouts/${next}/claim`,{},{headers:{'Idempotency-Key':crypto.randomUUID()},timeout:15000})
+              if(!controller.signal.aborted)navigate(`/checkout/${next}`)
+            } catch { /* another screen picked it up first */ }
           }
-          // Keep tender choice and an unsaved camera photo while provider totals change.
-          if(sandbox&&(detail.received_cents>0||detail.has_discount||detail.quote_available===false))return {...old,[detail.id]:{...draft,target:moneyInput(detail.order.collected_cents),sourceTotal:detail.order.gross_cents}}
-          if(sandbox&&draft.sourceTotal!==detail.order.gross_cents){
-            const automatic=draft.target===moneyInput(suggestPaymentTarget(draft.sourceTotal??detail.order.gross_cents,draft.tender,draft.includesCard))
-            return {...old,[detail.id]:{...draft,sourceTotal:detail.order.gross_cents,target:automatic?moneyInput(suggestPaymentTarget(detail.order.gross_cents,draft.tender,draft.includesCard)):draft.target}}
-          }
-          return old
-        })
+        }
       } catch(cause) {
         if(controller.signal.aborted)return
         const status=(cause as {response?:{status:number}})?.response?.status
         if(status===401||status===403)invalidate()
-        else if(sandbox){setOrder(old=>old?{...old,source_fresh:false,can_process:false,can_claim:false}:old);setQueue(old=>old?{...old,orders:old.orders.map(item=>({...item,source_fresh:false,can_process:false,can_claim:false}))}:old)}
         setError(errorMessage(cause))
       } finally {
         loading=false
-        if(!controller.signal.aborted)timer=setTimeout(load,sandbox?Math.max(100,1000-(Date.now()-started)):15000)
+        if(!controller.signal.aborted)timer=setTimeout(load,fast?Math.max(100,1000-(Date.now()-started)):15000)
       }
     }
     load()
     window.addEventListener('focus',load);document.addEventListener('visibilitychange',load)
     return()=>{controller.abort();clearTimeout(timer);window.removeEventListener('focus',load);document.removeEventListener('visibilitychange',load)}
-  },[id,history,date,cursor,selectedStore?.id,refresh,user?.sub,role,busy,sandbox])
+  },[id,history,date,cursor,tender,query,selectedStore?.id,refresh,user?.sub,role,busy])
   const stores=history?access?.history_stores:access?.live_stores
   const scoped=stores?.some(s=>s.id===selectedStore?.id)
-  function select(next:Order){if(busy)return;if(sandbox&&freshOrder(next,Date.now()).can_claim&&!history){claimMutation.run(`${api}/${next.id}/claim`,{});return}navigate(link(`/checkout/${next.id}`,history))}
+  function select(next:Order){if(busy)return;navigate(checkoutLink(`/checkout/${next.id}`,history))}
   function updated(value?:Order){if(value)setOrder(value);setRefresh(n=>n+1)}
+  function toggleAutoOpen(value:boolean){setAutoOpen(value);try{localStorage.setItem(AUTO_OPEN_KEY,value?'1':'0')}catch{/* this device only */}}
+  async function findClover(){
+    const code=findText.trim().toUpperCase()
+    if(!/^[A-Z0-9]{13}$/.test(code)||!selectedStore){setFindError('Enter the 13-character Clover order ID.');return}
+    try {
+      const {data}=await client.get<Order>(`/checkouts/clover/${code}`,{params:{store_id:selectedStore.id},timeout:15000})
+      setFindError('');setFindText('');navigate(checkoutLink(`/checkout/${data.id}`,data.status!=='open'))
+    } catch(cause) {setFindError(errorMessage(cause))}
+  }
+  const current=order&&order.id===orderId&&order.store_id===selectedStore?.id&&drafts[order.id]?order:undefined
+  const setDraft=(orderKey:number)=>(value:DraftUpdate)=>setDrafts(old=>({...old,[orderKey]:typeof value==='function'?value(old[orderKey]):{...old[orderKey],...value}}))
   if(manual&&access?.live_stores.length)return <div className="co-workspace"><ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)}/></div>
   return <div className="co-workspace">
-    <header className="co-heading"><div><h1>{orderId?'Order details':history?'Order history':'Checkout'}</h1>{!orderId&&<p>{history?(access?.role==='staff'?'Your orders, including previous shifts.':'Orders at the locations you can access today.'):sandbox?'The order, the amount, the payment photo.':'Start a manual checkout or continue an open order.'}</p>}</div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
-    {sandbox&&<Alert className="co-sandbox-banner" type="warning" showIcon message={orderId?'Clover sandbox test · no real sales or stock changes':'Sandbox rehearsal · no real sales or stock changes'} description={orderId?undefined:'Scan items and take card on Android Clover. Record cash, e-transfer, WeChat Pay and Alipay here; the Clover order stays open. Orders and payment photos here are disposable.'}/>}
-    {!orderId&&<div className="co-toolbar"><span className={'co-connection'+(connected||deviceConnected?' co-connected':'')}><span aria-hidden="true"/>{sandbox?(connected?'Clover sandbox syncing':deviceConnected?'Device items syncing · Clover cloud delayed':'Clover sandbox · waiting for sync'):'Clover disconnected'}</span><Link to={link(history?'/checkout':'/checkout/history')}>{history?'Current orders':'Order history'}</Link></div>}
-    {sandbox&&!!queue?.clover.fetched_at&&<p className="co-muted">Last snapshot: {new Date(queue.clover.fetched_at*1000).toLocaleTimeString()}. {queue.clover.message}</p>}
-    {!orderId&&<div className="co-source-switch">{sandbox?<Link to="/checkout">Exit sandbox</Link>:access?.clover_sandbox_enabled&&<Link to="/checkout?source=clover-sandbox">Open Clover sandbox rehearsal</Link>}</div>}
-    {claimMutation.notice}
+    <header className="co-heading"><div><h1>{orderId?'Order details':history?'Order history':'Checkout'}</h1>{!orderId&&<p>{history?(access?.role==='staff'?'Your orders, including previous shifts, and today’s Clover register sales.':'Orders at the locations you can access today.'):cloverOn?'Scan on Clover. Take card on Clover. Everything else is recorded here.':'Start a manual checkout or continue an open order.'}</p>}</div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
+    {!orderId&&<div className="co-toolbar"><span className={'co-connection'+(connected?' co-connected':'')}><span aria-hidden="true"/>{cloverStore?(connected?`Clover connected${queue?.clover.environment==='sandbox'?' · sandbox':''}${queue?.clover.writes===false?' · read only':''}`:'Clover not responding'):'Clover disconnected'}</span><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Current orders':'Order history'}</Link></div>}
+    {cloverStore&&!orderId&&queue?.clover.message&&<p className="co-muted">{queue.clover.message}</p>}
+    {cloverOn&&!orderId&&<div className="co-clover-tools">
+      <label><Switch size="small" checked={autoOpen} onChange={toggleAutoOpen}/>Open new Clover orders automatically on this device</label>
+      <div className="co-clover-find"><Input aria-label="Clover order ID" placeholder="Clover order ID" value={findText} maxLength={13} onChange={e=>{setFindText(e.target.value);setFindError('')}} onPressEnter={findClover}/><Button disabled={busy} onClick={findClover}>Find</Button></div>
+      {findError&&<Alert type="error" showIcon message={findError}/>}
+    </div>}
     {error&&<Alert type="error" showIcon message={error} action={<Button disabled={busy} onClick={()=>setRefresh(n=>n+1)}>Retry</Button>}/>}
     {!access?(!error&&<Skeleton active paragraph={{rows:4}}/>):<>
-      {!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history||sandbox)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(link(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>}
-      {!history&&!sandbox&&!orderId&&scoped&&<div className="co-location"><Button type="primary" disabled={busy} onClick={()=>navigate('/checkout/new')}>Start manual checkout</Button><Link to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>Record completed sale</Link></div>}
-      {orderId&&<Link className="co-back" to={link(history?'/checkout/history':'/checkout')}>← Back to {history?'order history':'current orders'}</Link>}
-      {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={link(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>:!scoped?<p className="co-muted">Choose a location to see its orders.</p>:!queue||queueScope!==scopeKey?<Skeleton active/>:<>
-        {!orderId&&!!queue.orders.length&&<nav className={'co-order-switcher'+(history?' co-history-list':'')} aria-label={history?'Order history':'Current orders'}>{queue.orders.map(item=><button type="button" key={item.id} disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong>{item.register_name||'POPCORE order'}</strong><b>{item.total_pending?'Total pending':formatCents(item.order.collected_cents)}</b></span><span className="co-switch-items">{item.order.lines.map(l=>`${l.quantity}× ${l.product_name_snapshot}`).join(' · ')}</span><span className="co-switch-meta">{item.reference}{history?` · ${item.business_date} · ${item.cashier_name}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Complete':'In progress'}{sandbox&&!freshOrder(item,now).source_fresh?' · Not freshly synced':''}</span></button>)}</nav>}
+      {!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(checkoutLink(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>}
+      {history&&!orderId&&scoped&&<div className="co-history-filters">
+        <label>Paid by<select className="co-select" value={tender} disabled={busy} onChange={e=>setTender(e.target.value)}><option value="">Any method</option>{TENDER_FILTERS.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label className="co-history-search">Search<Input allowClear value={search} maxLength={80} placeholder="Item, Clover order ID or note" onChange={e=>setSearch(e.target.value)}/></label>
+      </div>}
+      {!history&&!orderId&&scoped&&<div className="co-location"><Button type={cloverOn?'default':'primary'} disabled={busy} onClick={()=>navigate('/checkout/new')}>Start manual checkout</Button><Link to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>Record completed sale</Link></div>}
+      {orderId&&<Link className="co-back" to={checkoutLink(history?'/checkout/history':'/checkout')}>← Back to {history?'order history':'current orders'}</Link>}
+      {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>:!scoped?<p className="co-muted">Choose a location to see its orders.</p>:!queue||queueScope!==scopeKey?<Skeleton active/>:<>
+        {!orderId&&!!queue.orders.length&&<nav className={'co-order-switcher'+(history?' co-history-list':'')} aria-label={history?'Order history':'Current orders'}>{queue.orders.map(item=><QueueRow key={item.id} item={item} history={history} busy={busy} select={select} me={user?.sub}/>)}</nav>}
         {!orderId&&queue.next_before_id&&<Button disabled={busy} onClick={()=>setCursor(queue.next_before_id)}>Older orders</Button>}{!orderId&&cursor&&<Button disabled={busy} onClick={()=>setCursor(null)}>Newest orders</Button>}
-        {currentOrder&&currentOrder.id===orderId&&currentOrder.store_id===selectedStore?.id&&drafts[currentOrder.id]?<CurrentOrder key={`${sandbox}|${currentOrder.id}`} order={currentOrder} draft={drafts[currentOrder.id]} cnyPerCad={access.cny_per_cad||''} setDraft={value=>setDrafts(old=>({...old,[currentOrder.id]:typeof value==='function'?value(old[currentOrder.id]):{...old[currentOrder.id],...value}}))} updated={updated} removed={()=>{setOrder(undefined);navigate(link(history?'/checkout/history':'/checkout'))}} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>:!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Tap your customer’s order. New arrivals will not switch your current order.':history?'Try another date, or return to current orders.':sandbox?'Create an order on Android Clover. Leave this queue open to receive it automatically.':'Clover is disconnected. Start a manual checkout to enter the items and record payment.'}</p>{!history&&<span className="co-muted">{sandbox?'No customer details to re-enter once connected.':'Automatic order sync is not active.'}</span>}</div>}
+        {current?(current.clover?<CloverOrder key={`clover|${current.id}`} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>
+          :<CurrentOrder key={current.id} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>)
+          :!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':filtered?'No orders match':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Tap your customer’s order. New arrivals will not switch your current order.':filtered?'Try another payment method or search word.':history?'Try another date, or return to current orders.':cloverOn?(autoOpen?'Scan the items on Clover. The order opens here by itself.':'Scan the items on Clover. The order appears above.'):'Clover is disconnected. Start a manual checkout to enter the items and record payment.'}</p>{!history&&!cloverOn&&<span className="co-muted">Automatic order sync is not active.</span>}</div>}
         {orderId&&order?.id!==orderId&&<Skeleton active paragraph={{rows:5}}/>}
       </>}
     </>}

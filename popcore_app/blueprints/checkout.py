@@ -1,10 +1,14 @@
 """Authenticated cashier queue and assigned phone evidence routes."""
+import time
+
 from flask import Blueprint, jsonify, request, send_file
 
+import clover_checkout
+import exchange_rates
 from auth import role_required
-from checkout_access import checkout_access, require_checkout
-from checkout_operations import (attach_photo, change_checkout, checkout_detail,
-    checkout_row, create_checkout, manager, read_order_note)
+from checkout_access import REGISTER_SUB, checkout_access, require_checkout
+from checkout_operations import (attach_photo, change_checkout, checkout_detail, receive_manual, undo_manual,
+    checkout_row, create_checkout, is_clover, manager, read_order_note)
 from db import get_db
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryError, InventoryConflict
@@ -13,12 +17,26 @@ from sales_operations import record_late_adjustment
 from validation import read_date, read_int
 
 bp = Blueprint('checkout', __name__)
+TENDERS = ('cash', 'card', 'e_transfer', 'wechat', 'alipay')
+# Keyword search: the Clover or manual reference, the order note, and every item name (also Chinese names,
+# which the stored JSON keeps escaped, so names are compared after json_extract decodes them).
+SEARCH = """(reference LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\'
+    OR EXISTS(SELECT 1 FROM json_each(checkout_orders.payload, '$.lines') line
+        LEFT JOIN products p ON p.id=json_extract(line.value, '$.product_id')
+        WHERE json_extract(line.value, '$.product_name_snapshot') LIKE ? ESCAPE '\\'
+           OR json_extract(line.value, '$.raw_product_text') LIKE ? ESCAPE '\\'
+           OR p.name_cn_en LIKE ? ESCAPE '\\' OR p.jizhanming LIKE ? ESCAPE '\\' OR p.sku LIKE ? ESCAPE '\\')
+    OR EXISTS(SELECT 1 FROM clover_orders c, json_each(c.snapshot, '$.items') item
+        WHERE c.checkout_id=checkout_orders.id AND json_extract(item.value, '$.name') LIKE ? ESCAPE '\\'))"""
 
 
 @bp.errorhandler(InventoryError)
 @bp.errorhandler(ValueError)
 @bp.errorhandler(PermissionError)
+@bp.errorhandler(clover_checkout.ConnectorError)
 def error(exc):
+    if isinstance(exc, clover_checkout.ConnectorError):
+        return jsonify(error=str(exc), code=exc.code), 503
     if isinstance(exc, InventoryError):
         return jsonify(error=str(exc), code=exc.code), exc.status
     if isinstance(exc, PermissionError):
@@ -31,11 +49,35 @@ def body():
     return value if isinstance(value, dict) else {}
 
 
+def _clover_sync(con, store_id):
+    """Pull Clover's latest orders for the Clover store before showing them (rate-limited)."""
+    cfg = clover_checkout.store_config(store_id)
+    if cfg is None:
+        return None
+    try:
+        clover_checkout.sync(con, cfg)
+    except (InventoryError, PermissionError, ValueError) as exc:
+        return {'enabled': True, 'connected': False, 'message': str(exc)[:200], 'environment': cfg['environment'],
+                'writes': False, 'fetched_at': 0, 'server_ms': 0}
+    return clover_checkout.feed_status(con, cfg)
+
+
 @bp.get('/api/checkouts/access')
 @role_required('staff')
 def access():
-    from blueprints.clover_sandbox import enabled
-    return jsonify(**checkout_access(get_db(), request.jwt_payload), clover_sandbox_enabled=enabled())
+    scope = checkout_access(get_db(), request.jwt_payload)
+    try:
+        cfg = clover_checkout.config()
+    except ValueError:
+        cfg = None
+    # WeChat Pay and Alipay: the rate set in Settings, otherwise today's reference rate.
+    source = 'Settings' if scope['cny_per_cad'] else None
+    if not scope['cny_per_cad']:
+        live = exchange_rates.cny_per_cad()
+        if live:
+            scope, source = {**scope, 'cny_per_cad': live['rate']}, f"{live['source']} reference rate, {live['date']}"
+    return jsonify(**scope, cny_rate_source=source, clover_store_id=cfg['store_id'] if cfg else None,
+                   clover_environment=cfg['environment'] if cfg else None)
 
 
 @bp.get('/api/checkouts')
@@ -54,12 +96,28 @@ def queue():
     where = ['store_id=?']; values = [store_id]
     if view == 'live':
         where.append("status='open'")
+    elif scope['role'] == 'staff' and store_id in {s['id'] for s in scope['live_stores']}:
+        # Staff on shift also see the sales the Clover register recorded today.
+        where.append('(created_by=? OR (created_by=? AND business_date=?))')
+        values += [actor['sub'], REGISTER_SUB, scope['business_date']]
     elif scope['role'] == 'staff':
         where.append('created_by=?'); values.append(actor['sub'])
     if request.args.get('business_date'):
         where.append('business_date=?'); values.append(read_date(request.args['business_date'], 'business_date'))
     if request.args.get('before_id'):
         where.append('id<?'); values.append(read_int(request.args['before_id'], 'before_id', minimum=1))
+    if request.args.get('tender'):
+        if request.args['tender'] not in TENDERS:
+            raise ValueError('tender must be cash, card, e_transfer, wechat or alipay')
+        where.append("EXISTS(SELECT 1 FROM checkout_attempts a WHERE a.checkout_id=checkout_orders.id AND a.status='completed' AND a.tender=?)")
+        values.append(request.args['tender'])
+    text = (request.args.get('q') or '').strip()
+    if text:
+        if len(text) > 80:
+            raise ValueError('Search for at most 80 characters')
+        like = '%' + text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+        where.append(SEARCH); values += [like] * SEARCH.count('?')
+    clover = _clover_sync(con, store_id)  # history shows the same live Clover status
     rows = con.execute('SELECT id FROM checkout_orders WHERE ' + ' AND '.join(where) + ' ORDER BY id DESC LIMIT 101', values).fetchall()
     staff = [dict(row) for row in con.execute("""SELECT a.auth0_sub AS value,
         COALESCE(NULLIF(e.name,''),a.auth0_sub) AS label FROM inventory_access a
@@ -67,7 +125,20 @@ def queue():
         WHERE a.store_id=? ORDER BY label""", (store_id,))] if view == 'live' else []
     return jsonify(orders=[checkout_detail(con,row['id'],actor) for row in rows[:100]],staff=staff,
                    next_before_id=rows[99]['id'] if len(rows)>100 else None,
-                   clover={'connected':False,'message':'Clover is not connected. Payments are recorded manually.'})
+                   clover=clover or {'enabled':False,'connected':False,
+                                     'message':'Clover is not connected for this store. Payments are recorded manually.'})
+
+
+@bp.get('/api/checkouts/clover/<order_id>')
+@role_required('staff')
+def find_clover(order_id):
+    """Find the POPCORE checkout of a Clover order by the ID the Clover Orders app shows."""
+    con = get_db(); actor = request.jwt_payload
+    store_id = read_int(request.args.get('store_id'), 'store_id', minimum=1)
+    checkout_id = clover_checkout.find(con, store_id, order_id)
+    if checkout_id is None:
+        return jsonify(error='No POPCORE order has that Clover ID at this store'), 404
+    return jsonify(checkout_detail(con, checkout_id, actor))
 
 
 @bp.post('/api/checkouts')
@@ -79,7 +150,18 @@ def create():
 @bp.get('/api/checkouts/<int:checkout_id>')
 @role_required('staff')
 def detail(checkout_id):
-    return jsonify(checkout_detail(get_db(),checkout_id,request.jwt_payload))
+    con = get_db(); actor = request.jwt_payload
+    row = checkout_row(con, checkout_id, actor)
+    if row['status'] == 'open' and is_clover(con, row['id']):
+        cfg = clover_checkout.store_config(row['store_id'])
+        link = con.execute('SELECT * FROM clover_orders WHERE checkout_id=?', (row['id'],)).fetchone()
+        if cfg and link['fetch_next_at'] <= time.time():
+            # An open order on screen reads straight from Clover, so its price is exact.
+            try:
+                clover_checkout.refresh_one(con, cfg, link)
+            except (clover_checkout.ConnectorError, InventoryError, PermissionError, ValueError):
+                pass
+    return jsonify(checkout_detail(con,checkout_id,actor))
 
 
 @bp.post('/api/checkouts/<int:checkout_id>/notes')
@@ -104,7 +186,15 @@ def save_note(checkout_id):
 @bp.post('/api/checkouts/<int:checkout_id>/<action>')
 @role_required('staff')
 def change(checkout_id,action):
-    return jsonify(change_checkout(get_db(),checkout_id,action,body(),request.jwt_payload,request.headers.get('Idempotency-Key')))
+    con = get_db()
+    if action in clover_checkout.ACTIONS and is_clover(con, checkout_id):
+        return jsonify(clover_checkout.change(con,checkout_id,action,body(),request.jwt_payload,
+                                              request.headers.get('Idempotency-Key')))
+    if action in ('receive', 'undo'):
+        # Manual orders are paid the same way as Clover orders, with card recorded in POPCORE.
+        operation = receive_manual if action == 'receive' else undo_manual
+        return jsonify(operation(con,checkout_id,body(),request.jwt_payload,request.headers.get('Idempotency-Key')))
+    return jsonify(change_checkout(con,checkout_id,action,body(),request.jwt_payload,request.headers.get('Idempotency-Key')))
 
 
 def photo_scope(con,checkout_id,attempt_id,actor, *, write=False):

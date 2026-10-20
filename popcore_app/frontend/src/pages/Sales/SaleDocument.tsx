@@ -9,6 +9,7 @@ import { useHasRole } from '../../auth/useRole'
 import { formatCents, parseMoneyToCents } from '../../lib/money'
 import { useHistoryReconciliationGuard } from '../../lib/reconciliationNavigation'
 import { useAppStore } from '../../store'
+import { cnyCharged } from './checkoutHistory'
 
 const { Title, Text } = Typography
 const responseStatus = (cause: unknown) => (cause as { response?: { status?: number } })?.response?.status
@@ -113,7 +114,7 @@ export default function SaleDocumentPage() {
     </Card>
     <Card title="Payment and evidence review" style={{ marginTop: 16 }}>
       {(sale.payments?.length ?? 0) === 0 ? <Alert type="info" message="No tender amounts recorded" /> : <List dataSource={sale.payments} renderItem={payment => <List.Item><Space direction="vertical" style={{ width: '100%' }}>
-        <Space wrap><Text strong>{payment.tender.replace('_', ' ')} · {formatCents(payment.effective_amount_cents)}</Text><Tag>{payment.state}</Tag><Button size="small" disabled={busy} onClick={() => navigate(`/sales/payments/${payment.id}/evidence?sale_id=${sale.sale_id}`)}>Add evidence</Button></Space>
+        <Space wrap><Text strong>{payment.tender.replace('_', ' ')} · {formatCents(payment.effective_amount_cents)}</Text>{cnyCharged(payment) && <Text type="secondary">{cnyCharged(payment)}</Text>}<Tag>{payment.state}</Tag><Button size="small" disabled={busy} onClick={() => navigate(`/sales/payments/${payment.id}/evidence?sale_id=${sale.sale_id}`)}>Add evidence</Button></Space>
         {payment.evidence?.map(evidence => <div key={evidence.id}><EvidencePreview id={evidence.id} status={evidence.status} />{isManager && evidence.status === 'pending' && <Space wrap>
           <Input aria-label={`Evidence ${evidence.id} acceptance reason`} disabled={busy} placeholder="Acceptance reason" value={actionReasons[`ea${evidence.id}`] ?? ''} onChange={event => setActionReasons({ ...actionReasons, [`ea${evidence.id}`]: event.target.value })} />
           <Button disabled={busy || !actionReasons[`ea${evidence.id}`]?.trim()} onClick={() => runAction(`evidence-accept-${evidence.id}`, key => reviewEvidence(evidence.id, 'accepted', actionReasons[`ea${evidence.id}`], key))}>Accept</Button>
