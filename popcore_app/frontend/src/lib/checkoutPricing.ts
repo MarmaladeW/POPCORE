@@ -19,12 +19,25 @@ export function convertCadCentsToCnyFen(cadCents: number, rate: string): number 
   return fen <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(fen) : null
 }
 
+export const HST_PERCENT = 13
+
+/** Ontario HST on a subtotal, rounded half up to the cent (as Clover rounds tax). */
+export function hstCents(subtotalCents: number): number {
+  if (!safeNonnegative(subtotalCents)) throw new RangeError('Subtotal cents must be a nonnegative safe integer.')
+  return Number((BigInt(subtotalCents) * BigInt(HST_PERCENT) + 50n) / 100n)
+}
+
 export function suggestPayable(totalCents: number): number {
   if (!safeNonnegative(totalCents)) throw new RangeError('Total cents must be a nonnegative safe integer.')
   if (totalCents === 0) return 0
 
   const total = BigInt(totalCents)
   if (totalCents < 100) return Number((total * 390n + 199n) / 400n) || 1
+  if (totalCents > 1500) {
+    // Above $15: at least $1 off, or 2.5% when that is more, rounded down to the dollar.
+    const percent = total * 975n / 100_000n, dollar = (total - 100n) / 100n
+    return Number(percent < dollar ? percent : dollar) * 100
+  }
 
   let suggestion = Number((total * 1950n + 99_999n) / 200_000n) * 100
   if (suggestion >= totalCents) suggestion -= 100

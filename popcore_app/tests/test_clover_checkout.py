@@ -1,0 +1,539 @@
+"""Clover orders as native checkouts: import, pricing, settlement, write-back, closing."""
+import json
+import os
+import time
+from contextlib import closing
+from datetime import datetime
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
+
+import requests
+
+from test_receiving import ReceivingFixture
+import clover_checkout
+import db
+from blueprints import settings
+from checkout_access import REGISTER_SUB
+
+MERCHANT = 'M' * 13
+CREATED = int(datetime(2026, 10, 20, 12, 0, tzinfo=ZoneInfo('America/Toronto')).timestamp() * 1000)
+ITEM = 'ITEMAAAAAAAAA'
+
+
+def response(status, payload, headers=None):
+    result = requests.Response()
+    result.status_code = status
+    result._content = json.dumps(payload).encode()
+    result.headers.update(headers or {})
+    return result
+
+
+def clover_order(order_id='ORDERAAAAAAAA', *, prices=(1770, 1999), total=4259, payments=(), source='cloud',
+                 state='OPEN', discounts=(), refunds=(), created=CREATED, mapped=True):
+    items = [{'id': f'LINE{n:09d}', 'name': f'Item {n}', 'price': price, 'itemId': ITEM if mapped == 'all' or (mapped and n == 0) else None}
+             for n, price in enumerate(prices)]
+    return {'id': order_id, 'currency': 'CAD', 'source': source, 'total': total, 'createdTime': created,
+            'paymentState': state if source == 'cloud' else 'OPEN', 'items': items, 'discounts': list(discounts),
+            'payments': [] if source == 'device' else list(payments), 'refunds': list(refunds), 'credits': [],
+            'seen_at': time.time(), 'employeeName': 'Mason'}
+
+
+def card(payment_id, amount):
+    return {'id': payment_id, 'amount': amount, 'result': 'SUCCESS', 'tenderLabel': 'Credit Card',
+            'tenderLabelKey': 'com.clover.tender.credit_card', 'taxAmount': 0}
+
+
+class FakeConnector:
+    """The POPCORE side of the connector contract, with Clover's state kept in memory."""
+
+    def __init__(self):
+        self.orders, self.device, self.calls, self.verified = {}, {}, [], True
+        self.fail = {}  # route -> (status, payload)
+        self.deleted = set()
+
+    def put(self, *orders):
+        """Cloud orders are Clover's record; a device snapshot only overlays the feed."""
+        for order in orders:
+            order['seen_at'] = time.time()
+            if order['source'] == 'device':
+                self.device[order['id']] = order
+            else:
+                self.device.pop(order['id'], None)
+                self.orders[order['id']] = order
+
+    def feed(self):
+        rows = {**self.orders, **self.device}
+        return [row for order_id, row in rows.items() if order_id not in self.deleted]
+
+    def __call__(self, method, url, **kwargs):
+        path = url.split('/clover-sandbox', 1)[1]
+        self.calls.append((method, path, kwargs.get('json'), kwargs.get('headers') or {}))
+        route = method + ' ' + path.split('?')[0].rsplit('/', 1)[-1] if path.count('/') > 2 else method + ' ' + path
+        for key in (route, method + ' ' + path):
+            if key in self.fail:
+                status, payload = self.fail[key]
+                return response(status, payload)
+        base = {'environment': 'sandbox', 'merchant_id': MERCHANT}
+        if method == 'GET' and path == '/orders':
+            return response(200, {**base, 'fetched_at': time.time(), 'cloud_unavailable': False, 'orders': self.feed()})
+        if method == 'GET' and path == '/orders/scan':
+            return response(200, {**base, 'fetched_at': time.time(), 'more': False,
+                                  'orders': [o for o in self.orders.values() if o['id'] not in self.deleted]})
+        order_id = path.split('/')[2] if path.startswith('/orders/') else None
+        if method == 'GET' and order_id:
+            if order_id in self.deleted or order_id not in self.orders:
+                return response(404, {'error': 'Clover has no such order.', 'code': 'not_found'})
+            row = {**self.orders[order_id], 'source': 'cloud', 'seen_at': time.time()}
+            return response(200, {**base, 'order': row, 'pricing': {'verified': self.verified}})
+        if method == 'DELETE' and order_id:
+            if any(p['result'] == 'SUCCESS' for p in self.orders.get(order_id, {}).get('payments', [])):
+                return response(409, {'error': 'Clover keeps orders that have payments.', 'code': 'has_payments'})
+            self.deleted.add(order_id)
+            return response(200, {'deleted': True, 'missing': False})
+        if method == 'POST' and path.endswith('/settle'):
+            body = kwargs['json']
+            order = self.orders[order_id]
+            order['paymentState'] = 'PAID'
+            written = [{'key': p['key'], 'id': f'PAY{abs(hash(p["key"])) % 10**10:010d}', 'amount': p['amount']}
+                       for p in body['payments']]
+            for payment in written:
+                if not any(p.get('externalPaymentId') == payment['key'] for p in order['payments']):
+                    order['payments'].append({'id': payment['id'], 'amount': payment['amount'], 'result': 'SUCCESS',
+                                              'tenderLabel': 'Cash', 'externalPaymentId': payment['key']})
+            if body['discount_name']:
+                order['discounts'] = [d for d in order['discounts'] if d.get('name') != body['discount_name']] + [
+                    {'id': 'DISCOUNT00001', 'name': body['discount_name'], 'amount': body['target_total'] - order['total']}]
+            order['total'] = body['target_total']
+            return response(200, {'total': body['target_total'], 'paymentState': 'PAID', 'paid': True,
+                                  'discount': {'id': 'DISCOUNT00001', 'amount': -1} if body['discount_name'] else None,
+                                  'payments': written, 'difference_cents': 0})
+        if method == 'POST' and path.endswith('/label'):
+            order = self.orders[order_id]
+            order['title'] = kwargs['json']['label']
+            return response(200, {'title': order['title'], 'written': ['title'], 'paymentState': order['paymentState'],
+                                  'total': order['total']})
+        raise AssertionError(f'Unexpected connector call {method} {path}')
+
+    def settles(self):
+        return [call for call in self.calls if call[0] == 'POST' and call[1].endswith('/settle')]
+
+    def labels(self):
+        return [call for call in self.calls if call[0] == 'POST' and call[1].endswith('/label')]
+
+    def writes(self):
+        return [call for call in self.calls if call[0] in ('POST', 'DELETE')]
+
+
+class CloverCheckoutTests(ReceivingFixture):
+    def setUp(self):
+        super().setUp()
+        self.app.register_blueprint(settings.bp)
+        clock = patch('checkout_access.business_date', return_value='2026-10-20')
+        clock.start()
+        self.addCleanup(clock.stop)
+        with closing(self.connect()) as con:
+            for subject, name in (('staff', 'Staff Cashier'), ('other', 'Other Cashier'), ('manager', 'Manager')):
+                employee = con.execute('INSERT INTO employees(auth0_id,name) VALUES (?,?)', ('auth0|' + subject, name)).lastrowid
+                con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                    VALUES (?,'2026-10-20','00:01','00:02','test',?)""", (employee, self.store_id))
+            for subject in ('other', 'manager'):
+                con.execute('INSERT INTO inventory_access(auth0_sub,store_id) VALUES (?,?)', ('auth0|' + subject, self.store_id))
+            con.execute("INSERT INTO inventory_balances(product_id,location_id,disposition,quantity,version) VALUES (?,?,'saleable',5,1)",
+                        (self.product_id, self.floor))
+            con.execute('UPDATE products SET clover_item_id=? WHERE id=?', (ITEM, self.product_id))
+            con.commit()
+        environment = patch.dict(os.environ, {
+            'CLOVER_CONNECTOR_URL': 'https://connector.test/clover-sandbox', 'CLOVER_CONNECTOR_PASSWORD': 'p' * 32,
+            'CLOVER_CONNECTOR_WRITER_KEY': 'k' * 32, 'CLOVER_MERCHANT_ID': MERCHANT,
+            'CLOVER_STORE_ID': str(self.store_id), 'CLOVER_IMPORT_SINCE': '2026-10-01', 'CLOVER_INSTANCE': 'pc'})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.clover = FakeConnector()
+        connector = patch('clover_checkout.requests.request', side_effect=self.clover)
+        connector.start()
+        self.addCleanup(connector.stop)
+
+    # helpers
+    def queue(self, role='staff'):
+        with closing(self.connect()) as con:
+            con.execute('UPDATE clover_feed SET next_poll=0')
+            con.commit()
+        result = self.client.get(f'/api/checkouts?store_id={self.store_id}&view=live', headers=self.headers(role))
+        self.assertEqual(result.status_code, 200, result.get_json())
+        return result.get_json()
+
+    def detail(self, checkout_id, role='staff'):
+        with closing(self.connect()) as con:
+            con.execute('UPDATE clover_orders SET fetch_next_at=0')
+            con.commit()
+        result = self.client.get(f'/api/checkouts/{checkout_id}', headers=self.headers(role))
+        self.assertEqual(result.status_code, 200, result.get_json())
+        return result.get_json()
+
+    def act(self, checkout_id, action, key, role='staff', expect=200, **body):
+        result = self.client.post(f'/api/checkouts/{checkout_id}/{action}', json=body,
+                                  headers={**self.headers(role), 'Idempotency-Key': key})
+        self.assertEqual(result.status_code, expect, result.get_json())
+        return result.get_json()
+
+    def receive(self, order, key, tender, amount, *, plan='pay', expect=200, role='staff', **extra):
+        return self.act(order['id'], 'receive', key, role=role, expect=expect, tender=tender, amount_cents=amount,
+                        plan=plan, expected_version=order['version'], **extra)
+
+    def one(self, sql, *args):
+        with closing(self.connect()) as con:
+            return con.execute(sql, args).fetchone()
+
+    def checkout_for(self, order_id='ORDERAAAAAAAA'):
+        row = self.one('SELECT checkout_id FROM clover_orders WHERE order_id=?', order_id)
+        return row['checkout_id'] if row else None
+
+    # tests
+    def test_import_once_unclaimed_with_original_prices_and_exact_cash_price(self):
+        self.clover.put(clover_order(), clover_order('OLDORDERAAAAA', created=CREATED - 40 * 86400000),
+                        clover_order('EMPTYAAAAAAAA', prices=(), total=0),
+                        clover_order('DEVICEAAAAAAA', source='device', total=None))
+        listed = self.queue()
+        self.assertEqual(listed['clover']['connected'], True)
+        orders = [o for o in listed['orders'] if o['clover']]
+        self.assertEqual([o['reference'] for o in orders], ['ORDERAAAAAAAA'])
+        order = orders[0]
+        self.assertEqual((order['cashier_name'], order['clover']['register'], order['business_date']),
+                         ('Clover register', True, '2026-10-20'))
+        self.assertEqual([(l['unit_price_cents'], l['mapped']) for l in order['clover']['lines']],
+                         [(1770, True), (1999, False)])
+        version = order['version']
+        self.assertEqual(self.queue()['orders'][0]['version'], version)
+        detail = self.detail(order['id'])
+        self.assertEqual(detail['clover']['prices'], {
+            'card_cents': 4259, 'card_blocked': False, 'cash_cents': 4100, 'cash_mode': 'cash_discount',
+            'cash_label': 'Cash discount', 'split_cents': 4200, 'split_mode': 'split_card', 'split_label': 'Rounding'})
+        self.assertTrue(detail['clover']['can_claim'])
+        self.assertEqual(self.one('SELECT COUNT(*) n FROM checkout_orders')['n'], 1)
+
+    def test_device_snapshots_never_touch_payments(self):
+        self.clover.put(clover_order(payments=[card('CARDPAYMENT01', 2000)], state='PARTIALLY_PAID'))
+        checkout_id = self.queue()['orders'][0]['id']
+        self.clover.put(clover_order(prices=(1770, 1999, 500), total=4824, source='device'))
+        listed = self.queue()['orders'][0]
+        self.assertEqual((listed['clover']['total_cents'], listed['clover']['state']), (4824, 'PARTIALLY_PAID'))
+        with closing(self.connect()) as con:
+            attempts = con.execute('SELECT origin,status,amount_cents FROM checkout_attempts WHERE checkout_id=?',
+                                   (checkout_id,)).fetchall()
+        self.assertEqual([tuple(a) for a in attempts], [('clover', 'completed', 2000)])
+        # Clover's own record still has the card; reading it keeps the payment.
+        attempts = self.detail(checkout_id)['attempts']
+        self.assertEqual([(a['origin'], a['status'], a['amount_cents']) for a in attempts], [('clover', 'completed', 2000)])
+
+    def paid_label(self, checkout_id):
+        with closing(self.connect()) as con:
+            return clover_checkout.paid_label(con, checkout_id)
+
+    def test_cash_sale_is_recorded_and_the_clover_order_labelled_paid_but_left_open(self):
+        self.clover.put(clover_order(mapped='all'))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        done = self.receive(order, 'cash-1', 'cash', 4100, expected_due_cents=4100)
+        self.assertEqual((done['status'], done['cashier_name'], done['clover']['writeback']['state']),
+                         ('completed', 'Staff Cashier', 'done'))
+        again = self.receive(order, 'cash-1', 'cash', 4100, expected_due_cents=4100)
+        self.assertEqual(again['sale_id'], done['sale_id'])
+        label = self.paid_label(done['id'])
+        self.assertRegex(label, r'^Paid \d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
+        self.assertEqual(done['clover']['writeback'], {'state': 'done', 'error': None, 'mode': 'label', 'label': label})
+        (_, path, body, headers), = self.clover.writes()
+        self.assertEqual((path, body, headers['X-Popcore-Writer']), ('/orders/ORDERAAAAAAAA/label', {'label': label},
+                                                                     'k' * 32))
+        self.assertEqual((self.clover.orders['ORDERAAAAAAAA']['paymentState'], done['clover']['state']), ('OPEN', 'OPEN'))
+        sale = self.one('SELECT * FROM sale_documents WHERE id=?', done['sale_id'])
+        self.assertEqual((sale['created_by'], sale['gross_cents'], sale['reduction_cents'], sale['collected_cents'],
+                          sale['allocation_status']), ('auth0|staff', 4259, 159, 4100, 'allocated'))
+        payment = self.one('SELECT * FROM sale_payments WHERE sale_id=?', done['sale_id'])
+        self.assertEqual((payment['tender'], payment['amount_cents'], payment['state'], payment['source_system']),
+                         ('cash', 4100, 'recorded', 'popcore_checkout'))
+        # Later reads of the still-open Clover order change nothing, and stock moves once.
+        self.queue()
+        clover_checkout.background_sync()
+        self.assertEqual(len(self.detail(done['id'])['attempts']), 1)
+        self.assertIsNone(self.detail(done['id'])['clover']['review'])
+        self.assertEqual(self.one('SELECT COUNT(*) n FROM sale_documents')['n'], 1)
+        self.assertEqual(self.one('SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?',
+                                  self.product_id, self.floor)['quantity'], 3)
+
+    def test_wechat_on_a_clover_order_keeps_the_yuan_charged(self):
+        self.clover.put(clover_order(mapped='all'))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        self.receive(order, 'wechat-no-rate', 'wechat', 4100, expected_due_cents=4100, expect=400)
+        done = self.receive(order, 'wechat-1', 'wechat', 4100, expected_due_cents=4100, cny_per_cad='5.2500', cny_fen=21525)
+        self.assertEqual(done['status'], 'completed')
+        paid = done['attempts'][-1]
+        self.assertEqual((paid['tender'], paid['amount_cents'], paid['cny_fen'], paid['cny_per_cad']),
+                         ('wechat', 4100, 21525, '5.2500'))
+
+    def test_pay_mode_still_pays_the_clover_order_with_popcore_tenders(self):
+        with patch.dict(os.environ, {'CLOVER_WRITEBACK': 'pay'}):
+            self.clover.put(clover_order(mapped='all'))
+            order = self.detail(self.queue()['orders'][0]['id'])
+            done = self.receive(order, 'cash-1', 'cash', 4100, expected_due_cents=4100)
+            label = self.paid_label(done['id'])
+            self.assertEqual(done['clover']['writeback'], {'state': 'done', 'error': None, 'mode': 'pay', 'label': label})
+            (_, path, body, _), = self.clover.writes()
+            attempt = done['attempts'][0]
+            self.assertEqual(path, '/orders/ORDERAAAAAAAA/settle')
+            self.assertEqual((body['target_total'], body['discount_name'], body['reference']),
+                             (4100, 'Cash discount', {'title': label}))
+            self.assertEqual(body['payments'], [{'key': f"popcore-pc-{done['id']}-{attempt['id']}", 'tender': 'cash',
+                                                 'amount': 4100}])
+            self.assertIsNotNone(self.one('SELECT provider_payment_id FROM checkout_attempts WHERE id=?',
+                                          attempt['id'])['provider_payment_id'])
+            # The mirrored cash tender coming back from Clover is never counted again.
+            self.queue()
+            self.assertEqual(len(self.detail(done['id'])['attempts']), 1)
+            self.assertIsNone(self.detail(done['id'])['clover']['review'])
+        with patch.dict(os.environ, {'CLOVER_WRITEBACK': 'other'}):
+            self.assertRaises(ValueError, clover_checkout.config)
+
+    def test_split_card_part_waits_for_clover_then_completes(self):
+        self.clover.put(clover_order(mapped=False))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        part = self.receive(order, 'split-cash', 'cash', 2000, plan='split_card', expected_due_cents=4200)
+        self.assertEqual((part['status'], part['clover']['remaining_cents']), ('open', 2200))
+        self.assertEqual(self.clover.writes(), [])
+        self.clover.put(clover_order(mapped=False, payments=[card('CARDPAYMENT01', 2200)], state='PARTIALLY_PAID'))
+        self.queue()
+        done = self.detail(order['id'])
+        self.assertEqual((done['status'], done['clover']['writeback']['state']), ('completed', 'done'))
+        (_, path, body, _), = self.clover.writes()
+        self.assertEqual((path, body), ('/orders/ORDERAAAAAAAA/label', {'label': self.paid_label(done['id'])}))
+        self.assertEqual(done['clover']['state'], 'PARTIALLY_PAID')
+        payments = {row['tender']: row for row in (self.one(
+            'SELECT tender,state FROM sale_payments WHERE sale_id=? AND tender=?', done['sale_id'], t) for t in ('cash', 'card'))}
+        self.assertEqual((payments['card']['state'], payments['cash']['state']), ('verified', 'recorded'))
+        self.assertIsNotNone(self.one("SELECT 1 FROM payment_events WHERE event_type='verify' AND reason LIKE ?",
+                                      '%CARDPAYMENT01%'))
+
+    def test_card_taken_first_sets_the_rest_and_a_mismatch_is_flagged(self):
+        self.clover.put(clover_order(mapped=False, payments=[card('CARDPAYMENT01', 2300)], state='PARTIALLY_PAID'))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        self.assertEqual(order['clover']['clover_cents'], 2300)
+        self.receive(order, 'too-much', 'cash', 2000, plan='split_card', expect=400)
+        done = self.receive(order, 'rest', 'cash', 1900, plan='split_card')
+        self.assertEqual((done['status'], done['received_cents']), ('completed', 4200))
+        # Overpaid: the card lands after more cash than the rest was recorded.
+        self.clover.put(clover_order('ORDERBBBBBBBB', mapped=False))
+        self.queue()
+        second = self.detail(self.checkout_for('ORDERBBBBBBBB'))
+        self.receive(second, 'cash-b', 'cash', 2000, plan='split_card')
+        self.clover.put(clover_order('ORDERBBBBBBBB', mapped=False, payments=[card('CARDPAYMENT02', 2500)],
+                                     state='PARTIALLY_PAID'))
+        self.queue()
+        flagged = self.detail(second['id'])
+        self.assertEqual((flagged['status'], flagged['clover']['review']['reason']), ('open', 'overpaid'))
+        self.assertFalse(flagged['clover']['can_receive'])
+        # The cashier hands the cash back, takes it back in POPCORE and records what was really paid.
+        cash = flagged['clover']['undo_attempt_ids'][0]
+        self.act(second['id'], 'undo', 'undo-1', role='staff:other', expect=403, attempt_id=cash, reason='Gave cash back')
+        self.act(second['id'], 'undo', 'undo-2', expect=400, attempt_id=cash, reason=' ')
+        undone = self.act(second['id'], 'undo', 'undo-3', attempt_id=cash, reason='Gave cash back')
+        self.assertIsNone(undone['clover']['review'])
+        self.assertEqual(undone['clover']['collect']['pay']['rest_cents'], 1700)
+        fixed = self.receive(undone, 'cash-c', 'cash', 1700, plan='split_card', expected_due_cents=4200)
+        self.assertEqual((fixed['status'], fixed['received_cents']), ('completed', 4200))
+        self.assertEqual(self.one('SELECT cancel_reason FROM checkout_attempts WHERE id=?', cash)['cancel_reason'],
+                         'Gave cash back')
+        self.act(second['id'], 'undo', 'undo-4', expect=409, attempt_id=fixed['attempts'][-1]['id'], reason='Late')
+
+    def test_amounts_to_collect_for_every_way_of_paying(self):
+        self.clover.put(clover_order(prices=(2000, 2259), total=4813, mapped=False))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        collect = order['clover']['collect']
+        self.assertEqual(collect['pay'], {'due_cents': 4600, 'mode': 'cash_discount', 'label': 'Cash discount',
+                                          'rest_cents': 4600})
+        self.assertEqual(collect['split_card'], {'due_cents': 4800, 'mode': 'split_card', 'label': 'Rounding',
+                                                 'rest_cents': 4800})
+        self.assertEqual(collect['card'], {'due_cents': 4813, 'rest_cents': 4813})
+        part = self.receive(order, 'part', 'cash', 2000, plan='split_card', expected_due_cents=4800)
+        collect = part['clover']['collect']
+        self.assertEqual((collect['pay']['rest_cents'], collect['split_card']['rest_cents'], collect['card']['rest_cents']),
+                         (2600, 2800, 2800))
+        self.clover.put(clover_order('ORDERBBBBBBBB', prices=(2000, 2259), total=4813, mapped=False,
+                                     payments=[card('CARDPAYMENT01', 2300)], state='PARTIALLY_PAID'))
+        self.queue()
+        collect = self.detail(self.checkout_for('ORDERBBBBBBBB'))['clover']['collect']
+        self.assertEqual((collect['pay']['rest_cents'], collect['split_card']['rest_cents'], collect['card']['rest_cents']),
+                         (2500, 2500, 2513))
+
+    def test_a_manager_can_take_payment_on_another_cashiers_order(self):
+        self.clover.put(clover_order(mapped=False))
+        order = self.act(self.detail(self.queue()['orders'][0]['id'])['id'], 'claim', 'claim-1')
+        done = self.receive(order, 'manager-cash', 'cash', 4100, role='manager', expected_due_cents=4100)
+        self.assertEqual((done['status'], done['cashier_name']), ('completed', 'Staff Cashier'))
+        self.assertEqual(done['attempts'][0]['recorded_by'], 'auth0|manager')
+
+    def test_card_only_sale_is_recorded_by_the_register_without_a_screen(self):
+        self.clover.put(clover_order(payments=[card('CARDPAYMENT01', 4259)], state='PAID'))
+        with closing(self.connect()) as con:
+            clover_checkout.ensure_feed(con, clover_checkout.config())
+        clover_checkout.background_sync()
+        checkout_id = self.checkout_for()
+        row = self.one('SELECT * FROM checkout_orders WHERE id=?', checkout_id)
+        self.assertEqual((row['status'], row['created_by']), ('completed', REGISTER_SUB))
+        sale = self.one('SELECT * FROM sale_documents WHERE id=?', row['sale_id'])
+        self.assertEqual((sale['created_by'], sale['collected_cents'], sale['reduction_cents']), (REGISTER_SUB, 4259, 0))
+        self.assertEqual(self.one('SELECT state FROM sale_payments WHERE sale_id=?', row['sale_id'])['state'], 'verified')
+        # Clover already shows it paid: nothing is written there.
+        self.assertEqual(self.clover.writes(), [])
+        self.assertEqual(self.one('SELECT writeback_state FROM clover_orders WHERE checkout_id=?',
+                                  checkout_id)['writeback_state'], 'none')
+        # Staff on shift can still open the day's closing with register-owned sales in it.
+        created = self.client.post('/api/closing', json={'store_id': self.store_id, 'business_date': '2026-10-20'},
+                                   headers={**self.headers(), 'Idempotency-Key': 'closing-1'})
+        self.assertEqual(created.status_code, 201, created.get_json())
+
+    def test_write_back_failure_never_blocks_the_sale_and_is_retried(self):
+        self.clover.put(clover_order(mapped=False))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        self.clover.fail['POST label'] = (502, {'error': 'Clover is limiting requests.', 'code': 'clover_unavailable'})
+        done = self.receive(order, 'cash-1', 'cash', 4100)
+        self.assertEqual((done['status'], done['clover']['writeback']['state']), ('completed', 'failed'))
+        self.assertTrue(done['clover']['can_retry'])
+        closing_id = self.client.post('/api/closing', json={'store_id': self.store_id, 'business_date': '2026-10-20'},
+                                      headers={**self.headers('manager'), 'Idempotency-Key': 'c-1'}).get_json()['closing_id']
+        blockers = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager')).get_json()['hard_blockers']
+        self.assertIn(f"clover_writeback_pending:{done['id']}", blockers)
+        del self.clover.fail['POST label']
+        retried = self.act(done['id'], 'clover-retry', 'retry-1')
+        self.assertEqual(retried['clover']['writeback']['state'], 'done')
+        blockers = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager')).get_json()['hard_blockers']
+        self.assertNotIn(f"clover_writeback_pending:{done['id']}", blockers)
+        self.assertNotIn('clover_sync_stale', blockers)
+
+    def test_changes_on_clover_before_and_after_the_sale(self):
+        self.clover.put(clover_order(mapped=False))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        self.clover.put(clover_order(prices=(1770, 1999, 500), total=4824, mapped=False))
+        self.receive(order, 'stale', 'cash', 4100, expect=409)
+        fresh = self.detail(order['id'])
+        self.assertEqual(fresh['clover']['total_cents'], 4824)
+        done = self.receive(fresh, 'cash-2', 'cash', fresh['clover']['prices']['cash_cents'],
+                            expected_due_cents=fresh['clover']['prices']['cash_cents'])
+        self.assertEqual(done['status'], 'completed')
+        paid = self.clover.orders['ORDERAAAAAAAA']
+        self.clover.put({**paid, 'refunds': [{'id': 'REFUND0000001', 'amount': 500}]})
+        self.queue()
+        flagged = self.detail(done['id'])
+        self.assertEqual(flagged['clover']['review']['reason'], 'clover_refunded')
+        closing_id = self.client.post('/api/closing', json={'store_id': self.store_id, 'business_date': '2026-10-20'},
+                                      headers={**self.headers('manager'), 'Idempotency-Key': 'c-2'}).get_json()['closing_id']
+        exceptions = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager')).get_json()['review_exceptions']
+        self.assertIn(f"clover_review:{done['id']}", exceptions)
+
+    def test_cancel_deletes_on_clover_and_a_clover_delete_cancels(self):
+        self.clover.put(clover_order(), clover_order('ORDERBBBBBBBB'))
+        self.queue()
+        first, second = self.checkout_for(), self.checkout_for('ORDERBBBBBBBB')
+        cancelled = self.act(first, 'cancel', 'cancel-1')
+        self.assertEqual((cancelled['status'], cancelled['clover']['state']), ('cancelled', 'DELETED'))
+        self.assertIn('ORDERAAAAAAAA', self.clover.deleted)
+        # A Clover read taken just before the delete arrives late: the order stays deleted.
+        self.clover.deleted.discard('ORDERAAAAAAAA')
+        self.queue()
+        self.assertEqual(self.detail(first)['clover']['state'], 'DELETED')
+        self.clover.deleted.add('ORDERAAAAAAAA')
+        self.clover.deleted.add('ORDERBBBBBBBB')
+        gone = self.detail(second)
+        self.assertEqual((gone['status'], gone['clover']['state']), ('cancelled', 'DELETED'))
+        self.clover.put(clover_order('ORDERCCCCCCCC', payments=[card('CARDPAYMENT01', 1000)], state='PARTIALLY_PAID'))
+        self.queue()
+        third = self.checkout_for('ORDERCCCCCCCC')
+        self.act(third, 'cancel', 'cancel-3', expect=409)
+
+    def test_claim_release_and_another_cashiers_order(self):
+        self.clover.put(clover_order())
+        order = self.detail(self.queue()['orders'][0]['id'])
+        claimed = self.act(order['id'], 'claim', 'claim-1')
+        self.assertEqual((claimed['cashier_name'], claimed['clover']['register']), ('Staff Cashier', False))
+        self.act(order['id'], 'claim', 'claim-2', role='staff:other', expect=409)
+        self.receive(claimed, 'other-cash', 'cash', 4100, role='staff:other', expect=403)
+        released = self.act(order['id'], 'release', 'release-1')
+        self.assertTrue(released['clover']['register'])
+        self.assertEqual(self.act(order['id'], 'claim', 'claim-3', role='staff:other')['cashier_name'], 'Other Cashier')
+
+    def test_price_changes_and_card_are_refused(self):
+        self.clover.put(clover_order())
+        order = self.detail(self.queue()['orders'][0]['id'])
+        self.receive(order, 'card', 'card', 4259, expect=400)
+        self.receive(order, 'price', 'cash', 4100, expected_due_cents=4200, expect=409)
+        self.clover.verified = False
+        # Label mode writes no total to Clover, so Clover's own total is enough to price from.
+        self.assertEqual(self.detail(order['id'])['clover']['prices']['cash_cents'], 4100)
+        with patch.dict(os.environ, {'CLOVER_WRITEBACK': 'pay'}):
+            unverified = self.detail(order['id'])
+        self.assertEqual(unverified['clover']['prices']['cash_cents'], 4259)
+        self.assertEqual(unverified['clover']['prices']['cash_mode'], 'exact')
+
+    def test_closing_needs_a_clover_day_scan(self):
+        self.clover.put(clover_order(payments=[card('CARDPAYMENT01', 4259)], state='PAID'))
+        self.queue()
+        self.clover.fail['GET /orders/scan'] = (502, {'error': 'down', 'code': 'clover_unavailable'})
+        closing_id = self.client.post('/api/closing', json={'store_id': self.store_id, 'business_date': '2026-10-20'},
+                                      headers={**self.headers('manager'), 'Idempotency-Key': 'c-3'}).get_json()['closing_id']
+        detail = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager')).get_json()
+        self.assertIn('clover_sync_stale', detail['hard_blockers'])
+        del self.clover.fail['GET /orders/scan']
+        detail = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager')).get_json()
+        self.assertNotIn('clover_sync_stale', detail['hard_blockers'])
+
+    def test_find_by_clover_id_and_cny_rate(self):
+        self.clover.put(clover_order())
+        checkout_id = self.queue()['orders'][0]['id']
+        found = self.client.get(f'/api/checkouts/clover/orderaaaaaaaa?store_id={self.store_id}', headers=self.headers())
+        self.assertEqual(found.get_json()['id'], checkout_id)
+        self.assertEqual(self.client.get(f'/api/checkouts/clover/NOSUCHORDER01?store_id={self.store_id}',
+                                         headers=self.headers()).status_code, 404)
+        access = self.client.get('/api/checkouts/access', headers=self.headers()).get_json()
+        self.assertEqual((access['cny_per_cad'], access['clover_store_id']), ('', self.store_id))
+        for rate in ('0', '5.12345', 'bad'):
+            self.assertEqual(self.client.put('/api/settings', json={'checkout_cny_per_cad': rate},
+                                             headers=self.headers('admin')).status_code, 400, rate)
+        self.assertEqual(self.client.put('/api/settings', json={'checkout_cny_per_cad': '5.2500'},
+                                         headers=self.headers('admin')).status_code, 200)
+        self.assertEqual(self.client.get('/api/checkouts/access', headers=self.headers()).get_json()['cny_per_cad'],
+                         '5.2500')
+
+    def history(self, role='manager', **filters):
+        result = self.client.get('/api/checkouts', query_string={'store_id': self.store_id, 'view': 'history', **filters},
+                                 headers=self.headers(role))
+        self.assertEqual(result.status_code, 200, result.get_json())
+        return result.get_json()
+
+    def test_history_filters_by_payment_method_and_keyword(self):
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET jizhanming='泡泡玛特 Labubu' WHERE id=?", (self.product_id,))
+            con.commit()
+        self.clover.put(clover_order(mapped='all'), clover_order('ORDERBBBBBBBB', prices=(999,), total=1129, mapped=False,
+                                                                 payments=[card('CARDPAYMENT01', 1129)], state='PAID'))
+        self.queue()
+        cash = self.detail(self.checkout_for())
+        self.receive(cash, 'cash-1', 'cash', 4100, expected_due_cents=4100)
+        card_order = self.checkout_for('ORDERBBBBBBBB')
+        listed = self.history()
+        self.assertEqual(listed['clover']['enabled'], True)  # history shows the live Clover status too
+        self.assertEqual(len(listed['orders']), 2)
+        refs = lambda data: sorted(o['reference'] for o in data['orders'])
+        self.assertEqual(refs(self.history(tender='cash')), ['ORDERAAAAAAAA'])
+        self.assertEqual(refs(self.history(tender='card')), ['ORDERBBBBBBBB'])
+        self.assertEqual(refs(self.history(tender='alipay')), [])
+        self.assertEqual(refs(self.history(q='Item 0')), ['ORDERAAAAAAAA', 'ORDERBBBBBBBB'])  # Clover item names
+        self.assertEqual(refs(self.history(q='泡泡玛特')), ['ORDERAAAAAAAA'])  # POPCORE product name, in Chinese
+        self.assertEqual(refs(self.history(q='orderbbbb')), ['ORDERBBBBBBBB'])  # the Clover order ID
+        self.assertEqual(refs(self.history(q='item 0', tender='card')), ['ORDERBBBBBBBB'])
+        self.assertEqual(refs(self.history(q='%')), [])  # wildcards are plain text
+        self.assertEqual(self.client.get('/api/checkouts', query_string={'store_id': self.store_id, 'view': 'history',
+                                                                         'tender': 'cheque'},
+                                         headers=self.headers('manager')).status_code, 400)
+        self.assertEqual(self.checkout_for('ORDERBBBBBBBB'), card_order)
+
+    def test_migration_can_run_again(self):
+        db.migrate_db()
+        db.migrate_db()
+        self.assertIsNotNone(self.one("SELECT 1 FROM _migrations WHERE name='clover_checkouts'"))

@@ -451,6 +451,12 @@ def sale_detail(con, sale_id, *, actor):
                FROM payment_evidence WHERE payment_id=? ORDER BY id""", (row['id'],)
         )]
         payment['effective_amount_cents'] = effective
+        # A checkout's WeChat Pay or Alipay payment keeps the yuan charged and the rate used.
+        charge = con.execute(
+            'SELECT cny_fen, cny_per_cad FROM checkout_attempts WHERE payment_id=?', (row['id'],)
+        ).fetchone()
+        payment['cny_fen'] = charge['cny_fen'] if charge else None
+        payment['cny_per_cad'] = charge['cny_per_cad'] if charge else None
         payments.append(payment)
     sale['payments'] = payments
     known = [p['effective_amount_cents'] for p in payments

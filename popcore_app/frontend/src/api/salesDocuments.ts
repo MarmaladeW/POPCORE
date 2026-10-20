@@ -52,6 +52,8 @@ export interface SaleResult {
     tender: 'cash' | 'card' | 'e_transfer' | 'wechat' | 'alipay'
     amount_cents: number | null
     effective_amount_cents: number | null
+    cny_fen?: number | null
+    cny_per_cad?: string | null
     state: 'recorded' | 'verified' | 'rejected'
     events?: Array<{ id:number; event_type:string; direction:string; amount_cents:number|null; reason:string }>
     evidence?: Array<{ id:number; status:'pending'|'accepted'|'rejected'; mime_type:string; byte_size:number }>

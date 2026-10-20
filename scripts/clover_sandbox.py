@@ -1,4 +1,10 @@
-"""Single-merchant sandbox probe. No POPCORE imports or Clover business-data writes."""
+"""Single-merchant Clover connector for POPCORE. No POPCORE imports.
+
+It holds the merchant's OAuth tokens, reads orders (cloud, plus device snapshots for speed),
+receives Clover webhooks, and performs the only Clover writes POPCORE makes: completing an
+order it settled (one POPCORE discount, the order total, its tenders and a reference) and
+deleting an order nobody paid. Writes need the writer key as well as the admin login.
+"""
 import argparse
 from contextlib import contextmanager
 import hmac
@@ -18,57 +24,137 @@ import requests
 from flask import Flask, Response, abort, jsonify, redirect, render_template_string, request, session
 
 PREFIX = '/clover-sandbox'
-API = 'https://apisandbox.dev.clover.com'
-AUTHORIZE = 'https://sandbox.dev.clover.com/oauth/v2/authorize'
+ENVIRONMENTS = {
+    'sandbox': ('https://apisandbox.dev.clover.com', 'https://sandbox.dev.clover.com/oauth/v2/authorize'),
+    'production': ('https://api.clover.com', 'https://www.clover.com/oauth/v2/authorize'),
+}
 IDENTIFIER = re.compile(r'[A-Za-z0-9]{13}\Z')
+# The only Clover writes: one order of the configured merchant, its POPCORE discount and tenders.
+WRITE_PATH = re.compile(r'/v3/merchants/([A-Za-z0-9]{13})/orders/[A-Za-z0-9]{13}'
+                        r'(/payments|/discounts|/discounts/[A-Za-z0-9]{13})?\Z')
+PAYMENT_KEY = re.compile(r'popcore-[A-Za-z0-9]{1,12}-\d{1,15}-\d{1,15}\Z')
+POPCORE_DISCOUNTS = ('Cash discount', 'Rounding')
+# POPCORE tender -> Clover tender labelKey (cash) or the custom tender labels the merchant created.
+POPCORE_TENDERS = {'cash': ('com.clover.tender.cash',), 'e_transfer': ('e-transfer', 'etransfer', 'interac e-transfer'),
+                   'wechat': ('wechat pay', 'wechat', 'wechatpay'), 'alipay': ('alipay',)}
 MAX_SAFE_INTEGER = 2**53 - 1
+TAX_SCALE = 10_000_000  # Clover tax rates: 1000000 = 10%
+# A label POPCORE puts on a Clover order it recorded as paid, such as "Paid 2026-10-20 11:23".
+LABEL = re.compile(r'[ -~]{1,40}')
+TENDER_TTL = 600
+ORDER_TTL = 2
+# The companion re-sends open orders every 2 s: a device copy older than this is no longer ahead of the cloud.
+DEVICE_FRESH = 30
 
 
 class CloverError(Exception):
-    def __init__(self, message, retry_after=None):
+    def __init__(self, message, retry_after=None, status=None):
         super().__init__(message)
         self.retry_after = retry_after
+        self.status = status
+
+
+class Unsupported(Exception):
+    """Clover's total can't be reproduced exactly for this order."""
 
 
 def _safe_cents(value):
     return type(value) is int and 0 <= value <= MAX_SAFE_INTEGER
 
 
-def suggest_payable(total_cents):
-    if not _safe_cents(total_cents):
-        return None
-    if total_cents == 0:
-        return 0
-    if total_cents < 100:
-        return max(1, (total_cents * 390 + 199) // 400)
-    suggestion = ((total_cents * 1950 + 99_999) // 200_000) * 100
-    if suggestion >= total_cents:
-        suggestion -= 100
-    return max(1, suggestion)
+def valid_reference(reference):
+    """POPCORE's label for a settled order: an optional POPCORE-<n> reference and an optional title."""
+    if reference is None:
+        return True
+    if not isinstance(reference, dict):
+        return False
+    number, title = reference.get('external_reference_id'), reference.get('title')
+    if number is not None and not re.fullmatch(r'POPCORE-\d{1,15}', str(number)):
+        return False
+    if title is not None and not (isinstance(title, str) and LABEL.fullmatch(title)):
+        return False
+    return number is not None or title is not None
 
 
-def discount_quote(subtotal_cents, tax_cents, target_cents):
-    if not all(_safe_cents(value) for value in (subtotal_cents, tax_cents, target_cents)):
-        return None
-    total = subtotal_cents + tax_cents
-    if target_cents <= 0 or target_cents > total or subtotal_cents == 0 or total > MAX_SAFE_INTEGER:
-        return None
-    ideal = target_cents * subtotal_cents // total
-    best = None
-    for remaining in range(max(0, ideal - 2), min(subtotal_cents, ideal + 3) + 1):
-        predicted = remaining + (remaining * tax_cents * 2 + subtotal_cents) // (subtotal_cents * 2)
-        candidate = (abs(predicted - target_cents), predicted, remaining)
-        if best is None or candidate < best:
-            best = candidate
-    if best is None:
-        return None
-    _, predicted, remaining = best
-    return {'discountCents': subtotal_cents - remaining, 'predictedTotalCents': predicted,
-            'savingsCents': total - target_cents, 'warning': (total - target_cents) * 5 > total}
+def _half_up(numerator, denominator):
+    return (2 * numerator + denominator) // (2 * denominator)
 
 
 def money(cents):
     return '${}.{:02d}'.format(cents // 100, cents % 100) if _safe_cents(cents) else '—'
+
+
+def t_enabled(tender):
+    return tender.get('enabled') is not False and tender.get('visible') is not False
+
+
+def clover_calc(lines, discounts, extra=0):
+    """Clover's documented order total (docs.clover.com "Calculate order totals").
+
+    Line prices, line discounts (percentage, then amount), order discounts (percentage per line,
+    then amounts allocated in proportion), tax per tax-rate object on the combined discounted
+    amount of the lines sharing it, half up. `extra` is a further order amount discount.
+    Returns (total, tax, discounted subtotal). Raises Unsupported when that is not exact."""
+    amounts, rates = [], []
+    for line in lines:
+        price = line.get('price')
+        if (not _safe_cents(price) or line.get('unitQty') not in (None, 0, 1000) or line.get('refunded')
+                or line.get('exchanged') or line.get('modifications')):
+            raise Unsupported('modified, weighted or refunded line')
+        amount = price
+        line_discounts = line.get('discounts') or []
+        for discount in line_discounts:
+            if type(discount.get('percentage')) is int and discount['percentage'] > 0:
+                amount -= _half_up(price * discount['percentage'], 100)
+        for discount in line_discounts:
+            if not discount.get('percentage'):
+                if type(discount.get('amount')) is not int:
+                    raise Unsupported('line discount without amount')
+                amount += discount['amount'] if discount['amount'] < 0 else -discount['amount']
+        amounts.append(max(0, amount))
+        rates.append(tuple(sorted((rate['id'], rate['rate']) for rate in line.get('taxRates') or [])))
+    percentages = [d for d in discounts if d.get('percentage')]
+    if len(percentages) > 1:
+        raise Unsupported('several percentage discounts')
+    for discount in percentages:
+        if type(discount['percentage']) is not int or discount['percentage'] < 0:
+            raise Unsupported('percentage discount')
+        amounts = [a - _half_up(a * discount['percentage'], 100) for a in amounts]
+    off = extra
+    for discount in discounts:
+        if not discount.get('percentage'):
+            if type(discount.get('amount')) is not int:
+                raise Unsupported('order discount without amount')
+            off += abs(discount['amount'])
+    subtotal = sum(amounts)
+    off = min(off, subtotal)
+    discounted = subtotal - off
+    groups = {}
+    for amount, line_rates in zip(amounts, rates):
+        for rate in line_rates:
+            groups.setdefault(rate, 0)
+            groups[rate] += amount
+    tax = 0
+    for (rate_id, rate), taxable in groups.items():
+        if type(rate) is not int or rate < 0:
+            raise Unsupported('tax rate')
+        if subtotal:
+            tax += _half_up(taxable * discounted * rate, subtotal * TAX_SCALE)
+    if len(groups) > 1 and off and subtotal:
+        # Clover may allocate the amount discount per line before taxing; both readings must agree.
+        allocated, left = [], off
+        for index, amount in enumerate(amounts):
+            share = left if index == len(amounts) - 1 else _half_up(off * amount, subtotal)
+            share = min(share, left)
+            allocated.append(amount - share)
+            left -= share
+        per_line = {}
+        for amount, line_rates in zip(allocated, rates):
+            for rate in line_rates:
+                per_line[rate] = per_line.get(rate, 0) + amount
+        if sum(_half_up(v * rate[1], TAX_SCALE) for rate, v in per_line.items()) != tax:
+            raise Unsupported('tax groups disagree')
+    return discounted + tax, tax, discounted
 
 
 def device_order(value):
@@ -93,9 +179,10 @@ def device_order(value):
                 'priceWithModifiersAndItemAndOrderDiscounts', 'unitQty',
                 'unitName', 'discountAmount', 'orderLevelDiscountAmount',
                 'itemCode', 'itemId')}
-        if any(safe[key] is not None and not _safe_cents(safe[key]) for key in (
-                'price', 'priceWithModifiersAndItemAndOrderDiscounts', 'discountAmount',
-                'orderLevelDiscountAmount')):
+        if any(safe[key] is not None and (type(safe[key]) is not int or abs(safe[key]) > MAX_SAFE_INTEGER)
+               for key in ('discountAmount', 'orderLevelDiscountAmount')) or any(
+                safe[key] is not None and not _safe_cents(safe[key])
+                for key in ('price', 'priceWithModifiersAndItemAndOrderDiscounts')):
             raise ValueError('Invalid device line-item amount')
         if safe['unitQty'] is not None and (type(safe['unitQty']) is not int or
                                             not 0 <= safe['unitQty'] <= 1_000_000_000):
@@ -129,18 +216,19 @@ def cloud_matches_device(cloud, device):
     if device['total'] is not None and cloud.get('total') != device['total']:
         return False
     def item_key(item):
-        return (item.get('id'), item.get('unitQty'), item.get('price'),
-                item.get('priceWithModifiersAndItemAndOrderDiscounts'))
-    return ({item_key(item) for item in cloud['items']} ==
-            {item_key(item) for item in device['items']} and
-            {(item.get('id'), item.get('amount'), item.get('percentage'))
-             for item in cloud['discounts']} ==
-            {(item.get('id'), item.get('amount'), item.get('percentage'))
-             for item in device['discounts']})
+        return (item.get('id'), item.get('unitQty'), item.get('price'))
+    def discount_key(item):
+        return (item.get('id'), item.get('amount'), item.get('percentage'))
+    return ({item_key(item) for item in cloud['items']} == {item_key(item) for item in device['items']}
+            and {discount_key(d) for d in cloud['discounts']} == {discount_key(d) for d in device['discounts']})
 
 
 def create_app(config):
     config = dict(config)
+    environment = config.get('CLOVER_ENVIRONMENT', 'sandbox')
+    if environment not in ENVIRONMENTS:
+        raise ValueError('CLOVER_ENVIRONMENT must be sandbox or production.')
+    api, authorize = ENVIRONMENTS[environment]
     public = config['PUBLIC_URL'].rstrip('/')
     url = urlsplit(public)
     if (url.path != PREFIX or url.query or url.fragment or url.username or url.password
@@ -150,6 +238,9 @@ def create_app(config):
     for key in ('SESSION_SECRET', 'ADMIN_PASSWORD', 'WEBHOOK_PATH_KEY'):
         if len(config.get(key, '')) < 32:
             raise ValueError(key + ' must contain at least 32 characters.')
+    writer_key = config.get('POPCORE_WRITER_KEY', '')
+    if writer_key and len(writer_key) < 32:
+        raise ValueError('POPCORE_WRITER_KEY must contain at least 32 characters.')
     data = Path(config['DATA_DIR']).resolve()
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(data, 0o700)
@@ -194,7 +285,7 @@ def create_app(config):
 
     def save_tokens(tokens):
         if not isinstance(tokens, dict) or not isinstance(tokens.get('access_token'), str):
-            raise CloverError('Invalid token response; reconnect to Clover sandbox.')
+            raise CloverError('Invalid token response; reconnect to Clover.')
         save('tokens', json.dumps({k: tokens[k] for k in (
             'access_token', 'refresh_token', 'access_token_expiration', 'refresh_token_expiration')
             if k in tokens}))
@@ -202,18 +293,22 @@ def create_app(config):
     rate_lock = threading.Lock()
     retry_at = 0
     rate_failures = 0
+    merchant = config.get('CLOVER_MERCHANT_ID', '')
 
     def clover(method, path, **kwargs):
         nonlocal retry_at, rate_failures
-        # Only token exchanges may POST. There is deliberately no generic write API.
-        if method != 'GET' and path not in ('/oauth/v2/token', '/oauth/v2/refresh'):
-            raise ValueError('Sandbox probe does not write Clover orders, payments or stock.')
+        # Token exchanges, plus POPCORE settlement writes to orders of the configured merchant.
+        # There is deliberately no generic write API.
+        write = WRITE_PATH.fullmatch(path)
+        if method != 'GET' and path not in ('/oauth/v2/token', '/oauth/v2/refresh') and not (
+                method in ('POST', 'DELETE') and write and write.group(1) == merchant):
+            raise ValueError('The connector only writes POPCORE settlement to a configured merchant order.')
         with rate_lock:
             remaining = retry_at - time.monotonic()
             if remaining > 0:
                 raise CloverError('Clover is limiting requests. Waiting before retrying.', math.ceil(remaining))
         try:
-            result = requests.request(method, API + path, timeout=(5, 15), allow_redirects=False, **kwargs)
+            result = requests.request(method, api + path, timeout=(5, 15), allow_redirects=False, **kwargs)
             if result.status_code == 429:
                 with rate_lock:
                     rate_failures = min(rate_failures + 1, 6)
@@ -224,11 +319,20 @@ def create_app(config):
                         pass
                     retry_at = max(retry_at, time.monotonic() + delay)
                     delay = math.ceil(retry_at - time.monotonic())
-                raise CloverError('Clover is limiting requests. Waiting before retrying.', delay)
+                raise CloverError('Clover is limiting requests. Waiting before retrying.', delay, 429)
+            if result.status_code == 404:
+                raise CloverError('Clover has no such order.', status=404)
             if result.status_code != 200:
-                raise CloverError('Clover sandbox returned HTTP ' + str(result.status_code) +
-                                  '. Check permissions or reconnect; provider response is not displayed.')
-            payload = result.json()
+                # Only Clover's own short reason is shown, never the rest of its response.
+                try:
+                    reason = result.json().get('message') if result.content else None
+                except (ValueError, AttributeError):
+                    reason = None
+                reason = re.sub(r'[^ -~]', '', reason).strip()[:160] if isinstance(reason, str) else ''
+                raise CloverError('Clover returned HTTP ' + str(result.status_code) + '. ' +
+                                  (f'Clover says: {reason}' if reason else 'Check permissions or reconnect.'),
+                                  status=result.status_code)
+            payload = result.json() if result.content else {}
             if not isinstance(payload, dict):
                 raise ValueError('Expected an object')
             with rate_lock:
@@ -236,7 +340,7 @@ def create_app(config):
                     rate_failures = 0
             return payload
         except (requests.RequestException, ValueError):
-            raise CloverError('Clover sandbox could not be read. Retry or reconnect.') from None
+            raise CloverError('Clover could not be read. Retry or reconnect.') from None
 
     # ponytail: one process serializes refresh-token rotation; use a cross-process lock before scaling.
     token_lock = threading.Lock()
@@ -245,10 +349,10 @@ def create_app(config):
         with token_lock:
             tokens = json.loads(setting('tokens') or '{}')
             if not tokens.get('access_token'):
-                raise CloverError('Connect the Canadian test merchant first.')
+                raise CloverError('Connect the Clover merchant first.')
             if tokens.get('access_token_expiration', 0) <= time.time() + 60:
                 if not tokens.get('refresh_token') or tokens.get('refresh_token_expiration', 0) <= time.time():
-                    raise CloverError('Sandbox authorization expired. Reconnect the test merchant.')
+                    raise CloverError('Clover authorization expired. Reconnect the merchant.')
                 tokens = clover('POST', '/oauth/v2/refresh', json={
                     'client_id': config['CLOVER_APP_ID'], 'refresh_token': tokens['refresh_token']})
                 save_tokens(tokens)
@@ -272,6 +376,13 @@ def create_app(config):
             return Response('Sandbox administrator login required.', 401,
                             {'WWW-Authenticate': 'Basic realm="POPCORE sandbox"'})
 
+    def require_writer():
+        supplied = request.headers.get('X-Popcore-Writer', '')
+        if not writer_key:
+            abort(404)
+        if not hmac.compare_digest(supplied.encode(), writer_key.encode()):
+            abort(403)
+
     @app.after_request
     def headers(response):
         response.headers.update({'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
@@ -281,18 +392,21 @@ def create_app(config):
 
     @app.errorhandler(CloverError)
     def provider_error(error):
-        response = jsonify(error=str(error))
-        response.status_code = 502
+        response = jsonify(error=str(error), code='not_found' if error.status == 404 else 'clover_unavailable')
+        response.status_code = 404 if error.status == 404 else 502
         if error.retry_after is not None:
             response.headers['Retry-After'] = str(error.retry_after)
         return response
+
+    def conflict(code, message, **facts):
+        return jsonify(error=message, code=code, **facts), 409
 
     def missing():
         return [k for k in ('CLOVER_APP_ID', 'CLOVER_APP_SECRET', 'CLOVER_MERCHANT_ID') if not config.get(k)]
 
     @app.get(PREFIX + '/health')
     def health():
-        return jsonify(status='ok', environment='sandbox')
+        return jsonify(status='ok', environment=environment)
 
     @app.post(PREFIX + '/device-snapshot')
     def device_snapshot():
@@ -306,7 +420,7 @@ def create_app(config):
         value = request.get_json(silent=True)
         if not isinstance(value, dict):
             abort(400)
-        if value.get('merchantId') != config.get('CLOVER_MERCHANT_ID') or value.get('deviceId') != device_id:
+        if value.get('merchantId') != merchant or value.get('deviceId') != device_id:
             abort(403)
         sequence = value.get('sequence')
         if type(sequence) is not int or not 0 < sequence <= MAX_SAFE_INTEGER:
@@ -338,17 +452,16 @@ def create_app(config):
         with database() as db:
             events = [dict(r) for r in db.execute('SELECT * FROM events ORDER BY received DESC LIMIT 20')]
         return render_template_string('''<!doctype html><html lang="en"><meta charset="utf-8">
-            <meta name="viewport" content="width=device-width,initial-scale=1"><title>POPCORE Clover sandbox</title>
+            <meta name="viewport" content="width=device-width,initial-scale=1"><title>POPCORE Clover connector</title>
             <style>body{font:17px system-ui;max-width:850px;margin:32px auto;padding:0 20px;line-height:1.5}
             code,pre{overflow-wrap:anywhere;white-space:pre-wrap}table{width:100%;border-collapse:collapse}
             th,td{text-align:left;padding:8px;border-bottom:1px solid #ddd}a{color:#075a9c}</style>
-            <h1>POPCORE · Clover sandbox</h1>
-            <p>Isolated connection test. No real-store connection or inventory posting.</p>
-            <p>{{ 'Connected to the configured test merchant.' if connected else 'Not connected to Clover yet.' }}</p>
+            <h1>POPCORE · Clover {{ environment }}</h1>
+            <p>{{ 'Connected to the configured merchant.' if connected else 'Not connected to Clover yet.' }}
+            POPCORE writes: {{ 'enabled' if writer else 'off (no writer key)' }}.</p>
             {% if missing %}<p>Local configuration still needed: {{ missing|join(', ') }}.</p>{% endif %}
-            <p><a href="{{ prefix }}/connect">Connect Canadian test merchant</a> ·
-            <a href="{{ prefix }}/review">Review sandbox checkout</a> ·
-            <a href="{{ prefix }}/orders">Read test orders (JSON)</a></p>
+            <p><a href="{{ prefix }}/connect">Connect the Clover merchant</a> ·
+            <a href="{{ prefix }}/orders">Read current orders (JSON)</a></p>
             <h2>Clover dashboard settings</h2>
             <p>Site URL: <code>{{ public }}/</code></p>
             <p>Alternate Launch Path: <code>{{ prefix }}/connect</code></p>
@@ -356,13 +469,14 @@ def create_app(config):
             <p>Webhook URL (keep private): <code>{{ public }}/webhooks/{{ hook }}</code></p>
             <p>Webhook verification code: <code>{{ verification or 'Not received yet' }}</code></p>
             <p>Webhook authentication: {{ 'configured' if hook_auth else 'not configured; event delivery is blocked' }}.</p>
-            <h2>Latest notifications</h2><p>Reload this page after changing a test order.
+            <h2>Latest notifications</h2><p>Reload this page after changing an order.
             Notification time includes Clover delivery delay; it is not device scan latency.</p>
             <table><tr><th>Object</th><th>Change</th><th>Clover timestamp (ms)</th></tr>
             {% for e in events %}<tr><td>{{ e.object_id }}</td><td>{{ e.kind }}</td><td>{{ e.source_time }}</td></tr>
             {% endfor %}</table></html>''', prefix=PREFIX, public=public, missing=missing(),
             connected=bool(setting('tokens')), events=events, hook=config['WEBHOOK_PATH_KEY'],
-            verification=setting('verification'), hook_auth=bool(config.get('CLOVER_WEBHOOK_AUTH')))
+            verification=setting('verification'), hook_auth=bool(config.get('CLOVER_WEBHOOK_AUTH')),
+            environment=environment, writer=bool(writer_key))
 
     @app.get(PREFIX + '/connect')
     def connect():
@@ -375,9 +489,8 @@ def create_app(config):
             db.execute('DELETE FROM states WHERE expires < ?', (time.time(),))
             db.execute('INSERT INTO states VALUES (?, ?)', (nonce, time.time() + 600))
         session['oauth_state'] = nonce
-        return redirect(AUTHORIZE + '?' + urlencode({
-            'merchant_id': config['CLOVER_MERCHANT_ID'],
-            'client_id': config['CLOVER_APP_ID'], 'response_type': 'code',
+        return redirect(authorize + '?' + urlencode({
+            'merchant_id': merchant, 'client_id': config['CLOVER_APP_ID'], 'response_type': 'code',
             'redirect_uri': public + '/callback', 'state': nonce}))
 
     @app.get(PREFIX + '/callback')
@@ -391,19 +504,52 @@ def create_app(config):
                                   (state, time.time())).rowcount
         if not consumed or request.args.get('error'):
             abort(400)
-        merchant = request.args.get('merchant_id') or request.args.get('merchantId')
+        callback_merchant = request.args.get('merchant_id') or request.args.get('merchantId')
         code = request.args.get('code', '')
-        if merchant != config.get('CLOVER_MERCHANT_ID') or not code or len(code) > 4096:
+        if callback_merchant != merchant or not code or len(code) > 4096:
             abort(400)
         save_tokens(clover('POST', '/oauth/v2/token', json={
             'client_id': config['CLOVER_APP_ID'], 'client_secret': config['CLOVER_APP_SECRET'], 'code': code}))
         return redirect(PREFIX + '/')
 
-    tender_labels = {}
+    # Tender names change rarely: one cached list instead of a lookup per payment.
     tender_lock = threading.Lock()
-    tender_retry_after = 0
-    tender_lookup_running = False
-    # One probe worker shares the same sample across checkout, review and diagnostics.
+    tender_cache = {'at': 0.0, 'items': None, 'running': False, 'retry_at': 0.0}
+
+    def load_tenders(token):
+        payload = clover('GET', f'/v3/merchants/{merchant}/tenders', headers={'Authorization': 'Bearer ' + token})
+        items = {t['id']: {k: t.get(k) for k in ('id', 'label', 'labelKey', 'enabled', 'visible')}
+                 for t in payload.get('elements', []) if isinstance(t, dict) and IDENTIFIER.fullmatch(str(t.get('id', '')))}
+        with tender_lock:
+            tender_cache.update(at=time.monotonic(), items=items)
+        return items
+
+    def refresh_tenders_later(token):
+        def run():
+            try:
+                load_tenders(token)
+            except CloverError:
+                with tender_lock:
+                    tender_cache['retry_at'] = time.monotonic() + 30
+            finally:
+                with tender_lock:
+                    tender_cache['running'] = False
+        with tender_lock:
+            due = (tender_cache['items'] is None or time.monotonic() - tender_cache['at'] > TENDER_TTL)
+            if not due or tender_cache['running'] or time.monotonic() < tender_cache['retry_at']:
+                return tender_cache['items'] or {}
+            tender_cache['running'] = True
+        threading.Thread(target=run, daemon=True).start()
+        with tender_lock:
+            return tender_cache['items'] or {}
+
+    def tenders_now(token):
+        with tender_lock:
+            fresh = tender_cache['items'] is not None and time.monotonic() - tender_cache['at'] <= TENDER_TTL
+            items = tender_cache['items']
+        return items if fresh else load_tenders(token)
+
+    # One connector worker shares the same sample across POPCORE, the companion and diagnostics.
     orders_lock = threading.Lock()
     orders_condition = threading.Condition(orders_lock)
     orders_payload = None
@@ -413,33 +559,63 @@ def create_app(config):
     orders_failure = None
     orders_running = False
     orders_token = None
+    order_cache = {}
+    order_locks = {}
 
-    def lookup_tender(token, merchant, payment_id, tender_id):
-        nonlocal tender_retry_after, tender_lookup_running
-        try:
-            detail = clover('GET', '/v3/merchants/' + merchant + '/payments/' + payment_id,
-                            headers={'Authorization': 'Bearer ' + token},
-                            params={'expand': 'tender,employee,order'})
-            tender = detail.get('tender')
-            label = tender.get('label') if isinstance(tender, dict) and tender.get('id') == tender_id else None
-        except CloverError:
-            label = None
-        with tender_lock:
-            if label:
-                tender_labels[tender_id] = label
-            else:
-                tender_retry_after = time.monotonic() + 30
-            tender_lookup_running = False
+    def order_lock(order_id):
+        with orders_lock:
+            return order_locks.setdefault(order_id, threading.Lock())
 
-    def refresh_cloud(merchant):
+    ORDER_EXPAND = 'lineItems,discounts,payments,refunds,credits,employee'
+
+    def safe_row(order, tenders):
+        """Only the order facts POPCORE needs; never customer, card or token data."""
+        row = {k: order.get(k) for k in (
+            'id', 'total', 'currency', 'paymentState', 'state', 'testMode', 'createdTime',
+            'clientCreatedTime', 'modifiedTime', 'unpaidBalance', 'manualTransaction', 'payType',
+            'title', 'externalReferenceId')}
+        row['orderTypeId'] = (order.get('orderType') or {}).get('id')
+        row['employeeId'] = (order.get('employee') or {}).get('id')
+        row['employeeName'] = (order.get('employee') or {}).get('name')
+        row['items'] = [{**{k: item.get(k) for k in (
+            'id', 'itemCode', 'name', 'price', 'priceWithModifiersAndItemAndOrderDiscounts',
+            'unitQty', 'unitName', 'discountAmount', 'orderLevelDiscountAmount', 'refunded',
+            'isRevenue', 'createdTime')}, 'itemId': (item.get('item') or {}).get('id')}
+            for item in (order.get('lineItems') or {}).get('elements', [])]
+        row['discounts'] = [{k: discount.get(k) for k in ('id', 'name', 'amount', 'percentage')}
+                            for discount in (order.get('discounts') or {}).get('elements', [])]
+        row['payments'] = []
+        for payment in (order.get('payments') or {}).get('elements', []):
+            safe_payment = {k: payment.get(k) for k in (
+                'id', 'amount', 'tipAmount', 'taxAmount', 'result', 'createdTime',
+                'modifiedTime', 'offline', 'externalPaymentId')}
+            tender = payment.get('tender') or {}
+            known = tenders.get(tender.get('id')) or {}
+            safe_payment['tenderId'] = tender.get('id')
+            safe_payment['tenderLabel'] = tender.get('label') or known.get('label')
+            safe_payment['tenderLabelKey'] = tender.get('labelKey') or known.get('labelKey')
+            safe_payment['employeeId'] = (payment.get('employee') or {}).get('id')
+            row['payments'].append(safe_payment)
+        row['refunds'] = [{'id': r.get('id'), 'amount': r.get('amount'),
+                           'paymentId': (r.get('payment') or {}).get('id')}
+                          for r in (order.get('refunds') or {}).get('elements', []) if isinstance(r, dict)]
+        row['credits'] = [{'id': c.get('id'), 'amount': c.get('amount')}
+                          for c in (order.get('credits') or {}).get('elements', []) if isinstance(c, dict)]
+        return row
+
+    def check_payment_ids(order):
+        for payment in (order.get('payments') or {}).get('elements', []):
+            if not IDENTIFIER.fullmatch(str(payment.get('id', ''))):
+                raise CloverError('Clover returned an invalid payment identifier.')
+
+    def refresh_cloud():
         nonlocal orders_payload, orders_fetched_at, orders_next_read, orders_error
         nonlocal orders_failure, orders_running, orders_token
         try:
             token = access_token()
             payload = clover('GET', '/v3/merchants/' + merchant + '/orders',
                              headers={'Authorization': 'Bearer ' + token},
-                             params={'limit': 20, 'orderBy': 'modifiedTime DESC',
-                                     'expand': 'lineItems,discounts,payments,employee'})
+                             params={'limit': 20, 'orderBy': 'modifiedTime DESC', 'expand': ORDER_EXPAND})
             with orders_condition:
                 orders_payload, orders_fetched_at, orders_token = payload, time.time(), token
                 orders_next_read = time.monotonic() + 1
@@ -454,10 +630,9 @@ def create_app(config):
                 orders_condition.notify_all()
 
     def read_orders():
-        nonlocal tender_lookup_running, orders_running, orders_next_read
-        merchant = config.get('CLOVER_MERCHANT_ID', '')
+        nonlocal orders_running
         if not IDENTIFIER.fullmatch(merchant):
-            raise CloverError('Set the Canadian test merchant ID first.')
+            raise CloverError('Set the Clover merchant ID first.')
         with database() as db:
             device_rows = db.execute('SELECT order_id,payload,received,reconciled '
                                      'FROM device_orders ORDER BY received DESC LIMIT 20').fetchall()
@@ -466,57 +641,29 @@ def create_app(config):
             if start:
                 orders_running = True
                 if device_rows:
-                    threading.Thread(target=refresh_cloud, args=(merchant,), daemon=True).start()
+                    threading.Thread(target=refresh_cloud, daemon=True).start()
             elif orders_running and not device_rows:
                 orders_condition.wait_for(lambda: not orders_running, timeout=20)
         if start and not device_rows:
-            refresh_cloud(merchant)
+            refresh_cloud()
         with orders_condition:
             if orders_payload is None and not device_rows:
-                raise orders_failure or CloverError('Clover sandbox could not be read. Retry or reconnect.')
+                raise orders_failure or CloverError('Clover could not be read. Retry or reconnect.')
             payload = orders_payload or {'elements': []}
             fetched_at, token = orders_fetched_at, orders_token
             cloud_unavailable = orders_error or orders_payload is None
-        payment_ids = {payment.get('id', '') for order in payload.get('elements', [])
-                       for payment in (order.get('payments') or {}).get('elements', [])}
-        if any(not IDENTIFIER.fullmatch(payment_id) for payment_id in payment_ids):
-            raise CloverError('Clover sandbox returned an invalid payment identifier.')
-        # Only show order facts needed for this probe, never raw customer/card/token data.
+        unlabelled = any(not (payment.get('tender') or {}).get('label')
+                         for order in payload.get('elements', [])
+                         for payment in (order.get('payments') or {}).get('elements', []))
+        tenders = refresh_tenders_later(token) if token and unlabelled else {}
         rows = []
-        lookup_attempted = False
         for order in payload.get('elements', []):
-            row = {k: order.get(k) for k in (
-                'id', 'total', 'currency', 'paymentState', 'state', 'testMode', 'createdTime',
-                'clientCreatedTime', 'modifiedTime', 'unpaidBalance', 'manualTransaction', 'payType')}
-            row['orderTypeId'] = (order.get('orderType') or {}).get('id')
-            row['employeeId'] = (order.get('employee') or {}).get('id')
-            row['items'] = [{**{k: item.get(k) for k in (
-                'id', 'itemCode', 'name', 'price', 'priceWithModifiersAndItemAndOrderDiscounts',
-                'unitQty', 'unitName', 'discountAmount', 'orderLevelDiscountAmount', 'refunded',
-                'isRevenue', 'createdTime')}, 'itemId': (item.get('item') or {}).get('id')}
-                for item in (order.get('lineItems') or {}).get('elements', [])]
-            row['discounts'] = [{k: discount.get(k) for k in ('id', 'name', 'amount', 'percentage')}
-                                for discount in (order.get('discounts') or {}).get('elements', [])]
-            row['payments'] = []
-            for payment in (order.get('payments') or {}).get('elements', []):
-                payment_id = payment.get('id', '')
-                safe_payment = {k: payment.get(k) for k in (
-                    'id', 'amount', 'tipAmount', 'taxAmount', 'result', 'createdTime',
-                    'modifiedTime', 'offline')}
-                tender = payment.get('tender') or {}
-                tender_id = tender.get('id')
-                safe_payment['tenderId'] = tender_id
-                safe_payment['tenderLabel'] = tender.get('label')
-                safe_payment['employeeId'] = (payment.get('employee') or {}).get('id')
-                if token and tender_id and not safe_payment['tenderLabel']:
-                    with tender_lock:
-                        if tender_id not in tender_labels and not lookup_attempted and not tender_lookup_running and time.monotonic() >= tender_retry_after:
-                            lookup_attempted = True
-                            tender_lookup_running = True
-                            threading.Thread(target=lookup_tender, args=(token, merchant, payment_id, tender_id), daemon=True).start()
-                        safe_payment['tenderLabel'] = tender_labels.get(tender_id)
-                row['payments'].append(safe_payment)
-            rows.append(row)
+            # One malformed order must not hide the others.
+            try:
+                check_payment_ids(order)
+            except CloverError:
+                continue
+            rows.append(safe_row(order, tenders))
         by_id = {row['id']: row for row in rows}
         for device_row in device_rows:
             device = json.loads(device_row['payload'])
@@ -530,10 +677,10 @@ def create_app(config):
                 cloud['seen_at'] = fetched_at
                 cloud['reconciled'] = True
                 continue
-            if cloud and device_row['reconciled']:
+            if cloud and (device_row['reconciled'] or time.time() - device_row['received'] > DEVICE_FRESH):
                 continue
-            by_id[device['id']] = {**device, 'paymentState': 'OPEN', 'payments': [],
-                                   'source': 'device', 'seen_at': device_row['received'],
+            by_id[device['id']] = {**device, 'paymentState': 'OPEN', 'payments': [], 'refunds': [],
+                                   'credits': [], 'source': 'device', 'seen_at': device_row['received'],
                                    'reconciled': False}
         rows = sorted(by_id.values(), key=lambda row: row.get('seen_at', fetched_at), reverse=True)[:20]
         for row in rows:
@@ -545,77 +692,336 @@ def create_app(config):
     @app.get(PREFIX + '/orders')
     def orders():
         rows, fetched_at, cloud_unavailable = read_orders()
-        return jsonify(environment='sandbox', fetched_at=fetched_at, orders=rows,
+        return jsonify(environment=environment, merchant_id=merchant, fetched_at=fetched_at, orders=rows,
                        cloud_unavailable=cloud_unavailable,
-                       note='Up to 20 current orders; amounts are Clover minor units. Refresh to read lifecycle changes. No Clover or POPCORE data is written.')
+                       note='Up to 20 current orders; amounts are Clover minor units.')
 
-    @app.get(PREFIX + '/review')
-    def review():
-        rows, _, _ = read_orders()
-        for order in rows:
-            prices = []
-            line_discount = 0
-            item_order_discount = 0
-            has_line_discount = False
-            for item in order['items']:
-                for key in ('discountAmount', 'orderLevelDiscountAmount'):
-                    amount = item.get(key)
-                    if amount not in (None, 0):
-                        has_line_discount = True
-                    if _safe_cents(amount):
-                        if key == 'discountAmount':
-                            line_discount += amount
+    @app.get(PREFIX + '/orders/scan')
+    def scan():
+        """Every order created in [since, until), oldest first, for store-day closing."""
+        try:
+            since, until = int(request.args['since']), int(request.args['until'])
+            offset = int(request.args.get('offset', 0))
+        except (KeyError, ValueError):
+            abort(400)
+        if not 0 <= since < until or not 0 <= offset <= 10_000:
+            abort(400)
+        token = access_token()
+        payload = clover('GET', f'/v3/merchants/{merchant}/orders',
+                         headers={'Authorization': 'Bearer ' + token},
+                         params=[('filter', f'createdTime>={since}'), ('filter', f'createdTime<{until}'),
+                                 ('orderBy', 'createdTime ASC'), ('limit', 100), ('offset', offset),
+                                 ('expand', ORDER_EXPAND)])
+        tenders = tenders_now(token)
+        rows = []
+        for order in payload.get('elements', []):
+            try:
+                check_payment_ids(order)
+            except CloverError:
+                continue
+            row = safe_row(order, tenders)
+            row.update(source='cloud', seen_at=time.time(), reconciled=True)
+            rows.append(row)
+        return jsonify(environment=environment, merchant_id=merchant, fetched_at=time.time(), orders=rows,
+                       more=len(payload.get('elements', [])) == 100)
+
+    def fetch_order(order_id, *, fresh=False):
+        """(raw Clover order, line items with tax rates), cached briefly per order."""
+        cached = order_cache.get(order_id)
+        if cached and not fresh and time.monotonic() - cached[0] <= ORDER_TTL:
+            return cached[1], cached[2]
+        token = access_token()
+        auth = {'Authorization': 'Bearer ' + token}
+        base = f'/v3/merchants/{merchant}/orders/{order_id}'
+        order = clover('GET', base, headers=auth, params={'expand': ORDER_EXPAND})
+        check_payment_ids(order)
+        lines = clover('GET', base + '/line_items', headers=auth,
+                       params={'expand': 'taxRates,modifications,discounts', 'limit': 200}).get('elements', [])
+        order_cache[order_id] = (time.monotonic(), order, lines)
+        return order, lines
+
+    def calc_lines(lines):
+        return [{'price': line.get('price'), 'unitQty': line.get('unitQty'), 'refunded': line.get('refunded'),
+                 'exchanged': line.get('exchanged'),
+                 'modifications': (line.get('modifications') or {}).get('elements', []),
+                 'discounts': (line.get('discounts') or {}).get('elements', []),
+                 'taxRates': [{'id': r.get('id'), 'rate': r.get('rate')}
+                              for r in (line.get('taxRates') or {}).get('elements', [])]}
+                for line in lines]
+
+    def verify_pricing(order, lines):
+        """Can POPCORE reproduce Clover's current total? Only then may it set a new one."""
+        discounts = (order.get('discounts') or {}).get('elements', [])
+        if order.get('serviceCharge') or order.get('isVat'):
+            return {'verified': False, 'reason': 'Service charge or VAT pricing'}
+        foreign = [d for d in discounts if d.get('name') not in POPCORE_DISCOUNTS]
+        try:
+            total, tax, _ = clover_calc(calc_lines(lines), foreign)
+        except Unsupported as error:
+            return {'verified': False, 'reason': str(error)}
+        if total != order.get('total') and not any(d.get('name') in POPCORE_DISCOUNTS for d in discounts):
+            return {'verified': False, 'reason': 'Clover total does not match its items'}
+        return {'verified': True, 'tax_cents': tax}
+
+    @app.get(PREFIX + '/orders/<order_id>')
+    def one_order(order_id):
+        if not IDENTIFIER.fullmatch(order_id):
+            abort(400)
+        order, lines = fetch_order(order_id)
+        row = safe_row(order, refresh_tenders_later(access_token()))
+        row.update(source='cloud', seen_at=time.time(), reconciled=True)
+        pricing = verify_pricing(order, lines)
+        with database() as db:
+            device_row = db.execute('SELECT payload,received,reconciled FROM device_orders WHERE order_id=?',
+                                    (order_id,)).fetchone()
+        if device_row and not device_row['reconciled']:
+            device = json.loads(device_row['payload'])
+            if cloud_matches_device(row, device):
+                with database() as db:
+                    db.execute('UPDATE device_orders SET reconciled=1 WHERE order_id=? AND payload=?',
+                               (order_id, device_row['payload']))
+            elif time.time() - device_row['received'] <= DEVICE_FRESH:
+                # Same rule as the order list: the device is ahead of Clover's cloud copy, so its items win.
+                row = {**device, 'paymentState': 'OPEN', 'payments': [], 'refunds': [], 'credits': [],
+                       'source': 'device', 'seen_at': device_row['received'], 'reconciled': False}
+                pricing = {'verified': False, 'reason': "The Clover device is ahead of Clover's cloud copy."}
+        return jsonify(environment=environment, merchant_id=merchant, fetched_at=time.time(), order=row,
+                       pricing=pricing)
+
+    @app.post(PREFIX + '/orders/<order_id>/settle')
+    def settle(order_id):
+        """Complete an order POPCORE settled: its discount, Clover total, reference and tenders.
+
+        Idempotent: tenders carry POPCORE's key as externalPaymentId, an identical POPCORE
+        discount is reused, and the total and reference are plain field updates. Refuses when the
+        order no longer looks the way POPCORE priced it."""
+        nonlocal orders_next_read
+        require_writer()
+        body = request.get_json(silent=True)
+        if not IDENTIFIER.fullmatch(order_id) or not IDENTIFIER.fullmatch(merchant) or not isinstance(body, dict):
+            abort(400)
+        target, payments, name = body.get('target_total'), body.get('payments'), body.get('discount_name')
+        expected, reference = body.get('expected'), body.get('reference')
+        if (not _safe_cents(target) or not isinstance(payments, list) or len(payments) > 10
+                or name not in (None, *POPCORE_DISCOUNTS) or not isinstance(expected, dict)
+                or not valid_reference(reference)):
+            abort(400)
+        for payment in payments:
+            if not (isinstance(payment, dict) and isinstance(payment.get('key'), str)
+                    and PAYMENT_KEY.fullmatch(payment['key']) and payment.get('tender') in POPCORE_TENDERS
+                    and _safe_cents(payment.get('amount')) and payment['amount'] > 0):
+                abort(400)
+        if len({payment['key'] for payment in payments}) != len(payments):
+            abort(400)
+        with order_lock(order_id):
+            token = access_token()
+            auth = {'Authorization': 'Bearer ' + token}
+            base = f'/v3/merchants/{merchant}/orders/{order_id}'
+            order, lines = fetch_order(order_id, fresh=True)
+            discounts = (order.get('discounts') or {}).get('elements', [])
+            ours = [d for d in discounts if d.get('name') in POPCORE_DISCOUNTS]
+            foreign = [d for d in discounts if d.get('name') not in POPCORE_DISCOUNTS]
+            clover_payments = [p for p in (order.get('payments') or {}).get('elements', [])
+                               if not str(p.get('externalPaymentId') or '').startswith('popcore-')]
+            written = {p.get('externalPaymentId'): p for p in (order.get('payments') or {}).get('elements', [])
+                       if str(p.get('externalPaymentId') or '').startswith('popcore-')}
+            def quantity(value):
+                return None if value in (None, 0, 1000) else value
+            now_facts = {
+                'items': sorted([line.get('id'), line.get('price'), quantity(line.get('unitQty'))]
+                                for line in (order.get('lineItems') or {}).get('elements', [])),
+                'discounts': sorted([d.get('id'), d.get('amount'), d.get('percentage')] for d in foreign),
+                'payments': sorted([p.get('id'), p.get('amount')] for p in clover_payments
+                                   if p.get('result') == 'SUCCESS'),
+            }
+            supplied = {key: sorted(expected.get(key) or []) for key in now_facts}
+            supplied['items'] = sorted([i[0], i[1], quantity(i[2])] for i in supplied['items'] if len(i) == 3)
+            if supplied != now_facts:
+                return conflict('clover_changed', 'The order changed on Clover after POPCORE priced it.',
+                                current=now_facts)
+            paid_on_clover = sum(p.get('amount') or 0 for p in clover_payments if p.get('result') == 'SUCCESS')
+            received = sum(p['amount'] for p in payments)
+            if paid_on_clover + received != target:
+                return conflict('amounts_differ', 'POPCORE tenders and Clover payments do not add up to the target.')
+            existing_tax = sum(p.get('taxAmount') or 0 for p in clover_payments if p.get('result') == 'SUCCESS')
+            discount, tax = None, None
+            if payments:
+                try:
+                    calc_input = calc_lines(lines)
+                    base_total, base_tax, discounted = clover_calc(calc_input, foreign)
+                except Unsupported as error:
+                    return conflict('calc_unverified', f'Clover pricing is not exact here ({error}).')
+                if not ours and base_total != order.get('total'):
+                    return conflict('calc_unverified', 'Clover total does not match its items.')
+                if target > base_total:
+                    return conflict('overpaid', 'More money than the Clover order.', clover_total=base_total)
+                if target == base_total or name is None:
+                    if target != base_total:
+                        return conflict('discount_required', 'A discount is needed but none was named.')
+                    planned, total, tax = 0, base_total, base_tax
+                else:
+                    low, high = 0, discounted
+                    while low < high:
+                        middle = (low + high) // 2
+                        if clover_calc(calc_input, foreign, middle)[0] <= target:
+                            high = middle
                         else:
-                            item_order_discount += amount
-                if prices is None:
-                    continue
-                price = item.get('priceWithModifiersAndItemAndOrderDiscounts')
-                if price is None:
-                    price = item.get('price')
-                if not _safe_cents(price):
-                    prices = None
-                    continue
-                prices.append(price)
-            subtotal = sum(prices) if prices is not None else None
-            total = order.get('total')
-            target = suggest_payable(total)
-            order['hasDiscount'] = bool(order['discounts']) or has_line_discount
-            order['lineDiscountCents'] = line_discount
-            order['itemOrderDiscountCents'] = item_order_discount
-            order['quote'] = (discount_quote(subtotal, total - subtotal, target)
-                              if order.get('paymentState') == 'OPEN' and not order['payments']
-                              and not order['hasDiscount'] and _safe_cents(total)
-                              and _safe_cents(subtotal) and subtotal <= total and target else None)
-            order['target'] = target
-        return render_template_string('''<!doctype html><html lang="en"><meta charset="utf-8">
-            <meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandbox checkout review</title>
-            <style>body{font:16px system-ui;max-width:900px;margin:32px auto;padding:0 20px;line-height:1.5}
-            article{border:1px solid #ddd;border-radius:12px;padding:20px;margin:18px 0}.facts{display:flex;gap:24px;flex-wrap:wrap}
-            .quote{background:#f4f7f4;border-radius:8px;padding:12px 16px}.quote strong{font-size:1.35rem;display:block}
-            table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px;border-bottom:1px solid #eee}
-            code{overflow-wrap:anywhere}a{color:#075a9c}.muted{color:#596273}</style>
-            <p><a href="{{ prefix }}/">← Sandbox status</a></p><h1>Sandbox checkout review</h1>
-            <p>Read-only. Enter any suggested discount manually in the Clover emulator. No POPCORE inventory is changed.</p>
-            {% for order in orders %}<article><h2><code>{{ order.id }}</code></h2>
-            <div class="facts"><p>Status <strong>{{ order.paymentState or order.state or 'Unknown' }}</strong></p>
-            <p>Current Clover total <strong>{{ money(order.total) }}</strong></p></div>
-            {% if order['quote'] %}<div class="quote"><span>Suggested customer payment</span><strong>{{ money(order['target']) }}</strong>
-            <span>Pre-tax discount to enter in Clover</span><strong>{{ money(order['quote']['discountCents']) }}</strong>
-            <small>Estimated Clover total: {{ money(order['quote']['predictedTotalCents']) }}. Confirm the total on Clover before payment.</small></div>
-            {% elif order['hasDiscount'] %}<p class="quote"><strong>Discount entered in Clover</strong> This order will not receive another suggestion.</p>
-            {% else %}<p class="muted">Waiting for a usable Clover total before calculating a discount.</p>{% endif %}
-            <h3>Items</h3><table><tr><th>Item</th><th>Current price</th></tr>
-            {% for item in order['items'] %}<tr><td>{{ item.name or item.itemCode or item.id }}</td><td>{{ money(item.priceWithModifiersAndItemAndOrderDiscounts if item.priceWithModifiersAndItemAndOrderDiscounts is not none else item.price) }}</td></tr>{% endfor %}</table>
-            {% if order['discounts'] or order['lineDiscountCents'] or order['itemOrderDiscountCents'] %}<h3>Discounts</h3><ul>
-            {% for discount in order['discounts'] %}<li>{{ discount.name or 'Discount' }} — {{ money(discount.amount) }}</li>{% endfor %}
-            {% if order['lineDiscountCents'] %}<li>Line-item discounts — {{ money(order['lineDiscountCents']) }}</li>{% endif %}
-            {% if order['itemOrderDiscountCents'] and not order['discounts'] %}<li>Order-level discount allocation — {{ money(order['itemOrderDiscountCents']) }}</li>{% endif %}</ul>{% endif %}
-            {% if order['payments'] %}<h3>Payments</h3><ul>{% for payment in order['payments'] %}<li>{{ payment.tenderLabel or 'Tender' }} — {{ money(payment.amount) }} · {{ payment.result or 'Unknown' }}</li>{% endfor %}</ul>{% endif %}
-            </article>{% else %}<p>No sandbox orders found yet.</p>{% endfor %}</html>''',
-            prefix=PREFIX, orders=rows, money=money)
+                            low = middle + 1
+                    planned = low
+                    total, tax, _ = clover_calc(calc_input, foreign, planned)
+                if target - total > 5 or total < paid_on_clover:
+                    return conflict('unreachable', 'Clover cannot land on this amount.', clover_total=total)
+                # Clover must never show more money than POPCORE received: the largest tender
+                # carries the cent difference Clover's tax rounding leaves.
+                adjust = sorted(range(len(payments)), key=lambda i: payments[i]['amount'])[-1]
+                amounts = [p['amount'] - ((target - total) if i == adjust else 0) for i, p in enumerate(payments)]
+                if min(amounts) <= 0:
+                    return conflict('unreachable', 'Rounding would leave a tender at zero.')
+                # Resolve every tender before the first write, so a missing one changes nothing.
+                tenders, tender_ids = tenders_now(token), {}
+                for payment in payments:
+                    names = POPCORE_TENDERS[payment['tender']]
+                    tender = next((t for t in tenders.values() if (t.get('labelKey') in names or
+                                   str(t.get('label') or '').casefold() in names)), None)
+                    if payment['key'] not in written and (tender is None or not t_enabled(tender)):
+                        return conflict('tender_missing', 'Create and enable a "' + (
+                            'Cash' if payment['tender'] == 'cash' else names[0].title()) + '" tender on Clover first.')
+                    tender_ids[payment['key']] = tender['id'] if tender else None
+                for existing in ours:
+                    if planned and existing.get('name') == name and abs(existing.get('amount') or 0) == planned:
+                        discount = existing
+                    else:
+                        clover('DELETE', f"{base}/discounts/{existing['id']}", headers=auth)
+                if planned and discount is None:
+                    created = clover('POST', base + '/discounts', headers=auth,
+                                     json={'name': name, 'amount': -planned})
+                    discount = {'id': created.get('id'), 'name': name, 'amount': -planned}
+                update = {'total': total}
+            else:
+                total = order.get('total')
+                update = {}
+            update = {key: value for key, value in update.items() if order.get(key) != value}
+            if update:
+                clover('POST', base, headers=auth, json=update)
+            # The POPCORE number is a label: Clover refuses a new external reference once the order has
+            # a payment, and a refused label never stops the order being completed.
+            label = {}
+            if reference:
+                if reference.get('external_reference_id') and not any(
+                        p.get('result') == 'SUCCESS' for p in clover_payments):
+                    label['externalReferenceId'] = reference['external_reference_id']
+                if reference.get('title'):
+                    label['title'] = reference['title']
+            label = {key: value for key, value in label.items() if order.get(key) != value}
+            if label:
+                try:
+                    clover('POST', base, headers=auth, json=label)
+                except CloverError as error:
+                    if error.status != 400:
+                        raise
+            note = (reference or {}).get('title') or 'Recorded in POPCORE' + (
+                f" ({reference['external_reference_id']})" if (reference or {}).get('external_reference_id') else '')
+            results = []
+            if payments:
+                tax_left = max(0, tax - existing_tax)
+                share_base = sum(amounts)
+                for index, (payment, amount) in enumerate(zip(payments, amounts)):
+                    share = tax_left if index == len(payments) - 1 else _half_up(tax_left * amount, share_base)
+                    share = min(share, tax_left)
+                    tax_left -= share
+                    if payment['key'] in written:
+                        results.append({'key': payment['key'], 'id': written[payment['key']].get('id'),
+                                        'amount': written[payment['key']].get('amount'),
+                                        'taxAmount': written[payment['key']].get('taxAmount')})
+                        continue
+                    created = clover('POST', base + '/payments', headers=auth, json={
+                        'amount': amount, 'tender': {'id': tender_ids[payment['key']]},
+                        'externalPaymentId': payment['key'], 'result': 'SUCCESS',
+                        'note': note, 'taxAmount': share})
+                    results.append({'key': payment['key'], 'id': created.get('id'), 'amount': amount,
+                                    'taxAmount': share})
+            order, _ = fetch_order(order_id, fresh=True)
+            with orders_condition:
+                orders_next_read = 0
+            success = sum(p.get('amount') or 0 for p in (order.get('payments') or {}).get('elements', [])
+                          if p.get('result') == 'SUCCESS')
+            paid = order.get('paymentState') == 'PAID' and success == order.get('total')
+            if payments and not paid:
+                return conflict('not_paid', 'Clover did not record the order as paid.',
+                                clover_total=order.get('total'), paid_cents=success)
+            return jsonify(total=order.get('total'), paymentState=order.get('paymentState'), paid=paid,
+                           discount=discount, tax_cents=tax, difference_cents=target - (order.get('total') or 0)
+                           if payments else 0, payments=results,
+                           externalReferenceId=order.get('externalReferenceId'))
+
+    @app.post(PREFIX + '/orders/<order_id>/label')
+    def label_order(order_id):
+        """Mark an order POPCORE recorded as paid without paying it on Clover: its title and note.
+
+        Idempotent: nothing is written when the order already carries the label."""
+        nonlocal orders_next_read
+        require_writer()
+        body = request.get_json(silent=True)
+        text = body.get('label') if isinstance(body, dict) else None
+        if not IDENTIFIER.fullmatch(order_id) or not IDENTIFIER.fullmatch(merchant) or not (
+                isinstance(text, str) and LABEL.fullmatch(text)):
+            abort(400)
+        with order_lock(order_id):
+            auth = {'Authorization': 'Bearer ' + access_token()}
+            base = f'/v3/merchants/{merchant}/orders/{order_id}'
+            order, _ = fetch_order(order_id, fresh=True)
+            note = order.get('note') or ''
+            update = {} if order.get('title') == text else {'title': text}
+            if text not in note and len(f'{note}\n{text}' if note else text) <= 255:
+                update['note'] = f'{note}\n{text}' if note else text
+            if update:
+                try:
+                    clover('POST', base, headers=auth, json=update)
+                except CloverError as error:
+                    # Clover may keep a note it will not change; the title alone still marks the order.
+                    if error.status != 400 or 'note' not in update or 'title' not in update:
+                        raise
+                    clover('POST', base, headers=auth, json={'title': text})
+            order_cache.pop(order_id, None)
+            with orders_condition:
+                orders_next_read = 0
+            return jsonify(title=text, written=sorted(update), paymentState=order.get('paymentState'),
+                           total=order.get('total'))
+
+    @app.delete(PREFIX + '/orders/<order_id>')
+    def delete_order(order_id):
+        """Delete an order nobody paid, so Clover matches a cancellation in POPCORE."""
+        nonlocal orders_next_read
+        require_writer()
+        if not IDENTIFIER.fullmatch(order_id):
+            abort(400)
+        with order_lock(order_id):
+            try:
+                order, _ = fetch_order(order_id, fresh=True)
+            except CloverError as error:
+                if error.status == 404:
+                    return jsonify(deleted=True, missing=True)
+                raise
+            if order.get('paymentState') not in (None, 'OPEN') or any(
+                    p.get('result') == 'SUCCESS' for p in (order.get('payments') or {}).get('elements', [])):
+                return conflict('has_payments', 'Clover keeps orders that have payments.')
+            token = access_token()
+            try:
+                clover('DELETE', f'/v3/merchants/{merchant}/orders/{order_id}',
+                       headers={'Authorization': 'Bearer ' + token})
+            except CloverError as error:
+                if error.status != 404:
+                    raise
+            order_cache.pop(order_id, None)
+            with database() as db:
+                db.execute('DELETE FROM device_orders WHERE order_id=?', (order_id,))
+            with orders_condition:
+                orders_next_read = 0
+            return jsonify(deleted=True, missing=False)
 
     @app.post(PREFIX + '/webhooks/<path_key>')
     def webhook(path_key):
+        nonlocal orders_next_read
         if not hmac.compare_digest(path_key, config['WEBHOOK_PATH_KEY']):
             abort(404)
         body = request.get_json(silent=True)
@@ -634,8 +1040,8 @@ def create_app(config):
         if body.get('appId') != config.get('CLOVER_APP_ID') or not isinstance(merchants, dict):
             abort(400)
         pending = []
-        for merchant, events in merchants.items():
-            if merchant != config.get('CLOVER_MERCHANT_ID') or not isinstance(events, list):
+        for event_merchant, events in merchants.items():
+            if event_merchant != merchant or not isinstance(events, list):
                 abort(400)
             for event in events:
                 if (not isinstance(event, dict) or not isinstance(event.get('objectId'), str)
@@ -643,9 +1049,14 @@ def create_app(config):
                         or event.get('type') not in ('CREATE', 'UPDATE', 'DELETE')
                         or type(event.get('ts')) is not int or event['ts'] < 0):
                     abort(400)
-                pending.append((merchant, event['objectId'], event['type'], event['ts'], time.time()))
+                pending.append((event_merchant, event['objectId'], event['type'], event['ts'], time.time()))
         with database() as db:
             db.executemany('INSERT OR IGNORE INTO events VALUES (?, ?, ?, ?, ?)', pending)
+        # A Clover change makes the next read fresh instead of waiting for the poll.
+        with orders_condition:
+            orders_next_read = min(orders_next_read, time.monotonic())
+        for _, object_id, *_ in pending:
+            order_cache.pop(object_id.split(':')[-1], None)
         return '', 200
 
     return app

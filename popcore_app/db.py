@@ -1774,6 +1774,74 @@ def _migration_daily_sales_match_audits(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('daily_sales_match_audits')")
 
 
+def _migration_clover_checkouts(con, cur):
+    """Clover orders as native checkouts: one feed per merchant and a link row per order."""
+    cur.execute("""CREATE TABLE IF NOT EXISTS clover_feed (
+        merchant_id TEXT PRIMARY KEY CHECK(length(merchant_id)=13),
+        store_id INTEGER NOT NULL REFERENCES stores(id),
+        import_since_ms INTEGER NOT NULL CHECK(import_since_ms>=0),
+        next_poll REAL NOT NULL DEFAULT 0,
+        fetched_at REAL NOT NULL DEFAULT 0,
+        ok_at REAL NOT NULL DEFAULT 0,
+        day_scan_date TEXT,
+        day_scan_at REAL NOT NULL DEFAULT 0,
+        error TEXT NOT NULL DEFAULT 'Waiting for Clover'
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS clover_orders (
+        checkout_id INTEGER PRIMARY KEY REFERENCES checkout_orders(id),
+        merchant_id TEXT NOT NULL CHECK(length(merchant_id)=13),
+        order_id TEXT NOT NULL CHECK(length(order_id)=13),
+        created_ms INTEGER NOT NULL,
+        snapshot TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('cloud','device')),
+        state TEXT NOT NULL,
+        seen_at REAL NOT NULL,
+        fetch_next_at REAL NOT NULL DEFAULT 0,
+        plan TEXT CHECK(plan IS NULL OR plan IN ('pay','split_card')),
+        pricing_mode TEXT,
+        due_cents INTEGER CHECK(due_cents IS NULL OR due_cents>=0),
+        final_fingerprint TEXT,
+        writeback_state TEXT NOT NULL DEFAULT 'none'
+            CHECK(writeback_state IN ('none','pending','failed','done')),
+        writeback_error TEXT,
+        writeback_tries INTEGER NOT NULL DEFAULT 0 CHECK(writeback_tries>=0),
+        writeback_next_at REAL NOT NULL DEFAULT 0,
+        clover_total_cents INTEGER CHECK(clover_total_cents IS NULL OR clover_total_cents>=0),
+        discount_id TEXT,
+        discount_cents INTEGER CHECK(discount_cents IS NULL OR discount_cents>=0),
+        delete_pending INTEGER NOT NULL DEFAULT 0 CHECK(delete_pending IN (0,1)),
+        review_reason TEXT,
+        review_detail TEXT,
+        UNIQUE(merchant_id, order_id)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS clover_orders_writeback ON clover_orders(writeback_state, writeback_next_at)')
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(checkout_attempts)')}
+    for column, definition in (
+        ('origin', "TEXT NOT NULL DEFAULT 'popcore' CHECK(origin IN ('popcore','clover'))"),
+        ('provider_payment_id', 'TEXT'),
+        ('provider_amount_cents', 'INTEGER CHECK(provider_amount_cents IS NULL OR provider_amount_cents>0)'),
+        ('cancel_reason', 'TEXT'),
+    ):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE checkout_attempts ADD COLUMN {column} {definition}')
+    cur.execute('''CREATE UNIQUE INDEX IF NOT EXISTS checkout_attempt_provider
+        ON checkout_attempts(provider_payment_id) WHERE provider_payment_id IS NOT NULL''')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('clover_checkouts')")
+
+
+def _migration_checkout_attempt_cny(con, cur):
+    # A WeChat Pay or Alipay payment keeps the yuan the customer was charged and the rate used.
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(checkout_attempts)')}
+    for column, definition in (
+        ('cny_fen', 'INTEGER CHECK(cny_fen IS NULL OR cny_fen>=0)'),
+        ('cny_per_cad', 'TEXT'),
+    ):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE checkout_attempts ADD COLUMN {column} {definition}')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('checkout_attempt_cny')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1827,6 +1895,8 @@ def _get_migrations():
         ('add_actual_end_time_to_shifts',               _migration_add_actual_end_time_to_shifts),
         ('add_inventory_audit_context',                _migration_add_inventory_audit_context),
         ('daily_sales_match_audits',                   _migration_daily_sales_match_audits),
+        ('clover_checkouts',                           _migration_clover_checkouts),
+        ('checkout_attempt_cny',                       _migration_checkout_attempt_cny),
     ]
 
 

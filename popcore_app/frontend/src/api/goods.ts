@@ -14,6 +14,7 @@ export interface GoodsProduct {
   design_name?: string | null
   stock_unit?: NativeUnit | null
   identity_status?: 'verified' | 'unverified'
+  price?: number | null
 }
 export interface InventoryLocation {
   id: number

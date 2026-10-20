@@ -47,6 +47,97 @@ class CheckoutTests(ReceivingFixture):
         file = io.BytesIO(); Image.new('RGB', (8,8), 'red').save(file, format='PNG'); file.seek(0)
         return self.client.post(f"/api/checkouts/{order['id']}/attempts/{attempt}/evidence", headers={**self.headers(role),'Idempotency-Key':key}, data={'image': (file, 'proof.png')})
 
+    def test_manual_order_without_a_reference_is_numbered_per_store_and_day(self):
+        _, body = self.create_checkout(reference='CLOVER-1')
+        made = []
+        for key, reference in (('phone-1', None), ('phone-2', '   '), ('phone-3', None)):
+            order = {**body, 'reference': reference} if reference is not None else {k: v for k, v in body.items() if k != 'reference'}
+            response = self.call('', order, key)
+            self.assertEqual(response.status_code, 201, response.get_json())
+            made.append(response.get_json()['reference'])
+        self.assertEqual(made, ['DT-20260908-001', 'DT-20260908-002', 'DT-20260908-003'])
+        replay = self.call('', {k: v for k, v in body.items() if k != 'reference'}, 'phone-1')
+        self.assertEqual(replay.get_json()['reference'], 'DT-20260908-001')
+        self.assertEqual(self.call('', {**body, 'reference': 'x' * 121}, 'too-long').status_code, 400)
+
+    def receive(self, order, key, tender, amount, plan='pay', expect=200, **extra):
+        response = self.call(f"/{order['id']}/receive", {'tender': tender, 'amount_cents': amount, 'plan': plan,
+                                                        'expected_version': order['version'], **extra}, key)
+        self.assertEqual(response.status_code, expect, response.get_json())
+        return response.get_json()
+
+    def test_manual_orders_are_priced_and_paid_like_clover_orders(self):
+        order, body = self.create_checkout(reference='M-1')
+        collect = order['pricing']['collect']
+        self.assertEqual((collect['pay']['due_cents'], collect['pay']['label']), (4400, 'Cash discount'))
+        self.assertEqual((collect['split_card']['due_cents'], collect['split_card']['label']), (4500, 'Rounding'))
+        self.assertEqual(collect['card'], {'due_cents': 4520, 'rest_cents': 4520})
+        self.receive(order, 'stale-price', 'cash', 4400, expected_due_cents=4520, expect=409)
+        self.receive(order, 'too-much', 'cash', 4500, expect=400)
+        done = self.receive(order, 'cash-1', 'cash', 4400, expected_due_cents=4400)
+        self.assertEqual((done['status'], done['received_cents'], done['pricing']['collect']), ('completed', 4400, None))
+        self.assertEqual(self.receive(order, 'cash-1', 'cash', 4400, expected_due_cents=4400)['sale_id'], done['sale_id'])
+        with closing(self.connect()) as con:
+            sale = con.execute('SELECT * FROM sale_documents WHERE id=?', (done['sale_id'],)).fetchone()
+            self.assertEqual((sale['gross_cents'], sale['reduction_cents'], sale['collected_cents']), (4520, 120, 4400))
+            self.assertEqual(con.execute('SELECT tender,amount_cents FROM sale_payments WHERE sale_id=?', (done['sale_id'],)).fetchall()[0][:],
+                             ('cash', 4400))
+            self.assertEqual(con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",
+                                         (self.product_id, self.floor)).fetchone()[0], 3)
+        # Card alone pays the order total.
+        card_order, _ = self.create_checkout(reference='M-2')
+        paid = self.receive(card_order, 'card-1', 'card', 4520, expected_due_cents=4520)
+        self.assertEqual((paid['status'], paid['received_cents']), ('completed', 4520))
+
+    def test_manual_split_with_card_and_taking_a_payment_back(self):
+        order, _ = self.create_checkout(reference='M-3')
+        part = self.receive(order, 'card-part', 'card', 2000, plan='split_card', expected_due_cents=4500)
+        self.assertEqual((part['status'], part['pricing']['collect']['split_card']['rest_cents']), ('open', 2500))
+        self.assertEqual(part['pricing']['collect']['pay']['rest_cents'], 2500)  # with card in, the rest is rounded too
+        wrong = self.receive(part, 'cash-wrong', 'cash', 2000, plan='split_card')
+        cash = wrong['attempts'][-1]['id']
+        self.assertIn(cash, wrong['pricing']['undo_attempt_ids'])
+        self.assertEqual(self.call(f"/{order['id']}/undo", {'attempt_id': cash, 'reason': ' '}, 'undo-blank').status_code, 400)
+        undone = self.call(f"/{order['id']}/undo", {'attempt_id': cash, 'reason': 'Typed the wrong amount'}, 'undo-1').get_json()
+        self.assertEqual(undone['pricing']['collect']['split_card']['rest_cents'], 2500)
+        done = self.receive(undone, 'cash-rest', 'cash', 2500, plan='split_card', expected_due_cents=4500)
+        self.assertEqual((done['status'], done['received_cents']), ('completed', 4500))
+        self.assertEqual(self.call(f"/{order['id']}/undo", {'attempt_id': cash, 'reason': 'Late'}, 'undo-late').status_code, 409)
+
+    def test_manual_order_with_an_agreed_discount_is_only_rounded(self):
+        response = self.call('', dict(store_id=self.store_id, business_date='2026-09-08', reference='M-4',
+                                      subtotal_cents=4000, source_tax_cents=520, gross_cents=4520, reduction_cents=50,
+                                      rounding_cents=0, collected_cents=4470,
+                                      lines=[dict(product_id=self.product_id, unit='piece', quantity=2, unit_price_cents=2000,
+                                                  source_tax_cents=520)]), 'create-discounted')
+        collect = response.get_json()['pricing']['collect']
+        self.assertEqual((collect['pay']['due_cents'], collect['pay']['label'], collect['card']['due_cents']),
+                         (4400, 'Rounding', 4470))
+
+    def test_wechat_and_alipay_keep_the_yuan_charged_and_its_rate(self):
+        order, _ = self.create_checkout(reference='M-5')
+        # $24.00 at 1 CAD = 4.7528 CNY is ¥114.0672, charged as ¥114.07.
+        self.receive(order, 'no-rate', 'wechat', 2400, expected_due_cents=4400, expect=400)
+        self.receive(order, 'wrong-yuan', 'wechat', 2400, expected_due_cents=4400, cny_per_cad='4.7528', cny_fen=11400,
+                     expect=400)
+        self.receive(order, 'long-rate', 'wechat', 2400, expected_due_cents=4400, cny_per_cad='4.75281', cny_fen=11407,
+                     expect=400)
+        part = self.receive(order, 'wechat-1', 'wechat', 2400, expected_due_cents=4400, cny_per_cad='4.7528', cny_fen=11407)
+        wechat = part['attempts'][-1]
+        self.assertEqual((wechat['tender'], wechat['amount_cents'], wechat['cny_fen'], wechat['cny_per_cad']),
+                         ('wechat', 2400, 11407, '4.7528'))
+        # The rest by Alipay after the rate moved: each payment keeps the rate it was charged at.
+        done = self.receive(part, 'alipay-1', 'alipay', 2000, expected_due_cents=4400, cny_per_cad='4.7600', cny_fen=9520)
+        self.assertEqual(done['status'], 'completed')
+        sale = self.client.get(f"/api/sale-documents/{done['sale_id']}", headers=self.headers('admin')).get_json()
+        self.assertEqual([(p['tender'], p['amount_cents'], p['cny_fen'], p['cny_per_cad']) for p in sale['payments']],
+                         [('wechat', 2400, 11407, '4.7528'), ('alipay', 2000, 9520, '4.7600')])
+        # Other tenders are charged in dollars only.
+        cash_order, _ = self.create_checkout(reference='M-6')
+        cash = self.receive(cash_order, 'cash-cny', 'cash', 4400, expected_due_cents=4400, cny_per_cad='4.7528',
+                            cny_fen=20912)['attempts'][-1]
+        self.assertEqual((cash['cny_fen'], cash['cny_per_cad']), (None, None))
+
     def test_split_payment_photo_and_finalization_are_exactly_once(self):
         order, body = self.create_checkout()
         order = self.action(order, 'attempts', 'first', tender='e_transfer', amount_cents=2000, assigned_to='auth0|helper')

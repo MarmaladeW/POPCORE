@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { convertCadCentsToCnyFen, discountQuote, suggestPayable, suggestPaymentTarget } from './checkoutPricing.ts'
+import { convertCadCentsToCnyFen, discountQuote, hstCents, suggestPayable, suggestPaymentTarget } from './checkoutPricing.ts'
 
 test('CNY quote uses the configured rate with exact cent rounding', () => {
   assert.equal(convertCadCentsToCnyFen(3200, '5.20'), 16640)
@@ -16,8 +16,16 @@ test('CNY quote uses the configured rate with exact cent rounding', () => {
 test('suggestPayable rounds a 2.5% reduction to whole dollars, with ties down', () => {
   assert.equal(suggestPayable(4134), 4000)
   assert.equal(suggestPayable(712), 700)
-  assert.equal(suggestPayable(9914), 9700)
   assert.equal(suggestPayable(2000), 1900)
+  assert.equal(suggestPayable(1500), 1400)
+})
+
+test('above $15 suggestPayable takes at least $1 off, or 2.5% when more, rounded down', () => {
+  assert.equal(suggestPayable(2259), 2100)
+  assert.equal(suggestPayable(9914), 9600)
+  assert.equal(suggestPayable(6777), 6600)
+  assert.equal(suggestPayable(1501), 1400)
+  assert.equal(suggestPayable(1599), 1400)
 })
 
 test('suggestPayable keeps tiny positive totals positive', () => {
@@ -116,4 +124,14 @@ test('discountQuote rejects invalid and unsafe inputs without mutating arguments
   const inputs = [1000, 130, 1000] as const
   discountQuote(...inputs)
   assert.deepEqual(inputs, [1000, 130, 1000])
+})
+
+test('HST is 13% of the item prices, rounded half up like Clover', () => {
+  assert.equal(hstCents(4000), 520)
+  assert.equal(hstCents(1770 + 1999), 490)
+  assert.equal(hstCents(1999), 260)
+  assert.equal(hstCents(5), 1)
+  assert.equal(hstCents(0), 0)
+  assert.throws(() => hstCents(-1), RangeError)
+  assert.throws(() => hstCents(1.5), RangeError)
 })

@@ -1,6 +1,7 @@
 """Isolated checkout UI contract checks; no live provider or real authentication."""
 import asyncio
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -20,7 +21,14 @@ def checkout(number=1):
         order=dict(subtotal_cents=4000,source_tax_cents=520,gross_cents=4520,collected_cents=4520,reduction_cents=0,
             lines=[dict(quantity=2,unit='piece',product_name_snapshot='Smiski Museum Series' if number==1 else 'Mofusand Cat')]),
         attempts=[dict(id=number,tender='e_transfer',amount_cents=4520,status='pending',assigned_to='fixture|staff',
-            can_upload=True,photos=[])])
+            can_upload=True,photos=[])],pricing=manual_pricing(4520,cash=4400,split=4500))
+
+def manual_pricing(total,*,cash,split):
+    # What the server sends for a manual order: each way of paying already priced.
+    return dict(total_cents=total,card_cents=0,other_cents=0,can_receive=True,undo_attempt_ids=[],collect=dict(
+        pay=dict(due_cents=cash,mode='cash_discount',label='Cash discount',rest_cents=cash),
+        split_card=dict(due_cents=split,mode='split_card',label='Rounding',rest_cents=split),
+        card=dict(due_cents=total,rest_cents=total)))
 
 async def mobile_navigation(browser):
     context,page=await context_with_api(browser,{'mode':'data'},viewport={'width':390,'height':844},auth={'role':'admin'})
@@ -39,136 +47,135 @@ async def mobile_navigation(browser):
     finally:
         await context.close()
 
-async def sandbox_card_discount(browser):
-    state={'mode':'data'}
-    order=checkout(4)
-    order.update(source='clover-sandbox',can_claim=False,source_fresh=True,source_seen_at=time.time(),
-                 quote_available=True,totals_known=True,has_discount=False,cash_discount_applied=False,
-                 remaining_cents=2110,attempts=[])
-    order['order'].update(subtotal_cents=2000,source_tax_cents=110,gross_cents=2110,collected_cents=2110)
-    def api(path,query,request):
-        if path=='/api/clover-sandbox/checkouts/access':
-            return dict(business_date='2026-09-26',role='staff',live_stores=[dict(id=1,code='DT',name='Downtown')],
-                        history_stores=[])
-        if path=='/api/clover-sandbox/checkouts':
-            return dict(orders=[order],next_before_id=None,clover=dict(connected=True,fetched_at=time.time()))
-        if path=='/api/clover-sandbox/checkouts/4':return order
-        return payload(path,query)
-    state['api_payload']=api
-    context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':'staff'})
+async def clover_real_api_checks(browser):
+    # Real Flask routes and a disposable DB; only Clover itself is faked. The browser plays the cashier.
+    import re
+    import sys
+    sys.path.insert(0,str(ROOT/'popcore_app/tests'))
+    from test_clover_checkout import CloverCheckoutTests, card, clover_order
+    from contextlib import closing
+    fixture=CloverCheckoutTests(); fixture.setUp()
+    clover=fixture.clover
+    from werkzeug.serving import make_server
+    from threading import Thread
+    server=make_server('127.0.0.1',5058,fixture.app,threaded=True)
+    thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+    config=ROOT/'.local/checkout-focus/clover-vite.mjs'
+    config.parent.mkdir(parents=True,exist_ok=True)
+    config.write_text(f"import config from {json.dumps(str(HERE/'vite.config.mjs'))}; export default {{...config,server:{{...config.server,port:5178,proxy:{{'/api':'http://127.0.0.1:5058'}}}}}}")
+    vite=subprocess.Popen(['node','node_modules/vite/bin/vite.js','--config',str(config)],cwd=FRONTEND,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
-        await page.goto(BASE+'/checkout/4?source=clover-sandbox')
-        card=page.get_by_role('button',name='Card',exact=False)
-        await expect(card).to_be_enabled()
-        await card.click()
-        await expect(card).to_have_attribute('aria-pressed','true')
-        order.update(has_discount=True,cash_discount_applied=True,quote_available=False,remaining_cents=1900)
-        order['order'].update(subtotal_cents=1770,source_tax_cents=130,gross_cents=1900,collected_cents=1900)
-        await page.get_by_role('button',name='Refresh orders').click()
-        await expect(card).to_be_disabled()
-        await expect(card).to_have_attribute('aria-pressed','false')
-        await expect(page.get_by_text('Remove the cash discount on Clover to use Card.')).to_be_visible()
-        await expect(page.locator('.co-discount > span')).not_to_contain_text('to enter')
-        OUT.mkdir(parents=True,exist_ok=True)
-        await card.scroll_into_view_if_needed()
-        await page.screenshot(path=str(OUT/'sandbox-cash-discount-phone.png'))
-        await page.reload()
-        await expect(card).to_be_disabled()
-        order.update(has_discount=False,cash_discount_applied=False,quote_available=True,remaining_cents=2110)
-        order['order'].update(subtotal_cents=2000,source_tax_cents=110,gross_cents=2110,collected_cents=2110)
-        await page.get_by_role('button',name='Refresh orders').click()
-        await expect(card).to_be_enabled()
-        await expect(page.get_by_label('Customer pays')).to_have_value('21.10')
-        order.update(has_discount=True,quote_available=False)
-        await page.get_by_role('button',name='Refresh orders').click()
-        await expect(card).to_be_enabled()
-    finally:
-        await context.close()
+        for _ in range(100):
+            try:
+                _,writer=await asyncio.open_connection('127.0.0.1',5178);writer.close();await writer.wait_closed();break
+            except OSError:await asyncio.sleep(.1)
+        else:raise RuntimeError('Clover test Vite did not start')
+        context=await browser.new_context(viewport={'width':390,'height':844})
+        await context.add_init_script("window.__FOUNDATION_AUTH={role:'staff',token:'staff'}")
+        page=await context.new_page()
+        async def local_only(route):
+            from urllib.parse import urlsplit
+            if urlsplit(route.request.url).hostname not in ('127.0.0.1','localhost'):await route.abort()
+            else:await route.continue_()
+        await page.route('**/*',local_only)
+        await page.goto('http://127.0.0.1:5178/checkout')
+        await expect(page.get_by_text('Clover connected · sandbox',exact=True)).to_be_visible()
+        await expect(page.get_by_role('heading',name='Ready for your next customer',exact=True)).to_be_visible()
 
-async def sandbox_order_detail_and_hide(browser):
-    state={'mode':'data','hidden':False}
-    fresh=checkout(1)
-    fresh.update(source='clover-sandbox',source_fresh=True,source_seen_at=time.time(),
-                 quote_available=True,totals_known=True,has_discount=False,can_hide=False,
-                 can_note=True,note='',attempts=[])
-    stale=checkout(2)
-    stale.update(source='clover-sandbox',source_fresh=False,source_seen_at=0,
-                 quote_available=True,totals_known=True,has_discount=False,can_process=False,
-                 can_hide=True,attempts=[])
-    stores=[dict(id=1,code='DT',name='Downtown')]
-    def api(path,query,request):
-        if path=='/api/clover-sandbox/checkouts/access':
-            return dict(business_date='2026-09-28',role='staff',live_stores=stores,history_stores=stores,
-                        cny_per_cad='5.20')
-        if path=='/api/clover-sandbox/checkouts':
-            return dict(orders=[fresh]+([] if state['hidden'] else [stale]),next_before_id=None,
-                        clover=dict(connected=True,fetched_at=time.time()))
-        if path=='/api/clover-sandbox/checkouts/1':return fresh
-        if path=='/api/clover-sandbox/checkouts/1/notes':
-            fresh['note']=request.post_data_json['note']
-            return fresh
-        if path=='/api/clover-sandbox/checkouts/2':return stale
-        if path=='/api/clover-sandbox/checkouts/2/hide':
-            state['hidden']=True
-            return dict(hidden=True)
-        return payload(path,query)
-    state['api_payload']=api
-    context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':'staff'})
-    try:
-        await page.goto(BASE+'/checkout?source=clover-sandbox')
-        await page.get_by_role('navigation',name='Current orders').get_by_role('button',name='ORDER-1',exact=False).click()
-        await expect(page).to_have_url(BASE+'/checkout/1?source=clover-sandbox')
-        await expect(page.get_by_role('navigation',name='Current orders')).to_have_count(0)
-        await expect(page.get_by_role('article',name='Checkout ORDER-1')).to_be_visible()
-        amounts=page.locator('.co-original dd')
-        await expect(amounts).to_have_count(3)
-        edges=[(box:=await amounts.nth(i).bounding_box())['x']+box['width'] for i in range(3)]
-        assert max(edges)-min(edges)<2, f'Order amounts do not align: {edges}'
-        discount=page.locator('.co-discount')
-        heading=await discount.locator('span').bounding_box()
-        amount=await discount.locator('strong').bounding_box()
-        assert amount['y']>=heading['y']+heading['height'], 'Discount amount overlaps its heading'
-        await page.get_by_role('textbox',name='Order note').fill('Customer will return later')
-        await page.get_by_role('button',name='Save note').click()
-        await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer will return later')
-        await page.get_by_role('button',name='WeChat Pay').click()
-        await page.get_by_role('button',name='Use recorded total').click()
-        await expect(page.get_by_label('Chinese yuan collection amount')).to_contain_text('¥235.04')
-        await page.get_by_role('checkbox',name='Split payment').check()
-        await page.get_by_role('button',name='Use recorded total').click()
-        await page.get_by_label('Collect now (CAD)').fill('10.00')
-        await expect(page.get_by_label('Chinese yuan collection amount')).to_contain_text('¥52.00')
+        # A newly scanned order opens by itself on the idle screen, picked up by this cashier.
+        clover.put(clover_order(mapped='all'))
+        order=page.get_by_role('article',name='Checkout ORDERAAAAAAAA')
+        await expect(order).to_be_visible(timeout=20000)  # the first page load also compiles the screen
+        await expect(page).to_have_url(re.compile(r'/checkout/\d+$'))
+        await expect(order.get_by_role('heading',name='ORDERAAAAAAAA')).to_be_visible()
+        await expect(order).to_contain_text('Staff Cashier')
+        await expect(order.locator('.co-items')).to_contain_text('$17.70')
+        await expect(order.locator('.co-items')).to_contain_text('$19.99')
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         OUT.mkdir(parents=True,exist_ok=True)
-        await page.screenshot(path=str(OUT/'sandbox-order-detail-cny-phone.png'))
-        await page.reload()
-        await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer will return later')
+        await page.screenshot(path=str(OUT/'clover-order-phone.png'),full_page=True)
+
+        # The cash price is automatic; one tap records the sale and pays the Clover order.
+        await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
+        await expect(order.locator('.co-collect strong')).to_have_text('$41.00')
+        await expect(order.locator('.co-collect small')).to_contain_text('Cash discount −$1.59')
+        await order.get_by_role('button',name='Received $41.00',exact=True).click()
+        await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
+        await expect(order).to_contain_text('Sale recorded')
+        await expect(order).to_contain_text('tap Review Order, then Save to clear the screen')
+        await expect(order.get_by_label('Clover: Open')).to_be_visible()
+        (_,path,body,_),=clover.writes()
+        assert path=='/orders/ORDERAAAAAAAA/label' and re.fullmatch(r'Paid \d{4}-\d{2}-\d{2} \d{2}:\d{2}',body['label'])
+        assert clover.orders['ORDERAAAAAAAA']['paymentState']=='OPEN' and not clover.settles()
+        await page.screenshot(path=str(OUT/'clover-paid-phone.png'),full_page=True)
+
+        # Split with card: the card part on Clover first, the rest here.
         await page.get_by_role('link',name='Back to current orders').click()
-        await expect(page.get_by_role('navigation',name='Current orders')).to_be_visible()
-        await page.goto(BASE+'/checkout/history?source=clover-sandbox')
-        await page.get_by_role('navigation',name='Order history').get_by_role('button',name='ORDER-2',exact=False).click()
-        await expect(page.get_by_role('navigation',name='Order history')).to_have_count(0)
-        await expect(page.get_by_role('article',name='Checkout ORDER-2')).to_be_visible()
-        await page.get_by_role('button',name='Remove from list').click()
-        await page.get_by_role('dialog').get_by_role('button',name='Remove from list').click()
-        await expect(page.get_by_role('navigation',name='Order history')).to_be_visible()
-        await expect(page.get_by_role('button',name='ORDER-2',exact=False)).to_have_count(0)
-    finally:
+        clover.put(clover_order('ORDERBBBBBBBB',mapped=False))
+        order=page.get_by_role('article',name='Checkout ORDERBBBBBBBB')
+        await expect(order).to_be_visible(timeout=10000)
+        await order.get_by_role('button',name='Split payment',exact=True).click()
+        await order.get_by_label('Card part (CAD)').fill('22.00')
+        await expect(order).to_contain_text('Pay → ⋮ → Split Custom Amount → $22.00 → Card')
+        await expect(order.locator('.co-collect strong')).to_have_text('$20.00')
+        await page.screenshot(path=str(OUT/'clover-split-phone.png'),full_page=True)
+        clover.put(clover_order('ORDERBBBBBBBB',mapped=False,payments=[card('CARDPAYMENT01',2200)],state='PARTIALLY_PAID'))
+        await expect(order.get_by_text('Card $22.00 received on Clover',exact=False)).to_be_visible(timeout=10000)
+        await expect(order.locator('.co-collect strong')).to_have_text('$20.00')
+        await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
+        await order.get_by_role('button',name='Received $20.00',exact=True).click()
+        await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
+        await expect(order).to_contain_text('tap Pay more later to clear the screen')
+        assert [call[1] for call in clover.writes()]==['/orders/ORDERAAAAAAAA/label','/orders/ORDERBBBBBBBB/label']
+
+        # Cancelling an unpaid order deletes it on Clover.
+        await page.get_by_role('link',name='Back to current orders').click()
+        clover.put(clover_order('ORDERCCCCCCCC'))
+        order=page.get_by_role('article',name='Checkout ORDERCCCCCCCC')
+        await expect(order).to_be_visible(timeout=10000)
+        await order.get_by_text('Cancel this order',exact=True).click()
+        await order.get_by_role('button',name='Cancel order',exact=True).click()
+        await expect(order).to_contain_text('Deleted on Clover')
+        assert 'ORDERCCCCCCCC' in clover.deleted
+
+        # With automatic opening off the order waits in the list; the Clover ID finds it.
+        await page.get_by_role('link',name='Back to current orders').click()
+        await page.get_by_role('switch').click()
+        clover.put(clover_order('ORDERDDDDDDDD'))
+        await expect(page.get_by_role('button',name='ORDERDDDDDDDD',exact=False)).to_be_visible(timeout=10000)
+        await page.wait_for_timeout(1500)
+        await expect(page).to_have_url('http://127.0.0.1:5178/checkout')
+        await page.screenshot(path=str(OUT/'clover-queue-phone.png'),full_page=True)
+        await page.get_by_label('Clover order ID').fill('orderdddddddd')
+        await page.get_by_role('button',name='Find',exact=True).click()
+        order=page.get_by_role('article',name='Checkout ORDERDDDDDDDD')
+        await expect(order).to_be_visible()
+        await expect(order).to_contain_text('Not picked up yet')
+
+        # Clover being unavailable never blocks the sale; Retry finishes it on Clover.
+        clover.fail['POST label']=(502,{'error':'Clover is limiting requests.','code':'clover_unavailable'})
+        await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
+        await order.get_by_role('button',name='Received $41.00',exact=True).click()
+        await expect(order.get_by_text('Not labelled on Clover yet',exact=True)).to_be_visible()
+        await expect(order).to_contain_text('Sale recorded')
+        del clover.fail['POST label']
+        await order.get_by_role('button',name='Retry',exact=True).click()
+        await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
+        with closing(fixture.connect()) as con:
+            assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==3
+            assert con.execute("SELECT count(*) FROM clover_orders WHERE writeback_state='done'").fetchone()[0]==3
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         await context.close()
-    stores.append(dict(id=2,code='MK',name='Midtown'))
-    context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':'staff'})
-    try:
-        await page.goto(BASE+'/checkout/1?source=clover-sandbox')
-        await expect(page.get_by_label('Location')).to_be_visible()
-        await page.get_by_label('Location').select_option('1')
-        await expect(page.get_by_role('article',name='Checkout ORDER-1')).to_be_visible()
     finally:
-        await context.close()
+        vite.terminate();vite.wait(timeout=10)
+        server.shutdown();server.server_close();thread.join(timeout=5)
+        fixture.tearDown();fixture.doCleanups()
 
 async def checks(browser):
     state={'mode':'data','empty_queue':True}
     orders={1:checkout(),2:checkout(2)}
     pricing=checkout(3)
-    pricing.update(remaining_cents=4134,attempts=[])
+    pricing.update(remaining_cents=4134,attempts=[],pricing=manual_pricing(4134,cash=4000,split=4100))
     pricing['order'].update(subtotal_cents=4134,source_tax_cents=0,gross_cents=4134,
         collected_cents=4134)
     orders[3]=pricing
@@ -213,9 +220,13 @@ async def checks(browser):
     OUT.mkdir(parents=True,exist_ok=True)
     await page.evaluate('document.querySelectorAll("*").forEach(el=>{if(el.scrollTop)el.scrollTop=0});window.scrollTo(0,0)')
     await page.screenshot(path=str(OUT/'checkout-phone-ready.png'))
-    await page.get_by_label('Customer pays').fill('30.00')
-    await expect(page.get_by_role('alert').filter(has_text='20%')).to_be_visible()
-    await expect(page.get_by_text('Waiting for confirmed Clover total',exact=False)).to_be_visible()
+    # Each tender shows its price, with the cash discount applied automatically, as at a Clover order.
+    first=page.get_by_role('article',name='Checkout ORDER-1',exact=True)
+    await expect(first.get_by_role('button',name=re.compile(r'Card\b'))).to_contain_text('$45.20')
+    await expect(first.get_by_role('button',name=re.compile(r'Cash\b'))).to_contain_text('$44.00')
+    await first.get_by_role('button',name=re.compile(r'Cash\b')).click()
+    await expect(first.locator('.co-collect strong')).to_have_text('$44.00')
+    await expect(first.locator('.co-collect small')).to_contain_text('Cash discount −$1.20')
     async def switch_order(number):
         await page.get_by_role('link',name='Back to current orders').click()
         await page.get_by_role('button',name=f'Register {number}',exact=False).click()
@@ -228,26 +239,24 @@ async def checks(browser):
     await expect(page.get_by_role('article',name='Checkout ORDER-2',exact=True)).to_be_visible()
     await page.unroute('**/api/checkouts/2',slow_second)
     await switch_order(1)
-    await expect(page.get_by_label('Customer pays')).to_have_value('30.00')
+    # The tender chosen on an order survives switching away and back.
+    await expect(first.get_by_role('button',name=re.compile(r'Cash\b'))).to_have_attribute('aria-pressed','true')
     await switch_order(3)
-    await expect(page.get_by_role('article',name='Checkout ORDER-3',exact=True)).to_be_visible()
-    await page.get_by_role('button',name='Card',exact=False).click()
-    await expect(page.get_by_label('Customer pays')).to_have_value('41.34')
-    await page.get_by_role('checkbox',name='Split payment',exact=True).check()
-    await expect(page.get_by_role('checkbox',name='This split includes Card',exact=True)).to_be_checked()
-    await expect(page.get_by_label('Customer pays')).to_have_value('41.00')
-    await page.get_by_role('button',name='Cash',exact=False).click()
-    await expect(page.get_by_role('checkbox',name='This split includes Card',exact=True)).to_be_checked()
-    await expect(page.get_by_label('Customer pays')).to_have_value('41.00')
-    await page.get_by_role('checkbox',name='This split includes Card',exact=True).uncheck()
-    await expect(page.get_by_label('Customer pays')).to_have_value('40.00')
+    third=page.get_by_role('article',name='Checkout ORDER-3',exact=True)
+    await expect(third).to_be_visible()
+    await third.get_by_role('button',name=re.compile(r'Card\b')).click()
+    await expect(third.locator('.co-collect strong')).to_have_text('$41.34')
+    await third.get_by_role('button',name='Split payment',exact=True).click()
+    await expect(third).to_contain_text('$41.00 · Rounding −$0.34')
+    await third.get_by_role('button',name='Split without card',exact=True).click()
+    await expect(third).to_contain_text('$40.00 · Cash discount −$1.34')
     await switch_order(1)
     await expect(page.get_by_role('article',name='Checkout ORDER-1',exact=True)).to_be_visible()
-    await page.get_by_label('Customer pays').fill('45.20')
     file=ROOT/'.local/checkout-focus/proof.png'
     from PIL import Image
     file.parent.mkdir(parents=True,exist_ok=True); Image.new('RGB',(64,64),'#4f46e5').save(file)
-    await page.locator('input[type=file]').set_input_files(str(file))
+    await expect(page.get_by_role('button',name='Upload photo',exact=True)).to_be_visible()
+    await page.get_by_label('Payment evidence photo').set_input_files(str(file))
     await expect(page.get_by_role('button',name='Use photo',exact=True)).to_be_visible()
     await expect(page.get_by_role('button',name='Retake',exact=True)).to_be_visible()
     await expect(page.get_by_alt_text('Payment evidence preview')).to_be_visible()
@@ -267,7 +276,8 @@ async def checks(browser):
     state['status_for_path']={}
     await page.get_by_role('button',name='Retry',exact=True).click()
     await expect(page.get_by_text('Photo saved',exact=True)).to_be_visible()
-    await expect(page.get_by_role('button',name='Add another photo',exact=True)).to_be_enabled()
+    await expect(page.get_by_role('button',name='Take another photo',exact=True)).to_be_enabled()
+    await expect(page.get_by_role('button',name='Upload another photo',exact=True)).to_be_enabled()
     posts=[r for r in state['requests'] if r['method']=='POST']
     assert len(posts)==before+2 and posts[-1]['path']=='/api/checkouts/1/attempts/1/evidence'
     assert posts[-1]['idempotency_key']==posts[-2]['idempotency_key'] and posts[-1]['idempotency_key']
@@ -280,9 +290,9 @@ async def checks(browser):
     await page.screenshot(path=str(OUT/'checkout-desktop.png'),full_page=False)
     orders[1]['attempts'].append(dict(id=3,tender='wechat',amount_cents=100,status='completed',can_upload=True,photos=[]))
     await page.get_by_role('button',name='Refresh orders').click()
-    await expect(page.locator('input[type=file]')).to_have_count(2)
-    await page.locator('input[type=file]').nth(0).set_input_files(str(file))
-    await page.locator('input[type=file]').nth(1).set_input_files(str(file))
+    await expect(page.get_by_label('Payment evidence photo')).to_have_count(2)
+    await page.get_by_label('Payment evidence photo').nth(0).set_input_files(str(file))
+    await page.get_by_label('Payment evidence photo').nth(1).set_input_files(str(file))
     await expect(page.get_by_alt_text('Payment evidence preview')).to_have_count(2)
     await switch_order(2)
     await switch_order(1)
@@ -338,13 +348,15 @@ async def real_api_checks(browser):
         await page.route('**/*',local_only)
         await page.goto('http://127.0.0.1:5177/checkout')
         await page.get_by_role('button',name='Start manual checkout',exact=True).click()
-        await page.get_by_label('Order reference',exact=True).fill('LOCAL-BROWSER-ONLY')
+        await page.get_by_label('Order reference (optional)',exact=True).fill('LOCAL-BROWSER-ONLY')
         await page.get_by_label('Business date',exact=True).fill('2026-09-08')
         await page.get_by_label('Item 1',exact=True).click()
         await page.locator('.ant-select-item-option-content',has_text='Test Product').click()
         await page.get_by_label('Quantity',exact=True).fill('2')
         await page.get_by_label('Unit price ($)',exact=True).fill('20.00')
-        await page.get_by_label('Agreed tax total ($)',exact=True).fill('5.20')
+        # 13% HST fills itself in from the item prices; the form shows the final total.
+        await expect(page.get_by_label('Agreed tax total ($)',exact=True)).to_have_value('5.20')
+        await expect(page.get_by_text('Customer pays $45.20',exact=False)).to_be_visible()
         async with page.expect_response(lambda response: response.url.endswith('/api/checkouts') and response.request.method=='POST') as creation:
             await page.get_by_role('button',name='Create pending checkout',exact=True).click()
         order=await (await creation.value).json()
@@ -357,28 +369,22 @@ async def real_api_checks(browser):
         await page.get_by_role('textbox',name='Order note').fill('Customer requested a later pickup')
         await page.get_by_role('button',name='Save note').click()
         await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer requested a later pickup')
-        await page.get_by_role('button',name='E-transfer',exact=True).click()
-        await page.get_by_label('Customer pays').fill('45.20')
-        await page.get_by_role('button',name='Continue with E-transfer',exact=True).click()
-        await page.locator('input[type=file]').set_input_files(str(ROOT/'.local/checkout-focus/proof.png'))
+        # Paid like a Clover order: the e-transfer price includes the cash discount, then one tap.
+        await page.get_by_role('button',name=re.compile(r'^E-transfer')).click()
+        await expect(page.locator('.co-collect strong')).to_have_text('$44.00')
+        await page.get_by_role('button',name='Received $44.00',exact=True).click()
+        await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
+        # An existing picture (a screenshot of the transfer) goes through Upload photo, not the camera.
+        await page.get_by_label('Upload payment evidence').set_input_files(str(ROOT/'.local/checkout-focus/proof.png'))
+        await expect(page.get_by_role('button',name='Choose another',exact=True)).to_be_visible()
         await page.get_by_role('button',name='Use photo',exact=True).click()
         await expect(page.get_by_text('Photo saved',exact=True)).to_be_visible()
-        try:
-            await expect(page.get_by_role('button',name='Record $45.20 received',exact=True)).to_be_enabled()
-        except AssertionError:
-            OUT.mkdir(parents=True,exist_ok=True)
-            await page.screenshot(path=str(OUT/'real-api-record-missing.png'),full_page=True)
-            print('DIAGNOSTIC buttons:',await page.get_by_role('button').evaluate_all("els=>els.map(e=>[e.getAttribute('aria-label'),e.innerText,e.disabled,e.className])"))
-            print('DIAGNOSTIC text:',(await page.locator('.co-workspace').inner_text())[:3000])
-            raise
-        await page.get_by_role('button',name='Record $45.20 received',exact=True).click()
-        await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
         detail=fixture.client.get(f'/api/checkouts/{order["id"]}',headers=fixture.headers()).get_json()
-        assert detail['status']=='completed' and detail['received_cents']==4520 and detail['sale_id']
+        assert detail['status']=='completed' and detail['received_cents']==4400 and detail['sale_id']
         assert len(detail['attempts'][0]['photos'])==1
         with closing(fixture.connect()) as con:
             assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==1
-            assert con.execute('SELECT sum(amount_cents) FROM sale_payments').fetchone()[0]==4520
+            assert con.execute('SELECT sum(amount_cents) FROM sale_payments').fetchone()[0]==4400
             assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(fixture.product_id,fixture.floor)).fetchone()[0]==3
         await page.get_by_role('link',name='Back to current orders').click()
         await page.get_by_role('link',name='Order history',exact=True).first.click()
@@ -408,6 +414,29 @@ async def real_api_checks(browser):
             assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==1
             assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(fixture.product_id,fixture.floor)).fetchone()[0]==3
         await context.close()
+        # WeChat Pay is charged in yuan at the rate shown; the payment keeps that amount and its rate.
+        with closing(fixture.connect()) as con:
+            con.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('checkout_cny_per_cad','4.7528')")
+            con.commit()
+        wechat,_=fixture.create_checkout(reference='LOCAL-WECHAT-ONLY')
+        context=await browser.new_context(viewport={'width':390,'height':844})
+        await context.add_init_script("window.__FOUNDATION_AUTH={role:'staff',token:'staff'}")
+        page=await context.new_page()
+        await page.route('**/*',local_only)
+        await page.goto(f'http://127.0.0.1:5177/checkout/{wechat["id"]}')
+        await page.get_by_role('button',name=re.compile(r'^WeChat Pay')).click()
+        await expect(page.get_by_label('Chinese yuan collection amount').locator('strong')).to_have_text('¥209.12')
+        await page.get_by_role('button',name='Received $44.00',exact=True).click()
+        await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
+        await expect(page.get_by_text('¥209.12 charged at 1 CAD = 4.7528 CNY',exact=True)).to_be_visible()
+        await expect(page.get_by_text('WeChat Pay · $44.00 · ¥209.12',exact=True)).to_be_visible()  # beside the payment photo
+        await page.screenshot(path=str(ROOT/'.local/checkout-focus/browser/wechat-yuan-charged.png'),full_page=True)
+        with closing(fixture.connect()) as con:
+            assert tuple(con.execute("SELECT tender,amount_cents,cny_fen,cny_per_cad FROM checkout_attempts WHERE checkout_id=? AND status='completed'",(wechat['id'],)).fetchone())==('wechat',4400,20912,'4.7528')
+        await page.get_by_role('link',name='Back to current orders').click()
+        await page.get_by_role('link',name='Order history',exact=True).first.click()
+        await expect(page.get_by_role('button',name='LOCAL-WECHAT-ONLY',exact=False)).to_contain_text('WeChat Pay ¥209.12')
+        await context.close()
     finally:
         vite.terminate();vite.wait(timeout=10)
         server.shutdown();server.server_close();thread.join(timeout=5)
@@ -420,12 +449,11 @@ async def main():
         async with async_playwright() as p:
             browser=await p.chromium.launch()
             await mobile_navigation(browser)
-            await sandbox_card_discount(browser)
-            await sandbox_order_detail_and_hide(browser)
             await checks(browser)
             await real_api_checks(browser)
+            await clover_real_api_checks(browser)
             await browser.close()
-        print('PASS: checkout navigation, scoped manual checkout and off-duty history, sandbox cash-discount Card lock and reversal, order switching, warning, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund and stock posting also passed with disposable data; no provider/auth verification.')
+        print('PASS: checkout navigation, scoped manual checkout and off-duty history, order switching with the chosen tender kept, automatic tender prices and splits, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund, stock posting and a WeChat Pay payment keeping the yuan charged and its rate also passed with disposable data. Clover orders against actual Flask routes and a fake Clover: automatic pick-up, cash price, Clover order labelled paid and left open, split with card, cancel and delete, find by ID and label retry; no live Clover/auth verification.')
     finally:
         process.terminate();process.wait(timeout=10)
 

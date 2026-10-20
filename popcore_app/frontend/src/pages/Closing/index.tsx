@@ -27,6 +27,9 @@ function issueLabel(code: string, subject?: string) {
     delivery_unresolved: `${subject || `Delivery #${id}`} is still open.`, restock_unresolved: `${subject || `Restock #${id}`} is still open.`,
     hot_item_count_missing: `Required hot-item count for ${subject || `product #${id}`} is missing.`, payment_unverified: `${subject || `Payment #${id}`} is not verified.`,
     evidence_pending: `${subject || `Evidence #${id}`} is pending review.`, evidence_rejected: `${subject || `Evidence #${id}`} was rejected.`,
+    clover_sync_stale: 'Clover’s orders for this day were not checked in the last 10 minutes. Keep Clover connected, then refresh.',
+    clover_writeback_pending: `${subject || `Clover order #${id}`} is paid in POPCORE but not marked paid on Clover yet. Open it and retry.`,
+    clover_review: `${subject || `Clover order #${id}`} changed on Clover after the sale was recorded. Review it on Clover.`,
   }
   return labels[kind] || code
 }

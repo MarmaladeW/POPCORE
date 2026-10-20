@@ -1,5 +1,7 @@
 # Clover checkout rehearsal (option 1)
 
+> Superseded on 2026-10-20 by [Clover checkout](clover-checkout.md). The `/checkout?source=clover-sandbox` screen, its separate database and the posting step described here have been removed; Clover orders are now ordinary POPCORE checkouts. Kept as the record of the rehearsal.
+
 Status: the sandbox checkout is deployed. A read-only Android companion, device snapshot intake, and cloud-reader improvements are implemented locally. The companion debug APK built and installed on the sandbox emulator; its Clover listener registered. Hybrid settlement (non-card tenders recorded in POPCORE while the Clover order stays open) and barcode matching were added locally on 2026-10-07. The same day, on this Mac, the device path ran end to end: the sandbox Flex emulator's Register order `ANX52ECHFRJ8R` (2 items, CA$42.59) reached the local probe through the release companion, appeared in the Midtown sandbox queue, was claimed, and was settled as CA$42.00 cash in POPCORE with the Clover order left open. The local probe has no Clover OAuth tokens, so the cloud/card path and the webhook path were not exercised locally; sandbox items carry no item codes, so barcode matching showed 0 of 2 matched as expected. The new probe, adapter, companion and frontend changes are not deployed. End-to-end phone timing remains unverified.
 
 ## Boundaries

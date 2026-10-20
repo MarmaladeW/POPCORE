@@ -127,7 +127,8 @@ async def flow(browser, width):
         await actions.get_by_role('link', name='买单', exact=False).click()
         await expect(page.get_by_role('heading', name='Checkout', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Register 1', exact=False).click()
-        await expect(page.get_by_label('Customer pays')).to_be_visible()
+        # The order opens with its payment panel: every tender already priced by the server.
+        await expect(page.get_by_role('group', name='How is the customer paying?')).to_be_visible()
         await page.get_by_role('link', name='Home', exact=True).click()
         await actions.get_by_role('link', name='入店', exact=False).click()
         await expect(page.get_by_role('link', name='收货 / Receive shipment', exact=False)).to_be_visible()

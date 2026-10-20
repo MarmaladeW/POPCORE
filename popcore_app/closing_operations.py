@@ -2,7 +2,9 @@ from checkout_access import require_checkout, require_checkout_history_store, re
 """Versioned store-day closing and exact cash arithmetic."""
 import hashlib
 import json
+import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from checkout_operations import checkout_funds
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
@@ -109,6 +111,12 @@ def _source_facts(con, session):
             (store_id,business_date,business_date),
         )],
         'checkout_funds': checkout_funds(con,store_id,business_date),
+        'clover': [tuple(row) for row in con.execute(
+            """SELECT l.checkout_id, l.state, l.writeback_state, l.review_reason
+               FROM clover_orders l JOIN checkout_orders o ON o.id=l.checkout_id
+               WHERE o.store_id=? AND o.business_date=? ORDER BY l.checkout_id""",
+            (store_id, business_date),
+        )],
         'sale_sources': [tuple(row) for row in con.execute(
             """SELECT source.id, source.sale_id, source.source_system,
                       source.source_account, source.source_reference
@@ -235,12 +243,21 @@ def _issue_targets(con, session, codes, actor):
     targets = {}
     for code in codes:
         kind, _, value = code.partition(':')
-        if kind in {'sales_intake_incomplete', 'cash_count_missing', 'retained_float_shortfall'}:
-            targets[code] = {'href': '#closing-sources' if kind == 'sales_intake_incomplete' else '#closing-cash-count'}
+        if kind in {'sales_intake_incomplete', 'cash_count_missing', 'retained_float_shortfall', 'clover_sync_stale'}:
+            targets[code] = {'href': '#closing-cash-count' if kind in {'cash_count_missing', 'retained_float_shortfall'}
+                             else '#closing-sources'}
             continue
         item_id = int(value)
         row = None
-        if kind in {'checkout_unresolved', 'checkout_cash_unresolved'}:
+        if kind in {'clover_writeback_pending', 'clover_review'}:
+            row = con.execute('SELECT o.* FROM checkout_orders o WHERE o.id=?', (item_id,)).fetchone()
+            if row:
+                try:
+                    require_checkout(con, row, actor)
+                except PermissionError:
+                    continue
+                targets[code] = {'href': f"/checkout/{row['id']}", 'label': f"Clover order {row['reference']}"}
+        elif kind in {'checkout_unresolved', 'checkout_cash_unresolved'}:
             query = 'SELECT o.* FROM checkout_orders o WHERE o.id=?'
             if kind == 'checkout_cash_unresolved':
                 query = 'SELECT o.* FROM checkout_attempts a JOIN checkout_orders o ON o.id=a.checkout_id WHERE a.id=?'
@@ -340,6 +357,7 @@ def closing_detail(con, closing_id, *, actor):
     actionable = [code for code in hard if code.split(':')[0] in {
         'sales_intake_incomplete', 'cash_count_missing', 'retained_float_shortfall',
         'checkout_unresolved', 'delivery_unresolved', 'restock_unresolved', 'hot_item_count_missing',
+        'clover_writeback_pending', 'clover_sync_stale',
     }]
     result['issue_targets'] = _issue_targets(con, session, hard + exceptions if is_manager else actionable, actor)
     result['actionable_blockers'] = [code for code in actionable if code in result['issue_targets']]
@@ -432,6 +450,24 @@ def closing_issues(con, session):
            ORDER BY e.id""", (session['store_id'], session['business_date']),
     )
     exceptions.extend(f'evidence_{row["status"]}:{row["id"]}' for row in evidence)
+    store_id, business_date = session['store_id'], session['business_date']
+    feed = con.execute('SELECT * FROM clover_feed WHERE store_id=?', (store_id,)).fetchone()
+    if feed:
+        since = datetime.fromtimestamp(feed['import_since_ms'] / 1000, ZoneInfo('America/Toronto')).date().isoformat()
+        # Every Clover order of the day must be in POPCORE before the day can close.
+        if business_date >= since and (feed['day_scan_date'] != business_date
+                                       or time.time() - feed['day_scan_at'] > 600):
+            hard.append('clover_sync_stale')
+    hard.extend(f'clover_writeback_pending:{row[0]}' for row in con.execute(
+        """SELECT l.checkout_id FROM clover_orders l JOIN checkout_orders o ON o.id=l.checkout_id
+           WHERE o.store_id=? AND o.business_date=? AND o.status='completed'
+           AND l.writeback_state IN ('pending','failed') AND EXISTS(SELECT 1 FROM checkout_attempts a
+           WHERE a.checkout_id=o.id AND a.origin='popcore' AND a.status='completed') ORDER BY l.checkout_id""",
+        (store_id, business_date)))
+    exceptions.extend(f'clover_review:{row[0]}' for row in con.execute(
+        """SELECT l.checkout_id FROM clover_orders l JOIN checkout_orders o ON o.id=l.checkout_id
+           WHERE o.store_id=? AND o.business_date=? AND l.review_reason IS NOT NULL ORDER BY l.checkout_id""",
+        (store_id, business_date)))
     return hard, exceptions
 
 
