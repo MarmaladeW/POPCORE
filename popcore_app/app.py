@@ -74,6 +74,7 @@ from blueprints.trades    import bp as trades_bp
 from blueprints.today     import bp as today_bp
 from blueprints.reports   import bp as reports_bp
 from blueprints.special_orders import bp as special_orders_bp
+from blueprints.clover_matches import bp as clover_matches_bp
 
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
@@ -95,6 +96,7 @@ app.register_blueprint(trades_bp)
 app.register_blueprint(today_bp)
 app.register_blueprint(reports_bp)
 app.register_blueprint(special_orders_bp)
+app.register_blueprint(clover_matches_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.

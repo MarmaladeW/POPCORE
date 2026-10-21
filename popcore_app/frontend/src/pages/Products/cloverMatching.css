@@ -1,0 +1,26 @@
+.pc-clover-matching { max-width: 1280px; margin: 0 auto; color: #20242d; }
+.pc-clover-matching header a { display: inline-flex; align-items: center; min-height: 44px; }
+.pc-clover-matching h1 { margin: 4px 0 6px; font-size: 28px; }
+.pc-clover-matching header > p { max-width: 80ch; color: #536078; line-height: 1.55; }
+.pc-clover-matching .ant-alert { margin-block: 12px; }
+.pc-clover-matching .ant-btn { min-height: 44px; height: auto; }
+.pc-clover-counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 12px; }
+.pc-clover-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 16px; }
+.pc-clover-toolbar .ant-input-search { flex: 1; min-width: 220px; }
+.pc-clover-toolbar .ant-input-affix-wrapper, .pc-clover-toolbar .ant-input-search-button { min-height: 44px; }
+.pc-clover-toolbar > .ant-select { width: 200px; min-height: 44px; }
+.pc-clover-legacy, .pc-clover-why, .pc-clover-decision, .pc-clover-stack { display: grid; gap: 6px; min-width: 0; }
+.pc-clover-decision { gap: 8px; }
+.pc-clover-stack { gap: 12px; }
+.pc-clover-legacy strong { font-size: 15px; overflow-wrap: anywhere; }
+.pc-clover-legacy span { color: #374151; font-size: 13px; overflow-wrap: anywhere; }
+.pc-clover-legacy small, .pc-clover-why small { color: #536078; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.pc-clover-select { width: 100%; min-height: 44px; }
+.pc-clover-select .ant-select-selector { min-height: 44px; align-items: center; }
+.pc-clover-outcome { color: #2f6b3a; font-size: 13px; overflow-wrap: anywhere; }
+.pc-clover-refused { margin: 6px 0 0; padding-left: 18px; }
+.pc-clover-confirm p { line-height: 1.55; }
+@media (max-width: 640px) {
+  .pc-clover-matching h1 { font-size: 22px; }
+  .pc-clover-toolbar > .ant-select, .pc-clover-toolbar > .ant-btn { width: 100%; }
+}
