@@ -22,7 +22,9 @@ from test_clover_match_review import CloverMatchReviewTests
 async def choose(page, label, text):
     await page.locator(f'.ant-select[aria-label="{label}"]').click()
     await page.keyboard.type(text)
-    await page.keyboard.press('Enter')
+    option = page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').filter(has_text=text).first
+    await option.click()
+    await expect(page.locator(f'.ant-select[aria-label="{label}"] .ant-select-selection-item')).to_contain_text(text)
 
 
 async def checks(browser, fixture):
