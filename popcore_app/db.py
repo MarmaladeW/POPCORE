@@ -1842,6 +1842,30 @@ def _migration_checkout_attempt_cny(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('checkout_attempt_cny')")
 
 
+def _migration_clover_match_reviews(con, cur):
+    # Pending legacy → Clover product decisions, editable until applied. No foreign keys on
+    # purpose: applying a merge re-points every products(id) reference and deletes the legacy
+    # row, and this record must keep naming the legacy product afterwards.
+    cur.execute("""CREATE TABLE IF NOT EXISTS clover_match_reviews (
+        legacy_product_id INTEGER PRIMARY KEY,
+        legacy_sku TEXT,
+        legacy_jizhanming TEXT,
+        legacy_name TEXT,
+        decision TEXT CHECK (decision IS NULL OR decision IN ('merge', 'keep', 'delete')),
+        target_product_id INTEGER,
+        source TEXT NOT NULL DEFAULT 'sheet',
+        confidence TEXT,
+        note TEXT,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        applied_at TEXT,
+        applied_by TEXT,
+        applied_outcome TEXT,
+        CHECK ((decision = 'merge') = (target_product_id IS NOT NULL))
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('clover_match_reviews')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1897,6 +1921,7 @@ def _get_migrations():
         ('daily_sales_match_audits',                   _migration_daily_sales_match_audits),
         ('clover_checkouts',                           _migration_clover_checkouts),
         ('checkout_attempt_cny',                       _migration_checkout_attempt_cny),
+        ('clover_match_reviews',                       _migration_clover_match_reviews),
     ]
 
 

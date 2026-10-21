@@ -9,6 +9,7 @@ import {
   EditOutlined, PictureOutlined, FilterOutlined,
   SyncOutlined, ExclamationCircleOutlined, FileTextOutlined,
 } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import RoleGuard from '../../components/RoleGuard'
@@ -150,6 +151,7 @@ function stockBadge(total: number | null) {
 
 export default function ProductsPage() {
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
   const { series, productTypes, selectedStore } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
   const [stockMap,  setStockMap]  = useState<Map<number, number> | null>(null)
@@ -491,6 +493,9 @@ export default function ProductsPage() {
                 </Text>
               )}
             </div>
+          </RoleGuard>
+          <RoleGuard minRole="manager">
+            <Button style={{ minHeight: 44 }} onClick={() => navigate('/products/clover-matching')}>Clover matching</Button>
           </RoleGuard>
           <RoleGuard minRole="manager">
             <Button type="primary" aria-label="Add Product" icon={<PlusOutlined />} onClick={openNew}>

@@ -33,15 +33,26 @@ by item ID when present, else by exact name, so a later rename is recognised by 
   product's own rows (for example both hold stock at one location) is refused and listed; resolve
   that stock first. `delete` works only for unreferenced products.
 - The Clover checkout adapter now maps order lines by Clover item ID first, barcode second.
+- `scripts/load_clover_match_review.py --sheet review.xlsx [--db PATH] [--dry-run] [--replace]` loads a
+  filled review sheet into the in-app review (table `clover_match_reviews`, no foreign keys so a merge
+  never re-points it). A row loads only when its legacy id still has the same 记账名 and name; an
+  unknown or ambiguous Clover name loads as undecided with a note. Rows already edited or applied in
+  the app are left alone (`--replace` overwrites edits, never applied rows).
+- Products → **Clover matching** (`/products/clover-matching`, manager) lists every row with its
+  status (no decision, ready, keep, applied, old product gone). Changing a decision saves at once and
+  marks the row "edited here". Nothing merges until a manager selects ready rows and applies them;
+  each row then runs the same merge as the script in its own transaction and records who applied it
+  and what happened. A refused row changes nothing and stays open. Applied rows can no longer change.
 
 ## Production procedure (not yet executed)
 
 1. Take a backup (`scripts/create_backup_package.py`) and keep it until the catalogue is verified.
 2. Import: `import_clover_items.py --csv clover-items-2026-10-08.csv --dry-run`, then without `--dry-run`.
-3. Review: `merge_clover_products.py review --out review.csv`; the owner fills `decision` for every
-   `check` and `none` row and spot-checks the confident ones.
-4. Apply with `--dry-run` first, read the refusals, then apply for real. Re-run review until no
-   legacy rows remain or the remainder is deliberately kept.
+3. Review: `merge_clover_products.py review --out review.csv`; fill `decision` for every `check` and
+   `none` row and spot-check the confident ones.
+4. Load the sheet into the app (`load_clover_match_review.py --dry-run`, then for real), then correct
+   and apply decisions from Products → Clover matching, one series at a time before counting it.
+   The script's `apply` remains for bulk use; both refuse colliding stock the same way.
 5. Stores' opening counts and identity review (stock form/unit) proceed on the Clover products.
 
 Verified locally on 2026-10-08: importing the 548-item list into an empty database twice (548 created,
