@@ -109,7 +109,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
     const attention=inventoryAttention(product,data?.locations||[])
     const match=stockFilter==='all'||(stockFilter==='attention'?attention.length>0:attention.includes(stockFilter))
     const needle=designQuery.trim().normalize('NFKC').toLocaleLowerCase()
-    return match&&(!selected||!needle||`${product.name} ${product.design_name||''} ${product.sku}`.normalize('NFKC').toLocaleLowerCase().includes(needle))
+    return match&&(!selected||!needle||[product.name,product.design_name,product.sku,product.jizhanming,product.name_cn_en,product.alias_text].filter(Boolean).join(' ').normalize('NFKC').toLocaleLowerCase().includes(needle))
   }
   const visibleSeries=data?.series.filter(series=>stockFilter==='all'||series.products.some(matchesStock))||[]
 
@@ -194,7 +194,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
     {stockAction&&actionProduct&&data&&canWork&&<SeriesStockAction kind={stockAction.kind} product={actionProduct} data={data} onClose={()=>setStockAction(undefined)} onSaved={()=>{setStockAction(undefined);setSaved('stock');setRefresh(value=>value+1)}}/>}
     {historyOpen&&selected&&<SeriesHistory series={selected} storeCode={storeCode} onClose={()=>setHistoryOpen(false)}/>}
     <Drawer rootClassName="pc-inventory-drawer" title="Stock details" width="min(100%, 480px)" open={!!detail} onClose={()=>setDetailId(undefined)} destroyOnClose>
-      {detail&&data&&<div className="pc-series-stock-details"><InventoryPhoto key={detail.image_filename} filename={detail.image_filename} name={detail.design_name||detail.name} large/><h2>{detail.design_name||detail.name}</h2><p>{detail.sku} · {detail.identity_status==='verified'?'Reviewed identity':'Identity needs review'}</p>
+      {detail&&data&&<div className="pc-series-stock-details"><InventoryPhoto key={detail.image_filename} filename={detail.image_filename} name={detail.design_name||detail.name} large/><h2>{detail.design_name||detail.name}</h2><p>{detail.name_cn_en&&detail.name_cn_en!==(detail.design_name||detail.name)&&<>{detail.name_cn_en} · </>}{detail.sku} · {detail.identity_status==='verified'?'Reviewed identity':'Identity needs review'}</p>
         {canWork&&data.mode==='authoritative'&&detail.identity_status==='verified'&&<Space wrap><Button onClick={()=>openStockAction('move',detail.id)}>Move stock</Button>{detail.stock_form==='sealed_set'&&<Button type="primary" onClick={()=>openStockAction('open_set',detail.id)}>Open sealed set</Button>}</Space>}
         {data.locations.map(location=><section key={location.id}><h3>{location.store_code} · {location.name}</h3>{!location.opening_verified&&<p className="pc-series-warning">Opening count needs review</p>}<dl>{detail.balances.filter(balance=>balance.location_id===location.id).map(balance=><div key={balance.disposition}><dt>{dispositionName(balance.disposition)}:</dt> <dd>{balance.quantity===null?'Unknown':units(balance.quantity,detail.stock_unit)}</dd></div>)}</dl></section>)}
       </div>}

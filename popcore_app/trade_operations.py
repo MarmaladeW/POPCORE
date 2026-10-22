@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from catalog_identity import product_search_text_sql
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import (
     InventoryConflict, InventoryValidationError,
@@ -715,8 +716,9 @@ def slot_detail(con, slot_id, *, actor):
         occupant = dict(row) if row else None
     result['occupant'] = occupant
     result['products'] = [dict(row) for row in con.execute(
-        """SELECT p.id AS product_id,
+        f"""SELECT p.id AS product_id,
                   COALESCE(p.design_name, p.name_cn_en, p.jizhanming, p.sku) AS name,
+                  {product_search_text_sql('p')} AS search_text,
                   p.stock_form, p.stock_unit,
                   COALESCE(b.quantity, 0) AS quantity,
                   COALESCE(b.version, 0) AS balance_version

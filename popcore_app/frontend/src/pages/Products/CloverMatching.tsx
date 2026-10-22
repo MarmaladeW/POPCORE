@@ -39,11 +39,12 @@ export default function CloverMatching() {
 
   const options = useMemo(() => [
     { label: 'Decision', options: [
-      { value: 'keep', label: 'Keep old product (no Clover item yet)' },
-      { value: 'delete', label: 'Delete old product (only if no history)' },
+      { value: 'keep', label: 'Keep old product (no Clover item yet)', search: 'Keep old product (no Clover item yet)' },
+      { value: 'delete', label: 'Delete old product (only if no history)', search: 'Delete old product (only if no history)' },
     ] },
     { label: 'Merge into Clover item', options: (data?.clover_products ?? []).map(product => ({
       value: `p:${product.id}`, label: `${product.name}${product.price != null ? ` · ${money(product.price)}` : ''}`,
+      search: `${product.name} ${product.search_text ?? ''}`,
     })) },
   ], [data])
 
@@ -110,7 +111,7 @@ export default function CloverMatching() {
     {row.status === 'applied'
       ? <span className="pc-clover-outcome">{row.applied_outcome}</span>
       : <Select aria-label={`Decision for ${row.legacy_jizhanming || row.legacy_name}`} className="pc-clover-select" showSearch allowClear
-          optionFilterProp="label" placeholder="Choose a Clover item, keep or delete" value={decisionValue(row)} options={options}
+          optionFilterProp="search" placeholder="Choose a Clover item, keep or delete" value={decisionValue(row)} options={options}
           disabled={row.status === 'missing' || applying} loading={saving === row.legacy_product_id}
           onChange={value => change(row, value)} popupMatchSelectWidth={false} virtual />}
     <div className="pc-clover-why">

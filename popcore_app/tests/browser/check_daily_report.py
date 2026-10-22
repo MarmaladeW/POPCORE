@@ -21,7 +21,7 @@ def api_payload(path, query, request):
     if path in ('/api/products/section-aliases', '/api/sales/recorded-dates'):
         return []
     if path == '/api/products/search':
-        return [{**PRODUCT, 'id': 2, 'sku': 'TEST-2', 'jizhanming': 'Other Product'}]
+        return [{**PRODUCT, 'id': 2, 'sku': 'TEST-2', 'jizhanming': 'Other Product', 'name_cn_en': 'Other Product'}]
     if path == '/api/sales/report-metadata':
         return {'cash_actual': None, 'cash_expected': None, 'cash_difference': None,
                 'employee_discounts': [], 'display_sales': [], 'claw_prizes': []}

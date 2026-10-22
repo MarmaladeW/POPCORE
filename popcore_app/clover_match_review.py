@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import merge_clover_products as merger  # noqa: E402
+from catalog_identity import product_search_text_sql  # noqa: E402
 
 SOURCES = {'auto': 'auto', 'you': 'owner', 'owner': 'owner', 'claude': 'claude', 'claude (fixed auto)': 'claude'}
 CONFIDENCE = ('high', 'medium', 'low')
@@ -66,7 +67,8 @@ def list_reviews(con):
         '''SELECT COUNT(*) FROM products p WHERE p.clover_item_name IS NULL
               AND NOT EXISTS (SELECT 1 FROM clover_match_reviews r WHERE r.legacy_product_id = p.id)''').fetchone()[0]
     clover = [dict(row) for row in con.execute(
-        '''SELECT id, clover_item_name AS name, price, brand FROM products
+        f'''SELECT id, clover_item_name AS name, price, brand,
+                  {product_search_text_sql('products')} AS search_text FROM products
             WHERE clover_item_name IS NOT NULL ORDER BY clover_item_name COLLATE NOCASE''')]
     return {'items': items, 'clover_products': clover, 'unlisted_legacy': unlisted}
 

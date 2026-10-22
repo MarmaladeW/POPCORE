@@ -2,7 +2,7 @@
 import sqlite3
 import uuid
 
-from catalog_identity import FORMS_TO_UNITS, normalize_design_name
+from catalog_identity import FORMS_TO_UNITS, normalize_design_name, product_alias_text_sql
 from goods_operations import _begin, _replay, _remember
 from inventory_commands import (
     INVENTORY_DISPOSITIONS, InventoryConflict, InventoryError,
@@ -59,7 +59,8 @@ def series_inventory(con, actor, store_code, query='', series_id=None):
             item = dict(row)
             opened_sets.setdefault(item.pop('random_product_id'), []).append(item)
     for row in con.execute(
-        '''SELECT id,sku,COALESCE(NULLIF(jizhanming,''),NULLIF(name_cn_en,''),sku) AS name,
+        f'''SELECT id,sku,COALESCE(NULLIF(jizhanming,''),NULLIF(name_cn_en,''),sku) AS name,
+                  jizhanming,name_cn_en,{product_alias_text_sql('products')} AS alias_text,
                   series_id,stock_form,stock_unit,design_name,identity_status,
                   (SELECT filename FROM hidden_images i WHERE i.product_id=products.id
                    ORDER BY CASE WHEN i.image_type='general' THEN 0 ELSE 1 END,i.id LIMIT 1) AS image_filename
@@ -87,7 +88,8 @@ def series_inventory(con, actor, store_code, query='', series_id=None):
     needle = normalize_design_name(query)
     series = [item for item in roster.values() if not needle or needle in normalize_design_name(
         ' '.join([item['name'], *[str(p.get(field) or '') for p in item['products']
-                                for field in ('name', 'sku', 'design_name')]]))]
+                                for field in ('name', 'sku', 'design_name', 'jizhanming',
+                                              'name_cn_en', 'alias_text')]]))]
     return {'mode': mode, 'locations': locations, 'series': series,
             'unassigned_count': con.execute('SELECT COUNT(*) FROM products WHERE series_id IS NULL').fetchone()[0]}
 

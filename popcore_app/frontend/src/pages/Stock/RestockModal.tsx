@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import dayjs from 'dayjs'
 import client from '../../api/client'
+import { productNames } from '../../lib/productLabel'
 import { useAppStore } from '../../store'
 
 type Op = 'restock_upstairs' | 'ru_dian' | 'adjust'
@@ -105,7 +106,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
     const r = await client.get('/products/search', { params: { q: v, limit: 8 } })
     setOptions(r.data.map((p: any) => ({
       value: p.jizhanming || p.name_cn_en,
-      label: `${p.jizhanming || p.name_cn_en} (${p.sku})`,
+      label: `${productNames(p)} (${p.sku})`,
       product: p,
     })))
   }

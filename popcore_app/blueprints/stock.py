@@ -9,6 +9,7 @@ from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
+from catalog_identity import product_search_text_sql
 from inventory_commands import (
     InventoryError, post_inventory, require_inventory_access,
 )
@@ -346,7 +347,7 @@ def get_all_stock():
         params.append(series)
     if q:
         for token in q.split():
-            filters.append("LOWER(COALESCE(p.search_blob,'') || ' ' || COALESCE(p.design_name,'') || ' ' || COALESCE((SELECT name FROM product_series WHERE id=p.series_id),'')) LIKE ?")
+            filters.append(f"{product_search_text_sql('p')} LIKE ?")
             params.append(f'%{token}%')
 
     where = ('AND ' + ' AND '.join(filters)) if filters else ''
@@ -916,7 +917,7 @@ def export_stock():
         params.append(series)
     if q:
         for token in q.split():
-            filters.append("p.search_blob LIKE ?")
+            filters.append(f"{product_search_text_sql('p')} LIKE ?")
             params.append(f'%{token}%')
 
     where = ('AND ' + ' AND '.join(filters)) if filters else ''

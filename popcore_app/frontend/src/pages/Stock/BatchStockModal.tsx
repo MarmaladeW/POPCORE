@@ -6,6 +6,7 @@ import {
 import { DeleteOutlined, WarningOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import client from '../../api/client'
+import { productNames } from '../../lib/productLabel'
 import { batchMatch, saveAlias, cleanName, isHeaderLine } from '../../api/matcher'
 import { useAppStore } from '../../store'
 
@@ -89,7 +90,7 @@ function ProductPicker({ onSelect }: { onSelect: (p: any) => void }) {
   async function search(q: string) {
     if (!q) { setOpts([]); return }
     const r = await client.get('/products/search', { params: { q, limit: 8 } })
-    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${p.jizhanming || p.name_cn_en || p.sku} (${p.sku})`, product: p })))
+    setOpts(r.data.map((p: any) => ({ value: String(p.id), label: `${productNames(p)} (${p.sku})`, product: p })))
   }
   return (
     <AutoComplete
@@ -232,7 +233,7 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
               const c = r.candidates!.find(x => x.id === v)
               handleManualSelect(r._key, r.rawName, c)
             }}
-            options={r.candidates.map(c => ({ value: c.id, label: `${c.jizhanming || c.name_cn_en || c.sku} (${c.sku})` }))}
+            options={r.candidates.map(c => ({ value: c.id, label: `${productNames(c)} (${c.sku})` }))}
           />
         )
         return <Space size={4}><Tag color="green">✓</Tag><span>{r.jizhanming}</span><Tag>{r.sku}</Tag></Space>
