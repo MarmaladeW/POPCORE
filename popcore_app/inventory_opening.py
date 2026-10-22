@@ -18,7 +18,7 @@ from inventory_commands import _post_inventory_in_transaction
 
 
 COUNT_SHEET_COLUMNS = (
-    'store', 'location', 'product_id', 'sku', 'name', 'design', 'barcode',
+    'store', 'location', 'product_id', 'sku', '记账名', 'name', 'design', 'barcode',
     'stock_form', 'unit', 'identity', 'count', 'notes',
 )
 COUNT_SHEET_SCOPES = ('legacy', 'catalog')
@@ -75,7 +75,7 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
               AND (st.instore_qty != 0 OR st.upstairs_qty != 0))"""
         params.append(location['store_id'])
     rows = con.execute(
-        f"""SELECT p.id, p.sku, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS name,
+        f"""SELECT p.id, p.sku, p.jizhanming, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS name,
                    p.design_name, p.stock_form, p.stock_unit, p.identity_status,
                    (SELECT GROUP_CONCAT(code, ' | ') FROM (
                         SELECT DISTINCT code FROM product_barcodes
@@ -91,6 +91,7 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
         'location': location['code'],
         'product_id': row['id'],
         'sku': row['sku'] or '',
+        '记账名': row['jizhanming'] or '',
         'name': row['name'] or '',
         'design': row['design_name'] or '',
         'barcode': row['barcodes'] or '',

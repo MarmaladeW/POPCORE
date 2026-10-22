@@ -109,6 +109,10 @@ class OpeningCountTests(IsolatedApiCase):
     def _codes(self, report):
         return sorted({error['code'] for error in report['errors']})
 
+    def _shop_name(self, product_id):
+        with closing(self.connect()) as con:
+            return con.execute('SELECT jizhanming FROM products WHERE id=?', (product_id,)).fetchone()[0]
+
     def _row(self, **values):
         base = {'store': 'DT', 'location': 'floor', 'unit': 'box', 'count': '1',
                 '_file': 'manual.csv', '_row': 2}
@@ -117,6 +121,9 @@ class OpeningCountTests(IsolatedApiCase):
     # ── count sheet ──────────────────────────────────────────────────────────
 
     def test_count_sheet_route_is_blind_scoped_and_manager_only(self):
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET name_cn_en='Open Box Series Figures' WHERE id=?", (self.box,))
+            con.commit()
         response = self.client.get(
             '/api/products/count-sheet?store_code=DT&location=floor',
             headers=self.headers('manager'))
@@ -128,6 +135,9 @@ class OpeningCountTests(IsolatedApiCase):
         self.assertEqual((box['product_id'], box['barcode'], box['stock_form'], box['unit'],
                           box['identity'], box['count']),
                          (str(self.box), '00012345', 'random_box', 'box', 'verified', ''))
+        self.assertEqual((box['记账名'], box['name']),
+                         (self._shop_name(self.box), 'Open Box Series Figures'))
+        self.assertLess(list(rows[0]).index('记账名'), list(rows[0]).index('name'))
         self.assertNotIn('instore_qty', rows[0])
         self.assertEqual(next(r for r in rows if r['sku'] == 'TEST-1')['identity'], 'unverified')
 
