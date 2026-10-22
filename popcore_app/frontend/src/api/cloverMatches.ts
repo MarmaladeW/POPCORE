@@ -25,7 +25,7 @@ export interface CloverMatch {
   status: MatchStatus
 }
 
-export interface CloverProductOption { id: number; name: string; price: number | null; brand: string | null }
+export interface CloverProductOption { id: number; name: string; price: number | null; brand: string | null; search_text?: string }
 
 export interface CloverMatches { items: CloverMatch[]; clover_products: CloverProductOption[]; unlisted_legacy: number }
 

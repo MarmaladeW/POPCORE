@@ -8,6 +8,7 @@ import {
   QuestionCircleOutlined, CloseCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
+import { productNames } from '../../lib/productLabel'
 import { useAppStore } from '../../store'
 import {
   parseReportBackend,
@@ -84,7 +85,7 @@ function ProductPicker({ onSelect, placeholder }: { onSelect: (p: BackendProduct
     const r = await client.get('/products/search', { params: { q, limit: 8 } })
     setOpts(r.data.map((p: any) => ({
       value: String(p.id),
-      label: `${p.jizhanming || p.name_cn_en || p.sku} (${p.sku})`,
+      label: `${productNames(p)} (${p.sku})`,
       product: p,
     })))
   }
@@ -444,7 +445,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
               }}
               options={(r.candidates || []).map((c: BackendCandidate) => ({
                 value: c.id,
-                label: `${c.name_cn_en || c.jizhanming || c.sku} · ${c.sku} (${c.score}%)`,
+                label: `${productNames(c)} · ${c.sku} (${c.score}%)`,
               }))}
             />
             <ProductPicker placeholder="或搜索其他产品..."

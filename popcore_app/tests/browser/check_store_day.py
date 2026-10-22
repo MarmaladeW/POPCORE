@@ -313,7 +313,7 @@ async def sale_safety_checks(browser):
     def scoped_products(path, query, request):
         if path == '/api/stock':
             item = dict(PRODUCT)
-            item.update({'id': 2, 'product_id': 2, 'jizhanming': 'MK Product'})
+            item.update({'id': 2, 'product_id': 2, 'jizhanming': 'MK Product', 'name_cn_en': 'MK Product'})
             return {'items': [item], 'total': 1} if 'store_code=MK' in query else {'items': [PRODUCT], 'total': 1}
         return api_payload(path, query, request)
 
@@ -360,8 +360,8 @@ async def sale_safety_checks(browser):
         if path == '/api/products/search':
             verified = dict(PRODUCT)
             unverified = dict(PRODUCT)
-            verified.update({'id': 2, 'jizhanming': 'Verified Choice'})
-            unverified.update({'id': 3, 'jizhanming': 'Unverified Choice',
+            verified.update({'id': 2, 'jizhanming': 'Verified Choice', 'name_cn_en': 'Verified Choice'})
+            unverified.update({'id': 3, 'jizhanming': 'Unverified Choice', 'name_cn_en': 'Unverified Choice',
                                'identity_status': 'unverified'})
             return [verified, unverified]
         return api_payload(path, query, request)
@@ -645,7 +645,7 @@ async def closing_target_checks(browser):
         if path == '/api/inventory/locations':
             return [{'id': 1, 'store_id': 1, 'store_code': 'DT', 'code': 'floor', 'name': 'Shop floor', 'opening_verified': True}]
         if path == '/api/products/19':
-            return {**PRODUCT, 'id': 19, 'sku': 'REQUIRED-19', 'jizhanming': 'Required Product'}
+            return {**PRODUCT, 'id': 19, 'sku': 'REQUIRED-19', 'jizhanming': 'Required Product', 'name_cn_en': 'Required Product'}
         if path == '/api/goods/counts':
             return {'id': 101, 'version': 1, 'status': 'draft'}
         if path == '/api/goods/counts/102':

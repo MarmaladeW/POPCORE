@@ -5,6 +5,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { useRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
 import client from '../../api/client'
+import { productNames } from '../../lib/productLabel'
 import { parseMoneyToCents } from '../../lib/money'
 import type { GoodsProduct } from '../../api/goods'
 import useCheckoutMutation from '../Sales/useCheckoutMutation'
@@ -85,7 +86,7 @@ function EventForm({ display }: { display: boolean }) {
           </> : <>
             <Form.Item name="product_id" label="Product" rules={[{ required: true, message: 'Choose the product from search results.' }]}>
               <Select showSearch filterOption={false} loading={searching} onSearch={findProduct} placeholder="Search product name or SKU"
-                options={options.map(product => ({ value: product.id, label: `${product.sku} · ${product.jizhanming}` }))} />
+                options={options.map(product => ({ value: product.id, label: `${product.sku} · ${productNames(product)}` }))} />
             </Form.Item>
             <Form.Item name="quantity" label="Quantity" rules={[{ required: true }, { type: 'integer', min: 1 }]}><InputNumber min={1} precision={0} /></Form.Item>
           </>}

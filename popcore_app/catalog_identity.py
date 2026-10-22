@@ -82,6 +82,27 @@ def normalize_design_name(value):
     return unicodedata.normalize('NFKC', ' '.join(value.split())).casefold()
 
 
+def product_alias_text_sql(alias='p'):
+    """SQL for every saved alias of one product (legacy shop names kept by merges)."""
+    return (f"COALESCE((SELECT group_concat(a.alias, ' ') FROM product_aliases a "
+            f"WHERE a.product_id={alias}.id), '')")
+
+
+def product_search_text_sql(alias='p'):
+    """SQL for one product's lowercase search text, read live so it never goes stale.
+
+    Covers SKU, shop name (记账名), product name, the stored search_blob (brand,
+    type, series text), design and series names, and every saved alias.
+    """
+    p = alias
+    return ("LOWER(" + " || ' ' || ".join([
+        f"COALESCE({p}.sku,'')", f"COALESCE({p}.jizhanming,'')", f"COALESCE({p}.name_cn_en,'')",
+        f"COALESCE({p}.search_blob,'')", f"COALESCE({p}.design_name,'')",
+        f"COALESCE((SELECT s.name FROM product_series s WHERE s.id={p}.series_id),'')",
+        product_alias_text_sql(p),
+    ]) + ")")
+
+
 def _validate_identity(con, product):
     status = product.get('identity_status') or 'unverified'
     form = product.get('stock_form')

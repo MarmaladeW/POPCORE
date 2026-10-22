@@ -11,6 +11,9 @@ export interface SeriesProduct {
   id: number
   sku: string
   name: string
+  jizhanming?: string | null
+  name_cn_en?: string | null
+  alias_text?: string | null
   series_id: number
   stock_form: 'sealed_set' | 'random_box' | 'confirmed_design' | 'ordinary' | null
   stock_unit: NativeUnit | null

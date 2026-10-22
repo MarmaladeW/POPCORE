@@ -55,7 +55,7 @@ export default function TradesPage() {
         <Space wrap><Tag>Version {slot.version}</Tag><Tag color={slot.occupant ? 'green':'orange'}>{slot.occupant ? `Occupied: ${slot.occupant.design_name}`:'Empty · replacement needed'}</Tag></Space>
         {slot.occupant ? <>
           <Form layout="vertical" form={form} preserve>
-            <Form.Item label="Incoming verified design" name="design_product_id" rules={[{required:true}]}><Select showSearch optionFilterProp="label" options={designs.map(p=>({value:p.product_id,label:p.name}))}/></Form.Item>
+            <Form.Item label="Incoming verified design" name="design_product_id" rules={[{required:true}]}><Select showSearch optionFilterProp="search" options={designs.map(p=>({value:p.product_id,label:p.name,search:`${p.name} ${p.search_text??''}`}))}/></Form.Item>
             <Form.Item label="Proof type" name="proof_kind" rules={[{required:true}]}><Select options={[{value:'legacy_sticker',label:'Legacy sticker reviewed'},{value:'original_receipt',label:'Original receipt reviewed'},{value:'prior_trade',label:'Prior recorded trade'}]}/></Form.Item>
             <Form.Item label="Proof reference" name="proof_reference" rules={[{required:true}]}><Input /></Form.Item>
             <Form.Item label="Observed condition" name="condition" rules={[{required:true}]}><Input /></Form.Item>
@@ -68,7 +68,7 @@ export default function TradesPage() {
           <Space wrap><Input aria-label="Condition concern" placeholder="Condition concern" onChange={e=>form.setFieldValue('case_condition',e.target.value)} /><Button style={{minHeight:44}} onClick={async()=>{const r=await act(()=>createConditionCase({unit_id:slot.occupant_unit_id,observed_condition:form.getFieldValue('case_condition'),disclosed_condition:slot.occupant?.condition_disclosure,reason:'Recorded from trade slot'}),'Condition case created'); if(r)window.location.assign(`/trades/cases/${r.case_id}`)}}>Record condition case</Button></Space>
         </> : <Form layout="vertical" form={form} preserve>
           <Form.Item label="Random box to open" name="random_product_id" rules={[{required:true}]}><Select options={randoms.map(p=>({value:p.product_id,label:`${p.name} · ${p.quantity} ${p.stock_unit}`}))}/></Form.Item>
-          <Form.Item label="Observed verified design" name="open_design_id" rules={[{required:true}]}><Select showSearch optionFilterProp="label" options={designs.map(p=>({value:p.product_id,label:p.name}))}/></Form.Item>
+          <Form.Item label="Observed verified design" name="open_design_id" rules={[{required:true}]}><Select showSearch optionFilterProp="search" options={designs.map(p=>({value:p.product_id,label:p.name,search:`${p.name} ${p.search_text??''}`}))}/></Form.Item>
           <Form.Item label="Condition disclosure" name="open_disclosure" rules={[{required:true}]}><Input.TextArea /></Form.Item>
           <Button type="primary" style={{minHeight:44}} onClick={async()=>{const v=await form.validateFields();const rp=randoms.find(p=>p.product_id===v.random_product_id);const dp=designs.find(p=>p.product_id===v.open_design_id);await act(()=>openTradeSlot(slot.slot_id,{expected_version:slot.version,random_product_id:rp?.product_id,design_product_id:dp?.product_id,condition_disclosure:v.open_disclosure,random_balance_version:rp?.balance_version,trade_balance_version:dp?.balance_version}),'Replacement placed in slot')}}>Open box and place replacement</Button>
         </Form>}

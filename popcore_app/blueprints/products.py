@@ -17,8 +17,8 @@ from auth import login_required, role_required
 from validation import read_int
 from matcher import match_jzm, batch_match_jzm, load_matching_aliases, match_name, identity_conflicts, normalize_sku, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
 from catalog_identity import (
-    CatalogConflict, add_conversion, assign_barcode, resolve_barcode,
-    update_product_identity,
+    CatalogConflict, add_conversion, assign_barcode, product_alias_text_sql,
+    product_search_text_sql, resolve_barcode, update_product_identity,
 )
 from inventory_commands import require_inventory_access
 from inventory_opening import (
@@ -46,6 +46,7 @@ def _score_product(product, tokens, q_full):
     """
     blob = product.get('search_blob', '')
     jzm  = (product.get('jizhanming') or '').lower()
+    aliases = (product.get('alias_text') or '').lower()
     sku  = (product.get('sku') or '').lower()
     name = (product.get('name_cn_en') or '').lower()
     design = (product.get('design_name') or '').lower()
@@ -54,11 +55,13 @@ def _score_product(product, tokens, q_full):
     score = 150 if q_full == design else 100 if q_full == series else 0
 
     if q_full in jzm:  score += 100
+    elif q_full in aliases: score += 90
     if q_full in sku:  score += 80
     if q_full in name: score += 60
 
     for t in tokens:
         if t in jzm:  score += 30
+        elif t in aliases: score += 25
         if t in sku:  score += 20
         if t in name: score += 10
         if t in blob: score += 5
@@ -144,8 +147,9 @@ def search_products():
     con = get_db()
     cur = con.cursor()
 
-    search_source = """(SELECT p.*, ps.name AS series_name,
-        LOWER(COALESCE(p.search_blob,'') || ' ' || COALESCE(p.design_name,'') || ' ' || COALESCE(ps.name,'')) AS inventory_search_blob
+    search_source = f"""(SELECT p.*, ps.name AS series_name,
+        {product_alias_text_sql('p')} AS alias_text,
+        {product_search_text_sql('p')} AS inventory_search_blob
         FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id)"""
 
     filter_clauses = []
@@ -165,13 +169,15 @@ def search_products():
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-                   stock_form, stock_unit, design_name, identity_status, series_id, series_name
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
             FROM {search_source}
             {where}
             ORDER BY sku DESC
             {limit_clause}
         ''', filter_params + limit_param)
         rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            r.pop('alias_text', None)
         if include_stock and rows:
             pids = [r['id'] for r in rows]
             cur.execute(
@@ -192,7 +198,7 @@ def search_products():
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-               stock_form, stock_unit, design_name, identity_status, series_id, series_name
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
         FROM {search_source}
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
@@ -204,7 +210,7 @@ def search_products():
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-               stock_form, stock_unit, design_name, identity_status, series_id, series_name
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
         FROM {search_source}
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
@@ -217,8 +223,8 @@ def search_products():
     if char_conditions:
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, inventory_search_blob AS search_blob,
-                   stock_form, stock_unit, design_name, identity_status, series_id, series_name
+                   brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
             FROM {search_source}
             WHERE {char_conditions} {filter_sql}
             LIMIT 200
@@ -232,8 +238,8 @@ def search_products():
         bi_params = [f'%{b}%' for b in bigrams] + filter_params
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
-                   brand, notes, release_date, inventory_search_blob AS search_blob,
-                   stock_form, stock_unit, design_name, identity_status, series_id, series_name
+                   brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
             FROM {search_source}
             WHERE ({bi_cond}) {filter_sql}
             LIMIT 200
@@ -253,6 +259,7 @@ def search_products():
     final = candidates[:limit] if limit else candidates
     for c in final:
         c.pop('search_blob', None)
+        c.pop('alias_text', None)
         c.pop('_score', None)
 
     if include_stock and final:
@@ -886,7 +893,7 @@ def export_products():
         params.append(series)
     if q:
         for token in q.split():
-            filters.append("search_blob LIKE ?")
+            filters.append(f"{product_search_text_sql('products')} LIKE ?")
             params.append(f'%{token}%')
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
