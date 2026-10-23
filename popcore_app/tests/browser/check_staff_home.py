@@ -99,6 +99,10 @@ async def flow(browser, width):
                         checkouts=[], receipts=[], transfers=[], summary_text='2026.9.16 DT\n娃娃机：\nTest Product*1')
         if path == '/api/products/search':
             return [dict(id=1, sku='TEST-1', jizhanming='Test Product', stock_unit='piece')]
+        if path == '/api/inventory/locations':
+            assert 'store_code=DT' in query, query
+            return [dict(id=code_id, store_id=1, store_code='DT', code=code, name=name, is_active=1, opening_verified=1)
+                    for code_id, code, name in ((5, 'claw', 'Claw machine'), (1, 'floor', 'Floor'), (2, 'upstairs', 'Upstairs'))]
         if path == '/api/checkouts/access':
             return dict(business_date=state['day'], role='staff',
                         live_stores=[dict(id=1, code='DT', name='Downtown')], history_stores=[])
@@ -174,6 +178,21 @@ async def flow(browser, width):
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['amount_cents'] == 2000 and last['tender'] == 'e_transfer' and last['kind'] == 'cash_exchange'
         assert 'product_id' not in last and 'quantity' not in last
+        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await page.get_by_role('button', name='补货 / Refill', exact=True).click()
+        await page.get_by_role('spinbutton', name='Quantity').fill('3')
+        await page.get_by_role('combobox', name='Product').fill('Test')
+        await page.get_by_title('TEST-1 · Test Product', exact=True).click()
+        await page.get_by_role('button', name='Save record', exact=True).click()
+        await expect(page.get_by_text('Choose where the stock came from.', exact=True)).to_be_visible()
+        await page.get_by_role('combobox', name='从哪里拿 / Take from').click()
+        await expect(page.get_by_title('Claw machine', exact=True)).to_have_count(0)
+        await page.get_by_title('Upstairs', exact=True).click()
+        await page.screenshot(path=OUT / f'claw-refill-{width}.png', full_page=True)
+        await page.get_by_role('button', name='Save record', exact=True).click()
+        await expect(page).to_have_url(BASE + '/')
+        last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
+        assert (last['kind'], last['quantity'], last['source_location_id']) == ('claw_refill', 3, 2), last
         await actions.get_by_role('link', name='入店', exact=False).click()
         await page.get_by_role('link', name='入 display / Display arrival', exact=False).click()
         await expect(page.get_by_text('This adds a record to the daily summary. Stock balances are unchanged.', exact=True)).to_be_visible()

@@ -526,7 +526,7 @@ def _project_compatibility(con, document_id, kind, business_date, affected,
             'SELECT store_id, code FROM inventory_locations WHERE id=?',
             (location_id,),
         ).fetchone()
-        if location is None or location['code'] not in {'floor', 'upstairs', 'warehouse'}:
+        if location is None or location['code'] not in {'floor', 'upstairs', 'warehouse', 'claw'}:
             continue
         balance = con.execute(
             """SELECT quantity FROM inventory_balances
@@ -539,7 +539,7 @@ def _project_compatibility(con, document_id, kind, business_date, affected,
                VALUES (?, ?, 0, 0, 0)""",
             (product_id, location['store_id']),
         )
-        column = 'instore_qty' if location['code'] == 'floor' else 'upstairs_qty'
+        column = {'floor': 'instore_qty', 'claw': 'claw_qty'}.get(location['code'], 'upstairs_qty')
         con.execute(
             f"""UPDATE stock SET {column}=?, last_updated=?
                 WHERE product_id=? AND store_id=?""",

@@ -56,6 +56,7 @@ class InventoryAccessTests(IsolatedApiCase):
                    ORDER BY s.code, l.code"""
             )]
         self.assertEqual(rows, [
+            ('DT', 'claw', 'Claw machine'),
             ('DT', 'floor', 'Floor'),
             ('DT', 'upstairs', 'Upstairs'),
             ('MK', 'floor', 'Floor'),

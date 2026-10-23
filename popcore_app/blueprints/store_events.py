@@ -8,12 +8,14 @@ from flask import Blueprint, jsonify, request
 from auth import role_required
 from checkout_access import REGISTER_NAME, REGISTER_SUB, business_date, checkout_access
 from db import get_db
-from goods_operations import _begin, _remember, _replay
-from inventory_commands import InventoryConflict, InventoryError, require_inventory_access
+from goods_operations import _balance, _begin, _remember, _replay
+from inventory_commands import (InventoryConflict, InventoryError, _post_inventory_in_transaction,
+    require_inventory_access)
 from validation import read_date, read_int
 
 bp = Blueprint('store_events', __name__)
 OPERATIONAL = {'claw_prize', 'claw_refill', 'display_in'}
+REFILL_SOURCES = ('floor', 'upstairs', 'warehouse')
 
 
 @bp.errorhandler(InventoryError)
@@ -41,6 +43,31 @@ def _scope(con, actor, store_id, date, *, write=False):
     return 'personal' if access['role'] == 'staff' else 'store'
 
 
+def _post_claw(con, actor, key, store_id, kind, product_id, quantity, source_location_id, today):
+    """Post a claw refill (move in) or prize (consume) in authoritative mode; see docs/inventory-core.md."""
+    if con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode'] != 'authoritative':
+        return None
+    claw = con.execute("""SELECT id FROM inventory_locations
+        WHERE store_id=? AND code='claw' AND is_active=1""",(store_id,)).fetchone()
+    if not claw:
+        raise InventoryConflict('This store has no claw machine location','claw_location_missing')
+    unit = con.execute('SELECT stock_unit FROM products WHERE id=?',(product_id,)).fetchone()['stock_unit']
+    line = {'product_id':product_id,'unit':unit,'quantity':quantity}
+    if kind == 'claw_refill':
+        if source_location_id is None:
+            raise ValueError('source_location_id is required for a claw refill')
+        line.update(from_location_id=source_location_id,from_disposition='saleable',
+            to_location_id=claw['id'],to_disposition='saleable',expected_versions={
+                'from':_balance(con,product_id,source_location_id,'saleable')['version'],
+                'to':_balance(con,product_id,claw['id'],'saleable')['version']})
+    else:
+        line.update(from_location_id=claw['id'],from_disposition='saleable',expected_versions={
+            'from':_balance(con,product_id,claw['id'],'saleable')['version']})
+    return _post_inventory_in_transaction(con,{'kind':'move' if kind == 'claw_refill' else 'consume',
+        'business_date':today,'source_type':'store_event','source_id':f'{key}:claw','lines':[line]},
+        actor=actor,request_key=f'{key}:claw',access_store_ids=(store_id,))['document_id']
+
+
 def _event(con, event_id):
     row = con.execute('''SELECT e.*,COALESCE(NULLIF(emp.name,''),e.actor_sub) AS actor_name
         FROM store_events e LEFT JOIN employees emp ON emp.auth0_id=e.actor_sub WHERE e.id=?''',(event_id,)).fetchone()
@@ -57,6 +84,8 @@ def create():
     if not isinstance(kind,str) or kind not in OPERATIONAL | {'cash_exchange'}:
         raise ValueError('kind is invalid')
     allowed = {'store_id','kind','note'} | ({'product_id','quantity'} if kind in OPERATIONAL else {'tender','amount_cents'})
+    if kind == 'claw_refill':
+        allowed |= {'source_location_id'}
     if set(data) - allowed:
         raise ValueError('Unknown fields')
     store_id = read_int(data.get('store_id'),'store_id',minimum=1)
@@ -68,6 +97,8 @@ def create():
         product_id = read_int(data.get('product_id'),'product_id',minimum=1)
         quantity = read_int(data.get('quantity'),'quantity',minimum=1)
         tender = amount = None
+        source_location_id = (None if data.get('source_location_id') is None else
+            read_int(data['source_location_id'],'source_location_id',minimum=1))
     else:
         if data.get('tender') not in ('card','e_transfer'):
             raise ValueError('tender must be card or e_transfer')
@@ -75,7 +106,7 @@ def create():
         amount = read_int(data.get('amount_cents'),'amount_cents',minimum=1)
         if not note:
             raise ValueError('note must confirm digital receipt and physical cash payout')
-        product_id = quantity = None
+        product_id = quantity = source_location_id = None
     con = get_db(); actor = request.jwt_payload; today = business_date()
     _scope(con,actor,store_id,today,write=True)
     if kind == 'cash_exchange':
@@ -87,7 +118,8 @@ def create():
         if kind == 'cash_exchange':
             require_inventory_access(con,actor,(store_id,),'staff')
         intent = dict(store_id=store_id,kind=kind,product_id=product_id,quantity=quantity,
-            tender=tender,amount_cents=amount,note=note)
+            tender=tender,amount_cents=amount,note=note,
+            **({'source_location_id':source_location_id} if source_location_id is not None else {}))
         key,digest,prior = _replay(con,request.headers.get('Idempotency-Key'),'store_event',actor,intent)
         if prior:
             con.commit()
@@ -102,15 +134,23 @@ def create():
             if not product:
                 raise ValueError('product_id is invalid')
             product_name = product['name'] or str(product_id)
+        if source_location_id is not None and not con.execute(f'''SELECT 1 FROM inventory_locations
+                WHERE id=? AND store_id=? AND is_active=1 AND code IN ({','.join('?'*len(REFILL_SOURCES))})''',
+                (source_location_id,store_id,*REFILL_SOURCES)).fetchone():
+            raise ValueError('source_location_id must be this store\'s floor or back stock')
+        document_id = (_post_claw(con,actor,key,store_id,kind,product_id,quantity,source_location_id,today)
+            if kind in ('claw_prize','claw_refill') else None)
         cash_event_id = None
         if kind == 'cash_exchange':
             cash_event_id = con.execute('''INSERT INTO cash_events
                 (store_id,business_date,event_type,amount_cents,reason,actor_sub)
                 VALUES (?,?,'payout',?,?,?)''',(store_id,today,amount,'Cash exchange: '+note,actor['sub'])).lastrowid
         event_id = con.execute('''INSERT INTO store_events
-            (store_id,business_date,kind,actor_sub,product_id,product_name,quantity,tender,amount_cents,note,cash_event_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-            (store_id,today,kind,actor['sub'],product_id,product_name,quantity,tender,amount,note,cash_event_id)).lastrowid
+            (store_id,business_date,kind,actor_sub,product_id,product_name,quantity,tender,amount_cents,note,cash_event_id,
+             source_location_id,inventory_document_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (store_id,today,kind,actor['sub'],product_id,product_name,quantity,tender,amount,note,cash_event_id,
+             source_location_id,document_id)).lastrowid
         result = _event(con,event_id)
         _remember(con,key,'store_event',event_id,actor,digest,{'id':event_id})
         con.commit()

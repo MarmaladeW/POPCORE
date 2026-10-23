@@ -1866,6 +1866,23 @@ def _migration_clover_match_reviews(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('clover_match_reviews')")
 
 
+def _migration_claw_machine_location(con, cur):
+    # DT's claw machine holds prize stock. Refills move stock in from the floor or back,
+    # prizes take it out; in authoritative mode each event links the posted document.
+    store = cur.execute("SELECT id FROM stores WHERE code='DT'").fetchone()
+    if store is not None:
+        cur.execute("""INSERT OR IGNORE INTO inventory_locations
+            (store_id, code, name, is_active) VALUES (?, 'claw', 'Claw machine', 1)""", (store['id'],))
+        location_id = cur.execute(
+            "SELECT id FROM inventory_locations WHERE store_id=? AND code='claw'", (store['id'],)
+        ).fetchone()['id']
+        cur.execute("""INSERT OR IGNORE INTO inventory_scope_state
+            (store_id, location_id, opening_verified) VALUES (?, ?, 0)""", (store['id'], location_id))
+    cur.execute('ALTER TABLE store_events ADD COLUMN source_location_id INTEGER REFERENCES inventory_locations(id)')
+    cur.execute('ALTER TABLE store_events ADD COLUMN inventory_document_id INTEGER REFERENCES inventory_documents(id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('claw_machine_location')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1922,6 +1939,7 @@ def _get_migrations():
         ('clover_checkouts',                           _migration_clover_checkouts),
         ('checkout_attempt_cny',                       _migration_checkout_attempt_cny),
         ('clover_match_reviews',                       _migration_clover_match_reviews),
+        ('claw_machine_location',                      _migration_claw_machine_location),
     ]
 
 
