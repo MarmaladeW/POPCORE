@@ -115,8 +115,9 @@ async def checks(browser):
 
     await page.set_viewport_size({'width': 390, 'height': 844})
     assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-    await page.get_by_role('button', name='More', exact=True).click()
-    await expect(page.get_by_role('link', name='Special orders', exact=True)).to_be_visible()
+    # Until special orders move inside 买单 (Checkout section), 更多 keeps a 特殊订单 row.
+    await page.get_by_role('link', name='更多 More', exact=True).click()
+    await expect(page.get_by_role('link', name='特殊订单 Special orders', exact=True)).to_be_visible()
 
     posts = [request for request in state['requests'] if request['method'] == 'POST']
     assert [request['path'] for request in posts] == [

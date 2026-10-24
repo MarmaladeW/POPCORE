@@ -1,0 +1,100 @@
+/* POPCORE redesign tokens, exported from the Figma variables (file 8KcM1oYvxIDxPk8kVKsyQ1, 2026-10-24).
+   Names mirror the Figma variable names; the Figma file is the source of truth if they ever differ. */
+:root {
+  /* surfaces */
+  --surface-ground: #f7f7f8;
+  --surface-default: #ffffff;
+  --surface-soft: #f2f3f5;
+  --surface-subtle: #fafafb;
+  --surface-ink: #1f2328;
+
+  /* lines (1px hairlines everywhere) */
+  --line-hair: #eceef1;
+  --line-soft: #e4e7ec;
+  --line-dashed: #e3e6ea;
+  --line-strong: #c7ccd4;
+  --line-control: #c9ced6;
+
+  /* text: three tones plus on-ink and disabled */
+  --text-primary: #1f2328;
+  --text-secondary: #5f6670;
+  --text-tertiary: #9aa1ab;
+  --text-disabled: #b9bdc4;
+  --text-on-ink: #ffffff;
+  --text-on-ink-secondary: #c4c8cf;
+  --text-on-ink-tertiary: #9ba0a8;
+
+  /* back stock ("kraft" carton tile) */
+  --kraft-tile: #f6f1ea;
+  --kraft-ink: #7a6247;
+
+  /* status: a dot plus text, never filled strips */
+  --status-restock-ink: #946200;
+  --status-restock-dot: #d9a21b;
+  --status-restock-line: #ecdcb2;
+  --status-out-ink: #b4322a;
+  --status-out-tint: #fbf1f0;
+  --status-out-line: #efc9c5;
+  --status-ok-ink: #2f6b4c;
+  --status-ok-dot: #7fb594;
+
+  /* schedule staff colours (a user's own colour from Users still wins) */
+  --schedule-staff-1: #5b7fa6;
+  --schedule-staff-2: #7a6fb0;
+  --schedule-staff-3: #c0874f;
+  --schedule-staff-4: #5f9a7e;
+  --schedule-staff-5: #a0698a;
+
+  /* spacing, corners, strokes */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --radius: 0;          /* sharp corners; only status dots are round */
+  --stroke-hairline: 1px;
+
+  /* type: Geist for Latin and numbers, Noto Sans SC for Chinese, weights 400/500/600 only */
+  --font-ui: "Geist", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* Type roles used across the mockups (size/weight/line-height). Numbers are tabular everywhere:
+   font-variant-numeric: tabular-nums (Figma could not show this; the web build must). */
+.t-count-large  { font-size: 34px;  font-weight: 600; line-height: 1.15; letter-spacing: -1.02px; }
+.t-desk-title   { font-size: 28px;  font-weight: 600; line-height: 1.1;  letter-spacing: -0.42px; }
+.t-count        { font-size: 26px;  font-weight: 600; line-height: 1.05; letter-spacing: -0.52px; }
+.t-title        { font-size: 22px;  font-weight: 600; line-height: 1.5;  letter-spacing: -0.44px; }
+.t-phone-title  { font-size: 19px;  font-weight: 600; line-height: 1.15; letter-spacing: -0.19px; }
+.t-name         { font-size: 15px;  font-weight: 500; line-height: 1.25; }
+.t-body         { font-size: 13px;  font-weight: 400; line-height: 1.5; }
+.t-row-name     { font-size: 13px;  font-weight: 500; line-height: 1.45; }
+.t-cell         { font-size: 12.5px; font-weight: 400; line-height: 1.6; }
+.t-meta         { font-size: 12px;  font-weight: 400; line-height: 1.45; }
+.t-label        { font-size: 12px;  font-weight: 500; line-height: 1.45; }
+.t-small        { font-size: 11.5px; font-weight: 400; line-height: 1.5; }
+.t-label-small  { font-size: 11px;  font-weight: 500; line-height: 1.45; }
+.t-caption      { font-size: 11px;  font-weight: 400; line-height: 1.45; }
+.t-tiny         { font-size: 10.5px; font-weight: 400; line-height: 1.5; }
+
+/* Geist (OFL, see assets/fonts/OFL-Geist.txt), one variable file for 400–600. */
+@font-face {
+  font-family: "Geist";
+  src: url("../assets/fonts/geist-latin-wght.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  background: var(--surface-ground);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}

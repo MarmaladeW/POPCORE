@@ -100,14 +100,14 @@ async def run_checks(browser, case):
     await page.get_by_text('Custom hours', exact=True).click()
     await page.get_by_label('Available until', exact=True).fill('18:00')
     await page.get_by_role('button', name='Apply to selected dates').click()
-    await page.get_by_role('link', name='Home', exact=True).click()
+    await page.get_by_role('link', name='首页 Home', exact=True).click()
     await page.get_by_role('link', name='Store tasks', exact=True).click()
     await expect(page.get_by_text('Today / 今日', exact=True)).to_be_visible()
     assert await page.evaluate("""() => {
         const event = new Event('beforeunload', {cancelable: true});
         window.dispatchEvent(event); return event.defaultPrevented;
     }"""), 'Leaving the app must warn about a draft even outside Schedule'
-    await page.get_by_role('link', name='Schedule', exact=True).click()
+    await page.get_by_role('link', name='排班 Schedule', exact=True).click()
     await expect(calendar.locator('button').nth(0)).to_contain_text('18:00')
     await page.get_by_label('Operations store').select_option('MK')
     await expect(page.get_by_role('button', name='Submit two weeks', exact=True)).to_be_disabled()
@@ -133,11 +133,10 @@ async def run_checks(browser, case):
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Expand navigation', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
-    await page.locator('.pc-sidebar .ant-menu-submenu-title').filter(has_text='More').click()
-    await page.get_by_role('link', name='Store tasks', exact=True).click()
-    await expect(page.get_by_role('heading', name='Today / 今日', exact=True)).to_be_visible()
+    # Store tasks left the menus (approved redesign); leave Schedule through Home instead.
+    await page.get_by_role('link', name='首页 Home', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
-    await page.get_by_role('link', name='Schedule', exact=True).click()
+    await page.get_by_role('link', name='排班 Schedule', exact=True).click()
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
     await page.get_by_role('tab', name='My shifts', exact=True).click()
     await page.get_by_role('button', name='Edit reminder', exact=True).click()

@@ -1,44 +1,3 @@
-.pc-shell { min-height: 100vh; }
-.pc-main { min-height: 100vh; }
-.pc-sidebar { position: fixed !important; inset: 0 auto 0 0; z-index: 100; overflow: auto; }
-.pc-brand { display: flex; align-items: center; gap: 10px; min-height: 64px; padding: 12px 14px; }
-.pc-brand-mark { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 8px; background: #4F46E5; color: white; font-weight: 750; line-height: 1; }
-.pc-brand > span:last-child { display: grid; line-height: 1.2; }
-.pc-brand small, .pc-account small, .pc-more-account small { font-size: 11px; color: #6B7280; }
-.pc-sidebar-menu { flex: 1; border-inline-end: 0 !important; }
-.pc-sidebar .ant-layout-sider-children { display: flex; flex-direction: column; }
-.pc-collapse { width: calc(100% - 16px); min-height: 44px; margin: 8px; text-align: left; }
-.pc-header { position: sticky; top: 0; z-index: 90; display: flex; height: 64px; padding: 0 24px; align-items: center; justify-content: space-between; }
-.pc-date { min-width: 0; margin-right: 16px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pc-header-actions { display: flex; align-items: center; gap: 12px; }
-.pc-store-select { width: 180px; min-height: 40px; padding: 0 10px; border: 1px solid #DDE2EA; border-radius: 8px; background: white; color: #20242D; font: inherit; }
-.pc-account { display: flex; height: auto; min-height: 44px; align-items: center; gap: 8px; padding: 4px; }
-.pc-account > span:last-child, .pc-more-account > span { display: grid; min-width: 0; text-align: left; line-height: 1.25; }
-.pc-content { padding: 24px; }
-.pc-role { margin: 0; padding: 2px 8px; font-weight: 600; }
-.pc-shell-operations, .pc-shell-operations .pc-main { background: #F7F8FA; }
-.pc-shell-operations .pc-sidebar, .pc-shell-operations .pc-sidebar-menu { background: #FFFFFF; }
-.pc-shell-operations .pc-sidebar { border-inline-end: 1px solid #DDE2EA; }
-.pc-shell-operations .pc-sidebar-menu a { color: inherit; }
-.pc-shell-operations .pc-header { background: rgba(255,255,255,.96); border-bottom: 1px solid #DDE2EA; }
-.pc-shell-operations .pc-brand { border-bottom: 1px solid #DDE2EA; color: #20242D; }
-.pc-bottom-nav { position: fixed; inset: auto 0 0; z-index: 100; display: flex; padding-bottom: env(safe-area-inset-bottom); border-top: 1px solid #DDE2EA; background: #FFFFFF; }
-.pc-bottom-nav > a, .pc-bottom-nav > button { position: relative; display: flex; min-width: 0; min-height: 56px; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 0; color: #687386; }
-.pc-more-button { border: 0; background: transparent; font: inherit; }
-.pc-bottom-nav > a { text-decoration: none; }
-.pc-bottom-nav > a > span, .pc-bottom-nav > button > span { font-size: 19px; }
-.pc-bottom-nav small { font-size: 10px; }
-.pc-bottom-nav .active { color: #4F46E5; font-weight: 650; }
-.pc-bottom-nav .active::before { position: absolute; inset: 0 auto auto; width: 32px; height: 2px; border-radius: 0 0 2px 2px; background: #4F46E5; content: ''; }
-.pc-more-drawer .ant-drawer-content-wrapper { max-height: 72vh; }
-.pc-more-drawer .ant-drawer-body { padding: 8px 16px max(16px, env(safe-area-inset-bottom)); }
-.pc-more-drawer nav { display: grid; }
-.pc-more-drawer nav h3 { margin: 18px 0 4px; color: #687386; font-size: 12px; font-weight: 600; }
-.pc-more-drawer nav a { display: flex; min-height: 48px; align-items: center; gap: 12px; border-bottom: 1px solid #EDF0F4; color: #20242D; text-decoration: none; }
-.pc-more-drawer nav a[aria-current='page'] { color: #4F46E5; font-weight: 650; }
-.pc-more-account { display: flex; align-items: center; gap: 12px; padding-top: 16px; }
-.pc-more-account > span { flex: 1; }
-.pc-shell-operations :focus-visible { outline: 3px solid rgba(79,70,229,.35); outline-offset: 2px; }
 .pc-shell-operations h1, .pc-shell-operations h2, .pc-shell-operations h3 { text-wrap: balance; }
 .pc-page { width: 100%; }
 .pc-overview-actions, .pc-inventory-tools { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 20px; }
@@ -56,12 +15,6 @@
 .pc-page-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 
 @media (max-width: 767px) {
-  .pc-header { height: 56px; padding: 0 16px; }
-  .pc-header .pc-brand { min-height: 0; padding: 0; border: 0; }
-  .pc-header .pc-brand-mark { width: 32px; height: 32px; flex-basis: 32px; }
-  .pc-header .pc-brand small { display: none; }
-  .pc-store-select-mobile { width: 104px; }
-  .pc-content { padding: 16px 16px calc(72px + env(safe-area-inset-bottom)); }
   .pc-loading-panel, .pc-today-section { padding: 14px; }
   .pc-page-actions { align-items: flex-start; }
   .pc-page-actions > .ant-space { flex-wrap: wrap; }

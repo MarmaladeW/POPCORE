@@ -129,11 +129,11 @@ async def flow(browser, width):
         await page.get_by_role('button', name='Register 1', exact=False).click()
         # The order opens with its payment panel: every tender already priced by the server.
         await expect(page.get_by_role('group', name='How is the customer paying?')).to_be_visible()
-        await page.get_by_role('link', name='Home', exact=True).click()
+        await page.get_by_role('link', name='首页 Home', exact=True).click()
         await actions.get_by_role('link', name='入店', exact=False).click()
         await expect(page.get_by_role('link', name='收货 / Receive shipment', exact=False)).to_be_visible()
         await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 / Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
-        await page.get_by_role('link', name='Home', exact=True).click()
+        await page.get_by_role('link', name='首页 Home', exact=True).click()
         await actions.get_by_role('link', name='娃娃机', exact=False).click()
         await page.get_by_role('button', name='出奖 / Prize won', exact=True).click()
         # Text fields first: after an option is chosen an Ant Design Select takes focus back,
@@ -157,7 +157,7 @@ async def flow(browser, width):
         await expect(page.get_by_label('Summary text')).to_have_value('2026.9.16 DT\n娃娃机：\nTest Product*1')
         await expect(page.get_by_role('link', name='Import historical summaries', exact=True)).to_have_count(0)
         await page.screenshot(path=OUT / f'summary-{width}.png', full_page=True)
-        await page.get_by_role('link', name='Home', exact=True).click()
+        await page.get_by_role('link', name='首页 Home', exact=True).click()
         await actions.get_by_role('link', name='娃娃机', exact=False).click()
         await page.get_by_role('button', name='换现金 / Cash exchange', exact=True).click()
         await page.get_by_role('textbox', name='Cash exchanged (CAD)').fill('20.00')

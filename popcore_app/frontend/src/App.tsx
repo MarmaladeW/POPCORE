@@ -7,6 +7,7 @@ import ProtectedRoute from './auth/ProtectedRoute'
 import { useHasRole, type Role } from './auth/useRole'
 import AppLayout from './components/AppLayout'
 import ErrorBoundary from './components/ErrorBoundary'
+import MoreMenu from './components/MoreMenu'
 import { resetAuthWarnings, setTokenGetter } from './api/client'
 import { useAppStore, ALL_STORES } from './store'
 import type { Store } from './store'
@@ -166,6 +167,7 @@ function AppInner() {
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
           <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />
           <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
+          <Route path="/more"           element={<MoreMenu />} />
           <Route path="*"               element={<NotFound />} />
         </Routes></Suspense>
       </ErrorBoundary>
@@ -176,42 +178,7 @@ function AppInner() {
 
 export default function App() {
   return (
-    <ConfigProvider
-      theme={{
-        token: {
-          colorPrimary:     '#6366F1',
-          colorSuccess:     '#10B981',
-          colorWarning:     '#F59E0B',
-          colorError:       '#EF4444',
-          colorInfo:        '#6366F1',
-          borderRadius:     8,
-          fontFamily:       '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          colorBgContainer: '#ffffff',
-          colorBgLayout:    '#f0f2f5',
-          /* Nav bar is z-1000; all antd popups must sit above it */
-          zIndexPopupBase:  1010,
-        },
-        components: {
-          Menu: {
-            darkItemBg:            '#0D1B2A',
-            darkSubMenuItemBg:     '#0D1B2A',
-            darkItemHoverBg:       'rgba(99,102,241,0.15)',
-            darkItemSelectedBg:    'rgba(99,102,241,0.2)',
-            darkItemSelectedColor: '#818cf8',
-            itemBorderRadius:      8,
-          },
-          Table: {
-            headerBg:    '#f9fafb',
-            headerColor: '#374151',
-            rowHoverBg:  '#f5f3ff',
-            borderColor: '#e5e7eb',
-          },
-          Card:   { paddingLG: 16 },
-          Button: { borderRadius: 8 },
-          Tag:    { borderRadius: 6 },
-        },
-      }}
-    >
+    <ConfigProvider theme={operationsTheme}>
       <ProtectedRoute>
         <AppInner />
       </ProtectedRoute>

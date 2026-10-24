@@ -34,16 +34,13 @@ async def mobile_navigation(browser):
     context,page=await context_with_api(browser,{'mode':'data'},viewport={'width':390,'height':844},auth={'role':'admin'})
     try:
         await page.goto(BASE+'/')
-        await page.get_by_role('navigation',name='Primary navigation').get_by_role('button',name='More').click()
-        drawer=page.get_by_role('dialog',name='More')
-        assert (await drawer.locator('.ant-drawer-header').bounding_box())['y'] >= 0, 'More header starts above the phone viewport'
-        await expect(drawer.get_by_role('button',name='Close')).to_be_in_viewport()
-        await drawer.get_by_role('button',name='Close').click()
-        await expect(drawer).to_have_count(0)
-        await page.get_by_role('navigation',name='Primary navigation').get_by_role('button',name='More').click()
-        await page.get_by_role('navigation',name='More navigation').get_by_role('link',name='Products').click()
+        # 更多 is its own page (Figma Menus · Phone · More), not a drawer.
+        await page.get_by_role('navigation',name='Primary navigation').get_by_role('link',name='更多 More').click()
+        await expect(page).to_have_url(BASE+'/more')
+        assert (await page.get_by_role('heading',name='更多').bounding_box())['y'] >= 0, 'More header starts above the phone viewport'
+        await expect(page.get_by_role('navigation',name='Primary navigation').get_by_role('link',name='更多 More')).to_have_attribute('aria-current','page')
+        await page.get_by_role('navigation',name='More navigation').get_by_role('link',name='产品 Products').click()
         await expect(page).to_have_url(BASE+'/products')
-        await expect(drawer).to_have_count(0)
     finally:
         await context.close()
 

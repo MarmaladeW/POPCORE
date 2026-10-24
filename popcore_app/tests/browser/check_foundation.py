@@ -247,17 +247,17 @@ async def navigation_checks(browser):
             browser, {'mode': 'data'}, viewport=viewport, auth={'role': 'staff'},
         )
         await page.goto(BASE + '/goods/receiving')
-        receive_goods = page.get_by_role('link', name='Receive goods', exact=True)
         if viewport['width'] != 390:
-            await expect(receive_goods).to_have_attribute('aria-current', 'page')
+            await expect(page.get_by_role('link', name='入店 Receive goods', exact=True)).to_have_attribute('aria-current', 'page')
         if viewport['width'] == 390:
-            more = page.get_by_role('button', name='More', exact=True)
+            # 更多 is a page on phones (Figma Menus); it opens from the keyboard too.
+            more = page.get_by_role('link', name='更多 More', exact=True)
             await more.focus()
             await page.keyboard.press('Enter')
-            await expect(page.get_by_role('dialog', name='More')).to_be_visible()
-            await expect(receive_goods).to_have_attribute('aria-current', 'page')
-            await page.keyboard.press('Escape')
-            await expect(more).to_be_focused()
+            await expect(page).to_have_url(BASE + '/more')
+            await expect(more).to_have_attribute('aria-current', 'page')
+            await page.go_back()
+            await expect(page).to_have_url(BASE + '/goods/receiving')
         assert await page.evaluate('document.body.scrollWidth') <= viewport['width'] + 2
         await page.screenshot(path=evidence / f"operations-{viewport['width']}.png", full_page=True)
         await page.goto(BASE + '/schedule')

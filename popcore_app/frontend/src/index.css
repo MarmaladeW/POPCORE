@@ -319,14 +319,16 @@ html, body, #root {
   overflow-x: hidden;
 }
 
-/* ── iOS font-size: prevent Safari auto-zoom on inputs (must be ≥ 16px) ── */
-.ant-input,
-.ant-input-affix-wrapper input,
-.ant-select-selector,
-.ant-picker-input input,
-.ant-input-number-input,
-textarea.ant-input {
-  font-size: 16px !important;
+/* ── iOS font-size: prevent Safari auto-zoom on inputs (must be ≥ 16px); phones only ── */
+@media (max-width: 767px) {
+  .ant-input,
+  .ant-input-affix-wrapper input,
+  .ant-select-selector,
+  .ant-picker-input input,
+  .ant-input-number-input,
+  textarea.ant-input {
+    font-size: 16px !important;
+  }
 }
 
 /* ── Touch UX: remove tap flash, use fast-tap ── */
@@ -371,11 +373,14 @@ a,
   .ant-btn {
     min-height: 36px;
   }
-  .ant-input,
+  /* Phone controls stay 44px tall (Figma phone frames, touch targets). */
   .ant-input-affix-wrapper,
-  .ant-select-selector,
+  .ant-select-single:not(.ant-select-sm) .ant-select-selector,
   .ant-picker {
-    min-height: 38px !important;
+    min-height: 44px !important;
+  }
+  .ant-input:not(.ant-input-affix-wrapper .ant-input):not(textarea) {
+    min-height: 44px !important;
   }
   .ant-input-number-input {
     min-height: 34px;

@@ -42,7 +42,7 @@ async def checks(browser):
     context, page = await context_with_api(browser, {'mode':'data', 'api_payload':api_for('viewer', {})}, auth={'role':'viewer'})
     await page.goto(BASE + '/')
     await expect(page.get_by_role('navigation', name='Store actions')).to_have_count(0)
-    await expect(page.get_by_role('link', name='Products', exact=True)).to_be_visible()
+    await expect(page.get_by_role('link', name='产品 Products', exact=True)).to_be_visible()
     await context.close()
 
 async def main():
