@@ -1,4 +1,3 @@
-import { Grid } from 'antd'
 import { Link, Navigate } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 
@@ -7,16 +6,15 @@ import { moreItems } from '../lib/navigation'
 import { ROLE_LABELS } from './AppLayout'
 import Icon from './pc/Icon'
 import PageHeader from './pc/PageHeader'
-
-const { useBreakpoint } = Grid
+import { useIsPhone } from './pc/useIsPhone'
 
 // Phone 更多 page (Figma Menus · Phone · More). Desktop has everything in the rail.
 export default function MoreMenu() {
-  const screens = useBreakpoint()
+  const phone = useIsPhone()
   const { user, logout } = useAuth0()
   const role = useRole()
   const access = { staff: useHasRole('staff'), manager: useHasRole('manager'), admin: useHasRole('admin') }
-  if (screens.md) return <Navigate to="/" replace />
+  if (!phone) return <Navigate to="/" replace />
   return <div className="pc-more">
     <PageHeader title="更多" sub="More" />
     <nav className="pc-more-list" aria-label="More navigation">

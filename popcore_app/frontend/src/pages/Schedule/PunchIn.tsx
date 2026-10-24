@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Card, Skeleton, Space } from 'antd'
+import { Button, Skeleton } from 'antd'
+import Icon from '../../components/pc/Icon'
+import '../../components/pc/pc.css'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import { torontoDate } from '../Dashboard/todayPresentation'
@@ -95,21 +97,16 @@ function AttendancePrompt({ home }: { home: boolean }) {
 
   if (home && (recorded || (!error && (!status || !shift)))) return null
 
-  return <section aria-label="Today's attendance" style={{ marginBottom: 16 }}>
-    <Card size="small" title="Punch in / 上班打卡">
-      <Space direction="vertical" style={{ width: '100%' }}>
-        {error && <Alert type="error" showIcon role="alert" message={error}
-          action={<Button style={{ minHeight: 44 }} disabled={loading || saving} onClick={() => void refresh()}>Retry attendance</Button>} />}
-        {!status ? (loading && <Skeleton active paragraph={{ rows: 1 }} />) : recorded ? (
-          <div role="status">Punched in at <time dateTime={recorded.punched_in_at}>{new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false,
-          }).format(new Date(recorded.punched_in_at))}</time> (Toronto) · {status.business_date}</div>
-        ) : shift ? <>
-          <div>{status.business_date} · {shift.store_name || shift.store_code} · {shift.start_time}–{shift.end_time}</div>
-          <Button type="primary" aria-label="Punch in" loading={saving} disabled={loading || saving} onClick={punch}
-            style={{ minHeight: 44, minWidth: 120 }}>Punch in</Button>
-        </> : <div role="status">No assigned shift today · {status.business_date}</div>}
-      </Space>
-    </Card>
+  const alert = error && <small className="pc-punch-error" role="alert">{error}</small>
+  return <section aria-label="Today's attendance" className="pc-punch">
+    <Icon name="clock" size={18} />
+    {!status ? <div className="pc-punch-text"><strong>上班打卡 Punch in</strong>{alert}{loading && !error && <Skeleton active title={false} paragraph={{ rows: 1, width: 180 }} />}</div>
+      : recorded ? <div className="pc-punch-text"><strong>已打卡</strong><small role="status">Punched in at <time dateTime={recorded.punched_in_at}>{new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false,
+        }).format(new Date(recorded.punched_in_at))}</time> (Toronto) · {status.business_date}</small>{alert}</div>
+      : shift ? <div className="pc-punch-text"><strong>上班打卡 Punch in</strong><small><time dateTime={status.business_date}>今天</time> {shift.start_time}–{shift.end_time} · {shift.store_name || shift.store_code}</small>{alert}</div>
+      : <div className="pc-punch-text"><strong>上班打卡 Punch in</strong><small role="status">No assigned shift today · {status.business_date}</small>{alert}</div>}
+    {error && <Button disabled={loading || saving} onClick={() => void refresh()}>Retry attendance</Button>}
+    {status && !recorded && shift && <Button type="primary" aria-label="Punch in" loading={saving} disabled={loading || saving} onClick={punch}>打卡</Button>}
   </section>
 }

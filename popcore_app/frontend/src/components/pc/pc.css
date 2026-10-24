@@ -1,0 +1,38 @@
+/* Shared primitives mirroring the Figma components (panel, list row, label, dot). */
+.pc-panel { border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line-hair); }
+.pc-panel-head h2, .pc-section-head h2 { display: flex; align-items: baseline; gap: 6px; min-width: 0; margin: 0; white-space: nowrap; }
+.pc-panel-head h2 span, .pc-section-head h2 span { color: var(--text-primary); font-size: 13.5px; font-weight: 600; line-height: 20.25px; }
+.pc-panel-head h2 small, .pc-section-head h2 small { overflow: hidden; color: var(--text-tertiary); font-size: 12px; line-height: 18px; text-overflow: ellipsis; }
+.pc-panel-head a, .pc-section-head a { border-bottom: 1px solid var(--line-hair); color: var(--text-secondary); font-size: 12px; line-height: 18px; text-decoration: none; white-space: nowrap; }
+.pc-panel-count { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; line-height: 18px; white-space: nowrap; }
+.pc-dot { display: inline-block; width: 6px; height: 6px; flex: none; border-radius: 50%; }
+.pc-dot-warn { background: var(--status-restock-dot); }
+.pc-dot-ok { background: var(--status-ok-dot); }
+.pc-dot-out { background: var(--status-out-ink); }
+.pc-row { display: flex; align-items: center; gap: 10px; min-height: 65px; padding: 12px 16px; }
+.pc-row + .pc-row, .pc-panel-head + .pc-row { border-top: 0; }
+.pc-row + .pc-row { border-top: 1px solid var(--line-hair); }
+.pc-row-label { width: 52px; flex: none; color: var(--text-secondary); font-size: 11.5px; line-height: 17.25px; }
+.pc-row-main { display: grid; flex: 1; min-width: 0; }
+.pc-row-main strong { overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 500; line-height: 19.5px; text-overflow: ellipsis; white-space: nowrap; }
+.pc-row-main small { color: var(--text-tertiary); font-size: 11.5px; line-height: 17.25px; }
+.pc-row > time, .pc-row-time { flex: none; color: var(--text-tertiary); font-size: 11.5px; line-height: 17.25px; white-space: nowrap; }
+.pc-row .ant-btn { height: 40px; padding-inline: 14px; font-size: 13px; }
+.pc-tag { display: inline-block; width: 40px; flex: none; padding: 1px 6px; border: 1px solid var(--line-hair); color: var(--text-secondary); font-size: 11px; line-height: 16.5px; text-align: center; }
+.pc-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-top: 12px; }
+.pc-section-head h2 span { font-size: 13.5px; line-height: 19.575px; }
+.pc-section-head h2 small, .pc-section-head a { line-height: 17.4px; }
+.pc-quiet { margin: 0; padding: 12px 16px; color: var(--text-tertiary); font-size: 12px; line-height: 17.4px; }
+.pc-quiet strong { display: block; color: var(--text-secondary); font-size: 13px; font-weight: 400; line-height: 19.5px; }
+.pc-punch { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 11px 14px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-punch-text { display: grid; flex: 1; min-width: 0; }
+.pc-punch-text strong { color: var(--text-primary); font-size: 14px; font-weight: 500; line-height: 20.3px; }
+.pc-punch-text small { color: var(--text-tertiary); font-size: 12px; line-height: 17.4px; }
+.pc-punch-text .pc-punch-error { color: var(--status-out-ink); }
+.pc-punch { flex-wrap: wrap; }
+.pc-punch .ant-btn { min-height: 44px; padding-inline: 14px; font-size: 13px; }
+.pc-btn { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 14px; border: 1px solid var(--line-hair); background: var(--surface-default); color: var(--text-primary); font-size: 13px; font-weight: 500; line-height: 19.5px; text-decoration: none; white-space: nowrap; }
+.pc-btn:hover { border-color: var(--line-strong); color: var(--text-primary); }
+.pc-btn-ink { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.pc-btn-ink:hover { color: var(--text-on-ink); }

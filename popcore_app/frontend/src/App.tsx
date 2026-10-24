@@ -130,7 +130,7 @@ function AppInner() {
         />
       </AppLayout>
     )
-    return <ConfigProvider theme={operationsTheme}>{errorApp}</ConfigProvider>
+    return <ConfigProvider theme={operationsTheme} button={{ autoInsertSpace: false }}>{errorApp}</ConfigProvider>
   }
 
   const routedApp = (
@@ -173,12 +173,12 @@ function AppInner() {
       </ErrorBoundary>
     </AppLayout>
   )
-  return <ConfigProvider theme={operationsTheme}>{routedApp}</ConfigProvider>
+  return <ConfigProvider theme={operationsTheme} button={{ autoInsertSpace: false }}>{routedApp}</ConfigProvider>
 }
 
 export default function App() {
   return (
-    <ConfigProvider theme={operationsTheme}>
+    <ConfigProvider theme={operationsTheme} button={{ autoInsertSpace: false }}>
       <ProtectedRoute>
         <AppInner />
       </ProtectedRoute>

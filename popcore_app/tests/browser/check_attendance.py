@@ -58,7 +58,7 @@ async def flow(browser, viewport):
         await expect(panel).to_contain_text('Downtown')
         box = await punch.bounding_box()
         assert box['height'] >= 44
-        shifts_box = await page.get_by_text('My shifts / 我的班次', exact=True).bounding_box()
+        shifts_box = await page.get_by_text('我的班次', exact=True).bounding_box()
         assert box['y'] < shifts_box['y']
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         await page.screenshot(path=OUT / f'prompt-{viewport["width"]}.png')
@@ -133,7 +133,7 @@ async def flow(browser, viewport):
         await page.clock.set_system_time(datetime(2026, 9, 17, 4, tzinfo=timezone.utc))
         await page.clock.run_for(30_001)
         await expect(punch).to_be_enabled()
-        await expect(panel).to_contain_text('2026-09-17')
+        await expect(panel.locator('time[datetime="2026-09-17"]')).to_have_count(1)
         assert sum(r['method'] == 'POST' and r['path'] == ENDPOINT for r in state['requests']) == post_count
         assert all(r['query'] == '' for r in state['requests'] if r['path'] == ENDPOINT)
         assert not errors, errors
@@ -184,7 +184,7 @@ async def timeout_flow(browser):
             await page.clock.fast_forward(30_001)
             await expect(punch).to_have_count(0)
         # The timeout must release posting and let the new-day GET finish.
-        await expect(panel).to_contain_text('2026-09-17')
+        await expect(panel.locator('time[datetime="2026-09-17"]')).to_have_count(1)
         await expect(punch).to_be_enabled()
         assert state.get('attendance') is None
         held_method = None

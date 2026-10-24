@@ -74,3 +74,4 @@
 
 .pc-shell :focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
 .pc-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.pc-topbar-roomy { padding: 16px 16px 12px; }

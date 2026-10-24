@@ -101,7 +101,7 @@ async def run_checks(browser, case):
     await page.get_by_label('Available until', exact=True).fill('18:00')
     await page.get_by_role('button', name='Apply to selected dates').click()
     await page.get_by_role('link', name='首页 Home', exact=True).click()
-    await page.get_by_role('link', name='Store tasks', exact=True).click()
+    await page.get_by_role('link', name='待处理', exact=False).first.click()
     await expect(page.get_by_text('Today / 今日', exact=True)).to_be_visible()
     assert await page.evaluate("""() => {
         const event = new Event('beforeunload', {cancelable: true});

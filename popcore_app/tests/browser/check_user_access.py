@@ -44,7 +44,9 @@ async def check(browser, case):
     await page.route(BASE + '/api/inventory/access', api)
     await page.route(BASE + '/api/today*', api)
     await page.goto(BASE + '/today')
-    await expect(page.get_by_text('Today store access denied', exact=True)).to_be_visible()
+    # Without store access Today shows only what is not tied to a store: no work lists, no access error.
+    await expect(page.get_by_role('region', name='Store tasks')).to_have_count(0)
+    await expect(page.get_by_text('Today store access denied', exact=True)).to_have_count(0)
     await page.goto(BASE + '/users')
     await page.get_by_role('button', name='新建用户', exact=True).click()
     promote = page.get_by_role('combobox', name='Promote trainee (optional)')
@@ -61,7 +63,7 @@ async def check(browser, case):
     await expect(dt).to_be_checked()
     await expect(staff_dt).not_to_be_checked()
     await page.goto(BASE + '/today')
-    await expect(page.get_by_text('Today store access denied', exact=True)).to_have_count(0)
+    await expect(page.get_by_role('region', name='Store tasks')).to_be_visible()
     await expect(page.get_by_text('No inventory store access', exact=True)).to_have_count(0)
     await page.goto(BASE + '/users')
     await expect(dt).to_be_checked()
@@ -89,7 +91,9 @@ async def check(browser, case):
     with closing(case.connect()) as con:
         assert con.execute('SELECT COUNT(*) FROM inventory_access').fetchone()[0] == 0
     await page.goto(BASE + '/today')
-    await expect(page.get_by_text('Today store access denied', exact=True)).to_be_visible()
+    # Without store access Today shows only what is not tied to a store: no work lists, no access error.
+    await expect(page.get_by_role('region', name='Store tasks')).to_have_count(0)
+    await expect(page.get_by_text('Today store access denied', exact=True)).to_have_count(0)
     await context.close()
     for role in ('manager', 'staff'):
         context, page = await context_with_api(browser, {'mode': 'data'}, auth={'role': role})

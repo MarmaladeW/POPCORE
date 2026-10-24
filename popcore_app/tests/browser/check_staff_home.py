@@ -118,11 +118,16 @@ async def flow(browser, width):
     await page.clock.install(time=datetime(2026, 9, 16, 14, tzinfo=timezone.utc))
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
+    async def open_claw():
+        # The claw machine left the Home tiles (it becomes a location in 库存); until then it is a menu entry.
+        if width < 768:
+            await page.get_by_role('link', name='更多 More', exact=True).click()
+        await page.get_by_role('link', name='娃娃机 Claw machine', exact=False).first.click()
     try:
         await page.goto(BASE + '/')
         actions = page.get_by_role('navigation', name='Store actions')
         await expect(actions.get_by_role('link')).to_have_count(4)
-        for name in ['买单', '入店', '娃娃机', '汇总']:
+        for name in ['买单', '入店', '库存', '汇总']:
             await expect(actions.get_by_role('link', name=name, exact=False)).to_be_visible()
         await expect(page.get_by_role('button', name='Punch in', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Punch in', exact=True).click()
@@ -138,7 +143,7 @@ async def flow(browser, width):
         await expect(page.get_by_role('link', name='收货 / Receive shipment', exact=False)).to_be_visible()
         await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 / Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
         await page.get_by_role('link', name='首页 Home', exact=True).click()
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await open_claw()
         await page.get_by_role('button', name='出奖 / Prize won', exact=True).click()
         # Text fields first: after an option is chosen an Ant Design Select takes focus back,
         # and text filled into another field right then is lost or lands in its search box.
@@ -162,7 +167,7 @@ async def flow(browser, width):
         await expect(page.get_by_role('link', name='Import historical summaries', exact=True)).to_have_count(0)
         await page.screenshot(path=OUT / f'summary-{width}.png', full_page=True)
         await page.get_by_role('link', name='首页 Home', exact=True).click()
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await open_claw()
         await page.get_by_role('button', name='换现金 / Cash exchange', exact=True).click()
         await page.get_by_role('textbox', name='Cash exchanged (CAD)').fill('20.00')
         await page.get_by_role('textbox', name='Payment reference / Note').fill('Transfer received, cash handed over')
@@ -178,7 +183,7 @@ async def flow(browser, width):
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['amount_cents'] == 2000 and last['tender'] == 'e_transfer' and last['kind'] == 'cash_exchange'
         assert 'product_id' not in last and 'quantity' not in last
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await open_claw()
         await page.get_by_role('button', name='补货 / Refill', exact=True).click()
         await page.get_by_role('spinbutton', name='Quantity').fill('3')
         await page.get_by_role('combobox', name='Product').fill('Test')
@@ -205,7 +210,7 @@ async def flow(browser, width):
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['kind'] == 'display_in' and last['quantity'] == 2
         await page.get_by_label('Operations store').select_option('ALL')
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await open_claw()
         await expect(page.get_by_role('button', name='Save record', exact=True)).to_have_count(0)
 
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')

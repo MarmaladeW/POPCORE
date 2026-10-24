@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Dropdown, Grid } from 'antd'
+import { Dropdown } from 'antd'
 import type { MenuProps } from 'antd'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
@@ -11,9 +11,8 @@ import Icon from './pc/Icon'
 import { PageHeaderSlots, PhoneTopBar } from './pc/PageHeader'
 import StoreChip from './pc/StoreChip'
 import { CheckoutBusy, useCheckoutBusyListener } from './pc/useCheckoutBusy'
+import { useIsPhone } from './pc/useIsPhone'
 import './AppLayout.css'
-
-const { useBreakpoint } = Grid
 
 export const ROLE_LABELS: Record<string, string> = {
   viewer: '查看者 Viewer', staff: '店员 Staff', manager: '经理 Manager', admin: '管理员 Admin',
@@ -32,8 +31,7 @@ function RailLink({ item, active, collapsed }: { item: NavItem; active: boolean;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const checkoutBusy = useCheckoutBusyListener()
-  const screens = useBreakpoint()
-  const mobile = !screens.md
+  const mobile = useIsPhone()
   const location = useLocation()
   const { user, logout } = useAuth0()
   const role = useRole()

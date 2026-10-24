@@ -7,7 +7,7 @@ export default function StoreChip() {
   const busy = useCheckoutBusy()
   if (!stores.length || !selectedStore) return null
   return <label className="pc-chip pc-store-chip">
-    <span aria-hidden="true">{selectedStore.code === 'ALL' ? '全部门店 ALL' : selectedStore.code}</span>
+    <span aria-hidden="true">{selectedStore.code}</span>
     <select
       aria-label="Operations store"
       disabled={busy}
