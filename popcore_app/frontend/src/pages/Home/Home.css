@@ -110,3 +110,22 @@
   .pc-hm .pc-row-time { font-size: 12px; line-height: 17.4px; }
   .pc-hm .pc-quiet { padding: 12px 14px; }
 }
+
+/* 换现金 Cash exchange (Figma Checkout · Phone · 7) */
+.pc-exchange-body { display: grid; gap: 4px; max-width: 520px; }
+.pc-exchange-title { display: flex; align-items: baseline; gap: 6px; margin: 0; font-size: 15px; font-weight: 600; }
+.pc-exchange-title small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-exchange-lead { margin: 0 0 12px; color: var(--text-tertiary); font-size: 12px; line-height: 17.4px; }
+.pc-exchange-lead span { display: block; }
+.pc-exchange .ant-form-item { margin-bottom: 16px; }
+.pc-exchange .ant-form-item-label > label { color: var(--text-secondary); font-size: 12px; }
+.pc-exchange-tender { display: grid !important; grid-template-columns: 1fr 1fr; }
+.pc-exchange-tender .ant-radio-button-wrapper { display: grid; place-items: center; height: auto; min-height: 56px; padding: 8px; line-height: 1.3; text-align: center; }
+.pc-exchange-tender .ant-radio-button-wrapper > span:last-child { display: grid; }
+.pc-exchange-tender strong { font-size: 13px; font-weight: 500; }
+.pc-exchange-tender small { color: var(--text-tertiary); font-size: 11px; }
+.pc-exchange-tender .ant-radio-button-wrapper-checked small { color: var(--text-on-ink-tertiary); }
+.pc-exchange-amount.ant-input-affix-wrapper { min-height: 64px !important; padding: 8px 14px; border-color: var(--text-primary); }
+.pc-exchange-amount .ant-input-prefix { color: var(--text-tertiary); font-size: 18px; }
+.pc-exchange-amount input.ant-input { font-size: 30px !important; font-weight: 600; letter-spacing: -.6px; }
+.pc-exchange-save.ant-btn { width: 100%; min-height: 48px; font-size: 14px; font-weight: 600; }

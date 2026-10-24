@@ -13,6 +13,7 @@ import StoreChip from './pc/StoreChip'
 import { CheckoutBusy, useCheckoutBusyListener } from './pc/useCheckoutBusy'
 import { useIsPhone } from './pc/useIsPhone'
 import './AppLayout.css'
+import './pc/pc.css'
 
 export const ROLE_LABELS: Record<string, string> = {
   viewer: '查看者 Viewer', staff: '店员 Staff', manager: '经理 Manager', admin: '管理员 Admin',

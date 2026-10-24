@@ -140,6 +140,7 @@ function AppInner() {
           <Route path="/"               element={<RoleRoute minRole="viewer"  element={<HomePage />} />} />
           <Route path="/today" element={<RoleRoute minRole="viewer" element={<DashboardPage />} />} />
           <Route path="/checkout" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
+          <Route path="/checkout/cash-exchange" element={<RoleRoute minRole="staff" element={<EventEntry exchange />} />} />
           <Route path="/checkout/:id" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
           <Route path="/special-orders" element={<RoleRoute minRole="staff" element={<SpecialOrdersPage />} />} />
           <Route path="/incoming" element={<RoleRoute minRole="staff" element={<IncomingPage />} />} />

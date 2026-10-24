@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Input } from 'antd'
 import { CheckCircleOutlined } from '@ant-design/icons'
+import Icon from '../../components/pc/Icon'
 import { formatCents } from '../../lib/money'
 import { convertCadCentsToCnyFen } from '../../lib/checkoutPricing'
 import useCheckoutMutation from './useCheckoutMutation'
 import { cnyCharged } from './checkoutHistory'
 import { cardPart, centsOrNull, groupLines, POPCORE_TENDERS, reviewTitle, splitInstruction, stateTone, writebackStatus } from './cloverOrderView'
-import { cnyMoney, electronic, label, methods, OrderNotes, PhotoCapture, RefundTools, TakeBack, type Draft, type DraftUpdate, type Order } from './checkoutParts'
+import { cnyMoney, electronic, label, methods, OrderNotes, PhotoCapture, RefundTools, TakeBack, TenderLabel, type Draft, type DraftUpdate, type Order } from './checkoutParts'
 
 const clock = (ms:number) => new Date(ms).toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',timeZone:'America/Toronto'})
 const off = (cents:number) => `−${formatCents(cents)}`
@@ -46,14 +47,15 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
   const photoAttempts=order.attempts.filter(a=>a.status==='completed'&&a.origin==='popcore'&&electronic(a.tender))
   const payments=order.attempts.filter(a=>a.status==='completed')
   const saving=total!==null&&quote&&quote.due_cents<total?quote:null
-  const tenderPicker=(withPrices:boolean)=><fieldset className="co-methods" disabled={busy}><legend>{withPrices?'How is the customer paying?':'Collect the rest by'}</legend><div>
-    {withPrices&&collect&&<button type="button" aria-pressed={tender==='card'} disabled={clover.card_blocked} onClick={()=>setDraft({tender:'card'})}>{methods[1].icon}Card<small>{formatCents(collect.card.rest_cents)}</small></button>}
-    {tenderButtons.map(m=><button key={m.value} type="button" aria-pressed={tender===m.value} onClick={()=>setDraft({tender:m.value})}>{m.icon}{m.label}{withPrices&&quote&&<small>{formatCents(quote.rest_cents)}</small>}</button>)}
+  const tenderPicker=(withPrices:boolean)=><fieldset className="co-methods" disabled={busy}><legend>{withPrices?'付款方式 How is the customer paying?':'收余款 Collect the rest by'}</legend><div>
+    {tenderButtons.flatMap((m,i)=>[<button key={m.value} type="button" aria-pressed={tender===m.value} onClick={()=>setDraft({tender:m.value})}><TenderLabel method={m} amount={withPrices&&quote?formatCents(quote.rest_cents):undefined}/></button>,
+      ...(i===0&&withPrices&&collect?[<button key="card" type="button" aria-pressed={tender==='card'} disabled={clover.card_blocked} onClick={()=>setDraft({tender:'card'})}><TenderLabel method={methods[1]} amount={formatCents(collect.card.rest_cents)}/></button>]:[])])}
+    {withPrices&&<button type="button" aria-label="Split payment" onClick={()=>chooseSplit('card')}><span className="co-method-zh">拆单</span> <span className="co-method-en">Split w/ card</span><small>—</small></button>}
   </div>{clover.card_blocked&&withPrices&&<p className="co-muted">Card is off: a cash price is already entered on this Clover order.</p>}</fieldset>
   const received=<>{cny&&amount&&<section className="co-cny" aria-label="Chinese yuan collection amount"><span>{label(tender)} · CNY to collect</span>
       {fen!==null?<><strong>{cnyMoney.format(fen/100)}</strong><small>{formatCents(amount)} CAD at 1 CAD = {cnyPerCad} CNY{cnyRateSource?` (${cnyRateSource})`:''}. Check the amount the payment app shows.</small></>:<p>Ask an admin to set the CNY rate in Settings.</p>}</section>}
     {electronic(tender)&&amount&&<p className="co-muted">Check that the money arrived before tapping Received. Take the payment photo next.</p>}
-    {tender&&tender!=='card'&&amount!==null&&<div className="co-payment-action"><Button type="primary" size="large" disabled={!ready} loading={mutation.saving} onClick={receive}>Received {formatCents(amount)}</Button><small>Only confirm money actually received. POPCORE then marks the Clover order paid.</small></div>}</>
+    {tender&&tender!=='card'&&amount!==null&&<div className="co-payment-action"><Button type="primary" size="large" icon={<Icon name="check" size={18}/>} disabled={!ready} loading={mutation.saving} onClick={receive}>已收 {formatCents(amount)} · Received</Button><small>Only confirm money actually received. POPCORE then marks the Clover order paid.</small></div>}</>
 
   return <article className="co-order co-clover" aria-label={`Checkout ${order.reference}`}>
     <header className="co-order-heading"><div>
@@ -75,9 +77,8 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
       {splitMode===''&&<>
         {tenderPicker(true)}
         {tender==='card'?<p className="co-instruction">Take <strong>{formatCents(collect.card.rest_cents)}</strong> by card on Clover: {popcoreIn||cardLanded?splitInstruction(collect.card.rest_cents):'Pay → Card'}. POPCORE records the sale when Clover confirms it.</p>
-          :tender&&<div className="co-collect"><span>Collect</span><strong>{formatCents(quote.rest_cents)}</strong>{saving&&<small>{saving.label} {off(total!-saving.due_cents)} · Clover total {formatCents(total)}</small>}</div>}
+          :tender&&<div className="co-collect"><span>应收 Collect</span><strong>{formatCents(quote.rest_cents)}</strong>{saving&&<small>{saving.label} {off(total!-saving.due_cents)} · Clover total {formatCents(total)}</small>}</div>}
         {received}
-        <Button type="link" disabled={busy} onClick={()=>chooseSplit('card')}>Split payment</Button>
       </>}
       {splitMode==='card'&&<>
         <div className="co-section-title"><h3>Split with card</h3><span>{formatCents(collect.split_card.due_cents)}{collect.split_card.label&&total!==null&&collect.split_card.due_cents<total?` · ${collect.split_card.label} ${off(total-collect.split_card.due_cents)}`:''}</span></div>

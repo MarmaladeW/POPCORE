@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Input, Skeleton, Switch } from 'antd'
-import { CameraOutlined, ReloadOutlined } from '@ant-design/icons'
+import { CameraOutlined } from '@ant-design/icons'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import client from '../../api/client'
@@ -14,6 +14,10 @@ import useCheckoutMutation from './useCheckoutMutation'
 import { autoOpenCandidate, groupLines } from './cloverOrderView'
 import { cnyCharged, historyQuery, missingPhotos, paymentSummary, TENDER_FILTERS } from './checkoutHistory'
 import { electronic, errorMessage, label, OrderNotes, PhotoCapture, RefundTools, TakeBack, type Access, type Draft, type DraftUpdate, type Order, type Queue, type Store } from './checkoutParts'
+import Icon from '../../components/pc/Icon'
+import PageHeader from '../../components/pc/PageHeader'
+import { useIsPhone } from '../../components/pc/useIsPhone'
+import { CheckoutShortcuts, CheckoutTabs, useOpenSpecialOrders } from './CheckoutNav'
 import './Checkout.css'
 
 const AUTO_OPEN_KEY = 'popcore.checkout.cloverAutoOpen'
@@ -52,7 +56,7 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy,cnyPerCad,cny
   </article>
 }
 
-function QueueRow({item,history,busy,select,me}:{item:Order;history:boolean;busy:boolean;select:(o:Order)=>void;me?:string}) {
+function QueueRow({item,history,busy,select,me,active}:{item:Order;history:boolean;busy:boolean;select:(o:Order)=>void;me?:string;active?:boolean}) {
   const clover=item.clover
   const total=clover?clover.total_cents:item.order.collected_cents
   const paid=paymentSummary(item.attempts)
@@ -64,8 +68,8 @@ function QueueRow({item,history,busy,select,me}:{item:Order;history:boolean;busy
   const who=item.cashier_sub===me?'You':item.cashier_name
   const missing=missingPhotos(item.attempts)
   const paidLine=<>{money&&<span className="co-switch-paid">{money}</span>}{missing>0&&<span className="co-switch-alert">{missing>1?`${missing} payment photos missing`:'Payment photo missing'}</span>}</>
-  if(!clover)return <button type="button" disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong>{item.register_name||'POPCORE order'}</strong><b>{amount}</b></span>{paidLine}<span className="co-switch-items">{item.order.lines.map(l=>`${l.quantity}× ${l.product_name_snapshot}`).join(' · ')}</span><span className="co-switch-meta">{item.reference}{history?` · ${item.business_date} · ${who}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Complete':item.status==='cancelled'?'Cancelled':'In progress'}</span></button>
-  return <button type="button" disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong className="co-clover-id">{clover.order_id}</strong><b>{amount}</b></span>{paidLine}<span className="co-switch-items">{groupLines(clover.lines).map(l=>`${l.quantity}× ${l.name}`).join(' · ')}</span><span className="co-switch-meta">{clock(clover.created_ms)} · {clover.register?'Not picked up':who}{history?` · ${item.business_date}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Sale recorded':item.status==='cancelled'?'Cancelled':'In progress'} · Clover: {clover.state_label}</span></button>
+  if(!clover)return <button type="button" aria-current={active||undefined} disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong>{item.register_name||'POPCORE order'}</strong><b>{amount}</b></span>{paidLine}<span className="co-switch-items">{item.order.lines.map(l=>`${l.quantity}× ${l.product_name_snapshot}`).join(' · ')}</span><span className="co-switch-meta">{item.reference}{history?` · ${item.business_date} · ${who}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Complete':item.status==='cancelled'?'Cancelled':'In progress'}</span></button>
+  return <button type="button" aria-current={active||undefined} disabled={busy} onClick={()=>select(item)}><span className="co-switch-top"><strong className="co-clover-id">{clover.order_id}</strong><b>{amount}</b></span>{paidLine}<span className="co-switch-items">{groupLines(clover.lines).map(l=>`${l.quantity}× ${l.name}`).join(' · ')}</span><span className="co-switch-meta">{clock(clover.created_ms)} · {clover.register?'Not picked up':who}{history?` · ${item.business_date}`:''}</span><span className="co-switch-state">{item.status==='completed'?'Sale recorded':item.status==='cancelled'?'Cancelled':'In progress'} · Clover: {clover.state_label}</span></button>
 }
 
 export default function CheckoutPage() {
@@ -171,34 +175,64 @@ export default function CheckoutPage() {
   }
   const current=order&&order.id===orderId&&order.store_id===selectedStore?.id&&drafts[order.id]?order:undefined
   const setDraft=(orderKey:number)=>(value:DraftUpdate)=>setDrafts(old=>({...old,[orderKey]:typeof value==='function'?value(old[orderKey]):{...old[orderKey],...value}}))
-  if(manual&&access?.live_stores.length)return <div className="co-workspace"><ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)}/></div>
-  return <div className="co-workspace">
-    <header className="co-heading"><div><h1>{orderId?'Order details':history?'Order history':'Checkout'}</h1>{!orderId&&<p>{history?(access?.role==='staff'?'Your orders, including previous shifts, and today’s Clover register sales.':'Orders at the locations you can access today.'):cloverOn?'Scan on Clover. Take card on Clover. Everything else is recorded here.':'Start a manual checkout or continue an open order.'}</p>}</div><Button icon={<ReloadOutlined/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}/></header>
-    {!orderId&&<div className="co-toolbar"><span className={'co-connection'+(connected?' co-connected':'')}><span aria-hidden="true"/>{cloverStore?(connected?`Clover connected${queue?.clover.environment==='sandbox'?' · sandbox':''}${queue?.clover.writes===false?' · read only':''}`:'Clover not responding'):'Clover disconnected'}</span><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Current orders':'Order history'}</Link></div>}
-    {cloverStore&&!orderId&&queue?.clover.message&&<p className="co-muted">{queue.clover.message}</p>}
-    {cloverOn&&!orderId&&<div className="co-clover-tools">
-      <label><Switch size="small" checked={autoOpen} onChange={toggleAutoOpen}/>Open new Clover orders automatically on this device</label>
-      <div className="co-clover-find"><Input aria-label="Clover order ID" placeholder="Clover order ID" value={findText} maxLength={13} onChange={e=>{setFindText(e.target.value);setFindError('')}} onPressEnter={findClover}/><Button disabled={busy} onClick={findClover}>Find</Button></div>
-      {findError&&<Alert type="error" showIcon message={findError}/>}
-    </div>}
+  const phone=useIsPhone(),specialCount=useOpenSpecialOrders()
+  const back=checkoutLink(history?'/checkout/history':'/checkout')
+  const storeName=stores?.find(s=>s.id===selectedStore?.id)?.name||selectedStore?.name||''
+  const refreshButton=<Button icon={<Icon name="refresh" size={18}/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}>{phone?null:'刷新'}</Button>
+  const startManual=<Button type="primary" icon={<Icon name="plus" size={18}/>} disabled={busy} onClick={()=>navigate('/checkout/new')}>{phone?<>手动开单<span className="pc-sr"> Manual checkout</span></>:'手动开单 Manual checkout'}</Button>
+  const recordSale=<Link className="pc-btn" to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>补录 Record sale</Link>
+  const canStart=!history&&!orderId&&!!scoped
+  const header=<PageHeader
+    title={orderId?(phone&&current?.status==='open'?'收款':'订单详情'):history?'订单记录':'买单'}
+    sub={orderId?undefined:`${history?'Order history':'Checkout'}${storeName?` · ${storeName}`:''}`}
+    back={phone&&orderId?{label:history?'订单记录':'当前订单',to:back}:undefined}
+    actions={<>{refreshButton}{canStart&&<>{recordSale}{startManual}</>}</>}/>
+  if(manual&&access?.live_stores.length)return <div className="co-workspace">{header}{!phone&&<CheckoutTabs specialCount={specialCount}/>}<ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)}/></div>
+  const locationPicker=!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(checkoutLink(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>
+  const ready=!!stores?.length&&scoped&&!!queue&&queueScope===scopeKey
+  const listColumn=(!orderId||!phone)&&!!stores?.length&&scoped
+  // Special orders and 换现金 need no checkout shift, so their phone rows show even without the order list.
+  const shortcuts=phone&&!history&&!orderId&&<CheckoutShortcuts specialCount={specialCount} disabled={busy}/>
+  return <div className={'co-workspace'+(orderId?' co-has-order':'')}>
+    {header}
+    {!phone&&<CheckoutTabs history={history} specialCount={specialCount}/>}
     {error&&<Alert type="error" showIcon message={error} action={<Button disabled={busy} onClick={()=>setRefresh(n=>n+1)}>Retry</Button>}/>}
-    {!access?(!error&&<Skeleton active paragraph={{rows:4}}/>):<>
-      {!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(checkoutLink(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>}
-      {history&&!orderId&&scoped&&<div className="co-history-filters">
-        <label>Paid by<select className="co-select" value={tender} disabled={busy} onChange={e=>setTender(e.target.value)}><option value="">Any method</option>{TENDER_FILTERS.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <label className="co-history-search">Search<Input allowClear value={search} maxLength={80} placeholder="Item, Clover order ID or note" onChange={e=>setSearch(e.target.value)}/></label>
+    {!listColumn&&shortcuts}
+    {!access?(!error&&<Skeleton active paragraph={{rows:4}}/>):<div className={'co-columns'+(listColumn?'':' co-single')}>
+      {listColumn&&<div className="co-list">
+        <div className="co-toolbar"><span className={'co-connection'+(connected?' co-connected':'')}><span aria-hidden="true"/>{cloverStore?(connected?`Clover connected${queue?.clover.environment==='sandbox'?' · sandbox':''}${queue?.clover.writes===false?' · read only':''}`:'Clover not responding'):'Clover disconnected'}</span>
+          {phone&&<span className="co-toolbar-links">{refreshButton}<Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?<>当前订单<span className="pc-sr"> Current orders</span></>:<>订单记录<span className="pc-sr"> Order history</span></>}</Link></span>}</div>
+        {cloverStore&&queue?.clover.message&&<p className="co-muted">{queue.clover.message}</p>}
+        {cloverOn&&<div className="co-clover-find"><Input prefix={<Icon name="search" size={18}/>} aria-label="Clover order ID" placeholder="Clover 订单号 Order ID" value={findText} maxLength={13} onChange={e=>{setFindText(e.target.value);setFindError('')}} onPressEnter={findClover}/><Button disabled={busy} onClick={findClover}>查找<span className="pc-sr"> Find</span></Button></div>}
+        {cloverOn&&findError&&<Alert type="error" showIcon message={findError}/>}
+        {locationPicker}
+        {history&&<p className="co-muted">{access?.role==='staff'?'Your orders, including previous shifts, and today’s Clover register sales.':'Orders at the locations you can access today.'}</p>}
+        {history&&<div className="co-history-filters">
+          <label>Paid by<select className="co-select" value={tender} disabled={busy} onChange={e=>setTender(e.target.value)}><option value="">Any method</option>{TENDER_FILTERS.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="co-history-search">Search<Input allowClear value={search} maxLength={80} placeholder="Item, Clover order ID or note" onChange={e=>setSearch(e.target.value)}/></label>
+        </div>}
+        {phone&&canStart&&<div className="co-start">{startManual}{recordSale}</div>}
+        {shortcuts}
+        {!ready?<Skeleton active/>:<>
+          {!!queue!.orders.length&&<h2 className="co-list-title">{history?'订单记录':'当前订单'} <small>{history?'Order history':'Current orders'} · {queue!.orders.length}</small></h2>}
+          {!!queue!.orders.length&&<nav className={'co-order-switcher'+(history?' co-history-list':'')} aria-label={history?'Order history':'Current orders'}>{queue!.orders.map(item=><QueueRow key={item.id} item={item} history={history} busy={busy} select={select} me={user?.sub} active={item.id===orderId}/>)}</nav>}
+          {queue!.next_before_id&&<Button disabled={busy} onClick={()=>setCursor(queue!.next_before_id)}>Older orders</Button>}{cursor&&<Button disabled={busy} onClick={()=>setCursor(null)}>Newest orders</Button>}
+        </>}
+        {cloverOn&&<label className="co-auto-open"><Switch size="small" checked={autoOpen} onChange={toggleAutoOpen}/>此设备自动打开新的 Clover 订单<span className="pc-sr"> Open new Clover orders automatically on this device</span></label>}
       </div>}
-      {!history&&!orderId&&scoped&&<div className="co-location"><Button type={cloverOn?'default':'primary'} disabled={busy} onClick={()=>navigate('/checkout/new')}>Start manual checkout</Button><Link to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>Record completed sale</Link></div>}
-      {orderId&&<Link className="co-back" to={checkoutLink(history?'/checkout/history':'/checkout')}>← Back to {history?'order history':'current orders'}</Link>}
-      {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>:!scoped?<p className="co-muted">Choose a location to see its orders.</p>:!queue||queueScope!==scopeKey?<Skeleton active/>:<>
-        {!orderId&&!!queue.orders.length&&<nav className={'co-order-switcher'+(history?' co-history-list':'')} aria-label={history?'Order history':'Current orders'}>{queue.orders.map(item=><QueueRow key={item.id} item={item} history={history} busy={busy} select={select} me={user?.sub}/>)}</nav>}
-        {!orderId&&queue.next_before_id&&<Button disabled={busy} onClick={()=>setCursor(queue.next_before_id)}>Older orders</Button>}{!orderId&&cursor&&<Button disabled={busy} onClick={()=>setCursor(null)}>Newest orders</Button>}
-        {current?(current.clover?<CloverOrder key={`clover|${current.id}`} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>
-          :<CurrentOrder key={current.id} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>)
-          :!orderId&&<div className="co-empty"><CameraOutlined/><h2>{queue.orders.length?'Choose an order above':filtered?'No orders match':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue.orders.length?'Tap your customer’s order. New arrivals will not switch your current order.':filtered?'Try another payment method or search word.':history?'Try another date, or return to current orders.':cloverOn?(autoOpen?'Scan the items on Clover. The order opens here by itself.':'Scan the items on Clover. The order appears above.'):'Clover is disconnected. Start a manual checkout to enter the items and record payment.'}</p>{!history&&!cloverOn&&<span className="co-muted">Automatic order sync is not active.</span>}</div>}
-        {orderId&&order?.id!==orderId&&<Skeleton active paragraph={{rows:5}}/>}
-      </>}
-    </>}
+      <div className="co-detail">
+        {orderId&&<Link className="co-back" to={back}>← Back to {history?'order history':'current orders'}</Link>}
+        {orderId&&locationPicker}
+        {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>
+          :!scoped?<>{!orderId&&locationPicker}<p className="co-muted">Choose a location to see its orders.</p></>
+          :!ready?(orderId?<Skeleton active paragraph={{rows:5}}/>:null):<>
+          {current?(current.clover?<CloverOrder key={`clover|${current.id}`} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>
+            :<CurrentOrder key={current.id} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>)
+            :!orderId&&<div className={'co-empty'+(queue!.orders.length?' co-empty-choose':'')}><CameraOutlined/><h2>{queue!.orders.length?'Choose an order above':filtered?'No orders match':history?'No orders for this view':'Ready for your next customer'}</h2><p>{queue!.orders.length?'Tap your customer’s order. New arrivals will not switch your current order.':filtered?'Try another payment method or search word.':history?'Try another date, or return to current orders.':cloverOn?(autoOpen?'Scan the items on Clover. The order opens here by itself.':'Scan the items on Clover. The order appears above.'):'Clover is disconnected. Start a manual checkout to enter the items and record payment.'}</p>{!history&&!cloverOn&&<span className="co-muted">Automatic order sync is not active.</span>}</div>}
+          {orderId&&order?.id!==orderId&&<Skeleton active paragraph={{rows:5}}/>}
+        </>}
+      </div>
+    </div>}
     <footer className="co-footer">{access?.business_date&&<span>{access.business_date} · Toronto time</span>}<Link to="/schedule">My schedule</Link></footer>
   </div>
 }

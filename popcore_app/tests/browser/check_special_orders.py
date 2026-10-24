@@ -76,9 +76,9 @@ async def checks(browser):
         auth={'role': 'staff'},
     )
     await page.goto(BASE + '/special-orders')
-    await expect(page.get_by_role('heading', name='Special Orders', exact=True)).to_be_visible()
+    await expect(page.get_by_role('link', name='特殊订单 Special orders', exact=False)).to_have_attribute('aria-current', 'page')
 
-    await page.get_by_role('button', name='New special order', exact=True).click()
+    await page.get_by_role('button', name=re.compile('New special order')).click()
     await page.get_by_label('Customer name').fill('Maya Chen')
     await page.get_by_label('Phone number').fill('416-555-0148')
     await page.get_by_label('Item description').fill('Smiski Museum Series - The Source')
@@ -109,15 +109,16 @@ async def checks(browser):
     await complete.click()
     await expect(page.get_by_text('Customer received the item', exact=True)).to_be_visible()
 
-    await page.get_by_role('tab', name='Completed', exact=True).click()
+    await page.get_by_role('tab', name='已取货 Received', exact=False).click()
     await expect(page.get_by_role('button', name='Maya Chen', exact=False)).to_be_visible()
     assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
 
     await page.set_viewport_size({'width': 390, 'height': 844})
     assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     # Until special orders move inside 买单 (Checkout section), 更多 keeps a 特殊订单 row.
-    await page.get_by_role('link', name='更多 More', exact=True).click()
-    await expect(page.get_by_role('link', name='特殊订单 Special orders', exact=True)).to_be_visible()
+    # Special orders live inside 买单 now: a row on the phone checkout page.
+    await page.get_by_role('link', name='买单 Checkout', exact=True).click()
+    await expect(page.get_by_role('navigation', name='Checkout tools').get_by_role('link', name='特殊订单 Special orders', exact=False)).to_be_visible()
 
     posts = [request for request in state['requests'] if request['method'] == 'POST']
     assert [request['path'] for request in posts] == [

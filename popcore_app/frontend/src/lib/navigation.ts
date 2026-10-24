@@ -19,10 +19,9 @@ const item = {
   products: { key: '/products', zh: '产品', en: 'Products', icon: 'grid', note: '系列与款式' },
   users: { key: '/users', zh: '员工', en: 'Users', icon: 'user', note: '管理员' },
   settings: { key: '/settings', zh: '设置', en: 'Settings', icon: 'gear', note: '管理员' },
-  // Interim entries: these pages move inside Checkout (special orders, 换现金) and Inventory (claw)
-  // in their own sections; until then they stay reachable from the menus.
-  claw: { key: '/claw', zh: '娃娃机', en: 'Claw machine', icon: 'gift', note: '换现金' },
-  specialOrders: { key: '/special-orders', zh: '特殊订单', en: 'Special orders', icon: 'doc' },
+  // Interim entry: the claw machine becomes a location inside Inventory in that section;
+  // until then it stays reachable from the menus.
+  claw: { key: '/claw', zh: '娃娃机', en: 'Claw machine', icon: 'gift' },
 } satisfies Record<string, NavItem>
 
 export const removedFromMenus = ['/trades', '/today']
@@ -30,7 +29,7 @@ export const removedFromMenus = ['/trades', '/today']
 function interim(access: NavAccess): NavItem[] {
   return [
     ...(access.manager ? [item.summary] : []),
-    ...(access.staff ? [item.claw, item.specialOrders] : []),
+    ...(access.staff ? [item.claw] : []),
   ]
 }
 
@@ -64,8 +63,11 @@ export function bottomItems(access: NavAccess, active: string): NavItem[] {
   return [item.home, ...(access.staff ? [item.checkout] : []), ...(promoted ? [promoted] : []), item.schedule]
 }
 
+// Pages reached from inside Checkout (a row on phone, a tab on desktop).
+export const checkoutSections = ['/special-orders', '/checkout/cash-exchange', '/checkout/history']
+
 export function activeSection(pathname: string, manager: boolean): string {
-  if (pathname === '/checkout/history' || pathname === '/sales/entry') return '/checkout'
+  if (pathname === '/checkout/history' || pathname === '/sales/entry' || pathname === '/special-orders' || pathname === '/checkout/cash-exchange') return '/checkout'
   if (pathname === '/closing') return '/summary'
   if (pathname === '/incoming/display') return '/incoming'
   if (pathname.startsWith('/goods/receiving') || pathname.startsWith('/goods/transfers')) return '/incoming'

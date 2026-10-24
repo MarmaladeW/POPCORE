@@ -1,5 +1,6 @@
 """Staff entrance and event recording, isolated synthetic API responses only."""
 import asyncio
+import re
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,16 +52,14 @@ async def actual_event_api(browser):
             else:
                 await route.abort()
         await page.route('**/*', local_only)
-        await page.goto('http://127.0.0.1:5178/claw')
-        await page.get_by_role('button', name='换现金 / Cash exchange', exact=True).click()
-        # Text fields before the Select, for the focus reason noted in flow().
-        await page.get_by_role('textbox', name='Cash exchanged (CAD)').fill('20.00')
-        await page.get_by_role('textbox', name='Payment reference / Note').fill('LOCAL-TEST-ONLY')
-        await page.get_by_role('combobox', name='Payment received by').click()
-        await page.get_by_title('Card', exact=True).click()
-        await expect(page.get_by_role('textbox', name='Cash exchanged (CAD)')).to_have_value('20.00')
+        # 换现金 lives in 买单 Checkout now.
+        await page.goto('http://127.0.0.1:5178/checkout/cash-exchange')
+        await page.get_by_role('textbox', name='换出现金 Cash given (CAD)').fill('20.00')
+        await page.get_by_role('textbox', name='付款参考号 Payment reference').fill('LOCAL-TEST-ONLY')
+        await page.locator('.pc-exchange-tender').get_by_text('Card', exact=True).click()
+        await expect(page.get_by_role('textbox', name='换出现金 Cash given (CAD)')).to_have_value('20.00')
         await page.get_by_role('checkbox', name='I received this digital payment and handed over the same amount in cash.').check()
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url('http://127.0.0.1:5178/')
         await expect(page.get_by_role('region', name='Recent records')).to_contain_text('$20.00')
         with closing(fixture_case.connect()) as con:
@@ -134,7 +133,7 @@ async def flow(browser, width):
         await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         await page.screenshot(path=OUT / f'home-{width}.png', full_page=True)
         await actions.get_by_role('link', name='买单', exact=False).click()
-        await expect(page.get_by_role('heading', name='Checkout', exact=True)).to_be_visible()
+        await expect(page.get_by_role('heading', name='买单', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Register 1', exact=False).click()
         # The order opens with its payment panel: every tender already priced by the server.
         await expect(page.get_by_role('group', name='How is the customer paying?')).to_be_visible()
@@ -167,18 +166,19 @@ async def flow(browser, width):
         await expect(page.get_by_role('link', name='Import historical summaries', exact=True)).to_have_count(0)
         await page.screenshot(path=OUT / f'summary-{width}.png', full_page=True)
         await page.get_by_role('link', name='首页 Home', exact=True).click()
-        await open_claw()
-        await page.get_by_role('button', name='换现金 / Cash exchange', exact=True).click()
-        await page.get_by_role('textbox', name='Cash exchanged (CAD)').fill('20.00')
-        await page.get_by_role('textbox', name='Payment reference / Note').fill('Transfer received, cash handed over')
-        await page.get_by_role('combobox', name='Payment received by').click()
-        await page.get_by_title('E-transfer', exact=True).click()
-        await expect(page.get_by_role('textbox', name='Cash exchanged (CAD)')).to_have_value('20.00')
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        # 换现金 is a row (phone) or tab (desktop) of 买单 Checkout.
+        await page.get_by_role('link', name='买单 Checkout', exact=True).click()
+        tools = page.get_by_role('navigation', name='Checkout tools' if width < 768 else 'Checkout sections')
+        await tools.get_by_role('link', name='换现金 Cash exchange', exact=False).click()
+        await page.get_by_role('textbox', name='换出现金 Cash given (CAD)').fill('20.00')
+        await page.get_by_role('textbox', name='付款参考号 Payment reference').fill('Transfer received, cash handed over')
+        await page.locator('.pc-exchange-tender').get_by_text('E-transfer', exact=True).click()
+        await expect(page.get_by_role('textbox', name='换出现金 Cash given (CAD)')).to_have_value('20.00')
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page.get_by_text('Confirm the payment received and cash handed over.', exact=True)).to_be_visible()
         await page.get_by_role('checkbox', name='I received this digital payment and handed over the same amount in cash.').check()
         await page.screenshot(path=OUT / f'cash-exchange-{width}.png', full_page=True)
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['amount_cents'] == 2000 and last['tender'] == 'e_transfer' and last['kind'] == 'cash_exchange'

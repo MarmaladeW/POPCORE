@@ -7,6 +7,10 @@ import { formatCents, parseMoneyToCents } from '../../lib/money'
 import { useAppStore } from '../../store'
 import type { SpecialOrder } from './specialOrders'
 import { paymentState } from './specialOrders'
+import Icon from '../../components/pc/Icon'
+import PageHeader from '../../components/pc/PageHeader'
+import { useIsPhone } from '../../components/pc/useIsPhone'
+import { CheckoutTabs } from '../Sales/CheckoutNav'
 import './SpecialOrders.css'
 
 type Status = 'open' | 'completed'
@@ -44,6 +48,7 @@ const localDateTime = (value: string | null) => value
 
 export default function SpecialOrdersPage() {
   const admin = useHasRole('admin')
+  const phone = useIsPhone()
   const stores = useAppStore(state => state.stores).filter(store => store.code !== 'ALL')
   const selectedStore = useAppStore(state => state.selectedStore)
   const [status, setStatus] = useState<Status>('open')
@@ -148,13 +153,14 @@ export default function SpecialOrdersPage() {
     } catch (cause) { setError((cause as Error).message) }
   }
 
+  const toggle = (phoneLabel: boolean) => <Button type="primary" icon={creating ? undefined : <Icon name="plus" size={18} />} onClick={() => setCreating(value => !value)}>
+    {creating ? 'Close form' : phoneLabel ? <>新建<span className="pc-sr"> New special order</span></> : '新建特殊订单 New special order'}
+  </Button>
   return <main className="so-page">
-    <header className="so-heading">
-      <div><p className="so-eyebrow">Customer requests</p><h1>Special Orders</h1><p>Track unique requests, separate payments, and customer pickup.</p></div>
-      <Button type="primary" size="large" onClick={() => setCreating(value => !value)}>
-        {creating ? 'Close form' : 'New special order'}
-      </Button>
-    </header>
+    <PageHeader title={phone ? '特殊订单' : '买单'} sub={phone ? undefined : `Checkout${selectedStore?.code && selectedStore.code !== 'ALL' ? ` · ${selectedStore.name}` : ''}`}
+      back={phone ? { label: '买单', to: '/checkout' } : undefined} actions={toggle(false)} phoneAction={toggle(true)} />
+    {!phone && <CheckoutTabs specialCount={status === 'open' && !loading ? orders.length : undefined} />}
+    <p className="so-lead">不在产品列表里的预订 · Unique requests, separate payments and customer pickup.</p>
 
     {error && <Alert role="alert" type="error" showIcon message={error} action={pending.current
       ? <Button onClick={() => void mutate()} disabled={saving}>Retry</Button>
@@ -174,8 +180,9 @@ export default function SpecialOrdersPage() {
       <div className="so-form-actions"><Button onClick={() => setCreating(false)}>Cancel</Button><Button type="primary" htmlType="submit" loading={saving}>Create order</Button></div>
     </form>}
 
-    <Tabs activeKey={status} onChange={key => setStatus(key as Status)} items={[
-      { key: 'open', label: 'Open' }, { key: 'completed', label: 'Completed' },
+    <Tabs className="so-tabs" activeKey={status} onChange={key => setStatus(key as Status)} items={[
+      { key: 'open', label: <>进行中 Open{status === 'open' && !loading ? ` · ${orders.length}` : ''}</> },
+      { key: 'completed', label: <>已取货 Received{status === 'completed' && !loading ? ` · ${orders.length}` : ''}</> },
     ]} />
 
     <Spin spinning={loading}>

@@ -21,7 +21,9 @@ export type Queue = { orders:Order[]; next_before_id:number|null; clover:CloverS
 export type Draft = { target:string; tender:string; split:string; includesCard:boolean; sourceTotal?:number; photos?:Record<number,File>; cloverSplit?:''|'card'|'tenders' }
 export type DraftUpdate = Partial<Draft> | ((draft:Draft)=>Draft)
 
-export const methods = [{value:'cash',label:'Cash',icon:<DollarOutlined/>},{value:'card',label:'Card',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer'},{value:'wechat',label:'WeChat Pay'},{value:'alipay',label:'Alipay'}]
+export const methods = [{value:'cash',label:'Cash',zh:'现金',icon:<DollarOutlined/>},{value:'card',label:'Card',zh:'刷卡',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer',zh:'转账'},{value:'wechat',label:'WeChat Pay',zh:'微信'},{value:'alipay',label:'Alipay',zh:'支付宝'}]
+// A tender tile (Figma): Chinese, English, then the amount.
+export const TenderLabel = ({method,amount}:{method:typeof methods[number];amount?:React.ReactNode}) => <><span className="co-method-zh">{method.zh}</span> <span className="co-method-en">{method.label}</span>{amount!==undefined&&<small>{amount}</small>}</>
 export const electronic = (method:string) => ['e_transfer','wechat','alipay'].includes(method)
 export const moneyInput = (cents:number) => (cents/100).toFixed(2)
 export const label = (method:string) => methods.find(m=>m.value===method)?.label || method
@@ -86,7 +88,7 @@ export function OrderNotes({order,updated,onBusy,disabled}:{order:Order;updated:
   useEffect(()=>{if(!dirty){setNote(order.note||'');setBase(order.note||'')}},[order.note,dirty])
   useEffect(()=>{onBusy(mutation.pending);return()=>onBusy(false)},[mutation.pending])
   return <section className="co-note" aria-label="Order note">
-    <h3>Order note</h3>
+    <h3>订单备注 Order note</h3>
     {order.can_note?<>
       <Input.TextArea aria-label="Order note" value={note} rows={3} maxLength={2000} showCount
         placeholder="Special payment, pickup, or customer circumstances" disabled={disabled}
