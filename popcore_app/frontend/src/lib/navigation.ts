@@ -13,7 +13,8 @@ const item = {
   summary: { key: '/summary', zh: '汇总', en: 'Summary', icon: 'doc' },
   stock: { key: '/stock', zh: '库存', en: 'Inventory', icon: 'box', note: '晚盘、娃娃机' },
   restock: { key: '/restock', zh: '补货', en: 'Restock', icon: 'swap' },
-  sales: { key: '/sales', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
+  // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs.
+  sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
   reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '经理' },
   schedule: { key: '/schedule', zh: '排班', en: 'Schedule', icon: 'cal' },
   products: { key: '/products', zh: '产品', en: 'Products', icon: 'grid', note: '系列与款式' },
@@ -23,17 +24,10 @@ const item = {
 
 export const removedFromMenus = ['/trades', '/today']
 
-function interim(access: NavAccess): NavItem[] {
-  return [
-    ...(access.manager ? [item.summary] : []),
-  ]
-}
-
 export function railGroups(access: NavAccess): NavGroup[] {
   const daily: NavItem[] = [item.home]
   if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock)
   else if (access.staff) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock)
-  daily.push(...interim(access))
   const planning: NavItem[] = [item.schedule, item.products, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
@@ -48,7 +42,6 @@ export function moreItems(access: NavAccess): NavItem[] {
     item.products,
     ...(access.manager ? [item.sales, item.reports] : []),
     ...(access.admin ? [item.users, item.settings] : []),
-    ...interim(access),
   ]
 }
 
@@ -67,15 +60,14 @@ export const checkoutSections = ['/special-orders', '/checkout/cash-exchange', '
 
 export function activeSection(pathname: string, manager: boolean): string {
   if (pathname === '/checkout/history' || pathname === '/sales/entry' || pathname === '/special-orders' || pathname === '/checkout/cash-exchange') return '/checkout'
-  if (pathname === '/closing') return '/summary'
+  if (pathname === '/closing' || pathname === '/sales' || pathname.startsWith('/sales/day/') || pathname === '/sales/matching') return '/summary'
   if (pathname === '/incoming/display') return '/incoming'
   if (pathname.startsWith('/goods/receiving') || pathname.startsWith('/goods/transfers')) return '/incoming'
   if (pathname.startsWith('/goods/')) return '/stock'
   if (pathname.startsWith('/trades/cases/')) return '/trades'
   if (pathname.startsWith('/sales/documents/') || pathname.startsWith('/sales/payments/')) {
-    return manager ? '/sales' : '/checkout'
+    return manager ? '/summary' : '/checkout'
   }
-  if (pathname.startsWith('/sales/day/') || pathname === '/sales/matching') return '/sales'
   if (pathname.startsWith('/products/')) return '/products'
   if (pathname === '/stock/products' || pathname === '/claw' || pathname.startsWith('/stock/')) return '/stock'
   return pathname === '/' ? '/' : `/${pathname.split('/')[1]}`

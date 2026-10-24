@@ -34,7 +34,8 @@ async def checks(browser):
         for label, path in [('Restock', '/restock'), ('Trades', '/trades'), ('Products', '/products')]:
             await expect(tools.get_by_role('link', name=label, exact=True)).to_have_attribute('href', path)
         await page.goto(BASE + '/summary')
-        await expect(page.get_by_role('link', name='Cash count & closing', exact=False)).to_have_attribute('href', '/closing')
+        # 收工 opens from the summary's Closing panel.
+        await expect(page.get_by_role('region', name='Closing').get_by_role('link')).to_have_attribute('href', '/closing')
         await page.goto(BASE + '/checkout/history')
         nav = page.locator('.pc-bottom-nav' if width == 390 else '.pc-sidebar-menu')
         await expect(nav.locator('a[href="/checkout"]')).to_have_attribute('aria-current', 'page')

@@ -1,0 +1,33 @@
+/* 历史日报 Historical reports (Figma Summary · Desktop · Historical reports). */
+.pc-hist-intro { margin: -8px 0 16px; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
+.pc-hist-phone-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.pc-hist-phone-actions > * { flex: 1 1 auto; }
+.pc-hist-aliases { margin-bottom: 16px; padding: 16px; }
+.pc-hist-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 24px; align-items: start; }
+.pc-hist-side, .pc-hist-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.pc-hist-main > * { margin-bottom: 0 !important; }
+.pc-hist-chart-body { padding: 12px 16px 8px; }
+.pc-hist-days ul { max-height: 480px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.pc-hist-days li { display: flex; align-items: stretch; border-top: 1px solid var(--line-hair); }
+.pc-hist-days li:first-child { border-top: 0; }
+.pc-hist-days li button { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 12px 8px 12px 16px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pc-hist-days li button > span { display: grid; flex: 1; min-width: 0; }
+.pc-hist-days li strong { font-size: 13px; font-weight: 500; }
+.pc-hist-days li small { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-hist-days li b { color: var(--text-secondary); font-size: 12.5px; font-weight: 400; white-space: nowrap; }
+.pc-hist-days li > a { display: inline-flex; align-items: center; padding: 0 12px; color: var(--text-tertiary); }
+.pc-hist-day-current { background: var(--surface-soft); box-shadow: inset -2px 0 0 var(--surface-ink); }
+.pc-hist-export { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 12px 16px; border-top: 1px solid var(--line-hair); }
+.pc-hist-export .ant-picker { width: 100%; }
+.pc-hist-export .ant-btn { width: 100%; }
+.pc-hist-unknown, .pc-hist-note { margin: 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; }
+.pc-hist-entry { padding: 20px; }
+.pc-hist-log .pc-panel-head { flex-wrap: wrap; }
+.pc-hist-log .pc-panel-head h2 { white-space: normal; }
+.pc-hist-log .ant-table-wrapper { border-top: 0; }
+@media (max-width: 1100px) {
+  .pc-hist-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.pc-hist-side .pc-panel-head h2 { flex-wrap: wrap; gap: 0 6px; white-space: normal; }
+.pc-hist-back { display: inline-flex; align-items: center; gap: 6px; margin: -8px 0 12px; color: var(--text-secondary); font-size: 12.5px; text-decoration: none; }
+.pc-hist-day > p { color: var(--text-tertiary); font-size: 12px; }

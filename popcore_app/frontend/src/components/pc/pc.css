@@ -37,3 +37,51 @@
 .pc-btn-ink { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
 .pc-btn-ink:hover { color: var(--text-on-ink); }
 .pc-notice { margin: 0 0 16px; padding: 10px 14px; border: 1px solid var(--status-restock-line); background: var(--surface-default); color: var(--status-restock-ink); font-size: 12.5px; }
+
+/* Page tabs under the header (Figma Sales: 每日汇总 · 收工 · 历史日报). */
+.pc-page-tabs { display: flex; flex-wrap: wrap; gap: 4px 24px; margin: -8px 0 24px; border-bottom: 1px solid var(--line-hair); }
+.pc-page-tabs a { display: inline-flex; align-items: baseline; gap: 4px; padding: 0 0 12px; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--text-secondary); font-size: 13px; line-height: 19.5px; text-decoration: none; }
+.pc-page-tabs a[aria-current='page'] { border-color: var(--text-primary); color: var(--text-primary); font-weight: 600; }
+.pc-page-tabs a:hover { color: var(--text-primary); }
+
+/* Figures strip: aligned cells, label over a large number, small note under it. */
+.pc-figures { display: grid; margin-bottom: 24px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-figures-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pc-figures-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.pc-figures-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.pc-figures > div { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 18px 18px 16px; }
+.pc-figures > div + div { border-left: 1px solid var(--line-hair); }
+.pc-figures span { color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.pc-figures strong { color: var(--text-primary); font-size: 22px; font-weight: 600; line-height: 28px; letter-spacing: -.4px; overflow-wrap: anywhere; }
+.pc-figures small { color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; }
+.pc-figures .pc-figure-warn { color: var(--status-restock-ink); }
+@media (max-width: 767.98px) {
+  .pc-figures { margin-bottom: 16px; }
+  .pc-figures > div { padding: 12px; }
+  .pc-figures strong { font-size: 20px; line-height: 26px; }
+  .pc-figures-4 { grid-template-columns: 1fr 1fr; }
+  .pc-figures-4 > div:nth-child(3) { border-left: 0; }
+  .pc-figures-4 > div:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
+}
+
+/* ‹ day › stepper; the date input lies over the label so tapping the date opens the picker. */
+.pc-day { display: inline-flex; align-items: stretch; height: 40px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-day > button { display: inline-flex; align-items: center; justify-content: center; width: 40px; padding: 0; border: 0; background: none; color: var(--text-primary); cursor: pointer; }
+.pc-day > button:disabled { color: var(--text-disabled); cursor: default; }
+.pc-day-date { position: relative; display: grid; place-content: center; min-width: 158px; padding: 0 12px; border-inline: 1px solid var(--line-hair); text-align: center; cursor: pointer; }
+.pc-day-date strong { color: var(--text-primary); font-size: 13px; font-weight: 600; line-height: 16px; }
+.pc-day-date small { color: var(--text-tertiary); font-size: 10.5px; line-height: 13px; }
+.pc-day-date input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.pc-day-date:focus-within { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+@media (max-width: 767.98px) {
+  .pc-day { display: flex; height: 50px; margin-bottom: 14px; }
+  .pc-day > button { width: 50px; }
+  .pc-day-date { flex: 1; }
+  .pc-day-date strong { font-size: 14px; line-height: 18px; }
+  .pc-day-date small { font-size: 11px; }
+}
+@media (max-width: 767.98px) {
+  .pc-page-tabs { flex-wrap: nowrap; gap: 20px; margin: 0 0 14px; overflow-x: auto; scrollbar-width: none; }
+  .pc-page-tabs a { padding-bottom: 10px; white-space: nowrap; }
+  .pc-page-tabs a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}

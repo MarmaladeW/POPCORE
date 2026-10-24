@@ -315,8 +315,12 @@ html, body {
 }
 
 /* ── Global mobile fixes ── */
-html, body, #root {
+html, body {
   overflow-x: hidden;
+}
+/* clip, not hidden: #root must not become a scroll box, or position: sticky stops working. */
+#root {
+  overflow-x: clip;
 }
 
 /* ── iOS font-size: prevent Safari auto-zoom on inputs (must be ≥ 16px); phones only ── */

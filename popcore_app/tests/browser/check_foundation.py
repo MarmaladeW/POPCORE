@@ -107,7 +107,7 @@ async def page_state_checks(browser):
     pages = (
         ('/stock/products', 'Unable to load stock data.', 'Foundation Item', 'No data'),
         ('/products', 'Unable to load products.', 'Foundation Item', 'No data'),
-        ('/sales', 'Unable to load sales data.', 'Foundation Item', 'Sales Log'),
+        ('/sales', 'Unable to load sales data.', 'Foundation Item', 'No recorded dates yet.'),
     )
     for path, error_text, marker, empty_text in pages:
         state = {'mode': 'error'}

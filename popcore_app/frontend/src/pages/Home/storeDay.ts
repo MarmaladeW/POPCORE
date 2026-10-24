@@ -4,6 +4,7 @@ import client from '../../api/client'
 import { useRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
 import { torontoDate } from '../Dashboard/todayPresentation'
+import type { SummaryCheckouts } from '../Sales/dailySummary'
 
 export type StoreEvent = {
   id: number; kind: string; business_date: string; created_at: string; actor_name: string
@@ -12,6 +13,7 @@ export type StoreEvent = {
 }
 export type StoreDay = {
   business_date: string; scope: 'personal' | 'store'; events: StoreEvent[]; summary_text: string
+  checkouts?: SummaryCheckouts; pending?: number
   receipts: { id: number; shipment_reference: string | null; status: string }[]
   transfers: { id: number; status: string; source_store_id: number; destination_store_id: number }[]
 }

@@ -4,19 +4,22 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { useRole } from '../../auth/useRole'
 import { savedLineValue, savedPriceSummary } from './historicalSales'
 import {
-  Alert, Button, Card, Col, Row, Spin, Table, Tag, Typography,
+  Alert, Button, Card, Spin, Table, Tag, Typography,
 } from 'antd'
-import { ArrowLeftOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import client from '../../api/client'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useAppStore } from '../../store'
+import Icon from '../../components/pc/Icon'
+import PageHeader from '../../components/pc/PageHeader'
+import { SalesTabs } from './SalesNav'
+import './historicalReports.css'
 
 // Chart.js is loaded from CDN — declare as ambient global
 declare const Chart: any
 
-const { Text, Title } = Typography
+const { Text } = Typography
 
 interface SaleRow {
   id: number
@@ -189,26 +192,10 @@ function DayDetail({date,storeCode,storeName}:{date:string;storeCode:string;stor
   ]
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-
-      {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 12,
-        marginBottom: isMobile ? 16 : 24,
-        flexWrap: 'wrap',
-      }}>
-        <Link aria-label="Historical reports" to={`/sales?date=${date}`}><ArrowLeftOutlined /> Historical reports</Link>
-        <div>
-          <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>
-            {formattedDate}
-          </Title>
-          {!isMobile && (
-            <Text style={{ color: '#6b7280', fontSize: 13 }}>
-              {storeName} · Historical pasted report
-            </Text>
-          )}
-        </div>
-      </div>
+    <div className="pc-hist pc-hist-day">
+      <PageHeader title={formattedDate} sub={`${storeName} · Historical pasted report`} />
+      <SalesTabs />
+      <Link className="pc-hist-back" aria-label="Historical reports" to={`/sales?date=${date}`}><Icon name="back" size={14} />历史日报 Historical reports</Link>
 
       <p>Saved report prices estimate product value. Payment totals and refunds are in <Link to="/reports">Insights &amp; reports</Link>.</p>
       {error ? <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setRefresh(value => value + 1)}>Retry</Button>} /> : loading ? (
@@ -225,26 +212,9 @@ function DayDetail({date,storeCode,storeName}:{date:string;storeCode:string;stor
         <>
           {!!estimate.unknownRows && <p>{estimate.unknownRows} {estimate.unknownRows === 1 ? 'product has' : 'products have'} no saved price. The estimate includes only products with a saved price.</p>}
           {/* KPI strip */}
-          <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
-            {kpis.map(k => (
-              <Col key={k.label} xs={8} sm={8}>
-                <Card
-                  style={{ borderRadius: 10, borderTop: `3px solid ${k.color}` }}
-                  bodyStyle={{ padding: isMobile ? '10px 12px' : '14px 20px' }}
-                >
-                  <div style={{ fontSize: isMobile ? 10 : 12, color: '#9ca3af' }}>{k.label}</div>
-                  <div style={{
-                    fontSize:   isMobile ? 15 : 20,
-                    fontWeight: 700,
-                    color:      k.color,
-                    marginTop:  4,
-                  }}>
-                    {k.value}
-                  </div>
-                </Card>
-              </Col>
-            ))}
-          </Row>
+          <div className="pc-figures pc-figures-3">
+            {kpis.map(k => <div key={k.label}><span>{k.label}</span><strong>{k.value}</strong></div>)}
+          </div>
 
           {/* Bar chart */}
           <Card

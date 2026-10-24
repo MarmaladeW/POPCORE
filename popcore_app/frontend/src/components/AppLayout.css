@@ -43,7 +43,8 @@
 .pc-content { padding: 24px 32px 32px; }
 .pc-desk-header + .pc-content, div:has(> .pc-desk-header) + .pc-content { padding-top: 0; }
 
-.pc-phone-top { position: sticky; top: 0; z-index: 90; }
+/* Scrolls with the page: a pinned top bar would cover whatever a tap scrolls into view. */
+.pc-phone-top { position: relative; z-index: 90; }
 .pc-topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 14px 10px; border-bottom: 1px solid var(--line-hair); background: var(--surface-default); }
 .pc-topbar-title { display: grid; gap: 1.5px; min-width: 0; }
 .pc-topbar h1 { margin: 0; overflow: hidden; color: var(--text-primary); font-size: 19px; font-weight: 600; line-height: 21.85px; letter-spacing: -.19px; text-overflow: ellipsis; white-space: nowrap; }

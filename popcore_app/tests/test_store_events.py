@@ -232,6 +232,43 @@ class StoreEventsTests(ReceivingFixture):
             con.commit()
         self.assertEqual(self.get().get_json()['receipts'],[])
 
+    def test_summary_text_groups_each_payment_method_and_marks_split_parts(self):
+        orders = (
+            ('CASH-1','10:00',[('cash',2800)],'Cash Toy'),
+            ('SPLIT-1','11:00',[('cash',1800),('card',2200)],'Split Toy'),
+            ('CARD-1','12:00',[('card',4259)],'Card Toy'),
+            ('EMT-1','13:00',[('e_transfer',7400)],'Transfer Toy'),
+            ('WX-1','14:00',[('wechat',4400)],'Wechat Toy'),
+            ('HELPER-1','15:00',[('card',500)],'Private Toy'),
+        )
+        with closing(self.connect()) as con:
+            for reference, time, tenders, item in orders:
+                owner = 'auth0|helper' if reference.startswith('HELPER') else 'auth0|staff'
+                order_id = con.execute('''INSERT INTO checkout_orders
+                    (store_id,business_date,reference,payload,created_by,status,created_at)
+                    VALUES (?,?,?,?,?,'completed',?)''',
+                    (self.store_id,self.today,reference,json.dumps({'lines':[{'product_name_snapshot':item,'quantity':1}]}),
+                     owner,f'{self.today}T{time}:00Z')).lastrowid
+                for tender, amount in tenders:
+                    con.execute("INSERT INTO checkout_attempts(checkout_id,tender,amount_cents,assigned_to,status) VALUES (?,?,?,?,'completed')",
+                        (order_id,tender,amount,owner))
+            con.commit()
+        lines = self.get().get_json()['summary_text'].split('\n')
+        self.assertEqual(lines[1],'按付款方式分开，仅含本系统已完成买单')
+        groups = [line for line in lines if not line.startswith(' ') and '笔，' in line]
+        self.assertEqual(groups,['现金: 2 笔，$46.00','刷卡: 2 笔，$64.59','转账 EMT: 1 笔，$74.00','微信: 1 笔，$44.00','支付宝: 0 笔，$0.00'])
+        split_lines = [line for line in lines if 'SPLIT-1' in line]
+        self.assertEqual(len(split_lines),2)
+        self.assertTrue(split_lines[0].endswith('SPLIT-1 · $18.00 拆单'))
+        self.assertTrue(split_lines[1].endswith('SPLIT-1 · $22.00 拆单'))
+        self.assertEqual(lines.count('    Split Toy × 1'),1)
+        self.assertNotIn('拆单',next(line for line in lines if 'CASH-1' in line))
+        self.assertNotIn('HELPER-1','\n'.join(lines))
+        self.assertEqual(self.get().get_json()['pending'],0)
+        manager = self.get('manager').get_json()['summary_text']
+        self.assertIn('刷卡: 3 笔，$69.59',manager)
+        self.assertEqual([len(self.get().get_json()['checkouts'][group]) for group in ('pos','non_pos','split')],[2,2,1])
+
     def test_summary_text_uses_snapshots_actor_local_time_and_pending_count(self):
         payload = {'lines':[{'product_name_snapshot':'Captured Plush','quantity':2}], 'collected_cents':1200}
         with closing(self.connect()) as con:
@@ -243,7 +280,9 @@ class StoreEventsTests(ReceivingFixture):
             con.execute("INSERT INTO checkout_orders(store_id,business_date,reference,payload,created_by) VALUES (?,?,?,'{}','auth0|staff')",(self.store_id,self.today,'PENDING-1'))
             con.commit()
         self.assertEqual(self.post(dict(store_id=self.store_id,kind='claw_prize',product_id=self.product_id,quantity=1,note='Won')).status_code,201)
-        text = self.get().get_json()['summary_text']
-        for expected in ('DT',self.today,'个人','卡/现金订单','Captured Plush × 2','Staff','娃娃机出奖: 1','入娃娃机: 0','换现金: 0','入display: 0','待完成订单: 1'):
+        body = self.get().get_json()
+        self.assertEqual(body['pending'],1)
+        text = body['summary_text']
+        for expected in ('DT',self.today,'个人','刷卡: 1 笔，$12.00','Captured Plush × 2','Staff','娃娃机出奖: 1','入娃娃机: 0','换现金: 0','入display: 0','待完成订单: 1'):
             self.assertIn(expected,text)
         self.assertNotIn('PENDING-1:',text)

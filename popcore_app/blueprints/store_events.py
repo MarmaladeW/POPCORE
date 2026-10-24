@@ -160,6 +160,9 @@ def create():
         raise
 
 
+SUMMARY_METHODS = (('cash','现金'),('card','刷卡'),('e_transfer','转账 EMT'),('wechat','微信'),('alipay','支付宝'))
+
+
 @bp.get('/api/store-events')
 @role_required('staff')
 def summary():
@@ -218,14 +221,26 @@ def summary():
         return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).astimezone(ZoneInfo('America/Toronto')).strftime('%H:%M')
     labels = {'claw_prize':'娃娃机出奖','claw_refill':'入娃娃机','display_in':'入display','cash_exchange':'换现金'}
     lines = [f"{store_code} · {date} · {'个人' if personal else '门店'}汇总",
-        '按付款方式分组，仅含本系统已完成买单']
-    for group, label in (('pos','卡/现金订单'),('non_pos','电子支付订单'),('split','混合付款订单')):
-        items = checkouts[group]
-        lines.append(f"{label}: {len(items)} 单，${sum(item['amount_cents'] for item in items)/100:.2f}")
-        for item in items:
-            payments = ' + '.join(f"{pay['tender']} ${pay['amount_cents']/100:.2f}" for pay in item['payments'])
-            lines.append(f"  {local_time(item['created_at'])} {item['actor_name']} · {item['reference']} · {payments}")
-            lines.extend(f"    {line['name']} × {line['quantity']}" for line in item['items'])
+        '按付款方式分开，仅含本系统已完成买单']
+    # One group per payment method. A split order shows its part under each method it used,
+    # marked 拆单; its items are listed once, under the first method it appears in.
+    ordered = sorted(by_order.values(), key=lambda item: (item['created_at'], item['id']))
+    methods = list(SUMMARY_METHODS)
+    known = {tender for tender, _ in methods}
+    methods += [(tender, tender) for tender in sorted({pay['tender'] for item in ordered
+        for pay in item['payments']} - known)]
+    listed = set()
+    for tender, label in methods:
+        parts = [(item, sum(pay['amount_cents'] for pay in item['payments'] if pay['tender'] == tender))
+            for item in ordered if any(pay['tender'] == tender for pay in item['payments'])]
+        lines.append(f"{label}: {len(parts)} 笔，${sum(amount for _, amount in parts)/100:.2f}")
+        for item, amount in parts:
+            split = len({pay['tender'] for pay in item['payments']}) > 1
+            lines.append(f"  {local_time(item['created_at'])} {item['actor_name']} · {item['reference']} · ${amount/100:.2f}"
+                + (' 拆单' if split else ''))
+            if item['id'] not in listed:
+                listed.add(item['id'])
+                lines.extend(f"    {line['name']} × {line['quantity']}" for line in item['items'])
     lines.append(f"待完成订单: {pending}")
     for kind in ('claw_prize','claw_refill','cash_exchange','display_in'):
         kind_events = [event for event in events if event['kind'] == kind]
@@ -237,5 +252,5 @@ def summary():
     lines.append(f"入店收货: {len(receipts)}；入店调拨: {len(transfers)}")
     lines.extend(f"  收货 {item['id']}: {item['shipment_reference'] or '无单号'} ({item['status']})" for item in receipts)
     lines.extend(f"  调拨 {item['id']}: {item['status']}" for item in transfers)
-    return jsonify(business_date=date,scope=scope,events=events,checkouts=checkouts,
+    return jsonify(business_date=date,scope=scope,events=events,checkouts=checkouts,pending=pending,
         receipts=receipts,transfers=transfers,summary_text='\n'.join(lines))

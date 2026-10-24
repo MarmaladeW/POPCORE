@@ -13,7 +13,7 @@ const statusLabels: Record<string, [string, 'warn' | 'ok' | 'out']> = {
   planned: ['待发出', 'warn'], active: ['运输中', 'warn'], partial: ['部分收', 'warn'], completed: ['已收齐', 'ok'],
 }
 
-function Status({ status }: { status: string }) {
+export function Status({ status }: { status: string }) {
   const [zh, tone] = statusLabels[status] || [status, 'warn']
   return <span className="pc-hm-status"><i className={`pc-dot pc-dot-${tone}`} aria-hidden="true" />{zh}<span className="pc-sr"> {status}</span></span>
 }
