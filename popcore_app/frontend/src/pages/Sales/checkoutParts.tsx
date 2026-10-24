@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Checkbox, Form, Input, Modal } from 'antd'
 import { CameraOutlined, CheckCircleOutlined, CreditCardOutlined, DollarOutlined, UploadOutlined } from '@ant-design/icons'
 import client from '../../api/client'
-import { formatCents, parseMoneyToCents } from '../../lib/money'
+import { formatCents, tryParseMoneyToCents } from '../../lib/money'
 import { useHasRole } from '../../auth/useRole'
 import useCheckoutMutation from './useCheckoutMutation'
 import type { CloverBlock } from './cloverOrderView'
@@ -110,7 +110,7 @@ export function RefundTools({order,updated,onBusy,disabled}:{order:Order;updated
       <p>{order.received_cents?'Mark this checkout abandoned, then record the money actually refunded.':'Cancel this unpaid checkout.'}</p>
       {!!order.received_cents&&<Form.Item name="reason" label="Reason" rules={[{required:true,whitespace:true}]}><Input.TextArea rows={2}/></Form.Item>}
       <Button danger htmlType="submit" loading={mutation.saving}>{order.received_cents?'Abandon checkout':'Cancel checkout'}</Button>
-    </Form>:<Form key={order.version} layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action('refund',{...v,attempt_id:Number(v.attempt_id),amount_cents:parseMoneyToCents(v.amount)})}>
+    </Form>:<Form key={order.version} layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action('refund',{...v,attempt_id:Number(v.attempt_id),amount_cents:tryParseMoneyToCents(v.amount)})}>
       <p><strong>{formatCents(order.refund_due_cents)}</strong> still to refund. Record refunds after returning the money.</p>
       <Form.Item name="attempt_id" label="Original payment" rules={[{required:true}]}><select className="co-select" defaultValue=""><option value="" disabled>Select payment</option>{order.attempts.filter(a=>(a.refundable_cents||0)>0).map(a=><option key={a.id} value={a.id}>{label(a.tender)} · {formatCents(a.refundable_cents||0)} refundable</option>)}</select></Form.Item>
       <div className="co-action-pair"><Form.Item name="amount" label="Refund amount ($)" rules={[{required:true}]}><Input inputMode="decimal"/></Form.Item><Form.Item name="business_date" label="Refund date" rules={[{required:true}]}><Input type="date"/></Form.Item></div>
