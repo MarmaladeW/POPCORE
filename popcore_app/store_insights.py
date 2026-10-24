@@ -28,7 +28,7 @@ def _current_inventory(con, ids):
         reasons=[]
         if not known: reasons.append('unverified')
         elif all(available(location)==0 for location in locations): reasons.append('out_of_stock')
-        if any(floor['code']=='floor' and available(floor)==0 and any(back['store_id']==floor['store_id'] and back['code']!='floor' and (available(back) or 0)>0 for back in locations) for floor in locations):
+        if any(floor['code']=='floor' and available(floor)==0 and any(back['store_id']==floor['store_id'] and back['code'] in ('upstairs','warehouse') and (available(back) or 0)>0 for back in locations) for floor in locations):
             reasons.append('replenish')
         if valid and any(location['opening_verified'] and any(balances.get((row['id'],location['id'],kind),0)>0 for kind in ('hold','damaged')) for location in locations):
             reasons.append('condition')

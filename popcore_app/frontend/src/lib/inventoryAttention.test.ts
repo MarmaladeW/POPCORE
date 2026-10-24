@@ -14,6 +14,7 @@ test('floor replenishment uses positive back stock in the same store only',()=>{
   assert.deepEqual(inventoryAttention(product([0,4]),locations.slice(0,2)), ['replenish'])
   assert.deepEqual(inventoryAttention(product([0,0,5,4]),locations), [])
   assert.deepEqual(inventoryAttention(product([null,4]),locations.slice(0,2)), ['unverified'])
+  assert.deepEqual(inventoryAttention(product([0,0,3]),[...locations.slice(0,2),{id:3,store_id:1,code:'claw'}]), [])
 })
 test('hold and damage remain visible without treating transit or display as problems',()=>{
   assert.deepEqual(inventoryAttention(product([2,0],[{location_id:1,disposition:'hold',quantity:1}]),locations.slice(0,2)), ['condition'])

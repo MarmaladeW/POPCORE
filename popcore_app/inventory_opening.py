@@ -34,7 +34,12 @@ class OpeningCountError(Exception):
 
 def legacy_column(location_code):
     """Legacy stock column that the compatibility projection maps a location to."""
-    return 'instore_qty' if location_code == 'floor' else 'upstairs_qty'
+    return {'floor': 'instore_qty', 'claw': 'claw_qty'}.get(location_code, 'upstairs_qty')
+
+
+def trusts_legacy(location_code):
+    """Legacy claw_qty overlapped the floor count, so it is not compared or kept."""
+    return location_code != 'claw'
 
 
 def active_locations(con):
@@ -72,7 +77,7 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
     if scope == 'legacy':
         where = """WHERE EXISTS (
             SELECT 1 FROM stock st WHERE st.product_id=p.id AND st.store_id=?
-              AND (st.instore_qty != 0 OR st.upstairs_qty != 0))"""
+              AND (st.instore_qty != 0 OR st.upstairs_qty != 0 OR st.claw_qty != 0))"""
         params.append(location['store_id'])
     rows = con.execute(
         f"""SELECT p.id, p.sku, p.jizhanming, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS name,
@@ -244,7 +249,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
         legacy = con.execute(
             f"SELECT {legacy_column(location['code'])} AS qty FROM stock "
             'WHERE product_id=? AND store_id=?', (product['id'], location['store_id']),
-        ).fetchone()
+        ).fetchone() if trusts_legacy(location['code']) else None
         legacy_qty = legacy['qty'] if legacy else None
         accepted[slot] = {
             'file': row['_file'], 'row': row['_row'],
@@ -273,6 +278,8 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
                   f'{_key(location)} has count rows but every count is blank; enter the '
                   f'counts (0 where none was found) or pass --empty-location {_key(location)}')
             continue
+        if not trusts_legacy(location['code']):
+            continue
         column = legacy_column(location['code'])
         for legacy in con.execute(
             f"""SELECT p.id, p.sku, p.identity_status, st.{column} AS qty
@@ -295,7 +302,9 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
                     'message': 'legacy quantity stays untrusted until the identity is verified and counted',
                 })
     for legacy in con.execute(
-        """SELECT st.product_id, p.sku, s.code AS store, st.claw_qty
+        """SELECT st.product_id, p.sku, s.code AS store, st.claw_qty,
+                  EXISTS (SELECT 1 FROM inventory_locations
+                          WHERE store_id=st.store_id AND code='claw' AND is_active=1) AS has_claw
            FROM stock st JOIN products p ON p.id=st.product_id
            JOIN stores s ON s.id=st.store_id
            WHERE st.claw_qty != 0 AND st.store_id IN
@@ -306,7 +315,9 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             'code': 'legacy_claw_unverified', 'product_id': legacy['product_id'],
             'sku': legacy['sku'], 'store': legacy['store'],
             'legacy_qty': legacy['claw_qty'],
-            'message': 'claw_qty is not a physical balance and is not opened',
+            'message': ('claw_qty is not a physical balance; the claw count replaces it'
+                        if legacy['has_claw'] else
+                        'claw_qty is not a physical balance and is not opened'),
         })
 
     mode = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
@@ -388,7 +399,7 @@ def reconcile_inventory(con, foreign_key_baseline=None):
     ]
     compatibility_differences = []
     for row in con.execute(
-        """SELECT p.id AS product_id, s.store_id, s.instore_qty, s.upstairs_qty,
+        """SELECT p.id AS product_id, s.store_id, s.instore_qty, s.upstairs_qty, s.claw_qty,
                   (SELECT COALESCE(SUM(b.quantity), 0) FROM inventory_balances b
                    JOIN inventory_locations l ON l.id=b.location_id
                    WHERE b.product_id=p.id AND l.store_id=s.store_id
@@ -397,18 +408,27 @@ def reconcile_inventory(con, foreign_key_baseline=None):
                    JOIN inventory_locations l ON l.id=b.location_id
                    WHERE b.product_id=p.id AND l.store_id=s.store_id
                      AND b.disposition='saleable'
-                     AND l.code IN ('upstairs','warehouse')) AS back_qty
+                     AND l.code IN ('upstairs','warehouse')) AS back_qty,
+                  (SELECT CASE WHEN COUNT(l.id)=0 THEN NULL ELSE COALESCE(SUM(b.quantity), 0) END
+                   FROM inventory_locations l
+                   LEFT JOIN inventory_balances b ON b.location_id=l.id
+                     AND b.product_id=p.id AND b.disposition='saleable'
+                   WHERE l.store_id=s.store_id AND l.code='claw'
+                     AND l.is_active=1) AS claw_balance
            FROM stock s JOIN products p ON p.id=s.product_id
            WHERE p.identity_status='verified' AND s.store_id IN
              (SELECT store_id FROM inventory_locations WHERE is_active=1)"""
     ):
-        if (row['instore_qty'], row['upstairs_qty']) != (row['floor_qty'], row['back_qty']):
+        # Stores without a claw location keep their legacy claw_qty untouched.
+        claw_differs = row['claw_balance'] is not None and row['claw_qty'] != row['claw_balance']
+        if (row['instore_qty'], row['upstairs_qty']) != (row['floor_qty'], row['back_qty']) \
+                or claw_differs:
             compatibility_differences.append(dict(row))
     for row in con.execute(
         """SELECT DISTINCT b.product_id, l.store_id FROM inventory_balances b
            JOIN inventory_locations l ON l.id=b.location_id
            WHERE b.disposition='saleable' AND b.quantity != 0
-             AND l.code IN ('floor','upstairs','warehouse')
+             AND l.code IN ('floor','upstairs','warehouse','claw')
              AND NOT EXISTS (SELECT 1 FROM stock s
                              WHERE s.product_id=b.product_id AND s.store_id=l.store_id)"""
     ):
@@ -529,6 +549,27 @@ def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path
                      f'inventory document {document_id}',
                      line['location_id'], document_id),
                 )
+
+        # Legacy claw_qty was never a physical balance; the claw count replaces it.
+        for legacy in con.execute(
+            """SELECT st.product_id, st.store_id, st.claw_qty FROM stock st
+               JOIN inventory_locations l ON l.store_id=st.store_id
+                 AND l.code='claw' AND l.is_active=1
+               LEFT JOIN inventory_balances b ON b.product_id=st.product_id
+                 AND b.location_id=l.id AND b.disposition='saleable'
+               WHERE st.claw_qty != COALESCE(b.quantity, 0)
+               ORDER BY st.store_id, st.product_id""").fetchall():
+            con.execute('UPDATE stock SET claw_qty=0, last_updated=? WHERE product_id=? AND store_id=?',
+                        (business_date, legacy['product_id'], legacy['store_id']))
+            con.execute(
+                """INSERT INTO stock_transactions
+                   (product_id, txn_type, qty, location, date, notes, store_id,
+                    inventory_document_id)
+                   VALUES (?, 'inventory_opening', 0, 'claw', ?, ?, ?, ?)""",
+                (legacy['product_id'], business_date,
+                 f'Opening count 0 replaces legacy claw_qty {legacy["claw_qty"]}; '
+                 f'inventory document {document_id}', legacy['store_id'], document_id),
+            )
 
         unverified = [row['id'] for row in con.execute(
             """SELECT l.id FROM inventory_locations l JOIN stores s ON s.id=l.store_id
