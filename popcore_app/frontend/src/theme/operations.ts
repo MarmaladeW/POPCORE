@@ -1,7 +1,7 @@
 import type { ThemeConfig } from 'antd'
 
 // Mirrors styles/tokens.css (Figma variables). Sharp corners, 1px hairlines, ink primary.
-const font = '"Geist", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif'
+const font = '"Geist", "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif'
 
 export const operationsTheme: ThemeConfig = {
   token: {

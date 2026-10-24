@@ -55,7 +55,7 @@
   --stroke-hairline: 1px;
 
   /* type: Geist for Latin and numbers, Noto Sans SC for Chinese, weights 400/500/600 only */
-  --font-ui: "Geist", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-ui: "Geist", "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
 }
 
 /* Type roles used across the mockups (size/weight/line-height). Numbers are tabular everywhere:
@@ -76,7 +76,9 @@
 .t-caption      { font-size: 11px;  font-weight: 400; line-height: 1.45; }
 .t-tiny         { font-size: 10.5px; font-weight: 400; line-height: 1.5; }
 
-/* Geist (OFL, see assets/fonts/OFL-Geist.txt), one variable file for 400–600. */
+/* Geist (OFL, see assets/fonts/OFL-Geist.txt), one variable file for 400–600.
+   Noto Sans SC is self-hosted from @fontsource-variable/noto-sans-sc (OFL); the browser fetches only the
+   character-range slices a page uses. */
 @font-face {
   font-family: "Geist";
   src: url("../assets/fonts/geist-latin-wght.woff2") format("woff2");
