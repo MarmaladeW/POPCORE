@@ -46,8 +46,8 @@ class OpeningCountTests(IsolatedApiCase):
                 """INSERT INTO product_barcodes
                    (code, product_id, code_kind, input_unit, quantity_per_scan)
                    VALUES ('00012345', ?, 'manufacturer', 'box', 1)""", (self.box,))
-            self._stock(con, self.box, 'DT', instore=4, upstairs=6)
-            self._stock(con, self.set, 'DT', instore=0, upstairs=2)
+            self._stock(con, self.box, 'DT', instore=4, upstairs=6, claw=3)
+            self._stock(con, self.set, 'DT', instore=0, upstairs=2, claw=2)
             self._stock(con, self.design, 'MK', instore=3, upstairs=0, claw=1)
             for role in ('admin', 'manager'):
                 for store_id in self.stores.values():
@@ -95,6 +95,7 @@ class OpeningCountTests(IsolatedApiCase):
         paths = [
             self._sheet('DT', 'floor', {'OPEN-BOX': '5', 'OPEN-SET': '0'}),
             self._sheet('DT', 'upstairs', {'OPEN-BOX': '6', 'OPEN-SET': '0'}),
+            self._sheet('DT', 'claw', {'OPEN-BOX': '1'}),
             self._sheet('MK', 'floor', {'OPEN-DESIGN': '2'}),
         ]
         rows = []
@@ -186,9 +187,13 @@ class OpeningCountTests(IsolatedApiCase):
         self.assertEqual(counts['OPEN-BOX', 'floor']['difference'], 1)
         self.assertEqual(counts['OPEN-SET', 'upstairs']['difference'], -2)
         self.assertEqual(counts['OPEN-DESIGN', 'floor']['difference'], -1)
+        # Legacy claw_qty overlapped the floor count, so the claw count is not compared with it.
+        self.assertEqual((counts['OPEN-BOX', 'claw']['legacy_qty'],
+                          counts['OPEN-BOX', 'claw']['difference']), (None, 1))
         warnings = {(w['code'], w['product_id']) for w in report['warnings']}
         self.assertIn(('unverified_legacy_stock', self.product_id), warnings)
         self.assertIn(('legacy_claw_unverified', self.design), warnings)
+        self.assertIn(('legacy_claw_unverified', self.set), warnings)
         self.assertEqual(report['request_key'], self._review(
             self._complete_rows(), empty_locations=['MK-warehouse'])['request_key'])
         self.assertEqual(self.snapshot(LEDGER_TABLES), before)
@@ -225,14 +230,38 @@ class OpeningCountTests(IsolatedApiCase):
         report = self._review(rows)
         missing = sorted(e['message'].split()[0] for e in report['errors']
                          if e['code'] == 'location_not_counted')
-        self.assertEqual(missing, ['DT-upstairs', 'MK-floor', 'MK-warehouse'])
+        self.assertEqual(missing, ['DT-claw', 'DT-upstairs', 'MK-floor', 'MK-warehouse'])
         self.assertNotIn('uncounted_legacy_stock', self._codes(report))
         floor_only = self._review(rows + [self._row(location='upstairs', sku='OPEN-BOX',
                                                     count='6')],
-                                  empty_locations=['MK-floor', 'MK-warehouse'])
+                                  empty_locations=['DT-claw', 'MK-floor', 'MK-warehouse'])
         uncounted = {e['product_id'] for e in floor_only['errors']
                      if e['code'] == 'uncounted_legacy_stock'}
         self.assertEqual(uncounted, {self.set, self.design})
+
+    def test_empty_claw_needs_no_legacy_counts_and_clears_legacy_claw_qty(self):
+        rows = [row for row in self._complete_rows() if row['location'] != 'claw']
+        missing = self._review(rows, empty_locations=['MK-warehouse'])
+        self.assertIn('DT-claw has no count rows', ' '.join(
+            e['message'] for e in missing['errors'] if e['code'] == 'location_not_counted'))
+        report = apply_opening_counts(
+            db.DB_PATH, rows, actor_sub=ADMIN_SUB, business_date='2026-10-20',
+            backup_path=self.folder / 'claw-empty.db',
+            empty_locations=['DT-claw', 'MK-warehouse'])
+        self.assertTrue(report['applied'], report['errors'])
+        self.assertNotIn('uncounted_legacy_stock', self._codes(report))
+        self.assertTrue(report['reconciliation']['ok'], report['reconciliation'])
+        with closing(self.connect()) as con:
+            claw = {r[0]: r[1] for r in con.execute(
+                'SELECT product_id, claw_qty FROM stock WHERE store_id=?', (self.stores['DT'],))}
+            self.assertEqual((claw[self.box], claw[self.set]), (0, 0))
+            self.assertEqual(con.execute(
+                'SELECT claw_qty FROM stock WHERE product_id=? AND store_id=?',
+                (self.design, self.stores['MK'])).fetchone()[0], 1)
+            self.assertEqual(con.execute(
+                """SELECT COUNT(*) FROM inventory_scope_state ss
+                   JOIN inventory_locations l ON l.id=ss.location_id
+                   WHERE l.code='claw' AND ss.opening_verified=1""").fetchone()[0], 1)
 
     def test_sheet_with_only_blank_counts_is_not_an_empty_location(self):
         blank = self._row(store='MK', location='warehouse', sku='OPEN-DESIGN', count='')
@@ -273,7 +302,7 @@ class OpeningCountTests(IsolatedApiCase):
             scope = con.execute(
                 'SELECT opening_verified, opening_document_id FROM inventory_scope_state'
             ).fetchall()
-            self.assertEqual(len(scope), 4)
+            self.assertEqual(len(scope), 5)
             self.assertEqual({tuple(row) for row in scope}, {(1, document_id)})
             document = con.execute(
                 'SELECT kind, actor_sub, business_date, request_key FROM inventory_documents'
@@ -286,20 +315,22 @@ class OpeningCountTests(IsolatedApiCase):
                    JOIN inventory_locations l ON l.id=b.location_id""")}
             self.assertEqual(balances, {('OPEN-BOX', 'floor'): 5,
                                         ('OPEN-BOX', 'upstairs'): 6,
+                                        ('OPEN-BOX', 'claw'): 1,
                                         ('OPEN-DESIGN', 'floor'): 2})
             stock = {r['sku']: (r['instore_qty'], r['upstairs_qty'], r['claw_qty'])
                      for r in con.execute(
                 """SELECT p.sku, s.instore_qty, s.upstairs_qty, s.claw_qty
                    FROM stock s JOIN products p ON p.id=s.product_id""")}
             self.assertEqual(stock['OPEN-SET'], (0, 0, 0))
-            self.assertEqual(stock['OPEN-BOX'], (5, 6, 0))
+            self.assertEqual(stock['OPEN-BOX'], (5, 6, 1))
             self.assertEqual(stock['OPEN-DESIGN'], (2, 0, 1))
             self.assertEqual(stock['TEST-1'], (2, 10, 0))
             zeroed = con.execute(
-                """SELECT qty, inventory_document_id FROM stock_transactions
-                   WHERE product_id=? AND txn_type='inventory_opening'""", (self.set,)
+                """SELECT location, qty, inventory_document_id FROM stock_transactions
+                   WHERE product_id=? AND txn_type='inventory_opening' ORDER BY id""", (self.set,)
             ).fetchall()
-            self.assertEqual([tuple(row) for row in zeroed], [(0, document_id)])
+            self.assertEqual([tuple(row) for row in zeroed],
+                             [('upstairs', 0, document_id), ('claw', 0, document_id)])
         with closing(self.connect()) as con:
             con.execute(f"ATTACH DATABASE '{backup}' AS snapshot")
             self.assertEqual(con.execute(
@@ -369,6 +400,7 @@ class OpeningCountTests(IsolatedApiCase):
     def test_cli_defaults_to_dry_run_and_apply_needs_explicit_inputs(self):
         paths = [self._sheet('DT', 'floor', {'OPEN-BOX': '5', 'OPEN-SET': '0'}),
                  self._sheet('DT', 'upstairs', {'OPEN-BOX': '6', 'OPEN-SET': '0'}),
+                 self._sheet('DT', 'claw', {'OPEN-BOX': '1'}),
                  self._sheet('MK', 'floor', {'OPEN-DESIGN': '2'})]
         before = self.snapshot(LEDGER_TABLES)
         report_path = self.folder / 'report.json'

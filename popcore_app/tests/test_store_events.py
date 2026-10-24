@@ -1,4 +1,4 @@
-"""Store activity stays attributed, scoped, and separate from stock and sales."""
+"""Store activity stays attributed and scoped; only claw refills and prizes move stock."""
 from contextlib import closing
 from datetime import date, timedelta
 import json
@@ -16,7 +16,17 @@ class StoreEventsTests(ReceivingFixture):
             for name in ('staff', 'helper', 'manager'):
                 con.execute('INSERT INTO employees(auth0_id,name) VALUES (?,?)', (f'auth0|{name}', name.title()))
                 con.execute("INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id) VALUES ((SELECT id FROM employees WHERE auth0_id=?),?,'09:00','17:00','test',?)", (f'auth0|{name}', self.today, self.store_id))
+            con.execute("INSERT INTO inventory_access(auth0_sub,store_id) VALUES ('auth0|helper',?)",(self.store_id,))
+            self.claw, self.upstairs = (con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code=?",
+                (self.store_id,code)).fetchone()[0] for code in ('claw','upstairs'))
+            for location, quantity in ((self.floor,10),(self.claw,5)):
+                con.execute("INSERT INTO inventory_balances VALUES (?,?,'saleable',?,1)",(self.product_id,location,quantity))
             con.commit()
+
+    def balances(self):
+        with closing(self.connect()) as con:
+            return {row['location_id']:row['quantity'] for row in con.execute(
+                "SELECT location_id,quantity FROM inventory_balances WHERE product_id=? AND disposition='saleable'",(self.product_id,))}
 
     def post(self, body, key='event-1', role='staff'):
         return self.client.post('/api/store-events', json=body,
@@ -25,16 +35,90 @@ class StoreEventsTests(ReceivingFixture):
     def get(self, role='staff', date=None):
         return self.client.get(f'/api/store-events?store_id={self.store_id}&business_date={date or self.today}', headers=self.headers(role))
 
-    def test_records_operational_events_without_stock_or_sale_changes(self):
-        before = self.snapshot(('inventory_documents','sale_documents','stock'))
+    def test_legacy_mode_records_events_without_stock_or_sale_changes(self):
+        with closing(self.connect()) as con:
+            con.execute("UPDATE inventory_mode SET mode='legacy' WHERE id=1")
+            con.commit()
+        before = self.snapshot(('inventory_documents','inventory_balances','sale_documents','stock'))
         for kind in ('claw_prize','claw_refill','display_in'):
-            body = dict(store_id=self.store_id,kind=kind,product_id=self.product_id,quantity=2,note='Counted')
+            body = dict(store_id=self.store_id,kind=kind,product_id=self.product_id,quantity=2,note='Counted',
+                **({'source_location_id':self.upstairs} if kind == 'claw_refill' else {}))
             first = self.post(body, kind)
             self.assertEqual(first.status_code, 201, first.get_json())
             self.assertEqual(self.post(body,kind).get_json(), first.get_json())
             self.assertEqual(first.get_json()['product_name'],'Test Product')
-        self.assertEqual(self.snapshot(('inventory_documents','sale_documents','stock')), before)
-        self.assertEqual(len(self.get().get_json()['events']),3)
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','sale_documents','stock')), before)
+        events = self.get().get_json()['events']
+        self.assertEqual(len(events),3)
+        self.assertEqual({event['kind']:event['source_location_id'] for event in events},
+            {'claw_prize':None,'claw_refill':self.upstairs,'display_in':None})
+        self.assertEqual({event['inventory_document_id'] for event in events},{None})
+
+    def test_refill_moves_stock_into_claw_and_prize_takes_it_out(self):
+        refill = dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,quantity=3,
+            source_location_id=self.floor)
+        first = self.post(refill,'refill')
+        self.assertEqual(first.status_code,201,first.get_json())
+        self.assertEqual(first.get_json()['source_location_id'],self.floor)
+        self.assertEqual(self.balances(),{self.floor:7,self.claw:8})
+        before = self.snapshot(('inventory_documents','inventory_balances','store_events','stock'))
+        self.assertEqual(self.post(refill,'refill').get_json(),first.get_json())
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','store_events','stock')),before)
+        prize = self.post(dict(store_id=self.store_id,kind='claw_prize',product_id=self.product_id,quantity=6,note='Won'),'prize')
+        self.assertEqual(prize.status_code,201,prize.get_json())
+        self.assertEqual(self.balances(),{self.floor:7,self.claw:2})
+        with closing(self.connect()) as con:
+            documents = {row['id']:dict(row) for row in con.execute(
+                'SELECT id,kind,source_type,source_id,request_key,actor_sub FROM inventory_documents')}
+            self.assertEqual(documents[first.get_json()['inventory_document_id']],
+                dict(id=first.get_json()['inventory_document_id'],kind='move',source_type='store_event',
+                     source_id='refill:claw',request_key='refill:claw',actor_sub='auth0|staff'))
+            self.assertEqual(documents[prize.get_json()['inventory_document_id']]['kind'],'consume')
+            stock = con.execute('SELECT instore_qty,claw_qty FROM stock WHERE product_id=? AND store_id=?',
+                (self.product_id,self.store_id)).fetchone()
+            self.assertEqual(tuple(stock),(7,2))
+        self.assertIn('入娃娃机: 1',self.get().get_json()['summary_text'])
+
+    def test_refill_needs_a_floor_or_back_source_and_prizes_need_claw_stock(self):
+        before = self.snapshot(('inventory_documents','inventory_balances','store_events','stock'))
+        refill = dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,quantity=1)
+        with closing(self.connect()) as con:
+            other = con.execute('SELECT id FROM inventory_locations WHERE store_id!=? LIMIT 1',(self.store_id,)).fetchone()[0]
+        for source in (None,self.claw,other):
+            response = self.post({**refill,**({'source_location_id':source} if source else {})},f'bad-source-{source}')
+            self.assertEqual(response.status_code,400,response.get_json())
+        self.assertEqual(self.post({**refill,'kind':'claw_prize','source_location_id':self.floor},'prize-source').status_code,400)
+        short = self.post({**refill,'source_location_id':self.upstairs},'empty-upstairs')
+        self.assertEqual((short.status_code,short.get_json()['code']),(409,'insufficient_stock'))
+        prize = self.post(dict(store_id=self.store_id,kind='claw_prize',product_id=self.product_id,quantity=6),'big-prize')
+        self.assertEqual((prize.status_code,prize.get_json()['code']),(409,'insufficient_stock'))
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','store_events','stock')),before)
+        with closing(self.connect()) as con:
+            con.execute("UPDATE inventory_locations SET is_active=0 WHERE id=?",(self.claw,))
+            con.commit()
+        missing = self.post(dict(store_id=self.store_id,kind='claw_prize',product_id=self.product_id,quantity=1),'no-claw')
+        self.assertEqual((missing.status_code,missing.get_json()['code']),(409,'claw_location_missing'))
+        with closing(self.connect()) as con:
+            con.execute("UPDATE inventory_locations SET is_active=1 WHERE id=?",(self.claw,))
+            con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|staff'")
+            con.commit()
+        self.assertEqual(self.post({**refill,'source_location_id':self.floor},'no-access').status_code,403)
+        display = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1),'display')
+        self.assertEqual(display.status_code,201,display.get_json())
+        self.assertIsNone(display.get_json()['inventory_document_id'])
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances')),
+            {key:before[key] for key in ('inventory_documents','inventory_balances')})
+
+    def test_evening_check_counts_the_floor_not_the_claw(self):
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET is_bestseller=1 WHERE id=?',(self.product_id,))
+            con.commit()
+        self.assertEqual(self.post(dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,
+            quantity=4,source_location_id=self.floor),'refill').status_code,201)
+        response = self.client.get('/api/inventory-check/today?store_code=DT',headers=self.headers('staff'))
+        self.assertEqual(response.status_code,200,response.get_json())
+        item = next(row for row in response.get_json()['items'] if row['product_id']==self.product_id)
+        self.assertEqual((item['theoretical_qty'],item['current_instore_qty']),(6,6))
 
     def test_product_snapshot_uses_catalog_fallbacks(self):
         body = dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1)
@@ -70,7 +154,8 @@ class StoreEventsTests(ReceivingFixture):
         self.assertEqual(self.post(body).status_code,403)
 
     def test_exact_retry_across_toronto_date_keeps_original_event(self):
-        body = dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,quantity=1)
+        body = dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,quantity=1,
+            source_location_id=self.floor)
         first = self.post(body).get_json()
         tomorrow = (date.fromisoformat(self.today) + timedelta(days=1)).isoformat()
         with closing(self.connect()) as con:
@@ -80,6 +165,7 @@ class StoreEventsTests(ReceivingFixture):
             replay = self.post(body)
         self.assertEqual(replay.status_code,201,replay.get_json())
         self.assertEqual(replay.get_json(),first)
+        self.assertEqual(self.balances(),{self.floor:9,self.claw:6})
 
     def test_validation_closed_day_and_privacy(self):
         valid = dict(store_id=self.store_id,kind='claw_prize',product_id=self.product_id,quantity=1,note='Prize')
