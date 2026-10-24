@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { activeSection, bottomItems, checkoutSections, homeShortcuts, moreItems, railGroups, removedFromMenus, type NavAccess } from './navigation.ts'
+import { activeSection, bottomItems, checkoutSections, homeShortcuts, inventorySections, moreItems, railGroups, removedFromMenus, type NavAccess } from './navigation.ts'
 
 const roles: Record<string, NavAccess> = {
   viewer: { staff: false, manager: false, admin: false },
@@ -18,7 +18,8 @@ before.manager = [...before.staff, '/sales', '/reports']
 before.admin = [...before.manager, '/users', '/settings']
 
 // Special orders sit inside Checkout, so anyone who can open Checkout reaches them from there.
-const viaCheckout = (keys: string[]) => keys.includes('/checkout') ? [...keys, '/special-orders'] : keys
+// The claw machine sits inside Inventory.
+const viaCheckout = (keys: string[]) => [...keys, ...(keys.includes('/checkout') ? ['/special-orders'] : []), ...(keys.includes('/stock') ? ['/claw'] : [])]
 const rail = (access: NavAccess) => viaCheckout(railGroups(access).flatMap(group => group.items.map(entry => entry.key)))
 const phone = (access: NavAccess) => viaCheckout([...bottomItems(access, '/'), ...moreItems(access), ...homeShortcuts(access)].map(entry => entry.key))
 
@@ -74,6 +75,16 @@ test('special orders and 换现金 open from Checkout, not the menus', () => {
   assert.deepEqual(checkoutSections, ['/special-orders', '/checkout/cash-exchange', '/checkout/history'])
   assert.equal(activeSection('/special-orders', false), '/checkout')
   assert.equal(activeSection('/checkout/cash-exchange', false), '/checkout')
+})
+
+test('晚盘 and the claw machine open from Inventory, not the menus', () => {
+  for (const access of Object.values(roles)) {
+    const menus = [...railGroups(access).flatMap(group => group.items), ...moreItems(access)].map(entry => entry.key)
+    for (const key of inventorySections) assert.ok(!menus.includes(key))
+  }
+  assert.equal(activeSection('/stock/count', false), '/stock')
+  assert.equal(activeSection('/stock/claw', false), '/stock')
+  assert.equal(activeSection('/claw', false), '/stock')
 })
 
 test('nested pages light up their section', () => {

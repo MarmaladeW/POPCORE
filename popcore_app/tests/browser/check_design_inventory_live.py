@@ -42,7 +42,7 @@ async def checks(browser, fixture):
     await page.goto(BASE+f'/stock?series_id={fixture.series_id}')
     await expect(page.get_by_text('5 boxes',exact=True)).to_be_visible()
     await expect(page.get_by_text('0 pieces',exact=True)).to_be_visible()
-    await page.get_by_role('button',name='Identify boxes',exact=True).click()
+    await page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True).click()
     await expect(page.get_by_role('dialog',name='Identify boxes',exact=True)).to_be_visible()
     await page.get_by_label('Source boxes',exact=True).select_option(str(fixture.product_id))
     await page.get_by_label('Named design',exact=True).select_option(str(fixture.design_ids[0]))

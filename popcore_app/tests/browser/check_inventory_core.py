@@ -141,7 +141,7 @@ async def checks(browser):
 
     await page.goto(BASE + '/stock/products')
     await page.locator('select').first.select_option('DT')
-    await expect(page.get_by_role('heading', name='Inventory', exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading', name='库存', exact=True)).to_be_visible()
     await expect(page.get_by_text('Authoritative inventory', exact=True)).to_be_visible()
     await expect(page.get_by_text('Floor · saleable: 3 boxes', exact=True).first).to_be_visible()
     await page.screenshot(path=evidence / 'inventory-1280.png', full_page=True)

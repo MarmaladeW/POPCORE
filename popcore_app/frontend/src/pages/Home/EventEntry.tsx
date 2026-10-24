@@ -16,14 +16,14 @@ import { eventNames } from './storeDay'
 import './Home.css'
 
 // display: 入 display (Receive goods). exchange: 换现金, a tab of Checkout. Otherwise the claw machine.
-export default function EventEntry({ display = false, exchange: exchangeOnly = false }: { display?: boolean; exchange?: boolean }) {
+export default function EventEntry({ display = false, exchange: exchangeOnly = false, inline = false }: { display?: boolean; exchange?: boolean; inline?: boolean }) {
   const store = useAppStore(state => state.selectedStore)
   const { user } = useAuth0()
   const role = useRole()
-  return <EventForm key={`${store?.id}|${user?.sub}|${role}|${display}|${exchangeOnly}`} display={display} exchangeOnly={exchangeOnly} />
+  return <EventForm key={`${store?.id}|${user?.sub}|${role}|${display}|${exchangeOnly}`} display={display} exchangeOnly={exchangeOnly} inline={inline} />
 }
 
-function EventForm({ display, exchangeOnly }: { display: boolean; exchangeOnly: boolean }) {
+function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchangeOnly: boolean; inline: boolean }) {
   const store = useAppStore(state => state.selectedStore)
   const navigate = useNavigate()
   const [kind, setKind] = useState(display ? 'display_in' : exchangeOnly ? 'cash_exchange' : 'claw_prize')
@@ -111,13 +111,12 @@ function EventForm({ display, exchangeOnly }: { display: boolean; exchangeOnly: 
     </div>
   </div>
 
-  return <div className="pc-home pc-home-task">
-    <Link className="pc-home-back" to="/">← Back to home</Link>
-    <header className="pc-home-heading"><h1>{display ? '入 display / Display arrival' : '娃娃机 / Claw machine'}</h1><p>{store?.name} · Record what happened.</p></header>
+  return <div className={inline ? 'pc-home-task pc-event-inline' : 'pc-home pc-home-task'}>
+    {!inline && <Link className="pc-home-back" to="/">← Back to home</Link>}
+    {!inline && <header className="pc-home-heading"><h1>{display ? '入 display / Display arrival' : '娃娃机 / Claw machine'}</h1><p>{store?.name} · Record what happened.</p></header>}
     {!store || store.code === 'ALL' ? <Alert type="info" showIcon message="Choose one store before recording an event." />
       : denied ? <Alert role="alert" type="error" showIcon message="You no longer have access to record events here. Check your assigned shift in Schedule." />
       : <>
-        {!display && <p className="pc-home-muted">换现金 Cash exchange is now in <Link to="/checkout/cash-exchange">买单 Checkout</Link>.</p>}
         {!display && <div className="pc-home-event-options" role="group" aria-label="Claw machine actions">
           {['claw_prize', 'claw_refill'].map(value => <Button key={value} aria-pressed={kind === value} type={kind === value ? 'primary' : 'default'} disabled={mutation.pending}
             onClick={() => { setKind(value); form.resetFields(); setOptions([]) }}>{eventNames[value]}</Button>)}
@@ -136,22 +135,22 @@ function EventForm({ display, exchangeOnly }: { display: boolean; exchangeOnly: 
               return cents != null && cents > 0 ? Promise.resolve() : Promise.reject(new Error('Enter a positive amount, with at most two decimal places.'))
             } }]}><Input inputMode="decimal" prefix="$" /></Form.Item>
           </> : <>
-            <Form.Item name="product_id" label="Product" rules={[{ required: true, message: 'Choose the product from search results.' }]}>
+            <Form.Item name="product_id" label="产品 Product" rules={[{ required: true, message: 'Choose the product from search results.' }]}>
               <Select showSearch filterOption={false} loading={searching} onSearch={findProduct} placeholder="Search product name or SKU"
                 options={options.map(product => ({ value: product.id, label: `${product.sku} · ${productNames(product)}` }))} />
             </Form.Item>
-            <Form.Item name="quantity" label="Quantity" rules={[{ required: true }, { type: 'integer', min: 1 }]}><InputNumber min={1} precision={0} /></Form.Item>
+            <Form.Item name="quantity" label="数量 Quantity" rules={[{ required: true }, { type: 'integer', min: 1 }]}><InputNumber min={1} precision={0} /></Form.Item>
             {refill && sources?.length !== 0 && <Form.Item name="source_location_id" label="从哪里拿 / Take from" rules={[{ required: true, message: 'Choose where the stock came from.' }]}>
               <Select loading={!sources} options={sources?.map(location => ({ value: location.id, label: location.name }))} />
             </Form.Item>}
           </>}
-          <Form.Item name="note" label={exchange ? 'Payment reference / Note' : display ? 'From / Note' : 'Note (optional)'} rules={exchange ? [{ required: true, whitespace: true, message: 'Add the payment reference or a note to identify this exchange.' }] : []}>
+          <Form.Item name="note" label={exchange ? 'Payment reference / Note' : display ? '来源 From / Note' : '备注 Note (optional)'} rules={exchange ? [{ required: true, whitespace: true, message: 'Add the payment reference or a note to identify this exchange.' }] : []}>
             <Input.TextArea rows={2} maxLength={500} />
           </Form.Item>
           {exchange && <Form.Item name="confirmed" valuePropName="checked" rules={[{ validator: (_, value) => value === true ? Promise.resolve() : Promise.reject(new Error('Confirm the payment received and cash handed over.')) }]}>
             <Checkbox>I received this digital payment and handed over the same amount in cash.</Checkbox>
           </Form.Item>}
-          <Button htmlType="submit" type="primary" loading={mutation.saving} disabled={mutation.pending}>Save record</Button>
+          <Button className="pc-exchange-save" htmlType="submit" type="primary" size="large" loading={mutation.saving} disabled={mutation.pending}>保存记录 Save record</Button>
         </Form>
       </>}
   </div>

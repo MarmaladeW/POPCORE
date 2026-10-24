@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useLayoutEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import Icon from './Icon'
@@ -37,7 +37,8 @@ export function DesktopHeader({ title, sub, actions }: Pick<PageHeaderSpec, 'tit
 
 export default function PageHeader(spec: PageHeaderSpec) {
   const slots = useContext(PageHeaderSlots)
-  useEffect(() => slots?.register(), [slots])
+  // Layout effect: the shell drops its fallback top bar before paint, so two never show at once.
+  useLayoutEffect(() => slots?.register(), [slots])
   if (!slots) return null
   if (slots.mobile) {
     return slots.phone ? createPortal(<PhoneTopBar title={spec.title} sub={spec.sub} back={spec.back} right={spec.phoneAction} roomy={spec.roomy} />, slots.phone) : null

@@ -19,9 +19,6 @@ const item = {
   products: { key: '/products', zh: '产品', en: 'Products', icon: 'grid', note: '系列与款式' },
   users: { key: '/users', zh: '员工', en: 'Users', icon: 'user', note: '管理员' },
   settings: { key: '/settings', zh: '设置', en: 'Settings', icon: 'gear', note: '管理员' },
-  // Interim entry: the claw machine becomes a location inside Inventory in that section;
-  // until then it stays reachable from the menus.
-  claw: { key: '/claw', zh: '娃娃机', en: 'Claw machine', icon: 'gift' },
 } satisfies Record<string, NavItem>
 
 export const removedFromMenus = ['/trades', '/today']
@@ -29,7 +26,6 @@ export const removedFromMenus = ['/trades', '/today']
 function interim(access: NavAccess): NavItem[] {
   return [
     ...(access.manager ? [item.summary] : []),
-    ...(access.staff ? [item.claw] : []),
   ]
 }
 
@@ -63,6 +59,9 @@ export function bottomItems(access: NavAccess, active: string): NavItem[] {
   return [item.home, ...(access.staff ? [item.checkout] : []), ...(promoted ? [promoted] : []), item.schedule]
 }
 
+// Pages reached from inside Inventory: 晚盘 and the claw machine location.
+export const inventorySections = ['/stock/count', '/stock/claw', '/claw']
+
 // Pages reached from inside Checkout (a row on phone, a tab on desktop).
 export const checkoutSections = ['/special-orders', '/checkout/cash-exchange', '/checkout/history']
 
@@ -78,7 +77,7 @@ export function activeSection(pathname: string, manager: boolean): string {
   }
   if (pathname.startsWith('/sales/day/') || pathname === '/sales/matching') return '/sales'
   if (pathname.startsWith('/products/')) return '/products'
-  if (pathname === '/stock/products') return '/stock'
+  if (pathname === '/stock/products' || pathname === '/claw' || pathname.startsWith('/stock/')) return '/stock'
   return pathname === '/' ? '/' : `/${pathname.split('/')[1]}`
 }
 

@@ -118,10 +118,8 @@ async def flow(browser, width):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     async def open_claw():
-        # The claw machine left the Home tiles (it becomes a location in 库存); until then it is a menu entry.
-        if width < 768:
-            await page.get_by_role('link', name='更多 More', exact=True).click()
-        await page.get_by_role('link', name='娃娃机 Claw machine', exact=False).first.click()
+        # The claw machine is a location inside 库存 Inventory now.
+        await page.goto(BASE + '/stock/claw')
     try:
         await page.goto(BASE + '/')
         actions = page.get_by_role('navigation', name='Store actions')
@@ -151,7 +149,7 @@ async def flow(browser, width):
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
         await expect(page.get_by_role('spinbutton', name='Quantity')).to_have_value('1')
         state['status_for_path'] = {'/api/store-events': (503, {'error': 'Synthetic connection failure'})}
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page.get_by_role('button', name='Retry', exact=True)).to_be_visible()
         state['status_for_path'] = {}
         await page.get_by_role('button', name='Retry', exact=True).click()
@@ -188,13 +186,13 @@ async def flow(browser, width):
         await page.get_by_role('spinbutton', name='Quantity').fill('3')
         await page.get_by_role('combobox', name='Product').fill('Test')
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page.get_by_text('Choose where the stock came from.', exact=True)).to_be_visible()
         await page.get_by_role('combobox', name='从哪里拿 / Take from').click()
         await expect(page.get_by_title('Claw machine', exact=True)).to_have_count(0)
         await page.get_by_title('Upstairs', exact=True).click()
         await page.screenshot(path=OUT / f'claw-refill-{width}.png', full_page=True)
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert (last['kind'], last['quantity'], last['source_location_id']) == ('claw_refill', 3, 2), last
@@ -205,13 +203,13 @@ async def flow(browser, width):
         await page.get_by_role('combobox', name='Product').fill('Test')
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
         await expect(page.get_by_role('spinbutton', name='Quantity')).to_have_value('2')
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['kind'] == 'display_in' and last['quantity'] == 2
         await page.get_by_label('Operations store').select_option('ALL')
         await open_claw()
-        await expect(page.get_by_role('button', name='Save record', exact=True)).to_have_count(0)
+        await expect(page.get_by_role('button', name='保存记录 Save record', exact=True)).to_have_count(0)
 
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
         await page.get_by_label('Operations store').select_option('DT')
@@ -240,7 +238,7 @@ async def main():
             await page.goto(BASE + '/')
             await expect(page.get_by_role('navigation', name='Store actions')).to_have_count(0)
             await page.goto(BASE + '/claw')
-            await expect(page.get_by_role('button', name='Save record', exact=True)).to_have_count(0)
+            await expect(page.get_by_role('button', name='保存记录 Save record', exact=True)).to_have_count(0)
             await context.close()
             await actual_event_api(browser)
             await browser.close()

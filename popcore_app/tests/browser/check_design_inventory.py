@@ -54,7 +54,7 @@ async def checks(browser, width, role):
     context,page = await context_with_api(browser,state,viewport={'width':width,'height':900},auth={'role':role})
     await context.add_init_script("if (!localStorage.getItem('popcore_selected_store')) localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE+'/stock')
-    await expect(page.get_by_role('heading',name='Inventory by series',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='库存',exact=True)).to_be_visible()
     await page.get_by_role('link',name='Night Garden',exact=False).click()
     await expect(page.get_by_role('heading',name='Confirmed designs',exact=True)).to_be_visible()
     await expect(page.get_by_role('heading',name='Other products',exact=True)).to_be_visible()
@@ -82,9 +82,9 @@ async def checks(browser, width, role):
     await page.get_by_role('heading',name='Night Garden',exact=True).scroll_into_view_if_needed()
     await page.screenshot(animations='disabled',path=OUT/f'{role}-{width}.png')
     assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-    await page.get_by_role('button',name='Identify boxes',exact=True).click()
+    await page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True).click()
     await close_drawer(page)
-    await page.get_by_role('button',name='Identify boxes',exact=True).click()
+    await page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True).click()
     await expect(page.get_by_role('dialog',name='Identify boxes',exact=True)).to_be_visible()
     await page.get_by_label('Source boxes',exact=True).select_option('12')
     await page.get_by_label('Named design',exact=True).select_option('14')
@@ -123,7 +123,7 @@ async def checks(browser, width, role):
     assert saves[0]['post_data']['open_set_id']==61
     assert saves[0]['post_data']['source_product_id']==12 and saves[0]['post_data']['design_product_id']==14
     assert saves[0]['post_data']['source_version']==2 and saves[0]['post_data']['target_version']==0
-    await page.get_by_role('button',name='Identify boxes',exact=True).click()
+    await page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True).click()
     await page.get_by_label('Source boxes',exact=True).select_option('12')
     await page.get_by_label('Named design',exact=True).select_option('14')
     await page.get_by_label('Location',exact=True).select_option('1')
@@ -135,7 +135,7 @@ async def checks(browser, width, role):
     await page.get_by_role('button',name='Cancel identification',exact=True).click()
     state['status_for_path']={}
     if role=='manager':
-        await page.get_by_role('button',name='Set up series',exact=True).click()
+        await page.get_by_role('button',name='设置款式 Set up series',exact=True).click()
         await expect(page.get_by_role('dialog',name='Set up a named design roster',exact=True)).to_be_visible()
         await page.get_by_label('Series to update',exact=True).select_option('7')
         await page.get_by_label('Design names',exact=True).fill('Rain\nCloud')
@@ -153,7 +153,7 @@ async def checks(browser, width, role):
         saves=[r for r in state['requests'] if r['path']=='/api/product-series/setup' and r['method']=='POST']
         assert len(saves)==2 and saves[0]['idempotency_key']==saves[1]['idempotency_key'] and saves[0]['post_data']==saves[1]['post_data']
     else:
-        await expect(page.get_by_role('button',name='Set up series',exact=True)).to_have_count(0)
+        await expect(page.get_by_role('button',name='设置款式 Set up series',exact=True)).to_have_count(0)
     state['get_status_for_path']={'/api/inventory/series':(503,{'error':'Inventory unavailable'})}
     await page.get_by_role('button',name='Refresh inventory',exact=True).click()
     await expect(page.get_by_text('Inventory unavailable',exact=True)).to_be_visible()
@@ -171,11 +171,11 @@ async def checks(browser, width, role):
     await expect(page.get_by_text('8 boxes',exact=True)).to_be_visible()
     await page.get_by_label('Operations store',exact=True).select_option('MK')
     await expect(page.get_by_role('cell').filter(has_text='Not yet verified').first).to_be_visible()
-    await page.get_by_role('button',name='Identify boxes',exact=True).click()
+    await page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True).click()
     await expect(page.get_by_role('button',name='Confirm identification',exact=True)).to_be_disabled()
     await close_drawer(page)
     await page.get_by_label('Operations store',exact=True).select_option('ALL')
-    await expect(page.get_by_role('button',name='Identify boxes',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True)).to_have_count(0)
     await expect(page.get_by_role('link',name='Receive Sun',exact=True)).to_have_count(0)
     await context.close()
 

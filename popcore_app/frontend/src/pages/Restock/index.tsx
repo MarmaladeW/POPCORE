@@ -13,9 +13,8 @@ import { useSearchParams } from 'react-router-dom'
 import client from '../../api/client'
 import { useHasRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
-import EveningCheckStep from './EveningCheckStep'
-import BestsellerManage from './BestsellerManage'
-import HistoryTab from './HistoryTab'
+import { RestockHistory } from './HistoryTab'
+import { Link } from 'react-router-dom'
 import SessionModal from './SessionModal'
 import PageHeader from '../../components/pc/PageHeader'
 import { SectionHeading } from '../../components/pc/Panel'
@@ -256,7 +255,6 @@ function TodaySessions() {
 export default function RestockPage() {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
-  const isAdmin  = useHasRole('admin')
   const selectedStore = useAppStore(state => state.selectedStore)
 
   const tabItems = [
@@ -266,20 +264,10 @@ export default function RestockPage() {
       children: <TodaySessions />,
     },
     {
-      key:      'evening',
-      label:    <>晚盘核查 <small>Evening count</small></>,
-      children: <EveningCheckStep />,
-    },
-    {
       key:      'history',
       label:    <>历史记录 <small>History</small></>,
-      children: <HistoryTab />,
+      children: <RestockHistory />,
     },
-    ...(isAdmin ? [{
-      key:      'bestsellers',
-      label:    <>畅销品管理 <small>Bestsellers</small></>,
-      children: <BestsellerManage />,
-    }] : []),
   ]
 
   return (
@@ -287,7 +275,10 @@ export default function RestockPage() {
       <PageHeader title="夜间补货" sub={isMobile ? `Restock · ${dayjs().format('M月D日')}` : `Restock${selectedStore?.name && selectedStore.code !== 'ALL' ? ` · ${selectedStore.name}` : ''}`} />
       <div className="pc-restock-grid">
         <RestockSuggestions />
-        <Tabs className="pc-restock-page-tabs" defaultActiveKey="today" items={tabItems} size={isMobile ? 'small' : 'middle'} />
+        <div>
+          <Tabs className="pc-restock-page-tabs" defaultActiveKey="today" items={tabItems} size={isMobile ? 'small' : 'middle'} />
+          <p className="pc-restock-note">晚盘 Evening count is now in <Link to="/stock/count">库存 → 晚盘</Link>.</p>
+        </div>
       </div>
     </div>
   )

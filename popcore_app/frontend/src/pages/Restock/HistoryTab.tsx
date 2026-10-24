@@ -83,7 +83,7 @@ const PICK_LABELS: Record<string, string> = {
 
 // ── Restock History ───────────────────────────────────────────────────────────
 
-function RestockHistory() {
+export function RestockHistory() {
   const [sessions, setSessions]     = useState<RestockSessionRow[]>([])
   const [total, setTotal]           = useState(0)
   const [page, setPage]             = useState(1)
@@ -250,7 +250,7 @@ function RestockHistory() {
 
 // ── Inventory Check History ───────────────────────────────────────────────────
 
-function InventoryCheckHistory() {
+export function InventoryCheckHistory() {
   const [rows, setRows]           = useState<InventoryCheckRow[]>([])
   const [loading, setLoading]     = useState(false)
   const [dateRange, setDateRange] = useState<[string, string] | null>(null)

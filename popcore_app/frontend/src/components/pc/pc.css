@@ -36,3 +36,4 @@
 .pc-btn:hover { border-color: var(--line-strong); color: var(--text-primary); }
 .pc-btn-ink { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
 .pc-btn-ink:hover { color: var(--text-on-ink); }
+.pc-notice { margin: 0 0 16px; padding: 10px 14px; border: 1px solid var(--status-restock-line); background: var(--surface-default); color: var(--status-restock-ink); font-size: 12.5px; }

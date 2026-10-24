@@ -47,3 +47,29 @@
 .pc-receipt-cells .ant-select .ant-select-selector { min-height: 0 !important; padding: 0 !important; border: 0 !important; box-shadow: none !important; font-size: 15px !important; font-weight: 600; }
 .pc-receipt-cells .ant-select { max-width: 100%; }
 .pc-receipt-cells .ant-input-number-input { min-height: 0 !important; height: 28px; font-size: 18px !important; }
+
+/* 晚盘 (Figma Inventory · Evening count) */
+.pc-count-tabs .ant-tabs-nav { margin-bottom: 16px; }
+.pc-count-tabs .ant-tabs-tab small { color: var(--text-tertiary); font-size: 11px; }
+
+/* 娃娃机 claw machine location (Figma Inventory · Claw machine) */
+.pc-claw-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.pc-claw-main { display: grid; gap: 12px; }
+.pc-claw-stats { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-claw-stats > div { display: grid; gap: 2px; padding: 14px 16px; }
+.pc-claw-stats > div + div { border-left: 1px solid var(--line-hair); }
+.pc-claw-stats span { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-claw-stats strong { font-size: 24px; font-weight: 600; line-height: 30px; letter-spacing: -.4px; }
+.pc-event-inline { max-width: none; }
+.pc-event-inline .pc-home-event-options { margin: 0 0 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.pc-event-inline .pc-home-event-options .ant-btn { min-height: 56px; }
+.pc-claw .pc-section-head { padding: 0 0 8px; }
+.pc-claw-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pc-claw-table th { padding: 10px 14px; border-bottom: 1px solid var(--line-hair); color: var(--text-tertiary); font-size: 11.5px; font-weight: 400; text-align: right; }
+.pc-claw-table th:first-child, .pc-claw-table td:first-child { text-align: left; }
+.pc-claw-table td { padding: 10px 14px; border-bottom: 1px solid var(--line-hair); text-align: right; }
+.pc-claw-table td:nth-child(2) { font-size: 14px; font-weight: 600; }
+.pc-claw-table td:nth-child(3) { color: var(--text-tertiary); }
+.pc-claw-table td small { display: block; color: var(--text-tertiary); font-size: 11px; }
+.pc-claw-note { margin: 8px 0 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.6; }
+@media (max-width: 1000px) { .pc-claw-grid { grid-template-columns: minmax(0, 1fr); } }

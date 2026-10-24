@@ -29,6 +29,8 @@ const StockPage=lazy(()=>import('./pages/Stock'))
 const SeriesInventory=lazy(()=>import('./pages/Stock/SeriesInventory'))
 const GoodsPage=lazy(()=>import('./pages/Stock/Goods'))
 const RestockPage=lazy(()=>import('./pages/Restock'))
+const CountHub=lazy(()=>import('./pages/Stock/CountHub'))
+const ClawPage=lazy(()=>import('./pages/Stock/ClawPage'))
 const HistoricalMatchReview=lazy(()=>import('./pages/Sales/HistoricalMatchReview'))
 const SalesPage=lazy(()=>import('./pages/Sales'))
 const DayDetailPage=lazy(()=>import('./pages/Sales/DayDetail'))
@@ -145,7 +147,9 @@ function AppInner() {
           <Route path="/special-orders" element={<RoleRoute minRole="staff" element={<SpecialOrdersPage />} />} />
           <Route path="/incoming" element={<RoleRoute minRole="staff" element={<IncomingPage />} />} />
           <Route path="/incoming/display" element={<RoleRoute minRole="staff" element={<EventEntry display />} />} />
-          <Route path="/claw" element={<RoleRoute minRole="staff" element={<EventEntry />} />} />
+          <Route path="/claw" element={<RoleRoute minRole="staff" element={<ClawPage />} />} />
+          <Route path="/stock/claw" element={<RoleRoute minRole="staff" element={<ClawPage />} />} />
+          <Route path="/stock/count" element={<RoleRoute minRole="staff" element={<CountHub />} />} />
           <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
           <Route path="/products/clover-matching" element={<RoleRoute minRole="manager" element={<CloverMatchingPage />} />} />

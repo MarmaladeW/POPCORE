@@ -11,8 +11,10 @@ import Transfers from './Transfers'
 import Counts from './Counts'
 import './goods.css'
 
-export default function GoodsPage({ initialTab }: {
+// embedded: only the tab's content, for the 晚盘 page's 其他盘点 tab.
+export default function GoodsPage({ initialTab, embedded = false }: {
   initialTab: 'receiving' | 'transfers' | 'counts'
+  embedded?: boolean
 }) {
   const navigate = useNavigate()
   const phone = useIsPhone()
@@ -59,6 +61,7 @@ export default function GoodsPage({ initialTab }: {
 
   const localLocations = locations.filter(item => item.store_id === selectedStore.id)
   const counts = initialTab === 'counts'
+  if (embedded) return <Counts products={products} locations={resumed ? locations : localLocations} />
   return (
     <div className="pc-goods">
       <PageHeader
