@@ -198,15 +198,20 @@ async def flow(browser, width):
         assert (last['kind'], last['quantity'], last['source_location_id']) == ('claw_refill', 3, 2), last
         await actions.get_by_role('link', name='入店', exact=False).click()
         await page.get_by_role('link', name='入 display Display arrival', exact=False).click()
-        await expect(page.get_by_text('This adds a record to the daily summary. Stock balances are unchanged.', exact=True)).to_be_visible()
+        await expect(page.get_by_text('This adds a record to the daily summary. Once inventory counts are live, it also puts the piece on display: taken from store stock, or added as an opened arrival.', exact=True)).to_be_visible()
         await page.get_by_role('spinbutton', name='Quantity').fill('2')
         await page.get_by_role('combobox', name='Product').fill('Test')
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
         await expect(page.get_by_role('spinbutton', name='Quantity')).to_have_value('2')
+        # Where the piece came from is required: store stock or an opened arrival.
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
+        await expect(page.get_by_text('Choose where the display piece came from.', exact=True)).to_be_visible()
+        await page.get_by_role('combobox', name='Where from').click()
+        await page.get_by_title('新到 · 已拆开 Arrived opened', exact=True).click()
         await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
-        assert last['kind'] == 'display_in' and last['quantity'] == 2
+        assert last['kind'] == 'display_in' and last['quantity'] == 2 and 'source_location_id' not in last, last
         await page.get_by_label('Operations store').select_option('ALL')
         await open_claw()
         await expect(page.get_by_role('button', name='保存记录 Save record', exact=True)).to_have_count(0)

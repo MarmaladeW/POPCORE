@@ -1,5 +1,5 @@
 import { productLabel } from '../../lib/productLabel'
-import { Alert, Button, Card, DatePicker, Descriptions, Form, Input, InputNumber, List, Select, Space, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, DatePicker, Descriptions, Form, Input, InputNumber, List, Select, Space, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
 import { useBeforeUnload, useNavigate } from 'react-router-dom'
@@ -17,7 +17,7 @@ type Tender = { tender: string; amount_cents: number | null }
 type CreateIntent = { key: string; body: SaleInput; product: GoodsProduct; tenders: Tender[] }
 interface FormValues {
   business_date: dayjs.Dayjs; entry_mode: SaleEntryMode; source_reference: string
-  product_id: number; quantity: number; unit_price: string; source_tax: string
+  product_id: number; quantity: number; unit_price: string; source_tax: string; from_display?: boolean
   collected: string; cash: string; card: string; e_transfer: string; wechat: string; alipay: string
 }
 const responseStatus = (cause: unknown) => (cause as { response?: { status?: number } })?.response?.status
@@ -101,7 +101,7 @@ export default function SaleEntryPage() {
           source: { system: 'manual', account: scope.code, reference: values.source_reference }, subtotal_cents: subtotal,
           source_tax_cents: tax, gross_cents: gross, reduction_cents: gross == null || collected == null ? null : Math.max(0, gross - collected),
           rounding_cents: gross == null || collected == null ? null : 0, collected_cents: collected,
-          lines: [{ product_id: product.id, unit: product.stock_unit, quantity: values.quantity, unit_price_cents: unitPrice, source_tax_cents: tax }],
+          lines: [{ product_id: product.id, unit: product.stock_unit, quantity: values.quantity, unit_price_cents: unitPrice, source_tax_cents: tax, ...(values.from_display ? { from_display: true } : {}) }],
         }
         intent = { key: newRequestKey(), body, product, tenders }; createIntent.current = intent
       } catch (cause) { setError((cause as Error).message); return }
@@ -182,7 +182,7 @@ export default function SaleEntryPage() {
         <Descriptions.Item label="Subtotal">{formatCents(submitted.body.subtotal_cents)}</Descriptions.Item>
         <Descriptions.Item label="Gross">{formatCents(submitted.body.gross_cents)}</Descriptions.Item>
         <Descriptions.Item label="Collected">{formatCents(submitted.body.collected_cents)}</Descriptions.Item>
-        <Descriptions.Item label="Expected stock effect">-{submitted.body.lines[0].quantity} {submitted.product.stock_unit}s from saleable floor stock after posting</Descriptions.Item>
+        <Descriptions.Item label="Expected stock effect">-{submitted.body.lines[0].quantity} {submitted.product.stock_unit}s from saleable {submitted.body.lines[0].from_display ? 'display' : 'floor'} stock after posting</Descriptions.Item>
       </Descriptions>
       <List size="small" header="Actual tenders" locale={{ emptyText: 'No tender facts entered' }} dataSource={submitted.tenders} renderItem={item => <List.Item>{item.tender.replace('_', ' ')} · {formatCents(item.amount_cents)}</List.Item>} />
       <Space wrap><Button type="primary" loading={saving} onClick={recordSale}>Record sale</Button><Button disabled={pending !== null} onClick={() => navigate(`/sales/documents/${draft.sale_id}`)}>View draft</Button></Space>
@@ -195,6 +195,7 @@ export default function SaleEntryPage() {
         <Title level={5}>Product and quantity</Title>
         <Form.Item name="product_id" label="Product" rules={[{ required: true }]}><Select showSearch filterOption={false} onSearch={searchProducts} options={products.map(product => ({ value: product.id, label: productLabel(product) }))} /></Form.Item>
         <Form.Item name="quantity" label="Quantity" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
+        <Form.Item name="from_display" valuePropName="checked"><Checkbox>陈列品 Display piece <Text type="secondary">· taken from display, not the floor</Text></Checkbox></Form.Item>
         <Title level={5}>Actual money</Title>
         {[['unit_price', 'Actual unit price ($)'], ['source_tax', 'Actual tax ($)'], ['collected', 'Actual collected total ($)'], ['cash', 'Cash ($)'], ['card', 'Card ($)'], ['e_transfer', 'E-transfer ($)'], ['wechat', 'WeChat Pay ($)'], ['alipay', 'Alipay ($)']].map(([name, label]) =>
           <Form.Item key={name} name={name} label={label} rules={[{ validator: async (_, value) => { try { readMoney(value) } catch (cause) { throw new Error((cause as Error).message) } } }]}><Input prefix="$" inputMode="decimal" placeholder="Unknown when blank" /></Form.Item>)}

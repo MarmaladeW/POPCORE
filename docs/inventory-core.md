@@ -56,7 +56,15 @@ DT's claw machine (`claw`, Claw machine) is an ordinary saleable location. It is
 - **补货 Refill** (`claw_refill`) names `source_location_id`, the same store's floor, upstairs or warehouse, chosen by staff each time. In authoritative mode the event posts a `move` from that location to the claw location.
 - **出奖 Prize won** (`claw_prize`) posts a `consume` from the claw location.
 
-Each claw post runs inside the store-event transaction through `_post_inventory_in_transaction`: request key and source `<Idempotency-Key>:claw`, source type `store_event`, actor inventory access to the store required, and expected versions read under `BEGIN IMMEDIATE`. The event stores `inventory_document_id`. Insufficient stock (`insufficient_stock`), a missing or inactive claw location (`claw_location_missing`), a refill without a valid source, or missing inventory access records no event. An exact retry returns the original event and posts nothing. In legacy mode the event is recorded exactly as before, with no stock change; a refill source, when given, is still saved. Display arrivals and 换现金 never move stock.
+Each claw post runs inside the store-event transaction through `_post_inventory_in_transaction`: request key and source `<Idempotency-Key>:claw`, source type `store_event`, actor inventory access to the store required, and expected versions read under `BEGIN IMMEDIATE`. The event stores `inventory_document_id`. Insufficient stock (`insufficient_stock`), a missing or inactive claw location (`claw_location_missing`), a refill without a valid source, or missing inventory access records no event. An exact retry returns the original event and posts nothing. In legacy mode the event is recorded exactly as before, with no stock change; a refill source, when given, is still saved. 换现金 never moves stock.
+
+## Display
+
+Each store (DT and MK) has a `display` location: the opened pieces shown for every series. Display stock is saleable and counted at the opening like any other location.
+
+- **入 display** (`display_in`) optionally names `source_location_id`, the same store's floor, upstairs or warehouse. In authoritative mode it posts a `move` from that location into display; without a source the piece arrived already opened (from a supplier or another store) and it posts a `receipt` into display. Request key and source are `<Idempotency-Key>:display`; it needs inventory access like a claw refill. A missing or inactive display location records nothing (`display_location_missing`). In legacy mode the event is recorded as before, with no stock change; a source, when given, is saved.
+- **Selling a display piece**: a sale line with `"from_display": true` (manual checkout and 补录 Record sale offer a 陈列品 Display piece checkbox) takes its stock from the display location instead of the floor; a physical return puts it back there. A display piece is sold on its own, never from an opened or fresh set, and the same product may appear once from the floor and once from display. Clover orders do not mark display pieces yet.
+- Display has no legacy stock column: the compatibility projection skips it, the opening never compares a display count with legacy numbers, and nothing in `stock` changes for it.
 
 `GET /api/inventory/access` lists operations-ready stores and existing grants for admins, including admins who have no store grant yet. The existing `POST` grants one `auth0_sub`/`store_id` pair; `DELETE` idempotently revokes just that pair. All three methods require the admin role. Failed reads show an error; ambiguous writes reread saved grants before allowing another change.
 
@@ -108,7 +116,7 @@ Use a fresh output directory. The script accepts only `empty`, `representative`,
 
 ## Opening counts (real activation)
 
-Real activation goes through `scripts/inventory_opening.py` only. The public commands route keeps rejecting `opening`. The script posts one opening document for every active location (DT floor, DT upstairs, DT claw, MK floor, MK warehouse) in a single transaction, so `inventory_mode` turns authoritative only once every location has a verified opening. Stores must move sales to Enter Sale or the in-app checkout at the same time, because daily-report stock lines are blocked in authoritative mode and its sales lines never deduct stock.
+Real activation goes through `scripts/inventory_opening.py` only. The public commands route keeps rejecting `opening`. The script posts one opening document for every active location (DT floor, DT upstairs, DT claw, DT display, MK floor, MK warehouse, MK display) in a single transaction, so `inventory_mode` turns authoritative only once every location has a verified opening. Stores must move sales to Enter Sale or the in-app checkout at the same time, because daily-report stock lines are blocked in authoritative mode and its sales lines never deduct stock.
 
 1. **Prerequisites.** Each product with legacy stock that will be counted must be identity-verified (`stock_form`, `stock_unit`, `identity_status=verified`). The approving admin needs an `inventory_access` grant for DT and MK.
 2. **Count sheets.** Managers download `GET /api/products/count-sheet?store_code=DT&location=floor` (the manager role plus inventory access to that store is required; `scope=catalog` lists every product). On the server, run `python scripts/inventory_opening.py count-sheet --db <db> --store DT --location floor --output <file>.csv` instead. The default `legacy` scope lists every product with legacy floor, back or claw stock at that store; the same list serves every location, including `--location claw`. Sheets are blind: they contain no expected quantities. Each row has the store, location, product ID, SKU, shop name (`记账名`), product name, design, barcode, stock form, native unit, identity status and empty `count`/`notes` columns.
@@ -117,7 +125,19 @@ Real activation goes through `scripts/inventory_opening.py` only. The public com
 5. **Apply.** Stop the app (`systemctl stop popcore`) to freeze writers. Rerun the same command with `--apply --backup <new path>`. The script takes `BEGIN IMMEDIATE` and holds it through the review, a consistent SQLite backup (checked with `integrity_check`), the opening post through `post_inventory` (actor recorded, stable request key derived from the reviewed counts), marking every location's `inventory_scope_state.opening_verified`, zeroing compatibility rows for verified products counted as 0, setting `claw_qty` to 0 wherever the claw count is 0 or absent (each change gets an `inventory_opening` history row), and a reconciliation. The reconciliation covers integrity, new foreign-key errors, movement sums against balances in both directions, and verified `stock` rows against balances (including `claw_qty` at stores with a claw location). Any failure rolls the whole cutover back, and the backup remains as the pre-cutover snapshot. Rerunning with the same files reports `already_applied` and writes nothing. Changed counts after activation are refused (`opening_closed`); fix them with corrections.
 6. Keep the backup, the count files and both JSON reports. Restart the app only after sales entry has moved to Enter Sale or checkout.
 
+Count sheets list each sealed set (整端) right after its blind box, even though the set has no legacy stock of its own. Count sealed sets in sets on the set row and loose boxes on the box row; display pieces go on the display sheet, not the floor sheet. Pass `--empty-location DT-display` (or `MK-display`) for a display that holds nothing.
+
 Local checks: `test_inventory_opening.py`.
+
+## Sealed sets (整端)
+
+A sealed set holds one of every design in its series; loose boxes could be anything. So a sealed set is its own product (`sealed_set`, counted in `set`), linked to its blind box (`random_box`, `box`) by a reviewed conversion of 1 set = N boxes, where N is the catalogue's boxes-per-set (`boxes_per_dan`). Opening a set keeps that provenance through `inventory_open_sets`.
+
+`scripts/create_sealed_sets.py --db <db>` reports, read-only, the sealed set it would create for every verified blind box that has a boxes-per-set count and no sealed set yet, plus the blind boxes still waiting for identity review. `--apply --backup <new path>` creates every pair in one transaction after a checked backup: a series named after the blind box when it has none, a verified `<SKU>-SET` product named `<记账名> 整端` (price = box price × N when known), and the conversion. A taken SKU or two blind boxes that would share one new series block the whole run. Run it after the identity sheet import and before downloading count sheets.
+
+Products → 工具 → 导出身份表 offers **按产品类型预填 Prefill from product type** (on by default; `suggest=1` on `GET /api/products/identity-sheet`): blank rows get 盲盒 → `random_box`/`box` and 吊卡, 大娃 (400% / 1000%), 周边, 配件 → `ordinary`/`piece`. Untyped products stay blank; review every row before importing, because import verifies each row that has an identity.
+
+Local checks: `test_sealed_sets.py`.
 
 ## Recovery
 

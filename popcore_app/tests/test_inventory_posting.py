@@ -57,8 +57,10 @@ class InventoryAccessTests(IsolatedApiCase):
             )]
         self.assertEqual(rows, [
             ('DT', 'claw', 'Claw machine'),
+            ('DT', 'display', 'Display'),
             ('DT', 'floor', 'Floor'),
             ('DT', 'upstairs', 'Upstairs'),
+            ('MK', 'display', 'Display'),
             ('MK', 'floor', 'Floor'),
             ('MK', 'warehouse', 'Warehouse'),
         ])

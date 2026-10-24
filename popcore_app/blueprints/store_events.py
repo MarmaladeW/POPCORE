@@ -68,6 +68,29 @@ def _post_claw(con, actor, key, store_id, kind, product_id, quantity, source_loc
         actor=actor,request_key=f'{key}:claw',access_store_ids=(store_id,))['document_id']
 
 
+def _post_display(con, actor, key, store_id, product_id, quantity, source_location_id, today):
+    """Put a piece on display in authoritative mode: moved from the floor or back stock when a source is
+    given, otherwise received already opened. Display stock stays saleable; see docs/inventory-core.md."""
+    if con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode'] != 'authoritative':
+        return None
+    display = con.execute("""SELECT id FROM inventory_locations
+        WHERE store_id=? AND code='display' AND is_active=1""",(store_id,)).fetchone()
+    if not display:
+        raise InventoryConflict('This store has no display location','display_location_missing')
+    unit = con.execute('SELECT stock_unit FROM products WHERE id=?',(product_id,)).fetchone()['stock_unit']
+    line = {'product_id':product_id,'unit':unit,'quantity':quantity,'to_location_id':display['id'],
+        'to_disposition':'saleable'}
+    to_version = _balance(con,product_id,display['id'],'saleable')['version']
+    if source_location_id is not None:
+        line.update(from_location_id=source_location_id,from_disposition='saleable',expected_versions={
+            'from':_balance(con,product_id,source_location_id,'saleable')['version'],'to':to_version})
+    else:
+        line['expected_versions'] = {'to':to_version}
+    return _post_inventory_in_transaction(con,{'kind':'move' if source_location_id is not None else 'receipt',
+        'business_date':today,'source_type':'store_event','source_id':f'{key}:display','lines':[line]},
+        actor=actor,request_key=f'{key}:display',access_store_ids=(store_id,))['document_id']
+
+
 def _event(con, event_id):
     row = con.execute('''SELECT e.*,COALESCE(NULLIF(emp.name,''),e.actor_sub) AS actor_name
         FROM store_events e LEFT JOIN employees emp ON emp.auth0_id=e.actor_sub WHERE e.id=?''',(event_id,)).fetchone()
@@ -84,7 +107,7 @@ def create():
     if not isinstance(kind,str) or kind not in OPERATIONAL | {'cash_exchange'}:
         raise ValueError('kind is invalid')
     allowed = {'store_id','kind','note'} | ({'product_id','quantity'} if kind in OPERATIONAL else {'tender','amount_cents'})
-    if kind == 'claw_refill':
+    if kind in ('claw_refill','display_in'):
         allowed |= {'source_location_id'}
     if set(data) - allowed:
         raise ValueError('Unknown fields')
@@ -139,7 +162,9 @@ def create():
                 (source_location_id,store_id,*REFILL_SOURCES)).fetchone():
             raise ValueError('source_location_id must be this store\'s floor or back stock')
         document_id = (_post_claw(con,actor,key,store_id,kind,product_id,quantity,source_location_id,today)
-            if kind in ('claw_prize','claw_refill') else None)
+            if kind in ('claw_prize','claw_refill') else
+            _post_display(con,actor,key,store_id,product_id,quantity,source_location_id,today)
+            if kind == 'display_in' else None)
         cash_event_id = None
         if kind == 'cash_exchange':
             cash_event_id = con.execute('''INSERT INTO cash_events

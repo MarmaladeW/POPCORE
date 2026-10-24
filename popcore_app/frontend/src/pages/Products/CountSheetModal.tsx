@@ -12,11 +12,15 @@ interface Props {
 
 type Scope = 'legacy' | 'catalog'
 
+// Every location the opening count needs a sheet for (scripts/inventory_opening.py counts them all).
 const LOCATIONS = [
   { value: 'DT:floor',     label: 'DT · Floor' },
   { value: 'DT:upstairs',  label: 'DT · Upstairs' },
+  { value: 'DT:claw',      label: 'DT · Claw machine' },
+  { value: 'DT:display',   label: 'DT · Display' },
   { value: 'MK:floor',     label: 'MK · Floor' },
   { value: 'MK:warehouse', label: 'MK · Warehouse' },
+  { value: 'MK:display',   label: 'MK · Display' },
 ]
 
 const ERROR_HINTS: Record<string, (store: string) => string> = {

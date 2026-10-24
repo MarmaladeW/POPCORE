@@ -3,8 +3,9 @@
 /* Catalog */
 .pc-prod-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
 .pc-prod-toolbar .pc-prod-hint { margin-left: auto; color: var(--text-tertiary); font-size: 12px; }
-.pc-prod-sync { display: grid; justify-items: end; gap: 4px; }
-.pc-prod-sync small { color: var(--text-tertiary); font-size: 11px; line-height: 14px; white-space: nowrap; }
+/* The last-sync caption hangs below the button so the header buttons stay level (Figma Catalog). */
+.pc-prod-sync { position: relative; display: grid; justify-items: end; }
+.pc-prod-sync small { position: absolute; top: calc(100% + 4px); right: 0; color: var(--text-tertiary); font-size: 11px; line-height: 14px; white-space: nowrap; }
 .pc-prod-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
 .pc-prod-grid-detail { grid-template-columns: minmax(0, 1fr) 320px; }
 .pc-prod-list { min-width: 0; border: 1px solid var(--line-hair); background: var(--surface-default); }
@@ -105,7 +106,9 @@
 .pc-prod-link { padding: 0; border: 0; background: none; color: var(--text-secondary); font: inherit; text-align: left; cursor: pointer; }
 .pc-prod-link:hover { color: var(--text-primary); text-decoration: underline; }
 .pc-prod-phone-actions > * { flex: 1 1 auto; }
-.pc-prod-phone-actions .pc-prod-sync { justify-items: stretch; }
+.pc-prod-phone-actions { align-items: flex-start; }
+.pc-prod-phone-actions .pc-prod-sync { justify-items: stretch; gap: 4px; }
+.pc-prod-phone-actions .pc-prod-sync small { position: static; }
 .pc-prod-toolbar input, .pc-prod-toolbar button[role='combobox'] { border-radius: 0; }
 .pc-prod-list .pc-prod-name strong, .pc-prod-list .pc-prod-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc-prod-rows .pc-prod-name strong { white-space: normal; }

@@ -40,15 +40,17 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
   const refill = kind === 'claw_refill'
   const [sources, setSources] = useState<Array<{ id: number; code: string; name: string }>>()
 
+  // Display pieces come from store stock or arrive already opened; claw refills come from store stock.
+  const needsSource = refill || display
   useEffect(() => {
-    if (!refill || !store || store.code === 'ALL') return
+    if (!needsSource || !store || store.code === 'ALL') return
     let current = true
     setSources(undefined)
     client.get<Array<{ id: number; code: string; name: string }>>('/inventory/locations', { params: { store_code: store.code } })
       .then(response => { if (current) setSources(response.data.filter(location => ['floor', 'upstairs', 'warehouse'].includes(location.code))) })
       .catch(() => { if (current) setSources([]) })
     return () => { current = false }
-  }, [refill, store])
+  }, [needsSource, store])
 
   useEffect(() => {
     const invalidate = () => { setDenied(true); form.resetFields(); setOptions([]); search.current?.abort() }
@@ -73,11 +75,11 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
     } finally { if (!controller.signal.aborted) setSearching(false) }
   }
 
-  function save(values: { product_id?: number; quantity?: number; source_location_id?: number; tender?: string; amount?: string; note?: string }) {
+  function save(values: { product_id?: number; quantity?: number; source_location_id?: number | 'opened'; tender?: string; amount?: string; note?: string }) {
     if (!store || store.code === 'ALL' || denied) return
     const details = exchange
       ? { tender: values.tender, amount_cents: tryParseMoneyToCents(values.amount || '') }
-      : { product_id: values.product_id, quantity: values.quantity, ...(refill && values.source_location_id ? { source_location_id: values.source_location_id } : {}) }
+      : { product_id: values.product_id, quantity: values.quantity, ...(needsSource && typeof values.source_location_id === 'number' ? { source_location_id: values.source_location_id } : {}) }
     void mutation.run('/store-events', { store_id: store.id, kind, ...details, note: values.note?.trim() || '' })
   }
 
@@ -122,7 +124,7 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
             onClick={() => { setKind(value); form.resetFields(); setOptions([]) }}>{eventNames[value]}</Button>)}
         </div>}
         <p className="pc-home-muted">{exchange ? 'Record after receiving the digital payment and handing over the same amount in cash. This reduces the expected cash drawer.'
-          : display ? 'This adds a record to the daily summary. Stock balances are unchanged.'
+          : display ? 'This adds a record to the daily summary. Once inventory counts are live, it also puts the piece on display: taken from store stock, or added as an opened arrival.'
           : refill ? 'This adds a record to the daily summary. Once inventory counts are live, it also moves the stock into the claw machine.'
           : 'This adds a record to the daily summary. Once inventory counts are live, it also takes the stock out of the claw machine.'}</p>
         {mutation.notice}
@@ -142,6 +144,10 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
             <Form.Item name="quantity" label="数量 Quantity" rules={[{ required: true }, { type: 'integer', min: 1 }]}><InputNumber min={1} precision={0} /></Form.Item>
             {refill && sources?.length !== 0 && <Form.Item name="source_location_id" label="从哪里拿 / Take from" rules={[{ required: true, message: 'Choose where the stock came from.' }]}>
               <Select loading={!sources} options={sources?.map(location => ({ value: location.id, label: location.name }))} />
+            </Form.Item>}
+            {display && <Form.Item name="source_location_id" label="从哪里来 / Where from" rules={[{ required: true, message: 'Choose where the display piece came from.' }]}>
+              <Select loading={!sources} options={[...(sources || []).map(location => ({ value: location.id, label: `从${location.code === 'floor' ? '楼面' : location.code === 'upstairs' ? '楼上' : '仓库'}拿 · ${location.name}` })),
+                { value: 'opened', label: '新到 · 已拆开 Arrived opened' }]} />
             </Form.Item>}
           </>}
           <Form.Item name="note" label={exchange ? 'Payment reference / Note' : display ? '来源 From / Note' : '备注 Note (optional)'} rules={exchange ? [{ required: true, whitespace: true, message: 'Add the payment reference or a note to identify this exchange.' }] : []}>
