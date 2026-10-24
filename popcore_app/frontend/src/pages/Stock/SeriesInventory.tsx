@@ -5,7 +5,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useRole, type Role } from '../../auth/useRole'
 import { useAppStore } from '../../store'
-import { getInventorySeries, getSeriesCatalog, type SeriesInventoryResult, type SeriesProduct } from '../../api/inventorySeries'
+import { getInventorySeries, type SeriesInventoryResult, type SeriesProduct } from '../../api/inventorySeries'
 import useCheckoutMutation from '../Sales/useCheckoutMutation'
 import { torontoDate } from '../Dashboard/todayPresentation'
 import SeriesHistory from './SeriesHistory'
@@ -38,9 +38,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const [query,setQuery] = useState(''), [search,setSearch] = useState(''), [refresh,setRefresh] = useState(0)
   const [result,setResult] = useState<{scope:string;data?:SeriesInventoryResult;error?:string}>()
   const [historyOpen,setHistoryOpen] = useState(false)
-  const [panel,setPanel] = useState<'setup'|'identify'>(), [saved,setSaved] = useState<'setup'|'identify'|'stock'>()
-  const [catalog,setCatalog] = useState<Array<{id:number;name:string}>>(), [catalogError,setCatalogError] = useState('')
-  const [setupSeries,setSetupSeries] = useState('new'), [seriesName,setSeriesName] = useState(''), [designNames,setDesignNames] = useState(''), [nameRows,setNameRows] = useState(6)
+  const [panel,setPanel] = useState<'identify'>(), [saved,setSaved] = useState<'identify'|'stock'>()
   const [sourceId,setSourceId] = useState<number>(), [designId,setDesignId] = useState<number>(), [locationId,setLocationId] = useState<number>()
   const [openSetId,setOpenSetId] = useState<number>()
   const [detailId,setDetailId] = useState<number>()
@@ -54,10 +52,9 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const data = current?.data, selected = data?.series.find(series=>series.id===selectedId)
   const canWork = storeCode!=='ALL' && ['staff','manager','admin'].includes(role)
   const manager = storeCode!=='ALL' && ['manager','admin'].includes(role)
-  const mutation = useCheckoutMutation(response=>{
-    setSaved(response.consume_document_id ? 'identify' : 'setup')
+  const mutation = useCheckoutMutation(()=>{
+    setSaved('identify')
     setPanel(undefined); setSourceId(undefined); setDesignId(undefined); setLocationId(undefined); setOpenSetId(undefined); setQuantity(1); setReason('')
-    if (!response.consume_document_id) { setParams({series_id:String(response.id)}); setDesignNames(''); setSeriesName('') }
     setRefresh(value=>value+1)
   })
   const locked = mutation.pending || mutation.saving
@@ -73,12 +70,6 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
       .catch(cause=>{if(!controller.signal.aborted)setResult({scope,error:failure(cause)})})
     return ()=>controller.abort()
   },[scope,storeCode,selectedId,search])
-  useEffect(()=>{
-    if(panel!=='setup')return
-    const controller = new AbortController(); setCatalog(undefined); setCatalogError('')
-    getSeriesCatalog(controller.signal).then(items=>{if(!controller.signal.aborted)setCatalog(items)}).catch(cause=>{if(!controller.signal.aborted)setCatalogError(failure(cause))})
-    return ()=>controller.abort()
-  },[panel,refresh])
   useEffect(()=>{setPanel(undefined);setHistoryOpen(false);setDetailId(undefined);setWorksheet(undefined);setStockAction(undefined);setDesignQuery('');setSourceId(undefined);setDesignId(undefined);setLocationId(undefined);setOpenSetId(undefined)},[selectedId])
 
   const source = selected?.products.find(product=>product.id===sourceId)
@@ -91,20 +82,12 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const identifyReady = canWork && data?.mode==='authoritative' && location?.opening_verified && source?.identity_status==='verified' && design?.identity_status==='verified'
     && sourceBalance?.quantity!=null && sourceBalance.version!=null && targetBalance?.quantity!=null && targetBalance.version!=null
     && Number.isInteger(quantity) && quantity>0 && quantity<=sourceBalance.quantity && quantity<=availableSource && !!reason.trim()
-  const names = designNames.split('\n').map(name=>name.trim()).filter(Boolean)
-  const duplicateNames = new Set(names.map(name=>name.toLocaleLowerCase())).size!==names.length
-  const setupReady = manager && !!catalog && names.length>0 && !duplicateNames && (setupSeries!=='new'||!!seriesName.trim())
 
   function identify() {
     if (!identifyReady || !source || !design || !location || !sourceBalance || !targetBalance) return
     void mutation.run('/goods/identify',{source_product_id:source.id,design_product_id:design.id,location_id:location.id,quantity,
       source_version:sourceBalance.version,target_version:targetBalance.version,business_date:torontoDate(),reason:reason.trim(),...(openSetId?{open_set_id:openSetId}:{})})
   }
-  function setup() {
-    if (!setupReady)return
-    void mutation.run('/product-series/setup',{...(setupSeries==='new'?{name:seriesName.trim()}:{series_id:Number(setupSeries)}),design_names:names})
-  }
-  function openSetup() {setSetupSeries(selectedId?String(selectedId):'new');setPanel('setup');setSaved(undefined)}
 
   const detail = selected?.products.find(product=>product.id===detailId)
   const actionProduct = selected?.products.find(product=>product.id===stockAction?.productId)
@@ -126,17 +109,17 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
       actions={<>{!selectedId&&<InventoryNav hasClaw={hasClaw} phone={false}/>}<div className="pc-series-toolbar">
           <Button className="pc-series-refresh" aria-label="Refresh inventory" title="Refresh inventory" icon={<ReloadOutlined />} disabled={locked} onClick={()=>setRefresh(value=>value+1)} />
           {selected&&<Button aria-label="Show movement history" icon={<HistoryOutlined />} disabled={locked} onClick={()=>setHistoryOpen(true)}>记录 History</Button>}
-          {selected&&canWork?<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>:manager&&<Button type="primary" disabled={locked} onClick={openSetup}>设置款式 Set up series</Button>}
+          {selected&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
         </div></>}
       phoneAction={undefined} />
     {phone&&!selectedId&&<InventoryNav hasClaw={hasClaw} phone/>}
     {phone&&<div className="pc-series-phone-tools"><div className="pc-series-toolbar">
           <Button className="pc-series-refresh" aria-label="Refresh inventory" title="Refresh inventory" icon={<ReloadOutlined />} disabled={locked} onClick={()=>setRefresh(value=>value+1)} />
           {selected&&<Button aria-label="Show movement history" icon={<HistoryOutlined />} disabled={locked} onClick={()=>setHistoryOpen(true)}>记录 History</Button>}
-          {selected&&canWork?<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>:manager&&<Button type="primary" disabled={locked} onClick={openSetup}>设置款式 Set up series</Button>}
+          {selected&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
         </div></div>}
     {storeCode==='ALL'&&<Alert type="info" showIcon message="Viewing all authorized stores. Select one store to receive, count, or identify stock." />}
-    {saved&&<Alert type="success" showIcon message={saved==='setup'?'Series saved. No stock quantities were added.':`${saved==='stock'?'Stock change':'Identification'} saved. ${data?'Inventory refreshed.':current?.error?'Inventory refresh needed.':'Refreshing inventory.'}`} />}
+    {saved&&<Alert type="success" showIcon message={`${saved==='stock'?'Stock change':'Identification'} saved. ${data?'Inventory refreshed.':current?.error?'Inventory refresh needed.':'Refreshing inventory.'}`} />}
     {!panel&&mutation.notice}
     {!current?<Skeleton active paragraph={{rows:5}}/>:current.error?<Alert type="error" showIcon message={current.error} action={<Button disabled={locked} onClick={()=>setRefresh(value=>value+1)}>Retry inventory</Button>}/>:
       data&&<>
@@ -162,25 +145,10 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
           {!visibleSeries.length?<p className="pc-series-empty">No series match this search and stock view.</p>:<ul className="pc-series-list">{visibleSeries.map(series=><li key={series.id}><Link to={`/stock?series_id=${series.id}`}><span className="pc-series-list-name">{series.name}<span>{series.products.length} products{series.products.some(product=>inventoryAttention(product,data.locations).length>0)&&<> · {series.products.filter(product=>inventoryAttention(product,data.locations).length>0).length} need attention</>}</span></span><span className="pc-series-list-count">{series.products.filter(product=>product.stock_form==='confirmed_design').length} named designs</span><ArrowRightOutlined aria-hidden /></Link></li>)}</ul>}
         </>}
         <footer className="pc-series-footer">
-          {selected&&manager&&<Button disabled={locked} onClick={openSetup}>设置款式 Set up series</Button>}
-          {data.unassigned_count>0&&<Link to="/stock/products">{data.unassigned_count} products need series assignment</Link>}
+          {selected?.product_id&&manager&&<Link to={`/products?product_id=${selected.product_id}`}>添加确认款或整端 Add designs or a sealed set</Link>}
           <nav aria-label="Inventory tools" className="pc-inventory-tools"><Link to="/products">Products</Link><Link to="/restock">Restock</Link><Link to="/trades">Trades</Link><Link to="/stock/products">All products</Link></nav>
         </footer>
       </>}
-    <Drawer rootClassName="pc-inventory-drawer" title="Set up a named design roster" width="min(100%, 520px)" open={panel==='setup'} onClose={()=>{if(!locked)setPanel(undefined)}} keyboard={!locked} maskClosable={!locked} closable={!locked} destroyOnClose
-      footer={<Space wrap><Button type="primary" disabled={locked||!setupReady} loading={mutation.saving} onClick={setup}>Save named designs</Button><Button disabled={locked} onClick={()=>setPanel(undefined)}>Cancel setup</Button></Space>}>
-      {panel==='setup'&&<div className="pc-series-form">{mutation.notice}
-      <p>Enter the actual design names, one per line. The 6, 9, and 12 row presets only size this form; they do not set pack size or add stock. Extra named designs are welcome.</p>
-      {catalogError&&<Alert type="error" message={catalogError} action={<Button onClick={()=>setRefresh(value=>value+1)}>Retry series list</Button>} />}
-      <fieldset disabled={locked||!catalog}>
-        <label>Series to update<select aria-label="Series to update" value={setupSeries} onChange={event=>setSetupSeries(event.target.value)}><option value="new">Create a new series</option>{catalog?.map(series=><option key={series.id} value={series.id}>{series.name}</option>)}</select></label>
-        {setupSeries==='new'&&<label>New series name<input aria-label="New series name" value={seriesName} onChange={event=>setSeriesName(event.target.value)} maxLength={200}/></label>}
-        <div className="pc-series-presets">Name-entry rows: {[6,9,12].map(count=><button type="button" key={count} aria-pressed={nameRows===count} onClick={()=>setNameRows(count)}>{count}</button>)}</div>
-        <label>Design names<textarea aria-label="Design names" rows={nameRows} value={designNames} placeholder="One confirmed design name per line" onChange={event=>setDesignNames(event.target.value)}/></label>
-        <p>{names.length} named designs to add. {duplicateNames?'Remove duplicate design names before saving.':''}</p>
-      </fieldset>
-      </div>}
-    </Drawer>
     <Drawer rootClassName="pc-inventory-drawer" title="Identify boxes" width="min(100%, 560px)" open={panel==='identify'} onClose={()=>{if(!locked)setPanel(undefined)}} keyboard={!locked} maskClosable={!locked} closable={!locked} destroyOnClose
       footer={<Space wrap><Button type="primary" disabled={locked||!identifyReady} loading={mutation.saving} onClick={identify}>Confirm identification</Button><Button disabled={locked} onClick={()=>setPanel(undefined)}>Cancel identification</Button></Space>}>
       {panel==='identify'&&selected&&data&&<div className="pc-series-form">{mutation.notice}

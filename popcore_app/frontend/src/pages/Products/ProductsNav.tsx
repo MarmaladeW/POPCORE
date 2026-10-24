@@ -1,13 +1,13 @@
 import { Link, useLocation } from 'react-router-dom'
 import { useHasRole } from '../../auth/useRole'
 
-// Products tabs (Figma Products desktop): 目录 Catalog · 系列 Series · Clover 对应 Matching (managers).
+// Products tabs (Figma Products desktop): 目录 Catalog · 整端·确认款 Sets & designs · Clover 对应 Matching (managers).
 export function ProductsTabs() {
   const path = useLocation().pathname
   const manager = useHasRole('manager')
   const tabs = [
     { to: '/products', zh: '目录', en: 'Catalog' },
-    { to: '/products/series', zh: '系列', en: 'Series' },
+    { to: '/products/series', zh: '整端·确认款', en: 'Sets & designs' },
     ...(manager ? [{ to: '/products/clover-matching', zh: 'Clover 对应', en: 'Matching' }] : []),
   ]
   return <nav className="pc-page-tabs" aria-label="Products sections">

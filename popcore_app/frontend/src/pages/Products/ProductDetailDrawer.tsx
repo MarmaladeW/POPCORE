@@ -10,10 +10,11 @@ interface Props {
   onClose: () => void
   onEdit: (p: ProductDetailData) => void
   onImages: (p: ProductDetailData) => void
+  onOpen?: (id: number) => void
 }
 
 // Phone: the product detail as a full-screen sheet with 图片 and 编辑 (desktop shows it beside the table).
-export default function ProductDetailDrawer({ productId, stockTotal, onClose, onEdit, onImages }: Props) {
+export default function ProductDetailDrawer({ productId, stockTotal, onClose, onEdit, onImages, onOpen }: Props) {
   const detail = useProductDetail(productId)
   const product = detail.product
   const screens = useBreakpoint()
@@ -31,7 +32,7 @@ export default function ProductDetailDrawer({ productId, stockTotal, onClose, on
         <Button onClick={() => onImages(product)}>图片 Images</Button>
       </Space> : null}
     >
-      <ProductDetailBody detail={detail} stockTotal={stockTotal} />
+      <ProductDetailBody detail={detail} stockTotal={stockTotal} onOpen={onOpen} />
     </Drawer>
   )
 }

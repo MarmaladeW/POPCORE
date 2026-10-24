@@ -29,7 +29,16 @@ Products → Sync from Google Sheet is available to managers and admins on deskt
 
 `/stock` groups explicit `product_series` membership. Each confirmed design is its own stable product ID, stocked in pieces. Blind boxes and sealed sets remain separate products in boxes and sets; the series has no additional stock balance. Existing unassigned products remain accessible in `/stock/products` and Products for reviewed identity assignment. Names and legacy `ip_series` text never silently map products into a reviewed series.
 
-Managers can create a series with a named roster or add names to an existing series. The 6/9/12 name-entry presets do not imply a conversion factor, pack contents, or stock quantity; extra named designs are supported. Setup uses a single transaction and request key, rejects Unicode/case/whitespace-equivalent duplicate names, and writes no stock. Existing product IDs and history are not merged or rewritten.
+### Products and their sub-items
+
+A series belongs to one product (`product_series.product_id`), normally the blind box: its 整端 sealed set and confirmed designs are that product's sub-items, and the series is shown under the product's current name. There is no separate series to set up: managers add sub-items on the product (Products → product detail → 子项, or Products → 整端·确认款 Sets & designs), typically while counting or opening boxes.
+
+- `POST /api/products/<id>/designs` with `{design_names: [...]}` (1–100, unique after Unicode/case/whitespace normalisation, `Idempotency-Key` required) creates one verified `confirmed_design` piece product per name, SKU `<product SKU>-01`, `-02`… continuing the numbering, 记账名 `<product 记账名> <design>`, price copied from the product. The product's series is created on first use.
+- `POST /api/products/<id>/sealed-set` with `{boxes_per_set: N}` creates the `<SKU>-SET` sealed set and its 1 set = N boxes conversion, and records N as the product's boxes-per-set. An untyped product becomes a verified blind box (`random_box`, `box`); any other form is refused (`not_blind_box`), as is a second sealed set (`sealed_set_exists`).
+- A sub-item cannot have sub-items (`sub_item`). Neither call writes stock.
+- `GET /api/products/<id>` returns `sub_items` for the owning product and `parent` for a sub-item. `GET /api/products/search?top_level=1` (the catalog) leaves sub-items out and gives each product its `sub_item_count`; every other search still finds sub-items, with `parent_product_id`.
+
+The older `POST /api/product-series/setup` (a series by name) remains for compatibility but has no screen. Existing product IDs and history are not merged or rewritten.
 
 `GET /api/inventory/series?store_code=DT` (or `ALL`) starts with the complete roster, including designs with no balance row. Quantities are trustworthy only in authoritative mode for a reviewed product at an active location with reviewed opening counts. Missing trusted balances are zero/version zero; all other quantities and versions are null. Saleable, hold, damaged, trade, display, and transit stay distinct. `ALL` includes only active authorized stores and offers no stock actions.
 
@@ -133,7 +142,7 @@ Local checks: `test_inventory_opening.py`.
 
 A sealed set holds one of every design in its series; loose boxes could be anything. So a sealed set is its own product (`sealed_set`, counted in `set`), linked to its blind box (`random_box`, `box`) by a reviewed conversion of 1 set = N boxes, where N is the catalogue's boxes-per-set (`boxes_per_dan`). Opening a set keeps that provenance through `inventory_open_sets`.
 
-`scripts/create_sealed_sets.py --db <db>` reports, read-only, the sealed set it would create for every verified blind box that has a boxes-per-set count and no sealed set yet, plus the blind boxes still waiting for identity review. `--apply --backup <new path>` creates every pair in one transaction after a checked backup: a series named after the blind box when it has none, a verified `<SKU>-SET` product named `<记账名> 整端` (price = box price × N when known), and the conversion. A taken SKU or two blind boxes that would share one new series block the whole run. Run it after the identity sheet import and before downloading count sheets.
+Sealed sets are normally added one product at a time (see Products and their sub-items above). `scripts/create_sealed_sets.py --db <db>` reports, read-only, the sealed set it would create for every verified blind box that has a boxes-per-set count and no sealed set yet, plus the blind boxes still waiting for identity review. `--apply --backup <new path>` creates every pair in one transaction after a checked backup: a series named after (and owned by) the blind box when it has none, a verified `<SKU>-SET` product named `<记账名> 整端` (price = box price × N when known), and the conversion. A taken SKU or two blind boxes that would share one new series block the whole run. Run it after the identity sheet import and before downloading count sheets.
 
 Products → 工具 → 导出身份表 offers **按产品类型预填 Prefill from product type** (on by default; `suggest=1` on `GET /api/products/identity-sheet`): blank rows get 盲盒 → `random_box`/`box` and 吊卡, 大娃 (400% / 1000%), 周边, 配件 → `ordinary`/`piece`. Untyped products stay blank; review every row before importing, because import verifies each row that has an identity.
 
