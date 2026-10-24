@@ -110,6 +110,10 @@ def _sale_input(con, data, actor):
     if floor is None:
         raise InventoryConflict('Store floor location is missing', 'inventory_store_missing')
     _location(con, floor['id'])
+    display = con.execute(
+        """SELECT id FROM inventory_locations
+           WHERE store_id=? AND code='display' AND is_active=1""", (store_id,)
+    ).fetchone()
     raw_lines = data.get('lines')
     if not isinstance(raw_lines, list) or not raw_lines:
         raise InventoryValidationError('lines must be a non-empty list')
@@ -121,6 +125,17 @@ def _sale_input(con, data, actor):
         quantity = read_int(raw.get('quantity'), 'quantity', minimum=1)
         product_id = raw.get('product_id')
         raw_text = str(raw.get('raw_product_text') or '').strip() or None
+        # A display piece is sold from the store's display location instead of the floor.
+        from_display = raw.get('from_display', False)
+        if not isinstance(from_display, bool):
+            raise InventoryValidationError('from_display must be true or false')
+        if from_display and product_id is None:
+            raise InventoryValidationError('Choose the product for a display piece')
+        if from_display and display is None:
+            raise InventoryConflict('This store has no display location', 'display_location_missing')
+        if from_display and (raw.get('open_set_id') is not None or raw.get('fresh_set') is not None):
+            raise InventoryValidationError('A display piece is sold on its own, not from a set')
+        location_id = display['id'] if from_display else floor['id']
         if product_id is None:
             if entry_mode != 'already_paid' or not raw_text:
                 raise InventoryValidationError('planned sale lines require a product')
@@ -141,9 +156,9 @@ def _sale_input(con, data, actor):
             })
             continue
         product_id = read_int(product_id, 'product_id', minimum=1)
-        if product_id in product_ids:
+        if (product_id, from_display) in product_ids:
             raise InventoryValidationError('sale lines must not repeat a product')
-        product_ids.add(product_id)
+        product_ids.add((product_id, from_display))
         product = con.execute(
             """SELECT id, jizhanming, name_cn_en, stock_form, stock_unit, design_name,
                       (SELECT name FROM product_series WHERE id=products.series_id) AS series_name,
@@ -157,7 +172,7 @@ def _sale_input(con, data, actor):
         unit = raw.get('unit')
         if unit != product['stock_unit']:
             raise InventoryValidationError('unit does not match product unit')
-        balance = _balance(con, product_id, floor['id'], 'saleable')
+        balance = _balance(con, product_id, location_id, 'saleable')
         open_set_id = raw.get('open_set_id')
         open_set_id = None if open_set_id is None else read_int(
             open_set_id, 'open_set_id', minimum=1
@@ -231,7 +246,7 @@ def _sale_input(con, data, actor):
             'source_tax_cents': _optional_cents(
                 raw.get('source_tax_cents'), 'source_tax_cents', nonnegative=True
             ),
-            'location_id': floor['id'],
+            'location_id': location_id,
             'captured_balance_version': balance['version'],
             'open_set_id': open_set_id,
             **fresh_values,

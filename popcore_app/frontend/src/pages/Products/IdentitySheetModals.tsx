@@ -51,6 +51,7 @@ export function IdentityExportModal({ open, onClose }: { open: boolean; onClose:
   const stores = useAppStore(state => state.stores)
   const [storeCode, setStoreCode] = useState('')
   const [unverified, setUnverified] = useState(true)
+  const [suggest, setSuggest] = useState(true)
   const [pending, setPending] = useState(false)
 
   async function download() {
@@ -59,6 +60,7 @@ export function IdentityExportModal({ open, onClose }: { open: boolean; onClose:
       const params = new URLSearchParams()
       if (storeCode) params.set('store_code', storeCode)
       if (unverified) params.set('unverified', '1')
+      if (suggest) params.set('suggest', '1')
       const res = await client.get(`/products/identity-sheet?${params}`, { responseType: 'blob' })
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
       const a = document.createElement('a')
@@ -89,6 +91,7 @@ export function IdentityExportModal({ open, onClose }: { open: boolean; onClose:
             ...stores.filter(s => s.code !== 'ALL').map(s => ({ value: s.code, label: `With legacy stock at ${s.code} (${s.name})` }))]} />
       </label>
       <Checkbox checked={unverified} onChange={event => setUnverified(event.target.checked)}>Unverified products only</Checkbox>
+      <Checkbox checked={suggest} onChange={event => setSuggest(event.target.checked)}>按产品类型预填 Prefill from product type (盲盒 → box, 吊卡 / 大娃 / 周边 → piece)</Checkbox>
       <Button type="primary" loading={pending} onClick={download} style={{ minHeight: 44 }}>Download identity sheet</Button>
     </Space>
   </Modal>

@@ -32,6 +32,11 @@ import json
 import re
 import unicodedata
 from collections import Counter
+from functools import lru_cache
+
+# Matching compares every query against every product, so the text helpers below
+# are cached: each product's name is normalised once instead of once per query.
+_CACHE_SIZE = 65536
 
 
 # ─── Noise cleaning ───────────────────────────────────────────────────────────
@@ -46,6 +51,7 @@ _SECTION_KEYWORDS = [
 ]
 
 
+@lru_cache(maxsize=_CACHE_SIZE)
 def clean_name(raw: str) -> str:
     """Strip trailing noise chars (* : ： etc.) from a pasted product name."""
     return _TRAILING_PUNCT.sub('', (raw or '').strip()).strip()
@@ -68,6 +74,7 @@ def is_header_line(raw: str) -> bool:
 
 # ─── Normalisation ────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=_CACHE_SIZE)
 def normalize(s: str) -> str:
     """
     Normalize a 记账名 for jzm matching.
@@ -131,10 +138,17 @@ _DIGIT_RE = re.compile(r'\d+')
 _GEN_RE   = re.compile(r'[一二三四五六七八九十]+代')
 
 
+@lru_cache(maxsize=_CACHE_SIZE)
 def _variant_tokens(s: str) -> tuple:
     """Numeric / generation tokens that distinguish product variants
     ("cons12" vs "cons", "二代" vs "三代")."""
     return (tuple(sorted(_DIGIT_RE.findall(s))), tuple(sorted(_GEN_RE.findall(s))))
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cjk_counts(s: str) -> Counter:
+    """Chinese characters in s; callers only read the returned Counter."""
+    return Counter(ch for ch in s if '一' <= ch <= '鿿')
 
 
 def _score_pair_jzm(qn: str, cn: str) -> int:
@@ -177,7 +191,7 @@ def _score_pair_jzm(qn: str, cn: str) -> int:
     q_cjk = [ch for ch in qn if '\u4e00' <= ch <= '\u9fff']
     if q_cjk:
         q_cnt = Counter(q_cjk)
-        c_cnt = Counter(ch for ch in cn if '\u4e00' <= ch <= '\u9fff')
+        c_cnt = _cjk_counts(cn)
         matched = sum(min(n, c_cnt.get(ch, 0)) for ch, n in q_cnt.items())
         coverage = matched / len(q_cjk)
         if coverage < 1.0:
@@ -214,21 +228,27 @@ def identity_conflicts(query: str, product: dict) -> bool:
     qn = normalize(query)
     name = normalize(product.get('name_cn_en') or product.get('jizhanming') or '')
     pn = name + ' ' + normalize(product.get('product_type') or '')
-    types = (r'figure|figurine|手办', r'plush|毛绒|绒毛',
-             r'vinyl|搪胶', r'keychain|keyring|挂件|钥匙扣')
-    qt = {pattern for pattern in types if re.search(pattern, qn)}
-    pt = {pattern for pattern in types if re.search(pattern, pn)}
+    qt, pt = _cues(qn, _TYPE_CUES), _cues(pn, _TYPE_CUES)
     if qt and pt and qt != pt:
         return True
     if _variant_tokens(qn) != _variant_tokens(name):
         return True
-    forms = (r'fullset|sealedset|整盒|整套|端(?:$|\s)', r'singlebox|单盒|單盒|散盒')
-    qf = {pattern for pattern in forms if re.search(pattern, qn)}
-    pf = {pattern for pattern in forms if re.search(pattern, pn)}
+    qf, pf = _cues(qn, _FORM_CUES), _cues(pn, _FORM_CUES)
     if qf and pf and qf != pf:
         return True
-    secret = r'secret|隐藏|隱藏|秘密'
-    return bool(re.search(secret, qn)) != bool(re.search(secret, name))
+    return bool(_cues(qn, _SECRET_CUES)) != bool(_cues(name, _SECRET_CUES))
+
+
+_TYPE_CUES = (r'figure|figurine|手办', r'plush|毛绒|绒毛',
+              r'vinyl|搪胶', r'keychain|keyring|挂件|钥匙扣')
+_FORM_CUES = (r'fullset|sealedset|整盒|整套|端(?:$|\s)', r'singlebox|单盒|單盒|散盒')
+_SECRET_CUES = (r'secret|隐藏|隱藏|秘密',)
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cues(text: str, patterns: tuple) -> frozenset:
+    """The patterns that occur in text."""
+    return frozenset(pattern for pattern in patterns if re.search(pattern, text))
 
 
 def _limit_hits(hits: list, limit: int) -> list:

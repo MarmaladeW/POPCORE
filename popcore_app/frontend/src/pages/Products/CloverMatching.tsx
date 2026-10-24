@@ -140,7 +140,7 @@ export default function CloverMatching() {
     <ProductsTabs />
     <header>
       <h1 className="pc-sr">Clover matching</h1>
-      <p>Match each old product (记账名) to its Clover item. Changes save as you make them; nothing merges until you select rows and apply them. A good habit: apply one series right before counting it.</p>
+      <p>Match each old product (记账名) to its Clover item. Changes save as you make them; nothing merges until you select rows and apply them. Apply every decision before the opening count, so the whole store is counted once on the final products.</p>
     </header>
     {error ? <Alert type="error" message={error} action={<Button onClick={() => setRetry(value => value + 1)}>Retry</Button>} />
       : !data ? <Skeleton active paragraph={{ rows: 8 }} /> : <>

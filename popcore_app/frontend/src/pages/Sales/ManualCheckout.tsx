@@ -1,6 +1,6 @@
 import { productLabel } from '../../lib/productLabel'
 import {useEffect,useRef,useState} from 'react'
-import {Alert,Button,Form,Input,InputNumber,Select,Space,Typography} from 'antd'
+import {Alert,Button,Checkbox,Form,Input,InputNumber,Select,Space,Typography} from 'antd'
 import {Link,useBeforeUnload,useNavigate} from 'react-router-dom'
 import {searchGoodsProducts,type GoodsProduct} from '../../api/goods'
 import {formatCents,parseMoneyToCents} from '../../lib/money'
@@ -8,7 +8,7 @@ import {HST_PERCENT,hstCents} from '../../lib/checkoutPricing'
 import {useAppStore} from '../../store'
 import {torontoDate} from '../Dashboard/todayPresentation'
 import useCheckoutMutation from './useCheckoutMutation'
-const {Title,Paragraph}=Typography
+const {Title,Paragraph,Text}=Typography
 export default function ManualCheckout({allowedStoreIds}:{allowedStoreIds:number[]}) {
   const selectedStore = useAppStore(state => state.selectedStore), setSelectedStore = useAppStore(state => state.setSelectedStore), navigate = useNavigate()
   const [store,setScope] = useState(selectedStore), [dirty,setDirty] = useState(false)
@@ -47,7 +47,7 @@ export default function ManualCheckout({allowedStoreIds}:{allowedStoreIds:number
   function submit(values:any) {
     try {
       const cents = (value:string) => { const n = parseMoneyToCents(value); if (n === null || n < 0) throw new Error('Enter a nonnegative amount in every money field.'); return n }
-      const lines = values.lines.map((line:any) => ({ product_id:line.product_id, unit:products.find(p=>p.id===line.product_id)?.stock_unit, quantity:line.quantity, unit_price_cents:cents(line.price) }))
+      const lines = values.lines.map((line:any) => ({ product_id:line.product_id, unit:products.find(p=>p.id===line.product_id)?.stock_unit, quantity:line.quantity, unit_price_cents:cents(line.price), ...(line.from_display?{from_display:true}:{}) }))
       const subtotal = lines.reduce((sum:number,line:any)=>sum+line.quantity*line.unit_price_cents,0)
       const tax = cents(values.tax), reduction = cents(values.reduction), due = subtotal+tax-reduction
       if (![subtotal,tax,reduction,due].every(Number.isSafeInteger) || due <= 0) throw new Error('The amount due must be positive and within the supported range.')
@@ -65,6 +65,7 @@ export default function ManualCheckout({allowedStoreIds}:{allowedStoreIds:number
         {fields.map(field => <section key={field.key} style={{borderBottom:'1px solid #d9d9d9',marginBottom:20}}>
           <Form.Item name={[field.name,'product_id']} label={`Item ${field.name+1}`} rules={[{required:true}]}><Select showSearch filterOption={false} onSearch={search} options={products.map(p=>({value:p.id,label:productLabel(p)}))} onChange={(id:number)=>fillPrice(field.name,id)} /></Form.Item>
           <Space wrap align="start"><Form.Item name={[field.name,'quantity']} label="Quantity" rules={[{required:true}]}><InputNumber min={1} precision={0} /></Form.Item><Form.Item name={[field.name,'price']} label="Unit price ($)" rules={[{required:true}]}><Input inputMode="decimal" /></Form.Item></Space>
+          <Form.Item name={[field.name,'from_display']} valuePropName="checked"><Checkbox>陈列品 Display piece <Text type="secondary">· taken from display, not the floor</Text></Checkbox></Form.Item>
           {fields.length>1 && <Button type="text" danger onClick={()=>remove(field.name)}>Remove item {field.name+1}</Button>}
         </section>)}
         <Button onClick={()=>add({quantity:1})} style={{marginBottom:20}}>Add item</Button>
