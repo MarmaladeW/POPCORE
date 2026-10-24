@@ -27,6 +27,18 @@ def _display_name(row):
     return (row['jizhanming'] or row['name_cn_en'] or row['sku'] or '').strip()
 
 
+def sealed_set_item(box, boxes):
+    """The sealed set a blind box gets: SKU, names and price for N boxes per set."""
+    name = _display_name(box)
+    return {
+        'box_product_id': box['id'], 'box_sku': box['sku'], 'name': name,
+        'boxes_per_set': boxes, 'set_sku': f"{box['sku']}{SET_SUFFIX}" if box['sku'] else None,
+        'set_jizhanming': f'{name} 整端',
+        'set_name': f"{(box['name_cn_en'] or name).strip()} · 整端 Sealed set",
+        'set_price': round(box['price'] * boxes, 2) if box['price'] is not None else None,
+    }
+
+
 def plan_sealed_sets(con):
     """Every verified blind box with a boxes-per-set count and no sealed set yet, and why others wait."""
     items, waiting, errors = [], [], []
@@ -48,14 +60,13 @@ def plan_sealed_sets(con):
             waiting.append({'product_id': row['id'], 'sku': row['sku'], 'name': _display_name(row),
                             'message': 'verify it as a blind box (random_box, box) first'})
             continue
-        boxes = int(row['boxes_per_dan'])
-        set_sku = f"{row['sku']}{SET_SUFFIX}" if row['sku'] else None
+        item = sealed_set_item(row, int(row['boxes_per_dan']))
+        set_sku = item['set_sku']
         if not set_sku or set_sku in taken:
             errors.append({'product_id': row['id'], 'sku': row['sku'], 'code': 'sku_taken',
                            'message': f'{set_sku or "a SKU"} is not available for its sealed set'})
             continue
-        name = _display_name(row)
-        series_name = row['series_name'] or name
+        series_name = row['series_name'] or item['name']
         if not row['series_id'] and series_name in planned_names:
             errors.append({'product_id': row['id'], 'sku': row['sku'], 'code': 'series_name_repeated',
                            'message': f'two blind boxes would share the new series "{series_name}"; '
@@ -64,11 +75,7 @@ def plan_sealed_sets(con):
         if not row['series_id']:
             planned_names.add(series_name)
         items.append({
-            'box_product_id': row['id'], 'box_sku': row['sku'], 'name': name,
-            'boxes_per_set': boxes, 'set_sku': set_sku,
-            'set_jizhanming': f'{name} 整端',
-            'set_name': f"{(row['name_cn_en'] or name).strip()} · 整端 Sealed set",
-            'set_price': round(row['price'] * boxes, 2) if row['price'] is not None else None,
+            **item,
             'series_id': row['series_id'] or series_by_name.get(series_name),
             'series_name': series_name,
             'new_series': not row['series_id'] and series_name not in series_by_name,
@@ -77,12 +84,16 @@ def plan_sealed_sets(con):
             'ready_to_apply': bool(items) and not errors}
 
 
-def _create_pair(con, item):
+def create_sealed_set(con, item):
+    """Create the sealed set product and its conversion; the blind box owns the series."""
     box = con.execute('SELECT * FROM products WHERE id=?', (item['box_product_id'],)).fetchone()
     series_id = item['series_id']
     if series_id is None:
-        series_id = con.execute('INSERT INTO product_series(name) VALUES (?)',
-                                (item['series_name'],)).lastrowid
+        series_id = con.execute('INSERT INTO product_series(name, product_id) VALUES (?, ?)',
+                                (item['series_name'], box['id'])).lastrowid
+    else:
+        con.execute('UPDATE product_series SET product_id=? WHERE id=? AND product_id IS NULL',
+                    (box['id'], series_id))
     if box['series_id'] != series_id:
         con.execute('UPDATE products SET series_id=? WHERE id=?', (series_id, box['id']))
     search = ' '.join(value for value in (item['set_sku'], item['set_jizhanming'], item['set_name'],
@@ -118,7 +129,7 @@ def apply_sealed_sets(db_path, *, backup_path):
                 source.backup(target)
                 if target.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                     raise SealedSetError('backup failed integrity_check', 'backup_failed')
-            created = [_create_pair(con, item) for item in report['items']]
+            created = [create_sealed_set(con, item) for item in report['items']]
             if con.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise SealedSetError('integrity_check failed after creating sealed sets', 'integrity_failed')
             con.execute('COMMIT')

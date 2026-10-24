@@ -1897,6 +1897,17 @@ def _migration_display_locations(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('display_locations')")
 
 
+def _migration_series_owned_by_product(con, cur):
+    # A series belongs to one product (e.g. a blind box): its sealed set and confirmed designs are that
+    # product's sub-items. Older series created by name keep product_id NULL until a product claims them.
+    if not cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_series'").fetchone():
+        return  # runs again once create_catalog_identity has made the table
+    cur.execute('ALTER TABLE product_series ADD COLUMN product_id INTEGER REFERENCES products(id)')
+    cur.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_product_series_product
+                   ON product_series(product_id) WHERE product_id IS NOT NULL''')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('series_owned_by_product')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1955,6 +1966,7 @@ def _get_migrations():
         ('clover_match_reviews',                       _migration_clover_match_reviews),
         ('claw_machine_location',                      _migration_claw_machine_location),
         ('display_locations',                          _migration_display_locations),
+        ('series_owned_by_product',                    _migration_series_owned_by_product),
     ]
 
 

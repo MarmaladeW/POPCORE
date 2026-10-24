@@ -1,9 +1,17 @@
-"""Series rosters over the existing product and inventory ledger identities."""
+"""Series rosters over the existing product and inventory ledger identities.
+
+A series normally belongs to one product (product_series.product_id), e.g. a blind box: its sealed set
+and confirmed designs are that product's sub-items, added with add_designs / add_sealed_set.
+"""
+import re
 import sqlite3
 import uuid
 
-from catalog_identity import FORMS_TO_UNITS, normalize_design_name, product_alias_text_sql
+from catalog_identity import (
+    FORMS_TO_UNITS, CatalogConflict, normalize_design_name, product_alias_text_sql, update_product_identity,
+)
 from goods_operations import _begin, _replay, _remember
+from sealed_sets import create_sealed_set, sealed_set_item
 from inventory_commands import (
     INVENTORY_DISPOSITIONS, InventoryConflict, InventoryError,
     InventoryValidationError, require_inventory_access,
@@ -41,8 +49,12 @@ def series_inventory(con, actor, store_code, query='', series_id=None):
     con.execute('BEGIN')
     locations = _locations(con, actor, store_code)
     mode = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
+    # A series owned by a product is shown under that product's current name.
     roster = {row['id']: {**dict(row), 'products': []} for row in con.execute(
-        'SELECT id,name FROM product_series WHERE (? IS NULL OR id=?) ORDER BY name,id',
+        '''SELECT ps.id,ps.product_id,
+                  COALESCE((SELECT COALESCE(NULLIF(p.jizhanming,''),NULLIF(p.name_cn_en,''),p.sku)
+                            FROM products p WHERE p.id=ps.product_id), ps.name) AS name
+           FROM product_series ps WHERE (? IS NULL OR ps.id=?) ORDER BY name,ps.id''',
         (series_id, series_id))}
     marks = ','.join('?' for _ in locations)
     balances = {(row['product_id'], row['location_id'], row['disposition']): row
@@ -195,6 +207,136 @@ def setup_series(con, data, *, actor, request_key):
     except sqlite3.IntegrityError as exc:
         con.rollback()
         raise InventoryConflict('Could not save the roster; no designs were created', 'series_conflict') from exc
+    except Exception:
+        con.rollback()
+        raise
+
+
+SUB_ITEM_FORMS = ('confirmed_design', 'sealed_set')
+
+
+def _display_name(product):
+    return (product['jizhanming'] or product['name_cn_en'] or product['sku'] or '').strip()
+
+
+def _parent_product(con, product_id):
+    product = con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone()
+    if product is None:
+        raise InventoryError('Product not found', 'not_found', 404)
+    if product['stock_form'] in SUB_ITEM_FORMS:
+        raise InventoryConflict('This is already a sub-item; add to its product instead', 'sub_item')
+    return product
+
+
+def _owned_series(con, product):
+    """The series this product owns, created (named after it) on first use."""
+    if product['series_id'] is not None:
+        series = con.execute('SELECT id,product_id FROM product_series WHERE id=?', (product['series_id'],)).fetchone()
+        if series['product_id'] not in (None, product['id']):
+            raise InventoryConflict('This product belongs to another product; add to that product instead', 'sub_item')
+        con.execute('UPDATE product_series SET product_id=? WHERE id=?', (product['id'], series['id']))
+        return series['id']
+    name = _display_name(product)
+    if con.execute('SELECT 1 FROM product_series WHERE name=?', (name,)).fetchone():
+        name = f"{name} ({product['sku']})"
+    series_id = con.execute('INSERT INTO product_series(name, product_id) VALUES (?, ?)',
+                            (name, product['id'])).lastrowid
+    con.execute('UPDATE products SET series_id=? WHERE id=?', (series_id, product['id']))
+    return series_id
+
+
+def add_designs(con, product_id, data, *, actor, request_key):
+    """Add confirmed designs under a product: each is its own piece product, SKU <product SKU>-01, -02..."""
+    product_id = read_int(product_id, 'product_id', minimum=1)
+    names = data.get('design_names') if isinstance(data, dict) and set(data) == {'design_names'} else None
+    if (not isinstance(names, list) or not 1 <= len(names) <= 100
+            or any(not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 for name in names)):
+        raise InventoryValidationError('Supply 1 to 100 nonempty design names, up to 200 characters each')
+    names = [name.strip() for name in names]
+    normalized = {normalize_design_name(name) for name in names}
+    if len(normalized) != len(names):
+        raise InventoryValidationError('Design names must be unique')
+    _begin(con)
+    try:
+        key, digest, prior = _replay(con, request_key, 'product_designs', actor,
+                                     {'product_id': product_id, 'design_names': names})
+        if prior is not None:
+            con.commit()
+            return prior
+        product = _parent_product(con, product_id)
+        series_id = _owned_series(con, product)
+        for row in con.execute("SELECT design_name FROM products WHERE series_id=? AND stock_form='confirmed_design'",
+                               (series_id,)):
+            if row['design_name'] and normalize_design_name(row['design_name']) in normalized:
+                raise InventoryConflict(f"{product['sku']} already has the design {row['design_name']}", 'design_conflict')
+        sku = product['sku'] or f'P{product_id}'
+        pattern = re.compile(re.escape(sku) + r'-(\d{2,})$')
+        used = [int(match.group(1)) for (other,) in con.execute('SELECT sku FROM products WHERE sku LIKE ?', (f'{sku}-%',))
+                if (match := pattern.match(other or ''))]
+        number = max(used, default=0)
+        parent_name, full_name = _display_name(product), (product['name_cn_en'] or _display_name(product)).strip()
+        product_ids = []
+        for design in names:
+            number += 1
+            design_sku, jizhanming, name = f'{sku}-{number:02d}', f'{parent_name} {design}', f'{full_name} · {design}'
+            search = ' '.join(value for value in (design_sku, jizhanming, name, product['brand'], product['ip_series'])
+                              if value).lower()
+            product_ids.append(con.execute(
+                '''INSERT INTO products(sku,jizhanming,name_cn_en,price,ip_series,product_type,brand,series_id,
+                                        stock_form,stock_unit,design_name,identity_status,search_blob)
+                   VALUES (?,?,?,?,?,?,?,?,'confirmed_design','piece',?,'verified',?)''',
+                (design_sku, jizhanming, name, product['price'], product['ip_series'], product['product_type'],
+                 product['brand'], series_id, design, search)).lastrowid)
+        result = {'product_id': product_id, 'series_id': series_id, 'product_ids': product_ids}
+        _remember(con, key, 'product_designs', product_id, actor, digest, result)
+        con.commit()
+        return result
+    except sqlite3.IntegrityError as exc:
+        con.rollback()
+        raise InventoryConflict('Could not save the designs; nothing was created', 'design_conflict') from exc
+    except Exception:
+        con.rollback()
+        raise
+
+
+def add_sealed_set(con, product_id, data, *, actor, request_key):
+    """Give a blind box its 整端 sealed set (SKU <product SKU>-SET), 1 set = N boxes.
+
+    An untyped product becomes a verified blind box here, since only blind boxes come in sealed sets."""
+    product_id = read_int(product_id, 'product_id', minimum=1)
+    if not isinstance(data, dict) or set(data) != {'boxes_per_set'}:
+        raise InventoryValidationError('Supply boxes_per_set only')
+    boxes = read_int(data['boxes_per_set'], 'boxes_per_set', minimum=1)
+    if boxes > 100:
+        raise InventoryValidationError('boxes_per_set must be 100 or fewer')
+    _begin(con)
+    try:
+        key, digest, prior = _replay(con, request_key, 'product_sealed_set', actor,
+                                     {'product_id': product_id, 'boxes_per_set': boxes})
+        if prior is not None:
+            con.commit()
+            return prior
+        product = _parent_product(con, product_id)
+        if con.execute('SELECT 1 FROM product_conversions WHERE target_product_id=?', (product_id,)).fetchone():
+            raise InventoryConflict('This product already has a sealed set', 'sealed_set_exists')
+        if product['stock_form'] not in (None, 'random_box'):
+            raise InventoryConflict('Only a blind box can have a sealed set', 'not_blind_box')
+        series_id = _owned_series(con, product)
+        if (product['stock_form'], product['identity_status']) != ('random_box', 'verified'):
+            update_product_identity(con, product_id, {'stock_form': 'random_box', 'stock_unit': 'box',
+                                                      'identity_status': 'verified'})
+        con.execute('UPDATE products SET boxes_per_dan=? WHERE id=?', (boxes, product_id))
+        item = sealed_set_item(product, boxes)
+        if not item['set_sku'] or con.execute('SELECT 1 FROM products WHERE sku=?', (item['set_sku'],)).fetchone():
+            raise InventoryConflict(f"{item['set_sku'] or 'A SKU'} is already taken", 'sku_taken')
+        created = create_sealed_set(con, {**item, 'series_id': series_id})
+        result = {'product_id': product_id, 'series_id': series_id, 'set_product_id': created['set_product_id']}
+        _remember(con, key, 'product_sealed_set', product_id, actor, digest, result)
+        con.commit()
+        return result
+    except CatalogConflict as exc:
+        con.rollback()
+        raise InventoryConflict(str(exc), exc.code) from exc
     except Exception:
         con.rollback()
         raise

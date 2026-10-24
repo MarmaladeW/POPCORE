@@ -149,11 +149,16 @@ def search_products():
 
     search_source = f"""(SELECT p.*, ps.name AS series_name,
         {product_alias_text_sql('p')} AS alias_text,
-        {product_search_text_sql('p')} AS inventory_search_blob
+        {product_search_text_sql('p')} AS inventory_search_blob,
+        CASE WHEN ps.product_id<>p.id THEN ps.product_id END AS parent_product_id,
+        CASE WHEN ps.product_id=p.id THEN (SELECT COUNT(*) FROM products c WHERE c.series_id=p.series_id AND c.id<>p.id)
+             ELSE 0 END AS sub_item_count
         FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id)"""
 
     filter_clauses = []
     filter_params  = []
+    if request.args.get('top_level') == '1':  # the catalog lists sub-items under their product
+        filter_clauses.append("parent_product_id IS NULL")
     if series:
         filter_clauses.append("ip_series = ?")
         filter_params.append(series)
@@ -169,7 +174,8 @@ def search_products():
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+                   parent_product_id, sub_item_count
             FROM {search_source}
             {where}
             ORDER BY sku DESC
@@ -198,7 +204,8 @@ def search_products():
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+               parent_product_id, sub_item_count
         FROM {search_source}
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
@@ -210,7 +217,8 @@ def search_products():
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+               parent_product_id, sub_item_count
         FROM {search_source}
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
@@ -224,7 +232,8 @@ def search_products():
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+                   parent_product_id, sub_item_count
             FROM {search_source}
             WHERE {char_conditions} {filter_sql}
             LIMIT 200
@@ -239,7 +248,8 @@ def search_products():
         cur.execute(f'''
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
-                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text
+                   stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+                   parent_product_id, sub_item_count
             FROM {search_source}
             WHERE ({bi_cond}) {filter_sql}
             LIMIT 200
@@ -309,9 +319,22 @@ def get_product(pid):
                    JOIN products target ON target.id=c.target_product_id
                    WHERE c.source_product_id=? ORDER BY c.version''', (pid,))
     conversions = [dict(r) for r in cur.fetchall()]
+    # Sub-items: the sealed set and confirmed designs under the product that owns this series.
+    owner = cur.execute('SELECT product_id FROM product_series WHERE id=?', (row['series_id'],)).fetchone() \
+        if row['series_id'] else None
+    owner_id = owner['product_id'] if owner else None
+    parent = None
+    if owner_id and owner_id != pid:
+        parent = dict(cur.execute('SELECT id, sku, jizhanming, name_cn_en FROM products WHERE id=?',
+                                  (owner_id,)).fetchone())
+    sub_items = [dict(r) for r in cur.execute(
+        '''SELECT id, sku, jizhanming, name_cn_en, stock_form, stock_unit, design_name, price
+           FROM products WHERE series_id=? AND id<>?
+           ORDER BY CASE stock_form WHEN 'sealed_set' THEN 0 ELSE 1 END, sku, id''',
+        (row['series_id'], pid))] if owner_id == pid else []
     con.close()
     return jsonify({**dict(row), 'aliases': aliases, 'barcodes': barcodes,
-                    'conversions': conversions})
+                    'conversions': conversions, 'parent': parent, 'sub_items': sub_items})
 
 
 # ─── Aliases ──────────────────────────────────────────────────────────────────
@@ -1690,3 +1713,31 @@ def setup_product_series():
         return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
     finally:
         con.close()
+
+
+def _add_sub_items(operation, pid):
+    from inventory_commands import InventoryError
+    con = get_db()
+    try:
+        return jsonify(operation(con, pid, request.get_json(silent=True), actor=request.jwt_payload,
+                                 request_key=request.headers.get('Idempotency-Key'))), 201
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
+@bp.post('/api/products/<int:pid>/designs')
+@role_required('manager')
+def add_product_designs(pid):
+    from inventory_catalog import add_designs
+    return _add_sub_items(add_designs, pid)
+
+
+@bp.post('/api/products/<int:pid>/sealed-set')
+@role_required('manager')
+def add_product_sealed_set(pid):
+    from inventory_catalog import add_sealed_set
+    return _add_sub_items(add_sealed_set, pid)
