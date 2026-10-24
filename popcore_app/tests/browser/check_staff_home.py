@@ -1,5 +1,6 @@
 """Staff entrance and event recording, isolated synthetic API responses only."""
 import asyncio
+import re
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,16 +52,14 @@ async def actual_event_api(browser):
             else:
                 await route.abort()
         await page.route('**/*', local_only)
-        await page.goto('http://127.0.0.1:5178/claw')
-        await page.get_by_role('button', name='换现金 / Cash exchange', exact=True).click()
-        # Text fields before the Select, for the focus reason noted in flow().
-        await page.get_by_role('textbox', name='Cash exchanged (CAD)').fill('20.00')
-        await page.get_by_role('textbox', name='Payment reference / Note').fill('LOCAL-TEST-ONLY')
-        await page.get_by_role('combobox', name='Payment received by').click()
-        await page.get_by_title('Card', exact=True).click()
-        await expect(page.get_by_role('textbox', name='Cash exchanged (CAD)')).to_have_value('20.00')
+        # 换现金 lives in 买单 Checkout now.
+        await page.goto('http://127.0.0.1:5178/checkout/cash-exchange')
+        await page.get_by_role('textbox', name='换出现金 Cash given (CAD)').fill('20.00')
+        await page.get_by_role('textbox', name='付款参考号 Payment reference').fill('LOCAL-TEST-ONLY')
+        await page.locator('.pc-exchange-tender').get_by_text('Card', exact=True).click()
+        await expect(page.get_by_role('textbox', name='换出现金 Cash given (CAD)')).to_have_value('20.00')
         await page.get_by_role('checkbox', name='I received this digital payment and handed over the same amount in cash.').check()
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url('http://127.0.0.1:5178/')
         await expect(page.get_by_role('region', name='Recent records')).to_contain_text('$20.00')
         with closing(fixture_case.connect()) as con:
@@ -118,27 +117,30 @@ async def flow(browser, width):
     await page.clock.install(time=datetime(2026, 9, 16, 14, tzinfo=timezone.utc))
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
+    async def open_claw():
+        # The claw machine is a location inside 库存 Inventory now.
+        await page.goto(BASE + '/stock/claw')
     try:
         await page.goto(BASE + '/')
         actions = page.get_by_role('navigation', name='Store actions')
         await expect(actions.get_by_role('link')).to_have_count(4)
-        for name in ['买单', '入店', '娃娃机', '汇总']:
+        for name in ['买单', '入店', '库存', '汇总']:
             await expect(actions.get_by_role('link', name=name, exact=False)).to_be_visible()
         await expect(page.get_by_role('button', name='Punch in', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Punch in', exact=True).click()
         await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         await page.screenshot(path=OUT / f'home-{width}.png', full_page=True)
         await actions.get_by_role('link', name='买单', exact=False).click()
-        await expect(page.get_by_role('heading', name='Checkout', exact=True)).to_be_visible()
+        await expect(page.get_by_role('heading', name='买单', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Register 1', exact=False).click()
         # The order opens with its payment panel: every tender already priced by the server.
         await expect(page.get_by_role('group', name='How is the customer paying?')).to_be_visible()
-        await page.get_by_role('link', name='Home', exact=True).click()
+        await page.get_by_role('link', name='首页 Home', exact=True).click()
         await actions.get_by_role('link', name='入店', exact=False).click()
-        await expect(page.get_by_role('link', name='收货 / Receive shipment', exact=False)).to_be_visible()
-        await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 / Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
-        await page.get_by_role('link', name='Home', exact=True).click()
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await expect(page.get_by_role('link', name='收货 Receive shipment', exact=False)).to_be_visible()
+        await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
+        await page.get_by_role('link', name='首页 Home', exact=True).click()
+        await open_claw()
         await page.get_by_role('button', name='出奖 / Prize won', exact=True).click()
         # Text fields first: after an option is chosen an Ant Design Select takes focus back,
         # and text filled into another field right then is lost or lands in its search box.
@@ -147,7 +149,7 @@ async def flow(browser, width):
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
         await expect(page.get_by_role('spinbutton', name='Quantity')).to_have_value('1')
         state['status_for_path'] = {'/api/store-events': (503, {'error': 'Synthetic connection failure'})}
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page.get_by_role('button', name='Retry', exact=True)).to_be_visible()
         state['status_for_path'] = {}
         await page.get_by_role('button', name='Retry', exact=True).click()
@@ -161,52 +163,53 @@ async def flow(browser, width):
         await expect(page.get_by_label('Summary text')).to_have_value('2026.9.16 DT\n娃娃机：\nTest Product*1')
         await expect(page.get_by_role('link', name='Import historical summaries', exact=True)).to_have_count(0)
         await page.screenshot(path=OUT / f'summary-{width}.png', full_page=True)
-        await page.get_by_role('link', name='Home', exact=True).click()
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
-        await page.get_by_role('button', name='换现金 / Cash exchange', exact=True).click()
-        await page.get_by_role('textbox', name='Cash exchanged (CAD)').fill('20.00')
-        await page.get_by_role('textbox', name='Payment reference / Note').fill('Transfer received, cash handed over')
-        await page.get_by_role('combobox', name='Payment received by').click()
-        await page.get_by_title('E-transfer', exact=True).click()
-        await expect(page.get_by_role('textbox', name='Cash exchanged (CAD)')).to_have_value('20.00')
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('link', name='首页 Home', exact=True).click()
+        # 换现金 is a row (phone) or tab (desktop) of 买单 Checkout.
+        await page.get_by_role('link', name='买单 Checkout', exact=True).click()
+        tools = page.get_by_role('navigation', name='Checkout tools' if width < 768 else 'Checkout sections')
+        await tools.get_by_role('link', name='换现金 Cash exchange', exact=False).click()
+        await page.get_by_role('textbox', name='换出现金 Cash given (CAD)').fill('20.00')
+        await page.get_by_role('textbox', name='付款参考号 Payment reference').fill('Transfer received, cash handed over')
+        await page.locator('.pc-exchange-tender').get_by_text('E-transfer', exact=True).click()
+        await expect(page.get_by_role('textbox', name='换出现金 Cash given (CAD)')).to_have_value('20.00')
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page.get_by_text('Confirm the payment received and cash handed over.', exact=True)).to_be_visible()
         await page.get_by_role('checkbox', name='I received this digital payment and handed over the same amount in cash.').check()
         await page.screenshot(path=OUT / f'cash-exchange-{width}.png', full_page=True)
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['amount_cents'] == 2000 and last['tender'] == 'e_transfer' and last['kind'] == 'cash_exchange'
         assert 'product_id' not in last and 'quantity' not in last
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
+        await open_claw()
         await page.get_by_role('button', name='补货 / Refill', exact=True).click()
         await page.get_by_role('spinbutton', name='Quantity').fill('3')
         await page.get_by_role('combobox', name='Product').fill('Test')
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page.get_by_text('Choose where the stock came from.', exact=True)).to_be_visible()
         await page.get_by_role('combobox', name='从哪里拿 / Take from').click()
         await expect(page.get_by_title('Claw machine', exact=True)).to_have_count(0)
         await page.get_by_title('Upstairs', exact=True).click()
         await page.screenshot(path=OUT / f'claw-refill-{width}.png', full_page=True)
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert (last['kind'], last['quantity'], last['source_location_id']) == ('claw_refill', 3, 2), last
         await actions.get_by_role('link', name='入店', exact=False).click()
-        await page.get_by_role('link', name='入 display / Display arrival', exact=False).click()
+        await page.get_by_role('link', name='入 display Display arrival', exact=False).click()
         await expect(page.get_by_text('This adds a record to the daily summary. Stock balances are unchanged.', exact=True)).to_be_visible()
         await page.get_by_role('spinbutton', name='Quantity').fill('2')
         await page.get_by_role('combobox', name='Product').fill('Test')
         await page.get_by_title('TEST-1 · Test Product', exact=True).click()
         await expect(page.get_by_role('spinbutton', name='Quantity')).to_have_value('2')
-        await page.get_by_role('button', name='Save record', exact=True).click()
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert last['kind'] == 'display_in' and last['quantity'] == 2
         await page.get_by_label('Operations store').select_option('ALL')
-        await actions.get_by_role('link', name='娃娃机', exact=False).click()
-        await expect(page.get_by_role('button', name='Save record', exact=True)).to_have_count(0)
+        await open_claw()
+        await expect(page.get_by_role('button', name='保存记录 Save record', exact=True)).to_have_count(0)
 
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
         await page.get_by_label('Operations store').select_option('DT')
@@ -235,7 +238,7 @@ async def main():
             await page.goto(BASE + '/')
             await expect(page.get_by_role('navigation', name='Store actions')).to_have_count(0)
             await page.goto(BASE + '/claw')
-            await expect(page.get_by_role('button', name='Save record', exact=True)).to_have_count(0)
+            await expect(page.get_by_role('button', name='保存记录 Save record', exact=True)).to_have_count(0)
             await context.close()
             await actual_event_api(browser)
             await browser.close()

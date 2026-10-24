@@ -68,7 +68,7 @@ async def run_checks(browser, case):
         return context, page
 
     context, page = await page_for('staff', 390)
-    await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading', name='排班', exact=True)).to_be_visible()
     await expect(page.get_by_label('Availability employee', exact=True)).to_have_count(0)
     calendar = page.get_by_label('Two-week availability calendar')
     await expect(calendar.locator('button')).to_have_count(14)
@@ -100,14 +100,14 @@ async def run_checks(browser, case):
     await page.get_by_text('Custom hours', exact=True).click()
     await page.get_by_label('Available until', exact=True).fill('18:00')
     await page.get_by_role('button', name='Apply to selected dates').click()
-    await page.get_by_role('link', name='Home', exact=True).click()
-    await page.get_by_role('link', name='Store tasks', exact=True).click()
+    await page.get_by_role('link', name='首页 Home', exact=True).click()
+    await page.get_by_role('link', name='待处理', exact=False).first.click()
     await expect(page.get_by_text('Today / 今日', exact=True)).to_be_visible()
     assert await page.evaluate("""() => {
         const event = new Event('beforeunload', {cancelable: true});
         window.dispatchEvent(event); return event.defaultPrevented;
     }"""), 'Leaving the app must warn about a draft even outside Schedule'
-    await page.get_by_role('link', name='Schedule', exact=True).click()
+    await page.get_by_role('link', name='排班 Schedule', exact=True).click()
     await expect(calendar.locator('button').nth(0)).to_contain_text('18:00')
     await page.get_by_label('Operations store').select_option('MK')
     await expect(page.get_by_role('button', name='Submit two weeks', exact=True)).to_be_disabled()
@@ -121,7 +121,7 @@ async def run_checks(browser, case):
     await expect(calendar.locator('button').nth(0)).to_contain_text('20:00')
     await page.get_by_role('button', name='Submit two weeks', exact=True).click()
     await expect(page.get_by_role('status').filter(has_text='Submitted')).to_be_visible()
-    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await page.get_by_role('tab', name='我的班 My shifts', exact=True).click()
     await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
     await expect(page.get_by_text('提前十分钟到！', exact=True)).to_be_visible()
     await expect(page.locator('.pc-personal-shift').filter(has_text='Full day').first).to_be_visible()
@@ -133,13 +133,12 @@ async def run_checks(browser, case):
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Expand navigation', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
-    await page.locator('.pc-sidebar .ant-menu-submenu-title').filter(has_text='More').click()
-    await page.get_by_role('link', name='Store tasks', exact=True).click()
-    await expect(page.get_by_role('heading', name='Today / 今日', exact=True)).to_be_visible()
+    # Store tasks left the menus (approved redesign); leave Schedule through Home instead.
+    await page.get_by_role('link', name='首页 Home', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
-    await page.get_by_role('link', name='Schedule', exact=True).click()
+    await page.get_by_role('link', name='排班 Schedule', exact=True).click()
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
-    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await page.get_by_role('tab', name='我的班 My shifts', exact=True).click()
     await page.get_by_role('button', name='Edit reminder', exact=True).click()
     await page.get_by_label('Reminder for all employees (both stores)', exact=True).fill('提前十分钟到！\nPlease check your shift time.')
     await page.route('**/api/schedule/reminder', lambda route: route.fulfill(status=500, content_type='application/json', body='{}'))
@@ -155,13 +154,13 @@ async def run_checks(browser, case):
     await page.get_by_role('button', name='Save reminder', exact=True).click()
     await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
     await page.reload()
-    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await page.get_by_role('tab', name='我的班 My shifts', exact=True).click()
     await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Edit reminder', exact=True).click()
     await page.get_by_label('Reminder for all employees (both stores)', exact=True).fill('Discard this')
     await page.get_by_role('button', name='Cancel', exact=True).click()
     await expect(page.get_by_text('Discard this', exact=True)).to_have_count(0)
-    await page.get_by_role('tab', name='Availability', exact=True).click()
+    await page.get_by_role('tab', name='可上时间 Availability', exact=True).click()
     switcher = page.get_by_label('Availability employee', exact=True).first
     await switcher.click()
     await page.get_by_title('Celia', exact=True).click()
@@ -191,7 +190,7 @@ async def run_checks(browser, case):
     assert await page.evaluate('document.body.scrollWidth') <= 392
     await page.screenshot(path=OUT/'employee-switcher-390.png', full_page=True, animations='disabled')
     await page.set_viewport_size({'width':1440,'height':980})
-    await page.get_by_role('tab', name='Team schedule', exact=True).click()
+    await page.get_by_role('tab', name='团队排班 Team schedule', exact=True).click()
     await expect(page.get_by_role('button', name='Two weeks', exact=True)).to_have_attribute('aria-pressed', 'true')
     await page.get_by_role('button', name='Availability', exact=True).click()
     await expect(page.locator('.fc-event').filter(has_text='Celia').first).to_be_visible()
@@ -318,10 +317,12 @@ async def run_checks(browser, case):
     # Actual finish: recorded by the manager once the shift's Toronto day has arrived.
     mason = panel.locator('.pc-schedule-person').filter(has_text='Mason')
     await mason.get_by_role('button', name='Edit', exact=True).click()
-    finish = dialog.get_by_label('Actual finish (optional)')
+    # 实际下班 is digits only with the numeric keypad: 2125 reads as 21:25; the saved value stays HH:mm.
+    finish = dialog.get_by_label('实际下班 Actual finish', exact=True)
     if START <= datetime.now(ZoneInfo('America/Toronto')).date():
-        await finish.fill('21:25')
-        await finish.press('Enter')
+        await expect(finish).to_have_attribute('inputmode', 'numeric')
+        await finish.fill('2125')
+        await expect(dialog.get_by_text('= 21:25', exact=True)).to_be_visible()
         await dialog.get_by_role('button', name='Save', exact=True).click()
         await expect(dialog).not_to_be_visible()
         await expect(mason).to_contain_text('12:00–22:00 · finished 21:25')
@@ -330,14 +331,20 @@ async def run_checks(browser, case):
             saved = con.execute('SELECT end_time,actual_end_time FROM shifts WHERE employee_id=103 AND date=?', (str(START),)).fetchone()
             assert tuple(saved) == ('22:00', '21:25'), tuple(saved)
         await page.screenshot(path=OUT / 'actual-finish-1440.png', full_page=True, animations='disabled')
-        # A finish up to 01:00 belongs to the next day.
         await mason.get_by_role('button', name='Edit', exact=True).click()
-        await expect(finish).to_have_value('21:25')
-        await finish.fill('02:00')
-        await finish.press('Enter')
+        await expect(finish).to_have_value('2125')
+        # A typed colon is dropped; digits that are not a time are refused and cannot be saved.
+        await finish.fill('21:34')
+        await expect(finish).to_have_value('2134')
+        await finish.fill('2460')
+        await expect(dialog.get_by_text('Type digits, e.g. 2134 for 21:34', exact=True)).to_be_visible()
+        await dialog.get_by_role('button', name='Save', exact=True).click()
+        await expect(dialog).to_be_visible()
+        # A finish up to 01:00 belongs to the next day.
+        await finish.fill('200')
         await expect(dialog.get_by_text('Must be after start, or by 01:00 the next day', exact=True)).to_be_visible()
-        await finish.fill('00:45')
-        await finish.press('Enter')
+        await finish.fill('045')
+        await expect(dialog.get_by_text('= 00:45', exact=True)).to_be_visible()
         await expect(dialog.get_by_text('Counted as 00:45 the next day.', exact=True)).to_be_visible()
         await expect(dialog.get_by_text('Must be after start, or by 01:00 the next day', exact=True)).to_have_count(0)
         await expect(page.locator('.ant-message-notice')).to_have_count(0)
@@ -396,7 +403,7 @@ async def run_checks(browser, case):
 
     for width in (1440,768,390):
         await page.set_viewport_size({'width':width,'height':980})
-        await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
+        await expect(page.get_by_role('heading', name='排班', exact=True)).to_be_visible()
         if width == 390:
             await expect(page.locator('.pc-mobile-shift-kind').filter(has_text='Full day').first).to_be_visible()
             if START <= datetime.now(ZoneInfo('America/Toronto')).date():
@@ -524,7 +531,7 @@ async def run_checks(browser, case):
     assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')
     await context.close()
     context, page = await page_for('staff', 390)
-    await page.get_by_role('tab', name='My shifts', exact=True).click()
+    await page.get_by_role('tab', name='我的班 My shifts', exact=True).click()
     await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
     await context.close()

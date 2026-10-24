@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Checkbox, Form, Input, Modal } from 'antd'
 import { CameraOutlined, CheckCircleOutlined, CreditCardOutlined, DollarOutlined, UploadOutlined } from '@ant-design/icons'
 import client from '../../api/client'
-import { formatCents, parseMoneyToCents } from '../../lib/money'
+import { formatCents, tryParseMoneyToCents } from '../../lib/money'
 import { useHasRole } from '../../auth/useRole'
 import useCheckoutMutation from './useCheckoutMutation'
 import type { CloverBlock } from './cloverOrderView'
@@ -21,7 +21,9 @@ export type Queue = { orders:Order[]; next_before_id:number|null; clover:CloverS
 export type Draft = { target:string; tender:string; split:string; includesCard:boolean; sourceTotal?:number; photos?:Record<number,File>; cloverSplit?:''|'card'|'tenders' }
 export type DraftUpdate = Partial<Draft> | ((draft:Draft)=>Draft)
 
-export const methods = [{value:'cash',label:'Cash',icon:<DollarOutlined/>},{value:'card',label:'Card',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer'},{value:'wechat',label:'WeChat Pay'},{value:'alipay',label:'Alipay'}]
+export const methods = [{value:'cash',label:'Cash',zh:'现金',icon:<DollarOutlined/>},{value:'card',label:'Card',zh:'刷卡',icon:<CreditCardOutlined/>},{value:'e_transfer',label:'E-transfer',zh:'转账'},{value:'wechat',label:'WeChat Pay',zh:'微信'},{value:'alipay',label:'Alipay',zh:'支付宝'}]
+// A tender tile (Figma): Chinese, English, then the amount.
+export const TenderLabel = ({method,amount}:{method:typeof methods[number];amount?:React.ReactNode}) => <><span className="co-method-zh">{method.zh}</span> <span className="co-method-en">{method.label}</span>{amount!==undefined&&<small>{amount}</small>}</>
 export const electronic = (method:string) => ['e_transfer','wechat','alipay'].includes(method)
 export const moneyInput = (cents:number) => (cents/100).toFixed(2)
 export const label = (method:string) => methods.find(m=>m.value===method)?.label || method
@@ -86,7 +88,7 @@ export function OrderNotes({order,updated,onBusy,disabled}:{order:Order;updated:
   useEffect(()=>{if(!dirty){setNote(order.note||'');setBase(order.note||'')}},[order.note,dirty])
   useEffect(()=>{onBusy(mutation.pending);return()=>onBusy(false)},[mutation.pending])
   return <section className="co-note" aria-label="Order note">
-    <h3>Order note</h3>
+    <h3>订单备注 Order note</h3>
     {order.can_note?<>
       <Input.TextArea aria-label="Order note" value={note} rows={3} maxLength={2000} showCount
         placeholder="Special payment, pickup, or customer circumstances" disabled={disabled}
@@ -99,6 +101,8 @@ export function OrderNotes({order,updated,onBusy,disabled}:{order:Order;updated:
   </section>
 }
 
+// The submit buttons show their saving state as text: antd's loading spinner can be left mid-animation
+// when a request ends quickly, keeping an invisible "loading" label on the button after a rejected refund.
 export function RefundTools({order,updated,onBusy,disabled}:{order:Order;updated:(o?:Order)=>void;onBusy:(v:boolean)=>void;disabled:boolean}) {
   const manager=useHasRole('manager')
   const mutation=useCheckoutMutation((data:Order)=>updated(data))
@@ -109,15 +113,15 @@ export function RefundTools({order,updated,onBusy,disabled}:{order:Order;updated
     {!order.abandoned_reason?<Form layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action(order.received_cents?'abandon':'cancel',{reason:v.reason})}>
       <p>{order.received_cents?'Mark this checkout abandoned, then record the money actually refunded.':'Cancel this unpaid checkout.'}</p>
       {!!order.received_cents&&<Form.Item name="reason" label="Reason" rules={[{required:true,whitespace:true}]}><Input.TextArea rows={2}/></Form.Item>}
-      <Button danger htmlType="submit" loading={mutation.saving}>{order.received_cents?'Abandon checkout':'Cancel checkout'}</Button>
-    </Form>:<Form key={order.version} layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action('refund',{...v,attempt_id:Number(v.attempt_id),amount_cents:parseMoneyToCents(v.amount)})}>
+      <Button danger htmlType="submit" disabled={mutation.saving}>{mutation.saving?'Saving…':order.received_cents?'Abandon checkout':'Cancel checkout'}</Button>
+    </Form>:<Form key={order.version} layout="vertical" disabled={disabled||mutation.pending} onFinish={v=>action('refund',{...v,attempt_id:Number(v.attempt_id),amount_cents:tryParseMoneyToCents(v.amount)})}>
       <p><strong>{formatCents(order.refund_due_cents)}</strong> still to refund. Record refunds after returning the money.</p>
       <Form.Item name="attempt_id" label="Original payment" rules={[{required:true}]}><select className="co-select" defaultValue=""><option value="" disabled>Select payment</option>{order.attempts.filter(a=>(a.refundable_cents||0)>0).map(a=><option key={a.id} value={a.id}>{label(a.tender)} · {formatCents(a.refundable_cents||0)} refundable</option>)}</select></Form.Item>
       <div className="co-action-pair"><Form.Item name="amount" label="Refund amount ($)" rules={[{required:true}]}><Input inputMode="decimal"/></Form.Item><Form.Item name="business_date" label="Refund date" rules={[{required:true}]}><Input type="date"/></Form.Item></div>
       <Form.Item name="reference" label="Refund reference" rules={[{required:true,whitespace:true,max:120}]}><Input/></Form.Item>
       <Form.Item name="reason" label="Reason" rules={[{required:true,whitespace:true}]}><Input.TextArea rows={2}/></Form.Item>
       <Form.Item name="confirmed_received_and_refunded" valuePropName="checked" rules={[{validator:(_,value)=>value===true?Promise.resolve():Promise.reject(new Error('Confirm the receipt and actual refund.'))}]}><Checkbox>I checked the original receipt and returned this money.</Checkbox></Form.Item>
-      <Button danger htmlType="submit" loading={mutation.saving}>Record refund</Button>
+      <Button danger htmlType="submit" disabled={mutation.saving}>{mutation.saving?'Saving…':'Record refund'}</Button>
     </Form>}
   </details>
 }

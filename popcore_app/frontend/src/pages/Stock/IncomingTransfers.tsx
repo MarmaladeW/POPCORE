@@ -23,12 +23,12 @@ export default function IncomingTransfers() {
       .catch(cause => { if (!controller.signal.aborted) setResult({scope,items:[],error:cause?._serverMessage || 'Unable to load incoming transfers. Please retry.'}) })
     return () => controller.abort()
   }, [scope, store?.id])
-  return <Card title="Incoming transfers" extra={['manager','admin'].includes(role) && <Button onClick={() => setParams({create:'1'})}>Create transfer</Button>}>
+  return <Card className="pc-goods-card" title={<>待收调拨 <span>Incoming transfers</span></>} extra={['manager','admin'].includes(role) && <Button onClick={() => setParams({create:'1'})}>新建调拨 Create transfer</Button>}>
     <Space direction="vertical" style={{width:'100%'}}>
       <Typography.Text type="secondary">Unfinished transfers to {store?.name}, including earlier days. Open one to confirm what arrived.</Typography.Text>
       <Button onClick={() => setRefresh(value => value + 1)}>Refresh transfers</Button>
       {!current ? <Spin /> : current.error ? <Alert role="alert" type="error" showIcon message={current.error} action={<Button onClick={() => setRefresh(value => value + 1)}>Retry</Button>} />
-        : <List rowKey="id" dataSource={current.items} locale={{emptyText:'No incoming transfers to receive.'}} renderItem={transfer => <List.Item>
+        : <List className="pc-transfer-list" rowKey="id" dataSource={current.items} locale={{emptyText:'No incoming transfers to receive.'}} renderItem={transfer => <List.Item>
           <Space direction="vertical" style={{width:'100%'}}>
             <Typography.Text strong>{transfer.source_store_name} · {transfer.source_location_name}</Typography.Text>
             <Typography.Text type="secondary">To {transfer.destination_location_name} · {transfer.business_date}</Typography.Text>

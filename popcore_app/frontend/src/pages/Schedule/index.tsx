@@ -7,17 +7,18 @@ import ManagerView from './ManagerView'
 import AvailabilityCalendar from './AvailabilityCalendar'
 import { getMe } from './scheduleApi'
 import PunchIn from './PunchIn'
+import PageHeader from '../../components/pc/PageHeader'
 import './schedule.css'
 
 export default function SchedulePage() {
   const isManager = useHasRole('manager')
   useEffect(() => { getMe().catch(() => {}) }, [])
   return <div className="pc-schedule-page">
-    <h2>Schedule</h2>
+    <PageHeader title="排班" sub="Schedule" />
     <PunchIn />
-    {isManager ? <ManagerView /> : <Tabs defaultActiveKey="availability" more={{ icon: <EllipsisOutlined aria-label="More tabs" /> }} items={[
-      { key: 'availability', label: 'My availability', children: <AvailabilityCalendar /> },
-      { key: 'shifts', label: 'My shifts', children: <EmployeeView /> },
+    {isManager ? <ManagerView /> : <Tabs className="pc-schedule-tabs" defaultActiveKey="availability" more={{ icon: <EllipsisOutlined aria-label="More tabs" /> }} items={[
+      { key: 'availability', label: '可上时间 My availability', children: <AvailabilityCalendar /> },
+      { key: 'shifts', label: '我的班 My shifts', children: <EmployeeView /> },
     ]} />}
   </div>
 }

@@ -10,6 +10,11 @@ export function parseMoneyToCents(value: string): number | null {
   return Number(cents)
 }
 
+/** Typed input that is not a usable amount reads as null instead of throwing. */
+export function tryParseMoneyToCents(value: string): number | null {
+  try { return parseMoneyToCents(value) } catch { return null }
+}
+
 export function formatCents(value: number | null | undefined): string {
   if (value == null) return 'Unknown'
   if (!Number.isSafeInteger(value)) throw new RangeError('Cents must be a safe integer.')

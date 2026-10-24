@@ -1,4 +1,6 @@
 import { Alert, AutoComplete, Button, Drawer, Skeleton } from 'antd'
+import PageHeader from '../../components/pc/PageHeader'
+import InsightsTabs from '../Reports/InsightsTabs'
 import { useEffect, useRef, useState } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -39,6 +41,8 @@ function ReviewScope({storeCode,storeName}:{storeCode:string;storeName:string}) 
   },[storeCode,from,to,page,query,retry,rangeError])
   const update=(changes:Record<string,string>)=>{const next=new URLSearchParams(params);Object.entries(changes).forEach(([key,value])=>value?next.set(key,value):next.delete(key));setParams(next)}
   return <main className="pc-match-review">
+    <PageHeader title="报表" sub={`Insights · ${storeName} · 核对旧名称`} />
+    <InsightsTabs dates={new URLSearchParams({from,to}).toString()} />
     <header><Link to={`/reports?${new URLSearchParams({from,to})}`}>Insights &amp; reports</Link><h1>Review past sales names</h1><p>{storeName} · Match saved daily-report names to exact products.</p></header>
     <p className="pc-match-intro">Suggestions need your review. Corrections change the product linked to a whole saved row; original names, quantities and saved prices stay intact.</p>
     <form className="pc-match-filters" onSubmit={event=>{event.preventDefault();update({q:search.trim(),page:'1'})}}>

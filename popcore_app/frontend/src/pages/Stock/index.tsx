@@ -17,6 +17,10 @@ import RestockModal from './RestockModal'
 import BatchStockModal from './BatchStockModal'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Link, useNavigate } from 'react-router-dom'
+import PageHeader from '../../components/pc/PageHeader'
+import Icon from '../../components/pc/Icon'
+import InventoryNav, { useHasClaw } from './InventoryNav'
+import './seriesInventory.css'
 
 const { Search } = Input
 const { Text, Title } = Typography
@@ -127,6 +131,7 @@ export default function StockPage() {
   const navigate = useNavigate()
   const isMobile = useIsMobile()
   const { series, selectedStore } = useAppStore()
+  const hasClaw = useHasClaw()
   const sc = selectedStore?.code
   const isAll = sc === 'ALL'
   const [stock,    setStock]   = useState<StockRow[]>([])
@@ -382,10 +387,10 @@ export default function StockPage() {
   const byUnit = (side: 'back_qty' | 'floor_qty') => (summary?.unit_totals ?? [])
     .map(row => `${row[side]} ${row.unit}${row[side] === 1 ? '' : 's'}`).join(' · ') || 'Unavailable'
   const summaryCards = summary ? [
-    { label: 'Upstairs / Back Stock', value: summary.mode === 'authoritative' ? byUnit('back_qty') : summary.total_upstairs_qty },
-    { label: 'Floor Stock', value: summary.mode === 'authoritative' ? byUnit('floor_qty') : summary.total_instore_qty },
-    { label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
-    { label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count },
+    { zh: '楼上', kraft: true, label: 'Upstairs / Back Stock', value: summary.mode === 'authoritative' ? byUnit('back_qty') : summary.total_upstairs_qty },
+    { zh: '楼面', kraft: false, label: 'Floor Stock', value: summary.mode === 'authoritative' ? byUnit('floor_qty') : summary.total_instore_qty },
+    { zh: '库存价值', kraft: false, label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+    { zh: '需补货 / 缺货', kraft: false, label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count },
   ] : []
   const openingReady = locations.length > 0 && locations.every(location => location.opening_verified)
 
@@ -395,47 +400,27 @@ export default function StockPage() {
 
   return (
     <div>
-      <nav className="pc-inventory-tools" aria-label="Inventory tools">
+      <PageHeader
+        title="库存"
+        sub={`All products${selectedStore?.name ? ` · ${selectedStore.name}` : ''}`}
+        actions={<>
+          {!isAll && <RoleGuard minRole="staff"><InventoryNav hasClaw={hasClaw} phone={false} /></RoleGuard>}
+          <Button icon={<Icon name="refresh" size={18} />} aria-label="Refresh" onClick={loadStock}>刷新</Button>
+          {!isAll && <RoleGuard minRole="staff"><Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>调整数量 Adjust stock</Button></RoleGuard>}
+        </>}
+        phoneAction={undefined} />
+      {isMobile && !isAll && <RoleGuard minRole="staff"><InventoryNav hasClaw={hasClaw} phone /></RoleGuard>}
+      {isMobile && <div className="pc-stock-phone-tools">
+        <Button icon={<Icon name="refresh" size={18} />} aria-label="Refresh" onClick={loadStock} />
+        {!isAll && <RoleGuard minRole="staff"><Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>调整数量 Adjust stock</Button></RoleGuard>}
+      </div>}
+      <nav className="pc-inventory-tools pc-stock-links" aria-label="Inventory tools">
         <Link to="/stock">Series inventory</Link>
         <Link to="/products">Products</Link>
         <Link to="/restock">Restock</Link>
         <Link to="/trades">Trades</Link>
       </nav>
-      {/* Header */}
-      <div className="pc-page-actions" style={{ marginBottom: 20 }}>
-        <div>
-          <Title level={3} style={{ margin: 0 }}>Inventory</Title>
-          <Text type="secondary">Verified products, native units, and store locations</Text>
-        </div>
-        <Space>
-          {!isAll && (
-            <RoleGuard minRole="staff">
-              <Space wrap>
-                <Button onClick={() => navigate('/goods/receiving')}>Receive</Button>
-                <Button onClick={() => navigate('/goods/transfers')}>Transfer</Button>
-                <Button onClick={() => navigate('/goods/counts')}>Count</Button>
-              </Space>
-            </RoleGuard>
-          )}
-          <Button onClick={loadStock}>Refresh</Button>
-          {!isAll && (
-            <RoleGuard minRole="staff">
-              <Button type="primary" icon={<EditOutlined />} onClick={() => { setQuickProduct(null); setRestockOpen(true) }}>
-                Adjust Stock
-              </Button>
-            </RoleGuard>
-          )}
-        </Space>
-      </div>
-
-      {isAll && (
-        <div style={{
-          background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8,
-          padding: '10px 16px', marginBottom: 16, color: '#92400e', fontSize: 13,
-        }}>
-          Viewing all stores combined. Please select a specific store to make changes.
-        </div>
-      )}
+      {isAll && <p className="pc-notice">Viewing all stores combined. Please select a specific store to make changes.</p>}
 
       {summary?.mode && <Alert
         type={summary.mode === 'authoritative' && summary.complete && openingReady ? 'success' : 'warning'}
@@ -471,20 +456,13 @@ export default function StockPage() {
 
       {/* Summary cards */}
       {summary && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-          {summaryCards.map(c => (
-            <Col key={c.label} xs={12} sm={6}>
-              <Card style={{ borderRadius: 8, borderColor: '#DDE2EA' }} bodyStyle={{ padding: '16px 20px' }}>
-                <div style={{ fontSize: 12, color: '#596273', marginBottom: 4 }}>{c.label}</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{c.value}</div>
-              </Card>
-            </Col>
-          ))}
-        </Row>
+        <div className="pc-stock-strip">
+          {summaryCards.map(c => <div key={c.label} className={c.kraft ? 'pc-stock-strip-back' : undefined}><span>{c.zh} {c.label}</span><strong>{c.value}</strong></div>)}
+        </div>
       )}
 
       {/* Tabs */}
-      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+      <div className="pc-stock-tabs">
 
         {/* Mobile: pill-style tab switcher */}
         {isMobile ? (

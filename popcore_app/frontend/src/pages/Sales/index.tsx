@@ -6,7 +6,7 @@ import { productLabel } from '../../lib/productLabel'
 import { savedLineValue, savedPriceSummary } from './historicalSales'
 import {
   Table, Button, Space, Tag, Popconfirm, message,
-  Typography, Row, Col, InputNumber, Card,
+  Typography, InputNumber, Card,
   DatePicker, AutoComplete, Spin, Alert,
 } from 'antd'
 import {
@@ -15,11 +15,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { Dayjs } from 'dayjs'
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip as RechartTooltip, ResponsiveContainer,
-  BarChart as HBarChart,
-} from 'recharts'
+import { BarChart, Bar, Cell, XAxis, Tooltip as RechartTooltip, ResponsiveContainer } from 'recharts'
 import client from '../../api/client'
 import type { ReportMetadata } from '../../api/matcher'
 import { cashDifference, hasReportNotes, REPORT_NOTE_SECTIONS } from './dailyReportReview'
@@ -28,6 +24,10 @@ import { useAppStore } from '../../store'
 import DailyReportEntry from './DailyReportEntry'
 import AliasManager from './AliasManager'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import PageHeader from '../../components/pc/PageHeader'
+import Icon from '../../components/pc/Icon'
+import { SalesTabs, dayTitle } from './SalesNav'
+import './historicalReports.css'
 
 const { Text, Title } = Typography
 
@@ -280,15 +280,10 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
 
   // Weekly bar chart data (last 7 days from summary)
   const weeklyData = summary.slice(0, 7).reverse().map(r => ({
-    date: dayjs(r.date).format('ddd MM/DD'),
+    date: dayjs(r.date).format('D'), day: r.date,
     UnitsSold: r.total_sold,
   }))
 
-  // Top products for today
-  const topProducts = [...sales]
-    .sort((a, b) => b.qty_sold - a.qty_sold)
-    .slice(0, 6)
-    .map(r => ({ name: r.jizhanming || r.sku, POS: r.qty_pos, 'Non-POS': r.qty_cash }))
 
   const entryColumns: ColumnsType<SaleRow> = [
     {
@@ -360,39 +355,71 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
     },
   ]
 
-  const summaryColumns: ColumnsType<SummaryRow> = [
-    { title: 'Date', dataIndex: 'date', width: 110, render:value=><Link to={`/sales/day/${value}`}>{value}</Link> },
-    { title: 'Products', dataIndex: 'product_count', width: 90, align: 'center' },
-    { title: 'POS', dataIndex: 'total_pos', width: 80, align: 'center', render: v => <Tag color="blue">{v}</Tag> },
-    { title: 'Non-POS', dataIndex: 'total_cash', width: 80, align: 'center', render: v => <Tag color="cyan">{v}</Tag> },
-    { title: 'Total Sold', dataIndex: 'total_sold', width: 90, align: 'center', render: v => <Tag color="green">{v}</Tag> },
-  ]
 
 
   if (loadError && !lastSuccess) {
     return <Alert role="alert" type="error" showIcon message={loadError} action={<Button onClick={loadSales}>Retry</Button>} />
   }
 
-  return (
-    <div>
-      <div style={{marginBottom:16}}>
-        <Title level={3} style={{margin:0}}>Historical reports</Title>
-        <p style={{margin:'6px 0'}}>Review pasted daily summaries for {selectedStore?.name}. Saved report prices estimate product value; payment totals and refunds are in Insights &amp; reports.</p>
-        <Space wrap>
-          <Link to="/sales/matching">Review past names</Link>
-          <Link to="/reports">Insights &amp; reports</Link>
-          <Button disabled={busy} onClick={() => setAliasMode(value => !value)}>{aliasMode ? 'Hide name mappings' : 'Manage name mappings'}</Button>
-        </Space>
+  const daysPanel = <section className="pc-panel pc-hist-days" aria-label="Recorded dates">
+    <div className="pc-panel-head"><h2><span>记录日</span> <small>Recorded dates</small></h2><span className="pc-panel-count">{summary.length} days</span></div>
+    <ul>
+      {summary.map(row => <li key={row.date} className={row.date === dateStr ? 'pc-hist-day-current' : undefined}>
+        <button type="button" disabled={busy || editing || !!pendingAdd} aria-current={row.date === dateStr ? 'date' : undefined} onClick={() => setDate(dayjs(row.date))}>
+          <span><strong>{dayTitle(row.date)}</strong><small>{row.date}</small></span><b>{row.total_sold} 件</b>
+        </button>
+        <Link to={`/sales/day/${row.date}`} aria-label={`Open the ${row.date} report`}><Icon name="right" size={14} /></Link>
+      </li>)}
+      {!summary.length && <li className="pc-quiet">No recorded dates yet.</li>}
+    </ul>
+    <RoleGuard minRole="manager">
+      <div className="pc-hist-export">
+        {!isMobile && <DatePicker aria-label="Export from" value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} />}
+        {!isMobile && <Text type="secondary">to</Text>}
+        {!isMobile && <DatePicker aria-label="Export to" value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} />}
+        <Button style={mobileTap} icon={<ExportOutlined />} onClick={doExport}>Export</Button>
       </div>
+    </RoleGuard>
+  </section>
+  const chartPanel = <section className="pc-panel pc-hist-chart" aria-label="Latest 7 recorded dates">
+    <div className="pc-panel-head"><h2><span>最近 7 天</span> <small>Latest 7 recorded dates</small></h2></div>
+    <div className="pc-hist-chart-body">
+      <ResponsiveContainer width="100%" height={120}>
+        <BarChart aria-label="Bar chart of units sold on the latest 7 recorded dates" data={weeklyData} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+          <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9aa1ab' }} axisLine={false} tickLine={false} />
+          <RechartTooltip cursor={{ fill: '#f2f3f5' }} />
+          <Bar dataKey="UnitsSold" name="Units sold" maxBarSize={22} isAnimationActive={false}>
+            {weeklyData.map(row => <Cell key={row.day} fill={row.day === dateStr ? '#1f2328' : '#dfe2e7'} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  </section>
+  const headerActions = <>
+    <Link className="pc-btn" to="/sales/matching">核对旧名称 Review past names</Link>
+    <Button disabled={busy} aria-pressed={aliasMode} onClick={() => setAliasMode(value => !value)}>{aliasMode ? '收起名称对应 Hide name mappings' : '名称对应 Manage name mappings'}</Button>
+    {!isAll && <Button type="primary" disabled={busy || editing} onClick={() => setImportMode(true)}><Icon name="plus" size={16} />导入日报 Import report</Button>}
+  </>
+
+  return (
+    <div className="pc-hist">
+      <PageHeader title="销售" sub={isMobile ? 'Historical reports' : `Sales · ${selectedStore?.name ?? ''} · pasted daily reports`} actions={headerActions} />
+      <SalesTabs />
+      <p className="pc-hist-intro">Review pasted daily summaries for {selectedStore?.name}. Saved report prices estimate product value; payment totals and refunds are in 报表 Insights.</p>
+      {isMobile && <div className="pc-hist-phone-actions">{headerActions}</div>}
       {/* Alias Manager panel */}
       {aliasMode && (
-        <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px', marginBottom: 20 }}>
+        <div className="pc-panel pc-hist-aliases">
           <AliasManager onBusyChange={setAliasSaving} />
         </div>
       )}
 
       {mutationError && <Alert role="alert" type="error" showIcon message={mutationError} style={{marginBottom:16}} />}
-      {/* Header */}
+      {isAll && <p className="pc-notice">Viewing all stores combined. Select a store to add or edit sales.</p>}
+      <div className="pc-hist-grid">
+      <aside className="pc-hist-side">{chartPanel}{!isMobile && daysPanel}</aside>
+      <div className="pc-hist-main">
+      {/* Date and add-product toolbar */}
       {isMobile ? (
         /* Mobile: Day-navigator with ‹ prev / date / next › */
         <div style={{ marginBottom: 16 }}>
@@ -553,53 +580,14 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
         </div>
       )}
 
-      {isAll && (
-        <div style={{
-          background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8,
-          padding: '10px 16px', marginBottom: 16, color: '#92400e', fontSize: 13,
-        }}>
-          Viewing all stores combined. Select a store to add or edit sales.
-        </div>
-      )}
 
-      {!!estimate.unknownRows && <p>{estimate.unknownRows} {estimate.unknownRows === 1 ? 'product has' : 'products have'} no saved price. The estimate includes only products with a saved price.</p>}
-      {/* Stat cards — 3-col KPI strip on mobile, 4-col on desktop */}
-      <Row gutter={[isMobile ? 8 : 16, isMobile ? 8 : 16]} style={{ marginBottom: isMobile ? 16 : 20 }}>
-        {isMobile ? (
-          // 3-column KPI strip on mobile: Revenue, Units, POS
-          <>
-            {[
-              { label: 'Saved-price estimate', value: estimateValue, color: '#6366F1' },
-              { label: 'Units Sold', value: totalSold,                       color: '#10B981' },
-              { label: 'POS / Non-POS', value: `${totalPos} / ${totalCash}`,   color: '#f59e0b' },
-            ].map(c => (
-              <Col key={c.label} xs={8}>
-                <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '10px 12px' }}>
-                  <div style={{ fontSize: 10, color: '#9ca3af' }}>{c.label}</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: c.color, marginTop: 2 }}>{c.value}</div>
-                </Card>
-              </Col>
-            ))}
-          </>
-        ) : (
-          // 4-column on desktop
-          <>
-            {[
-              { label: 'Saved-price estimate', value: estimateValue, color: '#6366F1' },
-              { label: 'Units Sold',     value: totalSold,                       color: '#10B981' },
-              { label: 'POS Sales',      value: `${totalPos} units`,             color: '#6366F1' },
-              { label: 'Non-POS Sales',     value: `${totalCash} units`,            color: '#10B981' },
-            ].map(c => (
-              <Col key={c.label} xs={12} sm={6}>
-                <Card style={{ borderRadius: 10, borderTop: `3px solid ${c.color}` }} bodyStyle={{ padding: '14px 20px' }}>
-                  <div style={{ fontSize: 12, color: '#9ca3af' }}>{c.label}</div>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: c.color, marginTop: 4 }}>{c.value}</div>
-                </Card>
-              </Col>
-            ))}
-          </>
-        )}
-      </Row>
+      {!!estimate.unknownRows && <p className="pc-hist-unknown">{estimate.unknownRows} {estimate.unknownRows === 1 ? 'product has' : 'products have'} no saved price. The estimate includes only products with a saved price.</p>}
+      <div className="pc-figures pc-figures-4">
+        <div><span>件数 Units sold</span><strong>{totalSold}</strong><small>{sales.length} 款</small></div>
+        <div><span>POS 件数</span><strong>{totalPos}</strong><small>卡/现金</small></div>
+        <div><span>非 POS 件数 Non-POS</span><strong>{totalCash}</strong><small>电子支付</small></div>
+        <div><span>估值 <span>Saved-price estimate</span></span><strong>{estimateValue}</strong><small>按保存的价格估算</small></div>
+      </div>
 
       {!isAll && metadataScope === `${sc}:${dateStr}` && (
         metadataError ? (
@@ -630,36 +618,6 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
         )
       )}
 
-      {/* Charts */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        <Col xs={24} lg={12}>
-          <Card title="Latest 7 recorded dates" style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart aria-label="Bar chart of units sold on the latest 7 recorded dates" data={weeklyData} margin={{ top: 0, right: 10, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} />
-                <RechartTooltip />
-                <Bar dataKey="UnitsSold" fill="#6366F1" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card title={`Top Products — ${date.format('MMM D')}`} style={{ borderRadius: 10 }} bodyStyle={{ padding: '12px 16px 8px' }}>
-            <ResponsiveContainer width="100%" height={200}>
-              <HBarChart aria-label={`Bar chart of top products by POS and non-POS units sold on ${date.format('MMM D')}`} data={topProducts} layout="vertical" margin={{ top: 0, right: 10, left: 60, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 10 }} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={60} />
-                <RechartTooltip />
-                <Bar dataKey="POS"  fill="#6366F1" radius={[0, 4, 4, 0]} stackId="a" />
-                <Bar dataKey="Non-POS" fill="#10B981" radius={[0, 4, 4, 0]} stackId="a" />
-              </HBarChart>
-            </ResponsiveContainer>
-          </Card>
-        </Col>
-      </Row>
 
       {/* Daily Report Entry — shown after confirming no saved report, or on explicit re-import */}
       {loadError && (
@@ -675,7 +633,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
       )}
 
       {!isAll && !loadError && (importMode || (!loading && metadataLoaded && !hasSavedReport)) && (
-        <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', padding: '20px 20px', marginBottom: 20 }}>
+        <div className="pc-panel pc-hist-entry">
           {importMode && hasSavedReport && (
             <div style={{ marginBottom: 12 }}>
               <Button size="small" onClick={() => setImportMode(false)}>← Back to historical report</Button>
@@ -695,16 +653,12 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
         </div>
       )}
 
+
       {/* Sales table + log */}
       {(hasSavedReport || loading) && !importMode && (
-      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <div style={{ fontWeight: 600, color: '#111827' }}>
-            Report quantities for {date.format(isMobile ? 'MMM D, YYYY' : 'dddd, MMMM D, YYYY')}
-            <Text style={{ color: '#9ca3af', fontWeight: 400, fontSize: 13, marginLeft: 8 }}>
-              {sales.length} products
-            </Text>
-          </div>
+      <section className="pc-panel pc-hist-log" aria-label="Sales log">
+        <div className="pc-panel-head">
+          <h2><span>销售明细</span> <small>Report quantities for {date.format(isMobile ? 'MMM D, YYYY' : 'dddd, MMMM D, YYYY')} · {sales.length} products</small></h2>
           <Space size={8}>
             {!isAll && (
               <Button size="small" style={mobileTap} disabled={busy || editing} icon={<ImportOutlined />} onClick={() => setImportMode(true)}>
@@ -801,35 +755,12 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
             scroll={{ x: 800, y: 500 }}
           />
         )}
-      </div>
+      </section>
       )}
 
-      {/* Sales Log — always visible */}
-      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', marginTop: 16, overflow: 'hidden' }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <span style={{ fontWeight: 600, color: '#111827' }}>Sales Log</span>
-          <RoleGuard minRole="manager">
-            <Space wrap size={[8, 8]}>
-              {!isMobile && <DatePicker value={exportFrom} onChange={d => setExportFrom(d ?? dayjs().subtract(30,'day'))} allowClear={false} style={{ width: 130 }} />}
-              {!isMobile && <Text style={{ color: '#9ca3af' }}>to</Text>}
-              {!isMobile && <DatePicker value={exportTo} onChange={d => setExportTo(d ?? dayjs())} allowClear={false} style={{ width: 130 }} />}
-              <Button
-                size="small"
-                style={mobileTap}
-                icon={<ExportOutlined />}
-                onClick={doExport}
-              >Export</Button>
-            </Space>
-          </RoleGuard>
-        </div>
-        <Table
-          rowKey="date"
-          size="middle"
-          dataSource={summary}
-          columns={summaryColumns}
-          pagination={{ pageSize: 30, showTotal: t => `${t} days` }}
-          scroll={{ x: 'max-content' }}
-        />
+      {isMobile && daysPanel}
+      <p className="pc-hist-note">The estimate uses saved prices, not money collected. Payment totals and refunds are in Insights.</p>
+      </div>
       </div>
     </div>
   )

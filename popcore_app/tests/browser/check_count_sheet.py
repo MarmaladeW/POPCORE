@@ -12,7 +12,7 @@ from check_foundation import BASE, FRONTEND, HERE, context_with_api, wait_for_se
 OUT = Path(__file__).resolve().parents[3] / '.local' / 'count-sheet' / 'browser'
 SHEET = '/api/products/count-sheet'
 # Ant icons prefix their own label to a button's accessible name ("file-text Count sheet").
-COUNT_BUTTON = re.compile(r'^(file-text )?Count sheet$')
+COUNT_BUTTON = re.compile(r'^盘点表 Count sheet$')
 CSV = 'store_code,location,product_id,sku,name,count,notes\nDT,upstairs,1,DT-FOUNDATION,Foundation Item,,\n'
 ERRORS = {
     'inventory_access_denied': (403, 'Inventory access denied',
@@ -54,10 +54,9 @@ async def manager_flow(browser, viewport):
     try:
         await page.goto(BASE + '/products')
         await expect(page.get_by_text('DT Foundation Item', exact=True).first).to_be_visible()
-        if viewport['width'] == 390:
-            await page.get_by_role('button', name='Toggle product filters').click()
-        button = page.get_by_role('button', name=COUNT_BUTTON)
-        await expect(page.get_by_role('button', name=re.compile(r'^(export )?Export$'))).to_be_visible()
+        await page.get_by_role('button', name='工具 Tools').click()
+        button = page.get_by_role('menuitem', name=COUNT_BUTTON)
+        await expect(page.get_by_role('menuitem', name=re.compile(r'^导出目录 Export$'))).to_be_visible()
         await button.click()
         dialog = page.get_by_role('dialog', name='Download count sheet')
         await expect(dialog).to_be_visible()
@@ -76,6 +75,7 @@ async def manager_flow(browser, viewport):
         assert sheet['queries'][-1] == {'store_code': 'DT', 'location': 'floor', 'scope': 'legacy'}, sheet['queries']
         await expect(dialog).to_be_hidden()
 
+        await page.get_by_role('button', name='工具 Tools').click()
         await button.click()
         await choose(page, dialog, 'Count sheet location', 'MK · Warehouse')
         await expect(dialog.get_by_text('Legacy stock at MK', exact=True)).to_be_visible()
@@ -89,6 +89,7 @@ async def manager_flow(browser, viewport):
 
         for code, (_, error, hint) in ERRORS.items():
             sheet['error'] = code
+            await page.get_by_role('button', name='工具 Tools').click()
             await button.click()
             await dialog.get_by_role('button', name='Download count sheet').click()
             alert = dialog.get_by_role('alert')
@@ -102,6 +103,7 @@ async def manager_flow(browser, viewport):
             await expect(dialog).to_be_hidden()
         # Reopening clears the previous error.
         sheet.pop('error')
+        await page.get_by_role('button', name='工具 Tools').click()
         await button.click()
         await expect(dialog.get_by_role('alert')).to_have_count(0)
 
@@ -120,7 +122,7 @@ async def staff_flow(browser):
     try:
         await page.goto(BASE + '/products')
         await expect(page.get_by_text('DT Foundation Item', exact=True).first).to_be_visible()
-        await expect(page.get_by_role('button', name=COUNT_BUTTON)).to_have_count(0)
+        await expect(page.get_by_role('button', name='工具 Tools')).to_have_count(0)
         await expect(page.get_by_role('dialog', name='Download count sheet')).to_have_count(0)
     finally:
         await context.close()

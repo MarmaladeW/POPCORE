@@ -107,7 +107,7 @@ async def page_state_checks(browser):
     pages = (
         ('/stock/products', 'Unable to load stock data.', 'Foundation Item', 'No data'),
         ('/products', 'Unable to load products.', 'Foundation Item', 'No data'),
-        ('/sales', 'Unable to load sales data.', 'Foundation Item', 'Sales Log'),
+        ('/sales', 'Unable to load sales data.', 'Foundation Item', 'No recorded dates yet.'),
     )
     for path, error_text, marker, empty_text in pages:
         state = {'mode': 'error'}
@@ -213,7 +213,7 @@ async def schedule_checks(browser):
     state = {'mode': 'data', 'schedule_mutations': []}
     context, page = await context_with_api(browser, state)
     await page.goto(BASE + '/schedule')
-    await expect(page.get_by_role('heading', name='Schedule', exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading', name='排班', exact=True)).to_be_visible()
     await page.locator('.fc-event:not(.fc-bg-event)').first.click()
     await expect(page.get_by_role('button', name='Save', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Save', exact=True).click()
@@ -247,17 +247,17 @@ async def navigation_checks(browser):
             browser, {'mode': 'data'}, viewport=viewport, auth={'role': 'staff'},
         )
         await page.goto(BASE + '/goods/receiving')
-        receive_goods = page.get_by_role('link', name='Receive goods', exact=True)
         if viewport['width'] != 390:
-            await expect(receive_goods).to_have_attribute('aria-current', 'page')
+            await expect(page.get_by_role('link', name='入店 Receive goods', exact=True)).to_have_attribute('aria-current', 'page')
         if viewport['width'] == 390:
-            more = page.get_by_role('button', name='More', exact=True)
+            # 更多 is a page on phones (Figma Menus); it opens from the keyboard too.
+            more = page.get_by_role('link', name='更多 More', exact=True)
             await more.focus()
             await page.keyboard.press('Enter')
-            await expect(page.get_by_role('dialog', name='More')).to_be_visible()
-            await expect(receive_goods).to_have_attribute('aria-current', 'page')
-            await page.keyboard.press('Escape')
-            await expect(more).to_be_focused()
+            await expect(page).to_have_url(BASE + '/more')
+            await expect(more).to_have_attribute('aria-current', 'page')
+            await page.go_back()
+            await expect(page).to_have_url(BASE + '/goods/receiving')
         assert await page.evaluate('document.body.scrollWidth') <= viewport['width'] + 2
         await page.screenshot(path=evidence / f"operations-{viewport['width']}.png", full_page=True)
         await page.goto(BASE + '/schedule')

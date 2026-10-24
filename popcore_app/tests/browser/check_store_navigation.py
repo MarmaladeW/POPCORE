@@ -15,25 +15,27 @@ async def checks(browser):
         context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
         await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
         await page.goto(BASE + '/')
-        await expect(page.get_by_role('heading', name='Store overview / 门店概览')).to_be_visible()
+        await expect(page.get_by_role('heading', name='门店概览')).to_be_visible()
         await expect(page.get_by_role('link', name='Review sale #41', exact=True)).to_have_attribute('href', '/sales/documents/41')
         actions = page.get_by_role('navigation', name='Store actions')
-        for path in ('/checkout', '/incoming', '/claw', '/summary'):
+        for path in ('/checkout', '/incoming', '/stock', '/summary'):
             await expect(actions.locator(f'a[href="{path}"]')).to_be_visible()
-        await expect(page.get_by_text('My shifts / 我的班次', exact=True)).to_be_visible()
+        await expect(page.get_by_text('我的班次', exact=True)).to_be_visible()
         await page.screenshot(path=OUT / f'manager-home-{width}.png', full_page=True)
         await page.evaluate("window.__FOUNDATION_AUTH={role:'staff'};window.dispatchEvent(new Event('foundation-auth'))")
         await expect(page.get_by_role('heading', name='开始工作')).to_be_visible()
         await expect(page.get_by_role('link', name='Review sale #41', exact=True)).to_have_count(0)
         await expect(page.get_by_role('navigation', name='Store actions').get_by_role('link')).to_have_count(4)
-        await page.get_by_role('link', name='Store tasks', exact=True).click()
+        # 待处理 Store tasks: a row on phone, the panel heading on desktop; both open the Today list.
+        await page.get_by_role('link', name='待处理', exact=False).first.click()
         await expect(page).to_have_url(BASE + '/today')
         await page.goto(BASE + '/stock')
         tools = page.get_by_role('navigation', name='Inventory tools')
         for label, path in [('Restock', '/restock'), ('Trades', '/trades'), ('Products', '/products')]:
             await expect(tools.get_by_role('link', name=label, exact=True)).to_have_attribute('href', path)
         await page.goto(BASE + '/summary')
-        await expect(page.get_by_role('link', name='Cash count & closing', exact=False)).to_have_attribute('href', '/closing')
+        # 收工 opens from the summary's Closing panel.
+        await expect(page.get_by_role('region', name='Closing').get_by_role('link')).to_have_attribute('href', '/closing')
         await page.goto(BASE + '/checkout/history')
         nav = page.locator('.pc-bottom-nav' if width == 390 else '.pc-sidebar-menu')
         await expect(nav.locator('a[href="/checkout"]')).to_have_attribute('aria-current', 'page')
@@ -42,7 +44,7 @@ async def checks(browser):
     context, page = await context_with_api(browser, {'mode':'data', 'api_payload':api_for('viewer', {})}, auth={'role':'viewer'})
     await page.goto(BASE + '/')
     await expect(page.get_by_role('navigation', name='Store actions')).to_have_count(0)
-    await expect(page.get_by_role('link', name='Products', exact=True)).to_be_visible()
+    await expect(page.get_by_role('link', name='产品 Products', exact=True)).to_be_visible()
     await context.close()
 
 async def main():

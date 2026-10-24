@@ -1,0 +1,55 @@
+/* Daily summary (Figma Summary · Phone 1–3, Desktop · Daily summary). */
+.pc-sum-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 24px; align-items: start; }
+.pc-sum-main, .pc-sum-side { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.pc-sum-side { position: sticky; top: 16px; }
+.pc-sum-open { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border: 1px solid var(--line-hair); background: var(--surface-default); font-size: 12.5px; }
+.pc-sum-open strong { flex: 1; font-weight: 500; }
+.pc-sum-open a { color: var(--text-secondary); font-size: 12px; text-decoration: none; border-bottom: 1px solid var(--line-hair); }
+.pc-sum-table-wrap { overflow-x: auto; }
+.pc-sum-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pc-sum-table th, .pc-sum-table td { padding: 10px 16px; border-top: 1px solid var(--line-hair); text-align: left; vertical-align: middle; }
+.pc-sum-table thead th { border-top: 0; color: var(--text-tertiary); font-size: 11.5px; font-weight: 400; }
+.pc-sum-table td:last-child, .pc-sum-table thead th:last-child { text-align: right; white-space: nowrap; }
+.pc-sum-group th { background: var(--surface-soft); color: var(--text-primary); font-weight: 600; }
+.pc-sum-group small { margin-left: 6px; color: var(--text-secondary); font-size: 11.5px; font-weight: 400; }
+.pc-sum-muted { color: var(--text-tertiary); }
+.pc-sum-kind { display: inline-block; padding: 2px 10px; border: 1px solid var(--line-hair); color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
+.pc-sum-table a { color: inherit; }
+.pc-sum-copy textarea { display: block; width: 100%; padding: 14px 16px; border: 0; background: none; color: var(--text-primary); font: 12px/1.6 var(--font-ui); resize: vertical; white-space: pre; overflow: auto; }
+.pc-sum-copy textarea:focus { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-sum-copy .pc-panel-head .pc-btn { min-height: 32px; padding: 0 12px; font-size: 12.5px; }
+.pc-sum-copied { margin: 0; padding: 0 16px 12px; color: var(--status-ok-ink); font-size: 12px; }
+.pc-sum-closing .pc-quiet { padding-bottom: 4px; }
+.pc-sum-closing .pc-btn { display: flex; margin: 8px 16px 16px; min-height: 40px; }
+.pc-sum-note { margin: 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; }
+.pc-sum-scope { margin: 0 0 12px; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
+
+/* Phone: method and record groups as boxes, the copy button docked above the bottom bar. */
+.pc-sum-heading { display: flex; align-items: baseline; gap: 6px; margin: 20px 0 8px; color: var(--text-primary); font-size: 13.5px; font-weight: 600; }
+.pc-sum-heading small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-sum-methods { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.pc-sum-methods .pc-panel-head { padding: 12px 14px; }
+.pc-sum-methods .pc-panel-head h3 { margin: 0; color: var(--text-primary); font-size: 13px; font-weight: 600; }
+.pc-sum-methods .pc-panel-head > span { color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.pc-sum-order { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 4px; align-items: start; padding: 12px 14px; color: inherit; text-decoration: none; }
+.pc-sum-order + .pc-sum-order { border-top: 1px solid var(--line-hair); }
+.pc-sum-order time { color: var(--text-tertiary); font-size: 12px; line-height: 19.5px; }
+.pc-sum-order > span { display: grid; min-width: 0; }
+.pc-sum-order strong { overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 500; line-height: 19.5px; text-overflow: ellipsis; white-space: nowrap; }
+.pc-sum-order small { color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; }
+.pc-sum-order > b { color: var(--text-primary); font-size: 13px; font-weight: 600; line-height: 19.5px; white-space: nowrap; }
+.pc-sum-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.pc-sum-links > * { flex: 1; }
+.pc-sum-phone .pc-sum-closing { margin-bottom: 10px; }
+.pc-sum-phone .pc-sum-note { margin-bottom: 12px; }
+.pc-sum-dock { position: sticky; bottom: calc(61px + env(safe-area-inset-bottom)); z-index: 5; margin: 0 -14px; padding: 10px 14px; border-top: 1px solid var(--line-hair); background: var(--surface-ground); }
+.pc-sum-dock .pc-btn { width: 100%; min-height: 50px; font-size: 14.5px; font-weight: 600; }
+.pc-sum-dock .pc-sum-copied { padding: 0 0 8px; }
+
+@media (max-width: 1180px) {
+  .pc-sum-grid { grid-template-columns: minmax(0, 1fr); }
+  .pc-sum-side { position: static; }
+  .pc-figures-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pc-figures-6 > div:nth-child(4) { border-left: 0; }
+  .pc-figures-6 > div:nth-child(n + 4) { border-top: 1px solid var(--line-hair); }
+}

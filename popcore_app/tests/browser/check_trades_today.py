@@ -32,13 +32,13 @@ async def checks(browser):
         context,page=await context_with_api(browser,state,viewport={'width':390,'height':844},auth={'role':role})
         await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
         await page.goto(BASE+'/today');await expect(page.get_by_text('Today / 今日')).to_be_visible()
-        if role=='viewer': await expect(page.get_by_text('My shifts / 我的班次')).to_have_count(0)
+        if role=='viewer': await expect(page.get_by_text('我的班次',exact=True)).to_have_count(0)
         else:
-            shifts=page.get_by_text('My shifts / 我的班次');await expect(shifts).to_be_visible()
-            assert (await shifts.bounding_box())['y'] < (await page.get_by_text('My work',exact=False).bounding_box())['y']
+            shifts=page.get_by_text('我的班次',exact=True);await expect(shifts).to_be_visible()
+            assert (await shifts.bounding_box())['y'] < (await page.get_by_text('Store tasks',exact=False).first.bounding_box())['y']
             await expect(page.get_by_role('main').get_by_text('MK',exact=True)).to_be_visible()
             before=state['shift_reads'];await page.evaluate("window.dispatchEvent(new Event('focus'))");await page.wait_for_timeout(100);assert state['shift_reads']>before
-            await page.get_by_text('View Schedule',exact=True).click();await expect(page.get_by_text('Schedule',exact=True).first).to_be_visible();await page.goto(BASE+'/today')
+            await page.get_by_role('link',name='排班表',exact=True).click();await expect(page.get_by_text('Schedule',exact=True).first).to_be_visible();await page.goto(BASE+'/today')
         if role!='viewer':
             await expect(page.get_by_role('link',name='Resume sale #41',exact=True)).to_have_attribute('href','/sales/documents/41')
             await expect(page.get_by_text('Store 1',exact=True)).to_have_count(0)
@@ -90,7 +90,7 @@ async def checks(browser):
     assert state.get('today_reads',0)>=1
     await page.evaluate("window.__FOUNDATION_AUTH={role:'viewer'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_text('Catalog identity',exact=True)).to_be_visible();await page.wait_for_timeout(700)
-    await expect(page.get_by_text('Old manager work',exact=True)).to_have_count(0);await expect(page.get_by_text('My work',exact=True)).to_have_count(0);await context.close()
+    await expect(page.get_by_text('Old manager work',exact=True)).to_have_count(0);await expect(page.get_by_text('Store tasks',exact=True)).to_have_count(0);await context.close()
     state={'mode':'data'};state['api_payload']=api_for('staff',state)
     context,page=await context_with_api(browser,state,viewport={'width':768,'height':900},auth={'role':'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")

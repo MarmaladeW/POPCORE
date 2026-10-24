@@ -1,15 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  Button, Space, Tag, Popconfirm, Select,
+  Button, Space, Tag, Popconfirm, Select, Dropdown,
   message, Typography, Table, Badge, Spin, Modal, Tabs, Alert,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, ExportOutlined, DeleteOutlined,
-  EditOutlined, PictureOutlined, FilterOutlined,
-  SyncOutlined, ExclamationCircleOutlined, FileTextOutlined,
+  EditOutlined, PictureOutlined,
+  ExclamationCircleOutlined, DownOutlined,
 } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import RoleGuard from '../../components/RoleGuard'
@@ -21,6 +20,12 @@ import CountSheetModal from './CountSheetModal'
 import ProductSearchBar from './ProductSearchBar'
 import ProductDetailDrawer from './ProductDetailDrawer'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useHasRole } from '../../auth/useRole'
+import Icon from '../../components/pc/Icon'
+import PageHeader from '../../components/pc/PageHeader'
+import { ProductDetailPane, StockFigure } from './ProductDetail'
+import { ProductsTabs } from './ProductsNav'
+import './products.css'
 
 const { Title, Text }  = Typography
 
@@ -142,16 +147,21 @@ const TYPE_COLORS: Record<string, string> = {
   'Figure':    'blue',
 }
 
+// Stock as dot plus number: red 0, yellow low, green otherwise (Figma Products · Catalog).
 function stockBadge(total: number | null) {
-  if (total == null) return <Text type="secondary">Unknown</Text>
-  if (total === 0)  return <Badge count={total} showZero style={{ backgroundColor: '#ef4444' }} />
-  if (total <= 3)   return <Badge count={total} showZero style={{ backgroundColor: '#F59E0B' }} />
-  return <Badge count={total} showZero style={{ backgroundColor: '#10B981' }} />
+  return <StockFigure value={total} />
+}
+
+const UNIT_NAMES: Record<string, string> = { set: '端', box: '盒', piece: '个' }
+
+function Secrets({ product }: { product: { hidden_count?: string; hidden_has_small?: number; hidden_has_large?: number } }) {
+  if (!product.hidden_count || product.hidden_count === '0') return null
+  return <>{product.hidden_has_small ? <span className="pc-prod-secret">小隐藏</span> : null}{product.hidden_has_large ? <span className="pc-prod-secret">大隐藏</span> : null}</>
 }
 
 export default function ProductsPage() {
   const isMobile = useIsMobile()
-  const navigate = useNavigate()
+  const manager = useHasRole('manager')
   const { series, productTypes, selectedStore } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
   const [stockMap,  setStockMap]  = useState<Map<number, number> | null>(null)
@@ -175,7 +185,6 @@ export default function ProductsPage() {
   const [identityImportOpen, setIdentityImportOpen] = useState(false)
   const [countSheetOpen, setCountSheetOpen] = useState(false)
   const [detailId,       setDetailId]       = useState<number | null>(null)
-  const [filtersVisible, setFiltersVisible] = useState(false)
 
   const [syncLoading,        setSyncLoading]        = useState(false)
   const [syncModalOpen,      setSyncModalOpen]      = useState(false)
@@ -329,116 +338,62 @@ export default function ProductsPage() {
     }
   }
 
+  const label = (r: Product) => r.jizhanming || r.sku
   const columns: ColumnsType<Product> = [
     {
-      title: 'SKU',
-      dataIndex: 'sku',
-      width: 120,
-      sorter: (a, b) => a.sku.localeCompare(b.sku),
-      render: v => <Text style={{ fontFamily: 'monospace', fontSize: 12, color: '#6b7280' }}>{v}</Text>,
-    },
-    {
-      title: '记账名 (Jizhanming)',
+      title: '记账名 · SKU',
       dataIndex: 'jizhanming',
+      width: 230,
+      ellipsis: true,
       sorter: (a, b) => (a.jizhanming ?? '').localeCompare(b.jizhanming ?? ''),
-      render: (v, r) => (
-        <div>
-          <div style={{ fontWeight: 500, color: '#111827' }}>{v || '—'}</div>
-          {r.hidden_count && r.hidden_count !== '0' && (
-            <div style={{ marginTop: 2 }}>
-              {r.hidden_has_small ? <Tag color="gold" style={{ fontSize: 10, margin: '0 2px 0 0' }}>小隐藏</Tag> : null}
-              {r.hidden_has_large ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>大隐藏</Tag> : null}
-            </div>
-          )}
-        </div>
-      ),
+      render: (v, r) => <span className="pc-prod-name"><strong>{v || '—'}<Secrets product={r} /></strong><small>{r.sku}</small></span>,
     },
     {
-      title: 'Product Name',
+      title: '产品名',
       dataIndex: 'name_cn_en',
       ellipsis: true,
       sorter: (a, b) => (a.name_cn_en ?? '').localeCompare(b.name_cn_en ?? ''),
-      render: (v, r) => (
-        <button
-          onClick={e => { e.stopPropagation(); setDetailId(r.id) }}
-          style={{
-            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-            fontSize: 13, color: '#6366F1', textAlign: 'left',
-            textDecoration: 'none', fontFamily: 'inherit',
-          }}
-          onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
-          onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-        >
-          {v || '—'}
-        </button>
-      ),
+      render: (v, r) => <button type="button" className="pc-prod-link" onClick={e => { e.stopPropagation(); setDetailId(r.id) }}>{v || '—'}</button>,
     },
     {
-      title: 'Series',
+      title: '系列 · 类型',
       dataIndex: 'ip_series',
-      width: 120,
+      width: 170,
+      ellipsis: true,
       sorter: (a, b) => (a.ip_series ?? '').localeCompare(b.ip_series ?? ''),
-      render: v => v ? <Tag color="blue" style={{ fontSize: 11 }}>{v}</Tag> : '—',
+      render: (v, r) => <span className="pc-prod-muted">{[v, r.product_type].filter(Boolean).join(' · ') || '—'}</span>,
     },
     {
-      title: 'Type',
-      dataIndex: 'product_type',
-      width: 100,
-      render: v => v
-        ? <Tag color={TYPE_COLORS[v] ?? 'default'} style={{ fontSize: 11 }}>{v}</Tag>
-        : '—',
-    },
-    {
-      title: 'Inventory',
+      title: '库存身份',
       width: 120,
-      render: (_, r) => (
-        <div>
-          <Tag color={r.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 11 }}>
-            {r.identity_status === 'verified' ? 'Verified' : 'Unverified'}
-          </Tag>
-          {r.stock_unit && <div style={{ fontSize: 11, color: '#6b7280' }}>{r.stock_form?.replaceAll('_', ' ')} · {r.stock_unit}</div>}
-        </div>
-      ),
+      render: (_, r) => <span>
+        <span className={r.identity_status === 'verified' ? 'pc-prod-id' : 'pc-prod-id pc-prod-id-warn'}>{r.identity_status === 'verified' ? '已核对' : '未核对'}<span className="pc-sr"> {r.identity_status === 'verified' ? 'Verified' : 'Unverified'}</span></span>
+        <span className="pc-prod-unit" title={r.stock_form?.replaceAll('_', ' ')}>{r.stock_unit ? UNIT_NAMES[r.stock_unit] || r.stock_unit : '—'}</span>
+      </span>,
     },
     {
-      title: 'Price (CA$)',
+      title: '价格',
       dataIndex: 'price',
-      width: 110,
+      width: 90,
       align: 'right',
       sorter: (a, b) => (a.price ?? 0) - (b.price ?? 0),
-      render: v => v != null
-        ? <Text style={{ color: '#6366F1', fontWeight: 600 }}>${v.toFixed(2)}</Text>
-        : <Text type="secondary">—</Text>,
+      render: v => v != null ? `$${v.toFixed(2)}` : <span className="pc-prod-muted">—</span>,
     },
     {
-      title: 'Stock',
+      title: '库存',
       width: 80,
-      align: 'center',
+      align: 'right',
       render: (_, r) => stockBadge(stockMap ? stockMap.get(r.id) ?? 0 : null),
     },
     {
-      title: 'Actions',
-      width: 100,
-      align: 'center',
+      title: <span className="pc-sr">Actions</span>,
+      width: manager ? 110 : 48,
+      align: 'right',
       render: (_, r) => (
-        <Space size={4}>
-          <Button
-            type="text"
-            size="small"
-            aria-label={`View images for ${r.jizhanming || r.sku}`}
-            icon={<PictureOutlined />}
-            onClick={() => setImagesProduct(r)}
-            style={{ color: '#6b7280' }}
-          />
+        <span className="pc-prod-actions">
+          <Button type="text" size="small" aria-label={`View images for ${label(r)}`} icon={<PictureOutlined />} onClick={e => { e.stopPropagation(); setImagesProduct(r) }} />
           <RoleGuard minRole="manager">
-            <Button
-              type="text"
-              size="small"
-              aria-label={`Edit ${r.jizhanming || r.sku}`}
-              icon={<EditOutlined />}
-              onClick={() => openEdit(r)}
-              style={{ color: '#6366F1' }}
-            />
+            <Button type="text" size="small" aria-label={`Edit ${label(r)}`} icon={<EditOutlined />} onClick={e => { e.stopPropagation(); openEdit(r) }} />
           </RoleGuard>
           <RoleGuard minRole="manager">
             <Popconfirm
@@ -453,63 +408,60 @@ export default function ProductsPage() {
                 }
               }}
             >
-              <Button type="text" size="small" aria-label={`Delete ${r.jizhanming || r.sku}`} icon={<DeleteOutlined />} danger />
+              <Button type="text" size="small" aria-label={`Delete ${label(r)}`} icon={<DeleteOutlined />} danger onClick={e => e.stopPropagation()} />
             </Popconfirm>
           </RoleGuard>
-        </Space>
+        </span>
       ),
     },
   ]
 
-  return (
-    <div>
-      {/* Header */}
-      <div className="pc-page-actions" style={{ marginBottom: 16 }}>
-        <div>
-          <Title level={isMobile ? 4 : 3} style={{ margin: 0 }}>Products</Title>
-          <Text style={{ color: '#6b7280', fontSize: 13 }}>{products.length} products</Text>
-        </div>
-        <Space size={8} wrap>
-          <Button onClick={load}>Refresh</Button>
-          {/* Filter toggle on mobile */}
-          {isMobile && (
-            <Button
-              aria-label="Toggle product filters"
-              icon={<FilterOutlined />}
-              onClick={() => setFiltersVisible(v => !v)}
-              type={filtersVisible ? 'primary' : 'default'}
-              style={{ minWidth: 40 }}
-            />
-          )}
-          <RoleGuard minRole="manager">
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-              <Button aria-label="Sync from Google Sheet" icon={<SyncOutlined />} onClick={handleSyncSheet} loading={syncLoading} style={{ minHeight: 44 }}>
-                Sync from Google Sheet
-              </Button>
-              {lastSync.last_sync_at && (
-                <Text style={{ color: '#9ca3af', fontSize: 11 }}>
-                  上次同步 / Last synced: {lastSync.last_sync_at}
-                  {lastSync.last_sync_count != null && ` (${lastSync.last_sync_count} 条更新 / updated)`}
-                </Text>
-              )}
-            </div>
-          </RoleGuard>
-          <RoleGuard minRole="manager">
-            <Button style={{ minHeight: 44 }} onClick={() => navigate('/products/clover-matching')}>Clover matching</Button>
-          </RoleGuard>
-          <RoleGuard minRole="manager">
-            <Button type="primary" aria-label="Add Product" icon={<PlusOutlined />} onClick={openNew}>
-              {isMobile ? '' : 'Add Product'}
-            </Button>
-          </RoleGuard>
-        </Space>
+  // 工具 Tools: catalog import/export, identity sheet export/import and the count sheet (managers).
+  const tools = {
+    items: [
+      { key: 'import', label: '导入目录 Import' },
+      { key: 'export', label: exporting ? '导出中… Exporting' : '导出目录 Export', disabled: exporting },
+      { type: 'divider' as const },
+      { key: 'identity-export', label: '导出身份表 Export identity sheet' },
+      { key: 'identity-import', label: '导入身份表 Import identity sheet' },
+      { type: 'divider' as const },
+      { key: 'count', label: '盘点表 Count sheet' },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (key === 'import') setPasteOpen(true)
+      else if (key === 'export') handleExport()
+      else if (key === 'identity-export') setIdentityExportOpen(true)
+      else if (key === 'identity-import') setIdentityImportOpen(true)
+      else if (key === 'count') setCountSheetOpen(true)
+    },
+  }
+  const headerActions = <>
+    <Button aria-label="Refresh" onClick={load}><Icon name="refresh" size={16} />刷新</Button>
+    <RoleGuard minRole="manager">
+      <div className="pc-prod-sync">
+        <Button aria-label="Sync from Google Sheet" onClick={handleSyncSheet} loading={syncLoading}>{!syncLoading && <Icon name="refresh" size={16} />}同步表格 Sync sheet</Button>
+        {lastSync.last_sync_at && <small>上次 {lastSync.last_sync_at}{lastSync.last_sync_count != null && ` · ${lastSync.last_sync_count} 条更新`}</small>}
       </div>
+    </RoleGuard>
+    <RoleGuard minRole="manager">
+      <Dropdown menu={tools} trigger={['click']}><Button>工具 Tools <DownOutlined /></Button></Dropdown>
+    </RoleGuard>
+    <RoleGuard minRole="manager">
+      <Button type="primary" aria-label="Add Product" onClick={openNew}><Icon name="plus" size={16} />新增产品 Add product</Button>
+    </RoleGuard>
+  </>
+  const showPane = !isMobile && detailId != null
+
+  return (
+    <div className="pc-prod">
+      <PageHeader title="产品" sub={`Products · ${products.length} 个产品`} actions={headerActions} />
+      <ProductsTabs />
+      {isMobile && manager && <div className="pc-prod-toolbar pc-prod-phone-actions">{headerActions}</div>}
 
       {stockError && <Alert role="alert" type="warning" showIcon
         message="Stock unavailable. Catalog tools are still available; stock quantities are unknown."
         style={{ marginBottom: 16 }} />}
 
-      {/* Filters — always visible on desktop, toggle on mobile */}
       {loadError && (
         <Alert
           role="alert"
@@ -522,101 +474,82 @@ export default function ProductsPage() {
         />
       )}
 
-      {(!isMobile || filtersVisible) && (
-        <div style={{
-          background: '#fff',
-          borderRadius: 10,
-          padding: isMobile ? '12px 16px' : '16px 20px',
-          marginBottom: 16,
-          boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-        }}>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: isMobile ? 0 : 12 }}>
-            <ProductSearchBar
-              series={series}
-              productTypes={productTypes}
-              onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
-            />
-            <RoleGuard minRole="manager">
-              <Space size={6} style={{ marginLeft: isMobile ? 0 : 'auto', flexWrap: 'wrap' }}>
-                <Button onClick={() => setPasteOpen(true)}>Import</Button>
-                <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>Export</Button>
-                <Button onClick={() => setIdentityExportOpen(true)}>Export identity sheet</Button>
-                <Button onClick={() => setIdentityImportOpen(true)}>Import identity sheet</Button>
-                <Button icon={<FileTextOutlined />} onClick={() => setCountSheetOpen(true)}>Count sheet</Button>
-                {selected.length > 0 && (
-                  <Popconfirm
-                    title={`Delete ${selected.length} products? This cannot be undone.`}
-                    onConfirm={handleBulkDelete}
-                    okButtonProps={{ danger: true }}
-                  >
-                    <Button danger icon={<DeleteOutlined />}>
-                      Delete ({selected.length})
-                    </Button>
-                  </Popconfirm>
-                )}
-              </Space>
-            </RoleGuard>
-          </div>
-        </div>
-      )}
+      <div className="pc-prod-toolbar">
+        <ProductSearchBar
+          series={series}
+          productTypes={productTypes}
+          onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
+        />
+        {!isMobile && <span className="pc-prod-hint">库存 = 本店合计 · 点一行看详情</span>}
+      </div>
 
-      {/* Table / Card list */}
-      <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-        {isMobile ? (
-          <Spin spinning={loading}>
-            {!loading && !loadError && products.length === 0 && (
-              <div style={{ textAlign: 'center', color: '#9ca3af', padding: '24px 16px', fontSize: 13 }}>No products found</div>
-            )}
-            {products.map(p => (
-              <div key={p.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }} onClick={() => setDetailId(p.id)}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14, color: '#20242D', overflowWrap: 'anywhere' }}>{p.jizhanming || p.name_cn_en || 'Unnamed product'}</div>
-                    {p.name_cn_en && p.jizhanming && (
-                      <div style={{ fontSize: 12, color: '#596273', marginTop: 2, overflowWrap: 'anywhere' }}>{p.name_cn_en}</div>
-                    )}
-                    <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 1 }}>{p.sku}</div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                    {stockBadge(stockMap ? stockMap.get(p.id) ?? 0 : null)}
-                    <Button type="text" size="small" aria-label={`View images for ${p.jizhanming || p.sku}`} icon={<PictureOutlined />} onClick={() => setImagesProduct(p)} style={{ color: '#6b7280', minWidth: 44, minHeight: 44 }} />
-                    <RoleGuard minRole="manager"><Button type="text" size="small" aria-label={`Edit ${p.jizhanming || p.sku}`} icon={<EditOutlined />} onClick={() => openEdit(p)} style={{ color: '#6366F1', minWidth: 44, minHeight: 44 }} /></RoleGuard>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {p.ip_series && <Tag color="blue" style={{ fontSize: 10 }}>{p.ip_series}</Tag>}
-                  {p.product_type && <Tag color={TYPE_COLORS[p.product_type] ?? 'default'} style={{ fontSize: 10 }}>{p.product_type}</Tag>}
-                  <Tag color={p.identity_status === 'verified' ? 'green' : 'orange'} style={{ fontSize: 10 }}>
-                    {p.identity_status === 'verified' ? `Verified · ${p.stock_unit}` : 'Unverified identity'}
-                  </Tag>
-                  {p.price != null && <Text style={{ fontSize: 12, color: '#6366F1', fontWeight: 600 }}>${p.price.toFixed(2)}</Text>}
-                </div>
-              </div>
-            ))}
-          </Spin>
-        ) : (
-          <Table
-            rowKey="id"
-            loading={loading}
-            dataSource={products}
-            columns={columns}
-            size="middle"
-            rowSelection={{
-              selectedRowKeys: selected,
-              onChange: keys => setSelected(keys as number[]),
-            }}
-            pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
-            scroll={{ x: 900 }}
-            onRow={(r) => ({
-              onClick: (e) => {
-                const target = e.target as HTMLElement
-                if (target.closest('button') || target.closest('.ant-checkbox')) return
-                setDetailId(r.id)
-              },
-              style: { cursor: 'pointer' },
-            })}
-          />
-        )}
+      <div className={showPane ? 'pc-prod-grid pc-prod-grid-detail' : 'pc-prod-grid'}>
+        <div className="pc-prod-list">
+          {manager && selected.length > 0 && (
+            <div className="pc-prod-selection">
+              <span>已选 {selected.length} 个产品 · {selected.length} selected</span>
+              <Button onClick={() => setSelected([])}>取消选择</Button>
+              <Popconfirm
+                title={`Delete ${selected.length} products? This cannot be undone.`}
+                onConfirm={handleBulkDelete}
+                okButtonProps={{ danger: true }}
+              >
+                <Button>删除 {selected.length} 个 Delete ({selected.length})</Button>
+              </Popconfirm>
+            </div>
+          )}
+          {isMobile ? (
+            <Spin spinning={loading}>
+              {!loading && !loadError && products.length === 0 && <p className="pc-quiet">No products found</p>}
+              <ul className="pc-prod-rows">
+                {products.map(p => (
+                  <li key={p.id}>
+                    <button type="button" className="pc-prod-open" onClick={() => setDetailId(p.id)}>
+                      <span className="pc-prod-name">
+                        <strong>{p.jizhanming || p.name_cn_en || 'Unnamed product'}<Secrets product={p} /></strong>
+                        {p.name_cn_en && p.jizhanming && <small>{p.name_cn_en}</small>}
+                        <small>{p.sku}</small>
+                      </span>
+                      {stockBadge(stockMap ? stockMap.get(p.id) ?? 0 : null)}
+                      <span className="pc-prod-price">{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </Spin>
+          ) : (
+            <Table
+              rowKey="id"
+              loading={loading}
+              dataSource={products}
+              columns={columns}
+              size="middle"
+              rowSelection={manager ? {
+                selectedRowKeys: selected,
+                onChange: keys => setSelected(keys as number[]),
+              } : undefined}
+              rowClassName={r => r.id === detailId ? 'pc-prod-row-active' : ''}
+              pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
+              scroll={{ x: 820 }}
+              onRow={(r) => ({
+                onClick: (e) => {
+                  const target = e.target as HTMLElement
+                  if (target.closest('button') || target.closest('.ant-checkbox')) return
+                  setDetailId(r.id)
+                },
+                style: { cursor: 'pointer' },
+              })}
+            />
+          )}
+        </div>
+        {showPane && <ProductDetailPane
+          key={detailId}
+          productId={detailId!}
+          stockTotal={stockMap ? stockMap.get(detailId!) ?? 0 : null}
+          onClose={() => setDetailId(null)}
+          onEdit={(p) => openEdit(p as unknown as Product)}
+          onImages={(p) => setImagesProduct(p as unknown as Product)}
+        />}
       </div>
 
       <ProductModal
@@ -649,7 +582,7 @@ export default function ProductsPage() {
         />
       </RoleGuard>
       <ProductDetailDrawer
-        productId={detailId}
+        productId={isMobile ? detailId : null}
         stockTotal={stockMap ? stockMap.get(detailId ?? 0) ?? 0 : null}
         onClose={() => setDetailId(null)}
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}

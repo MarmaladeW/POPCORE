@@ -1,4 +1,6 @@
-import { Alert, Button, Spin, Tabs, Typography } from 'antd'
+import { Alert, Spin, Tabs } from 'antd'
+import PageHeader from '../../components/pc/PageHeader'
+import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import client from '../../api/client'
@@ -7,13 +9,15 @@ import type { GoodsProduct, InventoryLocation } from '../../api/goods'
 import Receiving from './Receiving'
 import Transfers from './Transfers'
 import Counts from './Counts'
+import './goods.css'
 
-const { Title, Text } = Typography
-
-export default function GoodsPage({ initialTab }: {
+// embedded: only the tab's content, for the 晚盘 page's 其他盘点 tab.
+export default function GoodsPage({ initialTab, embedded = false }: {
   initialTab: 'receiving' | 'transfers' | 'counts'
+  embedded?: boolean
 }) {
   const navigate = useNavigate()
+  const phone = useIsPhone()
   const [params] = useSearchParams()
   const selectedStore = useAppStore(state => state.selectedStore)
   const [products, setProducts] = useState<GoodsProduct[]>([])
@@ -56,22 +60,26 @@ export default function GoodsPage({ initialTab }: {
   if (error) return <Alert type="error" showIcon message={error} />
 
   const localLocations = locations.filter(item => item.store_id === selectedStore.id)
+  const counts = initialTab === 'counts'
+  if (embedded) return <Counts products={products} locations={resumed ? locations : localLocations} />
   return (
-    <div>
-      <Button onClick={() => navigate('/stock')} style={{ marginBottom: 12 }}>Back to stock</Button>
-      <Title level={3} style={{ margin: 0 }}>Goods handling</Title>
-      <Text type="secondary">{selectedStore.name}</Text>
+    <div className="pc-goods">
+      <PageHeader
+        title={phone ? { receiving: '收货', transfers: '调入', counts: '盘点' }[initialTab] : counts ? '盘点' : '入店'}
+        sub={phone ? undefined : `${counts ? 'Counts' : 'Receive goods'} · ${selectedStore.name}`}
+        back={phone ? (counts ? { label: '库存', to: '/stock' } : { label: '入店', to: '/incoming' }) : undefined} />
       <Tabs
+        className="pc-goods-tabs"
         activeKey={initialTab}
         onChange={key => navigate(`/goods/${key}`)}
         items={[
-          { key: 'receiving', label: 'Receiving', children: (
+          { key: 'receiving', label: <>收货 <span>Receiving</span></>, children: (
             <Receiving products={products} locations={resumed ? locations : localLocations} storeId={selectedStore.id} />
           ) },
-          { key: 'transfers', label: 'Transfers', children: (
+          { key: 'transfers', label: <>调拨 <span>Transfers</span></>, children: (
             <Transfers products={products} locations={locations} />
           ) },
-          { key: 'counts', label: 'Counts', children: (
+          { key: 'counts', label: <>盘点 <span>Counts</span></>, children: (
             <Counts products={products} locations={resumed ? locations : localLocations} />
           ) },
         ]}

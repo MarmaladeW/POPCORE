@@ -7,6 +7,7 @@ import ProtectedRoute from './auth/ProtectedRoute'
 import { useHasRole, type Role } from './auth/useRole'
 import AppLayout from './components/AppLayout'
 import ErrorBoundary from './components/ErrorBoundary'
+import MoreMenu from './components/MoreMenu'
 import { resetAuthWarnings, setTokenGetter } from './api/client'
 import { useAppStore, ALL_STORES } from './store'
 import type { Store } from './store'
@@ -24,10 +25,13 @@ const EventEntry=lazy(()=>import('./pages/Home/EventEntry'))
 const StoreSummary=lazy(()=>import('./pages/Home/StoreSummary'))
 const ProductsPage=lazy(()=>import('./pages/Products'))
 const CloverMatchingPage=lazy(()=>import('./pages/Products/CloverMatching'))
+const SeriesCatalogPage=lazy(()=>import('./pages/Products/SeriesCatalog'))
 const StockPage=lazy(()=>import('./pages/Stock'))
 const SeriesInventory=lazy(()=>import('./pages/Stock/SeriesInventory'))
 const GoodsPage=lazy(()=>import('./pages/Stock/Goods'))
 const RestockPage=lazy(()=>import('./pages/Restock'))
+const CountHub=lazy(()=>import('./pages/Stock/CountHub'))
+const ClawPage=lazy(()=>import('./pages/Stock/ClawPage'))
 const HistoricalMatchReview=lazy(()=>import('./pages/Sales/HistoricalMatchReview'))
 const SalesPage=lazy(()=>import('./pages/Sales'))
 const DayDetailPage=lazy(()=>import('./pages/Sales/DayDetail'))
@@ -129,7 +133,7 @@ function AppInner() {
         />
       </AppLayout>
     )
-    return <ConfigProvider theme={operationsTheme}>{errorApp}</ConfigProvider>
+    return <ConfigProvider theme={operationsTheme} button={{ autoInsertSpace: false }}>{errorApp}</ConfigProvider>
   }
 
   const routedApp = (
@@ -139,13 +143,17 @@ function AppInner() {
           <Route path="/"               element={<RoleRoute minRole="viewer"  element={<HomePage />} />} />
           <Route path="/today" element={<RoleRoute minRole="viewer" element={<DashboardPage />} />} />
           <Route path="/checkout" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
+          <Route path="/checkout/cash-exchange" element={<RoleRoute minRole="staff" element={<EventEntry exchange />} />} />
           <Route path="/checkout/:id" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
           <Route path="/special-orders" element={<RoleRoute minRole="staff" element={<SpecialOrdersPage />} />} />
           <Route path="/incoming" element={<RoleRoute minRole="staff" element={<IncomingPage />} />} />
           <Route path="/incoming/display" element={<RoleRoute minRole="staff" element={<EventEntry display />} />} />
-          <Route path="/claw" element={<RoleRoute minRole="staff" element={<EventEntry />} />} />
+          <Route path="/claw" element={<RoleRoute minRole="staff" element={<ClawPage />} />} />
+          <Route path="/stock/claw" element={<RoleRoute minRole="staff" element={<ClawPage />} />} />
+          <Route path="/stock/count" element={<RoleRoute minRole="staff" element={<CountHub />} />} />
           <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
+          <Route path="/products/series" element={<SeriesCatalogPage />} />
           <Route path="/products/clover-matching" element={<RoleRoute minRole="manager" element={<CloverMatchingPage />} />} />
           <Route path="/stock"          element={<RoleRoute minRole="staff"   element={<SeriesInventory />} />} />
           <Route path="/stock/products" element={<RoleRoute minRole="staff" element={<StockPage />} />} />
@@ -166,52 +174,18 @@ function AppInner() {
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
           <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />
           <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
+          <Route path="/more"           element={<MoreMenu />} />
           <Route path="*"               element={<NotFound />} />
         </Routes></Suspense>
       </ErrorBoundary>
     </AppLayout>
   )
-  return <ConfigProvider theme={operationsTheme}>{routedApp}</ConfigProvider>
+  return <ConfigProvider theme={operationsTheme} button={{ autoInsertSpace: false }}>{routedApp}</ConfigProvider>
 }
 
 export default function App() {
   return (
-    <ConfigProvider
-      theme={{
-        token: {
-          colorPrimary:     '#6366F1',
-          colorSuccess:     '#10B981',
-          colorWarning:     '#F59E0B',
-          colorError:       '#EF4444',
-          colorInfo:        '#6366F1',
-          borderRadius:     8,
-          fontFamily:       '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          colorBgContainer: '#ffffff',
-          colorBgLayout:    '#f0f2f5',
-          /* Nav bar is z-1000; all antd popups must sit above it */
-          zIndexPopupBase:  1010,
-        },
-        components: {
-          Menu: {
-            darkItemBg:            '#0D1B2A',
-            darkSubMenuItemBg:     '#0D1B2A',
-            darkItemHoverBg:       'rgba(99,102,241,0.15)',
-            darkItemSelectedBg:    'rgba(99,102,241,0.2)',
-            darkItemSelectedColor: '#818cf8',
-            itemBorderRadius:      8,
-          },
-          Table: {
-            headerBg:    '#f9fafb',
-            headerColor: '#374151',
-            rowHoverBg:  '#f5f3ff',
-            borderColor: '#e5e7eb',
-          },
-          Card:   { paddingLG: 16 },
-          Button: { borderRadius: 8 },
-          Tag:    { borderRadius: 6 },
-        },
-      }}
-    >
+    <ConfigProvider theme={operationsTheme} button={{ autoInsertSpace: false }}>
       <ProtectedRoute>
         <AppInner />
       </ProtectedRoute>

@@ -40,7 +40,8 @@ def get_today(con, *, actor, store_code=None, business_date=None):
     sections = {}
     catalog = [_row(r, 'catalog_identity', '/products') for r in con.execute(
         "SELECT id,'unresolved' status,NULL store_id,COALESCE(name_cn_en,jizhanming,sku) label,NULL version,NULL updated_at FROM products WHERE identity_status!='verified' ORDER BY id LIMIT 51")]
-    if role in {'viewer', 'admin'}:
+    # Catalog and out-of-stock notices: viewers, and managers/admins who see everything. Staff see their work only.
+    if role in {'viewer', 'manager', 'admin'}:
         sections['catalog'] = _section(catalog)
     mine, operations = [], []
     if ids:
@@ -75,7 +76,7 @@ def get_today(con, *, actor, store_code=None, business_date=None):
             f"""SELECT e.payment_id,s.store_id,s.version sale_version,e.created_at FROM payment_evidence e
                 JOIN sale_payments p ON p.id=e.payment_id JOIN sale_documents s ON s.id=p.sale_id
                 WHERE s.store_id IN ({marks}) AND e.uploader_sub=? AND e.status='pending' ORDER BY e.created_at,e.id""", (*ids,subject)))
-        if role == 'viewer':
+        if role in {'viewer', 'manager', 'admin'}:
             notices = [{'source_id':r['product_id'],'type':'inventory_notice','link':'/products','store_id':r['store_id'],'status':'out_of_stock','version':r['version'],'updated_at':None} for r in con.execute(
                 f"""SELECT b.product_id,l.store_id,b.version FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
                     WHERE l.store_id IN ({marks}) AND b.disposition='saleable' AND b.quantity=0 ORDER BY l.store_id,b.product_id""", ids)]

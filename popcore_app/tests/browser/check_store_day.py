@@ -416,8 +416,8 @@ async def closing_resume_checks(browser):
     await expect(page.get_by_text('Saved unknown payment references', exact=True)).to_be_visible()
     await expect(page.get_by_text('Payment #77', exact=True)).to_be_visible()
     await expect(page.get_by_text('Late refund', exact=True)).to_be_visible()
-    await expect(page.get_by_role('button', name='Save cash count', exact=True)).to_have_count(0)
-    await expect(page.get_by_role('button', name='Close store day', exact=True)).to_have_count(0)
+    await expect(page.get_by_role('button', name='Save cash count', exact=False)).to_have_count(0)
+    await expect(page.get_by_role('button', name='Close store day', exact=False)).to_have_count(0)
     await context.close()
 
     def mismatch_payload(path, query, request):
@@ -474,7 +474,7 @@ async def closing_resume_checks(browser):
     await page.goto(BASE + '/closing?closing_id=91')
     await expect(page.get_by_text('Store day closed', exact=True)).to_be_visible()
     await expect(page.get_by_text('Immutable closing snapshot', exact=True)).to_have_count(0)
-    await expect(page.get_by_role('button', name='Save cash count', exact=True)).to_have_count(0)
+    await expect(page.get_by_role('button', name='Save cash count', exact=False)).to_have_count(0)
     await context.close()
 
     def conflict_payload(path, query, request):

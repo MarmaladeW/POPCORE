@@ -50,7 +50,7 @@ async def checks(browser, width):
     context, page = await context_with_api(browser,state,viewport={'width':width,'height':900},auth={'role':'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE+'/stock?series_id=7')
-    await page.get_by_role('button',name='Count series',exact=True).click(timeout=5000)
+    await page.get_by_role('button',name='按系列晚盘 Count series',exact=True).click(timeout=5000)
     drawer = page.get_by_role('dialog',name='Count series',exact=True)
     await expect(drawer.get_by_role('spinbutton')).to_have_count(12)
     await expect(drawer.get_by_label('Count Moon',exact=True)).to_have_value('')
@@ -86,7 +86,7 @@ async def checks(browser, width):
         {'product_id':14,'unit':'piece','observed_quantity':2}]
 
     await page.goto(BASE+'/stock?series_id=7')
-    await page.get_by_role('button',name='Receive series',exact=True).click()
+    await page.get_by_role('button',name='整系列入库 Receive series',exact=True).click()
     drawer = page.get_by_role('dialog',name='Receive series',exact=True)
     await drawer.get_by_label('Location',exact=True).select_option('1')
     await drawer.get_by_label('Receive Sun',exact=True).fill('0')
@@ -104,12 +104,12 @@ async def checks(browser, width):
     assert not [r for r in state['requests'] if r['method']=='POST' and (r['path'].endswith('/post') or r['path'].endswith('/submit'))]
 
     await page.goto(BASE+'/stock?series_id=7')
-    await page.get_by_role('button',name='Count series',exact=True).click()
+    await page.get_by_role('button',name='按系列晚盘 Count series',exact=True).click()
     await page.get_by_role('dialog').get_by_label('Location',exact=True).select_option('1')
     await page.get_by_role('dialog').get_by_label('Count Moon',exact=True).fill('9')
     await page.evaluate("() => {window.__FOUNDATION_AUTH={role:'manager'};window.dispatchEvent(new Event('foundation-auth'))}")
     await expect(page.get_by_role('dialog')).not_to_be_visible()
-    await page.get_by_role('button',name='Count series',exact=True).click()
+    await page.get_by_role('button',name='按系列晚盘 Count series',exact=True).click()
     await expect(page.get_by_role('dialog').get_by_label('Count Moon',exact=True)).to_have_value('')
     await page.keyboard.press('Escape')
     await expect(page.get_by_role('dialog')).not_to_be_visible()
@@ -153,7 +153,7 @@ async def real_flask_checks(browser):
     try:
         before = fixture.snapshot(('inventory_balances','inventory_documents','inventory_movements'))
         await page.goto(BASE+f'/stock?series_id={fixture.series_id}')
-        await page.get_by_role('button',name='Count series',exact=True).click()
+        await page.get_by_role('button',name='按系列晚盘 Count series',exact=True).click()
         drawer = page.get_by_role('dialog',name='Count series',exact=True)
         await drawer.get_by_label('Location',exact=True).select_option(str(fixture.floor))
         await drawer.get_by_label('Count A',exact=True).fill('0')
@@ -173,7 +173,7 @@ async def real_flask_checks(browser):
         assert quantities.get(fixture.design_ids[0],0) == 0 and quantities[fixture.design_ids[1]] == 3 and quantities[fixture.product_id] == 5
         before = fixture.snapshot(('inventory_balances','inventory_documents','inventory_movements'))
         await page.goto(BASE+f'/stock?series_id={fixture.series_id}')
-        await page.get_by_role('button',name='Receive series',exact=True).click()
+        await page.get_by_role('button',name='整系列入库 Receive series',exact=True).click()
         drawer = page.get_by_role('dialog',name='Receive series',exact=True)
         await drawer.get_by_label('Location',exact=True).select_option(str(fixture.floor))
         await drawer.get_by_label('Receive A',exact=True).fill('2')

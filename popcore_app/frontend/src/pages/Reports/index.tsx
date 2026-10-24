@@ -2,6 +2,8 @@ import { useEffect,useMemo,useState } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useRole } from '../../auth/useRole'
 import StoreInsights from './StoreInsights'
+import InsightsTabs from './InsightsTabs'
+import PageHeader from '../../components/pc/PageHeader'
 import { Alert,Button,Card,Empty,Select,Space,Table,Typography } from 'antd'
 import { Link,useSearchParams } from 'react-router-dom'
 import { downloadReport,getReport,type ReportName,type ReportResult } from '../../api/reports'
@@ -75,8 +77,11 @@ function DetailedReports(){
     finally{setExporting(false)}
   }
 
-  return <Space direction="vertical" style={{width:'100%'}} size={16}>
-    <Link to={`/reports?${new URLSearchParams({...from&&{from},...to&&{to}})}`}>Insights &amp; reports</Link>
+  const dates=new URLSearchParams({...from&&{from},...to&&{to}}).toString()
+  return <Space direction="vertical" style={{width:'100%'}} size={16} className="pc-reports">
+    <PageHeader title="报表" sub={`Insights · ${selectedStore?.name||''} · 明细报表`} />
+    <InsightsTabs dates={dates} />
+    <Link className="pc-reports-back" to={`/reports?${dates}`}>Insights &amp; reports</Link>
     <div><Typography.Text type="secondary">Operational reports</Typography.Text><Typography.Title level={2} style={{margin:'2px 0 0'}}>{definition.label} report</Typography.Title><Typography.Text type="secondary">{definition.dated?'Authoritative records within the selected scope.':'Current inventory; date filters do not apply.'}</Typography.Text></div>
     <Card><Space wrap>
       <Select aria-label="Report" value={name} options={names.map(value=>({value,label:reportDefinitions[value].label}))} onChange={chooseReport} style={{minWidth:220}}/>

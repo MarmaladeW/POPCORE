@@ -57,18 +57,18 @@ async def detail_checks(browser,width):
 async def sales_checks(browser,width):
     context,page,state=await setup(browser,width)
     await page.goto(BASE+'/sales?date=2026-09-18')
-    await expect(page.get_by_role('heading',name='Historical reports',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='销售',exact=True)).to_be_visible()
     await expect(page.get_by_text('DT Red design',exact=True).first).to_be_visible()
     assert any('date=2026-09-18' in req['query'] for req in state['requests'] if req['path']=='/api/sales')
     await expect(page.get_by_text('Saved-price estimate',exact=True).first).to_be_visible()
     await expect(page.get_by_text('CA$20.00',exact=True).first).to_be_visible()
     await expect(page.get_by_text('1 product has no saved price.',exact=False)).to_be_visible()
     await expect(page.get_by_text('Latest 7 recorded dates',exact=True)).to_be_visible()
-    await expect(page.get_by_role('link',name='Review past names',exact=True)).to_have_attribute('href','/sales/matching')
-    await expect(page.get_by_role('link',name='Insights & reports',exact=True)).to_have_attribute('href','/reports')
+    await expect(page.get_by_role('link',name='核对旧名称 Review past names',exact=True)).to_have_attribute('href','/sales/matching')
+    await expect(page.get_by_role('link',name='历史日报 Historical reports',exact=True)).to_have_attribute('aria-current','page')
     qty=page.get_by_label('POS quantity for DT Red design',exact=True)
     await qty.fill('7')
-    await page.get_by_role('heading',name='Historical reports',exact=True).click()
+    await page.get_by_role('heading',name='销售',exact=True).click()
     assert not [req for req in state['requests'] if req['method']=='POST']
     await expect(page.get_by_role('button',name='Save DT Red design',exact=True)).to_be_visible()
     state['status_for_path']={'/api/sales/upsert':(409,{'error':'This report requires reconciliation'})}
@@ -96,7 +96,7 @@ async def sales_checks(browser,width):
     await page.get_by_text('Garden · Green · Confirmed',exact=False).click()
     await page.get_by_label('Operations store',exact=True).select_option('DT')
     await expect(page.get_by_role('combobox',name='Add historical product',exact=True)).to_have_value('')
-    await page.get_by_role('button',name='Manage name mappings',exact=True).click()
+    await page.get_by_role('button',name='Manage name mappings',exact=False).click()
     await expect(page.get_by_text('Saved name mappings',exact=True)).to_be_visible()
     await page.get_by_label('Staff name',exact=True).fill('green garden')
     await page.get_by_role('combobox',name='Mapped product',exact=True).fill('garden')
@@ -106,7 +106,7 @@ async def sales_checks(browser,width):
     writes=[req for req in state['requests'] if req['path']=='/api/products/aliases' and req['method']=='POST']
     assert len(writes)==1 and writes[0]['post_data']=={'product_id':3,'alias':'green garden'}
     assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-    await page.get_by_role('heading',name='Historical reports',exact=True).click()
+    await page.get_by_role('heading',name='销售',exact=True).click()
     await page.screenshot(path=OUT/f'historical-{width}.png')
     await context.close()
 
@@ -118,7 +118,7 @@ async def pending_and_race_checks(browser):
     await page.get_by_label('POS quantity for DT Red design',exact=True).fill('6')
     await page.evaluate("window.__FOUNDATION_AUTH={role:'admin'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_label('POS quantity for DT Red design',exact=True)).to_have_value('2')
-    await page.get_by_role('button',name='Manage name mappings',exact=True).click()
+    await page.get_by_role('button',name='Manage name mappings',exact=False).click()
     search_release=asyncio.Event()
     first_search=asyncio.Event()
     async def search(route):
@@ -145,7 +145,7 @@ async def pending_and_race_checks(browser):
     await expect(page.get_by_label('Staff name',exact=True)).to_be_disabled()
     await expect(combo).to_be_disabled()
     await expect(page.get_by_label('Operations store',exact=True)).to_be_disabled()
-    await expect(page.get_by_role('button',name='Hide name mappings',exact=True)).to_be_disabled()
+    await expect(page.get_by_role('button',name='Hide name mappings',exact=False)).to_be_disabled()
     write_release.set()
     await expect(page.get_by_role('alert').filter(has_text='Mapping access denied')).to_be_visible()
     await expect(page.get_by_label('Staff name',exact=True)).to_have_value('garden shorthand')

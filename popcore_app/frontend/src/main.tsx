@@ -5,6 +5,8 @@ import { Auth0Provider } from '@auth0/auth0-react'
 import App from './App'
 import './lib/reconciliationNavigation'
 import 'antd/dist/reset.css'
+import '@fontsource-variable/noto-sans-sc'
+import './styles/tokens.css'
 import './index.css'
 
 const AUTH0_DOMAIN    = import.meta.env.VITE_AUTH0_DOMAIN    as string

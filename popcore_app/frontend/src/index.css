@@ -37,20 +37,20 @@
     --card-foreground:      oklch(0.141 0.005 285.823);
     --popover:              oklch(1 0 0);
     --popover-foreground:   oklch(0.141 0.005 285.823);
-    /* POPCORE primary: Indigo #6366F1 */
-    --primary:              #6366F1;
+    /* POPCORE primary: ink (redesign tokens) */
+    --primary:              var(--surface-ink, #1f2328);
     --primary-foreground:   #ffffff;
-    --secondary:            oklch(0.967 0.001 286.375);
+    --secondary:            var(--surface-soft, #f2f3f5);
     --secondary-foreground: oklch(0.21 0.006 285.885);
-    --muted:                oklch(0.967 0.001 286.375);
-    --muted-foreground:     oklch(0.552 0.016 285.938);
-    --accent:               oklch(0.967 0.001 286.375);
+    --muted:                var(--surface-soft, #f2f3f5);
+    --muted-foreground:     var(--text-tertiary, #9aa1ab);
+    --accent:               var(--surface-soft, #f2f3f5);
     --accent-foreground:    oklch(0.21 0.006 285.885);
-    --destructive:          #EF4444;
-    --border:               oklch(0.92 0.004 286.286);
-    --input:                oklch(0.92 0.004 286.286);
-    --ring:                 #6366F1;
-    --radius:               0.625rem;
+    --destructive:          var(--status-out-ink, #b4322a);
+    --border:               var(--line-hair, #eceef1);
+    --input:                var(--line-control, #c9ced6);
+    --ring:                 var(--surface-ink, #1f2328);
+    --radius:               0rem;
   }
 }
 
@@ -315,18 +315,24 @@ html, body {
 }
 
 /* ── Global mobile fixes ── */
-html, body, #root {
+html, body {
   overflow-x: hidden;
 }
+/* clip, not hidden: #root must not become a scroll box, or position: sticky stops working. */
+#root {
+  overflow-x: clip;
+}
 
-/* ── iOS font-size: prevent Safari auto-zoom on inputs (must be ≥ 16px) ── */
-.ant-input,
-.ant-input-affix-wrapper input,
-.ant-select-selector,
-.ant-picker-input input,
-.ant-input-number-input,
-textarea.ant-input {
-  font-size: 16px !important;
+/* ── iOS font-size: prevent Safari auto-zoom on inputs (must be ≥ 16px); phones only ── */
+@media (max-width: 767px) {
+  .ant-input,
+  .ant-input-affix-wrapper input,
+  .ant-select-selector,
+  .ant-picker-input input,
+  .ant-input-number-input,
+  textarea.ant-input {
+    font-size: 16px !important;
+  }
 }
 
 /* ── Touch UX: remove tap flash, use fast-tap ── */
@@ -371,11 +377,14 @@ a,
   .ant-btn {
     min-height: 36px;
   }
-  .ant-input,
+  /* Phone controls stay 44px tall (Figma phone frames, touch targets). */
   .ant-input-affix-wrapper,
-  .ant-select-selector,
+  .ant-select-single:not(.ant-select-sm) .ant-select-selector,
   .ant-picker {
-    min-height: 38px !important;
+    min-height: 44px !important;
+  }
+  .ant-input:not(.ant-input-affix-wrapper .ant-input):not(textarea) {
+    min-height: 44px !important;
   }
   .ant-input-number-input {
     min-height: 34px;
@@ -404,3 +413,9 @@ a,
     min-height: 44px;
   }
 }
+
+/* antd's reset (button { color: inherit }) is unlayered, so it beats Tailwind's layered text colours on
+   shadcn buttons; restate them so ink buttons keep white text. */
+button.text-primary-foreground { color: var(--primary-foreground); }
+button.text-secondary-foreground { color: var(--secondary-foreground); }
+button.text-white { color: #fff; }

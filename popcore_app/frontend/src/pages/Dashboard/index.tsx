@@ -1,77 +1,36 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, List, Skeleton, Tag, Typography } from 'antd'
+import { Alert, Button, Skeleton } from 'antd'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 
-import { getToday, type TodayPayload, type TodayRow, type TodaySection } from '../../api/today'
+import { getToday, type TodayPayload } from '../../api/today'
 import { useHasRole, useRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
+import PageHeader from '../../components/pc/PageHeader'
+import { ListRow, Panel } from '../../components/pc/Panel'
+import { useIsPhone } from '../../components/pc/useIsPhone'
+import HomeTiles from '../Home/HomeTiles'
 import MyShifts from './MyShifts'
 import PunchIn from '../Schedule/PunchIn'
-import { torontoDate } from './todayPresentation'
+import { sectionLabels, TodayRows } from './TodayRows'
+import { mergeWork, torontoDate } from './todayPresentation'
+import '../Home/Home.css'
 
-const sectionLabels: Record<string, string> = {
-  my_work: 'My work', operations: 'Store work', financial: 'Sales and tender checks',
-  catalog: 'Catalog notices', inventory: 'Inventory notices',
-}
-const typeLabels: Record<string, string> = {
-  sale: 'Sale', checkout: 'Checkout', financial_sale: 'Sale', allocation_exception: 'Sale',
-  payment_evidence: 'Payment evidence', payment_exception: 'Payment', receipt: 'Receipt',
-  count: 'Count', closing: 'Closing', cash_variance: 'Closing', delivery: 'Transfer',
-  restock: 'Restock', condition_case: 'Condition case', catalog_identity: 'Product',
-  inventory_notice: 'Product',
-}
-const statusLabels: Record<string, string> = {
-  open: 'In progress', draft: 'Draft', posted: 'Recorded', pending: 'Pending', submitted: 'Awaiting review',
-  returned: 'Returned for changes', active: 'In transit', planned: 'Planned',
-  evidence_pending: 'Evidence awaiting review', unresolved: 'Identity needs review',
-  out_of_stock: 'Out of stock', variance: 'Variance needs review',
-  allocated: 'Stock allocated', verified: 'Verified', recorded: 'Awaiting verification',
+// Today's numbers on the manager home: only counts the Today payload already carries.
+// The catalog list stops at 51 on the server, so 51 means "more than 50".
+const shownTotal = (name: string, total: number) => name === 'catalog' && total > 50 ? '50+' : total
+
+// On the manager home, long notice lists collapse to one summary row (Figma 产品资料 panel).
+const summaries: Record<string, { title: (total: string | number) => string; meta: string; action: string; to: string }> = {
+  catalog: { title: total => `${total} 个产品还没审核`, meta: 'Products need identity review before counting', action: '去审核 Review', to: '/products' },
+  inventory: { title: total => `${total} 条缺货提醒`, meta: 'Out-of-stock notices (product and location)', action: '查看 View', to: '/stock' },
 }
 
-function rowTitle(row: TodayRow) {
-  if (row.label) return row.label
-  return `${typeLabels[row.type] || row.type.replaceAll('_', ' ')} #${row.source_id}`
-}
-
-function actionLabel(row: TodayRow) {
-  const label = typeLabels[row.type] || 'item'
-  const verbs: Record<string, string> = {
-    sale: 'Resume', checkout: 'Continue', financial_sale: 'Review', allocation_exception: 'Resolve',
-    payment_evidence: 'Add evidence to', payment_exception: 'Review', receipt: 'Resume',
-    count: row.status === 'submitted' ? 'Review' : 'Resume', closing: 'Continue',
-    cash_variance: 'Review', delivery: 'Continue', restock: 'Continue',
-    condition_case: 'Review', catalog_identity: 'Review', inventory_notice: 'View',
-  }
-  return `${verbs[row.type] || 'Open'} ${label.toLowerCase()} #${row.source_id}`
-}
-
-function Section({ name, section, stores }: {
-  name: string
-  section: TodaySection
-  stores: TodayPayload['authorized_stores']
-}) {
-  const storeNames = new Map(stores.map(store => [store.id, store.name || store.code]))
-  return <section className="pc-today-section" aria-labelledby={`today-${name}`}>
-    <div className="pc-section-heading">
-      <Typography.Title id={`today-${name}`} level={4}>{sectionLabels[name] || name}</Typography.Title>
-      <span>{section.total}</span>
-    </div>
-    {section.rows.length === 0
-      ? <p className="pc-quiet-empty">No current items.</p>
-      : <List dataSource={section.rows} renderItem={row => <List.Item
-          actions={[<Link key="open" to={row.link}>{actionLabel(row)}</Link>]}
-        >
-          <List.Item.Meta
-            title={<span className="pc-work-title"><span>{rowTitle(row)}</span><Tag>{statusLabels[row.status] || row.status.replaceAll('_', ' ')}</Tag></span>}
-            description={[
-              row.store_id ? (storeNames.get(row.store_id) || `Store reference ${row.store_id}`) : null,
-              row.updated_at,
-            ].filter(Boolean).join(' · ')}
-          />
-        </List.Item>} />}
-  </section>
-}
+const strip: Array<{ key: string; zh: string; en: string; tone: 'warn' | 'out' }> = [
+  { key: 'financial', zh: '待核对收款', en: 'Tender checks', tone: 'warn' },
+  { key: 'catalog', zh: '待审核产品', en: 'Products to review', tone: 'warn' },
+  { key: 'inventory', zh: '缺货', en: 'Out of stock', tone: 'out' },
+]
 
 export default function DashboardPage({ home = false }: { home?: boolean }) {
   const location = useLocation()
@@ -93,9 +52,16 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
     const current = ++request.current
     setData(undefined); setLast(''); setLoading(true); setError('')
     if (!store?.code) { setLoading(false); return () => controller.abort() }
-    getToday(store.code, torontoDate(), controller.signal).then(value => {
+    // A store this person cannot open shows only what is not tied to a store (catalog notices), never an access error.
+    const storeIndependent = (value: TodayPayload): TodayPayload => ({ ...value, sections: value.sections.catalog ? { catalog: value.sections.catalog } : {} })
+    getToday(store.code, torontoDate(), controller.signal)
+      .catch((cause: any) => cause?.response?.status === 403 && store.code !== 'ALL'
+        ? getToday('ALL', torontoDate(), controller.signal).then(storeIndependent)
+        : Promise.reject(cause))
+      .then(value => {
       if (current === request.current) { setData(value); setLast(new Date().toLocaleTimeString()) }
     }).catch((cause: any) => {
+      if (current === request.current && cause?.response?.status === 403) { setData({ business_date: torontoDate(), generated_at: '', role, scope: store.code, store_ids: [], authorized_stores: [], sections: {} }); return }
       if (current === request.current && cause?.code !== 'ERR_CANCELED') {
         setError(cause?._serverMessage || 'Unable to load Today.')
       }
@@ -103,35 +69,51 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
     return () => { request.current++; controller.abort() }
   }, [attempt, role, store?.code, user?.sub])
 
-  const order = home ? ['financial', 'my_work', 'operations', 'catalog', 'inventory'] : ['my_work', 'operations', 'financial', 'catalog', 'inventory']
-  return <div className="pc-page pc-today">
-    <header className="pc-page-heading">
-      <Typography.Title level={2}>{home ? 'Store overview / 门店概览' : 'Today / 今日'}</Typography.Title>
-      <Typography.Text type="secondary">{torontoDate()} · {store?.name || 'Choose a store'}</Typography.Text>
-    </header>
-    <PunchIn home />
-    {home && saved?.saved && saved.storeId === store?.id && <p role="status">Record saved / 已记录</p>}
-    {home && <nav className="pc-overview-actions" aria-label="Store actions">
-      <Link to="/checkout">买单 / Checkout</Link>
-      <Link to="/incoming">入店 / Receive goods</Link>
-      <Link to="/claw">娃娃机 / Claw machine</Link>
-      <Link to="/summary">汇总 / Daily summary</Link>
-    </nav>}
-    {home && manager && <nav className="pc-overview-actions" aria-label="Manager review"><Link to="/reports">Insights &amp; reports</Link><Link to="/sales/matching">Review past sales names</Link></nav>}
-    {staff && <MyShifts key={`${user?.sub}:${role}`} />}
-    {loading && !data ? <div className="pc-loading-panel"><Skeleton active /></div>
-      : error && !data ? <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setAttempt(value => value + 1)}>Retry</Button>} />
-      : <>
-        {error && <Alert type="warning" showIcon message="Today could not refresh"
-          description={last && `Showing data refreshed at ${last}`}
-          action={<Button onClick={() => setAttempt(value => value + 1)}>Retry</Button>} />}
-        {data?.store_ids.length === 0 && <Alert type="info" showIcon message="No inventory store access"
-          description="Your permitted catalog notices and personal schedule remain available." />}
-        {home && data && data.store_ids.length > 0 && !Object.values(data.sections).some(section => section.total > 0) && <p className="pc-quiet-empty">No current items to review. Open Daily summary to check today's recorded activity.</p>}
-        {data && Object.entries(data.sections)
-          .filter(([, section]) => !home || section.total > 0)
-          .sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
-          .map(([name, section]) => <Section key={name} name={name} section={section} stores={data.authorized_stores} />)}
-      </>}
+  const phone = useIsPhone()
+  const order = home ? ['financial', 'tasks', 'catalog', 'inventory'] : ['tasks', 'financial', 'catalog', 'inventory']
+  const insights = home && manager ? <Link className="pc-btn" to="/reports">报表 Insights &amp; reports</Link> : null
+  const sections = data ? Object.entries(mergeWork(data.sections))
+    .filter(([, section]) => !home || section.total > 0)
+    .sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)) : []
+  return <div className={home ? 'pc-hm' : 'pc-hm pc-today'}>
+    <PageHeader
+      title={home ? '门店概览' : 'Today / 今日'}
+      sub={home ? `Store overview · ${store?.name || 'Choose a store'}` : `${torontoDate()} · ${store?.name || 'Choose a store'}`}
+      actions={<><PunchIn home />{insights}</>}
+    />
+    {phone && <PunchIn home />}
+    {home && saved?.saved && saved.storeId === store?.id && <p className="pc-hm-saved" role="status">已记录 Record saved</p>}
+    {home && <HomeTiles />}
+    {home && manager && data && <div className="pc-hm-strip">
+      {strip.filter(cell => data.sections[cell.key]).map(cell => {
+        const total = data.sections[cell.key].total
+        return <div key={cell.key}><span>{cell.zh} {cell.en}</span><strong className={total > 0 ? `pc-hm-count-${cell.tone}` : undefined}>{shownTotal(cell.key, total)}</strong></div>
+      })}
+    </div>}
+    <div className="pc-hm-grid pc-hm-shifts-first">
+      <div className="pc-hm-main">
+        {loading && !data ? <div className="pc-panel"><div className="pc-quiet"><Skeleton active /></div></div>
+          : error && !data ? <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setAttempt(value => value + 1)}>Retry</Button>} />
+          : <>
+            {error && <Alert type="warning" showIcon message="Today could not refresh"
+              description={last && `Showing data refreshed at ${last}`}
+              action={<Button onClick={() => setAttempt(value => value + 1)}>Retry</Button>} />}
+            {home && data && sections.length === 0 && <p className="pc-panel pc-quiet">No current items to review. Open Daily summary to check today's recorded activity.</p>}
+            {!home && data && sections.length === 0 && <p className="pc-panel pc-quiet">没有需要处理的事 · Nothing to review</p>}
+            {data && sections.map(([name, section]) => <Panel key={name} label={sectionLabels[name]?.en || name}
+              zh={sectionLabels[name]?.zh || name} en={sectionLabels[name]?.en} count={shownTotal(name, section.total)} tone={section.total > 0 ? 'warn' : 'ok'}>
+              {section.rows.length === 0 ? <p className="pc-quiet">No current items.</p>
+                : home && summaries[name] ? <ListRow title={summaries[name].title(shownTotal(name, section.total))} meta={summaries[name].meta}
+                  trailing={<Link className="pc-btn" to={summaries[name].to}>{summaries[name].action}</Link>} />
+                : <TodayRows rows={section.rows} stores={data.authorized_stores} />}
+            </Panel>)}
+          </>}
+        {home && manager && <nav className="pc-hm-links" aria-label="Manager review">
+          {phone && <Link to="/reports">报表 Insights &amp; reports</Link>}
+          <Link to="/sales/matching">核对旧销售名称 Review past sales names</Link>
+        </nav>}
+      </div>
+      {staff && <aside className="pc-hm-side"><MyShifts key={`${user?.sub}:${role}`} outside={phone} /></aside>}
+    </div>
   </div>
 }

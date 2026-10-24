@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Alert, Button, Input, Modal, Select, Skeleton, Table, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -7,6 +6,8 @@ import {
   type ApplyResult, type CloverMatch, type CloverMatches, type MatchStatus,
 } from '../../api/cloverMatches'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import PageHeader from '../../components/pc/PageHeader'
+import { ProductsTabs } from './ProductsNav'
 import './cloverMatching.css'
 
 const failure = (cause: unknown, fallback: string) => (cause as { _serverMessage?: string })?._serverMessage || fallback
@@ -14,6 +15,8 @@ const money = (price: number | null) => price == null ? '' : `$${price.toFixed(2
 const STATUS_LABEL: Record<MatchStatus, string> = {
   undecided: 'No decision', ready: 'Ready to apply', keep: 'Keep old product', applied: 'Applied', missing: 'Old product gone',
 }
+// Three-character statuses of one width (Figma Products · Clover matching).
+const STATUS_SHORT: Record<MatchStatus, string> = { undecided: '未决定', ready: '可应用', keep: '保留旧', applied: '已应用', missing: '已消失' }
 const STATUS_COLOR: Record<MatchStatus, string> = { undecided: 'default', ready: 'blue', keep: 'purple', applied: 'green', missing: 'red' }
 const CONFIDENCE_COLOR = { high: 'green', medium: 'gold', low: 'red' } as const
 const SOURCE_LABEL: Record<string, string> = { auto: 'Auto-match', owner: 'Your sheet pick', claude: 'Claude', edited: 'Edited here', sheet: 'Sheet' }
@@ -133,13 +136,19 @@ export default function CloverMatching() {
   const nameOf = (id: number) => { const item = data?.items.find(row => row.legacy_product_id === id); return item?.legacy_jizhanming || item?.legacy_name || `#${id}` }
 
   return <main className="pc-clover-matching">
+    <PageHeader title="产品" sub="Products · Clover 对应 Matching" />
+    <ProductsTabs />
     <header>
-      <Link to="/products">Products</Link>
-      <h1>Clover matching</h1>
+      <h1 className="pc-sr">Clover matching</h1>
       <p>Match each old product (记账名) to its Clover item. Changes save as you make them; nothing merges until you select rows and apply them. A good habit: apply one series right before counting it.</p>
     </header>
     {error ? <Alert type="error" message={error} action={<Button onClick={() => setRetry(value => value + 1)}>Retry</Button>} />
       : !data ? <Skeleton active paragraph={{ rows: 8 }} /> : <>
+        <div className="pc-figures pc-figures-5" aria-label="Decision status">
+          {(['undecided', 'ready', 'keep', 'applied', 'missing'] as MatchStatus[]).map(key => <div key={key}>
+            <span>{STATUS_SHORT[key]} <span>{STATUS_LABEL[key]}</span></span><strong>{counts[key] ?? 0}</strong>
+          </div>)}
+        </div>
         <nav className="pc-clover-counts" aria-label="Filter by status">
           {(['open', 'undecided', 'ready', 'keep', 'applied', 'missing', 'all'] as StatusFilter[]).map(key => {
             const count = key === 'all' ? data.items.length : key === 'open' ? (counts.undecided ?? 0) + (counts.ready ?? 0) + (counts.keep ?? 0) : counts[key] ?? 0

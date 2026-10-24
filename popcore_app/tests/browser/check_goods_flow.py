@@ -138,7 +138,7 @@ async def checks(browser, viewport):
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/goods/receiving')
-    await expect(page.get_by_text('Goods handling', exact=True)).to_be_visible()
+    await expect(page.get_by_role('tab', name='收货 Receiving', exact=True)).to_be_visible()
     await select_option(page, 0, 'Downtown Floor')
     scan = page.get_by_label('Scan barcode')
     await scan.fill('OUTSIDE')
@@ -191,12 +191,12 @@ async def resume_checks(browser):
     assert not [request for request in state['requests'] if request['method'] != 'GET']
     await page.get_by_label('Line 1 saleable').fill('4')
     await expect(page.get_by_text('4 pieces saleable', exact=True)).to_be_visible()
-    await expect(page.get_by_role('button', name='Post receipt', exact=True)).to_be_disabled()
+    await expect(page.get_by_role('button', name='入库 Post receipt', exact=True)).to_be_disabled()
     state['status_for_path'] = {'/api/goods/receipts/31': (503, {'error': 'Synthetic receipt lost response'})}
-    await page.get_by_role('button', name='Save draft changes', exact=True).click()
+    await page.get_by_role('button', name='存草稿 Save draft changes', exact=True).click()
     await expect(page.get_by_text('Synthetic receipt lost response', exact=True)).to_be_visible()
     await expect(page.get_by_label('Line 1 saleable')).to_be_disabled()
-    await expect(page.get_by_role('button', name='Cancel draft', exact=True)).to_be_disabled()
+    await expect(page.get_by_role('button', name='取消草稿 Cancel draft', exact=True)).to_be_disabled()
     await page.get_by_role('button', name='Retry identical request', exact=True).click()
     patches = [request for request in state['requests'] if request['method'] == 'PATCH']
     assert len(patches) == 2 and patches[0]['idempotency_key'] == patches[1]['idempotency_key']
@@ -204,12 +204,12 @@ async def resume_checks(browser):
     state['status_for_path'] = {}
     await page.get_by_role('button', name='Retry identical request', exact=True).click()
     await expect(page.get_by_text('3 pieces saleable', exact=True)).to_be_visible()
-    await expect(page.get_by_role('button', name='Post receipt', exact=True)).to_be_enabled()
+    await expect(page.get_by_role('button', name='入库 Post receipt', exact=True)).to_be_enabled()
     patch = patches[0]
     assert patch['post_data']['expected_version'] == 4
     assert patch['post_data']['lines'][0]['unit'] == 'piece'
     assert patch['post_data']['lines'][0]['saleable_quantity'] == 4
-    await page.get_by_role('button', name='Cancel draft', exact=True).click()
+    await page.get_by_role('button', name='取消草稿 Cancel draft', exact=True).click()
     cancel = next(request for request in state['requests'] if request['path'].endswith('/cancel'))
     assert cancel['post_data'] == {'expected_version': 5}
 
@@ -220,22 +220,22 @@ async def resume_checks(browser):
     await expect(page.get_by_text('Outstanding: 3 pieces', exact=True)).to_be_visible()
     assert not [request for request in state['requests'] if request['path'].startswith('/api/goods/transfers/51/')]
     await page.get_by_label('Action quantity').fill('4')
-    await page.get_by_role('button', name='Receive', exact=True).click()
+    await page.get_by_role('button', name='确认收到 Receive', exact=True).click()
     await expect(page.get_by_text('Quantity must be between 1 and 3. No transfer action was sent.', exact=True)).to_be_visible()
     assert not [request for request in state['requests'] if request['path'].endswith('/receive')]
     await page.get_by_label('Action quantity').fill('3')
-    await page.get_by_role('button', name='Receive', exact=True).dblclick()
+    await page.get_by_role('button', name='确认收到 Receive', exact=True).dblclick()
     receive = next(request for request in state['requests'] if request['path'].endswith('/receive'))
     assert receive['post_data']['expected_version'] == 7
     assert receive['post_data']['lines'] == [{'line_no': 1, 'quantity': 3, 'disposition': 'saleable'}]
     assert receive['idempotency_key']
     assert len([request for request in state['requests'] if request['path'].endswith('/receive')]) == 1
     state['status_for_path'] = {'/api/goods/transfers/51/return': (503, {'error': 'Synthetic lost response'})}
-    await page.get_by_role('button', name='Return to source', exact=True).click()
+    await page.get_by_role('button', name='退回 Return to source', exact=True).click()
     await expect(page.get_by_text('Synthetic lost response', exact=True)).to_be_visible()
     await expect(page.get_by_label('Action quantity')).to_be_disabled()
     await expect(page.get_by_label('Transfer reason')).to_be_disabled()
-    await expect(page.get_by_role('button', name='Receive', exact=True)).to_be_disabled()
+    await expect(page.get_by_role('button', name='确认收到 Receive', exact=True)).to_be_disabled()
     await page.get_by_role('button', name='Retry identical request', exact=True).click()
     returns = [request for request in state['requests'] if request['path'].endswith('/return')]
     assert len(returns) == 2 and returns[0]['idempotency_key'] == returns[1]['idempotency_key']
@@ -243,14 +243,14 @@ async def resume_checks(browser):
     state['status_for_path'] = {}
     await page.get_by_role('button', name='Retry identical request', exact=True).click()
     await page.get_by_label('Transfer reason').fill('Transit loss reviewed')
-    await page.get_by_role('button', name='Resolve loss', exact=True).click()
+    await page.get_by_role('button', name='记为丢失 Resolve loss', exact=True).click()
     loss = next(request for request in state['requests'] if request['path'].endswith('/resolve_loss'))
     assert loss['post_data']['reason'] == 'Transit loss reviewed'
 
     await page.goto(BASE + '/goods/transfers?transfer_id=52')
     await page.get_by_label('Action quantity').fill('2')
     await page.get_by_label('Transfer reason').fill('Supplier short shipment')
-    await page.get_by_role('button', name='Short close', exact=True).click()
+    await page.get_by_role('button', name='短收结案 Short close', exact=True).click()
     short_close = next(request for request in state['requests'] if request['path'].endswith('/short_close'))
     assert short_close['post_data']['expected_version'] == 9
     assert short_close['post_data']['lines'][0]['quantity'] == 2

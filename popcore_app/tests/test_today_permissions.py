@@ -36,6 +36,11 @@ class TodayPermissionTests(IsolatedApiCase):
             self.assertNotIn('evidence_id', raw)
         self.assertIn('financial', manager['sections'])
         self.assertIn('catalog', admin['sections'])
+        # Managers and admins see everything; staff see only their own and store work.
+        for payload in (manager, admin):
+            self.assertTrue({'catalog', 'inventory', 'my_work', 'operations', 'financial'} <= set(payload['sections']))
+        self.assertEqual(set(staff['sections']), {'my_work', 'operations'})
+        self.assertNotIn('inventory', viewer['sections'])  # no store access, so no store notices
 
     def test_specific_store_and_all_never_expand_scope(self):
         self.assertEqual(self.get_today('staff', 'DT').status_code, 200)

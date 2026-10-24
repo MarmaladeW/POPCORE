@@ -36,13 +36,14 @@ export default function ProductSearchBar({ series, productTypes, onChange }: Pro
   return (
     <>
       {/* Search input with prefix icon + clear button */}
-      <div className="relative" style={{ width: isMobile ? '100%' : 260 }}>
+      <div className="relative" style={{ width: isMobile ? '100%' : 340 }}>
         <Search
           className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none"
         />
         <Input
           className="pl-9 pr-8"
-          placeholder="Search name, SKU, 记账名..."
+          placeholder="记账名、产品名或 SKU"
+          aria-label="Search name, SKU, 记账名"
           value={inputQ}
           onChange={e => setInputQ(e.target.value)}
         />
@@ -61,11 +62,11 @@ export default function ProductSearchBar({ series, productTypes, onChange }: Pro
         value={filterSeries || '__all__'}
         onValueChange={v => setFilterSeries(v === '__all__' ? '' : v)}
       >
-        <SelectTrigger style={{ width: isMobile ? '100%' : 140 }}>
-          <SelectValue placeholder="All Series" />
+        <SelectTrigger aria-label="Series filter" style={{ width: isMobile ? 'calc(50% - 4px)' : 160 }}>
+          <SelectValue placeholder="全部系列" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="__all__">All Series</SelectItem>
+          <SelectItem value="__all__">全部系列</SelectItem>
           {series.map(s => (
             <SelectItem key={s} value={s}>{s}</SelectItem>
           ))}
@@ -77,11 +78,11 @@ export default function ProductSearchBar({ series, productTypes, onChange }: Pro
         value={filterType || '__all__'}
         onValueChange={v => setFilterType(v === '__all__' ? '' : v)}
       >
-        <SelectTrigger style={{ width: isMobile ? '100%' : 120 }}>
-          <SelectValue placeholder="All Types" />
+        <SelectTrigger aria-label="Type filter" style={{ width: isMobile ? 'calc(50% - 4px)' : 140 }}>
+          <SelectValue placeholder="所有类型" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="__all__">All Types</SelectItem>
+          <SelectItem value="__all__">所有类型</SelectItem>
           {productTypes.map(t => (
             <SelectItem key={t} value={t}>{t}</SelectItem>
           ))}

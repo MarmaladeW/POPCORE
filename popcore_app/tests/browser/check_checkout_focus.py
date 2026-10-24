@@ -34,16 +34,13 @@ async def mobile_navigation(browser):
     context,page=await context_with_api(browser,{'mode':'data'},viewport={'width':390,'height':844},auth={'role':'admin'})
     try:
         await page.goto(BASE+'/')
-        await page.get_by_role('navigation',name='Primary navigation').get_by_role('button',name='More').click()
-        drawer=page.get_by_role('dialog',name='More')
-        assert (await drawer.locator('.ant-drawer-header').bounding_box())['y'] >= 0, 'More header starts above the phone viewport'
-        await expect(drawer.get_by_role('button',name='Close')).to_be_in_viewport()
-        await drawer.get_by_role('button',name='Close').click()
-        await expect(drawer).to_have_count(0)
-        await page.get_by_role('navigation',name='Primary navigation').get_by_role('button',name='More').click()
-        await page.get_by_role('navigation',name='More navigation').get_by_role('link',name='Products').click()
+        # 更多 is its own page (Figma Menus · Phone · More), not a drawer.
+        await page.get_by_role('navigation',name='Primary navigation').get_by_role('link',name='更多 More').click()
+        await expect(page).to_have_url(BASE+'/more')
+        assert (await page.get_by_role('heading',name='更多').bounding_box())['y'] >= 0, 'More header starts above the phone viewport'
+        await expect(page.get_by_role('navigation',name='Primary navigation').get_by_role('link',name='更多 More')).to_have_attribute('aria-current','page')
+        await page.get_by_role('navigation',name='More navigation').get_by_role('link',name='产品 Products').click()
         await expect(page).to_have_url(BASE+'/products')
-        await expect(drawer).to_have_count(0)
     finally:
         await context.close()
 
@@ -99,7 +96,7 @@ async def clover_real_api_checks(browser):
         await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
         await expect(order.locator('.co-collect strong')).to_have_text('$41.00')
         await expect(order.locator('.co-collect small')).to_contain_text('Cash discount −$1.59')
-        await order.get_by_role('button',name='Received $41.00',exact=True).click()
+        await order.get_by_role('button',name='已收 $41.00 · Received',exact=True).click()
         await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
         await expect(order).to_contain_text('Sale recorded')
         await expect(order).to_contain_text('tap Review Order, then Save to clear the screen')
@@ -123,7 +120,7 @@ async def clover_real_api_checks(browser):
         await expect(order.get_by_text('Card $22.00 received on Clover',exact=False)).to_be_visible(timeout=10000)
         await expect(order.locator('.co-collect strong')).to_have_text('$20.00')
         await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
-        await order.get_by_role('button',name='Received $20.00',exact=True).click()
+        await order.get_by_role('button',name='已收 $20.00 · Received',exact=True).click()
         await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
         await expect(order).to_contain_text('tap Pay more later to clear the screen')
         assert [call[1] for call in clover.writes()]==['/orders/ORDERAAAAAAAA/label','/orders/ORDERBBBBBBBB/label']
@@ -147,7 +144,7 @@ async def clover_real_api_checks(browser):
         await expect(page).to_have_url('http://127.0.0.1:5178/checkout')
         await page.screenshot(path=str(OUT/'clover-queue-phone.png'),full_page=True)
         await page.get_by_label('Clover order ID').fill('orderdddddddd')
-        await page.get_by_role('button',name='Find',exact=True).click()
+        await page.get_by_role('button',name='查找 Find',exact=True).click()
         order=page.get_by_role('article',name='Checkout ORDERDDDDDDDD')
         await expect(order).to_be_visible()
         await expect(order).to_contain_text('Not picked up yet')
@@ -155,7 +152,7 @@ async def clover_real_api_checks(browser):
         # Clover being unavailable never blocks the sale; Retry finishes it on Clover.
         clover.fail['POST label']=(502,{'error':'Clover is limiting requests.','code':'clover_unavailable'})
         await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
-        await order.get_by_role('button',name='Received $41.00',exact=True).click()
+        await order.get_by_role('button',name='已收 $41.00 · Received',exact=True).click()
         await expect(order.get_by_text('Not labelled on Clover yet',exact=True)).to_be_visible()
         await expect(order).to_contain_text('Sale recorded')
         del clover.fail['POST label']
@@ -198,10 +195,10 @@ async def checks(browser):
     await page.goto(BASE+'/checkout')
     await expect(page).to_have_url(BASE+'/checkout')
     await expect(page.get_by_role('link',name='Today',exact=True)).to_have_count(0)
-    await expect(page.get_by_role('heading',name='Checkout',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='买单',exact=True)).to_be_visible()
     await expect(page.get_by_role('heading',name='Ready for your next customer',exact=True)).to_be_visible()
-    await expect(page.get_by_role('link',name='Record completed sale',exact=True)).to_have_attribute('href','/sales/entry')
-    await page.get_by_role('button',name='Start manual checkout',exact=True).click()
+    await expect(page.get_by_role('link',name='补录 Record sale',exact=True)).to_have_attribute('href','/sales/entry')
+    await page.get_by_role('button',name='手动开单 Manual checkout',exact=True).click()
     await expect(page).to_have_url(BASE+'/checkout/new')
     await expect(page.get_by_role('heading',name='New manual checkout · Downtown',exact=True)).to_be_visible()
     await expect(page.get_by_role('button',name='Create pending checkout',exact=True)).to_be_enabled()
@@ -213,7 +210,7 @@ async def checks(browser):
     assert not [r for r in state['requests'] if r['method']=='POST']
     state['empty_queue']=False
     await page.get_by_role('link',name='Back to checkouts',exact=True).click()
-    await expect(page.get_by_role('button',name='Start manual checkout',exact=True)).to_be_visible()
+    await expect(page.get_by_role('button',name='手动开单 Manual checkout',exact=True)).to_be_visible()
     await page.get_by_role('button',name='Register 1',exact=False).click()
     await expect(page.get_by_text('Alex Chen',exact=False).first).to_be_visible()
     await expect(page.get_by_text('Smiski Museum Series',exact=False).last).to_be_visible()
@@ -308,12 +305,12 @@ async def checks(browser):
     state['get_status_for_path']={};state['off_duty']=True
     await page.get_by_role('button',name='Refresh orders').click()
     await expect(page.get_by_role('heading',name='No checkout shift today',exact=True)).to_be_visible()
-    await expect(page.get_by_role('button',name='Start manual checkout',exact=True)).to_have_count(0)
-    await expect(page.get_by_role('link',name='Record completed sale',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('button',name='手动开单 Manual checkout',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('link',name='补录 Record sale',exact=True)).to_have_count(0)
     await page.get_by_role('link',name='View your order history',exact=True).click()
-    await expect(page.get_by_role('heading',name='Order history',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='订单记录',exact=True)).to_be_visible()
     await expect(page.get_by_role('button',name='Register 1',exact=False)).to_be_visible()
-    await expect(page.get_by_role('button',name='Start manual checkout',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('button',name='手动开单 Manual checkout',exact=True)).to_have_count(0)
     await page.goto(BASE+'/checkout/new?view=history')
     await expect(page.get_by_role('heading',name='No checkout shift today',exact=True)).to_be_visible()
     await expect(page.get_by_role('button',name='Create pending checkout',exact=True)).to_have_count(0)
@@ -347,7 +344,7 @@ async def real_api_checks(browser):
             else:await route.continue_()
         await page.route('**/*',local_only)
         await page.goto('http://127.0.0.1:5177/checkout')
-        await page.get_by_role('button',name='Start manual checkout',exact=True).click()
+        await page.get_by_role('button',name='手动开单 Manual checkout',exact=True).click()
         await page.get_by_label('Order reference (optional)',exact=True).fill('LOCAL-BROWSER-ONLY')
         await page.get_by_label('Business date',exact=True).fill('2026-09-08')
         await page.get_by_label('Item 1',exact=True).click()
@@ -370,9 +367,9 @@ async def real_api_checks(browser):
         await page.get_by_role('button',name='Save note').click()
         await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer requested a later pickup')
         # Paid like a Clover order: the e-transfer price includes the cash discount, then one tap.
-        await page.get_by_role('button',name=re.compile(r'^E-transfer')).click()
+        await page.get_by_role('button',name=re.compile(r'E-transfer')).click()
         await expect(page.locator('.co-collect strong')).to_have_text('$44.00')
-        await page.get_by_role('button',name='Received $44.00',exact=True).click()
+        await page.get_by_role('button',name='已收 $44.00 · Received',exact=True).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
         # An existing picture (a screenshot of the transfer) goes through Upload photo, not the camera.
         await page.get_by_label('Upload payment evidence').set_input_files(str(ROOT/'.local/checkout-focus/proof.png'))
@@ -387,7 +384,7 @@ async def real_api_checks(browser):
             assert con.execute('SELECT sum(amount_cents) FROM sale_payments').fetchone()[0]==4400
             assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(fixture.product_id,fixture.floor)).fetchone()[0]==3
         await page.get_by_role('link',name='Back to current orders').click()
-        await page.get_by_role('link',name='Order history',exact=True).first.click()
+        await page.get_by_role('link',name='订单记录 Order history',exact=True).first.click()
         await page.get_by_role('button',name='LOCAL-BROWSER-ONLY',exact=False).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
         await expect(page.get_by_role('textbox',name='Order note')).to_have_value('Customer requested a later pickup')
@@ -401,11 +398,17 @@ async def real_api_checks(browser):
         await page.get_by_role('button',name='Abandon checkout',exact=True).click()
         await expect(page.get_by_label('Original payment',exact=True)).to_be_visible()
         await page.get_by_label('Original payment',exact=True).select_option(str(partial['attempts'][0]['id']))
-        await page.get_by_label('Refund amount ($)',exact=True).fill('10.00')
+        await page.get_by_label('Refund amount ($)',exact=True).fill('-2')
         await page.get_by_label('Refund date',exact=True).fill('2026-09-08')
         await page.get_by_label('Refund reference',exact=True).fill('LOCAL-REFUND-RECEIPT')
         await page.get_by_label('Reason',exact=True).fill('Cash returned to customer')
         await page.get_by_role('checkbox',name='I checked the original receipt and returned this money.').check()
+        await page.get_by_role('button',name='Record refund',exact=True).click()
+        # An unusable amount reaches the server and its message shows, instead of the form doing nothing.
+        await expect(page.get_by_role('alert').filter(has_text='Refund must be within the original payment remaining refundable amount')).to_be_visible()
+        # The rejected request leaves the button ready under its own name (no leftover loading label).
+        await expect(page.get_by_role('button',name='Record refund',exact=True)).to_be_enabled(timeout=3000)
+        await page.get_by_label('Refund amount ($)',exact=True).fill('10.00')
         await page.get_by_role('button',name='Record refund',exact=True).click()
         await expect(page.get_by_role('heading',name='Checkout cancelled',exact=True)).to_be_visible()
         detail=fixture.client.get(f'/api/checkouts/{partial["id"]}',headers=fixture.headers('manager')).get_json()
@@ -424,9 +427,9 @@ async def real_api_checks(browser):
         page=await context.new_page()
         await page.route('**/*',local_only)
         await page.goto(f'http://127.0.0.1:5177/checkout/{wechat["id"]}')
-        await page.get_by_role('button',name=re.compile(r'^WeChat Pay')).click()
+        await page.get_by_role('button',name=re.compile(r'WeChat Pay')).click()
         await expect(page.get_by_label('Chinese yuan collection amount').locator('strong')).to_have_text('¥209.12')
-        await page.get_by_role('button',name='Received $44.00',exact=True).click()
+        await page.get_by_role('button',name='已收 $44.00 · Received',exact=True).click()
         await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
         await expect(page.get_by_text('¥209.12 charged at 1 CAD = 4.7528 CNY',exact=True)).to_be_visible()
         await expect(page.get_by_text('WeChat Pay · $44.00 · ¥209.12',exact=True)).to_be_visible()  # beside the payment photo
@@ -434,7 +437,7 @@ async def real_api_checks(browser):
         with closing(fixture.connect()) as con:
             assert tuple(con.execute("SELECT tender,amount_cents,cny_fen,cny_per_cad FROM checkout_attempts WHERE checkout_id=? AND status='completed'",(wechat['id'],)).fetchone())==('wechat',4400,20912,'4.7528')
         await page.get_by_role('link',name='Back to current orders').click()
-        await page.get_by_role('link',name='Order history',exact=True).first.click()
+        await page.get_by_role('link',name='订单记录 Order history',exact=True).first.click()
         await expect(page.get_by_role('button',name='LOCAL-WECHAT-ONLY',exact=False)).to_contain_text('WeChat Pay ¥209.12')
         await context.close()
     finally:
