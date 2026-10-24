@@ -123,11 +123,11 @@ async def checks(browser):
     await page.get_by_text('Sealed Set', exact=True).last.click()
     await expect(page.get_by_text('Conversion v1', exact=False)).to_be_visible()
     await page.keyboard.press('Escape')
-    search = page.get_by_placeholder('Search name, SKU, 记账名...')
+    search = page.get_by_label('Search name, SKU, 记账名')
     await search.fill('FAR-501')
     await expect(page.get_by_text('Outside First 500', exact=True).first).to_be_visible()
     await page.get_by_text('Outside First 500', exact=True).first.click()
-    await expect(page.get_by_role('dialog').get_by_text('第501项 / Outside First 500', exact=True)).to_be_visible()
+    await expect(page.get_by_role('complementary', name='Product detail').get_by_text('第501项 / Outside First 500', exact=True)).to_be_visible()
     await page.keyboard.press('Escape')
 
     resolution = await page.evaluate("""async () => {

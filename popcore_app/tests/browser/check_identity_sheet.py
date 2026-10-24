@@ -79,10 +79,10 @@ async def manager_flow(browser, fixture, viewport):
     try:
         await page.goto(BASE + '/products')
         await expect(page.get_by_text('TEST-1', exact=True).first).to_be_visible()
-        if width < 768:
-            await page.get_by_role('button', name='Toggle product filters').click()
-        export_button = page.get_by_role('button', name='Export identity sheet', exact=True)
-        import_button = page.get_by_role('button', name='Import identity sheet', exact=True)
+        tools = page.get_by_role('button', name='工具 Tools')
+        await tools.click()
+        export_button = page.get_by_role('menuitem', name='导出身份表 Export identity sheet', exact=True)
+        import_button = page.get_by_role('menuitem', name='导入身份表 Import identity sheet', exact=True)
         await expect(export_button).to_be_visible()
         await expect(import_button).to_be_visible()
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
@@ -100,6 +100,7 @@ async def manager_flow(browser, fixture, viewport):
         await expect(dialog).to_be_hidden()
 
         stock_before = fixture.snapshot(STOCK_TABLES)
+        await tools.click()
         await import_button.click()
         dialog = page.get_by_role('dialog', name='Import identity sheet')
         source = dialog.get_by_role('textbox', name='Identity sheet CSV or TSV')
@@ -148,8 +149,7 @@ async def staff_flow(browser):
     try:
         await page.goto(BASE + '/products')
         await expect(page.get_by_text('TEST-1', exact=True).first).to_be_visible()
-        await expect(page.get_by_role('button', name='Export identity sheet')).to_have_count(0)
-        await expect(page.get_by_role('button', name='Import identity sheet')).to_have_count(0)
+        await expect(page.get_by_role('button', name='工具 Tools')).to_have_count(0)
     finally:
         await context.close()
 

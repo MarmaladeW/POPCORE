@@ -69,13 +69,20 @@ async def flow(browser, viewport):
         await expect(page.get_by_text('Unknown', exact=True)).to_be_visible()
         sync = page.get_by_role('button', name='Sync from Google Sheet', exact=True)
         await expect(sync).to_be_visible()
-        assert await sync.inner_text() == 'Sync from Google Sheet'
+        assert await sync.inner_text() == '同步表格 Sync sheet'
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         await page.screenshot(path=OUT / f'catalog-{viewport["width"]}.png')
         await page.get_by_text('DT Foundation Item', exact=True).first.click()
-        drawer = page.get_by_role('dialog')
-        await expect(drawer.get_by_text('Unknown', exact=True)).to_be_visible()
-        await drawer.get_by_role('button', name='Close', exact=True).click()
+        # Detail: a sheet on phone, a pane beside the table on desktop.
+        if viewport['width'] == 390:
+            drawer = page.get_by_role('dialog')
+            await expect(drawer.get_by_text('Unknown', exact=True)).to_be_visible()
+            await drawer.get_by_role('button', name='Close', exact=True).click()
+        else:
+            pane = page.get_by_role('complementary', name='Product detail')
+            await expect(pane.get_by_text('Unknown', exact=True)).to_be_visible()
+            await pane.get_by_role('button', name='Close product detail', exact=True).click()
+            await expect(pane).to_have_count(0)
 
         await sync.click()
         dialog = page.get_by_role('dialog')
@@ -84,9 +91,9 @@ async def flow(browser, viewport):
         await dialog.get_by_role('button', name='确认 / Confirm (1)', exact=True).click()
         await expect(dialog).to_have_count(0)
 
-        if viewport['width'] == 390:
-            await page.get_by_role('button', name='Toggle product filters').click()
-        await page.get_by_role('button', name='Import', exact=True).click()
+        # File tools live in the 工具 Tools menu.
+        await page.get_by_role('button', name='工具 Tools').click()
+        await page.get_by_role('menuitem', name='导入目录 Import', exact=True).click()
         dialog = page.get_by_role('dialog', name='Import catalog / 导入产品目录')
         source = dialog.get_by_role('textbox', name='Catalog CSV or TSV')
         await expect(dialog.get_by_text('Required header:', exact=False)).to_be_visible()
@@ -135,7 +142,8 @@ async def flow(browser, viewport):
         # A partial update must display omitted names unchanged, including no deletion mark.
         state['text'] = 'SKU,单价,boxes_per_dan\nDT-FOUNDATION,30,6'
         state['rows'] = [{**ROWS[0], 'values': {'price': 30, 'boxes_per_dan': 6}}]
-        await page.get_by_role('button', name='Import', exact=True).click()
+        await page.get_by_role('button', name='工具 Tools').click()
+        await page.get_by_role('menuitem', name='导入目录 Import', exact=True).click()
         await source.fill(state['text'])
         await preview.click()
         row = dialog.get_by_role('row').filter(has_text='DT-FOUNDATION')
@@ -157,7 +165,7 @@ async def staff_flow(browser):
         await page.goto(BASE + '/products')
         await expect(page.get_by_text('DT Foundation Item', exact=True).first).to_be_visible()
         await expect(page.get_by_role('button', name='Sync from Google Sheet')).to_have_count(0)
-        await expect(page.get_by_role('button', name='Import', exact=True)).to_have_count(0)
+        await expect(page.get_by_role('button', name='工具 Tools')).to_have_count(0)
     finally:
         await context.close()
 
