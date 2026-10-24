@@ -406,6 +406,8 @@ async def real_api_checks(browser):
         await page.get_by_role('button',name='Record refund',exact=True).click()
         # An unusable amount reaches the server and its message shows, instead of the form doing nothing.
         await expect(page.get_by_role('alert').filter(has_text='Refund must be within the original payment remaining refundable amount')).to_be_visible()
+        # The rejected request leaves the button ready under its own name (no leftover loading label).
+        await expect(page.get_by_role('button',name='Record refund',exact=True)).to_be_enabled(timeout=3000)
         await page.get_by_label('Refund amount ($)',exact=True).fill('10.00')
         await page.get_by_role('button',name='Record refund',exact=True).click()
         await expect(page.get_by_role('heading',name='Checkout cancelled',exact=True)).to_be_visible()
