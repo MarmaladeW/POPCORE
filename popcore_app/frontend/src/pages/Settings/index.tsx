@@ -57,7 +57,7 @@ interface StoreRow {
   color: string
 }
 
-const ROW   = { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 } as const
+const ROW   = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 16 } as const
 const LABEL: React.CSSProperties = { minWidth: 240, color: '#374151', fontSize: 14, flexShrink: 0 }
 const INNER = { maxWidth: 680 } as const
 

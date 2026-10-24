@@ -113,3 +113,5 @@
 .pc-prod-detail-head > span { flex: 1 1 100%; flex-direction: column; gap: 2px; }
 .pc-prod-detail-head > span strong { white-space: normal; }
 .pc-prod-detail-head > .ant-btn-text { position: absolute; top: 10px; right: 8px; }
+.pc-ser-detail .pc-panel-head { flex-wrap: wrap; }
+.pc-ser-detail .pc-panel-head h2 { flex-wrap: wrap; white-space: normal; }
