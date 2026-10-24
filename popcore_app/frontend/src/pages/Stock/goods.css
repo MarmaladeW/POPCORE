@@ -1,0 +1,49 @@
+/* Goods: receiving, transfers (Figma Receive goods) */
+.pc-goods-tabs .ant-tabs-nav { margin-bottom: 16px; }
+.pc-goods-tabs .ant-tabs-tab span { color: inherit; }
+.pc-goods-card.ant-card { border-color: var(--line-hair); }
+.pc-goods-card > .ant-card-head { min-height: 48px; padding: 0 16px; border-bottom-color: var(--line-hair); }
+.pc-goods-card > .ant-card-head .ant-card-head-title { font-size: 13.5px; font-weight: 600; }
+.pc-goods-card > .ant-card-head .ant-card-head-title span { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-receive-form .ant-form-item { margin-bottom: 12px; }
+.pc-receive-form .ant-form-item-label > label { color: var(--text-secondary); font-size: 12px; }
+.pc-receive-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pc-receipt-lines { display: grid; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-receipt-line { display: grid; gap: 10px; padding: 14px; }
+.pc-receipt-line + .pc-receipt-line { border-top: 1px solid var(--line-hair); }
+.pc-receipt-product { font-size: 13.5px; font-weight: 500; line-height: 19.5px; }
+.pc-receipt-cells { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.pc-receive-form .pc-receipt-cells { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pc-receipt-cells > label, .pc-receipt-cells > .ant-form-item { display: grid; gap: 2px; margin: 0; padding: 8px 10px; border: 1px solid var(--line-hair); color: var(--text-tertiary); font-size: 11px; line-height: 15px; }
+.pc-receipt-cells .ant-input-number, .pc-receipt-cells .ant-select { width: 100%; }
+.pc-receipt-cells .ant-input-number { border: 0; box-shadow: none; }
+.pc-receipt-cells .ant-input-number-input { padding: 0; font-size: 18px; font-weight: 600; color: var(--text-primary); }
+.pc-receipt-cells .pc-receipt-actual { border-color: var(--text-primary); }
+.pc-receipt-short { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--status-restock-ink); font-size: 12px; }
+.pc-receipt-note { display: grid; gap: 4px; color: var(--text-tertiary); font-size: 11px; }
+.pc-receipt-effect { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--text-tertiary); font-size: 11.5px; }
+.pc-receipt-actions { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 8px; }
+.pc-receipt-actions .ant-btn, .pc-receive-save.ant-btn { min-height: 44px; }
+.pc-receive-save.ant-btn { width: 100%; }
+.pc-transfer-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-transfer-route > div { display: grid; }
+.pc-transfer-route > div:last-child { text-align: right; }
+.pc-transfer-route small { color: var(--text-tertiary); font-size: 11px; }
+.pc-transfer-route strong { font-size: 13px; font-weight: 500; }
+.pc-transfer-route > span { color: var(--text-tertiary); }
+.pc-transfer-sub { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-transfer-list .ant-list-item { padding: 12px 0; }
+@media (max-width: 767.98px) {
+  .pc-receipt-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pc-receive-form .pc-receipt-cells { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pc-receipt-actions { grid-template-columns: 1fr 1fr; }
+  .pc-receipt-actions .ant-btn-dangerous { grid-column: 1 / -1; }
+  .pc-receive-pair { grid-template-columns: 1fr 1fr; }
+}
+.pc-receipt-cells > .ant-form-item .ant-row { display: grid; gap: 2px; }
+.pc-receipt-cells > .ant-form-item .ant-form-item-label { padding: 0; line-height: 15px; }
+.pc-receipt-cells > .ant-form-item .ant-form-item-label > label { height: auto; color: var(--text-tertiary); font-size: 11px; }
+.pc-receipt-cells > .ant-form-item .ant-form-item-control { width: 100%; min-width: 0; }
+.pc-receipt-cells .ant-select .ant-select-selector { min-height: 0 !important; padding: 0 !important; border: 0 !important; box-shadow: none !important; font-size: 15px !important; font-weight: 600; }
+.pc-receipt-cells .ant-select { max-width: 100%; }
+.pc-receipt-cells .ant-input-number-input { min-height: 0 !important; height: 28px; font-size: 18px !important; }

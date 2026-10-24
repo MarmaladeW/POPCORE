@@ -37,9 +37,9 @@ async def checks(browser, width, role):
     link = page.get_by_role('link',name='Open transfer #51',exact=True)
     await expect(link).to_have_attribute('href','/goods/transfers?transfer_id=51')
     if role == 'staff':
-        await expect(page.get_by_role('button',name='Create transfer',exact=True)).to_have_count(0)
+        await expect(page.get_by_role('button',name='新建调拨 Create transfer',exact=True)).to_have_count(0)
     else:
-        await page.get_by_role('button',name='Create transfer',exact=True).click()
+        await page.get_by_role('button',name='新建调拨 Create transfer',exact=True).click()
         await expect(page.get_by_text('Transfer stock',exact=True)).to_be_visible()
         assert all(request['method']=='GET' for request in state['requests'])
         await page.goto(BASE+'/goods/transfers')
@@ -59,7 +59,7 @@ async def checks(browser, width, role):
         await page.evaluate("window.__FOUNDATION_AUTH={role:'staff'}; window.dispatchEvent(new Event('foundation-auth'))")
         await expect(page.get_by_text('Inventory access denied',exact=True).first).to_be_visible()
         await expect(page.get_by_role('link',name='Open transfer #51',exact=True)).to_have_count(0)
-        await expect(page.get_by_role('button',name='Create transfer',exact=True)).to_have_count(0)
+        await expect(page.get_by_role('button',name='新建调拨 Create transfer',exact=True)).to_have_count(0)
         state['get_status_for_path']={}
     await page.evaluate("localStorage.setItem('popcore_selected_store',JSON.stringify({id:2,code:'MK',name:'Markham',color:'#6366f1'}))")
     await page.goto(BASE+'/goods/transfers')
@@ -82,12 +82,12 @@ async def draft_resume_checks(browser):
     await page.get_by_label('Scan barcode').fill('00123')
     await page.get_by_label('Scan barcode').press('Enter')
     state['status_for_path']={'/api/goods/receipts':(503,{'error':'Receipt save unconfirmed'})}
-    await page.get_by_role('button',name='Save draft for review',exact=True).click()
+    await page.get_by_role('button',name='保存草稿 Save draft for review',exact=True).click()
     await expect(page.get_by_text('Receipt save unconfirmed',exact=True)).to_be_visible()
     await expect(page).to_have_url(BASE+'/goods/receiving')
     state['status_for_path']={}
     state['get_status_for_path']={'/api/goods/receipts/31':(503,{'error':'Receipt refresh unavailable'})}
-    await page.get_by_role('button',name='Save draft for review',exact=True).click()
+    await page.get_by_role('button',name='保存草稿 Save draft for review',exact=True).click()
     await expect(page).to_have_url(BASE+'/goods/receiving?receipt_id=31')
     await expect(page.get_by_text('Receipt refresh unavailable',exact=True).first).to_be_visible()
     state['get_status_for_path']={}
@@ -101,11 +101,11 @@ async def draft_resume_checks(browser):
     await select_option(page,1,'DT · Downtown Floor')
     await select_option(page,2,'Long bilingual product 商品名称')
     state['status_for_path']={'/api/goods/transfers':(503,{'error':'Transfer save unconfirmed'})}
-    await page.get_by_role('button',name='Create transfer',exact=True).click()
+    await page.get_by_role('button',name='新建调拨 Create transfer',exact=True).click()
     await expect(page.get_by_text('Transfer save unconfirmed',exact=True)).to_be_visible()
     await expect(page).to_have_url(BASE+'/goods/transfers?create=1')
     state['status_for_path']={}
-    await page.get_by_role('button',name='Create transfer',exact=True).click()
+    await page.get_by_role('button',name='新建调拨 Create transfer',exact=True).click()
     await expect(page).to_have_url(BASE+'/goods/transfers?transfer_id=51')
     await page.reload()
     await expect(page.get_by_text('Transfer #51',exact=True)).to_be_visible()

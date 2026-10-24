@@ -44,8 +44,8 @@ async def receipt_check(browser, width):
             await expect(page.get_by_text(LABEL,exact=True)).to_be_visible()
         await page.goto(BASE + '/goods/receiving?product_id=999&location_id=10')
         await expect(page.get_by_text(LABEL, exact=True)).to_be_visible()
-        await page.locator('.ant-input-number-input').first.fill('2')
-        await page.get_by_role('button', name='Save draft for review', exact=True).click()
+        await page.get_by_label('Actual quantity', exact=True).fill('2')
+        await page.get_by_role('button', name='保存草稿 Save draft for review', exact=True).click()
         await expect(page.get_by_text('Receipt #31', exact=True)).to_be_visible()
         await expect(page.get_by_text(LABEL, exact=True)).to_be_visible()
         created = [r for r in state['requests'] if r['path'] == '/api/goods/receipts' and r['method'] == 'POST']

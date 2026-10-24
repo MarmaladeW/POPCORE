@@ -139,8 +139,8 @@ async def flow(browser, width):
         await expect(page.get_by_role('group', name='How is the customer paying?')).to_be_visible()
         await page.get_by_role('link', name='首页 Home', exact=True).click()
         await actions.get_by_role('link', name='入店', exact=False).click()
-        await expect(page.get_by_role('link', name='收货 / Receive shipment', exact=False)).to_be_visible()
-        await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 / Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
+        await expect(page.get_by_role('link', name='收货 Receive shipment', exact=False)).to_be_visible()
+        await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
         await page.get_by_role('link', name='首页 Home', exact=True).click()
         await open_claw()
         await page.get_by_role('button', name='出奖 / Prize won', exact=True).click()
@@ -199,7 +199,7 @@ async def flow(browser, width):
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert (last['kind'], last['quantity'], last['source_location_id']) == ('claw_refill', 3, 2), last
         await actions.get_by_role('link', name='入店', exact=False).click()
-        await page.get_by_role('link', name='入 display / Display arrival', exact=False).click()
+        await page.get_by_role('link', name='入 display Display arrival', exact=False).click()
         await expect(page.get_by_text('This adds a record to the daily summary. Stock balances are unchanged.', exact=True)).to_be_visible()
         await page.get_by_role('spinbutton', name='Quantity').fill('2')
         await page.get_by_role('combobox', name='Product').fill('Test')

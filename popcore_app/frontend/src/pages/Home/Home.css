@@ -129,3 +129,22 @@
 .pc-exchange-amount .ant-input-prefix { color: var(--text-tertiary); font-size: 18px; }
 .pc-exchange-amount input.ant-input { font-size: 30px !important; font-weight: 600; letter-spacing: -.6px; }
 .pc-exchange-save.ant-btn { width: 100%; min-height: 48px; font-size: 14px; font-weight: 600; }
+
+/* 入店 Receive goods hub (Figma Receive goods · Phone 1) */
+.pc-incoming { display: grid; gap: 8px; max-width: 760px; }
+.pc-incoming-ask { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 17.4px; }
+.pc-incoming-choices { display: grid; gap: 8px; }
+.pc-incoming-choices a { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line-hair); background: var(--surface-default); color: var(--text-secondary); text-decoration: none; }
+.pc-incoming-choices a:hover { border-color: var(--line-strong); }
+.pc-incoming-icon { display: grid; width: 32px; height: 32px; flex: none; place-items: center; border: 1px solid var(--line-hair); color: var(--text-secondary); }
+.pc-incoming-choices .pc-nav-text { display: grid; flex: 1; min-width: 0; }
+.pc-incoming-choices strong { color: var(--text-primary); font-size: 15px; font-weight: 600; line-height: 22px; }
+.pc-incoming-choices strong small { margin-left: 4px; color: var(--text-tertiary); font-size: 11.5px; font-weight: 400; }
+.pc-incoming-choices .pc-nav-text > span { color: var(--text-tertiary); font-size: 12px; line-height: 17.4px; }
+.pc-incoming-chevron { color: var(--text-tertiary); }
+.pc-incoming-records .pc-section-head { padding-bottom: 8px; }
+.pc-incoming-row { display: block; color: inherit; text-decoration: none; }
+.pc-incoming-row + .pc-incoming-row { border-top: 1px solid var(--line-hair); }
+.pc-incoming-row .pc-row { min-height: 0; padding: 11px 14px; }
+.pc-hm-status { display: inline-flex; width: 64px; flex: none; align-items: center; justify-content: flex-start; gap: 6px; color: var(--text-secondary); font-size: 12px; line-height: 17.4px; white-space: nowrap; }
+
