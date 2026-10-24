@@ -51,7 +51,7 @@ by item ID when present, else by exact name, so a later rename is recognised by 
 3. Review: `merge_clover_products.py review --out review.csv`; fill `decision` for every `check` and
    `none` row and spot-check the confident ones.
 4. Load the sheet into the app (`load_clover_match_review.py --dry-run`, then for real), then correct
-   and apply decisions from Products → Clover matching, one series at a time before counting it.
+   and apply decisions from Products → Clover matching. Apply them all before the one full opening count.
    The script's `apply` remains for bulk use; both refuse colliding stock the same way.
 5. Stores' opening counts and identity review (stock form/unit) proceed on the Clover products.
 
