@@ -1883,6 +1883,20 @@ def _migration_claw_machine_location(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('claw_machine_location')")
 
 
+def _migration_display_locations(con, cur):
+    # Each store's display: the opened pieces shown for every series. Pieces move in from the floor or
+    # back stock or arrive already opened, and can be sold from display.
+    for store in cur.execute("SELECT id FROM stores WHERE code IN ('DT','MK')").fetchall():
+        cur.execute("""INSERT OR IGNORE INTO inventory_locations
+            (store_id, code, name, is_active) VALUES (?, 'display', 'Display', 1)""", (store['id'],))
+        location_id = cur.execute(
+            "SELECT id FROM inventory_locations WHERE store_id=? AND code='display'", (store['id'],)
+        ).fetchone()['id']
+        cur.execute("""INSERT OR IGNORE INTO inventory_scope_state
+            (store_id, location_id, opening_verified) VALUES (?, ?, 0)""", (store['id'], location_id))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('display_locations')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1940,6 +1954,7 @@ def _get_migrations():
         ('checkout_attempt_cny',                       _migration_checkout_attempt_cny),
         ('clover_match_reviews',                       _migration_clover_match_reviews),
         ('claw_machine_location',                      _migration_claw_machine_location),
+        ('display_locations',                          _migration_display_locations),
     ]
 
 

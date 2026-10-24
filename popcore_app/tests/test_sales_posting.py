@@ -65,6 +65,40 @@ class SalePostingTests(ReceivingFixture):
             ).fetchone()[0]
         self.assertEqual((quantity, documents), (3, 1))
 
+    def test_display_piece_sells_from_the_display_location(self):
+        with closing(self.connect()) as con:
+            display = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='display'",
+                                  (self.store_id,)).fetchone()[0]
+            con.execute("UPDATE inventory_scope_state SET opening_verified=1 WHERE location_id=?", (display,))
+            con.execute("""INSERT INTO inventory_balances (product_id, location_id, disposition, quantity, version)
+                           VALUES (?, ?, 'saleable', 1, 1)""", (self.product_id, display))
+            con.commit()
+        body = self.sale_body(reference='display-sale')
+        line = {**body['lines'][0], 'quantity': 1, 'source_tax_cents': 260}
+        body['lines'] = [line, {**line, 'from_display': True}]
+        draft = self.create(body, 'display-create')
+        self.assertEqual(draft.status_code, 201, draft.get_json())
+        posted = self.post(draft.get_json(), 'display-post')
+        self.assertEqual(posted.status_code, 200, posted.get_json())
+        with closing(self.connect()) as con:
+            left = {row['location_id']: row['quantity'] for row in con.execute(
+                """SELECT location_id, quantity FROM inventory_balances
+                   WHERE product_id=? AND disposition='saleable'""", (self.product_id,))}
+            locations = [row[0] for row in con.execute(
+                'SELECT location_id FROM sale_lines WHERE sale_id=? ORDER BY line_no',
+                (draft.get_json()['sale_id'],))]
+        self.assertEqual((left[self.floor], left[display]), (4, 0))
+        self.assertEqual(locations, [self.floor, display])
+        for extra, status in (({'from_display': 'yes'}, 400), ({'from_display': True, 'open_set_id': 1}, 400)):
+            bad = self.create({**body, 'source': {**body['source'], 'reference': f'bad-{status}-{len(extra)}'},
+                               'lines': [{**line, **extra}, line]}, f'bad-{len(extra)}')
+            self.assertEqual(bad.status_code, status, bad.get_json())
+        with closing(self.connect()) as con:
+            con.execute('UPDATE inventory_locations SET is_active=0 WHERE id=?', (display,))
+            con.commit()
+        gone = self.create({**body, 'source': {**body['source'], 'reference': 'no-display'}}, 'no-display')
+        self.assertEqual((gone.status_code, gone.get_json()['code']), (409, 'display_location_missing'))
+
     def test_planned_shortage_leaves_draft_and_no_movement(self):
         draft = self.create(self.sale_body(quantity=6), 'sale-create-short').get_json()
         response = self.post(draft, 'sale-post-short')

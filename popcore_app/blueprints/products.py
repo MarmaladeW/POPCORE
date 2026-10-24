@@ -1131,9 +1131,10 @@ def export_identity_sheet():
     import identity_sheet
     store_code = request.args.get('store_code', '').strip().upper()
     unverified = request.args.get('unverified', '') in ('1', 'true')
+    suggest = request.args.get('suggest', '') in ('1', 'true')
     con = get_db()
     try:
-        text, _ = identity_sheet.export_csv(con, store_code or None, unverified)
+        text, _ = identity_sheet.export_csv(con, store_code or None, unverified, suggest)
     except ValueError as exc:
         return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
     finally:

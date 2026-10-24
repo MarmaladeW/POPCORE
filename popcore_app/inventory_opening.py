@@ -33,13 +33,16 @@ class OpeningCountError(Exception):
 
 
 def legacy_column(location_code):
-    """Legacy stock column that the compatibility projection maps a location to."""
+    """Legacy stock column that the compatibility projection maps a location to (display has none)."""
+    if location_code == 'display':
+        return None
     return {'floor': 'instore_qty', 'claw': 'claw_qty'}.get(location_code, 'upstairs_qty')
 
 
 def trusts_legacy(location_code):
-    """Legacy claw_qty overlapped the floor count, so it is not compared or kept."""
-    return location_code != 'claw'
+    """Legacy claw_qty overlapped the floor count, and display never had a legacy column,
+    so neither is compared or kept."""
+    return location_code not in ('claw', 'display')
 
 
 def active_locations(con):
@@ -75,9 +78,12 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
     where = ''
     params = []
     if scope == 'legacy':
+        # A sealed set (整端) has no legacy stock of its own; it is listed with its blind box.
         where = """WHERE EXISTS (
-            SELECT 1 FROM stock st WHERE st.product_id=p.id AND st.store_id=?
-              AND (st.instore_qty != 0 OR st.upstairs_qty != 0 OR st.claw_qty != 0))"""
+            SELECT 1 FROM stock st WHERE st.store_id=?
+              AND (st.instore_qty != 0 OR st.upstairs_qty != 0 OR st.claw_qty != 0)
+              AND (st.product_id=p.id OR st.product_id IN (
+                   SELECT target_product_id FROM product_conversions WHERE source_product_id=p.id)))"""
         params.append(location['store_id'])
     rows = con.execute(
         f"""SELECT p.id, p.sku, p.jizhanming, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS name,

@@ -29,7 +29,17 @@ SNAPSHOT = ('series_id', 'stock_form', 'stock_unit', 'design_name', 'identity_st
 MAX_SERIES_NAME = 200
 
 
-def export_csv(con, store_code=None, unverified_only=False):
+# Suggested identity for a blank row, from the shop's product type: blind boxes are counted in boxes,
+# blister packs, big figures and accessories in pieces. Untyped products stay blank for review.
+SUGGESTED_IDENTITY = {
+    '盲盒': ('random_box', 'box'), '盲盒（杂项）': ('random_box', 'box'),
+    '吊卡': ('ordinary', 'piece'), '大娃': ('ordinary', 'piece'), '大娃 400%': ('ordinary', 'piece'),
+    '大娃 1000%': ('ordinary', 'piece'), '周边': ('ordinary', 'piece'), '配件': ('ordinary', 'piece'),
+    '积木 Blocks': ('ordinary', 'piece'),
+}
+
+
+def export_csv(con, store_code=None, unverified_only=False, suggest=False):
     filters, params = [], []
     if store_code:
         store = con.execute('SELECT id FROM stores WHERE code=?', (store_code,)).fetchone()
@@ -44,12 +54,17 @@ def export_csv(con, store_code=None, unverified_only=False):
     rows = con.execute(f'''
         SELECT p.id AS product_id, p.sku, p.name_cn_en AS name, p.jizhanming,
                p.ip_series AS legacy_series, p.series_id, ps.name AS series,
-               p.stock_form, p.stock_unit, p.design_name, p.identity_status
+               p.stock_form, p.stock_unit, p.design_name, p.identity_status, p.product_type
         FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id
         {where}
         ORDER BY p.ip_series, p.sku, p.id''', params).fetchall()
     lines = ['﻿' + ','.join(SHEET_HEADERS)]
-    lines += [','.join(esc_csv(row[column]) for column in SHEET_COLUMNS) for row in rows]
+    for row in rows:
+        values = dict(row)
+        if suggest and not values['stock_form'] and not values['stock_unit']:
+            values['stock_form'], values['stock_unit'] = SUGGESTED_IDENTITY.get(
+                (values['product_type'] or '').strip(), (None, None))
+        lines.append(','.join(esc_csv(values[column]) for column in SHEET_COLUMNS))
     return '\n'.join(lines), len(rows)
 
 

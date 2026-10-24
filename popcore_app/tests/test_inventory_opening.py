@@ -96,7 +96,9 @@ class OpeningCountTests(IsolatedApiCase):
             self._sheet('DT', 'floor', {'OPEN-BOX': '5', 'OPEN-SET': '0'}),
             self._sheet('DT', 'upstairs', {'OPEN-BOX': '6', 'OPEN-SET': '0'}),
             self._sheet('DT', 'claw', {'OPEN-BOX': '1'}),
+            self._sheet('DT', 'display', {'OPEN-BOX': '1'}),
             self._sheet('MK', 'floor', {'OPEN-DESIGN': '2'}),
+            self._sheet('MK', 'display', {'OPEN-DESIGN': '1'}),
         ]
         rows = []
         for path in paths:
@@ -230,11 +232,11 @@ class OpeningCountTests(IsolatedApiCase):
         report = self._review(rows)
         missing = sorted(e['message'].split()[0] for e in report['errors']
                          if e['code'] == 'location_not_counted')
-        self.assertEqual(missing, ['DT-claw', 'DT-upstairs', 'MK-floor', 'MK-warehouse'])
+        self.assertEqual(missing, ['DT-claw', 'DT-display', 'DT-upstairs', 'MK-display', 'MK-floor', 'MK-warehouse'])
         self.assertNotIn('uncounted_legacy_stock', self._codes(report))
         floor_only = self._review(rows + [self._row(location='upstairs', sku='OPEN-BOX',
                                                     count='6')],
-                                  empty_locations=['DT-claw', 'MK-floor', 'MK-warehouse'])
+                                  empty_locations=['DT-claw', 'DT-display', 'MK-display', 'MK-floor', 'MK-warehouse'])
         uncounted = {e['product_id'] for e in floor_only['errors']
                      if e['code'] == 'uncounted_legacy_stock'}
         self.assertEqual(uncounted, {self.set, self.design})
@@ -302,7 +304,7 @@ class OpeningCountTests(IsolatedApiCase):
             scope = con.execute(
                 'SELECT opening_verified, opening_document_id FROM inventory_scope_state'
             ).fetchall()
-            self.assertEqual(len(scope), 5)
+            self.assertEqual(len(scope), 7)
             self.assertEqual({tuple(row) for row in scope}, {(1, document_id)})
             document = con.execute(
                 'SELECT kind, actor_sub, business_date, request_key FROM inventory_documents'
@@ -316,7 +318,9 @@ class OpeningCountTests(IsolatedApiCase):
             self.assertEqual(balances, {('OPEN-BOX', 'floor'): 5,
                                         ('OPEN-BOX', 'upstairs'): 6,
                                         ('OPEN-BOX', 'claw'): 1,
-                                        ('OPEN-DESIGN', 'floor'): 2})
+                                        ('OPEN-BOX', 'display'): 1,
+                                        ('OPEN-DESIGN', 'floor'): 2,
+                                        ('OPEN-DESIGN', 'display'): 1})
             stock = {r['sku']: (r['instore_qty'], r['upstairs_qty'], r['claw_qty'])
                      for r in con.execute(
                 """SELECT p.sku, s.instore_qty, s.upstairs_qty, s.claw_qty
@@ -402,24 +406,24 @@ class OpeningCountTests(IsolatedApiCase):
                  self._sheet('DT', 'upstairs', {'OPEN-BOX': '6', 'OPEN-SET': '0'}),
                  self._sheet('DT', 'claw', {'OPEN-BOX': '1'}),
                  self._sheet('MK', 'floor', {'OPEN-DESIGN': '2'})]
+        empty = ['--empty-location', 'MK-warehouse', '--empty-location', 'DT-display',
+                 '--empty-location', 'MK-display']
         before = self.snapshot(LEDGER_TABLES)
         report_path = self.folder / 'report.json'
         report = opening_cli(['intake', '--db', db.DB_PATH, *map(str, paths),
-                              '--empty-location', 'MK-warehouse',
-                              '--business-date', '2026-10-20', '--report', str(report_path)])
+                              *empty, '--business-date', '2026-10-20', '--report', str(report_path)])
         self.assertTrue(report['dry_run'])
         self.assertTrue(report['ready_to_apply'])
         self.assertTrue(report_path.exists())
         self.assertEqual(self.snapshot(LEDGER_TABLES), before)
         with self.assertRaises(SystemExit):
             opening_cli(['intake', '--db', db.DB_PATH, *map(str, paths),
-                         '--empty-location', 'MK-warehouse', '--apply'])
+                         *empty, '--apply'])
         with self.assertRaises(SystemExit):
             opening_cli(['intake', '--db', db.DB_PATH, str(paths[0])])
         self.assertEqual(self.snapshot(LEDGER_TABLES), before)
         applied = opening_cli(['intake', '--db', db.DB_PATH, *map(str, paths),
-                               '--empty-location', 'MK-warehouse',
-                               '--business-date', '2026-10-20', '--apply',
+                               *empty, '--business-date', '2026-10-20', '--apply',
                                '--actor-sub', ADMIN_SUB,
                                '--backup', str(self.folder / 'cli-backup.db')])
         self.assertTrue(applied['applied'])

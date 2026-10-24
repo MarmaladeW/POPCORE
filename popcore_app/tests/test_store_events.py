@@ -1,4 +1,4 @@
-"""Store activity stays attributed and scoped; only claw refills and prizes move stock."""
+"""Store activity stays attributed and scoped; claw refills, prizes and display arrivals move stock."""
 from contextlib import closing
 from datetime import date, timedelta
 import json
@@ -79,6 +79,44 @@ class StoreEventsTests(ReceivingFixture):
             self.assertEqual(tuple(stock),(7,2))
         self.assertIn('入娃娃机: 1',self.get().get_json()['summary_text'])
 
+    def test_display_arrival_moves_from_stock_or_arrives_opened(self):
+        with closing(self.connect()) as con:
+            display = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='display'",
+                (self.store_id,)).fetchone()[0]
+            con.execute("UPDATE inventory_scope_state SET opening_verified=1 WHERE location_id=?",(display,))
+            con.commit()
+        taken = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=2,
+            source_location_id=self.floor),'from-floor')
+        self.assertEqual(taken.status_code,201,taken.get_json())
+        self.assertEqual(self.balances(),{self.floor:8,self.claw:5,display:2})
+        opened = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1,
+            note='Arrived opened'),'arrived')
+        self.assertEqual(opened.status_code,201,opened.get_json())
+        self.assertEqual(self.balances(),{self.floor:8,self.claw:5,display:3})
+        with closing(self.connect()) as con:
+            kinds = {row['id']:(row['kind'],row['source_id']) for row in con.execute(
+                'SELECT id,kind,source_id FROM inventory_documents')}
+            self.assertEqual(kinds[taken.get_json()['inventory_document_id']],('move','from-floor:display'))
+            self.assertEqual(kinds[opened.get_json()['inventory_document_id']],('receipt','arrived:display'))
+            # Display has no legacy column: only the floor it came from changes in the old stock table.
+            stock = con.execute('SELECT instore_qty,upstairs_qty FROM stock WHERE product_id=? AND store_id=?',
+                (self.product_id,self.store_id)).fetchone()
+            self.assertEqual(stock['instore_qty'],8)
+        before = self.snapshot(('inventory_documents','inventory_balances','store_events'))
+        for source in (self.claw,display):
+            bad = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1,
+                source_location_id=source),f'bad-{source}')
+            self.assertEqual(bad.status_code,400,bad.get_json())
+        short = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1,
+            source_location_id=self.upstairs),'empty-back')
+        self.assertEqual((short.status_code,short.get_json()['code']),(409,'insufficient_stock'))
+        with closing(self.connect()) as con:
+            con.execute('UPDATE inventory_locations SET is_active=0 WHERE id=?',(display,))
+            con.commit()
+        missing = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1),'gone')
+        self.assertEqual((missing.status_code,missing.get_json()['code']),(409,'display_location_missing'))
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','store_events')),before)
+
     def test_refill_needs_a_floor_or_back_source_and_prizes_need_claw_stock(self):
         before = self.snapshot(('inventory_documents','inventory_balances','store_events','stock'))
         refill = dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,quantity=1)
@@ -103,11 +141,11 @@ class StoreEventsTests(ReceivingFixture):
             con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|staff'")
             con.commit()
         self.assertEqual(self.post({**refill,'source_location_id':self.floor},'no-access').status_code,403)
+        # 入 display moves stock in authoritative mode, so it needs inventory access too.
         display = self.post(dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1),'display')
-        self.assertEqual(display.status_code,201,display.get_json())
-        self.assertIsNone(display.get_json()['inventory_document_id'])
-        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances')),
-            {key:before[key] for key in ('inventory_documents','inventory_balances')})
+        self.assertEqual(display.status_code,403,display.get_json())
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','store_events')),
+            {key:before[key] for key in ('inventory_documents','inventory_balances','store_events')})
 
     def test_evening_check_counts_the_floor_not_the_claw(self):
         with closing(self.connect()) as con:

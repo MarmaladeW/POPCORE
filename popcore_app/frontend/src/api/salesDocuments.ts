@@ -10,6 +10,8 @@ export interface SaleLineInput {
   unit_price_cents?: number | null
   source_tax_cents?: number | null
   open_set_id?: number
+  /** Sold from the store's display location instead of the floor. */
+  from_display?: boolean
 }
 
 export interface SaleInput {

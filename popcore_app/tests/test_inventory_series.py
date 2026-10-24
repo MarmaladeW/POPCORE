@@ -13,6 +13,7 @@ class InventorySeriesTests(IsolatedApiCase):
             self.floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (self.store_id,)).fetchone()[0]
             self.back = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='upstairs'", (self.store_id,)).fetchone()[0]
             self.claw = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='claw'", (self.store_id,)).fetchone()[0]
+            self.display = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='display'", (self.store_id,)).fetchone()[0]
             self.other_floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (self.other_store,)).fetchone()[0]
             con.execute("INSERT INTO inventory_access VALUES ('auth0|staff',?)", (self.store_id,))
             con.execute("UPDATE inventory_mode SET mode='authoritative'")
@@ -43,7 +44,7 @@ class InventorySeriesTests(IsolatedApiCase):
         data = response.get_json()
         self.assertEqual(data['mode'],'authoritative')
         self.assertEqual(data['unassigned_count'],1)
-        self.assertEqual({row['id'] for row in data['locations']},{self.floor,self.back,self.claw})
+        self.assertEqual({row['id'] for row in data['locations']},{self.floor,self.back,self.claw,self.display})
         rows = {row['design_name'] or row['stock_form']:row for row in data['series'][0]['products']}
         def balance(name, location, disposition='saleable'):
             return next(row for row in rows[name]['balances'] if row['location_id']==location and row['disposition']==disposition)
@@ -93,7 +94,7 @@ class InventorySeriesTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute("INSERT INTO inventory_access VALUES ('auth0|staff',?)",(self.other_store,))
             con.execute('UPDATE stores SET is_active=0 WHERE id=?',(self.other_store,))
-            con.execute('UPDATE inventory_locations SET is_active=0 WHERE id IN (?,?)',(self.back,self.claw))
+            con.execute('UPDATE inventory_locations SET is_active=0 WHERE id IN (?,?,?)',(self.back,self.claw,self.display))
             con.commit()
         data = self.get('store_code=ALL').get_json()
         self.assertEqual([row['id'] for row in data['locations']],[self.floor])
