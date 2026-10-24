@@ -1,0 +1,47 @@
+/* Restock (Figma Restock page): floor suggestions beside today's sheets on desktop. */
+.pc-restock-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.pc-restock-page-tabs .ant-tabs-nav { margin-bottom: 12px; }
+.pc-restock-page-tabs .ant-tabs-tab small, .pc-restock-tabs .pc-step-tab small { color: var(--text-tertiary); font-size: 11px; }
+.pc-restock-new.ant-btn { width: 100%; min-height: 48px; margin-bottom: 12px; font-size: 14px; font-weight: 600; }
+.pc-restock .pc-section-head { padding: 0 0 8px; }
+.pc-restock-list { display: grid; }
+.pc-restock-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+.pc-restock-row + .pc-restock-row { border-top: 1px solid var(--line-hair); }
+.pc-restock-open { display: grid; flex: 1; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pc-restock-open strong { font-size: 13px; font-weight: 500; line-height: 19.5px; }
+.pc-restock-open small { color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; }
+.pc-restock-short { color: var(--status-out-ink); font-weight: 600; }
+.pc-restock-full { color: var(--status-ok-ink); font-weight: 600; }
+.pc-restock-actions { display: inline-flex; gap: 6px; }
+.pc-restock-kept { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-restock-suggest .ant-alert { margin-bottom: 8px; }
+.pc-restock-table.ant-table-wrapper { border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-th { display: grid; color: var(--text-secondary); font-size: 11.5px; font-weight: 400; line-height: 16px; }
+.pc-th small { color: var(--text-tertiary); font-size: 10.5px; }
+.pc-td-name { display: grid; font-size: 12.5px; font-weight: 500; }
+.pc-td-name small { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
+.pc-kraft-cell { background: var(--kraft-tile) !important; color: var(--kraft-ink); }
+.pc-restock-note { margin: 8px 0 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; }
+.pc-restock-status { display: inline-flex; margin-left: 10px; font-size: 12px; font-weight: 400; }
+.pc-restock-steps { padding: 12px 24px 4px; border-bottom: 1px solid var(--line-hair); }
+.pc-restock-tabs { padding: 0 16px; }
+.pc-step-tab b { font-weight: 500; }
+
+@media (max-width: 1100px) {
+  .pc-restock-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767.98px) {
+  .pc-restock-grid { gap: 12px; }
+  .pc-restock-actions .ant-btn { min-height: 32px; }
+  .pc-restock-row { flex-wrap: wrap; }
+  .pc-restock-actions { width: 100%; justify-content: flex-end; }
+}
+.pc-restock-fold { border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-restock-fold > summary { display: flex; align-items: center; gap: 12px; padding: 14px; list-style: none; cursor: pointer; color: var(--text-secondary); }
+.pc-restock-fold > summary::-webkit-details-marker { display: none; }
+.pc-restock-fold > summary .pc-nav-text { display: grid; flex: 1; }
+.pc-restock-fold > summary strong { color: var(--text-primary); font-size: 13.5px; font-weight: 500; }
+.pc-restock-fold > summary small { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-restock-fold[open] > summary { border-bottom: 1px solid var(--line-hair); }
+.pc-restock-fold .pc-restock-table.ant-table-wrapper { border: 0; }
+.pc-restock-fold .pc-restock-note { padding: 0 14px 12px; }

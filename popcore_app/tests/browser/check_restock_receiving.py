@@ -42,7 +42,7 @@ async def checks(browser, fixture):
     await page.route('**'+path+'/receive',uncertain_receive)
     await page.goto(BASE+f'/restock?session_id={fixture.session_id}')
     modal = page.get_by_role('dialog')
-    await modal.get_by_role('tab',name='Receive',exact=True).click()
+    await modal.get_by_role('tab',name='收货 Receive',exact=True).click()
     amount = modal.get_by_label('Line 1 quantity',exact=True)
     # Substring names: on a slow runner Ant Design can leave its zero-width loading icon
     # (aria-label "loading") inside these buttons after a request, which changes the exact name.
@@ -52,9 +52,9 @@ async def checks(browser, fixture):
     async def reopen_receive():
         # Every saved action reloads the session, which switches back to the picking tab.
         # Wait for that switch before returning to Receive, or it lands after the click.
-        await expect(modal.get_by_role('tab',name='仓库拣货',exact=False)).to_have_attribute('aria-selected','true')
-        await modal.get_by_role('tab',name='Receive',exact=True).click()
-        await expect(modal.get_by_role('tab',name='Receive',exact=True)).to_have_attribute('aria-selected','true')
+        await expect(modal.get_by_role('tab',name='拣货 Pick',exact=False)).to_have_attribute('aria-selected','true')
+        await modal.get_by_role('tab',name='收货 Receive',exact=True).click()
+        await expect(modal.get_by_role('tab',name='收货 Receive',exact=True)).to_have_attribute('aria-selected','true')
     await amount.fill('0')
     await expect(receive).to_be_disabled()
     await amount.fill('5')
@@ -66,7 +66,7 @@ async def checks(browser, fixture):
     await expect(return_to_source).to_be_disabled()
     await expect(modal.get_by_placeholder('Shortage reason')).to_be_disabled()
     await expect(modal.get_by_role('button',name='Close',exact=True)).to_have_count(0)
-    await expect(modal.get_by_role('tab',name='仓库拣货',exact=False)).to_be_disabled()
+    await expect(modal.get_by_role('tab',name='拣货 Pick',exact=False)).to_be_disabled()
     await page.keyboard.press('Escape')
     await expect(modal).to_be_visible()
     detail = fixture.client.get(path,headers=fixture.headers()).get_json()

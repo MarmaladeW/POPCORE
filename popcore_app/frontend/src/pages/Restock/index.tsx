@@ -17,6 +17,11 @@ import EveningCheckStep from './EveningCheckStep'
 import BestsellerManage from './BestsellerManage'
 import HistoryTab from './HistoryTab'
 import SessionModal from './SessionModal'
+import PageHeader from '../../components/pc/PageHeader'
+import { SectionHeading } from '../../components/pc/Panel'
+import Icon from '../../components/pc/Icon'
+import { useIsPhone } from '../../components/pc/useIsPhone'
+import './restock.css'
 
 const { Title } = Typography
 const { useBreakpoint } = Grid
@@ -209,40 +214,33 @@ function TodaySessions() {
     },
   ]
 
+  const rows = sessions.map(s => <div key={s.id} className="pc-restock-row">
+    <button type="button" className="pc-restock-open" onClick={() => setOpenId(s.id)} aria-label={`打开 补货单 #${s.id}`}>
+      <strong>{dayjs(s.created_at).format('HH:mm')} · {s.item_count} 种 · 申请 {s.total_requested} 箱</strong>
+      <small>已找到 {s.status === 'completed' ? <b className={s.total_found < s.total_requested ? 'pc-restock-short' : 'pc-restock-full'}>{s.total_found}</b> : '—'}</small>
+    </button>
+    <span className="pc-hm-status"><i className={`pc-dot pc-dot-${s.status === 'completed' ? 'ok' : 'warn'}`} aria-hidden="true" />{STATUS_LABELS[s.status]}</span>
+    <span className="pc-restock-actions">
+      <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setOpenId(s.id)}>打开</Button>
+      {s.status !== 'completed'
+        ? <Popconfirm title="确认撤销这条补货记录？" okText="撤销" okButtonProps={{ danger: true }} onConfirm={() => doDelete(s.id)}>
+          <Button size="small" danger loading={deletingId === s.id}>撤销</Button>
+        </Popconfirm>
+        : <span className="pc-restock-kept">保留记录</span>}
+    </span>
+  </div>)
+
   return (
     <>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ color: '#6b7280', fontSize: 13 }}>今日 {dayjs().format('MM月DD日')} 补货记录</span>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          loading={creating}
-          onClick={handleCreate}
-        >
-          新建补货
-        </Button>
-      </div>
+      <Button className="pc-restock-new" type="primary" size="large" icon={<PlusOutlined />} loading={creating} onClick={handleCreate}>新建补货单 New restock sheet</Button>
       {loadError && <Alert type="error" showIcon message={loadError} style={{ marginBottom: 12 }} />}
-
+      <SectionHeading zh="今日补货单" en={`Today's sheets · ${dayjs().format('MM月DD日')}`} />
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
+        <div className="pc-panel pc-quiet"><Spin /></div>
       ) : sessions.length === 0 ? (
-        <Empty
-          description="今日暂无补货记录"
-          style={{ padding: '40px 0' }}
-        >
-          <Button type="primary" icon={<PlusOutlined />} loading={creating} onClick={handleCreate}>
-            新建补货
-          </Button>
-        </Empty>
+        <div className="pc-panel pc-quiet"><strong>今日暂无补货记录</strong>No restock sheets yet today</div>
       ) : (
-        <Table
-          rowKey="id"
-          columns={columns}
-          dataSource={sessions}
-          size="small"
-          pagination={false}
-        />
+        <div className="pc-panel pc-restock-list">{rows}</div>
       )}
 
       <SessionModal
@@ -259,43 +257,38 @@ export default function RestockPage() {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
   const isAdmin  = useHasRole('admin')
+  const selectedStore = useAppStore(state => state.selectedStore)
 
   const tabItems = [
     {
       key:      'today',
-      label:    <span><PlusOutlined /> 今日补货</span>,
+      label:    <>今日补货 <small>Today</small></>,
       children: <TodaySessions />,
     },
     {
       key:      'evening',
-      label:    <span><AuditOutlined /> 晚盘核查</span>,
+      label:    <>晚盘核查 <small>Evening count</small></>,
       children: <EveningCheckStep />,
     },
     {
       key:      'history',
-      label:    <span><HistoryOutlined /> 历史记录</span>,
+      label:    <>历史记录 <small>History</small></>,
       children: <HistoryTab />,
     },
     ...(isAdmin ? [{
       key:      'bestsellers',
-      label:    <span><StarOutlined /> 畅销品管理</span>,
+      label:    <>畅销品管理 <small>Bestsellers</small></>,
       children: <BestsellerManage />,
     }] : []),
   ]
 
   return (
-    <div>
-      <div style={{ marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>夜间补货 & 晚盘</Title>
+    <div className="pc-restock">
+      <PageHeader title="夜间补货" sub={isMobile ? `Restock · ${dayjs().format('M月D日')}` : `Restock${selectedStore?.name && selectedStore.code !== 'ALL' ? ` · ${selectedStore.name}` : ''}`} />
+      <div className="pc-restock-grid">
+        <RestockSuggestions />
+        <Tabs className="pc-restock-page-tabs" defaultActiveKey="today" items={tabItems} size={isMobile ? 'small' : 'middle'} />
       </div>
-
-      <Tabs
-        defaultActiveKey="today"
-        items={tabItems}
-        size={isMobile ? 'small' : 'middle'}
-        style={{ background: '#fff', padding: isMobile ? '0 8px 8px' : '0 16px 16px', borderRadius: 8 }}
-      />
-      <RestockSuggestions />
     </div>
   )
 }
@@ -305,5 +298,10 @@ function RestockSuggestions(){
   const selectedStore=useAppStore(state=>state.selectedStore)
   const[data,setData]=useState<Suggestion[]>(),[error,setError]=useState('')
   useEffect(()=>{if(!selectedStore||selectedStore.code==='ALL'){setData(undefined);setError('Select one store to view floor suggestions.');return}let current=true;setData(undefined);setError('');client.get('/inventory/locations').then(response=>{const floor=response.data.find((location:{store_id:number;code:string})=>location.store_id===selectedStore.id&&location.code==='floor');if(!floor)throw new Error('floor');return client.get('/goods/restock-suggestions',{params:{location_id:floor.id}})}).then(response=>{if(current)setData(response.data.items)}).catch(cause=>{if(current)setError(cause?.response?.data?.error||'Restock suggestions are unavailable because reviewed floor/back-stock configuration is missing.')});return()=>{current=false}},[selectedStore])
-  return <div style={{marginTop:16}}><Title level={5}>Floor suggestions</Title>{error&&<Alert type="info" showIcon message={error}/>} {data&&<Table rowKey="product_id" pagination={false} size="small" dataSource={data} columns={[{title:'Product',render:(_,row)=>`${row.name||row.sku} (${row.sku})`},{title:'Target',render:(_,row)=>`${row.min_quantity}–${row.max_quantity} ${row.unit}s`},{title:'Floor',dataIndex:'floor_quantity'},{title:'Available back',dataIndex:'available_back_quantity'},{title:'Inbound',dataIndex:'outstanding_inbound'},{title:'Suggested',render:(_,row)=><strong>{row.suggested_quantity} {row.unit}s</strong>}]}/>}<Typography.Text type="secondary">Read-only guidance. Suggestions never move stock or create a shipment; target editing requires a versioned read contract.</Typography.Text></div>
+  const head=(zh:string,en:string)=><span className="pc-th">{zh}<small>{en}</small></span>
+  const phone=useIsPhone()
+  const body=<>{error&&<Alert type="info" showIcon message={error}/>} {data&&<Table className="pc-restock-table" rowKey="product_id" pagination={false} size="small" dataSource={data} columns={[{title:head('产品','Product'),render:(_,row)=><span className="pc-td-name">{row.name||row.sku}<small>{row.sku}</small></span>},{title:head('目标','Target'),align:'right',render:(_,row)=>`${row.min_quantity}–${row.max_quantity} ${row.unit}s`},{title:head('楼面','Floor'),align:'right',dataIndex:'floor_quantity'},{title:head('楼上','Back'),align:'right',className:'pc-kraft-cell',dataIndex:'available_back_quantity'},{title:head('在途','Inbound'),align:'right',dataIndex:'outstanding_inbound'},{title:head('建议','Suggest'),align:'right',render:(_,row)=><strong>{row.suggested_quantity} {row.unit}s</strong>}]}/>}<p className="pc-restock-note">Read-only guidance. Suggestions never move stock or create a shipment; target editing requires a versioned read contract.</p></>
+  // Phone: one row that opens the list (Figma Restock · Phone 1); desktop: the table beside today's sheets.
+  if(phone)return <details className="pc-restock-suggest pc-restock-fold" aria-label="Floor suggestions"><summary><Icon name="up-2" size={18}/><span className="pc-nav-text"><strong>楼面建议补货 {data?data.length:'—'} 项</strong><small>Floor suggestions · 楼上有货</small></span><Icon name="right" size={16}/></summary>{body}</details>
+  return <section className="pc-restock-suggest" aria-label="Floor suggestions"><SectionHeading zh="楼面建议" en={`Floor suggestions${data?` · ${data.length}`:''}`}/>{body}</section>
 }

@@ -77,18 +77,18 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     {
       key:      'request',
       disabled: receivingBusy,
-      label:    <span><InboxOutlined /> 录入补货</span>,
+      label:    <span className="pc-step-tab"><b>录入</b> <small>Request</small></span>,
       children: session && !error && !loading ? <RequestStep session={session} onRefresh={loadSession} /> : null,
     },
     {
       key:      'picking',
-      label:    <span><CheckSquareOutlined /> 仓库拣货</span>,
+      label:    <span className="pc-step-tab"><b>拣货</b> <small>Pick</small></span>,
       disabled: status === 'pending' || receivingBusy,
       children: session && !error && !loading ? <PickingStep session={session} onRefresh={loadSession} /> : null,
     },
     {
       key: 'receiving',
-      label: 'Receive',
+      label: <span className="pc-step-tab"><b>收货</b> <small>Receive</small></span>,
       disabled: !session?.delivery,
       children: session && !error && !loading ? <ReceivingStep session={session} onRefresh={loadSession} onBusy={setReceivingBusy} /> : null,
     },
@@ -100,9 +100,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
         <span style={{ marginLeft: 10, fontSize: 13, color: '#6b7280' }}>
           {dayjs(session.created_at).format('HH:mm')}
         </span>
-        <Tag color={STATUS_COLORS[status]} style={{ marginLeft: 10 }}>
-          {STATUS_LABELS[status]}
-        </Tag>
+        <span className="pc-hm-status pc-restock-status"><i className={`pc-dot pc-dot-${status === 'completed' ? 'ok' : 'warn'}`} aria-hidden="true" />{STATUS_LABELS[status]}</span>
       </>
     : '补货单'
 
@@ -128,7 +126,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
         <Alert type="error" showIcon message={error} />
       ) : (
         <>
-          <div style={{ padding: '12px 24px 4px', borderBottom: '1px solid #f0f0f0' }}>
+          <div className="pc-restock-steps">
             <Steps
               size="small"
               current={stepIndex}
@@ -146,7 +144,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
             onChange={setActiveTab}
             items={tabItems}
             size="middle"
-            style={{ padding: '0 16px' }}
+            className="pc-restock-tabs"
           />
         </>
       )}
