@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
+import type { CSSProperties } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
@@ -75,11 +76,11 @@ const UNCOVERED_COLOR = '#ef4444'
 
 type ViewType = 'dayGridMonth' | 'dayGridFortnight' | 'timeGridWeek' | 'timeGridDay'
 
-const VIEW_OPTIONS: { value: ViewType; label: string }[] = [
-  { value: 'dayGridMonth', label: 'Month' },
-  { value: 'dayGridFortnight', label: 'Two weeks' },
-  { value: 'timeGridWeek', label: 'Week' },
-  { value: 'timeGridDay',  label: 'Day' },
+const VIEW_OPTIONS: { value: ViewType; label: string; zh: string }[] = [
+  { value: 'dayGridMonth', label: 'Month', zh: '月' },
+  { value: 'dayGridFortnight', label: 'Two weeks', zh: '两周' },
+  { value: 'timeGridWeek', label: 'Week', zh: '周' },
+  { value: 'timeGridDay',  label: 'Day', zh: '日' },
 ]
 
 export default function ManagerCalendar() {
@@ -467,7 +468,7 @@ export default function ManagerCalendar() {
             className="pc-mobile-shift"
             aria-label={accessibleLabel}
             title={accessibleLabel}
-            style={{ background: employeeColor, color: textColorOn(employeeColor) }}
+            style={{ '--emp': employeeColor } as CSSProperties}
           >
             <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}{finished && ' ✓'}</span>
             <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
@@ -478,7 +479,7 @@ export default function ManagerCalendar() {
       const span = p.span ?? { left: 0, width: 1 }
       return (
         <div className={cn('pc-shift pc-shift-bar', p.is_trainee && 'pc-shift-bar-trainee', !!halfTag && 'pc-shift-bar-half')} title={tip} aria-label={tip}
-          style={{ marginLeft: `${span.left * 100}%`, width: `${span.width * 100}%`, background: p.emp_color }}>
+          style={{ marginLeft: `${span.left * 100}%`, width: `${span.width * 100}%`, '--emp': p.emp_color } as CSSProperties}>
           <div className="pc-shift-heading">
             {p.is_trainee && <span className="pc-shift-t">T</span>}
             <span className="pc-shift-name">{p.emp_name}</span>
@@ -515,8 +516,8 @@ export default function ManagerCalendar() {
       {loadError && <Alert type="error" showIcon message={loadError} action={<Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end, viewType)}>Retry</Button>} />}
       {loading && <span role="status">Loading schedule…</span>}
       <div className="pc-calendar-mode flex flex-wrap gap-2" aria-label="Calendar contents">
-        <Button variant={showAvailability ? 'outline' : 'default'} aria-pressed={!showAvailability} onClick={() => setShowAvailability(false)}>Assigned shifts</Button>
-        <Button variant={showAvailability ? 'default' : 'outline'} aria-pressed={showAvailability} onClick={() => setShowAvailability(true)}>Availability</Button>
+        <Button variant={showAvailability ? 'outline' : 'default'} aria-pressed={!showAvailability} aria-label="Assigned shifts" onClick={() => setShowAvailability(false)}>已排班 Shifts</Button>
+        <Button variant={showAvailability ? 'default' : 'outline'} aria-pressed={showAvailability} aria-label="Availability" onClick={() => setShowAvailability(true)}>可上时间 Availability</Button>
         <span className="pc-calendar-hint text-sm text-muted-foreground self-center">{showAvailability ? 'Submitted hours employees can work. Select a date to assign.' : 'Assigned shifts. Select a date to see who is available.'}</span>
       </div>
 
@@ -532,7 +533,7 @@ export default function ManagerCalendar() {
           </Button>
         </div>
         <div className="grid grid-cols-[auto_1fr] items-center gap-2 sm:flex">
-          <Button variant="outline" size="sm" className="h-8" onClick={() => eachCal((a) => a.gotoDate(viewType === 'dayGridFortnight' ? cycleStart(dayjs().format('YYYY-MM-DD')) : new Date()))}>Today</Button>
+          <Button variant="outline" size="sm" className="h-8" onClick={() => eachCal((a) => a.gotoDate(viewType === 'dayGridFortnight' ? cycleStart(dayjs().format('YYYY-MM-DD')) : new Date()))} aria-label="Today">今天</Button>
           <div className="pc-calendar-views flex min-w-0 rounded-lg border border-border overflow-hidden text-xs font-medium">
             {VIEW_OPTIONS.map((v, i) => (
               <button
@@ -546,7 +547,8 @@ export default function ManagerCalendar() {
                     : 'bg-background text-foreground hover:bg-muted',
                 )}
                 onClick={() => eachCal((a) => a.changeView(v.value, v.value === 'dayGridFortnight' ? cycleStart(dayjs(a.getDate()).format('YYYY-MM-DD')) : undefined))}
-              >{v.label}</button>
+                aria-label={v.label}
+              >{v.zh}</button>
             ))}
           </div>
         </div>
@@ -852,10 +854,9 @@ export default function ManagerCalendar() {
           </header>
           <div
             className={cn(
-              'pc-store-calendar-body rounded-xl border overflow-hidden',
+              'pc-store-calendar-body border overflow-hidden',
               isMobile && !isTimeGrid && 'pc-mobile-month',
             )}
-            style={{ borderColor: (st.color || '#6366f1') + '66' }}
           >
             <FullCalendar
               ref={(el) => { calRefs.current[st.code] = el }}

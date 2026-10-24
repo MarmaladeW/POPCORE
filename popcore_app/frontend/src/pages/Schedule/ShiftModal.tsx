@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Form, Select, Row, Col, Input, Radio, TimePicker, message } from 'antd'
-import dayjs, { type Dayjs } from 'dayjs'
+import { Form, Select, Row, Col, Input, Radio, message } from 'antd'
 import {
   createShift,
   updateShift,
@@ -18,6 +17,8 @@ import {
 import { scheduleApiErrorMessage } from './employeeScheduling'
 import { availabilityIssue } from './availabilityPeriod'
 import { finishesNextDay } from './schedulePresentation'
+import FinishInput from './FinishInput'
+import { INVALID_FINISH } from './finishTime'
 import { torontoDate } from '../Dashboard/todayPresentation'
 import { useAppStore } from '../../store'
 import { Button } from '@/components/ui/button'
@@ -351,7 +352,7 @@ export default function ShiftModal({
       <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
         <DialogContent className="pc-schedule-dialog" style={{ maxWidth: 480, maxHeight: '90dvh', overflowY: 'auto' }}>
           <DialogHeader>
-            <DialogTitle>{existing ? 'Edit shift' : 'Assign shift'} — {date ?? ''}</DialogTitle>
+            <DialogTitle>{existing ? '修改班' : '排班'} <span className="pc-dialog-en">{existing ? 'Edit shift' : 'Assign shift'}</span> · {date ?? ''}</DialogTitle>
           </DialogHeader>
 
           {/* Conflict warning panel */}
@@ -424,7 +425,7 @@ export default function ShiftModal({
                 <Col span={14}>
                   <Form.Item
                     name="employee_id"
-                    label="Employee"
+                    label="员工 Employee"
                     rules={[{ required: true, message: 'Select an employee' }]}
                   >
                     <Select
@@ -462,7 +463,7 @@ export default function ShiftModal({
                 <Col span={10}>
                   <Form.Item
                     name="store_code"
-                    label="Location"
+                    label="门店 Location"
                     rules={[{ required: true, message: 'Select a location' }]}
                   >
                     <Select
@@ -477,7 +478,7 @@ export default function ShiftModal({
                 </Col>
               </Row>
 
-              <Form.Item label="Shift type" style={{ marginBottom: 12 }}>
+              <Form.Item label={<>{'班次 '}<span>Shift type</span></>} style={{ marginBottom: 12 }}>
                 <Radio.Group
                   optionType="button"
                   className="pc-shift-types"
@@ -505,10 +506,10 @@ export default function ShiftModal({
               </Form.Item>
 
               <Row gutter={12}>
-                <Col span={12}>
+                <Col span={canRecordFinish ? 8 : 12}>
                   <Form.Item
                     name="start_time"
-                    label="Start time"
+                    label="开始 Start time"
                     rules={[{ required: true, message: 'Required' }]}
                   >
                     <Select
@@ -521,10 +522,10 @@ export default function ShiftModal({
                     />
                   </Form.Item>
                 </Col>
-                <Col span={12}>
+                <Col span={canRecordFinish ? 8 : 12}>
                   <Form.Item
                     name="end_time"
-                    label="End time"
+                    label="结束 End time"
                     dependencies={['start_time']}
                     rules={[
                       { required: true, message: 'Required' },
@@ -547,43 +548,37 @@ export default function ShiftModal({
                     />
                   </Form.Item>
                 </Col>
+                {canRecordFinish && <Col span={8}>
+                  <Form.Item
+                    name="actual_end_time"
+                    label="实际下班 Actual finish"
+                    dependencies={['start_time']}
+                    rules={[
+                      ({ getFieldValue }) => ({
+                        validator(_, value) {
+                          if (value === INVALID_FINISH) return Promise.reject(new Error('Type digits, e.g. 2134 for 21:34'))
+                          if (!value || !getFieldValue('start_time')) return Promise.resolve()
+                          if (value > getFieldValue('start_time') || finishesNextDay(getFieldValue('start_time'), value)) return Promise.resolve()
+                          return Promise.reject(new Error('Must be after start, or by 01:00 the next day'))
+                        },
+                      }),
+                    ]}
+                  >
+                    <FinishInput />
+                  </Form.Item>
+                </Col>}
               </Row>
+              {canRecordFinish && <p className="pc-finish-hint">
+                {watchedActualEnd && watchedActualEnd !== INVALID_FINISH && watchedStart && finishesNextDay(watchedStart, watchedActualEnd)
+                  ? `Counted as ${watchedActualEnd} the next day.`
+                  : 'Type digits only (2134 = 21:34). Hours are counted to this time, up to 01:00 the next day; leave empty if they finished on schedule.'}
+              </p>}
 
-              {canRecordFinish && (
-                <Form.Item
-                  name="actual_end_time"
-                  label="Actual finish (optional)"
-                  dependencies={['start_time']}
-                  extra={watchedActualEnd && watchedStart && finishesNextDay(watchedStart, watchedActualEnd)
-                    ? `Counted as ${watchedActualEnd} the next day.`
-                    : 'Set when they finished earlier or later than scheduled, up to 01:00 the next day. Hours are counted to this time.'}
-                  rules={[
-                    ({ getFieldValue }) => ({
-                      validator(_, value) {
-                        if (!value || !getFieldValue('start_time')) return Promise.resolve()
-                        if (value > getFieldValue('start_time') || finishesNextDay(getFieldValue('start_time'), value)) return Promise.resolve()
-                        return Promise.reject(new Error('Must be after start, or by 01:00 the next day'))
-                      },
-                    }),
-                  ]}
-                  getValueProps={(value?: string) => ({ value: value ? dayjs(value, 'HH:mm') : null })}
-                  normalize={(value: Dayjs | null) => (value ? value.format('HH:mm') : '')}
-                  style={{ marginBottom: 12 }}
-                >
-                  <TimePicker
-                    format="HH:mm"
-                    needConfirm={false}
-                    placeholder="e.g. 21:25"
-                    style={{ width: '100%' }}
-                    getPopupContainer={(trigger) => trigger.parentElement!}
-                  />
-                </Form.Item>
-              )}
 
               {(positionSelectOptions.length > 0) && (
                 <Form.Item
                   name="position"
-                  label="Position in store (optional)"
+                  label="岗位 Position (optional)"
                   style={{ marginBottom: 12 }}
                 >
                   <Select
@@ -595,7 +590,7 @@ export default function ShiftModal({
                 </Form.Item>
               )}
 
-              <Form.Item name="notes" label="Notes (optional)">
+              <Form.Item name="notes" label="备注 Notes (optional)">
                 <Input.TextArea rows={2} />
               </Form.Item>
             </Form>
@@ -627,11 +622,12 @@ export default function ShiftModal({
                     className="sm:mr-auto text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
                     onClick={handleDelete}
                     disabled={savePhase === 'checking'}
-                  >Delete</Button>
+                    aria-label="Delete"
+                  >删除 Delete</Button>
                 )}
-                <Button variant="outline" onClick={onClose}>Cancel</Button>
-                <Button onClick={() => handleSave()} disabled={savePhase === 'checking' || !!blockingIssue}>
-                  {savePhase === 'checking' ? 'Checking…' : 'Save'}
+                <Button variant="outline" aria-label="Cancel" onClick={onClose}>取消 Cancel</Button>
+                <Button onClick={() => handleSave()} disabled={savePhase === 'checking' || !!blockingIssue} aria-label={savePhase === 'checking' ? 'Checking…' : 'Save'}>
+                  {savePhase === 'checking' ? '检查中… Checking' : '保存 Save'}
                 </Button>
               </>
             )}

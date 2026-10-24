@@ -203,7 +203,7 @@ async def viewer_flow(browser):
     try:
         for path in ('/', '/schedule'):
             await page.goto(BASE + path)
-            await expect(page.get_by_role('heading', name='Schedule' if path == '/schedule' else 'Today / 今日', exact=True)).to_be_visible()
+            await expect(page.get_by_role('heading', name='排班' if path == '/schedule' else 'Today / 今日', exact=True)).to_be_visible()
             await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         assert not any(r['path'] == ENDPOINT for r in state.get('requests', []))
     finally:
