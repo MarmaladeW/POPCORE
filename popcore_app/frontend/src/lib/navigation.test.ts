@@ -97,7 +97,7 @@ test('nested pages light up their section', () => {
   assert.equal(activeSection('/goods/receiving', false), '/incoming')
   assert.equal(activeSection('/sales/day/2026-10-22', true), '/summary')
   assert.equal(activeSection('/sales', true), '/summary')
-  assert.equal(activeSection('/sales/matching', true), '/summary')
+  assert.equal(activeSection('/sales/matching', true), '/reports')
   assert.equal(activeSection('/sales/documents/4', true), '/summary')
   assert.equal(activeSection('/sales/documents/4', false), '/checkout')
   assert.equal(activeSection('/products/clover-matching', true), '/products')

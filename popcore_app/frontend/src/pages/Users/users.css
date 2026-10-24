@@ -1,0 +1,3 @@
+/* 员工 Users (Figma Users): actions in the header on desktop, a row on phone and inside Settings. */
+.pc-users-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.pc-users-note { margin: 0 0 12px; color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }

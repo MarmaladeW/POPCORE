@@ -8,6 +8,8 @@ import { Pipette, Plus, RefreshCw } from 'lucide-react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import PageHeader from '../../components/pc/PageHeader'
+import './users.css'
 import { EMPLOYEE_PALETTE } from '../../lib/palette'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
@@ -192,7 +194,7 @@ function StoreSelect({ entry, storeOptions, onChange }: {
   )
 }
 
-export default function UsersPage() {
+export default function UsersPage({ embedded = false }: { embedded?: boolean }) {
   const isAdmin   = useHasRole('admin')
   const isManager = useHasRole('manager')
   const { user: me } = useAuth0()
@@ -588,14 +590,20 @@ export default function UsersPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <Button onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户</Button>
-        <Button variant="outline" disabled={accessSaving} onClick={() => { load(); loadStores(); void loadAccess() }}>
-          <RefreshCw className="h-4 w-4 mr-1" />刷新
-        </Button>
-      </div>
+      {/* Standalone page: actions in the header (Figma Users); inside Settings: a row above the table. */}
+      {(() => {
+        const actions = <>
+          <Button variant="outline" aria-label="刷新" disabled={accessSaving} onClick={() => { load(); loadStores(); void loadAccess() }}>
+            <RefreshCw className="h-4 w-4 mr-1" />刷新
+          </Button>
+          <Button aria-label="新建用户" onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户 New user</Button>
+        </>
+        return embedded || isMobile
+          ? <>{!embedded && <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} />}<div className="pc-users-actions">{actions}</div></>
+          : <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} actions={actions} />
+      })()}
 
-      <p style={{ color: '#596273' }}>Store operations access enables Today, inventory and other store workflows within each user's role. Changes save immediately; scheduling stores are separate.</p>
+      <p className="pc-users-note">Store operations access enables Today, inventory and other store workflows within each user's role. Changes save immediately; scheduling stores are separate.</p>
       {accessError && <Alert type="error" showIcon message={accessError} style={{ marginBottom: 16 }}
         action={<Button variant="outline" disabled={accessSaving} onClick={() => void loadAccess()}>Retry access</Button>} />}
 

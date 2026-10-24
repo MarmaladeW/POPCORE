@@ -10,6 +10,9 @@ import { useNavigate } from 'react-router-dom'
 import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
 import UsersPage from '../Users'
+import PageHeader from '../../components/pc/PageHeader'
+import { useIsMobile } from '../../hooks/useIsMobile'
+import './settings.css'
 import {
   DEFAULT_STORE_HOURS, hoursForStore, parseStoreOpenHours, parseStaffRequirements,
   parseShiftPresets, parsePositions,
@@ -59,6 +62,7 @@ const LABEL: React.CSSProperties = { minWidth: 240, color: '#374151', fontSize: 
 const INNER = { maxWidth: 680 } as const
 
 export default function SettingsPage() {
+  const isMobile = useIsMobile()
   const isAdmin  = useHasRole('admin')
   const navigate = useNavigate()
 
@@ -713,22 +717,19 @@ export default function SettingsPage() {
   )
 
   const tabs: TabsProps['items'] = [
-    { key: 'insights',   label: '洞察设置 / Insights',   children: insightTab    },
+    { key: 'insights',   label: '洞察 / Insights',   children: insightTab    },
     { key: 'reports',    label: '报表计划 / Reports',    children: reportTab     },
-    { key: 'scheduling', label: '排班设置 / Scheduling', children: schedulingTab },
-    { key: 'checkout',   label: 'Checkout', children: checkoutTab },
-    { key: 'stores',     label: '门店管理 / Stores',     children: storesTab     },
-    { key: 'users',      label: '用户管理 / Users',      children: <UsersPage /> },
+    { key: 'scheduling', label: '排班 / Scheduling', children: schedulingTab },
+    { key: 'checkout',   label: '买单 / Checkout', children: checkoutTab },
+    { key: 'stores',     label: '门店 / Stores',     children: storesTab     },
+    { key: 'users',      label: '员工 / Users',      children: <UsersPage embedded /> },
   ]
 
   return (
-    <div>
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: '#111827' }}>
-          系统设置 / Settings
-        </h2>
-      </div>
-      <Tabs items={tabs} />
+    <div className="pc-settings">
+      <PageHeader title="设置" sub="Settings · 只有管理员" />
+      {/* Groups as a list on the left on desktop (Figma Settings), tabs on top on phone. */}
+      <Tabs className="pc-settings-tabs" items={tabs} tabPosition={isMobile ? 'top' : 'left'} />
     </div>
   )
 }
