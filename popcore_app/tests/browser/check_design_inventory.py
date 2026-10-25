@@ -134,26 +134,8 @@ async def checks(browser, width, role):
     await expect(page.get_by_label('Operations store',exact=True)).to_be_enabled()
     await page.get_by_role('button',name='Cancel identification',exact=True).click()
     state['status_for_path']={}
-    if role=='manager':
-        await page.get_by_role('button',name='设置款式 Set up series',exact=True).click()
-        await expect(page.get_by_role('dialog',name='Set up a named design roster',exact=True)).to_be_visible()
-        await page.get_by_label('Series to update',exact=True).select_option('7')
-        await page.get_by_label('Design names',exact=True).fill('Rain\nCloud')
-        state['status_for_path']={'/api/product-series/setup':(503,{'error':'Catalog result unconfirmed'})}
-        await page.get_by_role('button',name='Save named designs',exact=True).click()
-        await expect(page.get_by_text('Catalog result unconfirmed',exact=True)).to_be_visible()
-        await expect(page.get_by_label('Design names',exact=True)).to_be_disabled()
-        await expect(page.get_by_label('Operations store',exact=True)).to_be_disabled()
-        await page.keyboard.press('Escape')
-        await expect(page.get_by_role('dialog')).to_be_visible()
-        await no_overflow(page)
-        state['status_for_path']={}
-        await page.get_by_role('button',name='Retry',exact=True).click()
-        await expect(page.get_by_text('Series saved. No stock quantities were added.',exact=True)).to_be_visible()
-        saves=[r for r in state['requests'] if r['path']=='/api/product-series/setup' and r['method']=='POST']
-        assert len(saves)==2 and saves[0]['idempotency_key']==saves[1]['idempotency_key'] and saves[0]['post_data']==saves[1]['post_data']
-    else:
-        await expect(page.get_by_role('button',name='设置款式 Set up series',exact=True)).to_have_count(0)
+    # Designs and sealed sets are added on the product itself; Inventory has no series setup.
+    await expect(page.get_by_role('button',name='设置款式 Set up series',exact=True)).to_have_count(0)
     state['get_status_for_path']={'/api/inventory/series':(503,{'error':'Inventory unavailable'})}
     await page.get_by_role('button',name='Refresh inventory',exact=True).click()
     await expect(page.get_by_text('Inventory unavailable',exact=True)).to_be_visible()

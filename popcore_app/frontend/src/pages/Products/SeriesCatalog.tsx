@@ -1,25 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Input, Skeleton } from 'antd'
 import { useAuth0 } from '@auth0/auth0-react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { getInventorySeries, type InventorySeries, type SeriesInventoryResult, type SeriesProduct } from '../../api/inventorySeries'
 import { useRole } from '../../auth/useRole'
 import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useAppStore } from '../../store'
-import useCheckoutMutation from '../Sales/useCheckoutMutation'
 import { ProductsTabs } from './ProductsNav'
+import SubItemAdd from './SubItemAdd'
 import './products.css'
 
-const failure = (cause: unknown) => (cause as { _serverMessage?: string })?._serverMessage || 'Unable to load series. Please retry.'
+const failure = (cause: unknown) => (cause as { _serverMessage?: string })?._serverMessage || 'Unable to load sets and designs. Please retry.'
 const formNames: Record<string, string> = { sealed_set: '端', random_box: '盒', confirmed_design: '个', ordinary: '' }
 const saleable = (product: SeriesProduct, locationId: number) => product.balances.find(balance => balance.location_id === locationId && balance.disposition === 'saleable')?.quantity
 const isBack = (code: string) => ['upstairs', 'warehouse'].includes(code)
 
-// 系列 Series (Figma Products · Series and designs): each series' sealed set, single blind box and every
-// confirmed design with stock per location. 设置款式 / 新建系列 use the same /product-series/setup rules
-// as Inventory's series page: unique names, up to 100, each a verified piece product with a generated SKU.
+// 整端·确认款 Sets & designs: every product that has sub-items (its 整端 sealed set and confirmed designs),
+// with stock per location. Sub-items are added on the product itself (SubItemAdd); there is no separate
+// series to set up.
 export default function SeriesCatalog() {
   const store = useAppStore(state => state.selectedStore)
   const { user } = useAuth0(), role = useRole()
@@ -33,9 +33,6 @@ function SeriesScope({ storeCode, storeName, manager }: { storeCode?: string; st
   const [query, setQuery] = useState('')
   const [refresh, setRefresh] = useState(0)
   const [result, setResult] = useState<{ scope: string; data?: SeriesInventoryResult; error?: string }>()
-  const [panel, setPanel] = useState<'designs' | 'series'>()
-  const [seriesName, setSeriesName] = useState(''), [designNames, setDesignNames] = useState('')
-  const [saved, setSaved] = useState('')
   const usable = !!storeCode && storeCode !== 'ALL'
   const scope = `${storeCode}|${refresh}`
   useEffect(() => {
@@ -52,78 +49,38 @@ function SeriesScope({ storeCode, storeName, manager }: { storeCode?: string; st
   const list = useMemo(() => (data?.series || []).filter(series => !needle || series.name.normalize('NFKC').toLocaleLowerCase().includes(needle)), [data, needle])
   const selected = data?.series.find(series => series.id === selectedId) || (!phone ? list[0] : undefined)
 
-  const mutation = useCheckoutMutation(response => {
-    setSaved(panel === 'series' ? 'Series saved.' : 'Designs saved.')
-    setPanel(undefined); setDesignNames(''); setSeriesName('')
-    if (response?.id) setParams({ series_id: String(response.id) })
-    setRefresh(value => value + 1)
-  })
-  const locked = mutation.pending || mutation.saving
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent('popcore:checkout-busy', { detail: locked }))
-    return () => { window.dispatchEvent(new CustomEvent('popcore:checkout-busy', { detail: false })) }
-  }, [locked])
-  const names = designNames.split('\n').map(name => name.trim()).filter(Boolean)
-  const duplicate = new Set(names.map(name => name.toLocaleLowerCase())).size !== names.length
-  const ready = manager && usable && names.length > 0 && names.length <= 100 && !duplicate && (panel === 'designs' ? !!selected : !!seriesName.trim())
-  function save() {
-    if (!ready) return
-    void mutation.run('/product-series/setup', { ...(panel === 'series' ? { name: seriesName.trim() } : { series_id: selected!.id }), design_names: names })
-  }
-
-  const setupPanel = panel && manager && <section className="pc-panel pc-ser-setup" aria-label={panel === 'series' ? 'New series' : 'Add designs'}>
-    <header className="pc-panel-head"><h2><span>{panel === 'series' ? '新建系列' : '设置款式'}</span> <small>{panel === 'series' ? 'New series' : 'Add designs to this series'}</small></h2><button type="button" className="pc-btn" onClick={() => setPanel(undefined)} disabled={locked}>取消 Cancel</button></header>
-    <div className="pc-ser-setup-body">
-      <div>
-        {panel === 'series' && <label className="pc-ser-field">系列名 Series name<Input value={seriesName} onChange={event => setSeriesName(event.target.value)} disabled={locked} /></label>}
-        <label className="pc-ser-field">新款式名字，每行一个 · New design names, one per line
-          <Input.TextArea aria-label="Design names, one per line" rows={5} value={designNames} onChange={event => setDesignNames(event.target.value)} disabled={locked} /></label>
-        {duplicate && <p className="pc-ser-error">Each design name must be unique.</p>}
-        {names.length > 100 && <p className="pc-ser-error">Up to 100 names at a time.</p>}
-      </div>
-      <div className="pc-ser-setup-side">
-        <p>Each name becomes a verified confirmed-design product (unit: piece) with a generated SKU. Names must be unique within the series; up to 100 at a time.</p>
-        <Button type="primary" disabled={!ready || locked} loading={mutation.saving} onClick={save}>保存 {names.length || ''} 个款式 Save {names.length || ''} designs</Button>
-      </div>
-    </div>
-    <div className="pc-ser-alert">{mutation.notice}</div>
-  </section>
-
   return <div className="pc-ser">
-    <PageHeader title="产品" sub={phone ? 'Series' : `Products · ${data ? `${data.series.length} 个系列` : 'Series'}${storeName ? ` · ${storeName}` : ''}`}
-      actions={manager && usable ? <Button disabled={locked} onClick={() => { setPanel('series'); setSaved('') }}><Icon name="plus" size={16} />新建系列 New series</Button> : undefined} />
+    <PageHeader title="产品" sub={phone ? 'Sets & designs' : `Products · ${data ? `${data.series.length} 个产品有子项` : 'Sets & designs'}${storeName ? ` · ${storeName}` : ''}`} />
     <ProductsTabs />
-    {!usable ? <p className="pc-notice">Choose one store to see series stock.</p>
+    {!usable ? <p className="pc-notice">Choose one store to see stock.</p>
       : current?.error ? <Alert role="alert" type="error" showIcon message={current.error} action={<Button onClick={() => setRefresh(value => value + 1)}>Retry</Button>} />
       : !data ? <Skeleton active />
-      : <>
-        {saved && <p className="pc-ser-saved" role="status">{saved}</p>}
-        {phone && manager && <Button className="pc-ser-new" disabled={locked} onClick={() => { setPanel('series'); setSaved('') }}><Icon name="plus" size={16} />新建系列 New series</Button>}
-        {panel === 'series' && setupPanel}
-        <div className="pc-ser-grid">
+      : !data.series.length ? <p className="pc-notice">No product has a sealed set or confirmed designs yet. Open a product in the Catalog and add them there.</p>
+      : <div className="pc-ser-grid">
           {(!phone || !selected) && <aside className="pc-ser-side">
-            <Input allowClear prefix={<Icon name="search" size={16} />} placeholder="搜索系列 Search series" aria-label="Search series" value={query} onChange={event => setQuery(event.target.value)} />
+            <Input allowClear prefix={<Icon name="search" size={16} />} placeholder="搜索产品 Search products" aria-label="Search products" value={query} onChange={event => setQuery(event.target.value)} />
             <ul className="pc-panel pc-ser-list">
               {list.map(series => { const designs = series.products.filter(product => product.stock_form === 'confirmed_design').length
                 return <li key={series.id}><button type="button" aria-current={selected?.id === series.id ? 'true' : undefined} onClick={() => setParams({ series_id: String(series.id) })}>
                   <span><strong>{series.name}</strong><small>{designs ? `${series.products.length} 个产品` : `还没有确认款 · ${series.products.length} 个产品`}</small></span><b>{designs} 款</b>
                 </button></li> })}
-              {!list.length && <li className="pc-quiet">No series match.</li>}
+              {!list.length && <li className="pc-quiet">No products match.</li>}
             </ul>
           </aside>}
-          {selected && <SeriesDetail series={selected} locations={data.locations} manager={manager && usable} phone={phone}
-            onBack={() => setParams({})} onAdd={() => { setPanel('designs'); setSaved('') }} locked={locked} setup={panel === 'designs' ? setupPanel : null} />}
-        </div>
-      </>}
+          {selected && <SeriesDetail series={selected} locations={data.locations} manager={manager} phone={phone}
+            onBack={() => setParams({})} onSaved={() => setRefresh(value => value + 1)} />}
+        </div>}
   </div>
 }
 
-function SeriesDetail({ series, locations, manager, phone, onBack, onAdd, locked, setup }: {
+function SeriesDetail({ series, locations, manager, phone, onBack, onSaved }: {
   series: InventorySeries; locations: SeriesInventoryResult['locations']; manager: boolean; phone: boolean
-  onBack: () => void; onAdd: () => void; locked: boolean; setup: React.ReactNode
+  onBack: () => void; onSaved: () => void
 }) {
   const sets = series.products.filter(product => product.stock_form !== 'confirmed_design')
   const designs = series.products.filter(product => product.stock_form === 'confirmed_design')
+  const owner = series.products.find(product => product.id === series.product_id)
+  const canAddSealedSet = !sets.some(product => product.stock_form === 'sealed_set') && (!owner?.stock_form || owner.stock_form === 'random_box')
   const total = (product: SeriesProduct) => {
     const values = locations.map(location => saleable(product, location.id))
     return values.some(value => value == null) ? null : values.reduce<number>((sum, value) => sum + (value || 0), 0)
@@ -144,7 +101,7 @@ function SeriesDetail({ series, locations, manager, phone, onBack, onAdd, locked
     </tr>
   }
   return <section className="pc-ser-detail" aria-label={series.name}>
-    {phone && <button type="button" className="pc-ser-back" onClick={onBack}><Icon name="back" size={14} />全部系列 All series</button>}
+    {phone && <button type="button" className="pc-ser-back" onClick={onBack}><Icon name="back" size={14} />全部 All products</button>}
     <div className="pc-figures pc-figures-4">
       <div><span>确认款 Confirmed designs</span><strong>{designs.length}</strong></div>
       <div><span>整端 Sealed sets</span><strong>{byKind('sealed_set')}</strong></div>
@@ -154,7 +111,8 @@ function SeriesDetail({ series, locations, manager, phone, onBack, onAdd, locked
     </div>
     <div className="pc-panel">
       <header className="pc-panel-head"><h2><span>{series.name}</span> <small>{designs.length} 款确认款</small></h2>
-        {manager && <button type="button" className="pc-btn" disabled={locked} onClick={onAdd}>设置款式 Add designs</button>}</header>
+        {series.product_id && <Link className="pc-btn" to={`/products?product_id=${series.product_id}`}>产品详情 Product</Link>}</header>
+      {manager && series.product_id && <SubItemAdd key={series.id} productId={series.product_id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} />}
       <div className="pc-ser-table-wrap"><table className="pc-ser-table">
         <thead><tr><th>#</th><th>款式 Design</th><th>SKU</th><th>库存身份</th>{locations.map(location => <th key={location.id} className={isBack(location.code) ? 'pc-ser-num pc-kraft-cell' : 'pc-ser-num'}>{location.name}</th>)}<th className="pc-ser-num">合计</th></tr></thead>
         <tbody>
@@ -167,6 +125,5 @@ function SeriesDetail({ series, locations, manager, phone, onBack, onAdd, locked
         </tbody>
       </table></div>
     </div>
-    {setup}
   </section>
 }

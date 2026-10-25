@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Input, Spin, Tag } from 'antd'
+import { Link } from 'react-router-dom'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import { saveAlias, deleteAlias } from '../../api/matcher'
+import SubItemAdd from './SubItemAdd'
 
 export interface ProductDetailData {
   id: number
@@ -33,6 +35,10 @@ export interface ProductDetailData {
   identity_status?: 'unverified' | 'verified'
   barcodes?: { id: number; code: string; code_kind: string; input_unit: string; quantity_per_scan: number }[]
   conversions?: { id: number; target_sku: string; output_per_input: number; version: number }[]
+  series_id?: number | null
+  parent?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null } | null
+  sub_items?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null
+    stock_form: string | null; design_name: string | null; price: number | null }[]
 }
 
 // One product's facts and aliases; the drawer (phone) and the pane beside the table (desktop) share it.
@@ -41,13 +47,15 @@ export function useProductDetail(productId: number | null) {
   const [loading, setLoading] = useState(false)
   const [aliases, setAliases] = useState<{ id: number; alias: string }[]>([])
   const [aliasInput, setAliasInput] = useState('')
+  const [version, setVersion] = useState(0)
   useEffect(() => {
     if (!productId) { setProduct(null); setAliases([]); return }
     setLoading(true)
     client.get(`/products/${productId}`)
       .then(r => { setProduct(r.data); setAliases(r.data.aliases ?? []) })
       .finally(() => setLoading(false))
-  }, [productId])
+  }, [productId, version])
+  const reload = () => setVersion(value => value + 1)
   async function addAlias() {
     if (!aliasInput.trim() || !product) return
     try {
@@ -62,7 +70,7 @@ export function useProductDetail(productId: number | null) {
     await deleteAlias(product.id, aliasId)
     setAliases(prev => prev.filter(a => a.id !== aliasId))
   }
-  return { product, loading, aliases, aliasInput, setAliasInput, addAlias, removeAlias }
+  return { product, loading, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload }
 }
 
 const forms: Record<string, string> = { sealed_set: '整端', random_box: '盲盒单盒', confirmed_design: '确认款', ordinary: '普通' }
@@ -78,8 +86,34 @@ export function StockFigure({ value }: { value: number | null }) {
   return <span className={value === 0 ? 'pc-prod-stock pc-prod-stock-out' : 'pc-prod-stock'}><i className={`pc-dot pc-dot-${tone}`} aria-hidden="true" />{value}</span>
 }
 
-export function ProductDetailBody({ detail, stockTotal }: { detail: ReturnType<typeof useProductDetail>; stockTotal: number | null }) {
-  const { product, loading, aliases, aliasInput, setAliasInput, addAlias, removeAlias } = detail
+// A product's sub-items (整端 sealed set, confirmed designs), or the product a sub-item belongs to.
+function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; onOpen?: (id: number) => void; onSaved: () => void }) {
+  const open = (id: number, label: ReactNode) => onOpen
+    ? <button type="button" className="pc-prod-link" onClick={() => onOpen(id)}>{label}</button> : label
+  if (product.parent) return <>
+    <h3 className="pc-prod-section">属于 <small>Part of</small></h3>
+    <p className="pc-sub-parent">{open(product.parent.id, product.parent.jizhanming || product.parent.name_cn_en || product.parent.sku)} <small>{product.parent.sku}</small></p>
+  </>
+  const items = product.sub_items ?? []
+  const canAddSealedSet = !items.some(item => item.stock_form === 'sealed_set') && (!product.stock_form || product.stock_form === 'random_box')
+  return <>
+    <h3 className="pc-prod-section">子项 <small>Sealed set &amp; confirmed designs</small></h3>
+    {items.length > 0 ? <ul className="pc-sub-list">
+      {items.map(item => <li key={item.id}>
+        <span className="pc-sub-kind">{item.stock_form === 'sealed_set' ? '整端' : '确认款'}</span>
+        {open(item.id, item.stock_form === 'sealed_set' ? (item.jizhanming || item.sku) : (item.design_name || item.jizhanming || item.sku))}
+        <small>{item.sku}</small>
+      </li>)}
+    </ul> : <p className="pc-sub-empty">None yet. Add them when you count or open boxes.</p>}
+    {items.length > 0 && product.series_id && <p className="pc-sub-stock"><Link to={`/stock?series_id=${product.series_id}`}>各位置库存 Stock by location →</Link></p>}
+    <RoleGuard minRole="manager"><SubItemAdd productId={product.id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} /></RoleGuard>
+  </>
+}
+
+export function ProductDetailBody({ detail, stockTotal, onOpen }: {
+  detail: ReturnType<typeof useProductDetail>; stockTotal: number | null; onOpen?: (id: number) => void
+}) {
+  const { product, loading, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload } = detail
   const hasSecrets = product && product.hidden_count && product.hidden_count !== '0'
   return <Spin spinning={loading}>
     {product && <div className="pc-prod-detail-body">
@@ -87,6 +121,7 @@ export function ProductDetailBody({ detail, stockTotal }: { detail: ReturnType<t
         <div><span>价格 Price (CA$)</span><strong>{product.price != null ? `$${product.price.toFixed(2)}` : '—'}</strong></div>
         <div><span>库存 Stock</span><strong><StockFigure value={stockTotal} /></strong></div>
       </div>
+      <SubItems product={product} onOpen={onOpen} onSaved={reload} />
       <dl className="pc-prod-dl">
         <Fact label="全名 Full name" value={product.name_cn_en} />
         <Fact label="系列 · 类型" value={[product.ip_series, product.product_type].filter(Boolean).join(' · ')} />
@@ -132,9 +167,9 @@ export function ProductDetailBody({ detail, stockTotal }: { detail: ReturnType<t
 }
 
 // Desktop: the detail beside the catalog table (Figma Products · Catalog).
-export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages }: {
+export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages, onOpen }: {
   productId: number; stockTotal: number | null; onClose: () => void
-  onEdit: (p: ProductDetailData) => void; onImages: (p: ProductDetailData) => void
+  onEdit: (p: ProductDetailData) => void; onImages: (p: ProductDetailData) => void; onOpen?: (id: number) => void
 }) {
   const detail = useProductDetail(productId)
   const product = detail.product
@@ -145,6 +180,6 @@ export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onIm
       {product && <RoleGuard minRole="manager"><Button type="primary" onClick={() => onEdit(product)}>编辑 Edit</Button></RoleGuard>}
       <Button type="text" aria-label="Close product detail" onClick={onClose}>×</Button>
     </header>
-    <ProductDetailBody detail={detail} stockTotal={stockTotal} />
+    <ProductDetailBody detail={detail} stockTotal={stockTotal} onOpen={onOpen} />
   </aside>
 }

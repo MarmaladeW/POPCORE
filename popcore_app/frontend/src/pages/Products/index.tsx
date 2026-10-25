@@ -45,6 +45,7 @@ interface Product {
   stock_form?: 'sealed_set' | 'random_box' | 'confirmed_design' | 'piece' | null
   stock_unit?: 'set' | 'box' | 'piece' | null
   identity_status?: 'unverified' | 'verified'
+  sub_item_count?: number
 }
 
 interface StockRow {
@@ -159,6 +160,12 @@ function Secrets({ product }: { product: { hidden_count?: string; hidden_has_sma
   return <>{product.hidden_has_small ? <span className="pc-prod-secret">小隐藏</span> : null}{product.hidden_has_large ? <span className="pc-prod-secret">大隐藏</span> : null}</>
 }
 
+// Sub-items (sealed set, confirmed designs) are listed in the product's detail, not as catalog rows.
+function SubCount({ product }: { product: { sub_item_count?: number } }) {
+  if (!product.sub_item_count) return null
+  return <span className="pc-prod-subcount" title="Sealed set and confirmed designs">+{product.sub_item_count} 子项</span>
+}
+
 export default function ProductsPage() {
   const isMobile = useIsMobile()
   const manager = useHasRole('manager')
@@ -184,7 +191,7 @@ export default function ProductsPage() {
   const [identityExportOpen, setIdentityExportOpen] = useState(false)
   const [identityImportOpen, setIdentityImportOpen] = useState(false)
   const [countSheetOpen, setCountSheetOpen] = useState(false)
-  const [detailId,       setDetailId]       = useState<number | null>(null)
+  const [detailId,       setDetailId]       = useState<number | null>(() => { const id = new URLSearchParams(window.location.search).get('product_id'); return id && /^\d+$/.test(id) ? Number(id) : null })
 
   const [syncLoading,        setSyncLoading]        = useState(false)
   const [syncModalOpen,      setSyncModalOpen]      = useState(false)
@@ -208,7 +215,7 @@ export default function ProductsPage() {
     }
     setLoading(true)
     setLoadError(null)
-    const params: Record<string, string> = {}
+    const params: Record<string, string> = { top_level: '1' }  // sub-items show in their product's detail
     if (searchQ)      params.q = searchQ
     if (searchSeries) params.series = searchSeries
     if (searchType)   params.product_type = searchType
@@ -346,7 +353,7 @@ export default function ProductsPage() {
       width: 230,
       ellipsis: true,
       sorter: (a, b) => (a.jizhanming ?? '').localeCompare(b.jizhanming ?? ''),
-      render: (v, r) => <span className="pc-prod-name"><strong>{v || '—'}<Secrets product={r} /></strong><small>{r.sku}</small></span>,
+      render: (v, r) => <span className="pc-prod-name"><strong>{v || '—'}<Secrets product={r} /><SubCount product={r} /></strong><small>{r.sku}</small></span>,
     },
     {
       title: '产品名',
@@ -506,7 +513,7 @@ export default function ProductsPage() {
                   <li key={p.id}>
                     <button type="button" className="pc-prod-open" onClick={() => setDetailId(p.id)}>
                       <span className="pc-prod-name">
-                        <strong>{p.jizhanming || p.name_cn_en || 'Unnamed product'}<Secrets product={p} /></strong>
+                        <strong>{p.jizhanming || p.name_cn_en || 'Unnamed product'}<Secrets product={p} /><SubCount product={p} /></strong>
                         {p.name_cn_en && p.jizhanming && <small>{p.name_cn_en}</small>}
                         <small>{p.sku}</small>
                       </span>
@@ -547,6 +554,7 @@ export default function ProductsPage() {
           productId={detailId!}
           stockTotal={stockMap ? stockMap.get(detailId!) ?? 0 : null}
           onClose={() => setDetailId(null)}
+          onOpen={setDetailId}
           onEdit={(p) => openEdit(p as unknown as Product)}
           onImages={(p) => setImagesProduct(p as unknown as Product)}
         />}
@@ -585,6 +593,7 @@ export default function ProductsPage() {
         productId={isMobile ? detailId : null}
         stockTotal={stockMap ? stockMap.get(detailId ?? 0) ?? 0 : null}
         onClose={() => setDetailId(null)}
+        onOpen={setDetailId}
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
         onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
       />

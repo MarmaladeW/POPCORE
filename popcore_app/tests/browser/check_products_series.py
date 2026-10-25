@@ -1,4 +1,4 @@
-"""Products 系列 Series view with synthetic APIs: series list, stock per location, and 设置款式 setup."""
+"""Products 整端·确认款 Sets & designs with synthetic APIs: product list, stock per location, adding designs on the product."""
 import asyncio
 import subprocess
 from pathlib import Path
@@ -21,21 +21,21 @@ def product(pid, form, name, design=None, floor=0, upstairs=0):
 
 
 SERIES = {'mode': 'authoritative', 'locations': LOCATIONS, 'unassigned_count': 0, 'series': [
-    {'id': 5, 'name': 'Dream Series', 'products': [
+    {'id': 5, 'name': 'Dream Series', 'product_id': 52, 'products': [
         product(51, 'sealed_set', 'Dream 整端', floor=1, upstairs=3),
         product(52, 'random_box', 'Dream 盲盒', floor=2),
         product(53, 'confirmed_design', 'Dream Rabbit', 'Rabbit 兔子', floor=2, upstairs=1),
         product(54, 'confirmed_design', 'Dream Cat', 'Cat 猫', floor=0, upstairs=0),
     ]},
-    {'id': 6, 'name': 'Empty Series', 'products': []},
+    {'id': 6, 'name': 'Empty Series', 'product_id': None, 'products': []},
 ]}
 
 
 def api(path, query, request):
     if path == '/api/inventory/series':
         return SERIES
-    if path == '/api/product-series/setup':
-        return {'id': 5, 'created': 2}
+    if path == '/api/products/52/designs':
+        return {'product_id': 52, 'series_id': 5, 'product_ids': [60, 61]}
     return payload(path, query, False)
 
 
@@ -62,31 +62,33 @@ async def flow(browser, width):
         rabbit = detail.get_by_role('row').filter(has_text='Rabbit 兔子')
         await expect(rabbit.locator('td').nth(-1)).to_contain_text('3')
 
-        await detail.get_by_role('button', name='设置款式 Add designs').click()
+        # The set already has its 整端, so only designs can be added.
+        await expect(detail.get_by_role('button', name='+ 整端 Add sealed set')).to_have_count(0)
+        await detail.get_by_role('button', name='+ 确认款 Add designs').click()
         names = page.get_by_role('textbox', name='Design names, one per line')
-        save = page.get_by_role('button', name='Save', exact=False).filter(has_text='designs')
+        save = detail.get_by_role('button', name='Save', exact=False)
         await names.fill('Bear 熊\nbear 熊')
         await expect(page.get_by_text('Each design name must be unique.', exact=True)).to_be_visible()
         await expect(save).to_be_disabled()
         await names.fill('Bear 熊\nFox 狐狸')
         await save.click()
-        await expect(page.get_by_role('status').filter(has_text='Designs saved.')).to_be_visible()
-        posts = [r for r in state['requests'] if r['path'] == '/api/product-series/setup' and r['method'] == 'POST']
+        await expect(names).to_have_count(0)
+        posts = [r for r in state['requests'] if r['path'] == '/api/products/52/designs' and r['method'] == 'POST']
         assert len(posts) == 1 and posts[0]['idempotency_key'], posts
-        assert posts[0]['post_data'] == {'series_id': 5, 'design_names': ['Bear 熊', 'Fox 狐狸']}, posts
+        assert posts[0]['post_data'] == {'design_names': ['Bear 熊', 'Fox 狐狸']}, posts
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         await page.screenshot(path=OUT / f'series-{width}.png', full_page=True)
     finally:
         await context.close()
 
-    # Staff see the series but cannot set up designs.
+    # Staff see the sets and designs but cannot add any.
     state = {'mode': 'data', 'api_payload': api}
     context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     try:
         await page.goto(BASE + '/products/series?series_id=5')
         await expect(page.get_by_role('region', name='Dream Series').get_by_text('Cat 猫', exact=True)).to_be_visible()
-        await expect(page.get_by_role('button', name='设置款式 Add designs')).to_have_count(0)
+        await expect(page.get_by_role('button', name='+ 确认款 Add designs')).to_have_count(0)
         await expect(page.get_by_role('button', name='新建系列 New series')).to_have_count(0)
         await expect(page.get_by_role('navigation', name='Products sections').locator('a[href="/products/clover-matching"]')).to_have_count(0)
     finally:
@@ -106,7 +108,7 @@ async def main():
                         await flow(browser, width)
                 finally:
                     await browser.close()
-            print('PASS: Products series view, stock per location, unique-name setup request and staff limits at 390/1280.')
+            print('PASS: Products sets & designs, stock per location, adding designs on the product and staff limits at 390/1280.')
         finally:
             process.terminate()
             process.wait(timeout=10)

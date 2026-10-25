@@ -23,7 +23,7 @@ export interface SeriesProduct {
   balances: SeriesBalance[]
   open_sets?: Array<{id:number;location_id:number;purpose:string;remaining_qty:number;opening_document_id:number}>
 }
-export interface InventorySeries { id:number; name:string; products:SeriesProduct[] }
+export interface InventorySeries { id:number; name:string; product_id:number|null; products:SeriesProduct[] }
 export interface SeriesInventoryResult {
   mode: string
   locations: InventoryLocation[]
