@@ -113,6 +113,8 @@ class IsolatedApiCase(unittest.TestCase):
     @staticmethod
     def _decode_test_token(token):
         role, separator, subject = token.partition(':')
+        if role == 'norole':  # an account a manager never gave a role
+            return {'sub': f'auth0|{subject or role}'}
         role = role if role in auth.ROLE_HIERARCHY else 'viewer'
         return {
             'sub': f'auth0|{subject if separator else role}',

@@ -11,6 +11,11 @@ const ROLE_LEVELS: Record<Role, number> = {
 
 const ROLE_CLAIM = 'https://popcore/role'
 
+export function hasRole(user: Record<string, unknown> | undefined): boolean {
+  const role = user?.[ROLE_CLAIM]
+  return typeof role === 'string' && role in ROLE_LEVELS
+}
+
 export function useRole(): Role {
   const { user } = useAuth0()
   return (user?.[ROLE_CLAIM] as Role) ?? 'viewer'

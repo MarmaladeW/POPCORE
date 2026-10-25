@@ -58,6 +58,12 @@ def _decode_token(token: str) -> dict:
     )
 
 
+def _no_role():
+    # An account no manager gave a role (e.g. a public Auth0 sign-up) gets no access, not viewer.
+    return jsonify({'error': 'This account has no POPCORE role; ask a manager to set it up',
+                    'code': 'no_role'}), 403
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -73,6 +79,8 @@ def login_required(f):
             }), 503
         except Exception:
             return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
+        if request.jwt_payload.get(ROLE_CLAIM) not in ROLE_HIERARCHY:
+            return _no_role()
         return f(*args, **kwargs)
     return decorated
 
@@ -95,8 +103,10 @@ def role_required(*allowed_roles):
                 }), 503
             except Exception:
                 return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
-            role = payload.get(ROLE_CLAIM, 'viewer')
-            if ROLE_HIERARCHY.get(role, 0) < min_level:
+            role = payload.get(ROLE_CLAIM)
+            if role not in ROLE_HIERARCHY:
+                return _no_role()
+            if ROLE_HIERARCHY[role] < min_level:
                 return jsonify({'error': 'Forbidden'}), 403
             return f(*args, **kwargs)
         return decorated
