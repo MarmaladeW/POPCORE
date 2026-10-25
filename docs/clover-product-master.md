@@ -55,6 +55,18 @@ by item ID when present, else by exact name, so a later rename is recognised by 
    The script's `apply` remains for bulk use; both refuse colliding stock the same way.
 5. Stores' opening counts and identity review (stock form/unit) proceed on the Clover products.
 
+## Catalogue cutover (executed 2026-10-25)
+
+`scripts/apply_master_catalogue.py --plan plan.json [--db PATH] [--dry-run]` applied the owner-reviewed
+master product list in one transaction: every decided Clover match, the Downtown-only Clover items,
+brand-prefixed IDs (`PM0001`, `DR0001`, `PK0006-01` for a design under `PK0006`) and the Google Sheet's
+记账名 as each product's identity. Old SKUs and old 记账名 stay as search aliases. Undecided old products
+were left unchanged. The run refuses as a whole if the product count or any review decision differs from
+what the plan was built on. The Google Sheet sync is retired; POPCORE is the only 记账名 list.
+
+Report matching trusts an exact 记账名: it is checked against the product's own type, not against the
+long official Clover name.
+
 Verified locally on 2026-10-08: importing the 548-item list into an empty database twice (548 created,
 then 548 unchanged), and the merge tool's behaviour through `popcore_app/tests/test_clover_item_import.py`
 and `test_clover_product_merge.py`.
