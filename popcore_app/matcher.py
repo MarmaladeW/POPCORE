@@ -338,7 +338,11 @@ def match_jzm(
         sku_exact = bool(sku) and sku == query_sku
         exact = sku_exact or qn in fields or aliases.get(qn) == p['id']
         score = 100 if exact else max(_score_pair_jzm(qn, field) for field in fields)
-        if not sku_exact and identity_conflicts(query, p):
+        # The 记账名 is the owner-approved identity: an exact match is checked against the product's own
+        # type, not second-guessed by the long official (Clover) name.
+        checked = ({'name_cn_en': p.get('jizhanming'), 'product_type': p.get('product_type')}
+                   if fields[0] and qn == fields[0] else p)
+        if not sku_exact and identity_conflicts(query, checked):
             score = min(score, 75)
         if qn in aliases and aliases[qn] is None:
             score = min(score, 99)

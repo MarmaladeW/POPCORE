@@ -93,6 +93,11 @@ class CatalogSyncMatchingTests(IsolatedApiCase):
         result = batch_match_jzm(['Dream plush'], self.catalog())[0]
         self.assertNotEqual(result['status'], 'matched')
 
+    def test_exact_jizhanming_is_not_overruled_by_the_official_name(self):
+        self.add_product('PM0310', 'MEGA SPACE MOLLY 400%+100% Love-a-lot Bear', '400% 多爱熊')
+        result = batch_match_jzm(['400% 多爱熊'], self.catalog())[0]
+        self.assertEqual((result['status'], result['candidates'][0]['sku']), ('matched', 'PM0310'))
+
     def test_variant_cues_cannot_be_erased_by_exact_alias(self):
         pairs = [('Dream plush', 'Dream figure'), ('Dream 毛绒', 'Dream 手办'),
                  ('Dream 搪胶', 'Dream 毛绒'), ('Dream keychain', 'Dream figure'),
