@@ -41,11 +41,13 @@ export default function EveningCheckStep() {
   const [loading,   setLoading]   = useState(true)
   const [actualQty, setActualQty] = useState<Record<number, number>>({})
   const [saving,    setSaving]    = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
     const sc = selectedStore?.code
     if (!sc) return
     setLoading(true)
+    setLoadError('')
     try {
       const { data: d } = await client.get<TodayData>('/inventory-check/today', { params: { store_code: sc } })
       setData(d)
@@ -59,6 +61,10 @@ export default function EveningCheckStep() {
         }
         return prefill
       })
+    } catch (cause: any) {
+      // e.g. "All stores" selected: this check is per store. Say so instead of leaving the request unhandled.
+      setData(null)
+      setLoadError(cause?.response?.data?.error || 'Unable to load the evening check. Select one store and retry.')
     } finally {
       setLoading(false)
     }
@@ -187,6 +193,11 @@ export default function EveningCheckStep() {
 
   if (loading) {
     return <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
+  }
+
+  if (loadError) {
+    return <Alert type="warning" showIcon style={{ marginTop: 16 }} message={selectedStore?.code === 'ALL' ? '晚盘按门店进行 · Select one store for the evening check' : loadError}
+      action={<Button size="small" onClick={load}>Retry</Button>} />
   }
 
   return (

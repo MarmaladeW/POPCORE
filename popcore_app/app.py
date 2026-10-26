@@ -150,6 +150,9 @@ if not os.environ.get('DISABLE_SCHEDULER') or os.environ.get('CLOVER_BACKGROUND_
 def not_found(e):
     if request.path.startswith('/api/') or request.path.startswith('/hidden_imgs/'):
         return jsonify({'error': 'Not found'}), 404
+    if request.path.startswith('/assets/'):
+        # A page file from an older build: answer 404, never the app shell, which browsers reject as a script.
+        return 'Not found', 404, {'Content-Type': 'text/plain; charset=utf-8'}
     return send_from_directory(STATIC_DIR, 'index.html')
 
 
