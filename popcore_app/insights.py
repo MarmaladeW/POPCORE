@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from db import DB_PATH
+from inventory_commands import live_store_ids
 
 
 def _get_db():
@@ -484,9 +485,10 @@ def generate_daily_insights(con=None, business_date=None) -> int:
         thresholds['high_price_threshold'] = float(app_cfg.get('insight_high_price_threshold', 0))
         stores     = _get_active_stores(cur)
         today = date.fromisoformat(business_date) if business_date else datetime.utcnow().date()
-        mode = cur.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()
-        if mode and mode['mode'] == 'authoritative':
-            stores = []
+        # Legacy quantity checks stop for each store once it is live on the ledger.
+        live = live_store_ids(con)
+        live_codes = {row['code'] for row in cur.execute('SELECT id, code FROM stores') if row['id'] in live}
+        stores = [code for code in stores if code not in live_codes]
         now        = datetime.now(timezone.utc).isoformat()
         all_ins    = []
 

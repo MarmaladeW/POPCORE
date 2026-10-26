@@ -12,7 +12,7 @@ interface Props {
 
 type Scope = 'legacy' | 'catalog'
 
-// Every location the opening count needs a sheet for (scripts/inventory_opening.py counts them all).
+// Every location the opening count needs a sheet for; each store goes live once all of its own are counted.
 const LOCATIONS = [
   { value: 'DT:floor',     label: 'DT · Floor' },
   { value: 'DT:upstairs',  label: 'DT · Upstairs' },
@@ -46,7 +46,8 @@ async function readSheetError(err: any, store: string): Promise<SheetError> {
 
 export default function CountSheetModal({ open, storeCode, onClose }: Props) {
   const [location, setLocation] = useState(LOCATIONS[0].value)
-  const [scope, setScope] = useState<Scope>('legacy')
+  // Legacy stock is not trusted, so the whole catalog is the default sheet.
+  const [scope, setScope] = useState<Scope>('catalog')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<SheetError | null>(null)
 
@@ -90,7 +91,8 @@ export default function CountSheetModal({ open, storeCode, onClose }: Props) {
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Text type="secondary">
         Blind opening-count sheet: no expected quantities. Write whole native units in the count column,
-        0 when nothing is found, and keep product_id, SKU and unit unchanged.
+        0 when nothing is found, and keep product_id and SKU unchanged. An unverified product is verified
+        by counting it: check its stock_form (random_box for a blind box, ordinary for a piece) and fix it if wrong.
       </Text>
       <div>
         <div style={{ marginBottom: 4 }}>Location</div>
@@ -102,8 +104,8 @@ export default function CountSheetModal({ open, storeCode, onClose }: Props) {
         <Select aria-label="Count sheet scope" value={scope} disabled={pending}
           onChange={v => { setScope(v); setError(null) }} style={{ width: '100%' }}
           options={[
-            { value: 'legacy', label: `Legacy stock at ${store}` },
             { value: 'catalog', label: 'Whole catalog' },
+            { value: 'legacy', label: `Legacy stock at ${store}` },
           ]} />
       </div>
       {error && <Alert role="alert" type="error" showIcon message={error.message} description={error.hint} />}

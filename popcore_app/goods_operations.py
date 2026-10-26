@@ -10,6 +10,7 @@ from inventory_commands import (
     InventoryValidationError,
     _post_inventory_in_transaction,
     require_inventory_access,
+    store_is_live,
 )
 from validation import read_date, read_int
 
@@ -71,6 +72,8 @@ def _location(con, location_id):
     if row is None:
         raise InventoryValidationError('location_id is invalid')
     if not row['opening_verified']:
+        if not store_is_live(con, row['store_id']):
+            raise InventoryConflict('Authoritative inventory is not active', 'inventory_legacy_mode')
         raise InventoryConflict('Opening balance is not verified', 'opening_unverified')
     return dict(row)
 

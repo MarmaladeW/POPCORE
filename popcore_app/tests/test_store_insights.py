@@ -90,7 +90,7 @@ class StoreOverviewTests(IsolatedApiCase):
         self.assertEqual(current['exception_counts']['replenish'],0)
         self.assertEqual(current['exception_counts']['out_of_stock'],0)
         with closing(self.connect()) as con:
-            con.execute("UPDATE inventory_mode SET mode='legacy'");con.commit()
+            con.execute("UPDATE inventory_scope_state SET opening_verified=0");con.commit()  # no store has gone live
         self.assertEqual(self.get().get_json()['current_inventory']['exception_counts']['condition'],0)
 
     def test_confirmed_design_without_series_is_unknown(self):

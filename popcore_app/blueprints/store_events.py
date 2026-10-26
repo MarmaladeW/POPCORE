@@ -10,7 +10,7 @@ from checkout_access import REGISTER_NAME, REGISTER_SUB, business_date, checkout
 from db import get_db
 from goods_operations import _balance, _begin, _remember, _replay
 from inventory_commands import (InventoryConflict, InventoryError, _post_inventory_in_transaction,
-    require_inventory_access)
+    require_inventory_access, store_is_live)
 from validation import read_date, read_int
 
 bp = Blueprint('store_events', __name__)
@@ -45,7 +45,7 @@ def _scope(con, actor, store_id, date, *, write=False):
 
 def _post_claw(con, actor, key, store_id, kind, product_id, quantity, source_location_id, today):
     """Post a claw refill (move in) or prize (consume) in authoritative mode; see docs/inventory-core.md."""
-    if con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode'] != 'authoritative':
+    if not store_is_live(con, store_id):
         return None
     claw = con.execute("""SELECT id FROM inventory_locations
         WHERE store_id=? AND code='claw' AND is_active=1""",(store_id,)).fetchone()
@@ -71,7 +71,7 @@ def _post_claw(con, actor, key, store_id, kind, product_id, quantity, source_loc
 def _post_display(con, actor, key, store_id, product_id, quantity, source_location_id, today):
     """Put a piece on display in authoritative mode: moved from the floor or back stock when a source is
     given, otherwise received already opened. Display stock stays saleable; see docs/inventory-core.md."""
-    if con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode'] != 'authoritative':
+    if not store_is_live(con, store_id):
         return None
     display = con.execute("""SELECT id FROM inventory_locations
         WHERE store_id=? AND code='display' AND is_active=1""",(store_id,)).fetchone()

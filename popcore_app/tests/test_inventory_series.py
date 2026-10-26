@@ -87,7 +87,7 @@ class InventorySeriesTests(IsolatedApiCase):
 
     def test_legacy_quantities_unknown_and_design_search_keeps_roster(self):
         with closing(self.connect()) as con:
-            con.execute("UPDATE inventory_mode SET mode='legacy'")
+            con.execute("UPDATE inventory_scope_state SET opening_verified=0")  # no store has gone live
             con.commit()
         response = self.get('store_code=DT&q=blue')
         self.assertEqual(response.status_code,200)
@@ -197,6 +197,6 @@ class InventorySeriesTests(IsolatedApiCase):
         self.assertEqual(choices[0]['location_id'],self.floor)
         self.assertEqual(choices[0]['remaining_qty'],3)
         with closing(self.connect()) as con:
-            con.execute("UPDATE inventory_mode SET mode='legacy'")
+            con.execute("UPDATE inventory_scope_state SET opening_verified=0")  # no store has gone live
             con.commit()
         self.assertTrue(all(p['open_sets']==[] for p in self.get().get_json()['series'][0]['products']))

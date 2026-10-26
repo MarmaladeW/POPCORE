@@ -1,9 +1,10 @@
 """Export opening count sheets and review or apply completed opening counts.
 
 Dry-run is the default: the database is opened read-only and a JSON report
-compares every count with legacy stock. ``--apply`` additionally needs a
-business date, an admin Auth0 subject with inventory access to every store,
-and a new backup path; see docs/inventory-core.md (Opening counts).
+compares every count with legacy stock. ``--store`` opens one store at a time
+(default: every store not live yet). ``--apply`` additionally needs a
+business date, an admin Auth0 subject with inventory access to the opening
+stores, and a new backup path; see docs/inventory-core.md (Opening counts).
 """
 from __future__ import annotations
 
@@ -62,7 +63,7 @@ def intake(args):
             database, rows, actor_sub=args.actor_sub,
             business_date=date.fromisoformat(args.business_date).isoformat(),
             backup_path=args.backup, empty_locations=args.empty_location,
-            reason=args.reason,
+            reason=args.reason, stores=args.store,
         )
     else:
         business_date = date.fromisoformat(
@@ -71,7 +72,7 @@ def intake(args):
             report = review_opening_counts(
                 con, rows, empty_locations=args.empty_location,
                 actor_sub=args.actor_sub, business_date=business_date,
-                reason=args.reason,
+                reason=args.reason, stores=args.store,
             )
         report['applied'] = False
         report['dry_run'] = True
@@ -102,6 +103,9 @@ def main(argv=None):
     review = commands.add_parser('intake', help='review (default) or apply completed counts')
     review.add_argument('--db', type=Path, required=True)
     review.add_argument('counts', type=Path, nargs='+', help='completed count CSV files')
+    review.add_argument('--store', action='append', default=[], metavar='STORE',
+                        help='store going live with these counts, e.g. DT (repeatable; '
+                             'default: every store not live yet)')
     review.add_argument('--empty-location', action='append', default=[],
                         metavar='STORE-LOCATION',
                         help='declare a location that was counted and holds nothing, e.g. MK-warehouse')
@@ -110,7 +114,7 @@ def main(argv=None):
     review.add_argument('--reason', default=DEFAULT_OPENING_REASON)
     review.add_argument('--report', type=Path, help='also write the JSON report here')
     review.add_argument('--apply', action='store_true',
-                        help='post the opening and switch to authoritative mode')
+                        help='post the opening and take the opening stores live')
     review.add_argument('--backup', type=Path, help='new SQLite backup path (required with --apply)')
     review.set_defaults(handler=intake)
 

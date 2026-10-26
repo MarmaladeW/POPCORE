@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify
 
 from db import get_db
 from auth import login_required, role_required
+from inventory_commands import store_is_live
 from blueprints.stores import _resolve_store
 
 bp = Blueprint('inventory', __name__)
@@ -28,10 +29,7 @@ def _calc_theoretical_qty(cur, product_id: int, today: str,
     """
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
 
-    mode = cur.execute(
-        'SELECT mode FROM inventory_mode WHERE id=1'
-    ).fetchone()
-    if mode and mode['mode'] == 'authoritative':
+    if store_is_live(cur.connection, store_id):
         location = cur.execute(
             """SELECT l.id, ss.opening_verified
                FROM inventory_locations l

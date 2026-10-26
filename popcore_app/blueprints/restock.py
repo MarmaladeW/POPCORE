@@ -20,7 +20,7 @@ bp = Blueprint('restock', __name__)
 
 
 def _restock_access_denied(con, store_id, minimum_role):
-    if not _is_authoritative(con):
+    if not _is_authoritative(con, store_id):
         return None
     try:
         require_inventory_access(
@@ -525,7 +525,7 @@ def complete_restock_session(sid):
     if denied is not None:
         con.close()
         return denied
-    if _is_authoritative(con):
+    if _is_authoritative(con, sess['store_id']):
         store_id = sess['store_id']
         delivery = con.execute(
             'SELECT status FROM inventory_deliveries WHERE restock_session_id=?',

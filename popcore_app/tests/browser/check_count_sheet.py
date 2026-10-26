@@ -60,31 +60,30 @@ async def manager_flow(browser, viewport):
         await button.click()
         dialog = page.get_by_role('dialog', name='Download count sheet')
         await expect(dialog).to_be_visible()
-        await expect(dialog.get_by_text('Legacy stock at DT', exact=True)).to_be_visible()
+        await expect(dialog.get_by_text('Whole catalog', exact=True)).to_be_visible()
         assert not sheet['queries']
         await expect(page.locator('.ant-modal.ant-zoom-appear, .ant-modal.ant-zoom-enter')).to_have_count(0)
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         await page.screenshot(path=OUT / f'dialog-{viewport["width"]}.png')
 
-        # Default: selected store DT, floor, legacy scope.
+        # Default: selected store DT, floor, whole catalog (legacy stock is not trusted).
         async with page.expect_download() as info:
             await dialog.get_by_role('button', name='Download count sheet').click()
         download = await info.value
-        assert download.suggested_filename.startswith('count_sheet_DT_floor_legacy_'), download.suggested_filename
+        assert download.suggested_filename.startswith('count_sheet_DT_floor_catalog_'), download.suggested_filename
         assert Path(await download.path()).read_text(encoding='utf-8') == CSV
-        assert sheet['queries'][-1] == {'store_code': 'DT', 'location': 'floor', 'scope': 'legacy'}, sheet['queries']
+        assert sheet['queries'][-1] == {'store_code': 'DT', 'location': 'floor', 'scope': 'catalog'}, sheet['queries']
         await expect(dialog).to_be_hidden()
 
         await page.get_by_role('button', name='工具 Tools').click()
         await button.click()
         await choose(page, dialog, 'Count sheet location', 'MK · Warehouse')
-        await expect(dialog.get_by_text('Legacy stock at MK', exact=True)).to_be_visible()
-        await choose(page, dialog, 'Count sheet scope', 'Whole catalog')
+        await choose(page, dialog, 'Count sheet scope', 'Legacy stock at MK')
         async with page.expect_download() as info:
             await dialog.get_by_role('button', name='Download count sheet').click()
         download = await info.value
-        assert download.suggested_filename.startswith('count_sheet_MK_warehouse_catalog_'), download.suggested_filename
-        assert sheet['queries'][-1] == {'store_code': 'MK', 'location': 'warehouse', 'scope': 'catalog'}
+        assert download.suggested_filename.startswith('count_sheet_MK_warehouse_legacy_'), download.suggested_filename
+        assert sheet['queries'][-1] == {'store_code': 'MK', 'location': 'warehouse', 'scope': 'legacy'}
         await expect(dialog).to_be_hidden()
 
         for code, (_, error, hint) in ERRORS.items():

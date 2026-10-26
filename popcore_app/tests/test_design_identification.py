@@ -146,15 +146,21 @@ class DesignIdentificationTests(ReceivingFixture):
         response = self.identify()
         self.assertEqual((response.status_code, response.get_json()['code']), (409, 'opening_unverified'))
         self.assertEqual(self.snapshot(self.tables), before)
+        # A store with no verified location has not gone live, so it stays on legacy stock.
         with closing(self.connect()) as con:
             con.execute('UPDATE inventory_scope_state SET opening_verified=1 WHERE location_id=?', (self.floor,))
-            con.execute("UPDATE inventory_mode SET mode='legacy' WHERE id=1")
+            live = [row[0] for row in con.execute(
+                """SELECT location_id FROM inventory_scope_state WHERE opening_verified=1 AND store_id=
+                   (SELECT store_id FROM inventory_locations WHERE id=?)""", (self.floor,))]
+            con.execute(f"UPDATE inventory_scope_state SET opening_verified=0 WHERE location_id IN "
+                        f"({','.join('?' for _ in live)})", live)
             con.commit()
         response = self.identify()
         self.assertEqual((response.status_code, response.get_json()['code']), (409, 'inventory_legacy_mode'))
         self.assertEqual(self.snapshot(self.tables), before)
         with closing(self.connect()) as con:
-            con.execute("UPDATE inventory_mode SET mode='authoritative' WHERE id=1")
+            con.execute(f"UPDATE inventory_scope_state SET opening_verified=1 WHERE location_id IN "
+                        f"({','.join('?' for _ in live)})", live)
             con.commit()
         self.assertEqual(self.identify().status_code, 200)
         with closing(self.connect()) as con:
