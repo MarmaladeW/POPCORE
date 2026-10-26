@@ -56,11 +56,12 @@ async def checks(browser, width, role):
     await page.goto(BASE+'/stock')
     await expect(page.get_by_role('heading',name='库存',exact=True)).to_be_visible()
     await page.get_by_role('link',name='Night Garden',exact=False).click()
-    await expect(page.get_by_role('heading',name='Confirmed designs',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='确认款 Confirmed designs',exact=True)).to_be_visible()
     await expect(page.get_by_role('heading',name='Other products',exact=True)).to_be_visible()
     headings=await page.get_by_role('heading').all_text_contents()
-    groups=[name for name in headings if name in ('Confirmed designs','Sealed sets','Unidentified boxes','Other products')]
-    assert groups[0]=='Confirmed designs',groups
+    order=('整端 Sealed sets','单盒 Single boxes','确认款 Confirmed designs','Other products')
+    groups=[name for name in headings if name in order]
+    assert groups==sorted(groups,key=order.index) and '确认款 Confirmed designs' in groups,groups
     await expect(page.get_by_role('table').first).to_be_visible()
     await expect(page.get_by_text('2 sets',exact=True)).to_be_visible()
     await expect(page.get_by_text('8 boxes',exact=True)).to_be_visible()
@@ -175,7 +176,7 @@ async def twelve_design_checks(browser,width):
     context,page=await context_with_api(browser,state,viewport={'width':width,'height':900},auth={'role':'staff'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE+'/stock?series_id=7')
-    await expect(page.get_by_role('heading',name='Confirmed designs',exact=True)).to_be_visible()
+    await expect(page.get_by_role('heading',name='确认款 Confirmed designs',exact=True)).to_be_visible()
     await expect(page.get_by_role('link',name='Receive Design 12',exact=True)).to_be_visible()
     await expect(page.get_by_role('table',name='Confirmed design inventory',exact=True).get_by_role('row')).to_have_count(13)
     for name in ('Moon','Sun',*[f'Design {number}' for number in range(3,13)]):
@@ -189,7 +190,7 @@ async def twelve_design_checks(browser,width):
     await page.screenshot(animations='disabled',path=OUT/f'twelve-designs-details-{width}.png')
     await close_drawer(page)
     await no_overflow(page)
-    await page.get_by_role('heading',name='Confirmed designs',exact=True).scroll_into_view_if_needed()
+    await page.get_by_role('heading',name='确认款 Confirmed designs',exact=True).scroll_into_view_if_needed()
     await page.screenshot(animations='disabled',path=OUT/f'twelve-designs-{width}.png')
     await context.close()
 
@@ -210,6 +211,7 @@ async def mixed_quantities_checks(browser):
     await expect(moon.get_by_text('On hold: 1 piece · Floor',exact=True)).to_be_visible()
     available=moon.get_by_role('cell').filter(has_text='Not yet verified')
     await expect(available.get_by_text('Unknown',exact=True)).to_be_visible()
+    await moon.scroll_into_view_if_needed()  # designs sit below sealed sets and single boxes
     await expect(moon.get_by_role('link',name='Count Moon',exact=True)).to_be_in_viewport()
     await no_overflow(page)
     await page.screenshot(animations='disabled',path=OUT/'mixed-quantities-768.png')
