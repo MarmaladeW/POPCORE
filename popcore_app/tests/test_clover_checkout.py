@@ -623,8 +623,9 @@ class SendToCloverTests(CloverCheckoutTests):
         self.assertEqual((sale['business_date'], sale['created_by'], sale['collected_cents']), ('2026-10-20', 'auth0|staff', 6259))
         self.assertEqual(self.one('SELECT source_reference FROM sale_sources WHERE sale_id=?', done['sale_id'])[0],
                          'DT-20261020-001')
-        lines = {row['product_id']: row['quantity'] for row in self.connect().execute(
-            'SELECT product_id,quantity FROM sale_lines WHERE sale_id=?', (done['sale_id'],))}
+        with closing(self.connect()) as con:  # Windows cannot delete a database that is still open
+            lines = {row['product_id']: row['quantity'] for row in con.execute(
+                'SELECT product_id,quantity FROM sale_lines WHERE sale_id=?', (done['sale_id'],))}
         self.assertEqual(lines, {self.design: 2, self.product_id: 1})
         self.assertEqual((self.stock(self.design), self.stock(self.product_id)), (1, 4))
         payment = self.one('SELECT tender,amount_cents,state FROM sale_payments WHERE sale_id=?', done['sale_id'])

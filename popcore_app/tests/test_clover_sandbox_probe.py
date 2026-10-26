@@ -2,6 +2,7 @@
 import base64
 import json
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -250,6 +251,10 @@ class SandboxProbeTests(unittest.TestCase):
             headers={'Authorization': 'Bearer ' + 'b' * 32})
         with patch('scripts.clover_sandbox.requests.request', return_value=provider_response({}, 429)):
             response = client.get('/clover-sandbox/orders', headers=self.headers)
+            # The cloud read runs in the background; let it finish before its database is removed.
+            for thread in threading.enumerate():
+                if thread is not threading.current_thread() and thread.daemon:
+                    thread.join(5)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json['cloud_unavailable'])
         self.assertEqual(response.json['orders'][0]['source'], 'device')
