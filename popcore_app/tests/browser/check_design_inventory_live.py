@@ -71,7 +71,7 @@ async def checks(browser, fixture):
     await expect(page.get_by_role('dialog')).not_to_be_visible()
     for width in (390,768,1440):
         await page.set_viewport_size({'width':width,'height':1000})
-        await page.get_by_role('heading',name='Confirmed designs',exact=True).scroll_into_view_if_needed()
+        await page.get_by_role('heading',name='确认款 Confirmed designs',exact=True).scroll_into_view_if_needed()
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         await page.screenshot(animations='disabled',path=str(OUT/f'identified-{width}.png'))
         await page.get_by_label('Stock details for A',exact=True).click()

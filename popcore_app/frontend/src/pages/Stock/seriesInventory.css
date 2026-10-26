@@ -133,6 +133,9 @@
 .pc-series-filterbar .ant-input { min-height: 0 !important; }
 .pc-series-filterbar input::placeholder, .pc-series-search input::placeholder { color: var(--text-tertiary); }
 .pc-series-batch { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pc-series-batch-top { justify-content: flex-end; margin: -8px 0 16px; }
+.pc-series-filterbar .pc-series-side-toggle { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.pc-series-side-toggle input { width: 16px; height: 16px; margin: 0; }
 .pc-series-batch .pc-series-count { font-size: 12px; color: var(--text-secondary); margin-right: 8px; white-space: nowrap; }
 .pc-series-section-heading { flex-wrap: wrap; }
 .pc-series-product-name button { display: flex; align-items: center; gap: 10px; }

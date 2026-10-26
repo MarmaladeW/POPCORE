@@ -67,7 +67,7 @@ async def check(browser,width):
     await page.get_by_label('Find design in this series',exact=True).fill('star')
     await expect(page.locator('.pc-series-product')).to_have_count(1)
     await page.get_by_label('Find design in this series',exact=True).fill('')
-    await page.get_by_role('heading',name='Confirmed designs',exact=True).scroll_into_view_if_needed()
+    await page.get_by_role('heading',name='确认款 Confirmed designs',exact=True).scroll_into_view_if_needed()
     assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     assert await page.locator('.pc-series-filterbar > .ant-input-affix-wrapper').evaluate('element => Math.abs(element.getBoundingClientRect().height - 44) < 2')
     await page.screenshot(path=OUT/f'inventory-{width}.png',animations='disabled')
