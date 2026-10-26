@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button'
 
 interface Props {
   children: ReactNode
+  /** Clears the error when it changes, so one page's error doesn't follow you to the next page. */
+  resetKey?: string
 }
 
 interface State {
@@ -19,6 +21,10 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[ErrorBoundary]', error, info.componentStack)
+  }
+
+  componentDidUpdate(prevProps: Props) {
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) this.setState({ error: null })
   }
 
   render() {
