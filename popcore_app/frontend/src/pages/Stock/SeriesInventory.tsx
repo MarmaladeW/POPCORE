@@ -46,6 +46,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const [stockAction,setStockAction] = useState<{kind:'move'|'open_set';productId:number}>()
   const [stockFilter,setStockFilter] = useState<'all'|'attention'|InventoryAttention>('all')
   const [designQuery,setDesignQuery] = useState('')
+  const [showSideLocations,setShowSideLocations] = useState(false)
   const [quantity,setQuantity] = useState(1), [reason,setReason] = useState('')
   const scope = `${storeCode}|${selectedId}|${search}|${refresh}`
   const current = result?.scope===scope ? result : undefined
@@ -93,6 +94,16 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const actionProduct = selected?.products.find(product=>product.id===stockAction?.productId)
   function openStockAction(kind:'move'|'open_set',productId:number) {setDetailId(undefined);setStockAction({kind,productId});setSaved(undefined)}
   const designs = selected?.products.filter(product=>product.stock_form==='confirmed_design') || []
+  // A series reads top-down: sealed sets, then single boxes, then each confirmed design. The product that owns the
+  // series is its single box even before its stock type is reviewed.
+  const isBox = (product:SeriesProduct) => product.stock_form==='random_box' || (product.stock_form===null && product.id===selected?.product_id)
+  const sections = selected ? ([
+    {key:'sealed_set', title:'整端 Sealed sets', note:'Unopened sets', label:'Sealed set inventory', products:selected.products.filter(product=>product.stock_form==='sealed_set')},
+    {key:'random_box', title:'单盒 Single boxes', note:'Design not yet confirmed', label:'Single box inventory', products:selected.products.filter(isBox)},
+    {key:'confirmed_design', title:'确认款 Confirmed designs', note:'Each design is stocked separately', label:'Confirmed design inventory', products:designs},
+    {key:'ordinary', title:'Other products', note:'', label:'Other product inventory', products:selected.products.filter(product=>product.stock_form==='ordinary')},
+    {key:'review', title:'Identity needs review', note:'', label:'Unreviewed inventory', products:selected.products.filter(product=>product.stock_form===null&&!isBox(product))},
+  ] as const) : []
   function matchesStock(product:SeriesProduct) {
     const attention=inventoryAttention(product,data?.locations||[])
     const match=stockFilter==='all'||(stockFilter==='attention'?attention.length>0:attention.includes(stockFilter))
@@ -126,18 +137,17 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
         {data.mode!=='authoritative'&&<Alert type="warning" showIcon message="Inventory opening has not been activated. Quantities remain unknown until reviewed."/>}
         <div className="pc-series-filterbar"><label>Stock view<select aria-label="Inventory status" value={stockFilter} onChange={event=>setStockFilter(event.target.value as typeof stockFilter)} disabled={locked}>
           <option value="all">All stock</option><option value="attention">Needs attention</option><option value="out_of_stock">Out of stock</option><option value="replenish">Replenish floor</option><option value="unverified">Unverified stock</option><option value="condition">On hold / damaged</option>
-        </select></label>{selected&&<Input aria-label="Find design in this series" placeholder="Find a design" value={designQuery} onChange={event=>setDesignQuery(event.target.value)} disabled={locked} allowClear/>}</div>
+        </select></label>{selected&&<Input aria-label="Find design in this series" placeholder="Find a design" value={designQuery} onChange={event=>setDesignQuery(event.target.value)} disabled={locked} allowClear/>}
+          {selected&&data.locations.some(location=>SIDE_LOCATIONS.includes(location.code))&&<label className="pc-series-side-toggle"><input type="checkbox" checked={showSideLocations} onChange={event=>setShowSideLocations(event.target.checked)}/>陈列 · 娃娃机 Display &amp; claw</label>}</div>
         {rawId&&!selectedId?<Alert type="error" message="Invalid series reference."/>:selectedId&&!selected?<Alert type="warning" message="This series is unavailable in the selected scope."/>:selected?<>
-          <section className="pc-series-section" aria-labelledby="designs-heading">
-            <div className="pc-series-section-heading"><div><h3 id="designs-heading">Confirmed designs</h3><p>Available stock by location. Each design is stocked separately.</p></div><div className="pc-series-batch"><span className="pc-series-count">{designs.length} designs</span>{canWork&&<><Button disabled={locked||data.mode!=='authoritative'||!designs.length} onClick={()=>setWorksheet('count')}>按系列晚盘 Count series</Button><Button type="primary" disabled={locked||data.mode!=='authoritative'||!designs.length} onClick={()=>setWorksheet('receive')}>整系列入库 Receive series</Button></>}</div></div>
-            <StockTable products={designs.filter(matchesStock)} data={data} canWork={canWork&&!locked} onDetail={setDetailId} label="Confirmed design inventory" />
-          </section>
-          {(['sealed_set','random_box','ordinary',null] as const).map(form=>{
-            const products=selected.products.filter(product=>product.stock_form===form&&matchesStock(product))
-            if(!products.length)return null
-            return <section className="pc-series-section pc-series-packaging" key={form||'review'}>
-              <div className="pc-series-section-heading"><h3>{form===null?'Identity needs review':({sealed_set:'Sealed sets',random_box:'Unidentified boxes',ordinary:'Other products'})[form]}</h3><span>{form==='sealed_set'?'Unopened sets':form==='random_box'?'Design not yet confirmed':''}</span></div>
-              <StockTable products={products} data={data} canWork={canWork&&!locked&&form!==null} onDetail={setDetailId} label={form===null?'Unreviewed inventory':({sealed_set:'Sealed set inventory',random_box:'Unidentified box inventory',ordinary:'Other product inventory'})[form]} />
+          {canWork&&<div className="pc-series-batch pc-series-batch-top">{<><Button disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('count')}>按系列晚盘 Count series</Button><Button type="primary" disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('receive')}>整系列入库 Receive series</Button></>}</div>}
+          {sections.map(section=>{
+            const products=section.products.filter(matchesStock)
+            if(!section.products.length&&section.key!=='confirmed_design')return null
+            return <section className={'pc-series-section'+(section.key==='confirmed_design'?'':' pc-series-packaging')} key={section.key} aria-labelledby={`${section.key}-heading`}>
+              <div className="pc-series-section-heading"><div><h3 id={`${section.key}-heading`}>{section.title}</h3>{section.note&&<p>{section.note}</p>}</div>{section.key==='confirmed_design'&&<span className="pc-series-count">{designs.length} designs</span>}</div>
+              <StockTable products={products} data={data} canWork={canWork&&!locked&&section.key!=='review'} onDetail={setDetailId} label={section.label}
+                locations={visibleLocations(data.locations, products, showSideLocations, section.key==='confirmed_design')} />
             </section>
           })}
         </>:!rawId&&<>
@@ -178,11 +188,23 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   </main>
 }
 
-function StockTable({products,data,canWork,onDetail,label}:{products:SeriesProduct[];data:SeriesInventoryResult;canWork:boolean;onDetail:(id:number)=>void;label:string}) {
+type SeriesLocation = SeriesInventoryResult['locations'][number]
+// Display and the claw machine are secondary in day-to-day work: hidden until asked for, except where they hold stock.
+// Confirmed designs don't go into the claw machine, so it never shows for them unless stock is actually there.
+const SIDE_LOCATIONS = ['display','claw']
+function visibleLocations(locations:SeriesLocation[], products:SeriesProduct[], showSide:boolean, designs:boolean) {
+  return locations.filter(location=>{
+    if (!SIDE_LOCATIONS.includes(location.code)) return true
+    if (products.some(product=>(saleable(product,location.id)?.quantity||0)>0)) return true
+    return showSide && !(designs && location.code==='claw')
+  })
+}
+
+function StockTable({products,data,canWork,onDetail,label,locations}:{products:SeriesProduct[];data:SeriesInventoryResult;canWork:boolean;onDetail:(id:number)=>void;label:string;locations:SeriesLocation[]}) {
   const multipleStores = new Set(data.locations.map(item=>item.store_code)).size>1
   if(!products.length)return <p className="pc-series-empty">No products match this stock view. Try All stock or clear the search.</p>
   return <div className="pc-series-table-wrap"><table className="pc-series-table" aria-label={label}>
-    <thead><tr><th scope="col">Design / product</th>{data.locations.map(location=><th scope="col" key={location.id} className={'pc-series-location'+(['upstairs','warehouse'].includes(location.code)?' pc-kraft-cell':'')}>{multipleStores&&<span>{location.store_code} · </span>}{location.name}</th>)}<th scope="col" className="pc-series-available">Available</th>{canWork&&<th scope="col" className="pc-series-actions-heading"><span className="pc-series-sr-only">Actions</span></th>}</tr></thead>
+    <thead><tr><th scope="col">Design / product</th>{locations.map(location=><th scope="col" key={location.id} className={'pc-series-location'+(['upstairs','warehouse'].includes(location.code)?' pc-kraft-cell':'')}>{multipleStores&&<span>{location.store_code} · </span>}{location.name}</th>)}<th scope="col" className="pc-series-available">Available</th>{canWork&&<th scope="col" className="pc-series-actions-heading"><span className="pc-series-sr-only">Actions</span></th>}</tr></thead>
     <tbody>{products.map(product=>{
       const balances=product.balances.filter(balance=>balance.disposition==='saleable')
       const known=balances.length>0&&balances.every(balance=>balance.quantity!==null)
@@ -191,12 +213,12 @@ function StockTable({products,data,canWork,onDetail,label}:{products:SeriesProdu
       const exceptions=product.balances.filter(balance=>balance.disposition!=='saleable'&&balance.quantity!==null&&balance.quantity>0)
       return <tr className="pc-series-product" key={product.id}>
         <th scope="row" className="pc-series-product-name"><button type="button" aria-label={`Stock details for ${name}`} onClick={()=>onDetail(product.id)}><InventoryPhoto key={product.image_filename} filename={product.image_filename} name={name}/><span>{name}</span></button>
-          <div className="pc-series-mobile-locations">{data.locations.map(location=><span key={location.id}>{multipleStores?`${location.store_code} · `:''}{location.name} <b>{saleable(product,location.id)?.quantity??'Unknown'}</b></span>)}</div>
+          <div className="pc-series-mobile-locations">{locations.map(location=><span key={location.id}>{multipleStores?`${location.store_code} · `:''}{location.name} <b>{saleable(product,location.id)?.quantity??'Unknown'}</b></span>)}</div>
           {inventoryAttention(product,data.locations).includes('replenish')&&<span className="pc-series-warning">Replenish floor · back stock available</span>}
           {product.identity_status!=='verified'&&<span className="pc-series-warning">Identity needs review</span>}
           {exceptions.length>0&&<span className="pc-series-exceptions">{exceptions.map(balance=>{const location=data.locations.find(item=>item.id===balance.location_id);return <span key={`${balance.location_id}|${balance.disposition}`}>{dispositionName(balance.disposition)}: {units(balance.quantity!,product.stock_unit)} · {multipleStores?`${location?.store_code} · `:''}{location?.name}</span>})}</span>}
         </th>
-        {data.locations.map(location=><td key={location.id} className={'pc-series-location'+(['upstairs','warehouse'].includes(location.code)?' pc-kraft-cell':'')}>{saleable(product,location.id)?.quantity??<span className="pc-series-unknown">Unknown</span>}</td>)}
+        {locations.map(location=><td key={location.id} className={'pc-series-location'+(['upstairs','warehouse'].includes(location.code)?' pc-kraft-cell':'')}>{saleable(product,location.id)?.quantity??<span className="pc-series-unknown">Unknown</span>}</td>)}
         <td className={`pc-series-available ${known&&total===0?'pc-series-zero':''}`}><strong>{known?units(total,product.stock_unit):'Unknown'}</strong>{known&&total===0&&<span>Out of stock</span>}{!known&&<span>Not yet verified</span>}</td>
         {canWork&&<td className="pc-series-product-actions">{product.identity_status==='verified'&&product.stock_unit&&<><Link aria-label={`Receive ${name}`} to={`/goods/receiving?product_id=${product.id}`}>Receive</Link><Link aria-label={`Count ${name}`} to={`/goods/counts?product_id=${product.id}`}>Count</Link></>}</td>}
       </tr>
