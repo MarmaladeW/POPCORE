@@ -91,6 +91,12 @@ def checkout_detail(con, checkout_id, actor):
     row['remaining_cents'] = row['order']['collected_cents'] - row['received_cents']
     row['clover'] = None
     row['pricing'] = None if is_clover(con, checkout_id) else manual_block(row, actor)
+    row['clover_send'] = None
+    if not is_clover(con, checkout_id):
+        from clover_checkout import send_block  # avoids a circular import
+        row['clover_send'] = send_block(con, row, writable=writable)
+        if row['clover_send'] and row['clover_send']['pending']:
+            row['pricing']['can_receive'] = False  # paid on Clover once it has the order, or after Stop
     if is_clover(con, checkout_id):
         from clover_checkout import clover_block  # avoids a circular import
         row['clover'] = clover_block(con, row, actor, writable=writable)
@@ -263,6 +269,8 @@ def receive_manual(con, checkout_id, data, actor, request_key):
             return checkout_detail(con, row['id'], actor)
         if is_clover(con, row['id']):
             raise InventoryConflict('Clover orders are paid from their Clover screen', 'clover_order')
+        if con.execute('SELECT 1 FROM clover_sends WHERE checkout_id=?', (row['id'],)).fetchone():
+            raise InventoryConflict('This order is being sent to Clover. Retry or stop sending first.', 'clover_sending')
         if row['status'] != 'open' or row['version'] != expected:
             raise InventoryConflict('Checkout changed. Refresh before continuing.', 'checkout_state_conflict')
         if row['abandoned_reason']:

@@ -10,6 +10,7 @@ items while unpaid; POPCORE for its own tenders and the sale.
 """
 import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -38,6 +39,17 @@ OPEN_BLOCKERS = ('overpaid', 'tender_unknown', 'clover_deleted')
 # open on Clover and titles it "Paid <date> <time>"; "pay" adds POPCORE's discount, total and tenders so
 # Clover shows it paid. Sales paid entirely on Clover need neither.
 WRITEBACK_MODES = ('label', 'pay')
+# A sale started in POPCORE and sent to Clover for card. Clover keeps an external reference ("Invoice
+# Number") of at most 12 characters, so MT-20261026-001 is sent as MT261026001; the order's title ("Order #")
+# carries the reference in full.
+SEND_REFERENCE = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,11}\Z')
+MANUAL_REFERENCE = re.compile(r'([A-Za-z0-9]{1,3})-20(\d{6})-(\d{3})\Z')
+SEND_TITLE = re.compile(r'[ -~]{1,40}\Z')
+SEND_UNITS = 100
+SEND_DISCOUNT = 'Agreed discount'
+SEND_TAX_RATE = 1_300_000  # 13% HST in Clover's units, the rate the manual checkout screen fills in
+# Refusals where the connector wrote nothing on Clover, so the sale stays a plain POPCORE order.
+SEND_REFUSED = ('amounts_differ', 'tax_missing')
 PERMANENT_WRITE_ERRORS = ('clover_changed', 'overpaid', 'calc_unverified', 'unreachable', 'amounts_differ',
                           'discount_required', 'tender_missing', 'not_paid', 'writer_disabled', 'wrong_merchant')
 
@@ -186,15 +198,32 @@ def product_for_item(con, item_id, code):
     return None
 
 
+def sent_lines(con, order_id):
+    """Clover line name -> the POPCORE product it was sent for, when POPCORE started this order."""
+    row = con.execute('SELECT lines FROM clover_sends WHERE order_id=?', (order_id,)).fetchone()
+    return {line['name']: line for line in json.loads(row['lines'])} if row else {}
+
+
+def product_for_line(con, item, sent):
+    """A line POPCORE sent is its POPCORE product (the exact design); else the Clover item or barcode."""
+    line = sent.get(item.get('name')) if not item.get('itemId') else None
+    if line:
+        return {'id': line['product_id'], 'unit': line['unit'], 'name': line['product_name'],
+                'from_display': line['from_display']}
+    return product_for_item(con, item.get('itemId'), item.get('itemCode'))
+
+
 def lines_for(con, snapshot):
     """Sale lines: matched products merged per product; anything else stays as Clover's text."""
     mapped, raw = {}, []
+    sent = sent_lines(con, snapshot['id'])
     for item in snapshot['items']:
         whole = item.get('unitQty') in (None, 0, 1000)
         price = item['price'] if pricing.safe_cents(item.get('price')) else None
-        product = product_for_item(con, item.get('itemId'), item.get('itemCode')) if whole else None
+        product = product_for_line(con, item, sent) if whole else None
         if product:
-            entry = mapped.setdefault(product['id'], {'quantity': 0, 'prices': set(), 'unit': product['unit']})
+            display = bool(product.get('from_display'))
+            entry = mapped.setdefault((product['id'], display), {'quantity': 0, 'prices': set(), 'unit': product['unit']})
             entry['quantity'] += 1
             entry['prices'].add(price)
             continue
@@ -205,15 +234,21 @@ def lines_for(con, snapshot):
             text += f" x{item['unitQty'] / 1000:g} {item.get('unitName') or 'unit'}"
         raw.append({'quantity': 1, 'raw_product_text': text[:240], 'unit_price_cents': price if whole else None})
     return [{'product_id': product_id, 'unit': entry['unit'], 'quantity': entry['quantity'],
-             'unit_price_cents': next(iter(entry['prices'])) if len(entry['prices']) == 1 else None}
-            for product_id, entry in mapped.items()] + raw
+             'unit_price_cents': next(iter(entry['prices'])) if len(entry['prices']) == 1 else None,
+             **({'from_display': True} if display else {})}
+            for (product_id, display), entry in mapped.items()] + raw
 
 
 def _intent(con, store_id, snapshot, *, due):
     summary = pricing.summarize(snapshot)
+    # A sale POPCORE started keeps its own date and reference; a Clover order's are Clover's.
+    started = con.execute('''SELECT o.reference,o.business_date FROM clover_sends s
+        JOIN checkout_orders o ON o.id=s.checkout_id WHERE s.order_id=?''', (snapshot['id'],)).fetchone()
     return _sale_input(con, {
-        'store_id': store_id, 'business_date': toronto_date(snapshot['createdTime']), 'entry_mode': 'already_paid',
-        'source': {'system': 'popcore_checkout', 'account': str(store_id), 'reference': snapshot['id']},
+        'store_id': store_id, 'entry_mode': 'already_paid',
+        'business_date': started['business_date'] if started else toronto_date(snapshot['createdTime']),
+        'source': {'system': 'popcore_checkout', 'account': str(store_id),
+                   'reference': started['reference'] if started else snapshot['id']},
         **pricing.sale_money(summary, due), 'lines': lines_for(con, snapshot)}, register_actor())
 
 
@@ -363,6 +398,9 @@ def apply_order(con, cfg, feed, snapshot, *, pricing_facts=None):
         snapshot['_pricing'] = {'verified': bool(pricing_facts.get('verified')), 'total': snapshot['total'],
                                 'fingerprint': pricing.fingerprint(snapshot, payments=False)}
     if link is None:
+        started = _awaiting(con, cfg, snapshot)
+        if started is not None:
+            return _attach(con, cfg, started, snapshot)
         if snapshot['createdTime'] < feed['import_since_ms'] or snapshot['total'] is None or not snapshot['items']:
             return None
         return _create(con, cfg, snapshot)
@@ -388,6 +426,55 @@ def _create(con, cfg, snapshot):
         record_late_adjustment(con, store_id, business_date, 'checkout', checkout_id,
                                'Clover order imported after store-day close', REGISTER_SUB)
         checkout = con.execute('SELECT * FROM checkout_orders WHERE id=?', (checkout_id,)).fetchone()
+        link = con.execute('SELECT * FROM clover_orders WHERE checkout_id=?', (checkout_id,)).fetchone()
+        if snapshot['source'] == 'cloud':
+            _import_payments(con, checkout, link, snapshot)
+        _settle_if_paid(con, cfg, checkout_id, actor=register_actor())
+        con.commit()
+        return checkout_id
+    except Exception:
+        con.rollback()
+        raise
+
+
+def _sent_units(send):
+    return sorted((line['name'], line['price']) for line in json.loads(send['lines']) for _ in range(line['quantity']))
+
+
+def _awaiting(con, cfg, snapshot):
+    """The POPCORE sale whose reference this Clover order carries and whose lines it has, or None."""
+    reference = snapshot.get('externalReferenceId')
+    if not reference or snapshot['source'] != 'cloud':
+        return None
+    for send in con.execute('''SELECT s.* FROM clover_sends s JOIN checkout_orders o ON o.id=s.checkout_id
+            WHERE s.merchant_id=? AND s.reference=? AND s.order_id IS NULL AND o.status='open' ''',
+            (cfg['merchant'], reference)).fetchall():
+        if (snapshot['createdTime'] >= send['sent_ms'] - 300_000
+                and _sent_units(send) == sorted((i.get('name'), i.get('price')) for i in snapshot['items'])):
+            return send['checkout_id']
+    return None
+
+
+def _attach(con, cfg, checkout_id, snapshot):
+    """Link the Clover order POPCORE sent to the checkout that started it; its lines stay POPCORE's products."""
+    snapshot['_cloud_seen'] = snapshot['source'] == 'cloud'
+    _begin(con)
+    try:
+        checkout = con.execute('SELECT * FROM checkout_orders WHERE id=?', (checkout_id,)).fetchone()
+        if con.execute('SELECT 1 FROM clover_orders WHERE checkout_id=? OR (merchant_id=? AND order_id=?)',
+                       (checkout_id, cfg['merchant'], snapshot['id'])).fetchone():
+            con.commit()
+            return checkout_id
+        if checkout['status'] != 'open' or checkout['abandoned_reason']:
+            raise InventoryConflict('This sale is no longer open', 'checkout_state_conflict')
+        con.execute('UPDATE clover_sends SET order_id=?,error=NULL WHERE checkout_id=?', (snapshot['id'], checkout_id))
+        con.execute('''INSERT INTO clover_orders(checkout_id,merchant_id,order_id,created_ms,snapshot,fingerprint,source,
+            state,seen_at) VALUES (?,?,?,?,?,?,?,?,?)''',
+            (checkout_id, cfg['merchant'], snapshot['id'], snapshot['createdTime'], json.dumps(snapshot),
+             pricing.fingerprint(snapshot, payments=False), snapshot['source'],
+             snapshot['paymentState'] or 'DEVICE', snapshot['seen_at']))
+        intent = _intent(con, checkout['store_id'], snapshot, due=snapshot['total'])
+        con.execute('UPDATE checkout_orders SET payload=?,version=version+1 WHERE id=?', (json.dumps(intent), checkout_id))
         link = con.execute('SELECT * FROM clover_orders WHERE checkout_id=?', (checkout_id,)).fetchone()
         if snapshot['source'] == 'cloud':
             _import_payments(con, checkout, link, snapshot)
@@ -741,7 +828,9 @@ def change(con, checkout_id, action, data, actor, request_key):
         try:
             current = con.execute('SELECT * FROM checkout_orders WHERE id=?', (row['id'],)).fetchone()
             _, popcore_cents = _received(con, row['id'])
-            if current['status'] != 'open' or popcore_cents or (current['created_by'] != actor['sub'] and not manager(actor)):
+            started = con.execute('SELECT 1 FROM clover_sends WHERE checkout_id=?', (row['id'],)).fetchone()
+            if (current['status'] != 'open' or popcore_cents or started
+                    or (current['created_by'] != actor['sub'] and not manager(actor))):
                 raise InventoryConflict('Only an open order with no money recorded in POPCORE can be released',
                                         'checkout_state_conflict')
             con.execute('UPDATE checkout_orders SET created_by=?,version=version+1 WHERE id=?', (REGISTER_SUB, row['id']))
@@ -948,6 +1037,130 @@ def _cancel(con, cfg, row, link, data, actor):
         raise
 
 
+# ── Sales started in POPCORE, paid by card on Clover ────────────────────────
+
+def clover_reference(reference, checkout_id):
+    """The Clover external reference of a POPCORE checkout: its own reference when Clover can keep it."""
+    if SEND_REFERENCE.fullmatch(reference):
+        return reference
+    manual = MANUAL_REFERENCE.fullmatch(reference)
+    return ''.join(manual.groups()) if manual else f'POPCORE{checkout_id}'
+
+
+def _send_lines(con, intent):
+    """One Clover custom line per POPCORE line: the product ID and name, so the cashier sees the exact design."""
+    lines, names = [], set()
+    for line in intent['lines']:
+        product = con.execute('''SELECT p.sku,p.stock_form,p.design_name,p.jizhanming,p.name_cn_en,
+            (SELECT name FROM product_series WHERE id=p.series_id) AS series FROM products p WHERE p.id=?''',
+            (line['product_id'],)).fetchone()
+        if product['stock_form'] == 'confirmed_design' and product['design_name']:
+            title = ' '.join(filter(None, (product['series'], product['design_name'])))
+        else:
+            title = (product['jizhanming'] or '').strip() or (product['name_cn_en'] or '').strip()
+        name = ' '.join(filter(None, (product['sku'], title))) or line['product_name_snapshot']
+        name = ' '.join(name.split())[:110] + (' (display)' if line.get('from_display') else '')
+        while name in names:
+            name = name[:120] + '*'
+        names.add(name)
+        if not line['unit_price_cents']:
+            raise InventoryValidationError('Clover cannot charge an item at $0. Remove it or give it a price.')
+        lines.append({'name': name, 'price': line['unit_price_cents'], 'quantity': line['quantity'],
+                      'product_id': line['product_id'], 'unit': line['unit'], 'product_name': line['product_name_snapshot'],
+                      'from_display': bool(line.get('from_display'))})
+    if sum(line['quantity'] for line in lines) > SEND_UNITS:
+        raise InventoryValidationError(f'Clover takes at most {SEND_UNITS} items in one order.')
+    return lines
+
+
+def send(con, checkout_id, actor):
+    """Open a Clover order with this POPCORE checkout's exact lines and agreed prices, for card on the device.
+
+    The order carries the checkout reference, so it joins this checkout instead of arriving as a new
+    Clover order. Safe to repeat: the connector creates at most one Clover order per checkout."""
+    row = checkout_row(con, checkout_id, actor, cashier=True)
+    require_checkout(con, row, actor, write=True)
+    cfg = _cfg_for(row)
+    if len(cfg['writer_key']) < 32:
+        raise InventoryConflict('POPCORE only reads Clover here, so it cannot send orders.', 'writer_disabled')
+    _begin(con)
+    try:
+        current = con.execute('SELECT * FROM checkout_orders WHERE id=?', (row['id'],)).fetchone()
+        if con.execute('SELECT 1 FROM clover_orders WHERE checkout_id=?', (row['id'],)).fetchone():
+            con.commit()
+            return checkout_detail(con, row['id'], actor)
+        if current['status'] != 'open' or current['abandoned_reason']:
+            raise InventoryConflict('Only an open order can be sent to Clover', 'checkout_state_conflict')
+        if con.execute("SELECT 1 FROM checkout_attempts WHERE checkout_id=? AND status='completed'", (row['id'],)).fetchone():
+            raise InventoryConflict('Money is already recorded on this order in POPCORE', 'checkout_has_payments')
+        sent = con.execute('SELECT * FROM clover_sends WHERE checkout_id=?', (row['id'],)).fetchone()
+        intent = json.loads(current['payload'])
+        if sent is None:
+            con.execute('''INSERT INTO clover_sends(checkout_id,merchant_id,reference,lines,total_cents,sent_ms)
+                VALUES (?,?,?,?,?,?)''', (row['id'], cfg['merchant'], clover_reference(current['reference'], row['id']),
+                                          json.dumps(_send_lines(con, intent)), intent['collected_cents'],
+                                          int(time.time() * 1000)))
+            con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?', (row['id'],))
+            sent = con.execute('SELECT * FROM clover_sends WHERE checkout_id=?', (row['id'],)).fetchone()
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    lines = json.loads(sent['lines'])
+    body = {'key': f"popcore-{cfg['instance']}-{row['id']}", 'reference': sent['reference'],
+            'title': current['reference'] if SEND_TITLE.fullmatch(current['reference']) else sent['reference'],
+            'tax_rate': SEND_TAX_RATE, 'expected_total': sent['total_cents'],
+            'lines': [{k: line[k] for k in ('name', 'price', 'quantity')} for line in lines],
+            'discount': {'name': SEND_DISCOUNT, 'amount': intent['reduction_cents']} if intent['reduction_cents'] else None}
+    try:
+        data = call(cfg, 'POST', '/orders/create', body=body, writer=True, timeout=(3, 45))
+        snapshot = validate(data.get('order'))
+    except (ConnectorError, ValueError) as exc:
+        refused = isinstance(exc, ConnectorError) and exc.code in SEND_REFUSED
+        with con:
+            if refused:  # nothing exists on Clover: the order stays a plain POPCORE order
+                con.execute('DELETE FROM clover_sends WHERE checkout_id=? AND order_id IS NULL', (row['id'],))
+            else:
+                con.execute('UPDATE clover_sends SET error=? WHERE checkout_id=?', (str(exc)[:300], row['id']))
+            con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?', (row['id'],))
+        if refused and exc.code == 'amounts_differ':
+            raise InventoryConflict(f"{exc} Clover adds {SEND_TAX_RATE // 100_000}% HST after any discount; "
+                                    'change the tax or prices to match, or take payment in POPCORE.', exc.code) from exc
+        raise InventoryConflict(f'Not on Clover yet: {exc}', getattr(exc, 'code', 'clover_unavailable')) from exc
+    if snapshot.get('externalReferenceId') != sent['reference']:
+        raise InventoryConflict('Clover returned another order', 'clover_changed')
+    ensure_feed(con, cfg)
+    if data.get('pricing') is not None:
+        snapshot['_pricing'] = {'verified': bool(data['pricing'].get('verified')), 'total': snapshot['total'],
+                                'fingerprint': pricing.fingerprint(snapshot, payments=False)}
+    _attach(con, cfg, row['id'], snapshot)
+    return checkout_detail(con, row['id'], actor)
+
+
+def unsend(con, checkout_id, actor):
+    """Stop a send Clover never confirmed, so the order is paid in POPCORE again."""
+    row = checkout_row(con, checkout_id, actor, cashier=True)
+    require_checkout(con, row, actor, write=True)
+    with con:
+        if not con.execute('DELETE FROM clover_sends WHERE checkout_id=? AND order_id IS NULL', (row['id'],)).rowcount:
+            raise InventoryConflict('Clover already has this order. Cancel it from its Clover screen.', 'checkout_state_conflict')
+        con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?', (row['id'],))
+    return checkout_detail(con, row['id'], actor)
+
+
+def send_block(con, row, *, writable):
+    """What a POPCORE order's screen shows about sending it to Clover for card, or None."""
+    cfg = store_config(row['store_id'])
+    if cfg is None or len(cfg['writer_key']) < 32:
+        return None
+    sent = con.execute('SELECT error FROM clover_sends WHERE checkout_id=?', (row['id'],)).fetchone()
+    is_open = row['status'] == 'open' and not row['abandoned_reason']
+    unpaid = not any(a['status'] == 'completed' for a in row['attempts'])
+    return {'pending': sent is not None, 'error': sent['error'] if sent else None,
+            'can_send': writable and bool(row['can_process']) and is_open and unpaid,
+            'can_stop': writable and bool(row['can_process']) and sent is not None}
+
+
 # ── What the screen shows ───────────────────────────────────────────────────
 
 STATE_LABELS = {'OPEN': 'Open', 'PARTIALLY_PAID': 'Partly paid', 'PAID': 'Paid', 'DEVICE': 'Open on device',
@@ -974,9 +1187,10 @@ def clover_block(con, row, actor, *, writable):
     feed = con.execute('SELECT ok_at FROM clover_feed WHERE merchant_id=?', (link['merchant_id'],)).fetchone()
     fresh = time.time() - link['seen_at'] <= FRESH_SECONDS and bool(feed) and time.time() - feed['ok_at'] <= FRESH_SECONDS
     lines = []
+    sent = sent_lines(con, link['order_id'])
     for item in snapshot['items']:
         whole = item.get('unitQty') in (None, 0, 1000)
-        product = product_for_item(con, item.get('itemId'), item.get('itemCode')) if whole else None
+        product = product_for_line(con, item, sent) if whole else None
         lines.append({'name': str(item.get('name') or 'Clover item')[:240], 'quantity': 1 if whole else item['unitQty'] / 1000,
                       'unit': item.get('unitName') or 'each', 'unit_price_cents': item.get('price'),
                       'item_code': item.get('itemCode'), 'product_id': product['id'] if product else None,
@@ -1000,6 +1214,7 @@ def clover_block(con, row, actor, *, writable):
         'source': link['source'], 'seen_at': link['seen_at'], 'fresh': fresh,
         'employee_name': snapshot.get('employeeName'), 'register': register, 'register_name': REGISTER_NAME,
         'popcore_reference': f"POPCORE-{row['id']}", 'total_cents': summary['total'], 'lines': lines,
+        'started_in_popcore': bool(sent),
         'discounts': discounts, 'popcore_discount_label': pending_label,
         'prices': pricing.price_options(summary, verified=verified) if is_open else None,
         'pricing_verified': verified, 'plan': link['plan'], 'pricing_mode': mode, 'due_cents': due,
@@ -1010,7 +1225,7 @@ def clover_block(con, row, actor, *, writable):
         'review': {'reason': link['review_reason'], 'detail': link['review_detail']} if link['review_reason'] else None,
         'delete_pending': bool(link['delete_pending']),
         'can_claim': writable and is_open and register,
-        'can_release': writable and is_open and owner and not popcore_cents,
+        'can_release': writable and is_open and owner and not popcore_cents and not sent,
         'can_receive': writable and is_open and not blocked and (owner or register or is_manager) and summary['total'] is not None,
         'can_cancel': writable and is_open and not has_money and (owner or register or is_manager),
         'can_cancel_local': writable and is_open and not has_money and is_manager,

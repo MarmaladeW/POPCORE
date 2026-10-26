@@ -9,7 +9,7 @@ export default function useCheckoutMutation(done:(data:any)=>void) {
   const alive=useRef(true)
   useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[])
   const locked = useRef(false)
-  const request = useRef<{url:string;body:unknown;key:string}|null>(null)
+  const request = useRef<{url:string;body:unknown;key:string;timeout:number}|null>(null)
   const [saving,setSaving] = useState(false), [pending,setPending] = useState(false), [error,setError] = useState('')
   useHistoryReconciliationGuard(pending,'Your last action is unconfirmed. Leave and check the saved record before trying again?')
   useBeforeUnload(event => { if (pending) event.preventDefault() })
@@ -25,15 +25,15 @@ export default function useCheckoutMutation(done:(data:any)=>void) {
     document.addEventListener('click',guard,true)
     return ()=>document.removeEventListener('click',guard,true)
   },[pending])
-  async function run(url?:string,body?:unknown) {
+  async function run(url?:string,body?:unknown,timeout=15000) {
     if (locked.current) return
-    if (!request.current && url) request.current = {url,body,key:crypto.randomUUID()}
+    if (!request.current && url) request.current = {url,body,key:crypto.randomUUID(),timeout}
     if (!request.current) return
     locked.current=true
     setSaving(true); setPending(true); setError('')
     try {
       const intent = request.current
-      const response = await client.post(intent.url,intent.body,{headers:{'Idempotency-Key':intent.key},timeout:15000})
+      const response = await client.post(intent.url,intent.body,{headers:{'Idempotency-Key':intent.key},timeout:intent.timeout})
       if(!alive.current)return
       request.current = null; setPending(false); done(response.data); return response.data
     } catch (cause) {

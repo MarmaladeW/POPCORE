@@ -1,9 +1,11 @@
 """Single-merchant Clover connector for POPCORE. No POPCORE imports.
 
 It holds the merchant's OAuth tokens, reads orders (cloud, plus device snapshots for speed),
-receives Clover webhooks, and performs the only Clover writes POPCORE makes: completing an
-order it settled (one POPCORE discount, the order total, its tenders and a reference) and
-deleting an order nobody paid. Writes need the writer key as well as the admin login.
+receives Clover webhooks, and performs the only Clover writes POPCORE makes: opening an order
+for a sale POPCORE started (custom lines, its tax and reference) so card is taken on the device,
+labelling or completing an order it settled (one POPCORE discount, the order total, its tenders
+and a reference) and deleting an order nobody paid. Writes need the writer key as well as the
+admin login.
 """
 import argparse
 from contextlib import contextmanager
@@ -29,9 +31,15 @@ ENVIRONMENTS = {
     'production': ('https://api.clover.com', 'https://www.clover.com/oauth/v2/authorize'),
 }
 IDENTIFIER = re.compile(r'[A-Za-z0-9]{13}\Z')
-# The only Clover writes: one order of the configured merchant, its POPCORE discount and tenders.
-WRITE_PATH = re.compile(r'/v3/merchants/([A-Za-z0-9]{13})/orders/[A-Za-z0-9]{13}'
-                        r'(/payments|/discounts|/discounts/[A-Za-z0-9]{13})?\Z')
+# The only Clover writes: a new order POPCORE started, one order of the configured merchant, its
+# lines, POPCORE discount and tenders.
+WRITE_PATH = re.compile(r'/v3/merchants/([A-Za-z0-9]{13})/orders(/[A-Za-z0-9]{13}'
+                        r'(/payments|/discounts|/discounts/[A-Za-z0-9]{13}|/bulk_line_items)?)?\Z')
+# A sale started in POPCORE: its checkout reference becomes the Clover order's external reference, which
+# Clover ("Invoice ID") limits to 12 characters.
+REFERENCE = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,11}\Z')
+SENT_KEY = re.compile(r'popcore-[A-Za-z0-9]{1,12}-\d{1,15}\Z')  # POPCORE instance and checkout
+MAX_SENT_UNITS = 100
 PAYMENT_KEY = re.compile(r'popcore-[A-Za-z0-9]{1,12}-\d{1,15}-\d{1,15}\Z')
 POPCORE_DISCOUNTS = ('Cash discount', 'Rounding')
 # POPCORE tender -> Clover tender labelKey (cash) or the custom tender labels the merchant created.
@@ -272,6 +280,8 @@ def create_app(config):
             CREATE TABLE IF NOT EXISTS device_orders (
                 order_id TEXT PRIMARY KEY, payload TEXT NOT NULL, received REAL NOT NULL,
                 reconciled INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS sent_orders (
+                key TEXT PRIMARY KEY, reference TEXT NOT NULL, order_id TEXT UNIQUE, created REAL NOT NULL);
         ''')
 
     def setting(key):
@@ -333,6 +343,8 @@ def create_app(config):
                                   (f'Clover says: {reason}' if reason else 'Check permissions or reconnect.'),
                                   status=result.status_code)
             payload = result.json() if result.content else {}
+            if isinstance(payload, list):  # bulk line items answer with the created lines
+                payload = {'elements': payload}
             if not isinstance(payload, dict):
                 raise ValueError('Expected an object')
             with rate_lock:
@@ -987,6 +999,138 @@ def create_app(config):
                 orders_next_read = 0
             return jsonify(title=text, written=sorted(update), paymentState=order.get('paymentState'),
                            total=order.get('total'))
+
+    def sent_order_body(body):
+        """A POPCORE-started order: its reference, lines (name, price, quantity), discount and total."""
+        if not isinstance(body, dict):
+            return None
+        key, reference, lines, title = body.get('key'), body.get('reference'), body.get('lines'), body.get('title')
+        discount, expected, tax_rate = body.get('discount'), body.get('expected_total'), body.get('tax_rate')
+        if (not isinstance(key, str) or not SENT_KEY.fullmatch(key)
+                or type(tax_rate) is not int or not 0 < tax_rate < TAX_SCALE
+                or not isinstance(reference, str) or not REFERENCE.fullmatch(reference)
+                or not (title is None or isinstance(title, str) and LABEL.fullmatch(title))
+                or not isinstance(lines, list) or not lines or not _safe_cents(expected)):
+            return None
+        units = []
+        for line in lines:
+            if not (isinstance(line, dict) and isinstance(line.get('name'), str)
+                    and 0 < len(line['name'].strip()) <= 127 and '\n' not in line['name']
+                    and _safe_cents(line.get('price')) and line['price'] > 0
+                    and type(line.get('quantity')) is int and 0 < line['quantity'] <= MAX_SENT_UNITS):
+                return None
+            units += [{'name': line['name'].strip(), 'price': line['price']}] * line['quantity']
+        if len(units) > MAX_SENT_UNITS:
+            return None
+        if discount is not None and not (isinstance(discount, dict) and isinstance(discount.get('name'), str)
+                                         and LABEL.fullmatch(discount['name'])
+                                         and discount['name'] not in POPCORE_DISCOUNTS
+                                         and _safe_cents(discount.get('amount')) and discount['amount'] > 0):
+            return None
+        return {'key': key, 'reference': reference, 'title': title, 'tax_rate': tax_rate, 'units': units, 'discount': discount, 'expected': expected}
+
+    def find_sent(auth, reference):
+        """An order from the last two days carrying this external reference that no other POPCORE sale
+        sent, or None: the order a lost reply already created."""
+        since = int((time.time() - 2 * 86400) * 1000)
+        payload = clover('GET', f'/v3/merchants/{merchant}/orders', headers=auth, params=[
+            ('filter', f'createdTime>={since}'), ('orderBy', 'createdTime DESC'), ('limit', 100)])
+        with database() as db:
+            taken = {row['order_id'] for row in db.execute('SELECT order_id FROM sent_orders WHERE order_id IS NOT NULL')}
+        return next((o['id'] for o in payload.get('elements', [])
+                     if isinstance(o, dict) and o.get('externalReferenceId') == reference
+                     and IDENTIFIER.fullmatch(str(o.get('id', ''))) and o['id'] not in taken), None)
+
+    @app.post(PREFIX + '/orders/create')
+    def create_order():
+        """Open a Clover order for a sale POPCORE started, so the customer pays it by card on the device.
+
+        Custom lines (no Clover item) carry the merchant's default tax rates. Idempotent by POPCORE's
+        reference: the order ID is kept here, an order Clover already has under that external
+        reference is reused, and every step is skipped when Clover already shows it. Refuses, writing
+        nothing, when Clover's total for these lines is not the total POPCORE agreed."""
+        nonlocal orders_next_read
+        require_writer()
+        sent = sent_order_body(request.get_json(silent=True))
+        if sent is None or not IDENTIFIER.fullmatch(merchant):
+            abort(400)
+        key, reference = sent['key'], sent['reference']
+        with order_lock(key):
+            auth = {'Authorization': 'Bearer ' + access_token()}
+            known = [r for r in clover('GET', f'/v3/merchants/{merchant}/tax_rates', headers=auth,
+                                       params={'limit': 100}).get('elements', [])
+                     if isinstance(r, dict) and IDENTIFIER.fullmatch(str(r.get('id', '')))]
+            # The merchant's rate at the percentage POPCORE priced with; a default one first.
+            matching = [r for r in known if r.get('rate') == sent['tax_rate']]
+            matching = [r for r in matching if r.get('isDefault')] or matching
+            if len(matching) != 1:
+                return conflict('tax_missing', 'Clover has no single tax rate at the rate POPCORE priced with.',
+                                rates=[{k: r.get(k) for k in ('name', 'rate', 'isDefault')} for r in known])
+            rates = [{k: matching[0].get(k) for k in ('id', 'name', 'rate')}]
+            discounts = [{'name': sent['discount']['name'], 'amount': -sent['discount']['amount']}] \
+                if sent['discount'] else []
+            total, tax, _ = clover_calc([{'price': u['price'], 'taxRates': rates} for u in sent['units']], discounts)
+            if total != sent['expected']:
+                return conflict('amounts_differ', f"Clover would charge {money(total)}, not {money(sent['expected'])}.",
+                                clover_total=total, tax_cents=tax)
+            with database() as db:
+                row = db.execute('SELECT reference,order_id FROM sent_orders WHERE key=?', (key,)).fetchone()
+            if row and row['reference'] != reference:
+                return conflict('clover_changed', 'This POPCORE sale was sent with another reference.')
+            order_id = row['order_id'] if row else None
+            created = False
+            if order_id is None:
+                order_id = find_sent(auth, reference)
+            if order_id is None:
+                fields = {'state': 'open', 'externalReferenceId': reference}
+                if sent['title']:
+                    fields['title'] = sent['title']
+                order_id = clover('POST', f'/v3/merchants/{merchant}/orders', headers=auth, json=fields).get('id')
+                if not IDENTIFIER.fullmatch(str(order_id or '')):
+                    raise CloverError('Clover did not return the new order.')
+                created = True
+            with database() as db:
+                db.execute('INSERT INTO sent_orders(key,reference,order_id,created) VALUES (?,?,?,?) ON CONFLICT(key) '
+                           'DO UPDATE SET order_id=excluded.order_id', (key, reference, order_id, time.time()))
+            base = f'/v3/merchants/{merchant}/orders/{order_id}'
+            try:
+                order, lines = fetch_order(order_id, fresh=True)
+            except CloverError as error:
+                if error.status == 404:
+                    return conflict('deleted', 'The Clover order for this sale was deleted.', order_id=order_id)
+                raise
+            if order.get('externalReferenceId') != reference:
+                return conflict('clover_changed', 'That Clover order belongs to another sale.', order_id=order_id)
+            # An order already being paid on the device is never rewritten.
+            if order.get('paymentState') in (None, 'OPEN') and not (order.get('payments') or {}).get('elements'):
+                wanted = sorted((u['name'], u['price']) for u in sent['units'])
+                have = sorted((line.get('name'), line.get('price')) for line in lines)
+                if not have:
+                    clover('POST', base + '/bulk_line_items', headers=auth, json={'items': [
+                        {'name': u['name'], 'price': u['price'], 'taxRates': rates}
+                        for u in sent['units']]})
+                elif have != wanted:
+                    return conflict('clover_changed', 'The Clover order no longer has the lines POPCORE sent.',
+                                    order_id=order_id)
+                present = (order.get('discounts') or {}).get('elements', [])
+                if discounts and not any(d.get('name') == discounts[0]['name'] and d.get('amount') == discounts[0]['amount']
+                                         for d in present):
+                    clover('POST', base + '/discounts', headers=auth, json=discounts[0])
+                order, lines = fetch_order(order_id, fresh=True)
+                missing = [line.get('name') for line in lines
+                           if not (line.get('taxRates') or {}).get('elements')]
+                if missing:
+                    return conflict('tax_not_applied', 'Clover did not apply tax to the lines POPCORE sent.',
+                                    order_id=order_id)
+                if order.get('total') != total:
+                    clover('POST', base, headers=auth, json={'total': total})
+                order, lines = fetch_order(order_id, fresh=True)
+            with orders_condition:
+                orders_next_read = 0
+            row = safe_row(order, {})
+            row.update(source='cloud', seen_at=time.time(), reconciled=True)
+            return jsonify(environment=environment, merchant_id=merchant, created=created, order=row,
+                           pricing=verify_pricing(order, lines))
 
     @app.delete(PREFIX + '/orders/<order_id>')
     def delete_order(order_id):

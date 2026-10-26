@@ -11,6 +11,7 @@ export type CloverBlock = {
   order_id: string; merchant_id: string; created_ms: number; state: string; state_label: string
   source: 'cloud' | 'device'; seen_at: number; fresh: boolean; employee_name: string | null
   register: boolean; register_name: string; popcore_reference: string; total_cents: number | null
+  started_in_popcore?: boolean
   lines: CloverLine[]; discounts: { name: string; amount_cents: number | null; percentage: number | null; popcore: boolean }[]
   popcore_discount_label: string | null; pricing_verified: boolean; plan: 'pay' | 'split_card' | null
   pricing_mode: string | null; due_cents: number | null; clover_cents: number; popcore_cents: number

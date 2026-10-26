@@ -28,6 +28,20 @@ This replaces the sandbox rehearsal in [clover-checkout-rehearsal.md](clover-che
 - **Take back** (the cashier who recorded it, or a manager; reason required) removes a POPCORE payment from an order that is not yet a sale. Use it when change was given back or an amount was mistyped. It is also how an overpaid split is fixed.
 - **Cancel this order** deletes the unpaid order on Clover as well. Clover refuses when it already has a payment. If Clover cannot be reached, a manager can **Cancel in POPCORE only**; POPCORE deletes it on Clover later. An order deleted on Clover is cancelled in POPCORE when no money was recorded; otherwise it is flagged.
 
+## Sales started in POPCORE, card on Clover
+
+Some products exist only in POPCORE: confirmed designs such as `PM0209-01` 小王子 The Businessman have no Clover item, and their prices move with demand. For these the cashier builds the sale in POPCORE and Clover only takes the card.
+
+1. **Manual checkout**: choose the exact designs and any other items, agree each line's price and the tax, **Create pending checkout**.
+2. On the order, tap **Send to Clover for card**. POPCORE opens an open Clover order with one custom line per unit, named by product ID and name (`PM0209-01 小王子 The Businessman`), at the agreed price, with the merchant's 13% HST rate. An agreed discount goes on as one order discount, **Agreed discount**. The order's title (**Order #** on the device) is the POPCORE reference, `MT-20261026-001`; its external reference (**Invoice Number**) is the same reference shortened to Clover's 12 characters, `MT261026001`.
+3. On the device: **Orders** → tap the order → **Add Payment** → **Card**. POPCORE records the sale on the same checkout when Clover confirms it, as for any order paid entirely on Clover: card payment verified, nothing written back, stock moved on the exact designs.
+
+- The Clover order joins the POPCORE checkout it came from. It never arrives under **Clover register** as a new order: the send links it straight away, and if that reply is lost, the order is matched by its external reference and lines when Clover's feed shows it.
+- **Sending is refused, with nothing created on Clover,** when Clover would charge another total. Clover adds 13% HST after any discount, so a hand-typed tax, or 13% taken before a discount, gives a different total. The message shows Clover's amount; fix the tax or prices, or take payment in POPCORE.
+- While Clover has not confirmed the order (connection down), the order shows **Not on Clover yet** with **Retry** and **Stop sending**, and takes no payment in POPCORE. Retrying never makes a second Clover order. Stop sending makes it a plain POPCORE order again.
+- Once on Clover, the order is a Clover order in POPCORE: cash, e-transfer, WeChat Pay, Alipay and splits work exactly as for scanned orders below (cash discount, rounding, `Paid <date> <time>` label, order left open on Clover). **Cancel this order** deletes it on Clover. It cannot be released to the Clover register.
+- Only an open order with no money recorded can be sent. A $0 line cannot go to Clover; at most 100 units per order.
+
 ## Prices
 
 The server works out every amount from Clover's current total A (`popcore_app/clover_pricing.py`); the screen only shows them.
@@ -45,7 +59,15 @@ The server works out every amount from Clover's current total A (`popcore_app/cl
 
 ## What POPCORE writes on Clover
 
-Only after the sale is recorded, and only when money was recorded in POPCORE; a sale paid entirely on Clover needs nothing.
+**Send to Clover for card**: one idempotent request, `POST /orders/create`, with the checkout's key `popcore-<instance>-<checkout>`, its reference, the lines, any agreed discount, the tax rate POPCORE priced with and the total it expects. The connector:
+
+1. picks the merchant's tax rate at that percentage (the default one if several), and refuses (`tax_missing`, listing the rates) when there is none or it is ambiguous;
+2. works out Clover's total with the same calculation as `settle`, and refuses (`amounts_differ`) before writing anything when it is not the expected total;
+3. reuses the order it already made for that key, or an order of the last two days carrying the reference that no other key sent; otherwise creates an `open` order with the title and external reference;
+4. adds the lines in one bulk request (each with the tax rate's id, name and rate), then the discount and the total, skipping each step Clover already shows; an order already being paid on the device is never rewritten, and one whose lines differ is refused (`clover_changed`);
+5. reads the order back, requires a tax rate on every line (`tax_not_applied`), and returns it with Clover's pricing check.
+
+Otherwise, only after the sale is recorded, and only when money was recorded in POPCORE; a sale paid entirely on Clover needs nothing.
 
 `CLOVER_WRITEBACK=label` (the default, owner 2026-10-20): one idempotent request, `POST /orders/<id>/label`, sets the order's title to `Paid <date> <time>` (Toronto time of the last payment recorded in POPCORE) and adds the same line to its note. No payment or discount is added, so the order stays open on Clover, Clover's reports do not count that money, and its total stays Clover's original total. A cash-discount or rounding price exists only in POPCORE.
 
@@ -96,7 +118,8 @@ The Clover store must use authoritative inventory with a verified opening, and t
 - `popcore_app/tests/test_clover_pricing.py`: prices, sale money, keys and tender names.
 - `popcore_app/tests/test_clover_sandbox_probe.py`: the connector's Clover calculation, settle sequence, refusals, delete and single-order reads.
 - `popcore_app/tests/test_clover_checkout.py`: import, device snapshots, cash, splits in either order, overpaid and take back, card-only in the background, write-back failure and retry, changes and refunds after the sale, cancel and delete, claim and release, closing blockers and the migration.
-- `popcore_app/tests/browser/check_checkout_focus.py`: real Flask routes with a fake Clover at phone width. Covers automatic pick-up, the cash price, a split with card, cancel, find by ID and retry.
+- `popcore_app/tests/browser/check_checkout_focus.py`: real Flask routes with a fake Clover at phone width. Covers automatic pick-up, the cash price, a split with card, cancel, find by ID, retry, and a POPCORE order sent to Clover with the device steps shown and the card payment landing on it.
+- Sending to Clover: `test_clover_sandbox_probe.py` `ConnectorCreateTests` (one taxed order per key, replay, lost connector memory, another POPCORE copy's reference, discount, refusals that write nothing, orders changed or paid on the device, writer key and body checks) and `test_clover_checkout.py` `SendToCloverTests` (card on Clover records the exact designs on the same checkout and moves their stock, cash only labels Clover, refusals, Retry and Stop, a lost reply joined by reference, agreed discount, paid orders not sendable).
 
 None of these proves live Clover, the Clover devices, Auth0 or production.
 
@@ -106,6 +129,15 @@ Live sandbox, 2026-10-20, on the Flex emulator with the hosted connector and the
 - `T5TZ2XXJHQMD0`: Pay → ⋮ → Split Custom Amount → $22.00 on the device, with E-transfer standing in for card. The device showed $20.59 remaining. POPCORE asked for $20.00 and recorded it. The first write-back failed because Clover refuses a new external reference on an order that already has a payment; the connector now labels such orders through the title and payment notes. The retry left Clover PAID at $42.00: Rounding −$0.52, $22.00 E-transfer ($2.53 tax) and $20.00 Cash ($2.30 tax). The device returned to an empty Register.
 - After later Clover reads, both orders stayed completed and showed no review. Stock moved once per sale.
 - The owner's own run the same morning found two things. Items after the first appeared 8–20 seconds late, because the Android companion's six-hour sync session had ended at 07:44 and only Clover's own cloud sync was left; tapping **Start device sync** restored it. And the owner chose to leave orders paid outside Clover open there, labelled with the date and time, which is now the default.
+
+Live sandbox, 2026-10-26, **Send to Clover for card**: the connector change was deployed to the hosted sandbox connector (backup `/opt/popcore-clover-sandbox/clover_sandbox.py.before-send-20261026`). POPCORE ran its real app and routes on a fresh database (`.local/clover-send-rehearsal/`, Midtown, design `PM0209-01` 小王子 The Businessman with 3 in stock and a toy `TT0001` with 5) under the local test identity `local|claude-rehearsal`, instance `rehearsal`; only the Auth0 token check was replaced, as in the unit tests. The owner's database and production were not touched.
+
+- What the sandbox taught: Clover keeps at most 12 characters of external reference (`Invoice ID cannot exceed 12 characters`), hence the short form; a tax rate inside a line needs its `name`; the bulk line items request answers with a bare list; the sandbox merchant has no tax rate flagged default, hence matching the rate by percentage. Custom lines with the 13% rate are taxed exactly as POPCORE priced them (device: subtotal $55.39, tax $7.20, total $62.59), and Chinese names show on the device.
+- A REST-created `open` order shows in the device's **Orders** app, not on Register's current-order screen. Its detail shows **Order #** (title), **Invoice Number** (external reference) and **Add Payment**.
+- `N514PMBWZ3752` (checkout `MT-20261026-001`, 2× `PM0209-01` at $17.70 and 1× `TT0001` at $19.99): sent once; a second send returned the same order and Clover's feed showed no new order in POPCORE. Paid on the emulator with **Add Payment → E-transfer** for the full $62.59, because the emulator has no card reader and no manual card entry; that tender takes the same Clover-payment path as card. POPCORE completed `MT-20261026-001` by itself: sale dated 2026-10-26, source reference `MT-20261026-001`, lines 2× the design and 1× the toy, collected $62.59, allocated; stock `PM0209-01` 3 → 1 and `TT0001` 5 → 4; nothing written back. Clover shows it PAID.
+- `J9CTRDJ93YMKA` (checkout `MT-20261026-002`, same lines): sent, then paid in POPCORE with cash at the automatic cash price $61.00 (Cash discount −$1.59). POPCORE recorded the sale and only titled the Clover order `Paid 2026-10-26 03:05`; it stays OPEN on Clover with no payment. Only one design was left, so this sale waits for stock allocation, POPCORE's usual rule for an already-paid sale it cannot cover.
+- The 2026-10-26 probe order `WDWV5EAE25A6E` was deleted through the connector.
+- Still not proven: a real card tap (the emulator cannot take one) and the owner's own hands-on run.
 
 ## Not covered
 

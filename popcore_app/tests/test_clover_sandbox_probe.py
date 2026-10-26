@@ -2,6 +2,7 @@
 import base64
 import json
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -250,6 +251,10 @@ class SandboxProbeTests(unittest.TestCase):
             headers={'Authorization': 'Bearer ' + 'b' * 32})
         with patch('scripts.clover_sandbox.requests.request', return_value=provider_response({}, 429)):
             response = client.get('/clover-sandbox/orders', headers=self.headers)
+            # The cloud read runs in the background; let it finish before its database is removed.
+            for thread in threading.enumerate():
+                if thread is not threading.current_thread() and thread.daemon:
+                    thread.join(5)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json['cloud_unavailable'])
         self.assertEqual(response.json['orders'][0]['source'], 'device')
@@ -701,6 +706,167 @@ class ConnectorWriteTests(unittest.TestCase):
             gone = self.client.get(self.url, headers=self.headers)
         self.assertEqual((gone.status_code, gone.json['code']), (404, 'not_found'))
 
+
+
+class FakeCloverOrders:
+    """Clover's order creation: an empty open order, then bulk lines, a discount and the total."""
+
+    def __init__(self, test, *, tax_rates=None, drop_tax=False, prefix='NEW'):
+        self.test, self.orders, self.lines, self.writes, self.prefix = test, {}, {}, [], prefix
+        self.tax_rates = tax_rates if tax_rates is not None else [
+            {'id': 'HST0000000013', 'name': 'HST', 'rate': 1300000, 'isDefault': True},
+            {'id': 'NOTDEFAULT001', 'name': 'Other', 'rate': 500000, 'isDefault': False}]
+        self.drop_tax = drop_tax
+
+    def __call__(self, method, url, **kwargs):
+        path = url.split('clover.com', 1)[1]
+        root = '/v3/merchants/' + 'M' * 13
+        if method == 'GET' and path == root + '/tax_rates':
+            return provider_response({'elements': self.tax_rates})
+        if method == 'GET' and path == root + '/orders':
+            return provider_response({'elements': [{k: o[k] for k in ('id', 'externalReferenceId')}
+                                                   for o in self.orders.values()]})
+        order_id = path[len(root + '/orders/'):].split('/')[0] if path.startswith(root + '/orders/') else None
+        if method == 'GET' and order_id and path.endswith('/line_items'):
+            return provider_response({'elements': self.lines[order_id]})
+        if method == 'GET' and order_id:
+            if order_id not in self.orders:
+                return provider_response({}, 404)
+            return provider_response({**self.orders[order_id],
+                                      'lineItems': {'elements': [{k: v for k, v in line.items() if k != 'taxRates'}
+                                                                 for line in self.lines[order_id]]}})
+        self.writes.append((method, path, kwargs.get('json')))
+        if method == 'POST' and path == root + '/orders':
+            order_id = f'{self.prefix}{len(self.orders):010d}'
+            self.orders[order_id] = {'id': order_id, 'currency': 'CAD', 'paymentState': 'OPEN', 'total': 0,
+                                     'createdTime': 1, 'discounts': {'elements': []}, 'payments': {'elements': []},
+                                     **kwargs['json']}
+            self.lines[order_id] = []
+            return provider_response(self.orders[order_id])
+        if method == 'POST' and path.endswith('/bulk_line_items'):
+            for item in kwargs['json']['items']:
+                rates = [] if self.drop_tax else [r for r in self.tax_rates if r['id'] in {t['id'] for t in item['taxRates']}]
+                self.lines[order_id].append({'id': f'LINE{len(self.lines[order_id]):09d}', 'name': item['name'],
+                                             'price': item['price'], 'taxRates': {'elements': rates}})
+            return provider_response(self.lines[order_id])  # Clover answers with a bare list
+        if method == 'POST' and path.endswith('/discounts'):
+            created = {'id': 'DISC000000001', **kwargs['json']}
+            self.orders[order_id]['discounts']['elements'].append(created)
+            return provider_response(created)
+        if method == 'POST' and order_id and path == root + '/orders/' + order_id:
+            self.orders[order_id].update(kwargs['json'])
+            return provider_response(self.orders[order_id])
+        self.test.fail(f'Unexpected Clover write {method} {path}')
+
+
+class ConnectorCreateTests(unittest.TestCase):
+    """POPCORE-started sales: an open Clover order with custom lines, for card on the device."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.app = create_app({'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox', 'SESSION_SECRET': 's' * 32,
+                               'ADMIN_PASSWORD': 'p' * 32, 'WEBHOOK_PATH_KEY': 'w' * 32,
+                               'DATA_DIR': self.directory.name, 'CLOVER_MERCHANT_ID': 'M' * 13,
+                               'POPCORE_WRITER_KEY': 'k' * 32})
+        self.app.extensions['clover_save_tokens']({'access_token': 'token',
+                                                   'access_token_expiration': time.time() + 3600})
+        self.client = self.app.test_client()
+        credentials = base64.b64encode(('popcore:' + 'p' * 32).encode()).decode()
+        self.headers = {'Authorization': 'Basic ' + credentials, 'X-Popcore-Writer': 'k' * 32}
+        self.body = {'key': 'popcore-pc-12', 'reference': 'MT261026001', 'title': 'MT-20261026-001', 'expected_total': 4259, 'tax_rate': 1300000,
+                     'lines': [{'name': 'PM0209-01 The Prince · The Businessman', 'price': 1770, 'quantity': 1},
+                               {'name': 'PM0001 Labubu', 'price': 1999, 'quantity': 1}]}
+
+    def create(self, clover, body=None, headers=None):
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            return self.client.post('/clover-sandbox/orders/create', headers=headers or self.headers,
+                                    json=self.body if body is None else body)
+
+    def test_opens_one_taxed_order_with_the_popcore_reference_and_replays_it(self):
+        clover = FakeCloverOrders(self)
+        first = self.create(clover)
+        self.assertEqual(first.status_code, 200, first.json)
+        order = first.json['order']
+        self.assertEqual((first.json['created'], order['total'], order['externalReferenceId'], order['paymentState']),
+                         (True, 4259, 'MT261026001', 'OPEN'))
+        self.assertEqual([(i['name'], i['price']) for i in order['items']],
+                         [('PM0209-01 The Prince · The Businessman', 1770), ('PM0001 Labubu', 1999)])
+        self.assertEqual(first.json['pricing'], {'verified': True, 'tax_cents': 490})
+        root = '/v3/merchants/MMMMMMMMMMMMM/orders'
+        self.assertEqual(clover.writes, [
+            ('POST', root, {'state': 'open', 'externalReferenceId': 'MT261026001', 'title': 'MT-20261026-001'}),
+            ('POST', root + '/NEW0000000000/bulk_line_items', {'items': [
+                {'name': 'PM0209-01 The Prince · The Businessman', 'price': 1770, 'taxRates': [{'id': 'HST0000000013', 'name': 'HST', 'rate': 1300000}]},
+                {'name': 'PM0001 Labubu', 'price': 1999, 'taxRates': [{'id': 'HST0000000013', 'name': 'HST', 'rate': 1300000}]}]}),
+            ('POST', root + '/NEW0000000000', {'total': 4259})])
+        again = self.create(clover)
+        self.assertEqual((again.status_code, again.json['created'], again.json['order']['id']),
+                         (200, False, 'NEW0000000000'))
+        self.assertEqual(len(clover.writes), 3)
+        # Lost connector memory: the order Clover already holds under the reference is reused.
+        fresh = create_app({**self.app.config, 'PUBLIC_URL': 'http://127.0.0.1/clover-sandbox',
+                            'SESSION_SECRET': 's' * 32, 'ADMIN_PASSWORD': 'p' * 32, 'WEBHOOK_PATH_KEY': 'w' * 32,
+                            'DATA_DIR': tempfile.mkdtemp(dir=self.directory.name), 'CLOVER_MERCHANT_ID': 'M' * 13,
+                            'POPCORE_WRITER_KEY': 'k' * 32})
+        fresh.extensions['clover_save_tokens']({'access_token': 'token', 'access_token_expiration': time.time() + 3600})
+        with patch('scripts.clover_sandbox.requests.request', side_effect=clover):
+            reused = fresh.test_client().post('/clover-sandbox/orders/create', headers=self.headers, json=self.body)
+        self.assertEqual((reused.status_code, reused.json['created'], reused.json['order']['id']),
+                         (200, False, 'NEW0000000000'))
+        self.assertEqual(len(clover.writes), 3)
+        # Another POPCORE copy's sale with the same reference never takes this order over.
+        other = self.create(clover, {**self.body, 'key': 'popcore-pc-99'})
+        self.assertEqual((other.json['created'], other.json['order']['id']), (True, 'NEW0000000001'))
+
+    def test_quantities_become_single_lines_and_an_agreed_discount_is_kept(self):
+        clover = FakeCloverOrders(self)
+        body = {**self.body, 'expected_total': 3774, 'discount': {'name': 'Agreed price', 'amount': 200},
+                'lines': [{'name': 'PM0209-01 The Businessman', 'price': 1770, 'quantity': 2}]}
+        created = self.create(clover, body)
+        self.assertEqual(created.status_code, 200, created.json)
+        self.assertEqual([i['price'] for i in created.json['order']['items']], [1770, 1770])
+        self.assertEqual([w[2] for w in clover.writes[2:]], [{'name': 'Agreed price', 'amount': -200}, {'total': 3774}])
+
+    def test_refuses_without_writing_when_clover_would_charge_another_total(self):
+        clover = FakeCloverOrders(self)
+        refused = self.create(clover, {**self.body, 'expected_total': 4260})
+        self.assertEqual((refused.status_code, refused.json['code'], refused.json['clover_total']),
+                         (409, 'amounts_differ', 4259))
+        untaxed = self.create(FakeCloverOrders(self, tax_rates=[]))
+        self.assertEqual((untaxed.status_code, untaxed.json['code']), (409, 'tax_missing'))
+        plain = FakeCloverOrders(self, prefix='PLN', tax_rates=[{'id': 'HST0000000013', 'name': 'HST', 'rate': 1300000}])
+        self.assertEqual(self.create(plain, {**self.body, 'key': 'popcore-pc-50'}).status_code, 200)
+        twice = FakeCloverOrders(self, tax_rates=[{'id': f'HST000000001{n}', 'name': 'HST', 'rate': 1300000}
+                                                  for n in range(2)])
+        self.assertEqual(self.create(twice, {**self.body, 'key': 'popcore-pc-51'}).json['rates'], [{'name': 'HST', 'rate': 1300000, 'isDefault': None}] * 2)
+        self.assertEqual(clover.writes, [])
+        dropped = FakeCloverOrders(self, drop_tax=True, prefix='DRP')
+        self.assertEqual(self.create(dropped).json['code'], 'tax_not_applied')
+
+    def test_never_rewrites_an_order_changed_or_paid_on_the_device(self):
+        clover = FakeCloverOrders(self)
+        self.create(clover)
+        clover.lines['NEW0000000000'].pop()
+        self.assertEqual(self.create(clover).json['code'], 'clover_changed')
+        clover.orders['NEW0000000000']['payments']['elements'].append({'id': 'CARDPAYMENT01', 'amount': 2000,
+                                                                       'result': 'SUCCESS'})
+        clover.orders['NEW0000000000']['paymentState'] = 'PARTIALLY_PAID'
+        writes = len(clover.writes)
+        paid = self.create(clover)
+        self.assertEqual((paid.status_code, len(clover.writes)), (200, writes))
+
+    def test_create_needs_the_writer_key_and_a_valid_body(self):
+        clover = FakeCloverOrders(self)
+        self.assertEqual(self.create(clover, headers={**self.headers, 'X-Popcore-Writer': 'x'}).status_code, 403)
+        line = self.body['lines'][0]
+        for bad in ({}, {**self.body, 'reference': 'MT 1'}, {**self.body, 'reference': 'MT-20261026-1'}, {**self.body, 'key': 'popcore-pc-1-2'}, {**self.body, 'lines': []},
+                    {**self.body, 'lines': [{**line, 'price': 0}]}, {**self.body, 'lines': [{**line, 'quantity': 101}]},
+                    {**self.body, 'lines': [{**line, 'name': 'x' * 128}]},
+                    {**self.body, 'discount': {'name': 'Cash discount', 'amount': 100}},
+                    {**self.body, 'expected_total': -1}, {**self.body, 'tax_rate': None}):
+            self.assertEqual(self.create(clover, bad).status_code, 400, bad)
+        self.assertEqual(clover.writes, [])
 
 if __name__ == '__main__':
     unittest.main()

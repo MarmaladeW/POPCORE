@@ -28,6 +28,16 @@ const checkoutLink = (path:string,history=false) => history?`${path}?view=histor
 const needsPhoto = (order:Order) => order.attempts.some(a=>a.status==='completed'&&electronic(a.tender)&&a.can_upload&&!a.photos.length)
 const initialDraft = (_order:Order):Draft => ({target:'',tender:'',split:'',includesCard:false})
 
+/** Card on the Clover device for an order started here: Clover gets these exact items at the agreed prices,
+ *  and its card payment comes back to this order. Other tenders are still taken below, as before. */
+function CloverSend({send,busy,saving,run}:{send:NonNullable<Order['clover_send']>;busy:boolean;saving:boolean;run:(name:'clover-send'|'clover-unsend')=>void}) {
+  if(send.pending)return <Alert type="warning" showIcon message="Not on Clover yet" description={<>{send.error||'Waiting for Clover to confirm the order.'} Payments here wait until Clover has it, or until you stop sending.</>}
+    action={<div className="co-action-pair"><Button disabled={busy} loading={saving} onClick={()=>run('clover-send')}>Retry</Button>{send.can_stop&&<Button type="link" disabled={busy} onClick={()=>run('clover-unsend')}>Stop sending</Button>}</div>}/>
+  if(!send.can_send)return null
+  return <section className="co-clover-send" aria-label="Card on Clover"><Button size="large" icon={<Icon name="pay" size={18}/>} disabled={busy} loading={saving} onClick={()=>run('clover-send')}>刷卡 · Send to Clover for card</Button>
+    <small className="co-muted">Clover gets these items at these prices. On the device open Orders, tap this order, then Add Payment → Card. Cash and other tenders are still taken here.</small></section>
+}
+
 /** A manual order (a phone order, an item from another store): paid the same way as a Clover order. */
 function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy,cnyPerCad,cnyRateSource}:{order:Order;draft:Draft;setDraft:(v:DraftUpdate)=>void;updated:(o?:Order)=>void;refresh:()=>void;onBusy:(v:boolean)=>void;cnyPerCad:string;cnyRateSource?:string|null}) {
   const mutation=useCheckoutMutation((data:Order)=>updated(data))
@@ -46,6 +56,7 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy,cnyPerCad,cny
     <dl className="co-original"><div><dt>Subtotal</dt><dd>{formatCents(order.order.subtotal_cents)}</dd></div><div><dt>Tax</dt><dd>{formatCents(order.order.source_tax_cents)}</dd></div>{order.status!=='completed'&&order.order.reduction_cents>0&&<div><dt>Agreed discount</dt><dd>−{formatCents(order.order.reduction_cents)}</dd></div>}{order.status==='completed'?<div><dt>Customer paid</dt><dd>{formatCents(order.order.collected_cents)}</dd></div>:<div><dt>Order total</dt><dd>{formatCents(pricing?.total_cents??order.order.collected_cents)}</dd></div>}</dl>
     <OrderNotes order={order} updated={updated} disabled={blocked} onBusy={setNoteBusy}/>
     {mutation.notice}
+    {order.clover_send&&order.status==='open'&&<CloverSend send={order.clover_send} busy={blocked} saving={mutation.saving} run={name=>mutation.run(`/checkouts/${order.id}/${name}`,{},60000)}/>}
     {pricing?.can_receive&&pricing.collect&&<ManualPayment order={order} draft={draft} setDraft={setDraft} busy={blocked} saving={mutation.saving} run={run} cnyPerCad={cnyPerCad} cnyRateSource={cnyRateSource}/>}
     {order.abandoned_reason&&<Alert type="warning" message={`${formatCents(order.refund_due_cents)} still to refund`} description={order.abandoned_reason}/>}
     {!order.can_process&&order.status==='open'&&!order.abandoned_reason&&<p className="co-muted">View only. Recording payments needs the cashier’s account and an assigned shift at this location today.</p>}
@@ -187,7 +198,7 @@ export default function CheckoutPage() {
     sub={orderId?undefined:`${history?'Order history':'Checkout'}${storeName?` · ${storeName}`:''}`}
     back={phone&&orderId?{label:history?'订单记录':'当前订单',to:back}:undefined}
     actions={<>{refreshButton}{canStart&&<>{recordSale}{startManual}</>}</>}/>
-  if(manual&&access?.live_stores.length)return <div className="co-workspace">{header}{!phone&&<CheckoutTabs specialCount={specialCount}/>}<ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)}/></div>
+  if(manual&&access?.live_stores.length)return <div className="co-workspace">{header}{!phone&&<CheckoutTabs specialCount={specialCount}/>}<ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)} cloverStoreId={access.clover_store_id}/></div>
   const locationPicker=!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(checkoutLink(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>
   const ready=!!stores?.length&&scoped&&!!queue&&queueScope===scopeKey
   const listColumn=(!orderId||!phone)&&!!stores?.length&&scoped
