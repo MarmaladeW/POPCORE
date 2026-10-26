@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import { saveAlias, deleteAlias } from '../../api/matcher'
+import RemoveDesigns from './RemoveDesigns'
 import SubItemAdd from './SubItemAdd'
 
 export interface ProductDetailData {
@@ -105,8 +106,9 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
         <small>{item.sku}</small>
       </li>)}
     </ul> : <p className="pc-sub-empty">None yet. Add them when you count or open boxes.</p>}
-    {items.length > 0 && product.series_id && <p className="pc-sub-stock"><Link to={`/stock?series_id=${product.series_id}`}>各位置库存 Stock by location →</Link></p>}
-    <RoleGuard minRole="manager"><SubItemAdd productId={product.id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} /></RoleGuard>
+    {items.length > 0 && <p className="pc-sub-stock"><Link to={product.series_id ? `/stock?series_id=${product.series_id}` : `/stock?product_id=${product.id}`}>各位置库存 Stock by location →</Link></p>}
+    <RoleGuard minRole="manager"><SubItemAdd productId={product.id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} />
+      <RemoveDesigns productId={product.id} designCount={items.filter(item => item.stock_form === 'confirmed_design').length} onDone={onSaved} /></RoleGuard>
   </>
 }
 

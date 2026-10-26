@@ -115,3 +115,57 @@ class ProductSubItemTests(IsolatedApiCase):
         series = response.get_json()['series'][0]
         self.assertEqual((series['name'], series['product_id']), ('坐坐盲盒', self.box))
         self.assertEqual({product['id'] for product in series['products']}, {self.box, *result['product_ids']})
+
+
+class SealedSetVariationTests(ProductSubItemTests):
+    """Owner, 2026-10-26: a sealed set is the blind box's variation (like "Whole Set" on the website);
+    only confirmed designs make a product a series."""
+
+    def test_a_sealed_set_alone_makes_no_series_but_sits_under_its_box(self):
+        made = self.post(f'/api/products/{self.box}/sealed-set', {'boxes_per_set': 6}, 's-1').get_json()
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM product_series').fetchone()[0], 0)
+            self.assertIsNone(con.execute('SELECT series_id FROM products WHERE id=?', (self.box,)).fetchone()[0])
+        self.assertEqual([i['sku'] for i in self.product(self.box)['sub_items']], ['PM0123-SET'])
+        self.assertEqual(self.product(made['set_product_id'])['parent']['id'], self.box)
+        catalog = self.client.get('/api/products/search?top_level=1', headers=self.headers()).get_json()
+        row = next(p for p in catalog if p['id'] == self.box)
+        self.assertEqual(row['sub_item_count'], 1)
+        self.assertNotIn(made['set_product_id'], [p['id'] for p in catalog])
+
+    def test_inventory_lists_the_set_as_its_box_variation(self):
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access VALUES ('auth0|staff',?)", (self.store_id,))
+            con.commit()
+        made = self.post(f'/api/products/{self.box}/sealed-set', {'boxes_per_set': 6}, 's-1').get_json()
+        listed = self.client.get('/api/inventory/series?store_code=DT', headers=self.headers()).get_json()
+        box = next(p for p in listed['products'] if p['id'] == self.box)
+        self.assertEqual([v['id'] for v in box['variations']], [made['set_product_id']])
+        self.assertNotIn(made['set_product_id'], [p['id'] for p in listed['products']])
+        one = self.client.get(f'/api/inventory/series?store_code=DT&product_id={self.box}', headers=self.headers()).get_json()
+        self.assertEqual([v['sku'] for v in one['products'][0]['variations']], ['PM0123-SET'])
+
+    def test_remove_designs_makes_the_product_plain_again_and_keeps_its_set(self):
+        designs = self.post(f'/api/products/{self.box}/designs', {'design_names': ['Sisi', 'Zimomo']}, 'd-1').get_json()
+        made = self.post(f'/api/products/{self.box}/sealed-set', {'boxes_per_set': 6}, 's-1').get_json()
+        staff = self.client.post(f'/api/products/{self.box}/designs/remove', headers=self.headers('staff'))
+        self.assertEqual(staff.status_code, 403)
+        done = self.client.post(f'/api/products/{self.box}/designs/remove', headers=self.headers('manager'))
+        self.assertEqual((done.status_code, done.get_json()['removed_designs']), (200, 2))
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM product_series').fetchone()[0], 0)
+            self.assertIsNone(con.execute('SELECT series_id FROM products WHERE id=?', (self.box,)).fetchone()[0])
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM products WHERE id IN (?,?)', designs['product_ids']).fetchone()[0], 0)
+        self.assertEqual([i['sku'] for i in self.product(self.box)['sub_items']], ['PM0123-SET'])
+        again = self.client.post(f'/api/products/{self.box}/designs/remove', headers=self.headers('manager'))
+        self.assertEqual((again.status_code, again.get_json()['code']), (409, 'no_designs'))
+
+    def test_remove_designs_refuses_when_a_design_has_records(self):
+        designs = self.post(f'/api/products/{self.box}/designs', {'design_names': ['Sisi']}, 'd-1').get_json()
+        with closing(self.connect()) as con:
+            floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (self.store_id,)).fetchone()[0]
+            con.execute('INSERT INTO inventory_balances VALUES (?,?,?,?,1)', (designs['product_ids'][0], floor, 'saleable', 2))
+            con.commit()
+        refused = self.client.post(f'/api/products/{self.box}/designs/remove', headers=self.headers('manager'))
+        self.assertEqual((refused.status_code, refused.get_json()['code']), (409, 'designs_in_use'))
+        self.assertEqual(len(self.product(self.box)['sub_items']), 1)

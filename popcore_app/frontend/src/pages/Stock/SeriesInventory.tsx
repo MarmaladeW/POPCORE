@@ -5,7 +5,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useRole, type Role } from '../../auth/useRole'
 import { useAppStore } from '../../store'
-import { getInventorySeries, type SeriesInventoryResult, type SeriesProduct } from '../../api/inventorySeries'
+import { getInventorySeries, type InventorySeries, type SeriesInventoryResult, type SeriesProduct } from '../../api/inventorySeries'
 import useCheckoutMutation from '../Sales/useCheckoutMutation'
 import { torontoDate } from '../Dashboard/todayPresentation'
 import SeriesHistory from './SeriesHistory'
@@ -17,6 +17,7 @@ import './seriesInventory.css'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import InventoryNav, { useHasClaw } from './InventoryNav'
+import RemoveDesigns from '../Products/RemoveDesigns'
 
 const failure = (cause:unknown) => (cause as {_serverMessage?:string})?._serverMessage || 'Unable to load inventory. Please retry.'
 const units = (amount:number, unit:string|null) => `${amount} ${unit === 'box' ? (amount===1?'box':'boxes') : `${unit||'unit'}${amount===1?'':'s'}`}`
@@ -35,6 +36,9 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const hasClaw = useHasClaw()
   const [params,setParams] = useSearchParams()
   const rawId = params.get('series_id'), selectedId = rawId && /^\d+$/.test(rawId) && Number(rawId)>0 ? Number(rawId) : undefined
+  // A plain product (no designs or sealed set, so no series) opens on its own.
+  const rawProductId = params.get('product_id'), productId = rawProductId && /^\d+$/.test(rawProductId) && Number(rawProductId)>0 ? Number(rawProductId) : undefined
+  const opened = selectedId ?? productId
   const [query,setQuery] = useState(''), [search,setSearch] = useState(''), [refresh,setRefresh] = useState(0)
   const [result,setResult] = useState<{scope:string;data?:SeriesInventoryResult;error?:string}>()
   const [historyOpen,setHistoryOpen] = useState(false)
@@ -48,9 +52,13 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const [designQuery,setDesignQuery] = useState('')
   const [showSideLocations,setShowSideLocations] = useState(false)
   const [quantity,setQuantity] = useState(1), [reason,setReason] = useState('')
-  const scope = `${storeCode}|${selectedId}|${search}|${refresh}`
+  const scope = `${storeCode}|${selectedId}|${productId}|${search}|${refresh}`
   const current = result?.scope===scope ? result : undefined
-  const data = current?.data, selected = data?.series.find(series=>series.id===selectedId)
+  const data = current?.data
+  const plain = productId ? data?.products?.find(product=>product.id===productId) : undefined
+  const selected = selectedId ? data?.series.find(series=>series.id===selectedId)
+    : plain ? {id:0, name:plain.name, product_id:plain.id, products:[plain, ...(plain.variations ?? [])]} : undefined
+  const standalone = !!plain
   const canWork = storeCode!=='ALL' && ['staff','manager','admin'].includes(role)
   const manager = storeCode!=='ALL' && ['manager','admin'].includes(role)
   const mutation = useCheckoutMutation(()=>{
@@ -66,12 +74,12 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
 
   useEffect(()=>{
     const controller = new AbortController()
-    getInventorySeries(storeCode,selectedId ? '' : search,selectedId,controller.signal)
+    getInventorySeries(storeCode,opened ? '' : search,selectedId,controller.signal,productId)
       .then(value=>{if(!controller.signal.aborted)setResult({scope,data:value})})
       .catch(cause=>{if(!controller.signal.aborted)setResult({scope,error:failure(cause)})})
     return ()=>controller.abort()
-  },[scope,storeCode,selectedId,search])
-  useEffect(()=>{setPanel(undefined);setHistoryOpen(false);setDetailId(undefined);setWorksheet(undefined);setStockAction(undefined);setDesignQuery('');setSourceId(undefined);setDesignId(undefined);setLocationId(undefined);setOpenSetId(undefined)},[selectedId])
+  },[scope,storeCode,selectedId,productId,opened,search])
+  useEffect(()=>{setPanel(undefined);setHistoryOpen(false);setDetailId(undefined);setWorksheet(undefined);setStockAction(undefined);setDesignQuery('');setSourceId(undefined);setDesignId(undefined);setLocationId(undefined);setOpenSetId(undefined)},[selectedId,productId])
 
   const source = selected?.products.find(product=>product.id===sourceId)
   const design = selected?.products.find(product=>product.id===designId)
@@ -97,7 +105,9 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   // A series reads top-down: sealed sets, then single boxes, then each confirmed design. The product that owns the
   // series is its single box even before its stock type is reviewed.
   const isBox = (product:SeriesProduct) => product.stock_form==='random_box' || (product.stock_form===null && product.id===selected?.product_id)
-  const sections = selected ? ([
+  const sections = standalone && selected && !plain?.variations?.length ? [
+    {key:'stock', title:'库存 Stock', note:'', label:'Product inventory', products:selected.products},
+  ] : selected ? ([
     {key:'sealed_set', title:'整端 Sealed sets', note:'Unopened sets', label:'Sealed set inventory', products:selected.products.filter(product=>product.stock_form==='sealed_set')},
     {key:'random_box', title:'单盒 Single boxes', note:'Design not yet confirmed', label:'Single box inventory', products:selected.products.filter(isBox)},
     {key:'confirmed_design', title:'确认款 Confirmed designs', note:'Each design is stocked separately', label:'Confirmed design inventory', products:designs},
@@ -111,23 +121,27 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
     return match&&(!selected||!needle||[product.name,product.design_name,product.sku,product.jizhanming,product.name_cn_en,product.alias_text].filter(Boolean).join(' ').normalize('NFKC').toLocaleLowerCase().includes(needle))
   }
   const visibleSeries=data?.series.filter(series=>stockFilter==='all'||series.products.some(matchesStock))||[]
+  const visiblePlain=data?.products?.filter(product=>stockFilter==='all'||[product,...(product.variations??[])].some(matchesStock))||[]
+  // One A-Z list: a series (product with designs or a sealed set) opens its sub-items; a plain product opens its own stock.
+  const entries:{key:string;name:string;series?:InventorySeries;product?:SeriesProduct}[]=[...visibleSeries.map(series=>({key:`s${series.id}`,name:series.name,series})),...visiblePlain.map(product=>({key:`p${product.id}`,name:product.name,product}))]
+    .sort((a,b)=>a.name.localeCompare(b.name,'zh-CN'))
 
   return <main className="pc-series-inventory">
     <PageHeader
       title={selected?.name || '库存'}
       sub={selected ? <>{storeName} · {data?.locations.length} stock locations</> : `Inventory${storeName ? ` · ${storeName}` : ''}`}
-      back={selectedId ? { label: '全部系列', to: '/stock' } : undefined}
-      actions={<>{!selectedId&&<InventoryNav hasClaw={hasClaw} phone={false}/>}<div className="pc-series-toolbar">
+      back={opened ? { label: '全部商品', to: '/stock' } : undefined}
+      actions={<>{!opened&&<InventoryNav hasClaw={hasClaw} phone={false}/>}<div className="pc-series-toolbar">
           <Button className="pc-series-refresh" aria-label="Refresh inventory" title="Refresh inventory" icon={<ReloadOutlined />} disabled={locked} onClick={()=>setRefresh(value=>value+1)} />
-          {selected&&<Button aria-label="Show movement history" icon={<HistoryOutlined />} disabled={locked} onClick={()=>setHistoryOpen(true)}>记录 History</Button>}
-          {selected&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
+          {selected&&!standalone&&<Button aria-label="Show movement history" icon={<HistoryOutlined />} disabled={locked} onClick={()=>setHistoryOpen(true)}>记录 History</Button>}
+          {selected&&!standalone&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
         </div></>}
       phoneAction={undefined} />
-    {phone&&!selectedId&&<InventoryNav hasClaw={hasClaw} phone/>}
+    {phone&&!opened&&<InventoryNav hasClaw={hasClaw} phone/>}
     {phone&&<div className="pc-series-phone-tools"><div className="pc-series-toolbar">
           <Button className="pc-series-refresh" aria-label="Refresh inventory" title="Refresh inventory" icon={<ReloadOutlined />} disabled={locked} onClick={()=>setRefresh(value=>value+1)} />
-          {selected&&<Button aria-label="Show movement history" icon={<HistoryOutlined />} disabled={locked} onClick={()=>setHistoryOpen(true)}>记录 History</Button>}
-          {selected&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
+          {selected&&!standalone&&<Button aria-label="Show movement history" icon={<HistoryOutlined />} disabled={locked} onClick={()=>setHistoryOpen(true)}>记录 History</Button>}
+          {selected&&!standalone&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
         </div></div>}
     {storeCode==='ALL'&&<Alert type="info" showIcon message="Viewing all authorized stores. Select one store to receive, count, or identify stock." />}
     {saved&&<Alert type="success" showIcon message={`${saved==='stock'?'Stock change':'Identification'} saved. ${data?'Inventory refreshed.':current?.error?'Inventory refresh needed.':'Refreshing inventory.'}`} />}
@@ -139,23 +153,31 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
           <option value="all">All stock</option><option value="attention">Needs attention</option><option value="out_of_stock">Out of stock</option><option value="replenish">Replenish floor</option><option value="unverified">Unverified stock</option><option value="condition">On hold / damaged</option>
         </select></label>{selected&&<Input aria-label="Find design in this series" placeholder="Find a design" value={designQuery} onChange={event=>setDesignQuery(event.target.value)} disabled={locked} allowClear/>}
           {selected&&data.locations.some(location=>SIDE_LOCATIONS.includes(location.code))&&<label className="pc-series-side-toggle"><input type="checkbox" checked={showSideLocations} onChange={event=>setShowSideLocations(event.target.checked)}/>陈列 · 娃娃机 Display &amp; claw</label>}</div>
-        {rawId&&!selectedId?<Alert type="error" message="Invalid series reference."/>:selectedId&&!selected?<Alert type="warning" message="This series is unavailable in the selected scope."/>:selected?<>
-          {canWork&&<div className="pc-series-batch pc-series-batch-top">{<><Button disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('count')}>按系列晚盘 Count series</Button><Button type="primary" disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('receive')}>整系列入库 Receive series</Button></>}</div>}
+        {(rawId&&!selectedId)||(rawProductId&&!productId)?<Alert type="error" message="Invalid inventory reference."/>:opened&&!selected?<Alert type="warning" message="This product is unavailable in the selected scope."/>:selected?<>
+          {canWork&&<div className="pc-series-batch pc-series-batch-top">{<><Button disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('count')}>{standalone?'晚盘 Count':'按系列晚盘 Count series'}</Button><Button type="primary" disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('receive')}>{standalone?'入库 Receive':'整系列入库 Receive series'}</Button></>}</div>}
           {sections.map(section=>{
             const products=section.products.filter(matchesStock)
-            if(!section.products.length&&section.key!=='confirmed_design')return null
+            if(!section.products.length&&(section.key!=='confirmed_design'||standalone))return null
             return <section className={'pc-series-section'+(section.key==='confirmed_design'?'':' pc-series-packaging')} key={section.key} aria-labelledby={`${section.key}-heading`}>
               <div className="pc-series-section-heading"><div><h3 id={`${section.key}-heading`}>{section.title}</h3>{section.note&&<p>{section.note}</p>}</div>{section.key==='confirmed_design'&&<span className="pc-series-count">{designs.length} designs</span>}</div>
               <StockTable products={products} data={data} canWork={canWork&&!locked&&section.key!=='review'} onDetail={setDetailId} label={section.label}
                 locations={visibleLocations(data.locations, products, showSideLocations, section.key==='confirmed_design')} />
             </section>
           })}
-        </>:!rawId&&<>
-          <div className="pc-series-search"><Input.Search aria-label="Search series or design" placeholder="Search series, design, or SKU" value={query} onChange={event=>setQuery(event.target.value)} onSearch={value=>setSearch(value.trim())} disabled={locked} allowClear /><span>{visibleSeries.length} series</span></div>
-          {!visibleSeries.length?<p className="pc-series-empty">No series match this search and stock view.</p>:<ul className="pc-series-list">{visibleSeries.map(series=><li key={series.id}><Link to={`/stock?series_id=${series.id}`}><span className="pc-series-list-name">{series.name}<span>{series.products.length} products{series.products.some(product=>inventoryAttention(product,data.locations).length>0)&&<> · {series.products.filter(product=>inventoryAttention(product,data.locations).length>0).length} need attention</>}</span></span><span className="pc-series-list-count">{series.products.filter(product=>product.stock_form==='confirmed_design').length} named designs</span><ArrowRightOutlined aria-hidden /></Link></li>)}</ul>}
+        </>:!rawId&&!rawProductId&&<>
+          <div className="pc-series-search"><Input.Search aria-label="Search series or design" placeholder="Search product, series, design, or SKU" value={query} onChange={event=>setQuery(event.target.value)} onSearch={value=>setSearch(value.trim())} disabled={locked} allowClear /><span>{entries.length} products · {visibleSeries.length} with designs</span></div>
+          {!entries.length?<p className="pc-series-empty">No products match this search and stock view.</p>:<ul className="pc-series-list">{entries.map(entry=>{
+            // Before the opening count every quantity is unverified, so "needs attention" would be on every row.
+            const flagged=(product:SeriesProduct)=>inventoryAttention(product,data.locations).some(reason=>data.mode==='authoritative'||reason!=='unverified')
+            if(entry.series){const series=entry.series,attention=series.products.filter(flagged).length
+              return <li key={entry.key}><Link to={`/stock?series_id=${series.id}`}><span className="pc-series-list-name">{series.name}<span>{series.products.length} products{attention>0&&<> · {attention} need attention</>}</span></span><span className="pc-series-list-count">{series.products.filter(product=>product.stock_form==='confirmed_design').length} named designs</span><ArrowRightOutlined aria-hidden /></Link></li>}
+            const product=entry.product!,attention=[product,...(product.variations??[])].some(flagged)
+            return <li key={entry.key}><Link to={`/stock?product_id=${product.id}`}><span className="pc-series-list-name">{product.name}<span>{product.sku}{attention&&<> · needs attention</>}</span></span><span className="pc-series-list-count">{product.variations?.length?'整端 · 单盒':''}</span><ArrowRightOutlined aria-hidden /></Link></li>
+          })}</ul>}
         </>}
         <footer className="pc-series-footer">
           {selected?.product_id&&manager&&<Link to={`/products?product_id=${selected.product_id}`}>添加确认款或整端 Add designs or a sealed set</Link>}
+          {selected?.product_id&&manager&&!standalone&&<RemoveDesigns productId={selected.product_id} designCount={designs.length} onDone={()=>setParams({product_id:String(selected.product_id)})}/>}
           <nav aria-label="Inventory tools" className="pc-inventory-tools"><Link to="/products">Products</Link><Link to="/restock">Restock</Link><Link to="/trades">Trades</Link><Link to="/stock/products">All products</Link></nav>
         </footer>
       </>}

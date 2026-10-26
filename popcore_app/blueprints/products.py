@@ -150,9 +150,14 @@ def search_products():
     search_source = f"""(SELECT p.*, ps.name AS series_name,
         {product_alias_text_sql('p')} AS alias_text,
         {product_search_text_sql('p')} AS inventory_search_blob,
-        CASE WHEN ps.product_id<>p.id THEN ps.product_id END AS parent_product_id,
-        CASE WHEN ps.product_id=p.id THEN (SELECT COUNT(*) FROM products c WHERE c.series_id=p.series_id AND c.id<>p.id)
-             ELSE 0 END AS sub_item_count
+        COALESCE(CASE WHEN ps.product_id<>p.id THEN ps.product_id END,
+                 CASE WHEN p.stock_form='sealed_set' THEN (SELECT c.target_product_id FROM product_conversions c
+                                                         WHERE c.source_product_id=p.id LIMIT 1) END) AS parent_product_id,
+        -- confirmed designs (a series) plus the blind box's sealed set, which is a variation outside any series
+        (CASE WHEN ps.product_id=p.id THEN (SELECT COUNT(*) FROM products c WHERE c.series_id=p.series_id AND c.id<>p.id
+                                                AND c.stock_form IS NOT 'sealed_set') ELSE 0 END)
+        + (SELECT COUNT(*) FROM product_conversions c JOIN products s ON s.id=c.source_product_id
+           WHERE c.target_product_id=p.id AND s.stock_form='sealed_set') AS sub_item_count
         FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id)"""
 
     filter_clauses = []
@@ -327,11 +332,19 @@ def get_product(pid):
     if owner_id and owner_id != pid:
         parent = dict(cur.execute('SELECT id, sku, jizhanming, name_cn_en FROM products WHERE id=?',
                                   (owner_id,)).fetchone())
+    # A sealed set is the blind box's variation, linked by its conversion rather than by a series.
+    box = cur.execute('''SELECT p.id, p.sku, p.jizhanming, p.name_cn_en FROM product_conversions c
+                         JOIN products p ON p.id=c.target_product_id WHERE c.source_product_id=?''', (pid,)).fetchone() \
+        if row['stock_form'] == 'sealed_set' and not parent else None
+    if box:
+        parent = dict(box)
     sub_items = [dict(r) for r in cur.execute(
-        '''SELECT id, sku, jizhanming, name_cn_en, stock_form, stock_unit, design_name, price
-           FROM products WHERE series_id=? AND id<>?
+        '''SELECT id, sku, jizhanming, name_cn_en, stock_form, stock_unit, design_name, price FROM products
+           WHERE (series_id=? AND ? AND id<>?)
+              OR id IN (SELECT c.source_product_id FROM product_conversions c JOIN products s ON s.id=c.source_product_id
+                        WHERE c.target_product_id=? AND s.stock_form='sealed_set')
            ORDER BY CASE stock_form WHEN 'sealed_set' THEN 0 ELSE 1 END, sku, id''',
-        (row['series_id'], pid))] if owner_id == pid else []
+        (row['series_id'], 1 if owner_id == pid else 0, pid, pid))]
     con.close()
     return jsonify({**dict(row), 'aliases': aliases, 'barcodes': barcodes,
                     'conversions': conversions, 'parent': parent, 'sub_items': sub_items})
@@ -1734,6 +1747,22 @@ def _add_sub_items(operation, pid):
 def add_product_designs(pid):
     from inventory_catalog import add_designs
     return _add_sub_items(add_designs, pid)
+
+
+@bp.post('/api/products/<int:pid>/designs/remove')
+@role_required('manager')
+def remove_product_designs(pid):
+    from inventory_catalog import remove_designs
+    from inventory_commands import InventoryError
+    con = get_db()
+    try:
+        return jsonify(remove_designs(con, pid, actor=request.jwt_payload))
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
 
 
 @bp.post('/api/products/<int:pid>/sealed-set')

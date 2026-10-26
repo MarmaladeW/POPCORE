@@ -73,10 +73,10 @@ class SealedSetTests(IsolatedApiCase):
             made = con.execute('SELECT * FROM products WHERE id=?', (set_id,)).fetchone()
             self.assertEqual((made['sku'], made['stock_form'], made['stock_unit'], made['identity_status']),
                              ('BOX-1-SET', 'sealed_set', 'set', 'verified'))
+            # A sealed set is the box's variation: it makes no series (only confirmed designs do).
             box = con.execute('SELECT series_id FROM products WHERE id=?', (self.box,)).fetchone()
-            self.assertEqual(made['series_id'], box['series_id'])
-            self.assertEqual(con.execute('SELECT name FROM product_series WHERE id=?',
-                                         (made['series_id'],)).fetchone()[0], '哭娃度假')
+            self.assertIsNone(made['series_id'])
+            self.assertIsNone(box['series_id'])
             conversion = con.execute(
                 'SELECT source_product_id, target_product_id, output_per_input FROM product_conversions'
             ).fetchall()
