@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Suspense, useEffect, useState } from 'react'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { Button, ConfigProvider, Modal, Result } from 'antd'
 
@@ -7,6 +7,7 @@ import ProtectedRoute from './auth/ProtectedRoute'
 import { useHasRole, type Role } from './auth/useRole'
 import AppLayout from './components/AppLayout'
 import ErrorBoundary from './components/ErrorBoundary'
+import { lazyPage } from './lib/lazyPage'
 import MoreMenu from './components/MoreMenu'
 import { resetAuthWarnings, setTokenGetter } from './api/client'
 import { useAppStore, ALL_STORES } from './store'
@@ -15,37 +16,37 @@ import client from './api/client'
 import { operationsTheme } from './theme/operations'
 import './styles/operations.css'
 
-const SchedulePage=lazy(()=>import('./pages/Schedule'))
-const HomePage=lazy(()=>import('./pages/Home'))
-const DashboardPage=lazy(()=>import('./pages/Dashboard'))
-const CheckoutPage=lazy(()=>import('./pages/Sales/Checkout'))
-const SpecialOrdersPage=lazy(()=>import('./pages/SpecialOrders'))
-const IncomingPage=lazy(()=>import('./pages/Home/Incoming'))
-const EventEntry=lazy(()=>import('./pages/Home/EventEntry'))
-const StoreSummary=lazy(()=>import('./pages/Home/StoreSummary'))
-const ProductsPage=lazy(()=>import('./pages/Products'))
-const CloverMatchingPage=lazy(()=>import('./pages/Products/CloverMatching'))
-const SeriesCatalogPage=lazy(()=>import('./pages/Products/SeriesCatalog'))
-const StockPage=lazy(()=>import('./pages/Stock'))
-const SeriesInventory=lazy(()=>import('./pages/Stock/SeriesInventory'))
-const GoodsPage=lazy(()=>import('./pages/Stock/Goods'))
-const RestockPage=lazy(()=>import('./pages/Restock'))
-const CountHub=lazy(()=>import('./pages/Stock/CountHub'))
-const ClawPage=lazy(()=>import('./pages/Stock/ClawPage'))
-const HistoricalMatchReview=lazy(()=>import('./pages/Sales/HistoricalMatchReview'))
-const SalesPage=lazy(()=>import('./pages/Sales'))
-const DayDetailPage=lazy(()=>import('./pages/Sales/DayDetail'))
-const SaleEntryPage=lazy(()=>import('./pages/Sales/Entry'))
-const SaleDocumentPage=lazy(()=>import('./pages/Sales/SaleDocument'))
-const PaymentEvidencePage=lazy(()=>import('./pages/Sales/PaymentEvidence'))
-const ClosingPage=lazy(()=>import('./pages/Closing'))
-const UsersPage=lazy(()=>import('./pages/Users'))
-const SettingsPage=lazy(()=>import('./pages/Settings'))
-const NotFound=lazy(()=>import('./pages/NotFound'))
-const Unauthorized=lazy(()=>import('./pages/Unauthorized'))
-const TradesPage=lazy(()=>import('./pages/Trades'))
-const TradeCasePage=lazy(()=>import('./pages/Trades/TradeCase'))
-const ReportsPage=lazy(()=>import('./pages/Reports'))
+const SchedulePage=lazyPage(()=>import('./pages/Schedule'))
+const HomePage=lazyPage(()=>import('./pages/Home'))
+const DashboardPage=lazyPage(()=>import('./pages/Dashboard'))
+const CheckoutPage=lazyPage(()=>import('./pages/Sales/Checkout'))
+const SpecialOrdersPage=lazyPage(()=>import('./pages/SpecialOrders'))
+const IncomingPage=lazyPage(()=>import('./pages/Home/Incoming'))
+const EventEntry=lazyPage(()=>import('./pages/Home/EventEntry'))
+const StoreSummary=lazyPage(()=>import('./pages/Home/StoreSummary'))
+const ProductsPage=lazyPage(()=>import('./pages/Products'))
+const CloverMatchingPage=lazyPage(()=>import('./pages/Products/CloverMatching'))
+const SeriesCatalogPage=lazyPage(()=>import('./pages/Products/SeriesCatalog'))
+const StockPage=lazyPage(()=>import('./pages/Stock'))
+const SeriesInventory=lazyPage(()=>import('./pages/Stock/SeriesInventory'))
+const GoodsPage=lazyPage(()=>import('./pages/Stock/Goods'))
+const RestockPage=lazyPage(()=>import('./pages/Restock'))
+const CountHub=lazyPage(()=>import('./pages/Stock/CountHub'))
+const ClawPage=lazyPage(()=>import('./pages/Stock/ClawPage'))
+const HistoricalMatchReview=lazyPage(()=>import('./pages/Sales/HistoricalMatchReview'))
+const SalesPage=lazyPage(()=>import('./pages/Sales'))
+const DayDetailPage=lazyPage(()=>import('./pages/Sales/DayDetail'))
+const SaleEntryPage=lazyPage(()=>import('./pages/Sales/Entry'))
+const SaleDocumentPage=lazyPage(()=>import('./pages/Sales/SaleDocument'))
+const PaymentEvidencePage=lazyPage(()=>import('./pages/Sales/PaymentEvidence'))
+const ClosingPage=lazyPage(()=>import('./pages/Closing'))
+const UsersPage=lazyPage(()=>import('./pages/Users'))
+const SettingsPage=lazyPage(()=>import('./pages/Settings'))
+const NotFound=lazyPage(()=>import('./pages/NotFound'))
+const Unauthorized=lazyPage(()=>import('./pages/Unauthorized'))
+const TradesPage=lazyPage(()=>import('./pages/Trades'))
+const TradeCasePage=lazyPage(()=>import('./pages/Trades/TradeCase'))
+const ReportsPage=lazyPage(()=>import('./pages/Reports'))
 
 function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
   return useHasRole(minRole) ? <>{element}</> : <Unauthorized />
@@ -56,6 +57,7 @@ function AppInner() {
   const { setSeries, setProductTypes, setStores, setSelectedStore, selectedStore, clearAvailabilityDrafts } = useAppStore()
   const [bootstrapError, setBootstrapError] = useState(false)
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0)
+  const location = useLocation()
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -138,7 +140,7 @@ function AppInner() {
 
   const routedApp = (
     <AppLayout key={user?.sub}>
-      <ErrorBoundary>
+      <ErrorBoundary resetKey={location.pathname}>
         <Suspense fallback={<div role="status" aria-live="polite">Loading page…</div>}><Routes>
           <Route path="/"               element={<RoleRoute minRole="viewer"  element={<HomePage />} />} />
           <Route path="/today" element={<RoleRoute minRole="viewer" element={<DashboardPage />} />} />

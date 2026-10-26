@@ -2279,6 +2279,8 @@ def migrate_db():
             created_at TEXT    DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_aliases_norm ON product_aliases(alias_norm);
+        -- Product search reads each product's aliases; without this every search scans the whole table per product.
+        CREATE INDEX IF NOT EXISTS idx_aliases_product ON product_aliases(product_id);
 
         CREATE TABLE IF NOT EXISTS section_aliases (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
