@@ -50,6 +50,8 @@ class FakeConnector:
         self.orders, self.device, self.calls, self.verified = {}, {}, [], True
         self.fail = {}  # route -> (status, payload)
         self.deleted = set()
+        self.sent = {}  # POPCORE send key -> Clover order ID
+        self.lose_reply = False  # create the order on Clover, then fail the reply
 
     def put(self, *orders):
         """Cloud orders are Clover's record; a device snapshot only overlays the feed."""
@@ -74,6 +76,25 @@ class FakeConnector:
                 status, payload = self.fail[key]
                 return response(status, payload)
         base = {'environment': 'sandbox', 'merchant_id': MERCHANT}
+        if method == 'POST' and path == '/orders/create':
+            body = kwargs['json']
+            order_id = self.sent.get(body['key'])
+            if order_id is None:
+                order_id = self.sent[body['key']] = f'SENT{len(self.sent):09d}'
+                units = [line for line in body['lines'] for _ in range(line['quantity'])]
+                items = [{'id': f'LN{order_id[-6:]}{n:05d}', 'name': line['name'], 'price': line['price'], 'itemId': None}
+                         for n, line in enumerate(units)]
+                self.orders[order_id] = {
+                    'id': order_id, 'currency': 'CAD', 'source': 'cloud', 'total': body['expected_total'],
+                    'createdTime': int(time.time() * 1000), 'paymentState': 'OPEN', 'items': items,
+                    'discounts': [{'id': 'AGREED0000001', 'name': body['discount']['name'],
+                                   'amount': -body['discount']['amount']}] if body.get('discount') else [],
+                    'payments': [], 'refunds': [], 'credits': [], 'seen_at': time.time(),
+                    'externalReferenceId': body['reference'], 'title': body['title'], 'employeeName': None}
+            if self.lose_reply:
+                return response(502, {'error': 'Clover could not be read. Retry or reconnect.', 'code': 'clover_unavailable'})
+            return response(200, {**base, 'created': True, 'order': {**self.orders[order_id], 'seen_at': time.time()},
+                                  'pricing': {'verified': True, 'tax_cents': 0}})
         if method == 'GET' and path == '/orders':
             return response(200, {**base, 'fetched_at': time.time(), 'cloud_unavailable': False, 'orders': self.feed()})
         if method == 'GET' and path == '/orders/scan':
@@ -537,3 +558,131 @@ class CloverCheckoutTests(ReceivingFixture):
         db.migrate_db()
         db.migrate_db()
         self.assertIsNotNone(self.one("SELECT 1 FROM _migrations WHERE name='clover_checkouts'"))
+
+
+
+class SendToCloverTests(CloverCheckoutTests):
+    """A sale started in POPCORE (exact designs, agreed prices) and paid by card on the Clover device."""
+
+    def setUp(self):
+        super().setUp()
+        with closing(self.connect()) as con:
+            series = con.execute("INSERT INTO product_series(name) VALUES ('小王子')").lastrowid
+            self.design = con.execute("""INSERT INTO products(sku,jizhanming,name_cn_en,series_id,stock_form,stock_unit,
+                design_name,identity_status) VALUES ('PM0209-01','小王子 商人','The Little Prince Businessman',?,
+                'confirmed_design','piece','The Businessman','verified')""", (series,)).lastrowid
+            con.execute("INSERT INTO inventory_balances(product_id,location_id,disposition,quantity,version) VALUES (?,?,'saleable',3,1)",
+                        (self.design, self.floor))
+            con.execute("UPDATE products SET sku='TT0001' WHERE id=?", (self.product_id,))
+            con.commit()
+
+    def manual(self, *, tax=720, reduction=0, key='create-1'):
+        lines = [dict(product_id=self.design, unit='piece', quantity=2, unit_price_cents=1770),
+                 dict(product_id=self.product_id, unit='piece', quantity=1, unit_price_cents=1999)]
+        result = self.client.post('/api/checkouts', headers={**self.headers(), 'Idempotency-Key': key}, json=dict(
+            store_id=self.store_id, business_date='2026-10-20', lines=lines, subtotal_cents=5539, source_tax_cents=tax,
+            gross_cents=5539 + tax, reduction_cents=reduction, rounding_cents=0, collected_cents=5539 + tax - reduction))
+        self.assertEqual(result.status_code, 201, result.get_json())
+        return result.get_json()
+
+    def creates(self):
+        return [call for call in self.clover.calls if call[1] == '/orders/create']
+
+    def stock(self, product_id):
+        return self.one('SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?',
+                        product_id, self.floor)['quantity']
+
+    def test_card_on_clover_records_the_exact_designs_on_the_popcore_checkout(self):
+        order = self.manual()
+        self.assertEqual(order['clover_send'], {'pending': False, 'error': None, 'can_send': True, 'can_stop': False})
+        sent = self.act(order['id'], 'clover-send', 'send-1')
+        (_, _, body, headers), = self.creates()
+        self.assertEqual(headers['X-Popcore-Writer'], 'k' * 32)
+        self.assertEqual(body, {
+            'key': f"popcore-pc-{order['id']}", 'reference': 'DT261020001', 'title': 'DT-20261020-001',
+            'tax_rate': 1300000, 'expected_total': 6259, 'discount': None,
+            'lines': [{'name': 'PM0209-01 小王子 The Businessman', 'price': 1770, 'quantity': 2},
+                      {'name': 'TT0001 Test Product', 'price': 1999, 'quantity': 1}]})
+        order_id = sent['clover']['order_id']
+        self.assertEqual((sent['id'], sent['reference'], sent['cashier_name'], sent['clover']['register']),
+                         (order['id'], 'DT-20261020-001', 'Staff Cashier', False))
+        self.assertEqual((sent['clover']['started_in_popcore'], sent['clover']['can_release']), (True, False))
+        self.assertEqual([(l['product_id'], l['mapped']) for l in sent['clover']['lines']],
+                         [(self.design, True)] * 2 + [(self.product_id, True)])
+        self.assertEqual(sent['clover']['prices']['card_cents'], 6259)
+        # Sending again, or Clover's feed showing the order, never makes a second order on either side.
+        self.act(order['id'], 'clover-send', 'send-2')
+        self.assertEqual(len(self.creates()), 1)
+        self.assertEqual([o['id'] for o in self.queue()['orders']], [order['id']])
+        # The cashier takes card on the device; Clover's record finalizes the POPCORE sale by itself.
+        self.clover.put({**self.clover.orders[order_id], 'paymentState': 'PAID', 'payments': [card('CARDPAYMENT01', 6259)]})
+        clover_checkout.background_sync()
+        done = self.detail(order['id'])
+        self.assertEqual((done['status'], done['clover']['writeback']['state']), ('completed', 'none'))
+        sale = self.one('SELECT * FROM sale_documents WHERE id=?', done['sale_id'])
+        self.assertEqual((sale['business_date'], sale['created_by'], sale['collected_cents']), ('2026-10-20', 'auth0|staff', 6259))
+        self.assertEqual(self.one('SELECT source_reference FROM sale_sources WHERE sale_id=?', done['sale_id'])[0],
+                         'DT-20261020-001')
+        lines = {row['product_id']: row['quantity'] for row in self.connect().execute(
+            'SELECT product_id,quantity FROM sale_lines WHERE sale_id=?', (done['sale_id'],))}
+        self.assertEqual(lines, {self.design: 2, self.product_id: 1})
+        self.assertEqual((self.stock(self.design), self.stock(self.product_id)), (1, 4))
+        payment = self.one('SELECT tender,amount_cents,state FROM sale_payments WHERE sale_id=?', done['sale_id'])
+        self.assertEqual(tuple(payment), ('card', 6259, 'verified'))
+        self.assertEqual([w for w in self.clover.writes() if w[1] != '/orders/create'], [])
+        self.assertEqual(self.one('SELECT COUNT(*) n FROM checkout_orders')['n'], 1)
+
+    def test_cash_on_a_sent_order_is_recorded_in_popcore_and_only_labels_clover(self):
+        order = self.act(self.manual()['id'], 'clover-send', 'send-1')
+        cash = order['clover']['prices']['cash_cents']
+        self.assertEqual((cash, order['clover']['prices']['cash_mode']), (6100, 'cash_discount'))
+        done = self.receive(order, 'cash-1', 'cash', cash, expected_due_cents=cash)
+        self.assertEqual((done['status'], done['clover']['writeback']['state']), ('completed', 'done'))
+        clover_order = self.clover.orders[done['clover']['order_id']]
+        self.assertEqual((clover_order['paymentState'], clover_order['payments']), ('OPEN', []))
+        self.assertRegex(clover_order['title'], r'^Paid \d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
+        self.assertEqual([w[1].rsplit('/', 1)[-1] for w in self.clover.writes()], ['create', 'label'])
+        self.assertEqual((self.stock(self.design), self.stock(self.product_id)), (1, 4))
+
+    def test_refusals_leave_a_popcore_order_and_a_lost_reply_still_joins_it(self):
+        # Hand-typed tax that Clover would not charge: nothing exists on Clover and POPCORE pays it as before.
+        order = self.manual(tax=700)
+        self.clover.fail['POST /orders/create'] = (409, {'error': 'Clover would charge $62.59, not $62.39.', 'code': 'amounts_differ',
+                                                 'clover_total': 6259})
+        refused = self.act(order['id'], 'clover-send', 'send-1', expect=409)
+        self.assertEqual(refused['code'], 'amounts_differ')
+        self.assertIn('Clover would charge $62.59', refused['error'])
+        again = self.detail(order['id'])
+        self.assertEqual((again['clover'], again['clover_send']['pending'], again['pricing']['can_receive']),
+                         (None, False, True))
+        del self.clover.fail['POST /orders/create']
+        # Clover unreachable: the order waits for Retry or Stop, and POPCORE takes no payment meanwhile.
+        self.clover.fail['POST /orders/create'] = (502, {'error': 'Clover connection unavailable.', 'code': 'clover_unavailable'})
+        second = self.manual(key='create-2')
+        self.act(second['id'], 'clover-send', 'send-2', expect=409)
+        waiting = self.detail(second['id'])
+        self.assertEqual((waiting['clover_send']['pending'], waiting['clover_send']['can_stop'], waiting['pricing']['can_receive']),
+                         (True, True, False))
+        self.receive(waiting, 'cash-x', 'cash', 6100, plan='pay', expect=409)
+        stopped = self.act(second['id'], 'clover-unsend', 'stop-1')
+        self.assertEqual((stopped['clover_send']['pending'], stopped['pricing']['can_receive']), (False, True))
+        del self.clover.fail['POST /orders/create']
+        # Clover made the order but the reply was lost: the feed joins it to the POPCORE checkout by its reference.
+        third = self.manual(key='create-3')
+        self.clover.lose_reply = True
+        self.act(third['id'], 'clover-send', 'send-3', expect=409)
+        listed = [o['id'] for o in self.queue()['orders']]
+        self.assertEqual(sorted(listed), sorted([order['id'], second['id'], third['id']]))
+        joined = self.detail(third['id'])
+        self.assertEqual((joined['clover']['started_in_popcore'], joined['clover']['register']), (True, False))
+        self.assertEqual(self.one('SELECT COUNT(*) n FROM clover_orders')['n'], 1)
+
+    def test_an_agreed_discount_goes_to_clover_and_a_paid_order_cannot_be_sent(self):
+        order = self.manual(tax=694, reduction=200)
+        sent = self.act(order['id'], 'clover-send', 'send-1')
+        self.assertEqual(self.creates()[0][2]['discount'], {'name': 'Agreed discount', 'amount': 200})
+        self.assertEqual(sent['clover']['prices']['card_cents'], 6033)
+        paid = self.manual(key='create-2')
+        self.receive(paid, 'card-1', 'card', 1000, plan='split_card')
+        self.assertFalse(self.detail(paid['id'])['clover_send']['can_send'])
+        self.act(paid['id'], 'clover-send', 'send-2', expect=409)

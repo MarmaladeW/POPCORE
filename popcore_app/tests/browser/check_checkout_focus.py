@@ -158,8 +158,26 @@ async def clover_real_api_checks(browser):
         del clover.fail['POST label']
         await order.get_by_role('button',name='Retry',exact=True).click()
         await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
+
+        # A sale started in POPCORE goes to Clover for card and comes back to the same order.
+        created=fixture.client.post('/api/checkouts',headers={**fixture.headers(),'Idempotency-Key':'send-create'},json=dict(
+            store_id=fixture.store_id,business_date='2026-10-20',subtotal_cents=1770,source_tax_cents=230,gross_cents=2000,
+            reduction_cents=0,rounding_cents=0,collected_cents=2000,lines=[dict(product_id=fixture.product_id,unit='piece',quantity=1,unit_price_cents=1770)])).get_json()
+        await page.goto(f"http://127.0.0.1:5178/checkout/{created['id']}")
+        order=page.get_by_role('article',name=f"Checkout {created['reference']}")
+        await order.get_by_role('button',name='刷卡 · Send to Clover for card',exact=True).click()
+        await expect(order.locator('h2.co-clover-id')).to_be_visible(timeout=15000)
+        sent_id=next(order_id for order_id,row in clover.orders.items() if row.get('externalReferenceId'))
+        await expect(order.get_by_role('heading',name=sent_id)).to_be_visible()
+        await expect(order).to_contain_text(created['reference'])
+        await order.get_by_role('button',name=re.compile(r'Card\b')).click()
+        await expect(order).to_contain_text(f"Orders → {created['reference']} → Add Payment → Card")
+        await page.screenshot(path=str(OUT/'clover-sent-phone.png'),full_page=True)
+        clover.put({**clover.orders[sent_id],'paymentState':'PAID','payments':[card('CARDPAYMENT02',2000)]})
+        await expect(order).to_contain_text('Sale recorded',timeout=15000)
         with closing(fixture.connect()) as con:
-            assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==3
+            assert con.execute('SELECT count(*) FROM checkout_orders WHERE reference=?',(created['reference'],)).fetchone()[0]==1
+            assert con.execute('SELECT count(*) FROM sale_documents').fetchone()[0]==4
             assert con.execute("SELECT count(*) FROM clover_orders WHERE writeback_state='done'").fetchone()[0]==3
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         await context.close()
@@ -456,7 +474,7 @@ async def main():
             await real_api_checks(browser)
             await clover_real_api_checks(browser)
             await browser.close()
-        print('PASS: checkout navigation, scoped manual checkout and off-duty history, order switching with the chosen tender kept, automatic tender prices and splits, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund, stock posting and a WeChat Pay payment keeping the yuan charged and its rate also passed with disposable data. Clover orders against actual Flask routes and a fake Clover: automatic pick-up, cash price, Clover order labelled paid and left open, split with card, cancel and delete, find by ID and label retry; no live Clover/auth verification.')
+        print('PASS: checkout navigation, scoped manual checkout and off-duty history, order switching with the chosen tender kept, automatic tender prices and splits, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund, stock posting and a WeChat Pay payment keeping the yuan charged and its rate also passed with disposable data. Clover orders against actual Flask routes and a fake Clover: automatic pick-up, cash price, Clover order labelled paid and left open, split with card, cancel and delete, find by ID, label retry and a POPCORE order sent to Clover for card; no live Clover/auth verification.')
     finally:
         process.terminate();process.wait(timeout=10)
 

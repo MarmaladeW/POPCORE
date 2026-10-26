@@ -9,7 +9,7 @@ import {useAppStore} from '../../store'
 import {torontoDate} from '../Dashboard/todayPresentation'
 import useCheckoutMutation from './useCheckoutMutation'
 const {Title,Paragraph,Text}=Typography
-export default function ManualCheckout({allowedStoreIds}:{allowedStoreIds:number[]}) {
+export default function ManualCheckout({allowedStoreIds,cloverStoreId}:{allowedStoreIds:number[];cloverStoreId?:number|null}) {
   const selectedStore = useAppStore(state => state.selectedStore), setSelectedStore = useAppStore(state => state.setSelectedStore), navigate = useNavigate()
   const [store,setScope] = useState(selectedStore), [dirty,setDirty] = useState(false)
   const [form] = Form.useForm(), [products,setProducts] = useState<GoodsProduct[]>([]), [searchError,setSearchError] = useState('')
@@ -56,7 +56,7 @@ export default function ManualCheckout({allowedStoreIds}:{allowedStoreIds:number
   }
   return <>
     <Link to="/checkout">Back to checkouts</Link><Title level={3}>New manual checkout · {store.name}</Title>
-    <Paragraph>For a sale that is not on Clover, such as a phone order or an item another store is sending. Enter the agreed prices and tax. Saving starts a pending checkout; record payment after money is received. Stock moves when checkout is completed.</Paragraph>
+    <Paragraph>For a sale that is not on Clover, such as a phone order or an item another store is sending. Enter the agreed prices and tax. Saving starts a pending checkout; record payment after money is received. Stock moves when checkout is completed.{store.id===cloverStoreId&&' To take card on the Clover device, save, then tap Send to Clover for card: Clover gets these exact items at these prices, adding 13% HST after any discount.'}</Paragraph>
     {mutation.notice}{searchError && <Alert type="error" message={searchError} />}
     <Form form={form} layout="vertical" onFinish={submit} onValuesChange={changed=>{setDirty(true);if('tax' in changed)setTaxByHand(true)}} disabled={mutation.pending} initialValues={{date:torontoDate(),tax:'0.00',reduction:'0.00',lines:[{quantity:1}]}}>
       <Form.Item name="reference" label="Order reference (optional)" extra="Leave blank when there is none; POPCORE numbers it, for example MK-20261020-001." rules={[{max:120}]}><Input autoComplete="off" /></Form.Item>

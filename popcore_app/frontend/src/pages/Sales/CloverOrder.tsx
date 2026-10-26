@@ -61,7 +61,7 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
     <header className="co-order-heading"><div>
       <span className="co-muted">Clover order · {clock(clover.created_ms)}{clover.employee_name?` · ${clover.employee_name}`:''}</span>
       <h2 className="co-clover-id">{clover.order_id}</h2>
-      <span className="co-muted">{clover.popcore_reference} · {order.status==='completed'?'Sale recorded':order.status==='cancelled'?'Cancelled':order.abandoned_reason?'Refund due':'In progress'} · {clover.register?'Not picked up yet':order.cashier_name}</span>
+      <span className="co-muted">{clover.started_in_popcore?order.reference:clover.popcore_reference} · {order.status==='completed'?'Sale recorded':order.status==='cancelled'?'Cancelled':order.abandoned_reason?'Refund due':'In progress'} · {clover.register?'Not picked up yet':order.cashier_name}</span>
     </div><span className={'co-status co-clover-'+stateTone(clover.state)} aria-label={`Clover: ${clover.state_label}`}>{clover.state_label}</span></header>
     {mutation.notice}
     {clover.can_claim&&<div className="co-claim"><Button type="primary" disabled={busy} loading={mutation.saving} onClick={()=>run('claim')}>Pick up this order</Button></div>}
@@ -76,7 +76,7 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
     {clover.can_receive&&collect&&quote&&<section className="co-clover-pay" aria-label="Payment">
       {splitMode===''&&<>
         {tenderPicker(true)}
-        {tender==='card'?<p className="co-instruction">Take <strong>{formatCents(collect.card.rest_cents)}</strong> by card on Clover: {popcoreIn||cardLanded?splitInstruction(collect.card.rest_cents):'Pay → Card'}. POPCORE records the sale when Clover confirms it.</p>
+        {tender==='card'?<p className="co-instruction">Take <strong>{formatCents(collect.card.rest_cents)}</strong> by card on Clover: {popcoreIn||cardLanded?splitInstruction(collect.card.rest_cents):clover.started_in_popcore?<>Orders → <strong>{order.reference}</strong> → Add Payment → Card</>:'Pay → Card'}. POPCORE records the sale when Clover confirms it.</p>
           :tender&&<div className="co-collect"><span>应收 Collect</span><strong>{formatCents(quote.rest_cents)}</strong>{saving&&<small>{saving.label} {off(total!-saving.due_cents)} · Clover total {formatCents(total)}</small>}</div>}
         {received}
       </>}
@@ -104,7 +104,7 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
     {open&&!clover.can_receive&&!clover.can_claim&&<p className="co-muted">{clover.review?'A manager resolves this order before more money is recorded.':total===null?'Waiting for Clover’s total.':`View only. ${clover.register?'Recording payments needs an assigned shift at this location today.':`${order.cashier_name} has this order.`}`}</p>}
     {!!payments.length&&<section className="co-receipts"><h3>Payments</h3>{payments.map(a=><div key={a.id} className="co-receipt"><p><span>{label(a.tender)}<small className="co-muted"> · {a.origin==='clover'?'on Clover':clover.writeback.mode==='pay'&&clover.writeback.state==='done'?'recorded in POPCORE · on Clover':'recorded in POPCORE'}</small></span><strong>{formatCents(a.amount_cents)}</strong></p>{cnyCharged(a)&&<small className="co-receipt-cny">{cnyCharged(a)}</small>}{clover.undo_attempt_ids.includes(a.id)&&<TakeBack attempt={a} disabled={busy} run={body=>run('undo',body)}/>}</div>)}</section>}
     {photoAttempts.map(attempt=><PhotoCapture key={attempt.id} disabled={busy} primary={attempt.id===photoAttempts.find(a=>a.can_upload&&!a.photos.length)?.id} order={order} attempt={attempt} draft={draft} setDraft={setDraft} updated={refresh} onBusy={value=>setPhotoStates(old=>({...old,[attempt.id]:value}))}/>)}
-    {finishedHere&&clover.writeback.mode==='label'&&!['PAID','DELETED'].includes(clover.state)&&<p className="co-instruction">On Clover: {clover.clover_cents?<>tap <strong>Pay more later</strong></>:<>tap <strong>Review Order</strong>, then <strong>Save</strong></>} to clear the screen. The order stays open there, labelled paid.</p>}
+    {finishedHere&&!clover.started_in_popcore&&clover.writeback.mode==='label'&&!['PAID','DELETED'].includes(clover.state)&&<p className="co-instruction">On Clover: {clover.clover_cents?<>tap <strong>Pay more later</strong></>:<>tap <strong>Review Order</strong>, then <strong>Save</strong></>} to clear the screen. The order stays open there, labelled paid.</p>}
     {status&&(status.tone==='success'?<p className="co-saved co-clover-done" role="status"><CheckCircleOutlined/> <strong>{status.title}</strong><span>{status.detail}</span></p>
       :<Alert type={status.tone} showIcon message={status.title} description={status.detail} action={clover.can_retry&&<Button disabled={busy} loading={mutation.saving} onClick={()=>run('clover-retry')}>Retry</Button>}/>)}
     {clover.can_mark_handled&&<details className="co-secondary"><summary>Fixed on the Clover device instead</summary><p>Only when the Clover order now matches this sale.</p><Input aria-label="What was fixed on Clover" value={handled} maxLength={200} onChange={e=>setHandled(e.target.value)}/><Button disabled={busy||!handled.trim()} onClick={()=>run('clover-handled',{reason:handled.trim()})}>Mark handled</Button></details>}

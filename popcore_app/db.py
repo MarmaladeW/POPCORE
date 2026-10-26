@@ -1908,6 +1908,24 @@ def _migration_series_owned_by_product(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('series_owned_by_product')")
 
 
+def _migration_clover_sends(con, cur):
+    # A sale started in POPCORE and sent to Clover for card: the lines it sent (Clover line name ->
+    # POPCORE product) and, once Clover has it, the order that carries the checkout reference.
+    cur.execute("""CREATE TABLE IF NOT EXISTS clover_sends (
+        checkout_id INTEGER PRIMARY KEY REFERENCES checkout_orders(id),
+        merchant_id TEXT NOT NULL CHECK(length(merchant_id)=13),
+        reference TEXT NOT NULL,
+        lines TEXT NOT NULL,
+        total_cents INTEGER NOT NULL CHECK(total_cents>0),
+        order_id TEXT CHECK(order_id IS NULL OR length(order_id)=13),
+        error TEXT,
+        sent_ms INTEGER NOT NULL,
+        UNIQUE(merchant_id, order_id)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS clover_sends_reference ON clover_sends(merchant_id, reference)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('clover_sends')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1967,6 +1985,7 @@ def _get_migrations():
         ('claw_machine_location',                      _migration_claw_machine_location),
         ('display_locations',                          _migration_display_locations),
         ('series_owned_by_product',                    _migration_series_owned_by_product),
+        ('clover_sends',                               _migration_clover_sends),
     ]
 
 

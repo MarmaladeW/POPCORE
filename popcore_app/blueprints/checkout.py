@@ -187,6 +187,10 @@ def save_note(checkout_id):
 @role_required('staff')
 def change(checkout_id,action):
     con = get_db()
+    if action in ('clover-send', 'clover-unsend'):
+        # A POPCORE order sent to Clover so the customer pays by card on the device.
+        operation = clover_checkout.send if action == 'clover-send' else clover_checkout.unsend
+        return jsonify(operation(con, checkout_id, request.jwt_payload))
     if action in clover_checkout.ACTIONS and is_clover(con, checkout_id):
         return jsonify(clover_checkout.change(con,checkout_id,action,body(),request.jwt_payload,
                                               request.headers.get('Idempotency-Key')))
