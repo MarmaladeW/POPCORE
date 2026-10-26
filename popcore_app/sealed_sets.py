@@ -85,17 +85,12 @@ def plan_sealed_sets(con):
 
 
 def create_sealed_set(con, item):
-    """Create the sealed set product and its conversion; the blind box owns the series."""
+    """Create the sealed set product and its conversion (1 set = N boxes).
+
+    A sealed set is the blind box's other variation, like "Whole Set" on the website. It does not make the box a
+    series: only confirmed designs do (owner, 2026-10-26). The conversion is what links the set to its box."""
     box = con.execute('SELECT * FROM products WHERE id=?', (item['box_product_id'],)).fetchone()
-    series_id = item['series_id']
-    if series_id is None:
-        series_id = con.execute('INSERT INTO product_series(name, product_id) VALUES (?, ?)',
-                                (item['series_name'], box['id'])).lastrowid
-    else:
-        con.execute('UPDATE product_series SET product_id=? WHERE id=? AND product_id IS NULL',
-                    (box['id'], series_id))
-    if box['series_id'] != series_id:
-        con.execute('UPDATE products SET series_id=? WHERE id=?', (series_id, box['id']))
+    series_id = None
     search = ' '.join(value for value in (item['set_sku'], item['set_jizhanming'], item['set_name'],
                                           box['brand'], box['ip_series'], '整端 sealed set') if value).lower()
     set_id = con.execute(

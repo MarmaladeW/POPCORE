@@ -37,6 +37,23 @@ class InventorySeriesTests(IsolatedApiCase):
             headers['Idempotency-Key'] = key
         return self.client.post('/api/product-series/setup',json=body,headers=headers)
 
+    def test_plain_products_are_listed_and_open_on_their_own(self):
+        with closing(self.connect()) as con:
+            plain = con.execute('''INSERT INTO products(sku,jizhanming,name_cn_en,stock_form,stock_unit,identity_status)
+                VALUES ('AC0001','捏捏','Banana Squishy','ordinary','piece','verified')''').lastrowid
+            con.execute('INSERT INTO inventory_balances VALUES (?,?,?,?,4)', (plain,self.floor,'saleable',6))
+            con.commit()
+        listed = self.get().get_json()
+        self.assertIn(plain, [p['id'] for p in listed['products']])
+        self.assertNotIn(self.products['Red'], [p['id'] for p in listed['products']])  # sub-items stay in their series
+        self.assertEqual([s['id'] for s in listed['series']], [self.series_id])
+        one = self.get(f'store_code=DT&product_id={plain}').get_json()
+        self.assertEqual(([p['id'] for p in one['products']], one['series']), ([plain], []))
+        floor = next(b for b in one['products'][0]['balances'] if b['location_id']==self.floor and b['disposition']=='saleable')
+        self.assertEqual(floor['quantity'], 6)
+        self.assertEqual(self.get(f'store_code=DT&series_id={self.series_id}').get_json()['products'], [])
+        self.assertEqual([p['id'] for p in self.get('store_code=DT&q=squishy').get_json()['products']], [plain])
+
     def test_separate_products_dispositions_and_trusted_zero(self):
         before = self.snapshot(['products','inventory_balances','inventory_documents','stock'])
         response = self.get()

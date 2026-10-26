@@ -1022,7 +1022,8 @@ def get_inventory_series():
     con = get_db()
     try:
         return jsonify(series_inventory(con, request.jwt_payload, request.args.get('store_code'),
-                                        request.args.get('q', ''), request.args.get('series_id')))
+                                        request.args.get('q', ''), request.args.get('series_id'),
+                                        request.args.get('product_id')))
     except PermissionError:
         return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
     except InventoryError as exc:

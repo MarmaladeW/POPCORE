@@ -22,6 +22,8 @@ export interface SeriesProduct {
   image_filename?: string | null
   balances: SeriesBalance[]
   open_sets?: Array<{id:number;location_id:number;purpose:string;remaining_qty:number;opening_document_id:number}>
+  /** A plain blind box's sealed set (its "Whole set" variation). */
+  variations?: SeriesProduct[]
 }
 export interface InventorySeries { id:number; name:string; product_id:number|null; products:SeriesProduct[] }
 export interface SeriesInventoryResult {
@@ -29,6 +31,8 @@ export interface SeriesInventoryResult {
   locations: InventoryLocation[]
   unassigned_count: number
   series: InventorySeries[]
+  /** Plain products: no designs or sealed set, so no series. */
+  products?: SeriesProduct[]
 }
 export interface SeriesMovement {
   id:number; document_id:number; kind:string; product_id:number; product_name:string
@@ -36,8 +40,8 @@ export interface SeriesMovement {
   business_date:string; posted_at:string; reason:string|null; open_set_id?:number|null
   actor_sub?:string; store_code?:string; source_type?:string|null; source_id?:string|null; native_unit?:string|null
 }
-export const getInventorySeries = (storeCode:string, query:string, seriesId:number|undefined, signal:AbortSignal) =>
-  client.get<SeriesInventoryResult>('/inventory/series', {params:{store_code:storeCode,q:query||undefined,series_id:seriesId},signal}).then(response=>response.data)
+export const getInventorySeries = (storeCode:string, query:string, seriesId:number|undefined, signal:AbortSignal, productId?:number) =>
+  client.get<SeriesInventoryResult>('/inventory/series', {params:{store_code:storeCode,q:query||undefined,series_id:seriesId,product_id:productId},signal}).then(response=>response.data)
 export interface SeriesHistoryFilters {
   product_id?:number; date_from?:string; date_to?:string; before_id?:number; limit?:number
 }

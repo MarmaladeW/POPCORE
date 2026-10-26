@@ -197,8 +197,9 @@ def add_conversion(con, source_product_id, target_product_id,
         raise ValueError('conversion source must be a sealed_set measured in sets')
     if target.get('stock_form') != 'random_box' or target.get('stock_unit') != 'box':
         raise ValueError('conversion target must be a random_box measured in boxes')
-    if source.get('series_id') is None or source.get('series_id') != target.get('series_id'):
-        raise ValueError('conversion products must belong to the same explicit series')
+    # A sealed set is its box's variation and needs no series (owner, 2026-10-26); it may never sit in another series.
+    if source.get('series_id') is not None and source.get('series_id') != target.get('series_id'):
+        raise ValueError('a sealed set cannot belong to a different series than its blind box')
     if version is None:
         version = con.execute(
             'SELECT COALESCE(MAX(version), 0) + 1 FROM product_conversions '
