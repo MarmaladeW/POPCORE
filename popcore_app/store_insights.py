@@ -5,14 +5,14 @@ from datetime import date, datetime, timedelta, timezone
 
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from checkout_access import require_checkout_history_store
-from inventory_commands import InventoryValidationError
+from inventory_commands import InventoryValidationError, inventory_mode_for
 from operational_reports import _scope, _inventory_identity_valid, _product_name
 from validation import read_date
 
 
 def _current_inventory(con, ids):
     marks=','.join('?' for _ in ids)
-    mode=con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
+    mode=inventory_mode_for(con,ids)
     locations=[dict(row) for row in con.execute(f'''SELECT l.id,l.store_id,l.code,COALESCE(ss.opening_verified,0) opening_verified
         FROM inventory_locations l LEFT JOIN inventory_scope_state ss ON ss.location_id=l.id
         WHERE l.is_active=1 AND l.store_id IN ({marks})''',ids)]
@@ -21,7 +21,7 @@ def _current_inventory(con, ids):
             WHERE l.is_active=1 AND l.store_id IN ({marks})''',ids)}
     items=[];counts=Counter({key:0 for key in ('out_of_stock','replenish','condition','unverified')})
     for row in con.execute('SELECT p.*,ps.name series_name FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id ORDER BY p.id'):
-        valid=mode=='authoritative' and _inventory_identity_valid(row)
+        valid=_inventory_identity_valid(row)
         def available(location):
             return balances.get((row['id'],location['id'],'saleable'),0) if valid and location['opening_verified'] else None
         known=bool(locations) and all(available(location) is not None for location in locations)

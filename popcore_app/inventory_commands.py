@@ -44,6 +44,28 @@ class InventoryBusy(InventoryError):
         )
 
 
+def live_store_ids(con):
+    """Stores that run on the inventory ledger: each goes live with its own opening count.
+
+    A store is live once any of its active locations has a verified opening, so a
+    location added later stays unverified without taking the store back to legacy.
+    """
+    return {row[0] for row in con.execute(
+        """SELECT DISTINCT l.store_id FROM inventory_locations l
+           JOIN inventory_scope_state ss ON ss.location_id=l.id
+           WHERE l.is_active=1 AND ss.opening_verified=1""")}
+
+
+def store_is_live(con, store_id):
+    return store_id in live_store_ids(con)
+
+
+def inventory_mode_for(con, store_ids):
+    """'authoritative' when every named store is live, otherwise 'legacy'."""
+    store_ids = set(store_ids)
+    return 'authoritative' if store_ids and store_ids <= live_store_ids(con) else 'legacy'
+
+
 def require_inventory_access(con, jwt_payload, store_ids, minimum_role):
     if minimum_role not in ROLE_HIERARCHY:
         raise ValueError('Unknown minimum inventory role')
@@ -662,16 +684,15 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
                     'source_conflict',
                 )
 
-        mode = con.execute(
-            'SELECT mode FROM inventory_mode WHERE id=1'
-        ).fetchone()['mode']
+        # Each store goes live with its own opening; until then it stays on legacy stock.
+        live = live_store_ids(con)
         if normalized['kind'] == 'opening':
-            if mode != 'legacy':
+            if live & set(store_ids):
                 raise InventoryConflict(
                     'Opening is only allowed during controlled activation',
                     'opening_closed',
                 )
-        elif mode != 'authoritative':
+        elif not store_ids or not set(store_ids) <= live:
             raise InventoryConflict(
                 'Authoritative inventory is not active',
                 'inventory_legacy_mode',

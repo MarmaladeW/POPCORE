@@ -282,8 +282,18 @@ class OpeningCountTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute("UPDATE inventory_mode SET mode='authoritative' WHERE id=1")
             con.commit()
+        # A store's opening closes when that store is live, not when any store is.
+        self.assertNotIn('opening_closed', self._codes(
+            self._review(self._complete_rows(), empty_locations=['MK-warehouse'])))
+        with closing(self.connect()) as con:
+            con.execute("""UPDATE inventory_scope_state SET opening_verified=1
+                           WHERE location_id=(SELECT id FROM inventory_locations
+                                              WHERE store_id=? AND code='floor')""",
+                        (self.stores['DT'],))
+            con.commit()
         closed = self._review(self._complete_rows(), empty_locations=['MK-warehouse'])
         self.assertIn('opening_closed', self._codes(closed))
+        self.assertIn('DT is already live', ' '.join(e['message'] for e in closed['errors']))
 
     # ── apply ────────────────────────────────────────────────────────────────
 
@@ -428,6 +438,152 @@ class OpeningCountTests(IsolatedApiCase):
                                '--backup', str(self.folder / 'cli-backup.db')])
         self.assertTrue(applied['applied'])
         self.assertEqual(applied['request_key'], report['request_key'])
+
+    # ── one store at a time ──────────────────────────────────────────────────
+
+    def _dt_rows(self):
+        rows = []
+        for path in (self._sheet('DT', 'floor', {'OPEN-BOX': '5', 'OPEN-SET': '0'}),
+                     self._sheet('DT', 'upstairs', {'OPEN-BOX': '6', 'OPEN-SET': '0'}),
+                     self._sheet('DT', 'claw', {'OPEN-BOX': '1'}),
+                     self._sheet('DT', 'display', {'OPEN-BOX': '1'})):
+            rows.extend(read_count_file(path))
+        return rows
+
+    def _live_locations(self):
+        with closing(self.connect()) as con:
+            return sorted(f'{r[0]}-{r[1]}' for r in con.execute(
+                """SELECT s.code, l.code FROM inventory_scope_state ss
+                   JOIN inventory_locations l ON l.id=ss.location_id
+                   JOIN stores s ON s.id=l.store_id WHERE ss.opening_verified=1"""))
+
+    def _summary_mode(self, store_code):
+        # The legacy summary carries no mode field.
+        return self.client.get(f'/api/stock/summary?store_code={store_code}',
+                               headers=self.headers('admin')).get_json().get('mode', 'legacy')
+
+    def test_one_store_goes_live_while_the_other_stays_legacy(self):
+        outside = self._review(self._dt_rows() + [self._row(store='MK', sku='OPEN-DESIGN',
+                                                            unit='piece')], stores=['DT'])
+        self.assertIn('location_outside_opening', self._codes(outside))
+        report = apply_opening_counts(
+            db.DB_PATH, self._dt_rows(), actor_sub=ADMIN_SUB, business_date='2026-10-20',
+            backup_path=self.folder / 'dt.db', stores=['dt'])
+        self.assertTrue(report['applied'], report['errors'])
+        self.assertEqual(report['stores'], ['DT'])
+        self.assertTrue(report['reconciliation']['ok'], report['reconciliation'])
+        self.assertEqual(self._live_locations(),
+                         ['DT-claw', 'DT-display', 'DT-floor', 'DT-upstairs'])
+        with closing(self.connect()) as con:
+            # MK keeps its legacy rows, including a claw quantity it has no location for.
+            self.assertEqual(tuple(con.execute(
+                'SELECT instore_qty, upstairs_qty, claw_qty FROM stock WHERE product_id=? AND store_id=?',
+                (self.design, self.stores['MK'])).fetchone()), (3, 0, 1))
+
+        # Stock writes follow each store's own status.
+        body = {'product_id': self.design, 'qty': 2}
+        legacy = self.client.post('/api/stock/restock_upstairs', headers=self.headers('manager'),
+                                  json={**body, 'store_code': 'MK'})
+        self.assertEqual(legacy.status_code, 200, legacy.get_json())
+        live = self.client.post('/api/stock/restock_upstairs', headers=self.headers('manager'),
+                                json={'product_id': self.box, 'qty': 2, 'store_code': 'DT'})
+        self.assertEqual(live.get_json()['code'], 'idempotency_key_required')
+        self.assertEqual([self._summary_mode(code) for code in ('DT', 'MK', 'ALL')],
+                         ['authoritative', 'legacy', 'legacy'])
+
+        # DT is closed; the next opening is MK's by default.
+        again = self._review(self._dt_rows(), stores=['DT'])
+        self.assertIn('DT is already live', ' '.join(e['message'] for e in again['errors']))
+        # MK's legacy restock above put 2 in its warehouse, so the warehouse must be counted.
+        mk_rows = []
+        for path in (self._sheet('MK', 'floor', {'OPEN-DESIGN': '2'}),
+                     self._sheet('MK', 'warehouse', {'OPEN-DESIGN': '2'}),
+                     self._sheet('MK', 'display', {'OPEN-DESIGN': '1'})):
+            mk_rows.extend(read_count_file(path))
+        self.assertEqual(self._review(mk_rows)['stores'], ['MK'])
+        later = apply_opening_counts(
+            db.DB_PATH, mk_rows, actor_sub=ADMIN_SUB, business_date='2026-10-22',
+            backup_path=self.folder / 'mk.db')
+        self.assertTrue(later['applied'], later['errors'])
+        self.assertTrue(later['reconciliation']['ok'], later['reconciliation'])
+        self.assertEqual(len(self._live_locations()), 7)
+        self.assertEqual(self._summary_mode('ALL'), 'authoritative')
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM inventory_documents WHERE kind='opening'").fetchone()[0], 2)
+
+    def test_ledger_commands_need_the_location_store_to_be_live(self):
+        apply_opening_counts(db.DB_PATH, self._dt_rows(), actor_sub=ADMIN_SUB,
+                             business_date='2026-10-20', backup_path=self.folder / 'dt.db',
+                             stores=['DT'])
+        with closing(self.connect()) as con:
+            locations = {(r['code'], r['loc']): r['id'] for r in con.execute(
+                """SELECT s.code, l.code AS loc, l.id FROM inventory_locations l
+                   JOIN stores s ON s.id=l.store_id""")}
+
+        def receive(store, sku, product_id, unit, key):
+            return self.client.post('/api/inventory/commands', headers={
+                **self.headers('manager'), 'Idempotency-Key': key}, json={
+                'kind': 'receipt', 'business_date': '2026-10-21', 'lines': [{
+                    'product_id': product_id, 'quantity': 1, 'unit': unit,
+                    'to_location_id': locations[store, 'floor'], 'to_disposition': 'saleable',
+                    'expected_versions': {'to': 1 if sku == 'OPEN-BOX' else 0}}]})
+
+        self.assertEqual(receive('DT', 'OPEN-BOX', self.box, 'box', 'dt-receipt').status_code, 201)
+        mk = receive('MK', 'OPEN-DESIGN', self.design, 'piece', 'mk-receipt')
+        self.assertEqual((mk.status_code, mk.get_json()['code']), (409, 'inventory_legacy_mode'))
+
+    # ── counting verifies identity ───────────────────────────────────────────
+
+    def test_counting_an_unverified_product_verifies_the_form_on_its_row(self):
+        with closing(self.connect()) as con:
+            new_box = con.execute(
+                """INSERT INTO products (sku, name_cn_en, jizhanming, product_type, search_blob)
+                   VALUES ('NEW-BOX', 'New Box', 'New Box', '盲盒', 'new box')""").lastrowid
+            self._stock(con, new_box, 'DT', instore=2, upstairs=0)
+            con.commit()
+        with closing(self.connect()) as con:
+            sheet = {row['sku']: row for row in count_sheet_rows(con, 'DT', 'floor', 'catalog')}
+        self.assertEqual((sheet['NEW-BOX']['stock_form'], sheet['NEW-BOX']['unit'],
+                          sheet['NEW-BOX']['identity']), ('random_box', 'box', 'unverified'))
+        # TEST-1's product type has no suggestion, so its form stays blank on the sheet.
+        self.assertEqual((sheet['TEST-1']['stock_form'], sheet['TEST-1']['unit']), ('', ''))
+
+        cases = {
+            'identity_form_unsupported': [self._row(sku='NEW-BOX', stock_form='sealed_set', unit='set')],
+            'identity_changed': [self._row(sku='OPEN-BOX', stock_form='ordinary')],
+            'identity_conflict': [self._row(sku='NEW-BOX', stock_form='random_box'),
+                                  self._row(sku='NEW-BOX', location='upstairs', stock_form='ordinary',
+                                            unit='piece', _row=3)],
+            'unit_mismatch': [self._row(sku='NEW-BOX', stock_form='random_box', unit='piece')],
+        }
+        for code, rows in cases.items():
+            with self.subTest(code=code):
+                self.assertIn(code, self._codes(self._review(rows)))
+        inferred = self._review([self._row(sku='TEST-1', stock_form='ordinary', unit='')])
+        self.assertEqual(inferred['verified_by_count'], [{
+            'product_id': self.product_id, 'sku': 'TEST-1',
+            'stock_form': 'ordinary', 'stock_unit': 'piece'}])
+
+        rows = self._complete_rows() + [self._row(sku='NEW-BOX', stock_form='random_box', count='3',
+                                                  _row=9)]
+        report = apply_opening_counts(
+            db.DB_PATH, rows, actor_sub=ADMIN_SUB, business_date='2026-10-20',
+            backup_path=self.folder / 'verify.db', empty_locations=['MK-warehouse'])
+        self.assertTrue(report['applied'], report['errors'])
+        self.assertTrue(report['reconciliation']['ok'], report['reconciliation'])
+        self.assertEqual([item['sku'] for item in report['verified_by_count']], ['NEW-BOX'])
+        with closing(self.connect()) as con:
+            self.assertEqual(tuple(con.execute(
+                'SELECT stock_form, stock_unit, identity_status FROM products WHERE id=?',
+                (new_box,)).fetchone()), ('random_box', 'box', 'verified'))
+            self.assertEqual(con.execute(
+                """SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l
+                   ON l.id=b.location_id WHERE b.product_id=? AND l.code='floor'""",
+                (new_box,)).fetchone()[0], 3)
+            self.assertEqual(con.execute(
+                'SELECT instore_qty FROM stock WHERE product_id=? AND store_id=?',
+                (new_box, self.stores['DT'])).fetchone()[0], 3)
 
 
 if __name__ == '__main__':

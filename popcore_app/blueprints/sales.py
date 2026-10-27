@@ -466,7 +466,7 @@ def batch_stock_operation():
             return jsonify({'error': 'Product not found', 'code': 'not_found',
                             'field': 'product_id'}), 404
 
-    if _is_authoritative(con):
+    if _is_authoritative(con, store_id):
         request_key = request.headers.get('Idempotency-Key', '').strip()
         if not request_key:
             con.close()
@@ -955,7 +955,7 @@ def submit_daily_report():
         con.close()
         return err
 
-    if _is_authoritative(con) and any(
+    if _is_authoritative(con, store_id) and any(
         item['section'] in {'break_display', 'stock_in', 'stock_out'}
         for item in validated_items
     ):

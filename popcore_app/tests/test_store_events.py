@@ -36,8 +36,8 @@ class StoreEventsTests(ReceivingFixture):
         return self.client.get(f'/api/store-events?store_id={self.store_id}&business_date={date or self.today}', headers=self.headers(role))
 
     def test_legacy_mode_records_events_without_stock_or_sale_changes(self):
-        with closing(self.connect()) as con:
-            con.execute("UPDATE inventory_mode SET mode='legacy' WHERE id=1")
+        with closing(self.connect()) as con:  # the store has not gone live: no verified location
+            con.execute("UPDATE inventory_scope_state SET opening_verified=0 WHERE store_id=?",(self.store_id,))
             con.commit()
         before = self.snapshot(('inventory_documents','inventory_balances','sale_documents','stock'))
         for kind in ('claw_prize','claw_refill','display_in'):

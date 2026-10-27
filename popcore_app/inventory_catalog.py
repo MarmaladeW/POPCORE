@@ -14,7 +14,7 @@ from goods_operations import _begin, _replay, _remember
 from sealed_sets import create_sealed_set, sealed_set_item
 from inventory_commands import (
     INVENTORY_DISPOSITIONS, InventoryConflict, InventoryError,
-    InventoryValidationError, require_inventory_access,
+    InventoryValidationError, inventory_mode_for, require_inventory_access,
 )
 from validation import read_int
 
@@ -54,7 +54,7 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
         product_id = read_int(product_id, 'product_id', minimum=1)
     con.execute('BEGIN')
     locations = _locations(con, actor, store_code)
-    mode = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
+    mode = inventory_mode_for(con, {location['store_id'] for location in locations})
     # A series owned by a product is shown under that product's current name.
     roster = {row['id']: {**dict(row), 'products': []} for row in con.execute(
         '''SELECT ps.id,ps.product_id,
@@ -69,7 +69,7 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
                     f'SELECT * FROM inventory_balances WHERE location_id IN ({marks})',
                     [location['id'] for location in locations])}
     opened_sets = {}
-    if mode == 'authoritative':
+    if locations:
         for row in con.execute(
             f'''SELECT o.id,o.random_product_id,o.location_id,o.purpose,o.remaining_qty,o.opening_document_id
                 FROM inventory_open_sets o JOIN inventory_scope_state ss ON ss.location_id=o.location_id
@@ -105,7 +105,7 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
         product['open_sets'] = opened_sets.get(product['id'], []) if valid else []
         product['balances'] = []
         for location in locations:
-            trusted = mode == 'authoritative' and location['opening_verified'] and valid
+            trusted = location['opening_verified'] and valid
             for disposition in sorted(INVENTORY_DISPOSITIONS):
                 balance = balances.get((product['id'], location['id'], disposition))
                 product['balances'].append({

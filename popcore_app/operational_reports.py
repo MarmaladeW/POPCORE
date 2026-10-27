@@ -50,14 +50,13 @@ def query_report(con,name,*,actor,filters):
     if ids:
         marks=','.join('?' for _ in ids)
         if name=='inventory':
-            mode=con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
             rows=con.execute(f"""SELECT b.product_id,p.id,p.sku,p.jizhanming,p.name_cn_en,p.design_name,p.stock_form,p.identity_status,p.stock_unit,p.series_id,ps.name series_name,
               l.store_id,l.id location_id,l.name location,b.disposition,b.quantity,b.version,COALESCE(ss.opening_verified,0) opening_verified
               FROM inventory_balances b JOIN products p ON p.id=b.product_id JOIN inventory_locations l ON l.id=b.location_id
               LEFT JOIN product_series ps ON ps.id=p.series_id LEFT JOIN inventory_scope_state ss ON ss.location_id=l.id
               WHERE l.is_active=1 AND l.store_id IN ({marks}) ORDER BY l.store_id,p.sku,l.id,b.disposition""",ids)
             for row in rows:
-                verified=mode=='authoritative' and bool(row['opening_verified']) and _inventory_identity_valid(row)
+                verified=bool(row['opening_verified']) and _inventory_identity_valid(row)
                 items.append({**{key:row[key] for key in ('product_id','sku','stock_unit','store_id','location_id','location','disposition')},
                     'product_name':_product_name(row),'quantity':row['quantity'] if verified else None,
                     'version':row['version'] if verified else None,'inventory_verified':verified})

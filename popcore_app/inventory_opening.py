@@ -2,7 +2,9 @@
 
 The public commands route never posts an opening. Opening counts enter only
 through ``scripts/inventory_opening.py``, which reviews completed count files
-here and applies them as one opening document inside a held write lock.
+here and applies them as one opening document inside a held write lock. Each
+store goes live with its own opening, and a counted product that is not yet
+verified is verified by the stock form written on its count row.
 """
 import csv
 import hashlib
@@ -13,8 +15,10 @@ from contextlib import closing
 from pathlib import Path
 
 from auth import ROLE_CLAIM
+from catalog_identity import FORMS_TO_UNITS, update_product_identity
 from db import esc_csv
-from inventory_commands import _post_inventory_in_transaction
+from identity_sheet import SUGGESTED_IDENTITY
+from inventory_commands import _post_inventory_in_transaction, live_store_ids
 
 
 COUNT_SHEET_COLUMNS = (
@@ -24,6 +28,9 @@ COUNT_SHEET_COLUMNS = (
 COUNT_SHEET_SCOPES = ('legacy', 'catalog')
 REQUIRED_COUNT_COLUMNS = ('store', 'location', 'unit', 'count')
 DEFAULT_OPENING_REASON = 'Reviewed physical opening count'
+# Forms a count row may verify on its own. Sealed sets need a reviewed conversion and
+# confirmed designs a series and design name, so they are set up in Products first.
+COUNT_VERIFIABLE_FORMS = ('random_box', 'ordinary')
 
 
 class OpeningCountError(Exception):
@@ -87,7 +94,7 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
         params.append(location['store_id'])
     rows = con.execute(
         f"""SELECT p.id, p.sku, p.jizhanming, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS name,
-                   p.design_name, p.stock_form, p.stock_unit, p.identity_status,
+                   p.design_name, p.stock_form, p.stock_unit, p.identity_status, p.product_type,
                    (SELECT GROUP_CONCAT(code, ' | ') FROM (
                         SELECT DISTINCT code FROM product_barcodes
                         WHERE product_id=p.id ORDER BY code)) AS barcodes
@@ -97,6 +104,13 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
             ORDER BY COALESCE(ps.name, p.ip_series, ''), p.design_name, p.sku, p.id""",
         params,
     ).fetchall()
+
+    def identity(row):
+        # An unverified product is prefilled from its product type; counting it verifies that form.
+        if row['identity_status'] != 'verified' and not row['stock_form'] and not row['stock_unit']:
+            return SUGGESTED_IDENTITY.get((row['product_type'] or '').strip(), ('', ''))
+        return row['stock_form'] or '', row['stock_unit'] or ''
+
     return [{
         'store': location['store_code'],
         'location': location['code'],
@@ -106,8 +120,8 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
         'name': row['name'] or '',
         'design': row['design_name'] or '',
         'barcode': row['barcodes'] or '',
-        'stock_form': row['stock_form'] or '',
-        'unit': row['stock_unit'] or '',
+        'stock_form': identity(row)[0],
+        'unit': identity(row)[1],
         'identity': row['identity_status'],
         'count': '',
         'notes': '',
@@ -164,31 +178,57 @@ def _key(location):
 
 
 def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
-                          business_date=None, reason=DEFAULT_OPENING_REASON):
+                          business_date=None, reason=DEFAULT_OPENING_REASON, stores=None):
     """Validate completed count rows and compare them with legacy stock.
 
-    Reads only. Returns a JSON-safe report whose ``counts`` are the accepted
-    rows that apply would post (positive counts) or record as zero.
+    Reads only. ``stores`` names the stores going live (by default every store
+    that is not live yet); every active location of those stores must be
+    counted. Returns a JSON-safe report whose ``counts`` are the accepted rows
+    that apply would post (positive counts) or record as zero, and whose
+    ``verified_by_count`` are the unverified products the counts verify.
     """
-    locations = active_locations(con)
-    by_code = {(loc['store_code'], loc['code']): loc for loc in locations}
+    every_location = active_locations(con)
+    live = live_store_ids(con)
+    live_codes = {loc['store_code'] for loc in every_location if loc['store_id'] in live}
+    by_code = {(loc['store_code'], loc['code']): loc for loc in every_location}
     errors = []
     warnings = []
     submitted = set()
     counted = set()
     accepted = {}
+    verify = {}
+    closed = set()
 
     def error(row, code, message, **extra):
         errors.append({'file': row.get('_file') if row else None,
                        'row': row.get('_row') if row else None,
                        'code': code, 'message': message, **extra})
 
+    if stores:
+        opening_stores = {code.strip().upper() for code in stores}
+        for code in sorted(opening_stores - {loc['store_code'] for loc in every_location}):
+            error(None, 'store_unknown', f'{code} has no active inventory location')
+    else:
+        opening_stores = {loc['store_code'] for loc in every_location} - live_codes
+    locations = [loc for loc in every_location if loc['store_code'] in opening_stores]
+
+    def outside(row, location, label):
+        """A live store is closed; another store must be named to be counted now."""
+        if location['store_code'] in live_codes:
+            closed.add(location['store_code'])
+        elif location['store_code'] not in opening_stores:
+            error(row, 'location_outside_opening',
+                  f'{label} is not in this opening ({", ".join(sorted(opening_stores)) or "no store"}); '
+                  f'pass --store {location["store_code"]} to open it too')
+            return True
+        return False
+
     for value in empty_locations:
         store_code, _, location_code = value.partition('-')
         location = by_code.get((store_code.strip().upper(), location_code.strip().lower()))
         if location is None:
             error(None, 'location_unknown', f'--empty-location {value} is not an active location')
-        else:
+        elif not outside(None, location, f'--empty-location {value}'):
             submitted.add(location['id'])
             counted.add(location['id'])
 
@@ -197,6 +237,8 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
         if location is None:
             error(row, 'location_unknown',
                   'store and location must name an active inventory location')
+            continue
+        if outside(row, location, _key(location)):
             continue
         submitted.add(location['id'])
         try:
@@ -234,16 +276,53 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
                       f'SKU {sku!r} matches {len(matches)} products exactly')
                 continue
             product = matches[0]
-        if product['identity_status'] != 'verified':
-            error(row, 'identity_unverified',
-                  f'product {product["id"]} is not identity-verified', product_id=product['id'])
-            continue
+        form = row.get('stock_form', '').lower()
         unit = row.get('unit', '').lower()
-        if unit != product['stock_unit']:
+        if product['identity_status'] == 'verified':
+            native = product['stock_unit']
+            if form and form != product['stock_form']:
+                error(row, 'identity_changed',
+                      f'product {product["id"]} is verified as {product["stock_form"]}; '
+                      'change its identity in Products, not on the count sheet',
+                      product_id=product['id'])
+                continue
+        else:
+            # Counting an unverified product verifies the form written on its row.
+            if not form:
+                error(row, 'identity_unverified',
+                      f'product {product["id"]} is not verified; write its stock_form '
+                      f'({" or ".join(COUNT_VERIFIABLE_FORMS)}) or set it up in Products',
+                      product_id=product['id'])
+                continue
+            if form not in COUNT_VERIFIABLE_FORMS:
+                error(row, 'identity_form_unsupported',
+                      f'a count verifies {" or ".join(COUNT_VERIFIABLE_FORMS)} only; '
+                      f'set up {form} products in Products first', product_id=product['id'])
+                continue
+            if product['stock_form'] and form != product['stock_form']:
+                error(row, 'identity_changed',
+                      f'product {product["id"]} is set up as {product["stock_form"]}, not {form}; '
+                      'change it in Products first', product_id=product['id'])
+                continue
+            native = FORMS_TO_UNITS[form]
+            unit = unit or native
+            earlier = verify.get(product['id'])
+            if earlier and earlier['stock_form'] != form:
+                error(row, 'identity_conflict',
+                      f'product {product["id"]} is counted as {earlier["stock_form"]} '
+                      f'in {earlier["file"]} row {earlier["row"]} and as {form} here',
+                      product_id=product['id'])
+                continue
+        if unit != native:
             error(row, 'unit_mismatch',
-                  f'unit {unit or "(blank)"} does not match native unit {product["stock_unit"]}',
+                  f'unit {unit or "(blank)"} does not match native unit {native}',
                   product_id=product['id'])
             continue
+        if product['identity_status'] != 'verified':
+            verify.setdefault(product['id'], {
+                'product_id': product['id'], 'sku': product['sku'], 'stock_form': form,
+                'stock_unit': native, 'file': row['_file'], 'row': row['_row'],
+            })
         slot = (product['id'], location['id'])
         if slot in accepted:
             first = accepted[slot]
@@ -295,7 +374,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
         ):
             if (legacy['id'], location['id']) in accepted:
                 continue
-            if legacy['identity_status'] == 'verified':
+            if legacy['identity_status'] == 'verified' or legacy['id'] in verify:
                 error(None, 'uncounted_legacy_stock',
                       f'product {legacy["id"]} ({legacy["sku"]}) has legacy {column}='
                       f'{legacy["qty"]} at {_key(location)} but no count; write 0 if none was found',
@@ -317,6 +396,8 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
              (SELECT store_id FROM inventory_locations WHERE is_active=1)
            ORDER BY st.product_id"""
     ):
+        if legacy['store'] not in opening_stores:
+            continue
         warnings.append({
             'code': 'legacy_claw_unverified', 'product_id': legacy['product_id'],
             'sku': legacy['sku'], 'store': legacy['store'],
@@ -327,11 +408,8 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
         })
 
     mode = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
-    if mode != 'legacy':
-        error(None, 'opening_closed', f'inventory_mode is {mode}; opening is closed')
-    for location in locations:
-        if location['opening_verified']:
-            error(None, 'opening_closed', f'{_key(location)} already has a verified opening')
+    for store_code in sorted((opening_stores | closed) & live_codes):
+        error(None, 'opening_closed', f'{store_code} is already live; its opening is closed')
 
     if actor_sub:
         granted = {row['store_id'] for row in con.execute(
@@ -357,24 +435,34 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             'above_legacy': sum(1 for line in mine if line['difference'] > 0),
             'below_legacy': sum(1 for line in mine if line['difference'] < 0),
         })
-    empty = sorted(_key(loc) for loc in locations
+    # Over every location, so replaying an applied opening yields the same request key.
+    empty = sorted(_key(loc) for loc in every_location
                    if loc['id'] in submitted and not any(
                        line['count'] and line['location_id'] == loc['id'] for line in lines))
+    verified_by_count = [
+        {key: item[key] for key in ('product_id', 'sku', 'stock_form', 'stock_unit')}
+        for _, item in sorted(verify.items())
+    ]
     intent = {
         'business_date': business_date, 'reason': reason,
         'counts': [[line['product_id'], line['location_id'], line['count']] for line in lines],
         'empty_locations': empty,
     }
+    if verified_by_count:
+        intent['verified_by_count'] = [[item['product_id'], item['stock_form']]
+                                       for item in verified_by_count]
     digest = hashlib.sha256(
         json.dumps(intent, sort_keys=True, separators=(',', ':')).encode('utf-8')
     ).hexdigest()
     return {
         'inventory_mode': mode,
+        'stores': sorted(opening_stores),
         'business_date': business_date,
         'request_key': f'opening-count-{digest[:32]}',
         'ready_to_apply': not errors,
         'locations': location_summary,
         'counts': lines,
+        'verified_by_count': verified_by_count,
         'errors': errors,
         'warnings': warnings,
         'summary': {
@@ -382,6 +470,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             'counted_rows': len(lines),
             'counted_units': sum(line['count'] for line in lines),
             'differences_from_legacy': sum(1 for line in lines if line['difference']),
+            'verified_by_count': len(verified_by_count),
             'errors': len(errors),
             'warnings': len(warnings),
         },
@@ -404,6 +493,7 @@ def reconcile_inventory(con, foreign_key_baseline=None):
         if movements.get(key, 0) != balances.get(key, 0)
     ]
     compatibility_differences = []
+    # Only live stores keep legacy rows in step with the ledger; the others stay legacy.
     for row in con.execute(
         """SELECT p.id AS product_id, s.store_id, s.instore_qty, s.upstairs_qty, s.claw_qty,
                   (SELECT COALESCE(SUM(b.quantity), 0) FROM inventory_balances b
@@ -423,7 +513,9 @@ def reconcile_inventory(con, foreign_key_baseline=None):
                      AND l.is_active=1) AS claw_balance
            FROM stock s JOIN products p ON p.id=s.product_id
            WHERE p.identity_status='verified' AND s.store_id IN
-             (SELECT store_id FROM inventory_locations WHERE is_active=1)"""
+             (SELECT l.store_id FROM inventory_locations l
+              JOIN inventory_scope_state ss ON ss.location_id=l.id
+              WHERE l.is_active=1 AND ss.opening_verified=1)"""
     ):
         # Stores without a claw location keep their legacy claw_qty untouched.
         claw_differs = row['claw_balance'] is not None and row['claw_qty'] != row['claw_balance']
@@ -464,8 +556,9 @@ def connect(path, *, read_only):
 
 def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path,
                          empty_locations=(), reason=DEFAULT_OPENING_REASON,
-                         busy_timeout_ms=5000):
-    """Back up, post one opening document, verify every location, then commit.
+                         busy_timeout_ms=5000, stores=None):
+    """Back up, verify counted identities, post one opening document, verify
+    every location of the opening stores, then commit.
 
     The write lock is taken before review and held through commit, so no app
     writer can change stock between the reviewed comparison, the backup and
@@ -484,7 +577,7 @@ def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path
         con.execute('BEGIN IMMEDIATE')
         review = review_opening_counts(
             con, rows, empty_locations=empty_locations, actor_sub=actor_sub,
-            business_date=business_date, reason=reason,
+            business_date=business_date, reason=reason, stores=stores,
         )
         prior = con.execute(
             "SELECT id, status FROM inventory_documents WHERE request_key=?",
@@ -514,6 +607,18 @@ def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path
             backup_integrity = target.execute('PRAGMA integrity_check').fetchone()[0]
         if backup_integrity != 'ok':
             raise OpeningCountError('backup failed integrity_check', 'backup_failed')
+
+        for item in review['verified_by_count']:
+            try:
+                update_product_identity(con, item['product_id'], {
+                    'stock_form': item['stock_form'], 'stock_unit': item['stock_unit'],
+                    'identity_status': 'verified',
+                })
+            except ValueError as exc:
+                raise OpeningCountError(
+                    f'product {item["product_id"]} cannot be verified as {item["stock_form"]}: {exc}',
+                    getattr(exc, 'code', 'identity_invalid'),
+                ) from exc
 
         payload_lines = [{
             'product_id': line['product_id'], 'quantity': line['count'],
@@ -557,14 +662,17 @@ def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path
                 )
 
         # Legacy claw_qty was never a physical balance; the claw count replaces it.
+        opening_store_ids = sorted({loc['store_id'] for loc in active_locations(con)
+                                    if loc['store_code'] in review['stores']})
+        store_marks = ','.join('?' for _ in opening_store_ids) or 'NULL'
         for legacy in con.execute(
-            """SELECT st.product_id, st.store_id, st.claw_qty FROM stock st
+            f"""SELECT st.product_id, st.store_id, st.claw_qty FROM stock st
                JOIN inventory_locations l ON l.store_id=st.store_id
                  AND l.code='claw' AND l.is_active=1
                LEFT JOIN inventory_balances b ON b.product_id=st.product_id
                  AND b.location_id=l.id AND b.disposition='saleable'
-               WHERE st.claw_qty != COALESCE(b.quantity, 0)
-               ORDER BY st.store_id, st.product_id""").fetchall():
+               WHERE st.claw_qty != COALESCE(b.quantity, 0) AND st.store_id IN ({store_marks})
+               ORDER BY st.store_id, st.product_id""", opening_store_ids).fetchall():
             con.execute('UPDATE stock SET claw_qty=0, last_updated=? WHERE product_id=? AND store_id=?',
                         (business_date, legacy['product_id'], legacy['store_id']))
             con.execute(
@@ -578,10 +686,10 @@ def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path
             )
 
         unverified = [row['id'] for row in con.execute(
-            """SELECT l.id FROM inventory_locations l JOIN stores s ON s.id=l.store_id
+            f"""SELECT l.id FROM inventory_locations l JOIN stores s ON s.id=l.store_id
                LEFT JOIN inventory_scope_state ss ON ss.location_id=l.id
-               WHERE l.is_active=1 AND s.is_active=1
-                 AND COALESCE(ss.opening_verified, 0)=0""")]
+               WHERE l.is_active=1 AND s.is_active=1 AND l.store_id IN ({store_marks})
+                 AND COALESCE(ss.opening_verified, 0)=0""", opening_store_ids)]
         mode = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
         if unverified or mode != 'authoritative':
             raise OpeningCountError(

@@ -11,7 +11,8 @@ from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
 from catalog_identity import product_search_text_sql
 from inventory_commands import (
-    InventoryError, post_inventory, require_inventory_access,
+    InventoryError, inventory_mode_for, live_store_ids, post_inventory,
+    require_inventory_access, store_is_live,
 )
 
 
@@ -34,9 +35,9 @@ def _inventory_store(con, store_code):
     return resolved
 
 
-def _is_authoritative(con):
-    row = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()
-    return row is not None and row['mode'] == 'authoritative'
+def _is_authoritative(con, store_id):
+    """Whether this store has gone live on the inventory ledger (each store opens on its own)."""
+    return store_is_live(con, store_id)
 
 
 def _inventory_location(con, store_id, *codes):
@@ -220,9 +221,7 @@ def get_inventory_balances():
             item = dict(row)
             item['opening_verified'] = bool(item['opening_verified'])
             items.append(item)
-        mode = con.execute(
-            'SELECT mode FROM inventory_mode WHERE id=1'
-        ).fetchone()['mode']
+        mode = inventory_mode_for(con, (store_id,))
         return jsonify({'store_code': store_code, 'mode': mode, 'items': items})
     finally:
         con.close()
@@ -494,7 +493,7 @@ def ru_dian():
     if err:
         con.close()
         return err
-    if _is_authoritative(con):
+    if _is_authoritative(con, store_id):
         try:
             return jsonify(_authoritative_stock_adapter(
                 con, data, store_id, 'ru_dian', pid, qty, d, notes
@@ -581,7 +580,7 @@ def restock_upstairs():
     if err:
         con.close()
         return err
-    if _is_authoritative(con):
+    if _is_authoritative(con, store_id):
         try:
             return jsonify(_authoritative_stock_adapter(
                 con, data, store_id, 'restock_upstairs', pid, qty, d, notes
@@ -664,7 +663,7 @@ def adjust_stock():
     if err:
         con.close()
         return err
-    if _is_authoritative(con):
+    if _is_authoritative(con, store_id):
         try:
             return jsonify(_authoritative_stock_adapter(
                 con, data, store_id, 'adjust', pid, 0, d, notes,
@@ -785,7 +784,15 @@ def stock_summary():
         return err
     cur = con.cursor()
 
-    if _is_authoritative(con):
+    if store_code == 'ALL':
+        # All stores read the ledger only once every store with locations is live.
+        active = {row[0] for row in con.execute(
+            """SELECT DISTINCT l.store_id FROM inventory_locations l JOIN stores s ON s.id=l.store_id
+               WHERE l.is_active=1 AND s.is_active=1""")}
+        authoritative = bool(active) and active <= live_store_ids(con)
+    else:
+        authoritative = _is_authoritative(con, store_id)
+    if authoritative:
         if store_code == 'ALL':
             store_ids = [row['store_id'] for row in con.execute(
                 'SELECT store_id FROM inventory_access WHERE auth0_sub=?',
