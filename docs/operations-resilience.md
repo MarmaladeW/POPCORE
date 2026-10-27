@@ -68,7 +68,15 @@ With `--restore-db` it first copies the backup next to the live database, stops 
 
 ## Off-site database copy (Litestream)
 
-Litestream streams every change of `/root/POPCORE/popcore_app/popcore.db` to an S3-compatible bucket at most every 10 s, takes a full snapshot daily and keeps 30 days, so any moment of the last month can be restored. It uses about 20–60 MB of RAM.
+Litestream streams every change of `/root/POPCORE/popcore_app/popcore.db` to an S3-compatible bucket at most every 10 s, takes a full snapshot daily and keeps 30 days, so any moment of the last month can be restored (points more than about half an hour old are 15 minutes apart). It uses about 20–60 MB of RAM.
+
+The Backblaze B2 bucket and key:
+
+1. Buckets, Create a Bucket: a unique name, Files in Bucket are Private, Object Lock off.
+2. On the new bucket, Lifecycle Settings: Keep only the last version of the file. Litestream never rewrites a file, so older versions would only take space.
+3. The bucket's Endpoint, for example `s3.us-west-004.backblazeb2.com`, gives `LITESTREAM_ENDPOINT=https://s3.us-west-004.backblazeb2.com` and `LITESTREAM_REGION=us-west-004`.
+4. Application Keys, Add a New Application Key: access to that bucket only, Read and Write. Its keyID is `LITESTREAM_ACCESS_KEY_ID` and its applicationKey is `LITESTREAM_SECRET_ACCESS_KEY`; Backblaze shows the applicationKey only once.
+5. Caps & Alerts: daily caps of $0 for Class B and Class C transactions keep it free, and Backblaze emails at 75% and 100% of a cap. `litestream.yml` checks the bucket every 15 minutes. That keeps Litestream at about 550 LIST (Class C) requests a day, and about 1,000 once 30 days of history have built up, under the 2,500 that are free. Its defaults would make about 18,000 (measured with Litestream 0.5.17 against a local S3 server).
 
 Install (Litestream 0.5.14 or newer, see the [releases](https://github.com/benbjohnson/litestream/releases); 0.5.17 is on the droplet). The package leaves its service off, and it stays off until the bucket exists:
 
@@ -180,7 +188,7 @@ For phone pushes, add an HTTP monitor for the same URL every 5 minutes that aler
 | Item | Cost |
 |---|---|
 | Health check, deploy and rollback scripts, staging | $0 |
-| Litestream to R2 or B2 (database about 5 MB; well under 1 GB stored; at most one upload every 10 s) | $0 within the free tiers |
+| Litestream to R2 or B2 (database about 5 MB; well under 1 GB stored; at most one upload every 10 s; about 550–1,000 LIST requests a day) | $0 within the free tiers |
 | DigitalOcean weekly backups | 20% of the droplet price (about $1.20) |
 | GitHub Actions uptime check | $0 (public repository) |
 | Phone-push uptime monitor and heartbeat check (optional) | $0 on free plans; SMS is extra |

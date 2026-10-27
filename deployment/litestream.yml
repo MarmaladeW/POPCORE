@@ -14,6 +14,18 @@ snapshot:
   interval: 24h
   retention: 720h
 
+# How often Litestream checks the bucket. Each check lists a whole level's folder, and
+# Backblaze B2 gives 2,500 LIST requests (Class C) a day free. Litestream's defaults (L0
+# cleanup every 15 s, the first compaction level every 30 s) made about 18,000 a day when
+# measured with this file. Every 15 minutes it is about 550 a day at first and about 1,000
+# once 30 days of files have built up (one LIST returns at most 1,000 files). Changes still
+# upload every 10 s (sync-interval below), so at most about 10 s of writes is at risk.
+# Restore points more than about half an hour old are 15 minutes apart.
+l0-retention-check-interval: 15m
+levels:
+  - interval: 15m
+  - interval: 1h
+
 # Optional: Litestream calls this URL every 10 minutes while replication is healthy, so a
 # free check at healthchecks.io (or similar) can alert you when the calls stop. Empty = off.
 heartbeat-url: ${LITESTREAM_HEARTBEAT_URL}
