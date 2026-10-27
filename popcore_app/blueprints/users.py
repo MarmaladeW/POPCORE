@@ -13,6 +13,7 @@ def _is_valid_hex(color: str) -> bool:
     return bool(_HEX_RE.match(color))
 
 from db import get_db, HIDDEN_IMG_DIR
+from checkout_access import business_date
 from auth import (
     login_required, role_required,
     ROLE_HIERARCHY, AUTH0_MGMT_CLIENT_ID, AUTH0_MGMT_CLIENT_SECRET,
@@ -235,6 +236,16 @@ def update_user(uid):
         resp = _mgmt_patch(f'users/{uid_enc}', json=body)
         if not resp.ok:
             return jsonify({'error': resp.json().get('message', 'Update failed')}), 502
+    if 'is_active' in data:
+        # Blocking also ends POPCORE access at once (auth refuses inactive employees)
+        # and retires the calendar feed URL; unblocking restores access.
+        con = get_db()
+        if data['is_active']:
+            con.execute('UPDATE employees SET is_active = 1 WHERE auth0_id = ?', (uid,))
+        else:
+            con.execute('UPDATE employees SET is_active = 0, ical_token = NULL WHERE auth0_id = ?', (uid,))
+        con.commit()
+        con.close()
     return jsonify({'ok': True})
 
 
@@ -248,10 +259,29 @@ def delete_user(uid):
     if not resp.ok and resp.status_code != 404:
         return jsonify({'error': 'Delete failed'}), 502
     con = get_db()
-    con.execute('UPDATE employees SET is_active = 0 WHERE auth0_id = ?', (uid,))
+    # The employees row is kept, never deleted: its shifts stay on the schedule for reassignment.
+    con.execute('UPDATE employees SET is_active = 0, ical_token = NULL WHERE auth0_id = ?', (uid,))
     con.commit()
     con.close()
     return jsonify({'ok': True})
+
+
+@bp.route('/api/users/<string:uid>/future-shifts')
+@role_required('admin')
+def user_future_shifts(uid):
+    """Shifts from today on that stay assigned to this user, for the delete confirmation."""
+    con = get_db()
+    rows = con.execute('''
+        SELECT s.id, s.date, s.start_time, s.end_time,
+               COALESCE(st.code, '') AS store_code, COALESCE(st.name, '') AS store_name
+        FROM shifts s
+        JOIN employees e ON e.id = s.employee_id
+        LEFT JOIN stores st ON st.id = s.store_id
+        WHERE e.auth0_id = ? AND s.date >= ?
+        ORDER BY s.date, s.start_time
+    ''', (uid, business_date())).fetchall()
+    con.close()
+    return jsonify({'shifts': [dict(r) for r in rows]})
 
 
 @bp.route('/api/employees/stores')

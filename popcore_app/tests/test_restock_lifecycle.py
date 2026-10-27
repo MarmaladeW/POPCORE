@@ -108,3 +108,105 @@ class RestockLifecycleTests(ReceivingFixture):
                 )
                 self.assertEqual(response.status_code, 403, response.get_json())
                 self.assertEqual(response.get_json()['code'], 'inventory_forbidden')
+
+    def _act(self, action, key, version, lines, **extra):
+        return self.client.post(
+            f'/api/restock/session/{self.session_id}/{action}',
+            headers={**self.headers(), 'Idempotency-Key': key},
+            json={'expected_version': version, 'lines': lines, **extra},
+        )
+
+    def _balances(self):
+        with closing(self.connect()) as con:
+            return {(r['product_id'], r['location_id'], r['disposition']): r['quantity']
+                    for r in con.execute(
+                        'SELECT product_id, location_id, disposition, quantity FROM inventory_balances')}
+
+    def test_confirming_the_pick_again_cannot_dispatch_more_than_was_found(self):
+        with closing(self.connect()) as con:
+            con.execute('UPDATE restock_items SET requested_qty=10 WHERE session_id=?',
+                        (self.session_id,))
+            con.commit()
+        first = self._act('pick', 'confirm-pick-1', 1, [{'line_no': 1, 'quantity': 4}])
+        self.assertEqual(first.status_code, 200, first.get_json())
+        # The refreshed sheet offered 确认拣货 again, with a new key and the new version.
+        again = self._act('pick', 'confirm-pick-2', 2, [{'line_no': 1, 'quantity': 4}])
+        self.assertEqual(again.status_code, 409, again.get_json())
+        self.assertEqual(again.get_json()['code'], 'delivery_quantity_conflict')
+        one_more = self._act('pick', 'confirm-pick-3', 2, [{'line_no': 1, 'quantity': 1}])
+        self.assertEqual(one_more.status_code, 409, one_more.get_json())
+        balances = self._balances()
+        self.assertEqual(balances[(self.product_id, self.back, 'saleable')], 6)
+        self.assertEqual(balances[(self.product_id, self.back, 'transit')], 4)
+        line = self.client.get(f'/api/restock/session/{self.session_id}',
+                               headers=self.headers()).get_json()['delivery']['lines'][0]
+        self.assertEqual((line['dispatched_quantity'], line['outstanding_transit']), (4, 4))
+
+    def test_dispatch_into_a_short_closed_quantity_is_a_conflict(self):
+        with closing(self.connect()) as con:
+            other = con.execute(
+                """INSERT INTO products (sku, name_cn_en, jizhanming, product_type,
+                                         stock_form, stock_unit, identity_status)
+                   VALUES ('TEST-2', 'Second', 'Second', 'ordinary', 'ordinary', 'piece', 'verified')"""
+            ).lastrowid
+            con.execute(
+                """INSERT INTO inventory_balances (product_id, location_id, disposition, quantity, version)
+                   VALUES (?, ?, 'saleable', 5, 1)""", (other, self.back))
+            con.execute(
+                """INSERT INTO restock_items (session_id, product_id, requested_qty, found_qty, pick_status)
+                   VALUES (?, ?, 2, 2, 'found')""", (self.session_id, other))
+            con.commit()
+        steps = (
+            ('pick', 1, [{'line_no': 1, 'quantity': 2}, {'line_no': 2, 'quantity': 2}], {}),
+            ('receive', 2, [{'line_no': 1, 'quantity': 2}], {}),
+            # Line 1 asked for 5: 2 arrived, the other 3 are closed short. Line 2 is still in transit.
+            ('short-close', 3, [{'line_no': 1, 'quantity': 3}], {'reason': 'Rest not on the shelf'}),
+        )
+        for number, (action, version, lines, extra) in enumerate(steps, 1):
+            response = self._act(action, f'short-{number}', version, lines, **extra)
+            self.assertEqual(response.status_code, 200, response.get_json())
+        before = self._balances()
+        late = self._act('pick', 'short-late-pick', 4, [{'line_no': 1, 'quantity': 2}])
+        self.assertEqual(late.status_code, 409, late.get_json())
+        self.assertEqual(late.get_json()['code'], 'delivery_quantity_conflict')
+        self.assertEqual(self._balances(), before)
+
+    def test_refused_first_pick_leaves_no_delivery_and_the_sheet_stays_editable(self):
+        with closing(self.connect()) as con:
+            con.execute(
+                """UPDATE inventory_balances SET quantity=2
+                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+                (self.product_id, self.back))
+            item_id = con.execute('SELECT id FROM restock_items WHERE session_id=?',
+                                  (self.session_id,)).fetchone()[0]
+            con.commit()
+        refused = self._act('pick', 'refused-first-pick', 1, [{'line_no': 1, 'quantity': 4}])
+        self.assertEqual(refused.status_code, 409, refused.get_json())
+        self.assertEqual(refused.get_json()['code'], 'insufficient_stock')
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM inventory_deliveries').fetchone()[0], 0)
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM operation_requests').fetchone()[0], 0)
+        corrected = self.client.patch(f'/api/restock/items/{item_id}/pick', headers=self.headers(),
+                                      json={'pick_status': 'found', 'found_qty': 2})
+        self.assertEqual(corrected.status_code, 200, corrected.get_json())
+        deleted = self.client.delete(f'/api/restock/session/{self.session_id}', headers=self.headers())
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+
+    def test_public_restock_complete_refuses_a_sheet_whose_goods_are_in_transit(self):
+        picked = self._act('pick', 'transit-pick', 1, [{'line_no': 1, 'quantity': 4}])
+        self.assertEqual(picked.status_code, 200, picked.get_json())
+        before = self._balances()
+        command = self.client.post('/api/inventory/commands', headers={
+            **self.headers(), 'Idempotency-Key': 'restock-complete-command'}, json={
+            'kind': 'restock_complete', 'business_date': '2026-09-08',
+            'source_type': 'restock_session', 'source_id': str(self.session_id),
+            'lines': [{'product_id': self.product_id, 'unit': 'piece', 'quantity': 4,
+                       'from_location_id': self.back, 'from_disposition': 'saleable',
+                       'to_location_id': self.floor, 'to_disposition': 'saleable',
+                       'expected_versions': {'from': 2, 'to': 0}}]})
+        self.assertEqual(command.status_code, 409, command.get_json())
+        self.assertEqual(command.get_json()['code'], 'delivery_receipt_required')
+        self.assertEqual(self._balances(), before)
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT status FROM restock_sessions WHERE id=?',
+                                         (self.session_id,)).fetchone()[0], 'picking')

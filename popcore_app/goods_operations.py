@@ -446,7 +446,9 @@ def cancel_receipt(con, receipt_id, data, *, actor, request_key):
         raise
 
 
-def create_delivery(con, data, *, actor, request_key, kind='transfer'):
+def create_delivery(con, data, *, actor, request_key, kind='transfer', commit=True):
+    """Plan a delivery. With ``commit=False`` the write transaction stays open for
+    the caller's first action (see ``act_on_delivery``), which commits or rolls back both."""
     if kind not in {'transfer', 'restock'}:
         raise InventoryValidationError('delivery kind is invalid')
     source = _location(con, data.get('source_location_id'))
@@ -502,7 +504,8 @@ def create_delivery(con, data, *, actor, request_key, kind='transfer'):
     try:
         key, digest, prior = _replay(con, request_key, 'delivery_create', actor, intent)
         if prior:
-            con.commit()
+            if commit:
+                con.commit()
             return prior
         cur = con.execute(
             """INSERT INTO inventory_deliveries
@@ -525,7 +528,8 @@ def create_delivery(con, data, *, actor, request_key, kind='transfer'):
             )
         response = {'id': delivery_id, 'version': 1, 'status': 'planned'}
         _remember(con, key, 'delivery_create', delivery_id, actor, digest, response)
-        con.commit()
+        if commit:
+            con.commit()
         return response
     except Exception:
         if con.in_transaction:
@@ -604,7 +608,10 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
         'expected_version': expected_version, 'lines': requested,
         'reason': (data.get('reason') or '').strip() or None,
     }
-    _begin(con)
+    # A restock's first action joins the transaction that created its delivery
+    # (create_delivery with commit=False), so a refused action leaves no delivery behind.
+    if not con.in_transaction:
+        _begin(con)
     try:
         current = delivery_detail(con, delivery_id, actor=actor)
         key, digest, prior = _replay(
@@ -629,8 +636,19 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
             outstanding = (row['dispatched_quantity'] - row['received_quantity']
                            - row['returned_quantity'] - row['loss_quantity'])
             if action == 'dispatch':
-                if quantity > row['requested_quantity'] - row['dispatched_quantity']:
+                if quantity > (row['requested_quantity'] - row['dispatched_quantity']
+                               - row['short_quantity']):
                     raise InventoryConflict('Dispatch exceeds requested quantity', 'delivery_quantity_conflict')
+                if current['kind'] == 'restock':
+                    # A restock sheet carries down only what its pick found, however often 确认拣货 is pressed.
+                    found = con.execute(
+                        """SELECT found_qty FROM restock_items
+                           WHERE session_id=? AND product_id=? AND pick_status='found'""",
+                        (current['restock_session_id'], row['product_id']),
+                    ).fetchone()
+                    if row['dispatched_quantity'] + quantity > ((found['found_qty'] or 0) if found else 0):
+                        raise InventoryConflict('Dispatch exceeds the found quantity',
+                                                'delivery_quantity_conflict')
                 source_balance = _balance(con, row['product_id'], source['id'], 'saleable')
                 transit_balance = _balance(con, row['product_id'], source['id'], 'transit')
                 ledger_lines.append({

@@ -3,9 +3,10 @@ import { Alert, Button, Input } from 'antd'
 import { CheckCircleOutlined } from '@ant-design/icons'
 import Icon from '../../components/pc/Icon'
 import { formatCents } from '../../lib/money'
-import { convertCadCentsToCnyFen } from '../../lib/checkoutPricing'
+import { cashRest, convertCadCentsToCnyFen } from '../../lib/checkoutPricing'
 import useCheckoutMutation from './useCheckoutMutation'
 import { cnyCharged } from './checkoutHistory'
+import BoxChoices from './BoxChoices'
 import { cardPart, centsOrNull, groupLines, POPCORE_TENDERS, reviewTitle, splitInstruction, stateTone, writebackStatus } from './cloverOrderView'
 import { cnyMoney, electronic, label, methods, OrderNotes, PhotoCapture, RefundTools, TakeBack, TenderLabel, type Draft, type DraftUpdate, type Order } from './checkoutParts'
 
@@ -32,13 +33,19 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
   const plan=splitMode==='card'?'split_card':'pay'
   const quote=collect?(plan==='split_card'?collect.split_card:collect.pay):null
   const typedCard=collect&&splitMode==='card'&&!cardLanded&&!popcoreIn?cardPart(draft.split,collect.split_card.due_cents):null
-  let amount:number|null=null
-  if(collect&&quote){
-    if(splitMode==='card')amount=cardLanded?quote.rest_cents:popcoreIn?null:typedCard?.cents?collect.split_card.due_cents-typedCard.cents:null
-    else if(splitMode==='tenders'){const part=centsOrNull(draft.split);amount=part!==null&&part<=quote.rest_cents?part:null}
-    else amount=quote.rest_cents
-  }
   const tender=draft.tender, cny=tender==='wechat'||tender==='alipay'
+  // Cash is rounded to 5¢, because Canada has no pennies; every other tender pays the rest exactly.
+  const cash=tender==='cash'
+  const rest=quote?(cash?quote.cash_rest_cents??quote.rest_cents:quote.rest_cents):0
+  let amount:number|null=null, oddCash=false
+  if(collect&&quote){
+    if(splitMode==='card'){
+      const left=typedCard?.cents?collect.split_card.due_cents-typedCard.cents:null
+      amount=cardLanded?rest:popcoreIn?null:left===null?null:cash?cashRest(left):left
+    }
+    else if(splitMode==='tenders'){const part=centsOrNull(draft.split);oddCash=cash&&part!==null&&part%5!==0&&part!==rest;amount=part!==null&&part<=rest&&!oddCash?part:null}
+    else amount=rest
+  }
   const fen=cny&&amount?convertCadCentsToCnyFen(amount,cnyPerCad):null
   const ready=!busy&&!!quote&&POPCORE_TENDERS.includes(tender as typeof POPCORE_TENDERS[number])&&!!amount&&(!cny||fen!==null)
   const receive=()=>{if(ready&&quote&&amount)run('receive',{tender,amount_cents:amount,plan,expected_version:order.version,expected_due_cents:quote.due_cents,...(cny?{cny_fen:fen,cny_per_cad:cnyPerCad}:{})})}
@@ -48,7 +55,7 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
   const payments=order.attempts.filter(a=>a.status==='completed')
   const saving=total!==null&&quote&&quote.due_cents<total?quote:null
   const tenderPicker=(withPrices:boolean)=><fieldset className="co-methods" disabled={busy}><legend>{withPrices?'付款方式 How is the customer paying?':'收余款 Collect the rest by'}</legend><div>
-    {tenderButtons.flatMap((m,i)=>[<button key={m.value} type="button" aria-pressed={tender===m.value} onClick={()=>setDraft({tender:m.value})}><TenderLabel method={m} amount={withPrices&&quote?formatCents(quote.rest_cents):undefined}/></button>,
+    {tenderButtons.flatMap((m,i)=>[<button key={m.value} type="button" aria-pressed={tender===m.value} onClick={()=>setDraft({tender:m.value})}><TenderLabel method={m} amount={withPrices&&quote?formatCents(m.value==='cash'?quote.cash_rest_cents??quote.rest_cents:quote.rest_cents):undefined}/></button>,
       ...(i===0&&withPrices&&collect?[<button key="card" type="button" aria-pressed={tender==='card'} disabled={clover.card_blocked} onClick={()=>setDraft({tender:'card'})}><TenderLabel method={methods[1]} amount={formatCents(collect.card.rest_cents)}/></button>]:[])])}
     {withPrices&&<button type="button" aria-label="Split payment" onClick={()=>chooseSplit('card')}><span className="co-method-zh">拆单</span> <span className="co-method-en">Split w/ card</span><small>—</small></button>}
   </div>{clover.card_blocked&&withPrices&&<p className="co-muted">Card is off: a cash price is already entered on this Clover order.</p>}</fieldset>
@@ -71,13 +78,15 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
     {clover.delete_pending&&<Alert type="warning" showIcon message="Still open on Clover" description="Cancelled in POPCORE. POPCORE deletes it on Clover as soon as Clover answers." action={clover.can_retry&&<Button disabled={busy} onClick={()=>run('clover-retry')}>Retry</Button>}/>}
     <ul className="co-items">{groupLines(clover.lines).map(line=><li key={line.key}><span className="co-quantity">{line.quantity}×</span><span className="co-line-name">{line.name}{line.mapped?line.product_name&&line.product_name!==line.name&&<small className="co-muted"> · {line.product_name}</small>:<small className="co-unmapped"> · Not matched to a POPCORE product</small>}</span><span className="co-line-price">{formatCents(line.unit_price_cents)}</span></li>)}</ul>
     {!!clover.discounts.length&&<ul className="co-clover-discounts">{clover.discounts.map((d,i)=><li key={i}><span>{d.name}{d.popcore&&<small className="co-muted"> · added by POPCORE</small>}</span><span>{d.percentage!=null?`−${d.percentage}%`:formatCents(d.amount_cents)}</span></li>)}</ul>}
+    {!clover.lines.length&&<p className="co-instruction">No items on Clover: a custom amount. Once it is paid, a manager matches it to products on its sale page, or records it as a charge without stock.</p>}
     <dl className="co-original"><div><dt>Clover total</dt><dd>{total===null?'Pending':formatCents(total)}</dd></div>{order.status==='completed'&&clover.due_cents!==null&&<div><dt>Customer paid</dt><dd>{formatCents(clover.due_cents)}</dd></div>}</dl>
 
+    {open&&!!order.box_choices?.length&&<BoxChoices questions={order.box_choices} required={!!order.box_choice_required} disabled={busy||!order.can_choose_boxes} answer={body=>run('boxes',{expected_version:order.version,...body})}/>}
     {clover.can_receive&&collect&&quote&&<section className="co-clover-pay" aria-label="Payment">
       {splitMode===''&&<>
         {tenderPicker(true)}
         {tender==='card'?<p className="co-instruction">Take <strong>{formatCents(collect.card.rest_cents)}</strong> by card on Clover: {popcoreIn||cardLanded?splitInstruction(collect.card.rest_cents):clover.started_in_popcore?<>Orders → <strong>{order.reference}</strong> → Add Payment → Card</>:'Pay → Card'}. POPCORE records the sale when Clover confirms it.</p>
-          :tender&&<div className="co-collect"><span>应收 Collect</span><strong>{formatCents(quote.rest_cents)}</strong>{saving&&<small>{saving.label} {off(total!-saving.due_cents)} · Clover total {formatCents(total)}</small>}</div>}
+          :tender&&<div className="co-collect"><span>应收 Collect</span><strong>{formatCents(rest)}</strong>{(saving||rest!==quote.rest_cents)&&<small>{[saving&&`${saving.label} ${off(total!-saving.due_cents)}`,rest!==quote.rest_cents&&`Cash rounded to 5¢ ${rest<quote.rest_cents?'−':'+'}${formatCents(Math.abs(rest-quote.rest_cents))}`,`Clover total ${formatCents(total)}`].filter(Boolean).join(' · ')}</small>}</div>}
         {received}
       </>}
       {splitMode==='card'&&<>
@@ -95,13 +104,13 @@ export default function CloverOrder({order,draft,setDraft,updated,refresh,onBusy
       {splitMode==='tenders'&&<>
         <div className="co-section-title"><h3>Split between tenders</h3><span>{formatCents(quote.rest_cents)} left{saving?` · ${saving.label} ${off(total!-saving.due_cents)}`:''}</span></div>
         <label className="co-card-part">Collect now (CAD)<Input inputMode="decimal" value={draft.split} disabled={busy} onChange={e=>setDraft({split:e.target.value})}/></label>
-        {centsOrNull(draft.split)!==null&&amount===null&&<p className="co-unmapped" role="alert">Enter at most {formatCents(quote.rest_cents)}.</p>}
+        {centsOrNull(draft.split)!==null&&amount===null&&<p className="co-unmapped" role="alert">{oddCash?`Cash is counted in 5¢ steps: enter at most ${formatCents(rest)}.`:`Enter at most ${formatCents(rest)}.`}</p>}
         {tenderPicker(false)}{received}
         <div className="co-action-pair"><Button type="link" disabled={busy} onClick={()=>chooseSplit('card')}>Split with card</Button><Button type="link" disabled={busy} onClick={()=>chooseSplit('')}>No split</Button></div>
       </>}
     </section>}
 
-    {open&&!clover.can_receive&&!clover.can_claim&&<p className="co-muted">{clover.review?'A manager resolves this order before more money is recorded.':total===null?'Waiting for Clover’s total.':`View only. ${clover.register?'Recording payments needs an assigned shift at this location today.':`${order.cashier_name} has this order.`}`}</p>}
+    {open&&!clover.can_receive&&!clover.can_claim&&!order.box_choice_required&&<p className="co-muted">{clover.review?'A manager resolves this order before more money is recorded.':total===null?'Waiting for Clover’s total.':`View only. ${clover.register?'Recording payments needs an assigned shift at this location today.':`${order.cashier_name} has this order.`}`}</p>}
     {!!payments.length&&<section className="co-receipts"><h3>Payments</h3>{payments.map(a=><div key={a.id} className="co-receipt"><p><span>{label(a.tender)}<small className="co-muted"> · {a.origin==='clover'?'on Clover':clover.writeback.mode==='pay'&&clover.writeback.state==='done'?'recorded in POPCORE · on Clover':'recorded in POPCORE'}</small></span><strong>{formatCents(a.amount_cents)}</strong></p>{cnyCharged(a)&&<small className="co-receipt-cny">{cnyCharged(a)}</small>}{clover.undo_attempt_ids.includes(a.id)&&<TakeBack attempt={a} disabled={busy} run={body=>run('undo',body)}/>}</div>)}</section>}
     {photoAttempts.map(attempt=><PhotoCapture key={attempt.id} disabled={busy} primary={attempt.id===photoAttempts.find(a=>a.can_upload&&!a.photos.length)?.id} order={order} attempt={attempt} draft={draft} setDraft={setDraft} updated={refresh} onBusy={value=>setPhotoStates(old=>({...old,[attempt.id]:value}))}/>)}
     {finishedHere&&!clover.started_in_popcore&&clover.writeback.mode==='label'&&!['PAID','DELETED'].includes(clover.state)&&<p className="co-instruction">On Clover: {clover.clover_cents?<>tap <strong>Pay more later</strong></>:<>tap <strong>Review Order</strong>, then <strong>Save</strong></>} to clear the screen. The order stays open there, labelled paid.</p>}

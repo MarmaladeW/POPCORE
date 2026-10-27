@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import async_playwright, expect
 
@@ -201,6 +201,119 @@ async def checks(browser):
     await context.close()
 
 
+async def stock_dialog_checks(browser):
+    """Legacy 库存操作 dialog: one product's operation, location or picked product never carries to the next."""
+    def legacy_api(path, query, request):
+        if path == '/api/stock/summary':
+            return {**api_payload(path, query, request), 'mode': 'legacy', 'complete': False}
+        if path.startswith('/api/stock/') and request.method == 'POST':
+            return {'ok': True, 'upstairs_qty': 0, 'instore_qty': 4}
+        return api_payload(path, query, request)
+    state = {'mode': 'data', 'api_payload': legacy_api, 'get_status_for_path': {
+        '/api/inventory/locations': (403, {'error': 'Inventory access denied'}),
+        '/api/inventory/balances': (403, {'error': 'Inventory access denied'}),
+    }}
+    context, page = await context_with_api(browser, state)
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE + '/stock/products')
+    await expect(page.get_by_text('Legacy inventory view', exact=True)).to_be_visible()
+    dialog = page.locator('.ant-modal').filter(has_text='库存操作')
+    quantities = dialog.locator('.ant-input-number-input')
+
+    # Random Box: a manual correction of the in-store count to 4 boxes (端数 0, 散盒 4).
+    await page.get_by_role('row').filter(has_text='Random Box').get_by_role('button', name='Adjust').click()
+    await dialog.locator('.ant-select-selector').first.click()
+    await page.locator('.ant-select-item-option[title="手动调整"]').click()
+    await dialog.locator('.ant-select-selection-item[title="楼上"]').click()   # the location select
+    await page.locator('.ant-select-item-option[title="店内"]').click()
+    await quantities.nth(1).fill('4')
+    await dialog.get_by_role('button', name='提交').click()
+    await dialog.get_by_role('button', name='完成').click()
+    await expect(dialog).to_have_count(0)
+
+    # Sealed Set, later: the dialog opens on 入库（楼上） again, so receiving 6 boxes is not an absolute in-store set.
+    await page.get_by_role('row').filter(has_text='Sealed Set').get_by_role('button', name='Adjust').click()
+    await expect(dialog.locator('.ant-select-selection-item').first).to_have_text('入库（楼上）')
+    await expect(dialog.get_by_text('店内', exact=True)).to_have_count(0)
+    await quantities.nth(1).fill('6')
+    await dialog.get_by_role('button', name='提交').click()
+    await dialog.get_by_role('button', name='完成').click()
+
+    # A product picked in the search box survives the Stock page re-rendering behind the dialog.
+    await page.get_by_role('row').filter(has_text='Random Box').get_by_role('button', name='Adjust').click()
+    search = dialog.locator('.ant-select-auto-complete input')
+    await search.fill('Sealed')
+    await page.locator('.ant-select-item-option').filter(has_text='Sealed Set (SET-1)').last.click()
+    await expect(search).to_have_value('Sealed Set (SET-1)')
+    await page.set_viewport_size({'width': 700, 'height': 800})   # the page switches to its phone layout
+    await page.wait_for_timeout(300)
+    await expect(search).to_have_value('Sealed Set (SET-1)')
+    await quantities.nth(1).fill('3')
+    await dialog.get_by_role('button', name='提交').click()
+    await expect(dialog.get_by_role('button', name='完成')).to_be_visible()
+
+    posts = [(r['path'], r.get('post_data')) for r in state['requests'] if r['method'] == 'POST']
+    assert [path for path, _ in posts] == ['/api/stock/adjust', '/api/stock/restock_upstairs', '/api/stock/restock_upstairs'], posts
+    assert posts[0][1]['product_id'] == 2 and posts[0][1]['location'] == 'instore' and posts[0][1]['new_qty'] == 4, posts[0]
+    assert posts[1][1]['product_id'] == 3 and posts[1][1]['qty'] == 6, posts[1]
+    assert posts[2][1]['product_id'] == 3 and posts[2][1]['qty'] == 3, posts[2]
+    await context.close()
+
+
+async def product_detail_checks(browser):
+    """A late or failed product load never shows, or fills an edit form with, another product's facts."""
+    state = {'mode': 'data', 'api_payload': api_payload}
+    context, page = await context_with_api(browser, state)
+    slow = {'/api/products/2/inventory-identity': 1.5, '/api/products/3/inventory-identity': 1.0, '/api/products/4': 2.0}
+    async def delayed(route):
+        path = urlparse(route.request.url).path
+        if path == '/api/products/3' and route.request.method == 'GET':   # the set lists Design A as a sub-item
+            body = api_payload(path, '', route.request)
+            body['sub_items'] = [{'id': 4, 'sku': 'DESIGN-A', 'jizhanming': 'Design A', 'name_cn_en': 'Design A',
+                                  'stock_form': 'confirmed_design', 'design_name': 'A', 'price': 18}]
+            await route.fulfill(json=body)
+            return
+        await asyncio.sleep(slow.get(path, 0))
+        await route.fallback()
+    await page.route('**/api/products/**', delayed)
+    await page.goto(BASE + '/products')
+    table = page.locator('.ant-table')
+    pane = page.get_by_role('complementary', name='Product detail')
+    modal = page.locator('.ant-modal').filter(has_text='Edit Product')
+
+    # Random Box's edit dialog is closed before its inventory identity answers.
+    await table.get_by_text('Random Box', exact=True).first.click()
+    await pane.get_by_role('button', name='编辑 Edit').click()
+    await expect(modal.get_by_label('SKU')).to_have_value('RANDOM-1')
+    await modal.get_by_role('button', name='Cancel').click()
+    # Sealed Set's dialog: an identity field typed before its own identity answers is kept, and Random Box's
+    # late answer never reaches this form.
+    await table.get_by_text('Sealed Set', exact=True).first.click()
+    await pane.get_by_role('button', name='编辑 Edit').click()
+    await expect(modal.get_by_label('SKU')).to_have_value('SET-1')
+    await modal.get_by_label('Confirmed Design Name').fill('Typed while loading')
+    await page.wait_for_timeout(2000)
+    await expect(modal.get_by_label('SKU')).to_have_value('SET-1')
+    await expect(modal.locator('.ant-form-item').filter(has_text='Stock Form').locator('.ant-select-selection-item')).to_have_text('Sealed set')
+    await expect(modal.get_by_label('Confirmed Design Name')).to_have_value('Typed while loading')
+    await modal.get_by_role('button', name='Cancel').click()
+    assert not [r for r in state['requests'] if r['method'] != 'GET'], 'no product was saved'
+
+    # Phone sheet: opening a sub-item hides the set's facts and Edit button until the sub-item has loaded.
+    await page.set_viewport_size({'width': 390, 'height': 844})
+    await page.reload()
+    await page.get_by_text('Sealed Set', exact=True).first.click()
+    sheet = page.get_by_role('dialog')
+    await expect(sheet.get_by_text('SET-1', exact=True)).to_be_visible()
+    await sheet.get_by_role('button', name='A', exact=True).click()
+    await expect(sheet.get_by_text('Product Detail', exact=True)).to_be_visible()   # while Design A loads
+    await expect(sheet.get_by_text('SET-1', exact=True)).to_have_count(0)
+    await expect(sheet.get_by_role('button', name='编辑 Edit')).to_have_count(0)
+    await expect(sheet.locator('.pc-prod-name small')).to_have_text('DESIGN-A')
+    await expect(sheet.get_by_role('button', name='编辑 Edit')).to_be_visible()
+    await context.close()
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
@@ -218,6 +331,8 @@ async def main():
             browser = await pw.chromium.launch(headless=True)
             try:
                 await checks(browser)
+                await stock_dialog_checks(browser)
+                await product_detail_checks(browser)
             except Exception:
                 for context in browser.contexts:
                     if context.pages:

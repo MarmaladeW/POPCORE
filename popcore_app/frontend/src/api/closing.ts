@@ -16,7 +16,9 @@ export interface ClosingSession {
     opening_cash_cents: number
     verified_cash_receipts_cents: number
     expected_drawer_cents: number
-    unknown_cash_payment_ids: number[]
+    /** Managers only: staff get the day's totals without payment references. */
+    unknown_cash_payment_ids?: number[]
+    /** Includes cash refunded on sales that day, whichever day the sale was. */
     event_totals_cents: Record<'paid_in'|'refund'|'payout'|'removal',number>
   }
   latest_cash_count?: {
@@ -47,6 +49,7 @@ export interface ClosingSession {
   late_adjustments?: Array<{id:number;source_type:string;source_id:string;reason:string;created_at?:string}>
   actionable_blockers?: string[]
   issue_targets?: Record<string, {href: string; label?: string}>
+  /** For staff, a code they cannot act on and open has no id: `checkout_unresolved`, a label only. */
   hard_blockers?: string[]
   review_exceptions?: string[]
   source_documents?: {

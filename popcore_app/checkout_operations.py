@@ -7,12 +7,12 @@ from zoneinfo import ZoneInfo
 import clover_pricing as pricing
 import exchange_rates
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
-from checkout_access import require_checkout
+from checkout_access import REGISTER_SUB, require_checkout
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryConflict, InventoryValidationError
 from sales_operations import (
     TENDERS, _create_sale_in_transaction, _optional_cents, _post_sale_in_transaction,
-    _sale_input, _sale_row, record_late_adjustment,
+    _sale_input, _sale_row, box_choice_fields, box_options, needs_box_choice, record_late_adjustment, set_size,
 )
 from validation import read_date, read_int
 
@@ -103,7 +103,124 @@ def checkout_detail(con, checkout_id, actor):
         if row['clover']['register']:
             row['cashier_name'] = row['clover']['register_name']
         row['remaining_cents'] = row['clover']['remaining_cents']
+    is_open = row['status'] == 'open' and not row['abandoned_reason']
+    row['box_choices'] = box_choices(con, row) if is_open else []
+    row['box_choice_required'] = any(choice['choice'] is None for choice in row['box_choices'])
+    row['can_choose_boxes'] = writable and is_open and (
+        row['created_by'] in (actor['sub'], REGISTER_SUB if row['clover'] else None) or manager(actor))
+    if row['box_choice_required']:  # no money is recorded until the cashier says where the boxes came from
+        for block in (row['pricing'], row['clover']):
+            if block:
+                block['can_receive'] = False
     return row
+
+
+# ── Blind boxes over half a set ──────────────────────────────────────────────
+# Owner, 2026-10-27: more than half a set of blind boxes came from a new sealed set (开新端), a set
+# already opened on the floor (已开的端) or loose boxes (散盒). The cashier says which before payment;
+# the sale then opens that set, takes from that opened set, or takes loose boxes only.
+
+BOX_CHOICES = ('fresh_set', 'open_set', 'loose')
+
+
+def _floor_id(con, store_id):
+    row = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor' AND is_active=1",
+                      (store_id,)).fetchone()
+    if row is None:
+        raise InventoryConflict('Store floor location is missing', 'inventory_store_missing')
+    return row['id']
+
+
+def _line_choice(line):
+    return ('open_set' if line.get('open_set_id') else 'fresh_set' if line.get('fresh_set_product_id')
+            else 'loose' if line.get('loose_boxes') else None)
+
+
+def box_choices(con, row):
+    """The order's blind-box lines over half a set, each with the cashier's answer and the options on hand."""
+    floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor' AND is_active=1",
+                        (row['store_id'],)).fetchone()
+    floor = floor['id'] if floor else None
+    result = []
+    for line in row['order']['lines']:
+        if line.get('stock_form_snapshot') != 'random_box' or line.get('product_id') is None:
+            continue
+        size = set_size(con, line['product_id'])
+        if size is None or line['quantity'] <= size // 2:
+            continue
+        result.append({'product_id': line['product_id'], 'from_display': line['location_id'] != floor,
+                       'name': line['product_name_snapshot'], 'quantity': line['quantity'], 'set_size': size,
+                       'choice': _line_choice(line), 'open_set_id': line.get('open_set_id'),
+                       'options': box_options(con, line['product_id'], line['location_id'])})
+    return result
+
+
+def missing_box_choice(con, intent):
+    return any(needs_box_choice(con, line) for line in intent['lines'])
+
+
+def require_box_choice(con, intent):
+    if missing_box_choice(con, intent):
+        raise InventoryConflict('Say where the blind boxes came from before taking payment', 'box_choice_required')
+
+
+def choose_boxes(con, checkout_id, data, actor, request_key):
+    """Record where an order's blind boxes came from, for a manual or a Clover order."""
+    product_id = read_int(data.get('product_id'), 'product_id', minimum=1)
+    expected = read_int(data.get('expected_version'), 'expected_version', minimum=1)
+    choice, from_display = data.get('choice'), data.get('from_display', False)
+    if choice not in BOX_CHOICES or not isinstance(from_display, bool):
+        raise InventoryValidationError('Choose a new sealed set, an opened set or loose boxes')
+    if from_display and choice != 'loose':
+        raise InventoryValidationError('A display piece is sold on its own, not from a set')
+    row = checkout_row(con, checkout_id, actor)
+    require_checkout(con, row, actor, write=True)
+    clover = is_clover(con, row['id'])
+    if row['created_by'] != actor['sub'] and not manager(actor) and not (clover and row['created_by'] == REGISTER_SUB):
+        raise PermissionError('Checkout cashier access denied')
+    _begin(con)
+    try:
+        key, digest, prior = _replay(con, request_key, 'checkout_boxes', actor, {**data, 'checkout_id': row['id']})
+        if prior:
+            con.commit()
+            return checkout_detail(con, row['id'], actor)
+        current = con.execute('SELECT * FROM checkout_orders WHERE id=?', (row['id'],)).fetchone()
+        if current['status'] != 'open' or current['abandoned_reason'] or current['version'] != expected:
+            raise InventoryConflict('Checkout changed. Refresh before continuing.', 'checkout_state_conflict')
+        if clover and current['created_by'] == REGISTER_SUB:
+            from clover_checkout import _claim  # avoids a circular import
+            _claim(con, row['id'], actor, inside=True)  # like taking payment, answering picks the order up
+        elif current['created_by'] != actor['sub'] and not manager(actor):
+            raise PermissionError('Checkout cashier access denied')
+        intent = json.loads(current['payload'])
+        floor = _floor_id(con, current['store_id'])
+        line = next((line for line in intent['lines'] if line.get('product_id') == product_id
+                     and line.get('stock_form_snapshot') == 'random_box'
+                     and (line['location_id'] != floor) == from_display), None)
+        options = box_options(con, product_id, floor)
+        if line is None or options is None:
+            raise InventoryValidationError('This order has no blind box of a sealed set like that')
+        if choice == 'fresh_set' and options['fresh_set'] is None:
+            raise InventoryValidationError('This blind box has no sealed set to open')
+        raw = ({'loose_boxes': True} if choice == 'loose' else {'open_set_id': data.get('open_set_id')}
+               if choice == 'open_set' else {'fresh_set': {name: options['fresh_set'][name] for name in
+                                                            ('product_id', 'conversion_id', 'conversion_factor')}})
+        if choice == 'open_set':
+            read_int(raw['open_set_id'], 'open_set_id', minimum=1)
+        product = con.execute('SELECT id, stock_form FROM products WHERE id=?', (product_id,)).fetchone()
+        for field in ('open_set_id', 'fresh_set_product_id', 'fresh_set_conversion_id', 'fresh_set_conversion_factor',
+                      'fresh_set_balance_version', 'loose_boxes'):
+            line.pop(field, None)
+        line.update(box_choice_fields(con, product, raw, floor))
+        con.execute('UPDATE checkout_orders SET payload=?,version=version+1 WHERE id=?', (json.dumps(intent), row['id']))
+        record_late_adjustment(con, current['store_id'], current['business_date'], 'checkout', row['id'],
+                               'Checkout changed after store-day close', actor['sub'])
+        _remember(con, key, 'checkout_boxes', row['id'], actor, digest, {'id': row['id']})
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return checkout_detail(con, row['id'], actor)
 
 
 def checkout_funds(con, store_id, start_date, end_date=None):
@@ -229,14 +346,27 @@ def manual_due(summary, *, card_cents, other_cents, plan):
 
 
 def _manual_money(con, checkout_id):
-    card = other = 0
+    """(card, every other tender, of which cash) received on a manual order."""
+    card = other = cash = 0
     for attempt in con.execute("SELECT tender,amount_cents FROM checkout_attempts WHERE checkout_id=? AND status='completed'",
                                (checkout_id,)):
         if attempt['tender'] == 'card':
             card += attempt['amount_cents']
         else:
             other += attempt['amount_cents']
-    return card, other
+            cash += attempt['amount_cents'] if attempt['tender'] == 'cash' else 0
+    return card, other, cash
+
+
+def cash_amount_limit(tender, amount, due, *, cash_cents, received_cents):
+    """The most this payment may be. Cash pays what the other tenders leave rounded to 5¢ (Canada has
+    no pennies) and is counted in 5¢ steps; every other tender is exact."""
+    if tender != 'cash':
+        return due - received_cents
+    limit = pricing.cash_limit(due, cash_cents=cash_cents, other_cents=received_cents - cash_cents)
+    if amount % 5 and amount != limit:
+        raise InventoryValidationError(f'Cash is rounded to 5¢: collect ${limit / 100:.2f}, or an amount in 5¢ steps')
+    return limit
 
 
 def manual_block(row, actor):
@@ -244,9 +374,11 @@ def manual_block(row, actor):
     paid = [a for a in row['attempts'] if a['status'] == 'completed']
     card = sum(a['amount_cents'] for a in paid if a['tender'] == 'card')
     other = sum(a['amount_cents'] for a in paid if a['tender'] != 'card')
+    cash = sum(a['amount_cents'] for a in paid if a['tender'] == 'cash')
     is_open = row['status'] == 'open' and not row['abandoned_reason']
     return {'total_cents': summary['total'], 'card_cents': card, 'other_cents': other,
-            'collect': pricing.collect(summary, clover_cents=card, popcore_cents=other, verified=True) if is_open else None,
+            'collect': pricing.collect(summary, clover_cents=card, popcore_cents=other, cash_cents=cash,
+                                       verified=True) if is_open else None,
             'can_receive': bool(row['can_process']),
             'undo_attempt_ids': [a['id'] for a in paid if is_open and row['can_process']
                                  and (a['recorded_by'] == actor['sub'] or manager(actor))]}
@@ -276,21 +408,26 @@ def receive_manual(con, checkout_id, data, actor, request_key):
         if row['abandoned_reason']:
             raise InventoryConflict('Abandoned checkouts can only be refunded', 'checkout_abandoned')
         intent = json.loads(row['payload'])
+        require_box_choice(con, intent)
         summary = manual_summary(intent)
-        card, other = _manual_money(con, row['id'])
+        card, other, cash = _manual_money(con, row['id'])
         due, _ = manual_due(summary, card_cents=card + (amount if tender == 'card' else 0),
                             other_cents=other + (0 if tender == 'card' else amount), plan=plan)
         if data.get('expected_due_cents') is not None and data['expected_due_cents'] != due:
             raise InventoryConflict('The amount due changed. Check the new amount.', 'price_changed')
-        if amount > due - card - other:
+        if amount > cash_amount_limit(tender, amount, due, cash_cents=cash, received_cents=card + other):
             raise InventoryValidationError('That is more than the amount still to collect')
         # A payment started on the old screen and never received is replaced by this one.
         con.execute("UPDATE checkout_attempts SET status='cancelled' WHERE checkout_id=? AND status='pending'", (row['id'],))
         con.execute('''INSERT INTO checkout_attempts(checkout_id,tender,amount_cents,assigned_to,status,recorded_by,
             cny_fen,cny_per_cad) VALUES (?,?,?,?,'completed',?,?,?)''',
             (row['id'], tender, amount, actor['sub'], actor['sub'], fen, rate))
-        if card + other + amount == due:
-            final = {**intent, 'reduction_cents': intent['gross_cents'] - due, 'rounding_cents': 0, 'collected_cents': due}
+        cash += amount if tender == 'cash' else 0
+        received = card + other + amount
+        due = pricing.settled_due(due, cash_cents=cash, other_cents=received - cash)
+        if received == due:
+            # Cash rounded to 5¢ is part of the reduction (or, above the order's total, its rounding).
+            final = {**intent, **pricing.collected_money(intent['gross_cents'], due)}
             finalize_sale(con, row, final, actor=actor, key=key)
         con.execute('UPDATE checkout_orders SET version=version+1 WHERE id=?', (row['id'],))
         record_late_adjustment(con, row['store_id'], row['business_date'], 'checkout', row['id'],

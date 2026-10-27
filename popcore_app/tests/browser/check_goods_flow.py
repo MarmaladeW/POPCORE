@@ -290,6 +290,49 @@ async def resume_checks(browser):
     await context.close()
 
 
+async def scan_race_checks(browser):
+    """Quick scans resolve while earlier lookups are still in flight: every unit and typed edit counts."""
+    state = {'mode': 'data', 'api_payload': api_payload}
+    context, page = await context_with_api(browser, state, viewport={'width': 1280, 'height': 900}, auth={'role': 'manager'})
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+
+    async def slow_lookup(route):
+        await asyncio.sleep(.5)
+        await route.fallback()
+    await page.route('**/api/goods/barcodes/resolve**', slow_lookup)
+
+    await page.goto(BASE + '/goods/receiving?receipt_id=31')
+    await expect(page.get_by_text('3 pieces saleable', exact=True)).to_be_visible()
+    scan = page.get_by_label('Scan barcode')
+    save = page.get_by_role('button', name='存草稿 Save draft changes', exact=True)
+    for _ in range(2):   # two boxes scanned before the first lookup answers
+        await scan.fill('00123')
+        await scan.press('Enter')
+    await expect(save).to_be_disabled()   # saving waits for the lookups
+    await expect(page.get_by_text('5 pieces saleable', exact=True)).to_be_visible()
+    await expect(save).to_be_enabled()
+    await scan.fill('00123')
+    await scan.press('Enter')
+    await page.get_by_label('Line 1 damaged').fill('2')   # typed while the third lookup is in flight
+    await expect(page.get_by_text('6 pieces saleable', exact=True)).to_be_visible()
+    await expect(page.get_by_text('2 pieces damaged', exact=True)).to_be_visible()
+    await save.click()
+    await expect(page.get_by_text('3 pieces saleable', exact=True)).to_be_visible()   # the saved draft reloads
+    patch = next(request for request in state['requests'] if request['method'] == 'PATCH')
+    assert patch['post_data']['lines'][0]['saleable_quantity'] == 6, patch
+    assert patch['post_data']['lines'][0]['damaged_quantity'] == 2, patch
+
+    await page.goto(BASE + '/goods/counts')
+    await expect(page.get_by_text('Physical count', exact=True)).to_be_visible()
+    for _ in range(2):
+        await scan.fill('00123')
+        await scan.press('Enter')
+    observed = page.locator('.ant-form-item').filter(has_text='Observed quantity').locator('input')
+    await expect(observed).to_have_value('2')
+    await context.close()
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
@@ -311,6 +354,7 @@ async def main():
                                  {'width': 1440, 'height': 1000}):
                     await checks(browser, viewport)
                 await resume_checks(browser)
+                await scan_race_checks(browser)
             except Exception:
                 for context in browser.contexts:
                     if context.pages:

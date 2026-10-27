@@ -114,6 +114,60 @@ class CheckoutTests(ReceivingFixture):
         self.assertEqual((collect['pay']['due_cents'], collect['pay']['label'], collect['card']['due_cents']),
                          (4400, 'Rounding', 4470))
 
+    def create_priced(self, reference, subtotal, tax, reduction=0):
+        body = dict(store_id=self.store_id, business_date='2026-09-08', reference=reference, subtotal_cents=subtotal,
+                    source_tax_cents=tax, gross_cents=subtotal + tax, reduction_cents=reduction, rounding_cents=0,
+                    collected_cents=subtotal + tax - reduction,
+                    lines=[dict(product_id=self.product_id, unit='piece', quantity=1, unit_price_cents=subtotal,
+                                source_tax_cents=tax)])
+        response = self.call('', body, 'create-' + reference)
+        self.assertEqual(response.status_code, 201, response.get_json())
+        return response.get_json()
+
+    def sale_money(self, sale_id):
+        with closing(self.connect()) as con:
+            return tuple(con.execute('''SELECT gross_cents,reduction_cents,rounding_cents,collected_cents
+                FROM sale_documents WHERE id=?''', (sale_id,)).fetchone())
+
+    def test_cash_is_rounded_to_five_cents_and_the_difference_is_rounding(self):
+        # Owner, 2026-10-27: an agreed-discount order of $7.47 collects $7.45 in cash; e-transfer stays exact.
+        order = self.create_priced('N-1', 700, 91, reduction=44)
+        pay = order['pricing']['collect']['pay']
+        self.assertEqual((pay['due_cents'], pay['rest_cents'], pay['cash_rest_cents']), (747, 747, 745))
+        self.receive(order, 'odd-cash', 'cash', 747, expected_due_cents=747, expect=400)
+        done = self.receive(order, 'nickel-cash', 'cash', 745, expected_due_cents=747)
+        self.assertEqual((done['status'], done['received_cents']), ('completed', 745))
+        self.assertEqual(self.sale_money(done['sale_id']), (791, 46, 0, 745))
+        exact = self.create_priced('N-2', 700, 91, reduction=44)
+        self.assertEqual(self.receive(exact, 'etransfer', 'e_transfer', 747, expected_due_cents=747)['received_cents'], 747)
+        # The cash part of a card split: $20.37 by card on $42.60 leaves $21.63 of $42.00, collected as $21.65.
+        split = self.create_priced('N-3', 3770, 490)
+        part = self.receive(split, 'card-part', 'card', 2037, plan='split_card', expected_due_cents=4200)
+        rest = part['pricing']['collect']['split_card']
+        self.assertEqual((rest['rest_cents'], rest['cash_rest_cents']), (2163, 2165))
+        done = self.receive(part, 'cash-rest', 'cash', 2165, plan='split_card', expected_due_cents=4200)
+        self.assertEqual((done['status'], done['received_cents']), ('completed', 4202))
+        self.assertEqual(self.sale_money(done['sale_id']), (4260, 58, 0, 4202))
+        # A cash price under $1: $0.99 is $0.97, collected as $0.95.
+        small = self.create_priced('N-4', 88, 11)
+        self.assertEqual(small['pricing']['collect']['pay']['cash_rest_cents'], 95)
+        done = self.receive(small, 'small-cash', 'cash', 95, expected_due_cents=97)
+        self.assertEqual(self.sale_money(done['sale_id']), (99, 4, 0, 95))
+        # Rounded up past an order with no discount: $0.48 left after card on $12.48 is collected as $0.50,
+        # and the 2¢ above the order are the sale's rounding.
+        up = self.create_priced('N-5', 1104, 144)
+        part = self.receive(up, 'card-most', 'card', 1200, plan='split_card', expected_due_cents=1248)
+        self.assertEqual(part['pricing']['collect']['split_card']['cash_rest_cents'], 50)
+        done = self.receive(part, 'cash-up', 'cash', 50, plan='split_card', expected_due_cents=1248)
+        self.assertEqual(self.sale_money(done['sale_id']), (1248, 0, 2, 1250))
+
+    def test_cash_price_under_ten_dollars_is_the_previous_whole_dollar(self):
+        # Owner, 2026-10-27: $5.10 is $5; a whole-dollar $5.00 keeps its price.
+        collect = self.create_priced('U-1', 452, 58)['pricing']['collect']['pay']
+        self.assertEqual((collect['due_cents'], collect['label']), (500, 'Cash discount'))
+        collect = self.create_priced('U-2', 443, 57)['pricing']['collect']['pay']
+        self.assertEqual((collect['due_cents'], collect['label']), (500, None))
+
     def test_wechat_and_alipay_keep_the_yuan_charged_and_its_rate(self):
         order, _ = self.create_checkout(reference='M-5')
         # $24.00 at 1 CAD = 4.7528 CNY is ¥114.0672, charged as ¥114.07.
@@ -571,7 +625,7 @@ class CheckoutTests(ReceivingFixture):
             response=self.client.get(f'/api/reports/tenders?store_code=DT&from={day}&to={day}',headers=self.headers('manager'))
             self.assertEqual(response.status_code,200,response.get_json())
             self.assertEqual(response.get_json()['items'],[dict(tender='cash',recorded_cents=recorded,
-                verified_cents=recorded,unknown_count=0,pending_count=0,refund_cents=refunded)])
+                verified_cents=recorded,rejected_cents=0,unknown_count=0,pending_count=0,refund_cents=refunded)])
         patched=self.client.patch(f"/api/closing/{receipt_day['closing_id']}",json={
             'expected_version':receipt_day['version'],'intake_complete':True},headers={
             **self.headers('manager'),'Idempotency-Key':'refund-intake'}).get_json()

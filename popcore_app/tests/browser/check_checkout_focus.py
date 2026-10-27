@@ -112,15 +112,17 @@ async def clover_real_api_checks(browser):
         order=page.get_by_role('article',name='Checkout ORDERBBBBBBBB')
         await expect(order).to_be_visible(timeout=10000)
         await order.get_by_role('button',name='Split payment',exact=True).click()
-        await order.get_by_label('Card part (CAD)').fill('22.00')
-        await expect(order).to_contain_text('Pay → ⋮ → Split Custom Amount → $22.00 → Card')
-        await expect(order.locator('.co-collect strong')).to_have_text('$20.00')
-        await page.screenshot(path=str(OUT/'clover-split-phone.png'),full_page=True)
-        clover.put(clover_order('ORDERBBBBBBBB',mapped=False,payments=[card('CARDPAYMENT01',2200)],state='PARTIALLY_PAID'))
-        await expect(order.get_by_text('Card $22.00 received on Clover',exact=False)).to_be_visible(timeout=10000)
-        await expect(order.locator('.co-collect strong')).to_have_text('$20.00')
+        await order.get_by_label('Card part (CAD)').fill('20.37')
+        await expect(order).to_contain_text('Pay → ⋮ → Split Custom Amount → $20.37 → Card')
+        await expect(order.locator('.co-collect strong')).to_have_text('$21.63')
+        # Cash is rounded to 5¢, because Canada has no pennies (owner, 2026-10-27): the rest in cash is $21.65.
         await order.get_by_role('button',name=re.compile(r'Cash\b')).click()
-        await order.get_by_role('button',name='已收 $20.00 · Received',exact=True).click()
+        await expect(order.locator('.co-collect strong')).to_have_text('$21.65')
+        await page.screenshot(path=str(OUT/'clover-split-phone.png'),full_page=True)
+        clover.put(clover_order('ORDERBBBBBBBB',mapped=False,payments=[card('CARDPAYMENT01',2037)],state='PARTIALLY_PAID'))
+        await expect(order.get_by_text('Card $20.37 received on Clover',exact=False)).to_be_visible(timeout=10000)
+        await expect(order.locator('.co-collect strong')).to_have_text('$21.65')
+        await order.get_by_role('button',name='已收 $21.65 · Received',exact=True).click()
         await expect(order.get_by_text('Labelled paid on Clover',exact=True)).to_be_visible()
         await expect(order).to_contain_text('tap Pay more later to clear the screen')
         assert [call[1] for call in clover.writes()]==['/orders/ORDERAAAAAAAA/label','/orders/ORDERBBBBBBBB/label']
@@ -457,6 +459,45 @@ async def real_api_checks(browser):
         await page.get_by_role('link',name='Back to current orders').click()
         await page.get_by_role('link',name='订单记录 Order history',exact=True).first.click()
         await expect(page.get_by_role('button',name='LOCAL-WECHAT-ONLY',exact=False)).to_contain_text('WeChat Pay ¥209.12')
+        # Cash is rounded to 5¢ (owner, 2026-10-27): an agreed-discount order of $7.47 collects $7.45 in cash.
+        nickel=fixture.create_priced('LOCAL-NICKEL-ONLY',700,91,reduction=44)
+        await page.goto(f'http://127.0.0.1:5177/checkout/{nickel["id"]}')
+        await page.get_by_role('button',name=re.compile(r'Cash\b')).click()
+        await expect(page.locator('.co-collect strong')).to_have_text('$7.45')
+        await expect(page.locator('.co-collect small')).to_contain_text('Cash rounded to 5¢ −$0.02')
+        await page.get_by_role('button',name='已收 $7.45 · Received',exact=True).click()
+        await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
+        assert fixture.sale_money(fixture.client.get(f'/api/checkouts/{nickel["id"]}',headers=fixture.headers()).get_json()['sale_id'])==(791,46,0,745)
+        # Blind boxes over half a set: before any payment the cashier says where they came from (owner, 2026-10-27).
+        with closing(fixture.connect()) as con:
+            set_id=con.execute("""INSERT INTO products(sku,name_cn_en,jizhanming,stock_form,stock_unit,identity_status)
+                VALUES ('LOCAL-SET-12','Local Set','Local Set','sealed_set','set','verified')""").lastrowid
+            box_id=con.execute("""INSERT INTO products(sku,name_cn_en,jizhanming,stock_form,stock_unit,identity_status)
+                VALUES ('LOCAL-BOX-12','Local Box','Local Box','random_box','box','verified')""").lastrowid
+            con.execute('INSERT INTO product_conversions(source_product_id,target_product_id,output_per_input,version) VALUES (?,?,12,1)',(set_id,box_id))
+            for product,quantity in ((box_id,10),(set_id,1)):
+                con.execute("INSERT INTO inventory_balances(product_id,location_id,disposition,quantity,version) VALUES (?,?,'saleable',?,1)",(product,fixture.floor,quantity))
+            con.commit()
+        boxes=fixture.call('',dict(store_id=fixture.store_id,business_date='2026-09-08',reference='LOCAL-BOXES-ONLY',subtotal_cents=7*1999,
+            source_tax_cents=0,gross_cents=7*1999,reduction_cents=0,rounding_cents=0,collected_cents=7*1999,
+            lines=[dict(product_id=box_id,unit='box',quantity=7,unit_price_cents=1999)]),'create-local-boxes').get_json()
+        await page.goto(f'http://127.0.0.1:5177/checkout/{boxes["id"]}')
+        order=page.get_by_role('article',name='Checkout LOCAL-BOXES-ONLY')
+        await expect(order.get_by_text('Where did these 7 boxes come from?',exact=False)).to_be_visible()
+        await expect(order.get_by_role('button',name=re.compile(r'Card\b'))).to_have_count(0)  # no payment before the answer
+        await expect(order.get_by_role('button',name=re.compile('Opened a new sealed set'))).to_contain_text('1 sealed on hand')
+        await expect(order.get_by_role('button',name=re.compile('From an opened set'))).to_be_disabled()
+        await order.get_by_role('button',name=re.compile('Loose boxes from the floor')).click()
+        await expect(order.get_by_role('button',name=re.compile('Loose boxes from the floor'))).to_have_attribute('aria-pressed','true')
+        await page.screenshot(path=str(OUT/'blind-boxes-phone.png'),full_page=True)
+        await order.get_by_role('button',name=re.compile(r'Card\b')).click()
+        await order.get_by_role('button',name='已收 $139.93 · Received',exact=True).click()
+        await expect(page.get_by_role('heading',name='Checkout complete',exact=True)).to_be_visible()
+        with closing(fixture.connect()) as con:
+            sale=con.execute('SELECT s.id,s.allocation_status FROM sale_documents s JOIN checkout_orders o ON o.sale_id=s.id WHERE o.id=?',(boxes['id'],)).fetchone()
+            assert sale['allocation_status']=='allocated'
+            assert con.execute('SELECT loose_boxes FROM sale_lines WHERE sale_id=?',(sale['id'],)).fetchone()[0]==1
+            assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(box_id,fixture.floor)).fetchone()[0]==3
         await context.close()
     finally:
         vite.terminate();vite.wait(timeout=10)
@@ -474,7 +515,7 @@ async def main():
             await real_api_checks(browser)
             await clover_real_api_checks(browser)
             await browser.close()
-        print('PASS: checkout navigation, scoped manual checkout and off-duty history, order switching with the chosen tender kept, automatic tender prices and splits, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund, stock posting and a WeChat Pay payment keeping the yuan charged and its rate also passed with disposable data. Clover orders against actual Flask routes and a fake Clover: automatic pick-up, cash price, Clover order labelled paid and left open, split with card, cancel and delete, find by ID, label retry and a POPCORE order sent to Clover for card; no live Clover/auth verification.')
+        print('PASS: checkout navigation, scoped manual checkout and off-duty history, order switching with the chosen tender kept, automatic tender prices and splits, scoped photo preview/upload, mobile width and access revocation. Actual Flask manual creation without payment or stock movement, order note, upload, payment, finalization, history, abandoned-checkout refund, stock posting, a WeChat Pay payment keeping the yuan charged and its rate, cash rounded to 5¢ and the blind-box question before payment also passed with disposable data. Clover orders against actual Flask routes and a fake Clover: automatic pick-up, cash price, Clover order labelled paid and left open, split with card, cancel and delete, find by ID, label retry and a POPCORE order sent to Clover for card; no live Clover/auth verification.')
     finally:
         process.terminate();process.wait(timeout=10)
 

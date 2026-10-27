@@ -1,12 +1,13 @@
 """
 blueprints/restock.py — restock session workflow (pending → submitted → picking → completed).
 """
-from datetime import date
 import json
 from flask import Blueprint, request, jsonify
 
 from db import get_db, _ensure_stock_row
 from auth import login_required, role_required
+from checkout_access import business_date
+from store_access import legacy_store_denied
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_int
 from blueprints.stores import _resolve_store
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
@@ -21,7 +22,10 @@ bp = Blueprint('restock', __name__)
 
 def _restock_access_denied(con, store_id, minimum_role):
     if not _is_authoritative(con, store_id):
-        return None
+        # Legacy sheets stay readable to every signed-in user; changes need that store.
+        if minimum_role == 'viewer':
+            return None
+        return legacy_store_denied(con, request.jwt_payload, store_id)
     try:
         require_inventory_access(
             con, request.jwt_payload, (store_id,), minimum_role
@@ -38,7 +42,7 @@ def _restock_session_items(cur, sid, store_id):
         SELECT ri.id, ri.product_id, ri.requested_qty, ri.warehouse_stock_snapshot,
                ri.found_qty, ri.pick_status,
                p.sku, p.jizhanming, p.name_cn_en, p.ip_series, p.product_type,
-               p.boxes_per_dan,
+               p.boxes_per_dan, p.stock_unit,
                COALESCE(s.upstairs_qty, 0) AS upstairs_qty,
                COALESCE(s.instore_qty,  0) AS instore_qty
         FROM restock_items ri
@@ -53,7 +57,7 @@ def _restock_session_items(cur, sid, store_id):
 @bp.route('/api/restock/sessions/today')
 @login_required
 def restock_sessions_today():
-    today = date.today().isoformat()
+    today = business_date()
     con = get_db()
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
@@ -90,7 +94,7 @@ def restock_sessions_today():
 @bp.route('/api/restock/sessions', methods=['POST'])
 @role_required('staff')
 def create_restock_session():
-    today = date.today().isoformat()
+    today = business_date()
     data  = request.get_json(silent=True) or {}
     con   = get_db()
     store_code = (data.get('store_code') or '').strip().upper()
@@ -174,7 +178,7 @@ def delete_restock_session(sid):
 @login_required
 def restock_session_today():
     """Legacy: return the most recent pending session today for a given store, or 404."""
-    today = date.today().isoformat()
+    today = business_date()
     con   = get_db()
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
@@ -261,12 +265,13 @@ def _restock_delivery(con, sid):
     )]
     if not lines:
         raise InventoryValidationError('Restock session has no items')
+    # Left uncommitted: the first action commits it, or a refusal rolls it back.
     created = create_delivery(con, {
         'source_location_id': back, 'destination_location_id': floor,
         'business_date': session['date'], 'restock_session_id': sid,
         'lines': lines,
     }, actor=request.jwt_payload, request_key=f'restock-delivery:{sid}',
-        kind='restock')
+        kind='restock', commit=False)
     return created['id']
 
 
@@ -288,11 +293,16 @@ def restock_goods_action(sid, action):
                 con.close()
                 return denied
         delivery_id = _restock_delivery(con, sid)
-        result = act_on_delivery(
-            con, delivery_id, action, request.get_json(silent=True) or {},
-            actor=request.jwt_payload,
-            request_key=request.headers.get('Idempotency-Key'),
-        )
+        try:
+            result = act_on_delivery(
+                con, delivery_id, action, request.get_json(silent=True) or {},
+                actor=request.jwt_payload,
+                request_key=request.headers.get('Idempotency-Key'),
+            )
+        finally:
+            # A delivery created for a refused first action is never kept.
+            if con.in_transaction:
+                con.rollback()
         return jsonify(result)
     except PermissionError:
         return jsonify({'error': 'Inventory access denied',
@@ -626,7 +636,7 @@ def complete_restock_session(sid):
         try:
             result = post_inventory(
                 con, {'kind': 'restock_complete',
-                      'business_date': date.today().isoformat(),
+                      'business_date': business_date(),
                       'source_type': 'restock_session', 'source_id': str(sid),
                       'reason': f'Restock session {sid}', 'lines': lines},
                 actor=request.jwt_payload, request_key=f'restock-session-{sid}',
@@ -669,7 +679,7 @@ def complete_restock_session(sid):
         (sid,),
     )
     found_items = [dict(r) for r in cur.fetchall()]
-    today = date.today().isoformat()
+    today = business_date()
     synced_details = []
 
     for item in found_items:

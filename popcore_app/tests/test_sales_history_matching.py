@@ -123,11 +123,12 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute('UPDATE daily_sales SET unit_price=NULL WHERE id=?',(self.record,));con.commit()
         path='/api/sales?store_code=DT&date=2026-09-01'
-        self.assertIsNone(self.client.get(path,headers=self.headers()).get_json()[0]['price'])
+        # GET /api/sales is manager-only.
+        self.assertIsNone(self.client.get(path,headers=self.headers('manager')).get_json()[0]['price'])
         self.assertEqual(self.remap().status_code,200)
         with closing(self.connect()) as con:
             con.execute('UPDATE products SET price=999 WHERE id=?',(self.target,));con.commit()
-        row=self.client.get(path,headers=self.headers()).get_json()[0]
+        row=self.client.get(path,headers=self.headers('manager')).get_json()[0]
         self.assertIsNone(row['price']); self.assertIsNone(row['unit_price'])
         export=self.client.get('/api/sales/export?store_code=DT&from=2026-09-01&to=2026-09-01',headers=self.headers('manager'))
         self.assertEqual(list(csv.reader(io.StringIO(export.get_data(as_text=True))))[1][5],'')

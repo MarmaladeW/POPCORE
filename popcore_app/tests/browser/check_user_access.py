@@ -1,6 +1,7 @@
 """User access checkboxes with real Flask APIs, disposable data and mocked Auth0."""
 import asyncio
 from contextlib import closing
+from datetime import date, timedelta
 import json
 import socket
 import subprocess
@@ -13,6 +14,8 @@ from check_foundation import BASE, FRONTEND, HERE, context_with_api, wait_for_se
 
 sys.path.insert(0, str(HERE.parent))
 from support import IsolatedApiCase
+from blueprints import users as users_blueprint
+import checkout_access
 
 OUT = HERE.parents[2] / '.local' / 'user-access' / 'browser'
 
@@ -94,6 +97,7 @@ async def check(browser, case):
     # Without store access Today shows only what is not tied to a store: no work lists, no access error.
     await expect(page.get_by_role('region', name='Store tasks')).to_have_count(0)
     await expect(page.get_by_text('Today store access denied', exact=True)).to_have_count(0)
+    await delete_confirmation(page, case, api)
     await context.close()
     for role in ('manager', 'staff'):
         context, page = await context_with_api(browser, {'mode': 'data'}, auth={'role': role})
@@ -103,12 +107,44 @@ async def check(browser, case):
         await context.close()
 
 
+async def delete_confirmation(page, case, api):
+    """Deleting keeps a person's shifts: the confirmation lists those still assigned from today on."""
+    today = date.fromisoformat(checkout_access.business_date())
+    day = lambda offset: (today + timedelta(days=offset)).isoformat()
+    with closing(case.connect()) as con:
+        staff = con.execute("INSERT INTO employees(auth0_id,name) VALUES ('fixture|staff','Staff')").lastrowid
+        mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+        for offset, store, start, end in ((-1, case.store_id, '12:00', '20:00'), (2, case.store_id, '12:00', '20:00'),
+                                          (5, mk, '10:00', '18:00')):
+            con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                           VALUES (?,?,?,?,'fixture|admin',?)""", (staff, day(offset), start, end, store))
+        con.commit()
+    await page.route(BASE + '/api/users/*/future-shifts', api)
+    for width in (1440, 390):
+        await page.set_viewport_size({'width': width, 'height': 980})
+        await page.goto(BASE + '/users')
+        await page.locator('button:not([disabled])', has_text='删除').click()
+        confirm = page.locator('.ant-popconfirm')
+        await expect(confirm).to_contain_text('These shifts stay on the schedule so you can reassign them')
+        await expect(confirm.get_by_role('list', name='Staff future shifts').get_by_role('listitem')).to_have_text(
+            [f'{day(2)} · DT · 12:00–20:00', f'{day(5)} · MK · 10:00–18:00'])
+        await expect(confirm).not_to_contain_text(day(-1))
+        await expect(confirm.get_by_role('button', name='OK', exact=True)).to_be_enabled()
+        assert await page.evaluate('document.body.scrollWidth') <= width + 2
+        await page.screenshot(path=OUT/f'delete-confirm-{width}.png', animations='disabled')
+        await confirm.get_by_role('button', name='Cancel', exact=True).click()
+        await expect(confirm).to_be_hidden()
+    with closing(case.connect()) as con:
+        assert con.execute('SELECT COUNT(*) FROM shifts WHERE employee_id=?', (staff,)).fetchone()[0] == 3
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
             raise RuntimeError('Port 5174 is already in use')
     OUT.mkdir(parents=True, exist_ok=True)
     case = IsolatedApiCase(); case.setUp()
+    case.app.register_blueprint(users_blueprint.bp)  # the real future-shifts read
     with (OUT/'vite.log').open('w') as log:
         process = subprocess.Popen(['node', str(FRONTEND/'node_modules/vite/bin/vite.js'), '--config', str(HERE/'vite.config.mjs')], cwd=FRONTEND, stdout=log, stderr=subprocess.STDOUT)
         try:

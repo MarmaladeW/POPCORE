@@ -8,6 +8,14 @@ from blueprints.sales import _parse_token
 
 
 class DailyReportImportTests(IsolatedApiCase):
+    def setUp(self):
+        super().setUp()
+        # Daily report writes need access to the report's store (store_access.py).
+        with closing(self.connect()) as con:
+            con.executemany('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)',
+                            [('auth0|staff', self.store_id), ('auth0|manager', self.store_id)])
+            con.commit()
+
     def parse(self, text, **extra):
         response = self.client.post('/api/sales/parse_report', headers=self.headers(),
                                     json={'text': text, 'store_code': 'MK', **extra})
@@ -260,7 +268,8 @@ Test Product*1 （秘密）
         metadata = {'cash_actual': 0, 'cash_expected': 0, 'display_sales': parsed['display_sales'], 'claw_prizes': parsed['claw_prizes']}
         self.assertEqual(self.submit([], report_metadata=metadata).status_code, 200)
         for store in ('DT', 'ALL'):
-            result = self.client.get('/api/sales/recorded-dates?month=2026-09&store=' + store, headers=self.headers())
+            result = self.client.get('/api/sales/recorded-dates?month=2026-09&store=' + store,
+                                     headers=self.headers('manager'))  # sales reads are manager-only
             self.assertEqual(result.get_json(), ['2026-09-14'])
         parsed = self.parse('2026.9.14 DT\nTest Product*1\n2026.9.14 MK\nTest Product*1')
         self.assertTrue(parsed['metadata_errors'])

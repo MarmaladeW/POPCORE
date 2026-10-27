@@ -7,6 +7,8 @@ from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
+from checkout_access import business_date
+from store_access import legacy_store_denied
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
 from catalog_identity import product_search_text_sql
@@ -463,6 +465,10 @@ def patch_stock(product_id):
     if err:
         con.close()
         return err
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     con.execute('UPDATE stock SET notes=? WHERE product_id=? AND store_id=?',
                 (notes, product_id, store_id))
     con.commit()
@@ -480,7 +486,7 @@ def ru_dian():
     try:
         pid = read_int(data['product_id'], 'product_id', minimum=1)
         qty = read_int(data['qty'], 'qty', minimum=1)
-        d = read_date(data.get('date', str(date.today())))
+        d = read_date(data.get('date', business_date()))
     except KeyError as exc:
         return jsonify({'error': f'{exc.args[0]} is required',
                         'code': 'invalid_input', 'field': exc.args[0]}), 400
@@ -505,6 +511,10 @@ def ru_dian():
             return _inventory_error(exc)
         finally:
             con.close()
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
     if _missing_product(cur, pid):
@@ -567,7 +577,7 @@ def restock_upstairs():
     try:
         pid = read_int(data['product_id'], 'product_id', minimum=1)
         qty = read_int(data['qty'], 'qty', minimum=1)
-        d = read_date(data.get('date', str(date.today())))
+        d = read_date(data.get('date', business_date()))
     except KeyError as exc:
         return jsonify({'error': f'{exc.args[0]} is required',
                         'code': 'invalid_input', 'field': exc.args[0]}), 400
@@ -592,6 +602,10 @@ def restock_upstairs():
             return _inventory_error(exc)
         finally:
             con.close()
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
     if _missing_product(cur, pid):
@@ -646,7 +660,7 @@ def adjust_stock():
     try:
         pid = read_int(data['product_id'], 'product_id', minimum=1)
         new_qty = read_int(data['new_qty'], 'new_qty')
-        d = read_date(data.get('date', str(date.today())))
+        d = read_date(data.get('date', business_date()))
     except KeyError as exc:
         return jsonify({'error': f'{exc.args[0]} is required',
                         'code': 'invalid_input', 'field': exc.args[0]}), 400
@@ -676,6 +690,10 @@ def adjust_stock():
             return _inventory_error(exc)
         finally:
             con.close()
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     con.execute('BEGIN IMMEDIATE')
     cur = con.cursor()
     if _missing_product(cur, pid):
@@ -982,6 +1000,10 @@ def delete_stock_rows():
         con.close()
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, _ = resolved
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     cur = con.cursor()
 
     ph  = ','.join('?' * len(pids))

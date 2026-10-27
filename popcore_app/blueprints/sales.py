@@ -12,6 +12,8 @@ from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
+from checkout_access import business_date
+from store_access import legacy_store_denied
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
 from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm,
@@ -51,9 +53,9 @@ def _require_store_body(con, data):
 
 
 @bp.route('/api/sales')
-@login_required
+@role_required('manager')
 def get_sales():
-    d = request.args.get('date', str(date.today()))
+    d = request.args.get('date', business_date())
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
     if err:
@@ -134,8 +136,9 @@ def history_matches():
     con = get_db()
     try:
         stores = _history_stores(con, request.args.get('store_code'))
-        start = read_date(request.args.get('date_from', str(date.today() - timedelta(days=30))), 'date_from')
-        end = read_date(request.args.get('date_to', str(date.today())), 'date_to')
+        today = date.fromisoformat(business_date())
+        start = read_date(request.args.get('date_from', str(today - timedelta(days=30))), 'date_from')
+        end = read_date(request.args.get('date_to', str(today)), 'date_to')
         if start > end:
             raise ValueError('date_from must be on or before date_to')
         page = read_int(request.args.get('page', '1'), 'page', minimum=1)
@@ -274,7 +277,7 @@ def upsert_sale():
         if 'qty_pos' not in data and 'qty_cash' not in data:
             qty_cash = read_int(data.get('qty_sold', 0), 'qty_sold')
         read_int(qty_pos + qty_cash, 'qty_sold')
-        d = read_date(data.get('date', str(date.today())))
+        d = read_date(data.get('date', business_date()))
     except ValueError as exc:
         return jsonify(invalid_input(exc)), 400
     notes    = data.get('notes', '')
@@ -285,6 +288,10 @@ def upsert_sale():
     if err:
         con.close()
         return err
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     cur = con.cursor()
     if cur.execute('SELECT 1 FROM products WHERE id = ?', (pid,)).fetchone() is None:
         con.close()
@@ -314,13 +321,17 @@ def add_product_to_sales():
         pid = int(data['product_id'])
     except (ValueError, TypeError):
         return jsonify({'error': 'product_id must be an integer'}), 400
-    d = data.get('date', str(date.today()))
+    d = data.get('date', business_date())
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
     if err:
         con.close()
         return err
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     cur = con.cursor()
     cur.execute('''
         INSERT OR IGNORE INTO daily_sales (product_id, date, store, qty_sold)
@@ -332,7 +343,7 @@ def add_product_to_sales():
 
 
 @bp.route('/api/sales/summary')
-@login_required
+@role_required('manager')
 def sales_summary():
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
@@ -383,6 +394,11 @@ def delete_sales_record(record_id):
         store = cur.execute(
             'SELECT id FROM stores WHERE code = ?', (record['store'],)
         ).fetchone()
+        denied = legacy_store_denied(con, request.jwt_payload, store['id'] if store else None)
+        if denied:
+            con.rollback()
+            con.close()
+            return denied
         if store:
             prior_stock = cur.execute(f'''
                 SELECT 1 FROM stock_transactions
@@ -423,7 +439,7 @@ def batch_stock_operation():
         return jsonify({'error': 'items must be a list', 'code': 'invalid_input',
                         'field': 'items'}), 400
     try:
-        d = read_date(data.get('date', str(date.today())))
+        d = read_date(data.get('date', business_date()))
     except ValueError as exc:
         return jsonify(invalid_input(exc)), 400
 
@@ -549,6 +565,10 @@ def batch_stock_operation():
             con.close()
             return _inventory_error(exc)
 
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
     con.execute('BEGIN IMMEDIATE')
     required = {}
     if operation in {'ru_dian', 'ru_dian_claw', 'out_dian'}:
@@ -679,6 +699,10 @@ def batch_upsert_sales():
     if err:
         con.close()
         return err
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
 
     items = data.get('items', [])
     if not isinstance(items, list):
@@ -705,7 +729,7 @@ def batch_upsert_sales():
             con.close()
             return jsonify(invalid_input(exc, line=line)), 400
         try:
-            item_date = read_date(item.get('date', str(date.today())))
+            item_date = read_date(item.get('date', business_date()))
         except ValueError as exc:
             con.close()
             return jsonify(invalid_input(exc, line=line)), 400
@@ -954,6 +978,10 @@ def submit_daily_report():
     if err:
         con.close()
         return err
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
 
     if _is_authoritative(con, store_id) and any(
         item['section'] in {'break_display', 'stock_in', 'stock_out'}
@@ -1283,10 +1311,11 @@ def submit_daily_report():
 @bp.route('/api/sales/export')
 @role_required('manager')
 def export_sales():
+    today     = business_date()
     from_date = request.args.get('from', '')
-    to_date   = request.args.get('to',   str(date.today()))
+    to_date   = request.args.get('to',   today)
     if not from_date:
-        from_date = str(date.today() - timedelta(days=30))
+        from_date = str(date.fromisoformat(today) - timedelta(days=30))
 
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
@@ -1342,6 +1371,11 @@ def clear_sales_day():
         con.rollback()
         con.close()
         return err
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.rollback()
+        con.close()
+        return denied
     cur = con.cursor()
     prior_stock = cur.execute(f'''
         SELECT 1 FROM stock_transactions
@@ -1365,7 +1399,7 @@ def clear_sales_day():
 
 
 @bp.route('/api/sales/recorded-dates')
-@login_required
+@role_required('manager')
 def recorded_dates():
     """Return dates in a given month that have at least one daily_sales row."""
     month      = (request.args.get('month') or '').strip()      # YYYY-MM

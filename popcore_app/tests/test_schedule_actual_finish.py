@@ -85,6 +85,50 @@ class ActualFinishTests(IsolatedApiCase):
         self.assertEqual(self.patch_shift({'start_time': '13:00'}).status_code, 400)
         self.assertEqual(self.snapshot(['shifts']), before)
 
+    def test_removed_employees_keep_their_worked_hours_in_the_report(self):
+        self.assertEqual(self.patch_shift({'actual_end_time': '20:30'}).status_code, 200)
+        with closing(self.connect()) as con:
+            trainee = con.execute(
+                "INSERT INTO employees(auth0_id,name,is_trainee) VALUES ('trainee|gone','Gone',1)"
+            ).lastrowid
+            con.execute(
+                """INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                   VALUES (?,'2026-09-17','12:00','17:00','manager',?)""",
+                (trainee, self.store_id),
+            )
+            # Removed before the period: nothing worked, so not listed.
+            con.execute("INSERT INTO employees(auth0_id,name,is_active) VALUES ('auth0|left','Left',0)")
+            con.commit()
+        self.assertEqual(self.client.delete(f'/api/schedule/trainees/{trainee}', headers=self.headers('manager')).status_code, 200)
+        with closing(self.connect()) as con:
+            con.execute('UPDATE employees SET is_active=0 WHERE id=?', (self.employee,))
+            con.commit()
+        for store in ('ALL', 'DT'):
+            report = self.client.get(
+                f'/api/schedule/reports/monthly?year=2026&month=9&store_code={store}', headers=self.headers('manager'),
+            ).get_json()
+            self.assertEqual(
+                {row['name']: row['total_hours'] for row in report['employees']},
+                {'Cashier': 16.5, 'Gone': 5.0},
+            )
+        other = self.client.get(
+            '/api/schedule/reports/monthly?year=2026&month=9&store_code=MK', headers=self.headers('manager'),
+        ).get_json()
+        self.assertEqual(other['employees'], [])
+
+    def test_default_wage_period_follows_toronto_not_the_utc_server_date(self):
+        # 22:00 Toronto on Oct 3 is already Oct 4 in UTC; the wage month starting on the 4th has not begun.
+        self.clock.now.return_value = datetime(2026, 10, 4, 2, tzinfo=timezone.utc)
+        hours = self.client.get(f'/api/schedule/employees/{self.employee}/hours', headers=self.headers('manager')).get_json()
+        self.assertEqual((hours['period_start'], hours['period_end']), ('2026-09-04', '2026-10-03'))
+        self.assertEqual(hours['total_hours'], 16.0)
+
+    def test_conflict_lookup_is_for_managers_only(self):
+        url = f'/api/schedule/conflicts?employee_id={self.employee}&date=2026-09-16&store_code=MK'
+        self.assertEqual(self.client.get(url, headers=self.headers('staff')).status_code, 403)
+        found = self.client.get(url, headers=self.headers('manager')).get_json()
+        self.assertEqual([c['store_code'] for c in found['conflicts']], ['DT'])
+
     def test_migration_is_repeatable_and_keeps_recorded_finishes(self):
         self.assertEqual(self.patch_shift({'actual_end_time': '19:15'}).status_code, 200)
         with closing(self.connect()) as con:

@@ -15,16 +15,21 @@ export default function ManualPayment({order,draft,setDraft,busy,saving,run,cnyP
   const tender=draft.tender
   const plan=splitMode==='card'?'split_card':'pay'
   const quote:Collect=splitMode==='card'?collect.split_card:tender==='card'?collect.card:collect.pay
+  // Cash is rounded to 5¢, because Canada has no pennies; every other tender pays the rest exactly.
+  const rest=tender==='cash'?quote.cash_rest_cents??quote.rest_cents:quote.rest_cents
   const part=splitMode?centsOrNull(draft.split):null
-  const amount=splitMode?(part!==null&&part<=quote.rest_cents?part:null):quote.rest_cents
+  const oddCash=tender==='cash'&&part!==null&&part%5!==0&&part!==rest
+  const amount=splitMode?(part!==null&&part<=rest&&!oddCash?part:null):rest
   const cny=tender==='wechat'||tender==='alipay'
   const fen=cny&&amount?convertCadCentsToCnyFen(amount,cnyPerCad):null
   const ready=!busy&&!!tender&&!!amount&&(!cny||fen!==null)&&!(splitMode==='tenders'&&tender==='card')
   const discountText=quote.label&&quote.due_cents<total?`${quote.label} ${off(total-quote.due_cents)}`:''
+  const roundingText=rest!==quote.rest_cents?`Cash rounded to 5¢ ${rest<quote.rest_cents?'−':'+'}${formatCents(Math.abs(rest-quote.rest_cents))}`:''
+  const cashPrice=(c:Collect)=>c.cash_rest_cents??c.rest_cents
   const chooseSplit=(mode:''|'card'|'tenders')=>setDraft({cloverSplit:mode,split:'',tender:mode==='tenders'&&tender==='card'?'':tender})
   const receive=()=>{if(ready&&amount)run('receive',{tender,amount_cents:amount,plan,expected_due_cents:quote.due_cents,...(cny?{cny_fen:fen,cny_per_cad:cnyPerCad}:{})})}
   const picker=(withPrices:boolean,withCard:boolean)=><fieldset className="co-methods" disabled={busy}><legend>{withPrices?'付款方式 How is the customer paying?':'付款方式 Paid by'}</legend><div>
-    {methods.filter(m=>withCard||m.value!=='card').map(m=><button key={m.value} type="button" aria-pressed={tender===m.value} onClick={()=>setDraft({tender:m.value})}><TenderLabel method={m} amount={withPrices?formatCents(m.value==='card'?collect.card.rest_cents:collect.pay.rest_cents):undefined}/></button>)}
+    {methods.filter(m=>withCard||m.value!=='card').map(m=><button key={m.value} type="button" aria-pressed={tender===m.value} onClick={()=>setDraft({tender:m.value})}><TenderLabel method={m} amount={withPrices?formatCents(m.value==='card'?collect.card.rest_cents:m.value==='cash'?cashPrice(collect.pay):collect.pay.rest_cents):undefined}/></button>)}
     {withPrices&&<button type="button" aria-label="Split payment" onClick={()=>chooseSplit('card')}><span className="co-method-zh">拆单</span> <span className="co-method-en">Split w/ card</span><small>—</small></button>}
   </div></fieldset>
   const confirm=<>{cny&&amount&&<section className="co-cny" aria-label="Chinese yuan collection amount"><span>{label(tender)} · CNY to collect</span>
@@ -35,13 +40,13 @@ export default function ManualPayment({order,draft,setDraft,busy,saving,run,cnyP
   return <section className="co-clover-pay co-clover" aria-label="Payment">
     {!splitMode&&<>
       {picker(true,true)}
-      {tender&&<div className="co-collect"><span>应收 Collect</span><strong>{formatCents(quote.rest_cents)}</strong>{(discountText||quote.rest_cents!==total)&&<small>{[discountText,`Order total ${formatCents(total)}`].filter(Boolean).join(' · ')}</small>}</div>}
+      {tender&&<div className="co-collect"><span>应收 Collect</span><strong>{formatCents(rest)}</strong>{(discountText||rest!==total)&&<small>{[discountText,roundingText,`Order total ${formatCents(total)}`].filter(Boolean).join(' · ')}</small>}</div>}
       {confirm}
     </>}
     {splitMode&&<>
       <div className="co-section-title"><h3>{splitMode==='card'?'Split with card':'Split without card'}</h3><span>{formatCents(quote.due_cents)}{discountText?` · ${discountText}`:''} · {formatCents(quote.rest_cents)} left</span></div>
       <label className="co-card-part">Collect now (CAD)<Input inputMode="decimal" value={draft.split} disabled={busy} onChange={e=>setDraft({split:e.target.value})}/></label>
-      {centsOrNull(draft.split)!==null&&amount===null&&<p className="co-unmapped" role="alert">Enter at most {formatCents(quote.rest_cents)}.</p>}
+      {centsOrNull(draft.split)!==null&&amount===null&&<p className="co-unmapped" role="alert">{oddCash?`Cash is counted in 5¢ steps: enter at most ${formatCents(rest)}.`:`Enter at most ${formatCents(rest)}.`}</p>}
       {picker(false,splitMode==='card')}{confirm}
       <div className="co-action-pair"><Button type="link" disabled={busy} onClick={()=>chooseSplit(splitMode==='card'?'tenders':'card')}>{splitMode==='card'?'Split without card':'Split with card'}</Button><Button type="link" disabled={busy} onClick={()=>chooseSplit('')}>No split</Button></div>
     </>}

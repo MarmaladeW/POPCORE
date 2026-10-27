@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { convertCadCentsToCnyFen, discountQuote, hstCents, suggestPayable, suggestPaymentTarget } from './checkoutPricing.ts'
+import { cashRest, convertCadCentsToCnyFen, discountQuote, hstCents, nickel, suggestPayable, suggestPaymentTarget } from './checkoutPricing.ts'
 
 test('CNY quote uses the configured rate with exact cent rounding', () => {
   assert.equal(convertCadCentsToCnyFen(3200, '5.20'), 16640)
@@ -26,6 +26,32 @@ test('above $15 suggestPayable takes at least $1 off, or 2.5% when more, rounded
   assert.equal(suggestPayable(6777), 6600)
   assert.equal(suggestPayable(1501), 1400)
   assert.equal(suggestPayable(1599), 1400)
+})
+
+// The same vectors are in popcore_app/tests/test_clover_pricing.py: both sides must agree.
+test('under $10 the cash price is the previous whole dollar, and a whole dollar keeps its price', () => {
+  for (const [total, expected] of [[510, 500], [999, 900], [712, 700], [101, 100], [199, 100], [950, 900],
+    [100, 100], [500, 500], [900, 900], [1000, 900], [1099, 1000]]) {
+    assert.equal(suggestPayable(total), expected, String(total))
+  }
+})
+
+test('cash is rounded to 5 cents the Canadian way', () => {
+  for (const [cents, expected] of [[2160, 2160], [2161, 2160], [2162, 2160], [2163, 2165], [2164, 2165], [2165, 2165],
+    [2166, 2165], [2167, 2165], [2168, 2170], [2169, 2170], [747, 745], [0, 0]]) {
+    assert.equal(nickel(cents), expected, String(cents))
+  }
+  for (const [rest, expected] of [[747, 745], [2163, 2165], [19, 20], [97, 95], [3, 5], [2, 2], [1, 1], [0, 0]]) {
+    assert.equal(cashRest(rest), expected, String(rest))
+  }
+  assert.throws(() => nickel(1.5), RangeError)
+})
+
+test('cash alone pays the cash price rounded to 5 cents; other tenders pay it exactly', () => {
+  assert.equal(suggestPaymentTarget(99, 'cash', false), 95)
+  assert.equal(suggestPaymentTarget(99, 'e_transfer', false), 97)
+  assert.equal(suggestPaymentTarget(712, 'cash', false), 700)
+  assert.equal(suggestPaymentTarget(747, 'card', false), 747)
 })
 
 test('suggestPayable keeps tiny positive totals positive', () => {

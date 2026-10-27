@@ -1,4 +1,5 @@
 """Immutable individual sale documents and inventory allocation."""
+import checkout_access
 from checkout_access import require_linked_sale
 from datetime import datetime, timezone
 
@@ -173,68 +174,7 @@ def _sale_input(con, data, actor):
         if unit != product['stock_unit']:
             raise InventoryValidationError('unit does not match product unit')
         balance = _balance(con, product_id, location_id, 'saleable')
-        open_set_id = raw.get('open_set_id')
-        open_set_id = None if open_set_id is None else read_int(
-            open_set_id, 'open_set_id', minimum=1
-        )
-        if open_set_id is not None:
-            opened = con.execute(
-                'SELECT random_product_id, location_id FROM inventory_open_sets WHERE id=?',
-                (open_set_id,),
-            ).fetchone()
-            if (product['stock_form'] != 'random_box' or opened is None
-                    or opened['random_product_id'] != product_id
-                    or opened['location_id'] != floor['id']):
-                raise InventoryValidationError('Opened set does not match the product and store')
-            if raw.get('fresh_set') is not None:
-                raise InventoryValidationError('Choose an opened set or a fresh set, not both')
-        fresh_set = raw.get('fresh_set')
-        fresh_values = {
-            'fresh_set_product_id': None, 'fresh_set_conversion_id': None,
-            'fresh_set_conversion_factor': None, 'fresh_set_balance_version': None,
-        }
-        if fresh_set is not None:
-            if product['stock_form'] != 'random_box' or not isinstance(fresh_set, dict):
-                raise InventoryValidationError('fresh_set is invalid for this product')
-            set_product_id = read_int(
-                fresh_set.get('product_id'), 'fresh_set.product_id', minimum=1
-            )
-            conversion_id = read_int(
-                fresh_set.get('conversion_id'), 'fresh_set.conversion_id', minimum=1
-            )
-            conversion_factor = read_int(
-                fresh_set.get('conversion_factor'),
-                'fresh_set.conversion_factor', minimum=1,
-            )
-            conversion = con.execute(
-                """SELECT source_product_id, target_product_id, output_per_input
-                   FROM product_conversions WHERE id=?""", (conversion_id,),
-            ).fetchone()
-            set_product = con.execute(
-                """SELECT stock_form, stock_unit, identity_status FROM products WHERE id=?""",
-                (set_product_id,),
-            ).fetchone()
-            if (
-                conversion is None or set_product is None
-                or conversion['source_product_id'] != set_product_id
-                or conversion['target_product_id'] != product_id
-                or conversion['output_per_input'] != conversion_factor
-                or set_product['stock_form'] != 'sealed_set'
-                or set_product['stock_unit'] != 'set'
-                or set_product['identity_status'] != 'verified'
-            ):
-                raise InventoryConflict(
-                    'Fresh-set selection does not match the product',
-                    'conversion_product_mismatch',
-                )
-            fresh_values = {
-                'fresh_set_product_id': set_product_id,
-                'fresh_set_conversion_id': conversion_id,
-                'fresh_set_conversion_factor': conversion_factor,
-                'fresh_set_balance_version': _balance(
-                    con, set_product_id, floor['id'], 'saleable'
-                )['version'],
-            }
+        choice = box_choice_fields(con, product, raw, floor['id'])
         lines.append({
             'product_id': product_id, 'raw_product_text': raw_text,
             'product_name_snapshot': (' · '.join(value for value in (product['series_name'], product['design_name']) if value) if product['stock_form'] == 'confirmed_design' else product['jizhanming'] or product['name_cn_en']),
@@ -248,13 +188,164 @@ def _sale_input(con, data, actor):
             ),
             'location_id': location_id,
             'captured_balance_version': balance['version'],
-            'open_set_id': open_set_id,
-            **fresh_values,
+            **choice,
         })
     return {
         'store_id': store_id, 'business_date': business_date,
         'entry_mode': entry_mode, 'source': source_values,
         **money, 'lines': lines,
+    }
+
+
+def box_choice_fields(con, product, raw, floor_id):
+    """Where a blind-box line's boxes came from, as sale line fields (owner, 2026-10-27).
+
+    `open_set_id`: a set already opened on the floor (已开的端); `fresh_set`: a new sealed set opened for
+    this sale (开新端); `loose_boxes`: loose boxes, never boxes kept in an opened set (散盒). At most one."""
+    product_id = product['id']
+    open_set_id = raw.get('open_set_id')
+    open_set_id = None if open_set_id is None else read_int(
+        open_set_id, 'open_set_id', minimum=1
+    )
+    loose = raw.get('loose_boxes', False)
+    if not isinstance(loose, bool):
+        raise InventoryValidationError('loose_boxes must be true or false')
+    if loose and (product['stock_form'] != 'random_box' or open_set_id is not None
+                  or raw.get('fresh_set') is not None):
+        raise InventoryValidationError('Loose boxes are one choice for a blind box: not with a set')
+    if open_set_id is not None:
+        opened = con.execute(
+            'SELECT random_product_id, location_id FROM inventory_open_sets WHERE id=?',
+            (open_set_id,),
+        ).fetchone()
+        if (product['stock_form'] != 'random_box' or opened is None
+                or opened['random_product_id'] != product_id
+                or opened['location_id'] != floor_id):
+            raise InventoryValidationError('Opened set does not match the product and store')
+        if raw.get('fresh_set') is not None:
+            raise InventoryValidationError('Choose an opened set or a fresh set, not both')
+    fresh_set = raw.get('fresh_set')
+    fresh_values = {
+        'fresh_set_product_id': None, 'fresh_set_conversion_id': None,
+        'fresh_set_conversion_factor': None, 'fresh_set_balance_version': None,
+    }
+    if fresh_set is not None:
+        if product['stock_form'] != 'random_box' or not isinstance(fresh_set, dict):
+            raise InventoryValidationError('fresh_set is invalid for this product')
+        set_product_id = read_int(
+            fresh_set.get('product_id'), 'fresh_set.product_id', minimum=1
+        )
+        conversion_id = read_int(
+            fresh_set.get('conversion_id'), 'fresh_set.conversion_id', minimum=1
+        )
+        conversion_factor = read_int(
+            fresh_set.get('conversion_factor'),
+            'fresh_set.conversion_factor', minimum=1,
+        )
+        conversion = con.execute(
+            """SELECT source_product_id, target_product_id, output_per_input
+               FROM product_conversions WHERE id=?""", (conversion_id,),
+        ).fetchone()
+        set_product = con.execute(
+            """SELECT stock_form, stock_unit, identity_status FROM products WHERE id=?""",
+            (set_product_id,),
+        ).fetchone()
+        if (
+            conversion is None or set_product is None
+            or conversion['source_product_id'] != set_product_id
+            or conversion['target_product_id'] != product_id
+            or conversion['output_per_input'] != conversion_factor
+            or set_product['stock_form'] != 'sealed_set'
+            or set_product['stock_unit'] != 'set'
+            or set_product['identity_status'] != 'verified'
+        ):
+            raise InventoryConflict(
+                'Fresh-set selection does not match the product',
+                'conversion_product_mismatch',
+            )
+        fresh_values = {
+            'fresh_set_product_id': set_product_id,
+            'fresh_set_conversion_id': conversion_id,
+            'fresh_set_conversion_factor': conversion_factor,
+            'fresh_set_balance_version': _balance(
+                con, set_product_id, floor_id, 'saleable'
+            )['version'],
+        }
+    # loose_boxes is only written when chosen, so requests from before it existed hash the same.
+    return {'open_set_id': open_set_id, **fresh_values, **({'loose_boxes': True} if loose else {})}
+
+
+def set_size(con, product_id):
+    """Boxes per sealed set of a blind box (its newest reviewed conversion), or None without one."""
+    row = con.execute(
+        """SELECT output_per_input FROM product_conversions
+           WHERE target_product_id=? ORDER BY version DESC LIMIT 1""", (product_id,),
+    ).fetchone()
+    return row['output_per_input'] if row else None
+
+
+def needs_box_choice(con, line):
+    """The existing rule: blind boxes over half a set come from a new sealed set, an opened set or loose
+    boxes, and somebody has to say which. `line` is a sale line or a checkout payload line."""
+    if (line.get('stock_form_snapshot') != 'random_box' or line.get('product_id') is None
+            or line.get('open_set_id') is not None or line.get('fresh_set_product_id') is not None
+            or line.get('loose_boxes')):
+        return False
+    size = set_size(con, line['product_id'])
+    return size is not None and line['quantity'] > size // 2
+
+
+def loose_units(con, product_id, location_id):
+    """Saleable boxes not kept in an opened set at a location."""
+    on_hand = _balance(con, product_id, location_id, 'saleable')['quantity']
+    kept = con.execute(
+        """SELECT COALESCE(SUM(remaining_qty), 0) FROM inventory_open_sets
+           WHERE random_product_id=? AND location_id=? AND remaining_qty>0""",
+        (product_id, location_id),
+    ).fetchone()[0]
+    return max(0, on_hand - kept)
+
+
+def sale_box_options(con, store_id, product_id, *, actor):
+    """The answers for a blind box on a store's floor, for Record sale and a sale waiting for stock."""
+    store_id = read_int(store_id, 'store_id', minimum=1)
+    product_id = read_int(product_id, 'product_id', minimum=1)
+    require_inventory_access(con, actor, (store_id,), 'staff')
+    floor = con.execute(
+        "SELECT id FROM inventory_locations WHERE store_id=? AND code='floor' AND is_active=1", (store_id,),
+    ).fetchone()
+    return box_options(con, product_id, floor['id']) if floor else None
+
+
+def box_options(con, product_id, location_id):
+    """The three answers for a blind box at a location, with what each has on hand; None for other products."""
+    product = con.execute(
+        'SELECT stock_form FROM products WHERE id=?', (product_id,),
+    ).fetchone()
+    size = set_size(con, product_id)
+    if product is None or product['stock_form'] != 'random_box' or size is None:
+        return None
+    conversion = con.execute(
+        """SELECT c.id, c.source_product_id, c.output_per_input,
+                  COALESCE(NULLIF(p.jizhanming,''), p.name_cn_en, p.sku) AS name
+           FROM product_conversions c JOIN products p ON p.id=c.source_product_id
+           WHERE c.target_product_id=? AND p.stock_form='sealed_set' AND p.stock_unit='set'
+                 AND p.identity_status='verified'
+           ORDER BY c.version DESC LIMIT 1""", (product_id,),
+    ).fetchone()
+    return {
+        'set_size': size,
+        'fresh_set': {
+            'product_id': conversion['source_product_id'], 'conversion_id': conversion['id'],
+            'conversion_factor': conversion['output_per_input'], 'name': conversion['name'],
+            'sets_on_hand': _balance(con, conversion['source_product_id'], location_id, 'saleable')['quantity'],
+        } if conversion else None,
+        'open_sets': [dict(row) for row in con.execute(
+            """SELECT id, remaining_qty FROM inventory_open_sets
+               WHERE random_product_id=? AND location_id=? AND remaining_qty>0 ORDER BY id""",
+            (product_id, location_id),
+        )],
+        'loose_units': loose_units(con, product_id, location_id),
     }
 
 
@@ -290,14 +381,15 @@ def _create_sale_in_transaction(con, intent, actor):
                 quantity, unit_price_cents, source_tax_cents, location_id,
                 captured_balance_version, open_set_id, fresh_set_product_id,
                 fresh_set_conversion_id, fresh_set_conversion_factor,
-                fresh_set_balance_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                fresh_set_balance_version, loose_boxes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (sale_id, line_no, line['product_id'], line['raw_product_text'],
              line['product_name_snapshot'], line['stock_form_snapshot'], line['unit'],
              line['quantity'], line['unit_price_cents'], line['source_tax_cents'],
              line['location_id'], line['captured_balance_version'], line['open_set_id'],
              line['fresh_set_product_id'], line['fresh_set_conversion_id'],
-             line['fresh_set_conversion_factor'], line['fresh_set_balance_version']),
+             line['fresh_set_conversion_factor'], line['fresh_set_balance_version'],
+             int(bool(line.get('loose_boxes')))),
         )
     return sale_id
 
@@ -396,14 +488,15 @@ def update_sale(con, sale_id, data, *, actor, request_key):
                     quantity, unit_price_cents, source_tax_cents, location_id,
                     captured_balance_version, open_set_id, fresh_set_product_id,
                     fresh_set_conversion_id, fresh_set_conversion_factor,
-                    fresh_set_balance_version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    fresh_set_balance_version, loose_boxes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (sale_id, line_no, line['product_id'], line['raw_product_text'],
                  line['product_name_snapshot'], line['stock_form_snapshot'], line['unit'],
                  line['quantity'], line['unit_price_cents'], line['source_tax_cents'],
                  line['location_id'], line['captured_balance_version'], line['open_set_id'],
                  line['fresh_set_product_id'], line['fresh_set_conversion_id'],
-                 line['fresh_set_conversion_factor'], line['fresh_set_balance_version']),
+                 line['fresh_set_conversion_factor'], line['fresh_set_balance_version'],
+                 int(bool(line.get('loose_boxes')))),
             )
         result = {'sale_id': sale_id, 'version': expected_version + 1, 'status': 'draft'}
         _remember(con, key, 'sale_update', sale_id, actor, digest, result)
@@ -453,13 +546,21 @@ def sale_detail(con, sale_id, *, actor):
         events = [dict(event) for event in con.execute(
             'SELECT * FROM payment_events WHERE payment_id=? ORDER BY id', (row['id'],)
         )]
+        # The money received, as corrected; refunds are later money out, on their own day.
         effective = payment['amount_cents']
         if effective is not None:
             for event in events:
+                if event['event_type'] == 'refund':
+                    continue
                 if event['direction'] == 'increase':
                     effective += event['amount_cents']
                 elif event['direction'] == 'decrease':
                     effective -= event['amount_cents']
+        for event in events:
+            if event['event_type'] == 'refund' and event['business_date'] is None:
+                event['business_date'] = sale['business_date']  # recorded before refunds had a date
+        payment['refunded_cents'] = sum(
+            event['amount_cents'] for event in events if event['event_type'] == 'refund')
         payment['events'] = events
         payment['evidence'] = [dict(evidence) for evidence in con.execute(
             """SELECT id, status, mime_type, byte_size, created_at
@@ -474,26 +575,40 @@ def sale_detail(con, sale_id, *, actor):
         payment['cny_per_cad'] = charge['cny_per_cad'] if charge else None
         payments.append(payment)
     sale['payments'] = payments
-    known = [p['effective_amount_cents'] for p in payments
+    # A rejected payment (an e-transfer that never arrived) was not received: it stays on the sale for
+    # history, outside the total, so the sale shows that money as still owed.
+    received = [p for p in payments if p['state'] != 'rejected']
+    known = [p['effective_amount_cents'] for p in received
              if p['effective_amount_cents'] is not None]
-    sale['payment_total_cents'] = sum(known) if len(known) == len(payments) else None
+    sale['payment_total_cents'] = sum(known) if len(known) == len(received) else None
     sale['payment_difference_cents'] = (
         sale['payment_total_cents'] - sale['collected_cents']
         if sale['payment_total_cents'] is not None and sale['collected_cents'] is not None
         else None
     )
+    sale['rejected_cents'] = sum(p['effective_amount_cents'] or 0 for p in payments
+                                 if p['state'] == 'rejected')
+    sale['refunded_cents'] = sum(p['refunded_cents'] for p in payments)
+    # A physical return is dated by its inventory receipt: the day it was recorded.
     sale['returns'] = [dict(row) for row in con.execute(
-        'SELECT * FROM sale_returns WHERE sale_id=? ORDER BY id', (sale_id,)
+        """SELECT r.*, d.business_date FROM sale_returns r
+           LEFT JOIN inventory_documents d ON d.id=r.inventory_document_id
+           WHERE r.sale_id=? ORDER BY r.id""", (sale_id,)
     )]
     return sale
 
 
-def _allocation_payload(con, sale, *, current_versions=False):
+def _allocation_payload(con, sale, *, current_versions=False, non_stock=()):
+    """Consumption lines for a sale and the reasons it cannot post yet.
+
+    `non_stock`: line numbers a manager records as a charge that moves no stock."""
     lines = []
     unresolved = []
     for row in con.execute(
         'SELECT * FROM sale_lines WHERE sale_id=? ORDER BY line_no', (sale['id'],)
     ):
+        if row['line_no'] in non_stock:
+            continue
         if row['product_id'] is None or row['native_unit'] is None:
             unresolved.append('product_mapping_required')
             continue
@@ -519,19 +634,13 @@ def _allocation_payload(con, sale, *, current_versions=False):
                     or conversion['output_per_input'] != row['fresh_set_conversion_factor']):
                 unresolved.append('product_mapping_required')
                 continue
-        if row['stock_form_snapshot'] == 'random_box' and row['open_set_id'] is None:
-            conversion = con.execute(
-                """SELECT output_per_input FROM product_conversions
-                   WHERE target_product_id=? ORDER BY version DESC LIMIT 1""",
-                (row['product_id'],),
-            ).fetchone()
-            if (
-                conversion is not None
-                and row['quantity'] > conversion['output_per_input'] // 2
-                and row['fresh_set_product_id'] is None
-            ):
-                unresolved.append('fresh_set_selection_required')
-                continue
+        if needs_box_choice(con, dict(row)):
+            unresolved.append('fresh_set_selection_required')
+            continue
+        if (current_versions and row['loose_boxes']
+                and row['quantity'] > loose_units(con, row['product_id'], row['location_id'])):
+            # Loose boxes never take the boxes kept in an opened set.
+            raise InventoryConflict(f"Not enough loose boxes for line {row['line_no']}", 'insufficient_stock')
         version = row['captured_balance_version']
         if current_versions:
             version = _balance(
@@ -547,7 +656,9 @@ def _allocation_payload(con, sale, *, current_versions=False):
     return lines, sorted(set(unresolved))
 
 
-def _open_selected_fresh_sets(con, sale, actor, request_key):
+def _open_selected_fresh_sets(con, sale, actor, request_key, *, current_versions=False):
+    """Open the sealed sets chosen for a sale. A paid sale opens them as stock stands now, as its
+    consumption does: other sales of the same box between the checkout and payment do not make it stale."""
     selected = con.execute(
         """SELECT * FROM sale_lines
            WHERE sale_id=? AND fresh_set_product_id IS NOT NULL
@@ -560,6 +671,9 @@ def _open_selected_fresh_sets(con, sale, actor, request_key):
     for row in selected:
         set_version = row['fresh_set_balance_version']
         box_version = row['captured_balance_version']
+        if current_versions:
+            set_version = _balance(con, row['fresh_set_product_id'], row['location_id'], 'saleable')['version']
+            box_version = _balance(con, row['product_id'], row['location_id'], 'saleable')['version']
         opening_lines.append({
             'product_id': row['fresh_set_product_id'], 'quantity': 1, 'unit': 'set',
             'conversion_id': row['fresh_set_conversion_id'],
@@ -608,7 +722,8 @@ def _post_sale_in_transaction(con, sale, expected_version, actor, key,
         con.execute('SAVEPOINT sale_allocation')
         try:
             if allocation_lines is None:
-                _open_selected_fresh_sets(con, sale, actor, key)
+                _open_selected_fresh_sets(con, sale, actor, key,
+                                          current_versions=sale['entry_mode'] == 'already_paid')
                 lines, unresolved = _allocation_payload(con, sale, current_versions=True)
             inventory_result = _post_inventory_in_transaction(con, {
                 'kind': 'consume', 'business_date': sale['business_date'],
@@ -725,99 +840,101 @@ def allocate_sale(con, sale_id, data, *, actor, request_key):
                WHERE store_id=? AND code='floor' AND is_active=1""",
             (sale['store_id'],),
         ).fetchone()
+        non_stock = set()
         for mapping in mappings:
             if not isinstance(mapping, dict):
                 raise InventoryValidationError('each mapping must be an object')
             line_no = read_int(mapping.get('line_no'), 'line_no', minimum=1)
+            line = con.execute(
+                """SELECT product_id, location_id, open_set_id, loose_boxes, fresh_set_product_id,
+                          fresh_set_conversion_id, fresh_set_conversion_factor
+                   FROM sale_lines WHERE sale_id=? AND line_no=?""",
+                (sale_id, line_no),
+            ).fetchone()
+            if line is None:
+                raise InventoryValidationError('line_no is invalid')
+            if mapping.get('non_stock') is True:
+                # A charge with no product, such as a Clover payment without items: no stock moves.
+                if line['product_id'] is not None:
+                    raise InventoryValidationError('Only a line without a product can be a charge without stock')
+                non_stock.add(line_no)
+                continue
             product_id = read_int(mapping.get('product_id'), 'product_id', minimum=1)
             product = con.execute(
-                """SELECT jizhanming, name_cn_en, stock_form, stock_unit, identity_status
+                """SELECT id, jizhanming, name_cn_en, stock_form, stock_unit, identity_status
                    FROM products WHERE id=?""", (product_id,),
             ).fetchone()
             if product is None or product['identity_status'] != 'verified':
                 raise InventoryConflict('Product identity is unverified', 'identity_unverified')
-            open_set_id = mapping.get('open_set_id')
-            if open_set_id is not None:
-                open_set_id = read_int(open_set_id, 'open_set_id', minimum=1)
-            fresh_set = mapping.get('fresh_set')
-            fresh_product_id = fresh_conversion_id = fresh_factor = fresh_version = None
-            if fresh_set is not None:
-                if product['stock_form'] != 'random_box' or not isinstance(fresh_set, dict):
-                    raise InventoryValidationError('fresh_set is invalid for this product')
-                fresh_product_id = read_int(
-                    fresh_set.get('product_id'), 'fresh_set.product_id', minimum=1
-                )
-                fresh_conversion_id = read_int(
-                    fresh_set.get('conversion_id'), 'fresh_set.conversion_id', minimum=1
-                )
-                fresh_factor = read_int(
-                    fresh_set.get('conversion_factor'),
-                    'fresh_set.conversion_factor', minimum=1,
-                )
-                conversion = con.execute(
-                    """SELECT source_product_id, target_product_id, output_per_input
-                       FROM product_conversions WHERE id=?""", (fresh_conversion_id,),
-                ).fetchone()
-                if (
-                    conversion is None
-                    or conversion['source_product_id'] != fresh_product_id
-                    or conversion['target_product_id'] != product_id
-                    or conversion['output_per_input'] != fresh_factor
-                ):
-                    raise InventoryConflict(
-                        'Fresh-set selection does not match the product',
-                        'conversion_product_mismatch',
-                    )
-                fresh_version = _balance(
-                    con, fresh_product_id, floor['id'], 'saleable'
-                )['version']
+            # A display piece stays on display, and where its boxes came from (an opened set, loose boxes)
+            # stays chosen, unless the mapping changes the product or says where they came from.
+            location_id = line['location_id'] or floor['id']
+            kept = line['product_id'] == product_id and not any(
+                key in mapping for key in ('open_set_id', 'fresh_set', 'loose_boxes'))
+            fresh = ({'product_id': line['fresh_set_product_id'], 'conversion_id': line['fresh_set_conversion_id'],
+                      'conversion_factor': line['fresh_set_conversion_factor']}
+                     if line['fresh_set_product_id'] is not None and line['open_set_id'] is None else None)
+            raw = ({'open_set_id': line['open_set_id'], 'fresh_set': fresh, 'loose_boxes': bool(line['loose_boxes'])}
+                   if kept else
+                   {key: mapping[key] for key in ('open_set_id', 'fresh_set', 'loose_boxes') if key in mapping})
+            if location_id != floor['id'] and (raw.get('open_set_id') is not None or raw.get('fresh_set') is not None):
+                raise InventoryValidationError('A display piece is sold on its own, not from a set')
+            choice = box_choice_fields(con, product, raw, floor['id'])
             changed = con.execute(
                 """UPDATE sale_lines SET product_id=?, stock_form_snapshot=?, native_unit=?,
                           location_id=?, captured_balance_version=?, open_set_id=?,
                           fresh_set_product_id=?, fresh_set_conversion_id=?,
-                          fresh_set_conversion_factor=?, fresh_set_balance_version=?
+                          fresh_set_conversion_factor=?, fresh_set_balance_version=?, loose_boxes=?
                    WHERE sale_id=? AND line_no=?""",
-                (product_id, product['stock_form'], product['stock_unit'], floor['id'],
-                 _balance(con, product_id, floor['id'], 'saleable')['version'], open_set_id,
-                 fresh_product_id, fresh_conversion_id, fresh_factor, fresh_version,
-                 sale_id, line_no),
+                (product_id, product['stock_form'], product['stock_unit'], location_id,
+                 _balance(con, product_id, location_id, 'saleable')['version'], choice['open_set_id'],
+                 choice['fresh_set_product_id'], choice['fresh_set_conversion_id'],
+                 choice['fresh_set_conversion_factor'], choice['fresh_set_balance_version'],
+                 int(bool(choice.get('loose_boxes'))), sale_id, line_no),
             )
             if changed.rowcount != 1:
                 raise InventoryValidationError('line_no is invalid')
+        # Like posting, one product may sell once from the floor and once from display.
         duplicate = con.execute(
             """SELECT product_id FROM sale_lines
                WHERE sale_id=? AND product_id IS NOT NULL
-               GROUP BY product_id HAVING COUNT(*)>1 LIMIT 1""",
+               GROUP BY product_id, location_id HAVING COUNT(*)>1 LIMIT 1""",
             (sale_id,),
         ).fetchone()
         if duplicate:
             raise InventoryValidationError('sale lines must not repeat a product')
-        lines, unresolved = _allocation_payload(con, sale, current_versions=True)
+        lines, unresolved = _allocation_payload(con, sale, current_versions=True, non_stock=non_stock)
         if unresolved:
             raise InventoryConflict('Sale product mapping is unresolved', unresolved[0])
         _open_selected_fresh_sets(con, sale, actor, key)
-        lines, unresolved = _allocation_payload(con, sale, current_versions=True)
-        inventory_result = _post_inventory_in_transaction(con, {
+        lines, unresolved = _allocation_payload(con, sale, current_versions=True, non_stock=non_stock)
+        document_id = _post_inventory_in_transaction(con, {
             'kind': 'consume', 'business_date': sale['business_date'],
             'source_type': 'sale_document', 'source_id': str(sale_id),
             'reason': reason, 'lines': lines,
-        }, actor=actor, request_key=f'inventory:{key}:consume')
+        }, actor=actor, request_key=f'inventory:{key}:consume')['document_id'] if lines else None
         con.execute(
             """UPDATE sale_documents SET allocation_status='allocated',
                       allocation_reason=NULL, inventory_document_id=?, version=version+1
                WHERE id=? AND version=?""",
-            (inventory_result['document_id'], sale_id, expected_version),
+            (document_id, sale_id, expected_version),
         )
         con.execute(
             """UPDATE sale_allocations SET status='allocated', reason=NULL,
                       inventory_document_id=? WHERE sale_id=?""",
-            (inventory_result['document_id'], sale_id),
+            (document_id, sale_id),
         )
+        for line_no in non_stock:  # each charge that moved no stock keeps the manager's reason
+            con.execute(
+                """UPDATE sale_allocations SET reason=?, inventory_document_id=NULL
+                   WHERE sale_id=? AND line_no=?""",
+                (f'non_stock_charge: {reason}'[:300], sale_id, line_no),
+            )
         result = {
             'sale_id': sale_id, 'version': expected_version + 1,
             'status': 'posted', 'financial_status': 'recorded',
             'allocation_status': 'allocated',
-            'inventory_document_id': inventory_result['document_id'],
+            'inventory_document_id': document_id,
             'unresolved_reasons': [],
         }
         _remember(con, key, 'sale_allocate', sale_id, actor, digest, result)
@@ -950,6 +1067,16 @@ def record_payment_event(con, payment_id, event_type, data, *, actor, request_ke
             return prior
         if payment['sale_version'] != expected_version:
             raise InventoryConflict('Sale changed before payment review', 'sale_state_conflict')
+        sale = _sale_row(con, payment['sale_id'])
+        # A refund counts on the day the money leaves, as checkout refunds do (owner, 2026-10-27);
+        # the sale's own day keeps its receipts.
+        refund_date = checkout_access.business_date() if event_type == 'refund' else None
+        if refund_date is not None:
+            if payment['state'] == 'rejected':
+                raise InventoryConflict('A rejected payment was not received, so it cannot be refunded',
+                                        'payment_rejected')
+            if refund_date < sale['business_date']:
+                raise InventoryValidationError('A refund cannot be dated before its sale')
         if event_type in {'refund', 'correction'} and direction == 'decrease':
             if payment['amount_cents'] is None:
                 raise InventoryConflict('Unknown payment amount requires review', 'amount_unknown')
@@ -963,12 +1090,12 @@ def record_payment_event(con, payment_id, event_type, data, *, actor, request_ke
             ).fetchone()[0]
             if amount > payment['amount_cents'] + increases - decreases:
                 raise InventoryConflict('Refund exceeds recorded payment', 'refund_exceeds_payment')
-        con.execute(
+        event_id = con.execute(
             """INSERT INTO payment_events
-               (payment_id, event_type, direction, amount_cents, reason, actor_sub)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (payment_id, event_type, direction, amount, reason, actor['sub']),
-        )
+               (payment_id, event_type, direction, amount_cents, reason, actor_sub, business_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (payment_id, event_type, direction, amount, reason, actor['sub'], refund_date),
+        ).lastrowid
         if event_type in {'verify', 'reject'}:
             con.execute(
                 'UPDATE sale_payments SET state=? WHERE id=?',
@@ -978,11 +1105,18 @@ def record_payment_event(con, payment_id, event_type, data, *, actor, request_ke
             'UPDATE sale_documents SET version=version+1 WHERE id=?',
             (payment['sale_id'],),
         )
-        sale = _sale_row(con, payment['sale_id'])
-        record_late_adjustment(
-            con, sale['store_id'], sale['business_date'], 'payment_event', payment_id,
-            'Payment event recorded after store-day close', actor['sub'],
-        )
+        if refund_date is not None:
+            # The refund day's cash changed and the sale changed: a closed day gets a late adjustment.
+            for day in {sale['business_date'], refund_date}:
+                record_late_adjustment(
+                    con, sale['store_id'], day, 'payment_refund', event_id,
+                    'Refund recorded after store-day close', actor['sub'],
+                )
+        else:
+            record_late_adjustment(
+                con, sale['store_id'], sale['business_date'], 'payment_event', payment_id,
+                'Payment event recorded after store-day close', actor['sub'],
+            )
         result = {
             'payment_id': payment_id, 'sale_id': payment['sale_id'],
             'version': expected_version + 1, 'event_type': event_type,
@@ -1082,6 +1216,10 @@ def record_sale_return(con, sale_id, data, *, actor, request_key):
         ).fetchone()[0]
         if quantity > line['quantity'] - returned:
             raise InventoryConflict('Return exceeds allocated quantity', 'return_exceeds_sale')
+        # Stock comes back on the day of the return, not the day of the sale (owner, 2026-10-27).
+        return_date = checkout_access.business_date()
+        if return_date < sale['business_date']:
+            raise InventoryValidationError('A return cannot be dated before its sale')
         return_id = con.execute(
             """INSERT INTO sale_returns
                (sale_id, sale_line_no, quantity, disposition, reason, reviewed_by)
@@ -1090,7 +1228,7 @@ def record_sale_return(con, sale_id, data, *, actor, request_key):
         ).lastrowid
         current = _balance(con, line['product_id'], line['location_id'], disposition)
         inventory = _post_inventory_in_transaction(con, {
-            'kind': 'receipt', 'business_date': sale['business_date'],
+            'kind': 'receipt', 'business_date': return_date,
             'source_type': 'sale_return', 'source_id': str(return_id),
             'reason': reason, 'lines': [{
                 'product_id': line['product_id'], 'unit': line['native_unit'],
@@ -1104,6 +1242,12 @@ def record_sale_return(con, sale_id, data, *, actor, request_key):
             (inventory['document_id'], return_id),
         )
         con.execute('UPDATE sale_documents SET version=version+1 WHERE id=?', (sale_id,))
+        # The sale changed and the return day's stock moved: a closed day gets a late adjustment.
+        for day in {sale['business_date'], return_date}:
+            record_late_adjustment(
+                con, sale['store_id'], day, 'sale_return', return_id,
+                'Physical return recorded after store-day close', actor['sub'],
+            )
         result = {
             'return_id': return_id, 'sale_id': sale_id,
             'version': expected_version + 1,

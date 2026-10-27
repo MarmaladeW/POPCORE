@@ -36,6 +36,14 @@ class IntegerValidationTests(unittest.TestCase):
 
 
 class SalesRouteValidationTests(IsolatedApiCase):
+    def setUp(self):
+        super().setUp()
+        # Legacy writes need access to the store (store_access.py): the test staff gets DT.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)",
+                        (self.store_id,))
+            con.commit()
+
     def test_negative_sale_leaves_all_rows_unchanged(self):
         before = self.snapshot(('daily_sales', 'stock', 'stock_transactions'))
         response = self.client.post(
@@ -216,6 +224,14 @@ class SalesRouteValidationTests(IsolatedApiCase):
 
 
 class StockRouteValidationTests(IsolatedApiCase):
+    def setUp(self):
+        super().setUp()
+        # Legacy writes need access to the store (store_access.py): the test staff gets DT.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)",
+                        (self.store_id,))
+            con.commit()
+
     def test_missing_product_stock_move_is_not_a_server_error(self):
         before = self.snapshot(('stock', 'stock_transactions'))
         response = self.client.post(

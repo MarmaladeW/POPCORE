@@ -7,7 +7,9 @@ from flask import Blueprint, request, jsonify
 
 from db import get_db
 from auth import login_required, role_required
+from checkout_access import business_date
 from inventory_commands import store_is_live
+from store_access import legacy_store_denied
 from blueprints.stores import _resolve_store
 
 bp = Blueprint('inventory', __name__)
@@ -91,7 +93,7 @@ def _calc_theoretical_qty(cur, product_id: int, today: str,
 @bp.route('/api/inventory-check/today')
 @login_required
 def inventory_check_today():
-    today = date.today().isoformat()
+    today = business_date()
     con   = get_db()
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
@@ -159,8 +161,12 @@ def submit_inventory_check():
         con.close()
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, store_code = resolved
+    denied = legacy_store_denied(con, request.jwt_payload, store_id)
+    if denied:
+        con.close()
+        return denied
 
-    today      = date.today().isoformat()
+    today      = business_date()
     created_by = request.jwt_payload.get('sub')
     cur = con.cursor()
 

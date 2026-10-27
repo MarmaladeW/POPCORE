@@ -2,7 +2,8 @@ import { formatCents, parseMoneyToCents } from '../../lib/money.ts'
 
 // The server prices every Clover order; these helpers only word and check what it sent.
 
-export type CloverCollect = { due_cents: number; mode: string | null; label: string | null; rest_cents: number }
+/** `cash_rest_cents`: what cash collects for the rest, rounded to 5¢; other tenders collect `rest_cents` exactly. */
+export type CloverCollect = { due_cents: number; mode: string | null; label: string | null; rest_cents: number; cash_rest_cents?: number }
 export type CloverLine = {
   name: string; quantity: number; unit: string; unit_price_cents: number | null; item_code: string | null
   product_id: number | null; product_name: string | null; mapped: boolean

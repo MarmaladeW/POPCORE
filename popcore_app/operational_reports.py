@@ -2,6 +2,7 @@ from checkout_access import require_checkout_history_store
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from checkout_operations import checkout_funds
+from closing_operations import REFUND_DATE
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_commands import InventoryValidationError
 
@@ -92,21 +93,31 @@ def query_report(con,name,*,actor,filters):
             money=[dict(r) for r in con.execute(f"SELECT gross_cents FROM sale_documents WHERE store_id IN ({marks}) AND status='posted' AND business_date BETWEEN ? AND ?",(*ids,start,end))]
             known=[r['gross_cents'] for r in money if r['gross_cents'] is not None];totals={'known_gross_cents':sum(known),'incomplete_count':sum(r['gross_cents'] is None for r in money),'gross_complete':len(known)==len(money)}
         elif name=='tenders':
-            items=[dict(r) for r in con.execute(f"""WITH adjustments AS (
-              SELECT payment_id,SUM(CASE WHEN event_type='refund' THEN amount_cents ELSE 0 END) refund_cents
-              FROM payment_events GROUP BY payment_id)
-              SELECT p.tender,SUM(CASE WHEN p.amount_cents IS NOT NULL THEN p.amount_cents ELSE 0 END) recorded_cents,
-              SUM(CASE WHEN p.state='verified' AND p.amount_cents IS NOT NULL THEN p.amount_cents ELSE 0 END) verified_cents,
-              SUM(p.amount_cents IS NULL) unknown_count,SUM(p.state='recorded') pending_count,SUM(COALESCE(a.refund_cents,0)) refund_cents
-              FROM sale_payments p JOIN sale_documents s ON s.id=p.sale_id LEFT JOIN adjustments a ON a.payment_id=p.id
+            # Recorded money includes manager corrections, as on the sale page and in closing. A rejected
+            # payment was not received: it is only in its own column. Refunds stay separate, on their own date.
+            items=[dict(r) for r in con.execute(f"""WITH corrections AS (
+              SELECT payment_id,SUM(CASE WHEN direction='increase' THEN amount_cents
+                       WHEN direction='decrease' THEN -amount_cents ELSE 0 END) correction_cents
+              FROM payment_events WHERE event_type!='refund' GROUP BY payment_id)
+              SELECT p.tender,SUM(CASE WHEN p.state!='rejected' AND p.amount_cents IS NOT NULL THEN p.amount_cents+COALESCE(a.correction_cents,0) ELSE 0 END) recorded_cents,
+              SUM(CASE WHEN p.state='verified' AND p.amount_cents IS NOT NULL THEN p.amount_cents+COALESCE(a.correction_cents,0) ELSE 0 END) verified_cents,
+              SUM(CASE WHEN p.state='rejected' AND p.amount_cents IS NOT NULL THEN p.amount_cents+COALESCE(a.correction_cents,0) ELSE 0 END) rejected_cents,
+              SUM(p.state!='rejected' AND p.amount_cents IS NULL) unknown_count,SUM(p.state='recorded') pending_count,0 refund_cents
+              FROM sale_payments p JOIN sale_documents s ON s.id=p.sale_id LEFT JOIN corrections a ON a.payment_id=p.id
               WHERE s.store_id IN ({marks}) AND s.business_date BETWEEN ? AND ? GROUP BY p.tender ORDER BY p.tender""",(*ids,start,end))]
             tenders = {row['tender']:row for row in items}
+            blank = dict(recorded_cents=0,verified_cents=0,rejected_cents=0,unknown_count=0,pending_count=0,refund_cents=0)
+            # A refund on a sale counts on the day it was recorded (its sale's day if it has no date of its own).
+            for refund in con.execute(f"""SELECT p.tender,SUM(e.amount_cents) refund_cents
+              FROM payment_events e JOIN sale_payments p ON p.id=e.payment_id JOIN sale_documents s ON s.id=p.sale_id
+              WHERE e.event_type='refund' AND s.store_id IN ({marks}) AND {REFUND_DATE} BETWEEN ? AND ?
+              GROUP BY p.tender""",(*ids,start,end)):
+                tenders.setdefault(refund['tender'],dict(tender=refund['tender'],**blank))['refund_cents'] += refund['refund_cents']
             for store_id in ids:
                 funds = checkout_funds(con,store_id,start,end)
                 for kind,rows in funds.items():
                     for money in rows:
-                        row = tenders.setdefault(money['tender'],dict(tender=money['tender'],recorded_cents=0,
-                            verified_cents=0,unknown_count=0,pending_count=0,refund_cents=0))
+                        row = tenders.setdefault(money['tender'],dict(tender=money['tender'],**blank))
                         if kind == 'refunds':
                             row['refund_cents'] += money['amount_cents']
                         else:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import socket
 import subprocess
 import sys
@@ -23,6 +24,11 @@ PRODUCT = {
     'name_cn_en': 'Store Day Product', 'stock_unit': 'piece',
     'identity_status': 'verified', 'upstairs_qty': 10, 'instore_qty': 10,
 }
+BOX = {**PRODUCT, 'id': 5, 'product_id': 5, 'sku': 'BOX-12', 'jizhanming': 'Series Box', 'name_cn_en': 'Series Box',
+       'stock_unit': 'box', 'stock_form': 'random_box'}
+BOX_OPTIONS = {'options': {'set_size': 12, 'loose_units': 9, 'open_sets': [{'id': 31, 'remaining_qty': 5}],
+                           'fresh_set': {'product_id': 6, 'conversion_id': 2, 'conversion_factor': 12,
+                                         'name': 'Series Set', 'sets_on_hand': 1}}}
 
 
 def sale_detail(version=2, status='posted'):
@@ -366,10 +372,8 @@ async def sale_safety_checks(browser):
             return [verified, unverified]
         return api_payload(path, query, request)
 
-    context, page = await context_with_api(
-        browser, {'mode': 'data', 'api_payload': verified_allocation_payload},
-        auth={'role': 'manager'},
-    )
+    state = {'mode': 'data', 'api_payload': verified_allocation_payload}
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/documents/41')
@@ -377,24 +381,73 @@ async def sale_safety_checks(browser):
     await product.fill('Choice')
     await expect(page.get_by_text('Verified Choice', exact=True).last).to_be_visible()
     await expect(page.get_by_text('Unverified Choice', exact=True)).to_have_count(0)
+    # A line with no product (a Clover payment without items) can be recorded as a charge that moves no stock.
+    await page.get_by_role('checkbox', name='Charge without stock', exact=False).check()
+    await expect(product).to_have_count(0)
+    await page.get_by_label('Allocation reason').fill('Deposit for a special order')
+    async with page.expect_request(lambda item: item.url.endswith('/api/sale-documents/41/allocate')) as sent:
+        await page.get_by_role('button', name='Allocate stock').click()
+    assert (await sent.value).post_data_json['mappings'] == [{'line_no': 1, 'non_stock': True}]
     await context.close()
 
+    # Blind boxes over half a set (owner, 2026-10-27): the waiting sale is finished with one of three answers.
     def allocation_payload(path, query, request):
         if path == '/api/sale-documents/41':
             data = sale_detail(4)
-            data.update({'allocation_status': 'pending',
-                         'unresolved_reasons': ['fresh_set_selection_required']})
+            data.update({'store_id': 1, 'allocation_status': 'pending',
+                         'unresolved_reasons': ['fresh_set_selection_required'],
+                         'lines': [{'line_no': 1, 'product_id': 5, 'quantity': 7, 'unit': 'box',
+                                    'product_name_snapshot': 'Series Box'}]})
             return data
+        if path == '/api/sale-documents/box-options':
+            return BOX_OPTIONS
         return api_payload(path, query, request)
 
-    context, page = await context_with_api(
-        browser, {'mode': 'data', 'api_payload': allocation_payload}, auth={'role': 'manager'},
-    )
+    state = {'mode': 'data', 'api_payload': allocation_payload}
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/documents/41')
-    await expect(page.get_by_text('Opened-set provenance is required', exact=True)).to_be_visible()
-    await expect(page.get_by_role('button', name='Allocate stock')).to_have_count(0)
+    await expect(page.get_by_text('Opened-set provenance is required', exact=True)).to_have_count(0)
+    await expect(page.get_by_text('Where did these 7 boxes come from?', exact=False)).to_be_visible()
+    await page.get_by_label('Allocation reason').fill('Cashier took loose boxes')
+    allocate = page.get_by_role('button', name='Allocate stock')
+    await expect(allocate).to_be_disabled()  # no answer yet
+    await page.get_by_role('button', name=re.compile('Loose boxes from the floor')).click()
+    async with page.expect_request(lambda item: item.url.endswith('/api/sale-documents/41/allocate')) as sent:
+        await allocate.click()
+    assert (await sent.value).post_data_json['mappings'] == [
+        {'line_no': 1, 'product_id': 5, 'open_set_id': None, 'fresh_set': None, 'loose_boxes': True}]
+    await context.close()
+
+    # 补录 Record sale asks the same question before it saves the draft.
+    def box_entry_payload(path, query, request):
+        if path == '/api/stock':
+            return {'items': [BOX], 'total': 1}
+        if path == '/api/sale-documents/box-options':
+            return BOX_OPTIONS
+        return api_payload(path, query, request)
+
+    state = {'mode': 'data', 'api_payload': box_entry_payload}
+    context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    await page.goto(BASE + '/sales/entry')
+    await page.get_by_label('Receipt or order reference').fill('BOXES-7')
+    await page.get_by_label('Product').click()
+    await page.get_by_text('Series Box · Blind box', exact=True).last.click()
+    await page.get_by_label('Quantity').fill('7')
+    await expect(page.get_by_text('Where did these 7 boxes come from?', exact=False)).to_be_visible()
+    await page.get_by_role('button', name='Save draft').click()
+    await expect(page.get_by_text('Say where the blind boxes came from', exact=False)).to_be_visible()
+    assert not [item for item in state['requests'] if item['path'] == '/api/sale-documents' and item['method'] == 'POST']
+    await page.get_by_role('button', name=re.compile('From an opened set')).click()  # the one opened set
+    async with page.expect_request(lambda item: item.url.endswith('/api/sale-documents') and item.method == 'POST') as sent:
+        await page.get_by_role('button', name='Save draft').click()
+    line = (await sent.value).post_data_json['lines'][0]
+    assert (line['open_set_id'], line['fresh_set'], line['loose_boxes']) == (31, None, False), line
+    await expect(page.get_by_text('Draft saved', exact=True)).to_be_visible()
+    await expect(page.get_by_text('From an opened set #31', exact=True)).to_be_visible()
     await context.close()
 
 
@@ -549,6 +602,11 @@ async def closing_resume_checks(browser):
     assert len(events) == 2 and events[0]['post_data'] == events[1]['post_data']
     assert events[0]['idempotency_key'] == events[1]['idempotency_key']
     assert events[0]['post_data']['amount_cents'] == 125
+    # Once the retry is confirmed the event is recorded: its inputs clear, so another tap cannot record it twice.
+    await expect(page.get_by_text('Cash event recorded', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Cash event amount ($)')).to_have_value('')
+    await expect(page.get_by_label('Cash event reason')).to_have_value('')
+    await expect(page.get_by_role('button', name='Record cash event')).to_be_disabled()
     await context.close()
 
     context, page = await context_with_api(
@@ -559,6 +617,118 @@ async def closing_resume_checks(browser):
     await page.goto(BASE + '/closing?closing_id=91')
     await expect(page.get_by_text('Store day closed', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Close store day')).to_have_count(0)
+    await context.close()
+
+
+async def owner_rule_checks(browser):
+    """Owner, 2026-10-27: staff close with the day's totals and labels only; Closing's own cash refund is for
+    money with no sale; a sale shows a rejected payment as not received and a refund on its own date."""
+    def staff_payload(path, query, request):
+        if path == '/api/closing/71':
+            data = closing_detail()
+            data['cash'].pop('unknown_cash_payment_ids')  # managers only
+            data.update(
+                latest_cash_count=closing_detail('submitted')['latest_cash_count'],
+                tender_totals_cents={'cash': 2000, 'card': 21000, 'e_transfer': 0, 'wechat': 0, 'alipay': 0},
+                hard_blockers=['sales_intake_incomplete', 'pending_allocation', 'checkout_unresolved:51'],
+                actionable_blockers=['sales_intake_incomplete', 'checkout_unresolved:51'],
+                issue_targets={'sales_intake_incomplete': {'href': '#closing-sources'},
+                               'checkout_unresolved:51': {'href': '/checkout/51', 'label': 'MINE-51'}},
+                review_exceptions=['payment_unverified', 'payment_unverified'])
+            return data
+        return api_payload(path, query, request)
+
+    viewport = {'width': 390, 'height': 844}
+    context, page = await context_with_api(
+        browser, {'mode': 'data', 'api_payload': staff_payload}, viewport=viewport, auth={'role': 'staff'},
+    )
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    await page.goto(BASE + '/closing?closing_id=71')
+    await expect(page.get_by_text('Tender review', exact=True)).to_be_visible()
+    await expect(page.get_by_text('$210.00', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Unknown payment amounts', exact=False)).to_have_count(0)
+    await expect(page.get_by_text('No unknown manager-visible payment amounts.', exact=True)).to_have_count(0)
+    # Another cashier's sale is a label without a link; the staff member's own open order keeps its link.
+    await expect(page.get_by_text('A sale still needs stock allocation.', exact=True)).to_be_visible()
+    await expect(page.get_by_role('link', name='A sale still needs stock allocation.')).to_have_count(0)
+    await expect(page.get_by_role('link').filter(has_text='MINE-51')).to_have_attribute('href', '/checkout/51')
+    await expect(page.get_by_text('经理审核 Manager reviews: A payment is not verified.', exact=True)).to_have_count(2)
+    await expect(page.get_by_role('button', name='Submit for manager review')).to_be_disabled()
+    # The selected-value span sits over the search input; open the select from the input itself.
+    await page.get_by_role('combobox', name='Cash event type').click(force=True)
+    await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').get_by_title(
+        '现金退款 Cash refund, no sale', exact=True).click()
+    await expect(page.get_by_text('Only for money returned with no sale in POPCORE.', exact=False)).to_be_visible()
+    await expect(page.get_by_placeholder('备注 Required note: who was refunded and why')).to_be_visible()
+    assert await page.evaluate('document.body.scrollWidth') <= viewport['width'] + 2
+    await context.close()
+
+    def sale_payload(path, query, request):
+        if path == '/api/sale-documents/41':
+            data = sale_detail(5)
+            data['payments'] = [
+                {'id': 61, 'tender': 'e_transfer', 'amount_cents': 4520, 'effective_amount_cents': 4520,
+                 'state': 'rejected', 'refunded_cents': 0, 'evidence': [],
+                 'events': [{'id': 1, 'event_type': 'reject', 'direction': 'none', 'amount_cents': None,
+                             'reason': 'Never arrived', 'business_date': None}]},
+                {'id': 62, 'tender': 'cash', 'amount_cents': 2000, 'effective_amount_cents': 2000,
+                 'state': 'verified', 'refunded_cents': 500, 'evidence': [],
+                 'events': [{'id': 2, 'event_type': 'refund', 'direction': 'decrease', 'amount_cents': 500,
+                             'reason': 'One figure back', 'business_date': '2026-09-14'}]},
+            ]
+            data.update(collected_cents=4520, payment_total_cents=2000, payment_difference_cents=-2520,
+                        rejected_cents=4520, refunded_cents=500)
+            return data
+        if path == '/api/reports/tenders':
+            return {'report': 'tenders', 'scope': 'DT', 'store_ids': [1], 'filters': {},
+                    'generated_at': '2026-09-14T00:00:00Z', 'total_rows': 1,
+                    'items': [{'tender': 'e_transfer', 'recorded_cents': 0, 'verified_cents': 0,
+                               'rejected_cents': 4520, 'refund_cents': 0, 'unknown_count': 0, 'pending_count': 0}]}
+        return api_payload(path, query, request)
+
+    context, page = await context_with_api(
+        browser, {'mode': 'data', 'api_payload': sale_payload}, auth={'role': 'manager'},
+    )
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    await page.goto(BASE + '/sales/documents/41')
+    await expect(page.get_by_text('Not received: not counted in the total', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Rejected payments, not received: $45.20', exact=True)).to_be_visible()
+    await expect(page.get_by_text('$25.20 still owed', exact=True)).to_be_visible()
+    await expect(page.get_by_text('Refunded $5.00 on 2026-09-14 — One figure back', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Payment 61 refund amount ($)')).to_have_count(0)  # never received
+    await expect(page.get_by_label('Payment 62 refund amount ($)')).to_be_visible()
+    await page.goto(BASE + '/reports?report=tenders')
+    await expect(page.get_by_role('columnheader', name='Rejected', exact=True)).to_be_visible()
+    await expect(page.get_by_role('cell', name='$45.20', exact=True)).to_be_visible()
+    await context.close()
+
+
+async def repeat_action_checks(browser):
+    """A confirmed refund or physical return clears its amount and reason, so a second tap cannot record it again."""
+    state = {'mode': 'data', 'api_payload': api_payload}
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    await page.goto(BASE + '/sales/documents/41')
+    refund = page.get_by_role('button', name='Record monetary refund')
+    await page.get_by_label('Payment 61 refund amount ($)').fill('5.00')
+    await page.get_by_label('Payment 61 refund reason').fill('Customer returned one figure')
+    await refund.click()
+    await expect(page.get_by_text('Refund recorded', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Payment 61 refund amount ($)')).to_have_value('')
+    await expect(page.get_by_label('Payment 61 refund reason')).to_have_value('')
+    await expect(refund).to_be_disabled()
+    physical = page.get_by_role('button', name='Record physical return')
+    await page.get_by_label('Physical return reason').fill('Sealed box came back')
+    await physical.click()
+    await expect(page.get_by_text('Physical return recorded', exact=True)).to_be_visible()
+    await expect(page.get_by_label('Physical return reason')).to_have_value('')
+    await expect(physical).to_be_disabled()
+    posts = [item for item in state['requests'] if item['method'] == 'POST']
+    assert [item['path'] for item in posts] == ['/api/payments/61/events', '/api/sale-documents/41/returns'], posts
+    assert posts[0]['post_data']['amount_cents'] == 500 and posts[1]['post_data']['reason'] == 'Sealed box came back'
     await context.close()
 
 
@@ -736,6 +906,8 @@ async def main():
                 await payment_retry_checks(browser)
                 await sale_safety_checks(browser)
                 await closing_resume_checks(browser)
+                await owner_rule_checks(browser)
+                await repeat_action_checks(browser)
                 await report_checks(browser)
             except Exception:
                 for context in browser.contexts:

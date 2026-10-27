@@ -50,6 +50,15 @@ interface InventoryAccess {
   grants: { auth0_sub: string; store_id: number }[]
 }
 
+interface FutureShift {
+  id: number
+  date: string
+  start_time: string
+  end_time: string
+  store_code: string
+  store_name: string
+}
+
 const ROLE_OPTIONS = [
   { value: 'viewer',  label: '查看者' },
   { value: 'staff',   label: '店员' },
@@ -191,6 +200,63 @@ function StoreSelect({ entry, storeOptions, onChange }: {
       placeholder="未分配"
       maxTagCount={3}
     />
+  )
+}
+
+/** Delete confirmation listing the shifts still assigned from today on. Deleting keeps
+ *  them on the schedule, so the manager can see what to reassign before confirming. */
+function DeleteUserConfirm({ user, disabled, onConfirm }: {
+  user: User
+  disabled: boolean
+  onConfirm: () => void
+}) {
+  const [shifts, setShifts] = useState<FutureShift[]>()
+  const [error, setError] = useState('')
+  const request = useRef(0)
+
+  function loadShifts() {
+    const current = ++request.current
+    setShifts(undefined)
+    setError('')
+    client.get<{ shifts: FutureShift[] }>(`/users/${encodeURIComponent(user.id)}/future-shifts`)
+      .then(r => { if (current === request.current) setShifts(r.data.shifts) })
+      .catch((err: any) => {
+        if (current === request.current) setError(err?.response?.data?.error ?? 'Could not load future shifts')
+      })
+  }
+
+  const description = error ? <span role="alert">{error}</span>
+    : !shifts ? <span>正在查看未来班次… Checking future shifts…</span>
+    : !shifts.length ? <span>没有未来班次 · No future shifts are assigned.</span>
+    : (
+      <div className="pc-users-future-shifts">
+        <p>这些班次会留在排班表上，请重新安排 · These shifts stay on the schedule so you can reassign them:</p>
+        <ul aria-label={`${user.username} future shifts`}>
+          {shifts.map(s => (
+            <li key={s.id}>{s.date} · {s.store_code || '—'} · {s.start_time}–{s.end_time}</li>
+          ))}
+        </ul>
+      </div>
+    )
+
+  return (
+    <Popconfirm
+      title={`删除用户 ${user.username}？`}
+      description={description}
+      // Anchored to the button's right edge: the list loads after opening and grows leftwards.
+      placement="topRight"
+      disabled={disabled}
+      onOpenChange={open => { if (open) loadShifts() }}
+      onConfirm={onConfirm}
+      okButtonProps={{ danger: true, disabled: !shifts && !error }}
+    >
+      <Button
+        size="sm"
+        variant="outline"
+        className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+        disabled={disabled}
+      >删除</Button>
+    </Popconfirm>
   )
 }
 
@@ -369,6 +435,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
     try {
       await client.patch(`/users/${encodeURIComponent(u.id)}`, { is_active: u.is_active ? 0 : 1 })
       load()
+      loadStores() // blocking also deactivates the employee record
     } catch {
       message.error('操作失败')
     }
@@ -379,6 +446,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
       await client.delete(`/users/${encodeURIComponent(u.id)}`)
       message.success('已删除')
       load()
+      loadStores()
     } catch (err: any) {
       message.error(err?.response?.data?.error ?? '删除失败')
     }
@@ -566,19 +634,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
       render: (_, r) => (
         <Space>
           <Button size="sm" variant="outline" onClick={() => openEdit(r)}>编辑</Button>
-          <Popconfirm
-            title={`删除用户 ${r.username}？`}
-            disabled={me?.sub === r.id}
-            onConfirm={() => deleteUser(r)}
-            okButtonProps={{ danger: true }}
-          >
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
-              disabled={me?.sub === r.id}
-            >删除</Button>
-          </Popconfirm>
+          <DeleteUserConfirm user={r} disabled={me?.sub === r.id} onConfirm={() => deleteUser(r)} />
         </Space>
       ),
     },
@@ -703,19 +759,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
                     </div>
                     <div className="ml-auto flex gap-2">
                       <Button size="sm" variant="outline" onClick={() => openEdit(u)}>编辑</Button>
-                      <Popconfirm
-                        title={`删除用户 ${u.username}？`}
-                        disabled={me?.sub === u.id}
-                        onConfirm={() => deleteUser(u)}
-                        okButtonProps={{ danger: true }}
-                      >
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
-                          disabled={me?.sub === u.id}
-                        >删除</Button>
-                      </Popconfirm>
+                      <DeleteUserConfirm user={u} disabled={me?.sub === u.id} onConfirm={() => deleteUser(u)} />
                     </div>
                   </div>
                 </CardContent>

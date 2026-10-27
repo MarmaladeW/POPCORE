@@ -71,8 +71,8 @@ class OpeningCountTests(IsolatedApiCase):
                VALUES (?, ?, ?, ?, ?)""",
             (product_id, self.stores[store], upstairs, instore, claw))
 
-    def _sheet(self, store, location, counts, scope='legacy'):
-        """Export the real count sheet for a location, then fill in counts by SKU."""
+    def _sheet(self, store, location, counts, scope='legacy', forms=None):
+        """Export the real count sheet for a location, then fill in counts (and forms) by SKU."""
         with closing(self.connect()) as con:
             rows = count_sheet_rows(con, store, location, scope)
         path = self.folder / f'{store}-{location}.csv'
@@ -83,6 +83,8 @@ class OpeningCountTests(IsolatedApiCase):
             for row in rows:
                 if row['sku'] in counts:
                     row['count'] = counts[row['sku']]
+                if row['sku'] in (forms or {}):
+                    row['stock_form'] = forms[row['sku']]
                 writer.writerow(row)
             if not rows:
                 for sku, count in counts.items():
@@ -438,6 +440,71 @@ class OpeningCountTests(IsolatedApiCase):
                                '--backup', str(self.folder / 'cli-backup.db')])
         self.assertTrue(applied['applied'])
         self.assertEqual(applied['request_key'], report['request_key'])
+
+    def test_cli_rerun_after_counts_verified_products_is_already_applied(self):
+        # TEST-1 has DT legacy stock and no identity: its rows write the form and leave the unit blank.
+        forms = {'TEST-1': 'ordinary'}
+        paths = [self._sheet('DT', 'floor', {'OPEN-BOX': '5', 'OPEN-SET': '0', 'TEST-1': '2'}, forms=forms),
+                 self._sheet('DT', 'upstairs', {'OPEN-BOX': '6', 'OPEN-SET': '0', 'TEST-1': '10'},
+                             forms=forms),
+                 self._sheet('DT', 'claw', {'OPEN-BOX': '1'}),
+                 self._sheet('DT', 'display', {'OPEN-BOX': '1'})]
+        command = ['intake', '--db', db.DB_PATH, *map(str, paths), '--store', 'DT',
+                   '--business-date', '2026-10-20', '--actor-sub', ADMIN_SUB, '--apply']
+        first = opening_cli([*command, '--backup', str(self.folder / 'first.db')])
+        self.assertTrue(first['applied'], first['errors'])
+        self.assertEqual([item['sku'] for item in first['verified_by_count']], ['TEST-1'])
+        before = self.snapshot(LEDGER_TABLES + ('products',))
+        rerun = opening_cli([*command, '--backup', str(self.folder / 'rerun.db')])  # exits 0
+        self.assertTrue(rerun['already_applied'], rerun['errors'])
+        self.assertEqual((rerun['request_key'], rerun['opening_document_id']),
+                         (first['request_key'], first['opening_document_id']))
+        self.assertFalse((self.folder / 'rerun.db').exists())
+        self.assertEqual(self.snapshot(LEDGER_TABLES + ('products',)), before)
+
+    def test_open_restock_sheets_at_an_opening_store_block_its_opening(self):
+        with closing(self.connect()) as con:
+            def sheet(store, day, status, items=True):
+                sid = con.execute(
+                    'INSERT INTO restock_sessions(date, status, store_id) VALUES (?, ?, ?)',
+                    (day, status, self.stores[store])).lastrowid
+                if items:
+                    con.execute('INSERT INTO restock_items(session_id, product_id, requested_qty) '
+                                'VALUES (?, ?, 1)', (sid, self.box))
+                return sid
+            picking = sheet('DT', '2026-10-18', 'picking')
+            drafted = sheet('DT', '2026-10-19', 'pending')
+            sheet('DT', '2026-10-19', 'pending', items=False)
+            sheet('DT', '2026-10-17', 'completed')
+            submitted = sheet('MK', '2026-10-19', 'submitted')
+            con.commit()
+        rows = self._dt_rows()
+        report = self._review(rows, stores=['DT'])
+        blocked = [e for e in report['errors'] if e['code'] == 'open_restock_sessions']
+        self.assertEqual([e['sessions'] for e in blocked], [[
+            {'id': picking, 'date': '2026-10-18', 'status': 'picking'},
+            {'id': drafted, 'date': '2026-10-19', 'status': 'pending'}]])
+        self.assertIn(f'#{picking} (2026-10-18, picking)', blocked[0]['message'])
+        mk = self._review([], stores=['MK'])
+        self.assertEqual([e['sessions'] for e in mk['errors'] if e['code'] == 'open_restock_sessions'],
+                         [[{'id': submitted, 'date': '2026-10-19', 'status': 'submitted'}]])
+
+        before = self.snapshot(LEDGER_TABLES)
+        backup = self.folder / 'open-restock.db'
+        refused = apply_opening_counts(db.DB_PATH, rows, actor_sub=ADMIN_SUB,
+                                       business_date='2026-10-20', backup_path=backup, stores=['DT'])
+        self.assertFalse(refused['applied'])
+        self.assertIn('open_restock_sessions', self._codes(refused))
+        self.assertFalse(backup.exists())
+        self.assertEqual(self.snapshot(LEDGER_TABLES), before)
+
+        # Finished in legacy mode or deleted, the sheets no longer block the count.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE restock_sessions SET status='completed' WHERE id=?", (picking,))
+            con.execute('DELETE FROM restock_items WHERE session_id=?', (drafted,))
+            con.execute('DELETE FROM restock_sessions WHERE id=?', (drafted,))
+            con.commit()
+        self.assertTrue(self._review(rows, stores=['DT'])['ready_to_apply'])
 
     # ── one store at a time ──────────────────────────────────────────────────
 

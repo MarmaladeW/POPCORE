@@ -5,6 +5,14 @@ from support import IsolatedApiCase
 
 
 class ReportMatchChoiceTests(IsolatedApiCase):
+    def setUp(self):
+        super().setUp()
+        # Daily report writes need access to the store (store_access.py): the test staff gets DT.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)",
+                        (self.store_id,))
+            con.commit()
+
     def parse(self, line, header='随手记汇总：'):
         response = self.client.post('/api/sales/parse_report', headers=self.headers(),
                                     json={'text': '2026.9.14 DT\n' + header + '\n' + line,

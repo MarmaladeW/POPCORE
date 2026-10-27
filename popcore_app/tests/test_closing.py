@@ -2,6 +2,8 @@ import json
 from contextlib import closing
 
 from test_payments import PaymentTests
+from auth import ROLE_CLAIM
+from inventory_commands import post_inventory
 import db
 
 
@@ -10,6 +12,17 @@ class ClosingTests(PaymentTests):
         '10000': 0, '5000': 18, '2000': 1, '1000': 1, '500': 1,
         '200': 1, '100': 1, '25': 2, '10': 0, '5': 0,
     }
+
+    def setUp(self):
+        super().setUp()
+        # Staff close a store day they had a shift on (owner, 2026-10-27).
+        with closing(self.connect()) as con:
+            for subject, name in (('staff', 'Staff Cashier'), ('other', 'Other Cashier')):
+                employee = con.execute('INSERT INTO employees(auth0_id,name) VALUES (?,?)',
+                                       ('auth0|' + subject, name)).lastrowid
+                con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                               VALUES (?,'2026-09-08','10:00','18:00','test',?)""", (employee, self.store_id))
+            con.commit()
 
     def create_session(self, key='closing-create'):
         return self.client.post('/api/closing', headers={
@@ -96,10 +109,14 @@ class ClosingTests(PaymentTests):
         self.assertIn('Test Product', targets[f'hot_item_count_missing:{self.product_id}']['label'])
         self.assertTrue(detail['store_name'])
         staff = self.client.get(f"/api/closing/{session['closing_id']}", headers=self.headers()).get_json()
-        self.assertNotIn('hard_blockers', staff)
+        # Staff see the payment blockers as labels only: no id, no link (owner, 2026-10-27).
+        self.assertIn('cash_payment_unresolved', staff['hard_blockers'])
+        self.assertNotIn('cash_payment_unresolved:91', staff['hard_blockers'])
+        self.assertIn('evidence_pending', staff['review_exceptions'])
         self.assertNotIn('cash_payment_unresolved:91', staff['issue_targets'])
         self.assertNotIn('evidence_pending:81', staff['issue_targets'])
         self.assertIn(f'hot_item_count_missing:{self.product_id}', staff['actionable_blockers'])
+        self.assertIn(f'hot_item_count_missing:{self.product_id}', staff['hard_blockers'])
         with closing(self.connect()) as con:
             con.execute('DELETE FROM inventory_count_lines WHERE count_id=71')
             con.execute('DELETE FROM inventory_counts WHERE id=71')
@@ -219,7 +236,7 @@ class ClosingTests(PaymentTests):
         with closing(self.connect()) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM cash_events').fetchone()[0], 1)
 
-    def test_staff_projection_excludes_management_tender_totals(self):
+    def test_staff_projection_shows_day_totals_without_payment_references(self):
         session = self.cash_fixture()
         staff = self.client.get(
             f"/api/closing/{session['closing_id']}", headers=self.headers()
@@ -227,8 +244,12 @@ class ClosingTests(PaymentTests):
         manager = self.client.get(
             f"/api/closing/{session['closing_id']}", headers=self.headers('manager')
         )
-        self.assertNotIn('tender_totals_cents', staff.get_json())
-        self.assertIn('tender_totals_cents', manager.get_json())
+        # Owner, 2026-10-27: staff see the day's tender totals, not the payments behind them.
+        self.assertEqual(staff.get_json()['tender_totals_cents'], manager.get_json()['tender_totals_cents'])
+        for key in ('unknown_payment_ids', 'checkout_funds', 'snapshot', 'late_adjustments'):
+            self.assertNotIn(key, staff.get_json())
+        self.assertNotIn('unknown_cash_payment_ids', staff.get_json()['cash'])
+        self.assertIn('unknown_payment_ids', manager.get_json())
         self.assertNotIn('payment_evidence', str(staff.get_json()))
 
     def test_close_is_single_snapshot_and_single_removal_on_retry(self):
@@ -288,6 +309,96 @@ class ClosingTests(PaymentTests):
             self.assertEqual(con.execute(
                 "SELECT COUNT(*) FROM cash_events WHERE event_type='removal'"
             ).fetchone()[0], 0)
+
+    def close_submitted(self, session, key):
+        return self.client.post(
+            f"/api/closing/{session['closing_id']}/close",
+            headers={**self.headers('manager'), 'Idempotency-Key': key},
+            json={'expected_version': session['version'],
+                  'source_token': session['source_token'],
+                  'accepted_exceptions': self.accepted_exceptions(session)},
+        )
+
+    def test_next_day_stock_does_not_make_submitted_close_stale(self):
+        session = self.submitted_session()
+        next_day = self.create(
+            {**self.sale_body(quantity=1, reference='next-day-sale'),
+             'business_date': '2026-09-09'}, 'next-day-create',
+        ).get_json()
+        posted = self.post(next_day, 'next-day-post')
+        self.assertEqual(posted.get_json()['allocation_status'], 'allocated')
+        refreshed = self.client.get(
+            f"/api/closing/{session['closing_id']}", headers=self.headers('manager')
+        ).get_json()
+        self.assertEqual(refreshed['source_token'], session['source_token'])
+        response = self.close_submitted(session, 'next-day-close')
+        self.assertEqual(response.status_code, 200, response.get_json())
+
+    def test_same_day_stock_document_after_submit_makes_close_stale(self):
+        session = self.submitted_session()
+        with closing(self.connect()) as con:
+            upstairs = con.execute(
+                "SELECT id FROM inventory_locations WHERE store_id=? AND code='upstairs'",
+                (self.store_id,),
+            ).fetchone()[0]
+            version = con.execute(
+                """SELECT version FROM inventory_balances
+                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+                (self.product_id, self.floor),
+            ).fetchone()[0]
+            post_inventory(con, {
+                'kind': 'move', 'business_date': '2026-09-08', 'reason': 'Moved upstairs',
+                'lines': [{
+                    'product_id': self.product_id, 'quantity': 1, 'unit': 'piece',
+                    'from_location_id': self.floor, 'from_disposition': 'saleable',
+                    'to_location_id': upstairs, 'to_disposition': 'saleable',
+                    'expected_versions': {'from': version, 'to': 0},
+                }],
+            }, actor={'sub': 'auth0|staff', ROLE_CLAIM: 'staff'}, request_key='same-day-move')
+        response = self.close_submitted(session, 'same-day-stale-close')
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(response.get_json()['code'], 'closing_stale')
+
+    def test_sale_tenders_that_differ_from_collected_are_review_exceptions(self):
+        sales = {}
+        for reference, payments in (
+            ('no-tender', []),
+            ('short-tender', [{'tender': 'card', 'amount_cents': 3000}]),
+            ('exact-tender', [{'tender': 'card', 'amount_cents': 4520}]),
+        ):
+            draft = self.create(self.sale_body(quantity=1, reference=reference),
+                                f'{reference}-create').get_json()
+            sales[reference] = self.post(draft, f'{reference}-post').get_json()
+            if payments:
+                self.add_payments(sales[reference], payments, f'{reference}-payments')
+        session = self.create_session().get_json()
+        detail = self.client.get(
+            f"/api/closing/{session['closing_id']}", headers=self.headers('manager')
+        ).get_json()
+        short_id = sales['short-tender']['sale_id']
+        self.assertEqual(
+            [code for code in detail['review_exceptions'] if code.startswith('payment_mismatch:')],
+            [f"payment_mismatch:{sales['no-tender']['sale_id']}", f'payment_mismatch:{short_id}'],
+        )
+        self.assertEqual(detail['issue_targets'][f'payment_mismatch:{short_id}'],
+                         {'href': f'/sales/documents/{short_id}', 'label': 'short-tender'})
+
+    def test_payment_mismatch_needs_its_own_reason_at_sign_off(self):
+        session = self.submitted_session()
+        mismatch = f"payment_mismatch:{session['source_documents']['sales'][0]['id']}"
+        accepted = self.accepted_exceptions(session)
+        self.assertIn(mismatch, [item['code'] for item in accepted])
+        refused = self.client.post(
+            f"/api/closing/{session['closing_id']}/close",
+            headers={**self.headers('manager'), 'Idempotency-Key': 'mismatch-unreviewed'},
+            json={'expected_version': session['version'],
+                  'source_token': session['source_token'],
+                  'accepted_exceptions': [item for item in accepted if item['code'] != mismatch]},
+        )
+        self.assertEqual(refused.status_code, 409, refused.get_json())
+        self.assertEqual(refused.get_json()['code'], 'closing_exception_review_required')
+        closed = self.close_submitted(session, 'mismatch-reviewed')
+        self.assertEqual(closed.status_code, 200, closed.get_json())
 
     def test_late_paid_sale_keeps_snapshot_and_adds_linked_adjustment(self):
         session = self.submitted_session()

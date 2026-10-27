@@ -12,6 +12,14 @@ from support import IsolatedApiCase
 
 
 class StockIntegrityTests(IsolatedApiCase):
+    def setUp(self):
+        super().setUp()
+        # Legacy stock, report and restock writes need access to the store (store_access.py).
+        with closing(self.connect()) as con:
+            con.executemany('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)',
+                            [('auth0|staff', self.store_id), ('auth0|manager', self.store_id)])
+            con.commit()
+
     def test_concurrent_direct_moves_cannot_overdraw_stock(self):
         def move():
             with self.client.application.test_client() as client:

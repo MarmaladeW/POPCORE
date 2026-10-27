@@ -28,6 +28,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 export default function SessionModal({ sessionId, onClose }: Props) {
   const [session, setSession] = useState<RestockSession | null>(null)
+  const [live, setLive] = useState(false)
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('request')
   const [error, setError] = useState('')
@@ -42,7 +43,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     try {
       const [{ data }, locations] = await Promise.all([
         client.get<RestockSession>(`/restock/session/${sessionId}`),
-        client.get<Array<{ store_id: number }>>('/inventory/locations'),
+        client.get<Array<{ store_id: number; opening_verified: boolean }>>('/inventory/locations'),
       ])
       if (current !== request.current) return
       if (!locations.data.some(location => location.store_id === data.store_id)) {
@@ -50,6 +51,8 @@ export default function SessionModal({ sessionId, onClose }: Props) {
         setError('You do not have inventory access to this restock session.')
         return
       }
+      // A store is live once any of its locations has a verified opening (live_store_ids).
+      setLive(locations.data.some(location => location.store_id === data.store_id && location.opening_verified))
       setSession(data)
       // Auto-switch tab based on status
       if (data.status === 'pending') setActiveTab('request')
@@ -73,24 +76,25 @@ export default function SessionModal({ sessionId, onClose }: Props) {
 
   const status = session?.status ?? 'pending'
 
+  // Steps stay mounted while the session reloads, so typed quantities survive each saved row.
   const tabItems = [
     {
       key:      'request',
       disabled: receivingBusy,
       label:    <span className="pc-step-tab"><b>录入</b> <small>Request</small></span>,
-      children: session && !error && !loading ? <RequestStep session={session} onRefresh={loadSession} /> : null,
+      children: session && !error ? <Spin spinning={loading}><RequestStep session={session} onRefresh={loadSession} /></Spin> : null,
     },
     {
       key:      'picking',
       label:    <span className="pc-step-tab"><b>拣货</b> <small>Pick</small></span>,
       disabled: status === 'pending' || receivingBusy,
-      children: session && !error && !loading ? <PickingStep session={session} onRefresh={loadSession} /> : null,
+      children: session && !error ? <Spin spinning={loading}><PickingStep session={session} live={live} onRefresh={loadSession} onReceive={() => setActiveTab('receiving')} /></Spin> : null,
     },
     {
       key: 'receiving',
       label: <span className="pc-step-tab"><b>收货</b> <small>Receive</small></span>,
       disabled: !session?.delivery,
-      children: session && !error && !loading ? <ReceivingStep session={session} onRefresh={loadSession} onBusy={setReceivingBusy} /> : null,
+      children: session && !error ? <Spin spinning={loading}><ReceivingStep session={session} onRefresh={loadSession} onBusy={setReceivingBusy} /></Spin> : null,
     },
   ]
 
