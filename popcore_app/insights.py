@@ -2,8 +2,10 @@
 insights.py — nightly rule-based insight generation.
 
 Called by:
-  - APScheduler (nightly at 02:00 server time)
+  - APScheduler (once a day after app_settings.insight_generate_time, Toronto time)
   - POST /api/insights/generate  (admin manual trigger)
+
+Neither holds the SQLite write lock while the checks run: see "Orchestrator" below.
 
 Thresholds are read from insight_thresholds at runtime so managers can tune
 them without a code deploy.  Two checks have adaptive overrides:
@@ -15,17 +17,20 @@ them without a code deploy.  Two checks have adaptive overrides:
                    threshold is max(cfg, median_inter_sale_interval × 1.5).
 """
 import json
+import logging
 import sqlite3
 import statistics
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from db import DB_PATH
+from db import DB_PATH, SQLITE_BUSY_TIMEOUT
 from inventory_commands import live_store_ids
+
+log = logging.getLogger(__name__)
 
 
 def _get_db():
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT)
     con.row_factory = sqlite3.Row
     con.execute('PRAGMA journal_mode=WAL')
     return con
@@ -459,23 +464,31 @@ def _check_sales_swap(cur, store: str, thresholds: dict, today=None) -> list:
 
 
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
+#
+# Generating insights never holds SQLite's write lock while the checks run. A run is
+# claimed in one short write transaction, every check reads from a single read snapshot
+# (in WAL mode a reader never blocks staff writes, however long the checks take), and the
+# results are written in a second short transaction together with the run's success.
+# The nightly job and the admin "generate" route share the claim, so two generations never
+# overlap. A 'running' claim left behind by a process that died counts as abandoned once
+# it is older than STALE_RUN_AFTER, so that date is retried.
 
-def generate_daily_insights(con=None, business_date=None) -> int:
-    """
-    Run all checks for every active store and write results to insights.
-    Undismissed insights older than 48h are pruned first.
-    Returns the number of new insights written.
-    """
-    owned = con is None
-    con = con or _get_db()
-    cur = con.cursor()
+DAILY_JOB = 'daily_insights'
+MANUAL_JOB = 'manual_insights'
+STALE_RUN_AFTER = timedelta(minutes=30)
+
+
+class InsightRunBusy(RuntimeError):
+    """Another insight generation holds a fresh claim."""
+
+
+def compute_daily_insights(con, business_date=None) -> list:
+    """Run every check for every active legacy store and return the insights. Reads only."""
+    began = not con.in_transaction
+    if began:
+        con.execute('BEGIN')  # deferred: one consistent read snapshot, never the write lock
     try:
-        cur.execute('''
-            DELETE FROM insights
-            WHERE dismissed_at IS NULL
-              AND generated_at < datetime('now', '-48 hours')
-        ''')
-
+        cur = con.cursor()
         thresholds  = _get_thresholds(cur)
         app_cfg     = _get_app_settings(cur)
         # App settings override insight_thresholds table values
@@ -489,7 +502,6 @@ def generate_daily_insights(con=None, business_date=None) -> int:
         live = live_store_ids(con)
         live_codes = {row['code'] for row in cur.execute('SELECT id, code FROM stores') if row['id'] in live}
         stores = [code for code in stores if code not in live_codes]
-        now        = datetime.now(timezone.utc).isoformat()
         all_ins    = []
 
         for store in stores:
@@ -501,19 +513,119 @@ def generate_daily_insights(con=None, business_date=None) -> int:
             all_ins.extend(_check_stockout_risk(cur, store, thresholds, today))
             all_ins.extend(_check_data_quality(cur, store, thresholds, today))
             all_ins.extend(_check_sales_swap(cur, store, thresholds, today))
+        return all_ins
+    finally:
+        if began:
+            con.rollback()
 
-        for ins in all_ins:
-            cur.execute('''
-                INSERT INTO insights
-                    (store, check_type, severity, title, body, product_id, meta, generated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (ins['store'], ins['check_type'], ins['severity'],
-                  ins['title'], ins['body'], ins.get('product_id'),
-                  ins.get('meta', '{}'), now))
 
-        if owned:
-            con.commit()
-        return len(all_ins)
+def _store_insights(con, insights) -> None:
+    """Prune stale undismissed insights and insert new ones, inside the caller's write transaction."""
+    con.execute('''
+        DELETE FROM insights
+        WHERE dismissed_at IS NULL
+          AND generated_at < datetime('now', '-48 hours')
+    ''')
+    now = datetime.now(timezone.utc).isoformat()
+    con.executemany('''
+        INSERT INTO insights
+            (store, check_type, severity, title, body, product_id, meta, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', [(ins['store'], ins['check_type'], ins['severity'], ins['title'], ins['body'],
+           ins.get('product_id'), ins.get('meta', '{}'), now) for ins in insights])
+
+
+def _is_fresh_claim(row, now) -> bool:
+    """A 'running' claim young enough that its process may still be working on it."""
+    if row['status'] != 'running':
+        return False
+    try:
+        started = datetime.fromisoformat(row['started_at'])
+    except (TypeError, ValueError):
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return now - started < STALE_RUN_AFTER
+
+
+def _claim_run(con, job, business_date, now):
+    """Claim (job, business_date) in one short write transaction; return the claim token.
+
+    Returns None when the daily job already succeeded for the date. Raises
+    InsightRunBusy while any generation holds a fresh claim."""
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        running = con.execute(
+            "SELECT status, started_at FROM insight_runs WHERE status='running' AND job IN (?, ?)",
+            (DAILY_JOB, MANUAL_JOB)).fetchall()
+        if any(_is_fresh_claim(row, now) for row in running):
+            raise InsightRunBusy('Insight generation is already running')
+        if job == DAILY_JOB and con.execute(
+                "SELECT 1 FROM insight_runs WHERE job=? AND business_date=? AND status='succeeded'",
+                (job, business_date)).fetchone():
+            con.rollback()
+            return None
+        token = now.astimezone(timezone.utc).isoformat()
+        con.execute("""INSERT INTO insight_runs(job, business_date, status, started_at, finished_at, error)
+            VALUES (?, ?, 'running', ?, NULL, NULL)
+            ON CONFLICT(job, business_date) DO UPDATE SET status='running', started_at=excluded.started_at,
+                finished_at=NULL, error=NULL""", (job, business_date, token))
+        con.commit()
+        return token
+    except BaseException:
+        if con.in_transaction:
+            con.rollback()
+        raise
+
+
+def _mark_failed(con, job, business_date, token, exc) -> None:
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        con.execute("""UPDATE insight_runs SET status='failed', finished_at=?, error=?
+            WHERE job=? AND business_date=? AND status='running' AND started_at=?""",
+            (datetime.now(timezone.utc).isoformat(), str(exc)[:500], job, business_date, token))
+        con.commit()
+    except sqlite3.Error:
+        if con.in_transaction:
+            con.rollback()
+        # The claim stays 'running' and is retried once it is stale.
+        log.warning('Could not record the failed insight run %s %s', job, business_date, exc_info=True)
+
+
+def _run_claimed(con, job, business_date, token, check_date) -> int:
+    """Compute with reads only, then write the insights and the run's success together."""
+    try:
+        insights = compute_daily_insights(con, check_date)
+        con.execute('BEGIN IMMEDIATE')
+        if not con.execute(
+                "SELECT 1 FROM insight_runs WHERE job=? AND business_date=? AND status='running' AND started_at=?",
+                (job, business_date, token)).fetchone():
+            con.rollback()  # the claim went stale and another run took it over; that run writes
+            return 0
+        _store_insights(con, insights)
+        con.execute("UPDATE insight_runs SET status='succeeded', finished_at=? WHERE job=? AND business_date=?",
+                    (datetime.now(timezone.utc).isoformat(), job, business_date))
+        con.commit()
+        return len(insights)
+    except Exception as exc:
+        if con.in_transaction:
+            con.rollback()
+        _mark_failed(con, job, business_date, token, exc)
+        raise
+
+
+def generate_daily_insights(con=None, business_date=None) -> int:
+    """Generate insights now (the admin trigger) and return how many were written.
+
+    Raises InsightRunBusy while another generation is running. A connection passed in
+    must not be inside a transaction: this commits its own short transactions."""
+    now = datetime.now(timezone.utc)
+    claim_date = insight_business_date(now)
+    owned = con is None
+    con = con or _get_db()
+    try:
+        token = _claim_run(con, MANUAL_JOB, claim_date, now)
+        return _run_claimed(con, MANUAL_JOB, claim_date, token, business_date)
     finally:
         if owned:
             con.close()
@@ -526,7 +638,7 @@ def insight_business_date(now: datetime) -> str:
 
 
 def run_due_daily_insights(now=None) -> int:
-    """Run once for a due Toronto business date; failed dates may retry."""
+    """Run once for a due Toronto business date; a failed or abandoned date retries."""
     now = now or datetime.now(timezone.utc)
     local = now.astimezone(ZoneInfo('America/Toronto'))
     business_date = insight_business_date(now)
@@ -539,28 +651,17 @@ def run_due_daily_insights(now=None) -> int:
             hour, minute = 2, 0
         if (local.hour, local.minute) < (hour, minute):
             return 0
-        con.execute('BEGIN IMMEDIATE')
-        row = con.execute("SELECT status FROM insight_runs WHERE job='daily_insights' AND business_date=?", (business_date,)).fetchone()
-        if row and row['status'] in {'running', 'succeeded'}:
-            con.rollback(); return 0
-        started = now.astimezone(timezone.utc).isoformat()
-        con.execute("""INSERT INTO insight_runs(job,business_date,status,started_at,finished_at,error)
-            VALUES ('daily_insights',?,'running',?,NULL,NULL)
-            ON CONFLICT(job,business_date) DO UPDATE SET status='running',started_at=excluded.started_at,finished_at=NULL,error=NULL""", (business_date,started))
-        count = generate_daily_insights(con, business_date)
-        con.execute("UPDATE insight_runs SET status='succeeded',finished_at=? WHERE job='daily_insights' AND business_date=?", (datetime.now(timezone.utc).isoformat(),business_date))
-        con.commit(); return count
-    except Exception as exc:
-        con.rollback()
+        # A plain read first, so the per-minute poll takes no write lock once the date is done.
+        row = con.execute('SELECT status, started_at FROM insight_runs WHERE job=? AND business_date=?',
+                          (DAILY_JOB, business_date)).fetchone()
+        if row and (row['status'] == 'succeeded' or _is_fresh_claim(row, now)):
+            return 0
         try:
-            con.execute("""INSERT INTO insight_runs(job,business_date,status,started_at,finished_at,error)
-                VALUES ('daily_insights',?,'failed',?,?,?)
-                ON CONFLICT(job,business_date) DO UPDATE SET status='failed',finished_at=excluded.finished_at,error=excluded.error""",
-                (business_date,now.astimezone(timezone.utc).isoformat(),datetime.now(timezone.utc).isoformat(),str(exc)[:500]))
-            con.commit()
-        finally:
-            con.close()
-        raise
+            token = _claim_run(con, DAILY_JOB, business_date, now)
+        except InsightRunBusy:
+            return 0  # the admin trigger is running; the next minute's poll retries
+        if token is None:
+            return 0
+        return _run_claimed(con, DAILY_JOB, business_date, token, business_date)
     finally:
-        try: con.close()
-        except Exception: pass
+        con.close()

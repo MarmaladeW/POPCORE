@@ -1,0 +1,36 @@
+# /etc/systemd/system/litestream.service: continuous off-site copy of the POPCORE database.
+#
+# Same name as the unit in the litestream .deb, so this file replaces it and only one copy
+# ever runs. It adds the credentials file, which stays outside git, and keeps Litestream
+# small next to production on the 1 GB droplet.
+#   install -m 644 deployment/litestream.service /etc/systemd/system/litestream.service
+#   systemctl daemon-reload && systemctl enable litestream && systemctl restart litestream
+#   journalctl -u litestream -f
+
+[Unit]
+Description=Litestream replication of the POPCORE database
+Documentation=https://litestream.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/litestream.env
+ExecStart=/usr/bin/litestream replicate -config /etc/litestream.yml
+Restart=always
+RestartSec=10s
+# On stop, Litestream ships what is still pending before it exits.
+TimeoutStopSec=60s
+MemoryHigh=150M
+MemoryMax=250M
+Nice=10
+# It writes only beside the database (checkpoints and the .popcore.db-litestream folder),
+# so /usr, /boot and /etc can be read-only.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

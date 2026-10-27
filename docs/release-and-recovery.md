@@ -19,3 +19,7 @@ Production `backup.sh` uses the same package helper. Configure database and thre
 To restore, stop writes, verify the manifest and hashes with `restore_package`, restore into a new directory, apply credentials separately with owner-only permissions, run SQLite integrity and foreign-key checks, set private-directory ownership, and start the candidate against that restored path. Never expose private evidence as static files. Never overwrite the only existing database or attachment tree.
 
 If new-schema data has been posted, rolling application files backward may be unsafe. Preserve the current database and package first, then use reviewed forward recovery or reconciliation rather than silently restoring an older database and losing writes.
+
+## Production deploys, rollback and off-site copies
+
+The live droplet's deploy (rehearsed on a copy of live data, health-checked, rolled back automatically), rollback with an optional database restore, Litestream off-site replication, staging, uptime alerts and the quarterly restore drill are in [operations resilience](operations-resilience.md).
