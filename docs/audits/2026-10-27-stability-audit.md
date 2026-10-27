@@ -161,7 +161,12 @@ There is no snapshot before Oct 8. Of the 37 shifts edited between Aug 11 and Oc
 
 Owner actions: create an R2 or B2 bucket and key; enable DigitalOcean backups; add a `staging.popcore.store` DNS record and its Auth0 URLs; set up a free uptime monitor; approve the server installs. The runbook is `docs/operations-resilience.md`.
 
-Update, later on 2026-10-27: the owner approved the installs. The droplet now has the four commands (kept current by `popcore-deploy`), Litestream 0.5.17 with its config (off until the bucket exists) and staging (tested on a copy of live data, waiting for its DNS record, Auth0 URLs and certificate). A GitHub Actions check now watches `/api/health`. The bucket and key, DigitalOcean backups and the staging DNS and Auth0 entries still need the owner's accounts.
+Update, later on 2026-10-27: the owner approved the installs and set up the accounts. Everything in the table now runs:
+- the four commands, kept current by `popcore-deploy`
+- Litestream 0.5.17, replicating to a private Backblaze B2 bucket. A restore from the bucket passed `integrity_check` and matched the live row counts. Its checks run every 15 minutes, to stay within B2's free list requests.
+- staging at `https://staging.popcore.store`, which logs in through production's Auth0 and is stopped until needed
+- the GitHub Actions check on `/api/health`
+- DigitalOcean weekly backups, which were already on
 
 ## Lower priority (not changed)
 

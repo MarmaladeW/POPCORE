@@ -74,7 +74,7 @@ The Backblaze B2 bucket and key:
 
 1. Buckets, Create a Bucket: a unique name, Files in Bucket are Private, Object Lock off.
 2. On the new bucket, Lifecycle Settings: Keep only the last version of the file. Litestream never rewrites a file, so older versions would only take space.
-3. The bucket's Endpoint, for example `s3.us-west-004.backblazeb2.com`, gives `LITESTREAM_ENDPOINT=https://s3.us-west-004.backblazeb2.com` and `LITESTREAM_REGION=us-west-004`.
+3. The bucket's Endpoint, for example `s3.us-west-004.backblazeb2.com`, gives `LITESTREAM_ENDPOINT=https://s3.us-west-004.backblazeb2.com` and `LITESTREAM_REGION=us-west-004`. Backblaze shows the endpoint without `https://`; add it.
 4. Application Keys, Add a New Application Key: access to that bucket only, Read and Write. Its keyID is `LITESTREAM_ACCESS_KEY_ID` and its applicationKey is `LITESTREAM_SECRET_ACCESS_KEY`; Backblaze shows the applicationKey only once.
 5. Caps & Alerts: daily caps of $0 for Class B and Class C transactions keep it free, and Backblaze emails at 75% and 100% of a cap. `litestream.yml` checks the bucket every 15 minutes. That keeps Litestream at about 550 LIST (Class C) requests a day, and about 1,000 once 30 days of history have built up, under the 2,500 that are free. Its defaults would make about 18,000 (measured with Litestream 0.5.17 against a local S3 server).
 
