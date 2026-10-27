@@ -33,6 +33,13 @@ interface TodayData {
 }
 
 export default function EveningCheckStep() {
+  const storeCode = useAppStore(state => state.selectedStore?.code)
+  // Counts belong to one store: a store change starts a fresh check (and drops any reply still
+  // on its way), so one store's numbers are never shown or submitted as another store's.
+  return <StoreEveningCheck key={storeCode ?? ''} />
+}
+
+function StoreEveningCheck() {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
   const { selectedStore } = useAppStore()

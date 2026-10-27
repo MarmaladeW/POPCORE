@@ -75,7 +75,9 @@ from blueprints.today     import bp as today_bp
 from blueprints.reports   import bp as reports_bp
 from blueprints.special_orders import bp as special_orders_bp
 from blueprints.clover_matches import bp as clover_matches_bp
+from blueprints.health    import bp as health_bp
 
+app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
 app.register_blueprint(stores_bp)

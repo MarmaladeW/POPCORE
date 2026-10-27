@@ -4,6 +4,7 @@ from contextlib import closing
 from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -388,6 +389,19 @@ async def run_checks(browser, case):
     await select_date(START, 'DT')
     await page.get_by_role('button', name='Assigned shifts', exact=True).click()
     await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason')).to_be_visible()
+    # A reopened shift's type is read with its own store's hours, not those of the store in the dialog before it:
+    # straight after Mason's MK shift, Jessi's DT 12:00–22:00 on a Wednesday is a DT full day.
+    await calendars.nth(1).locator('.pc-shift').filter(has_text='Mason').click()
+    await expect(dialog.locator('.ant-select-selection-item').nth(1)).to_have_text('Markham')
+    await dialog.get_by_role('button', name='Cancel', exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    await calendars.nth(0).locator(f'td[data-date="{START + timedelta(days=2)}"] .pc-shift').filter(has_text='Jessi').click()
+    await expect(dialog.locator('.ant-select-selection-item')).to_have_text([re.compile('^Jessi'), 'Downtown', '12:00', '22:00'])
+    await expect(dialog.locator('.pc-shift-types .ant-radio-button-wrapper-checked')).to_have_text('Full day (12:00–22:00)')
+    await dialog.get_by_role('button', name='Cancel', exact=True).click()
+    await expect(dialog).not_to_be_visible()
+    with closing(case.connect()) as con:
+        assert tuple(con.execute('SELECT start_time,end_time FROM shifts WHERE employee_id=101 AND date=?', (str(START + timedelta(days=2)),)).fetchone()) == ('12:00', '22:00')
     if START <= datetime.now(ZoneInfo('America/Toronto')).date():
         # The recorded finish is marked on the calendar block itself.
         await expect(calendars.nth(0).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-finished')).to_have_text('✓ 00:45 +1')
@@ -553,6 +567,38 @@ async def run_checks(browser, case):
     await page.get_by_role('tab', name='我的班 My shifts', exact=True).click()
     await expect(page.get_by_text('提前十分钟到！\nPlease check your shift time.', exact=True)).to_be_visible()
     await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
+    await context.close()
+
+    # Period notes: a note that failed to load cannot be saved over, and changing the period keeps unsaved notes.
+    context, page = await page_for('manager')
+    await page.get_by_role('tab', name='团队排班 Team schedule', exact=True).click()
+    await page.locator('.pc-coverage-toggle').click()
+    await page.locator('.pc-coverage-notes summary').click()
+    notes = page.get_by_role('textbox', name='Period notes', exact=True)
+    await expect(notes).to_be_enabled()
+    notes_down = {'on': True}
+    async def failing_notes(route):
+        if notes_down['on'] and route.request.method == 'GET':
+            await route.fulfill(status=503, content_type='application/json', body='{"error":"unavailable"}')
+        else:
+            await route.fallback()
+    await page.route('**/api/schedule/notes**', failing_notes)
+    await page.get_by_role('button', name='Next calendar period', exact=True).click()
+    await expect(page.get_by_text('Notes could not be loaded, so they cannot be saved yet.', exact=False)).to_be_visible()
+    await expect(notes).to_be_disabled()
+    notes_down['on'] = False
+    await page.locator('.pc-coverage-panel').get_by_role('button', name='Retry', exact=True).click()
+    await expect(notes).to_be_enabled()
+    await notes.fill('Celia covers the 3rd')
+    await page.get_by_role('button', name='Previous calendar period', exact=True).click()
+    await expect(page.get_by_text('Unsaved period notes were kept. Go back to that period to save them.', exact=True)).to_be_visible()
+    await expect(notes).to_have_value('')
+    await page.get_by_role('button', name='Next calendar period', exact=True).click()
+    await expect(notes).to_have_value('Celia covers the 3rd')
+    await page.get_by_role('button', name='Save notes', exact=True).click()
+    await expect(page.get_by_text('Notes saved', exact=True)).to_be_visible()
+    with closing(case.connect()) as con:
+        assert con.execute('SELECT COUNT(*) FROM schedule_notes WHERE content=?', ('Celia covers the 3rd',)).fetchone()[0] == 1
     await context.close()
 
 

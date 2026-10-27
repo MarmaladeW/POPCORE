@@ -114,6 +114,32 @@ async def section_choices_flow(browser):
         await context.close()
 
 
+async def access_denied_flow(browser):
+    """Submitting is checked against the person's stores: a refusal says why and keeps the parsed report."""
+    def payload(path, query, request):
+        result = api_payload(path, query, request)
+        return {**result, 'review': []} if path == '/api/sales/parse_report' else result
+    state = {'api_payload': payload, 'status_for_path': {'/api/sales/submit_daily_report': (
+        403, {'error': 'Inventory access denied', 'code': 'inventory_forbidden'})}}
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    try:
+        await page.goto(BASE + '/sales')
+        await page.locator('textarea').fill('2026.9.14 DT\n卡机汇总：\nTest Product*1')
+        await page.get_by_role('button', name='Parse Report', exact=True).click()
+        submit = page.get_by_role('button', name='Confirm & Log', exact=False)
+        await submit.click()
+        await expect(page.get_by_text('Inventory access denied', exact=True)).to_be_visible()
+        await expect(page.get_by_text('Report imported', exact=False)).to_have_count(0)
+        await expect(submit).to_be_enabled()
+        assert len([r for r in state['requests'] if r['path'] == '/api/sales/submit_daily_report']) == 1
+    except Exception:
+        await page.screenshot(path=OUT / 'access-denied-failure.png', full_page=True)
+        raise
+    finally:
+        await context.close()
+
+
 async def metadata_only_flow(browser):
     def payload(path, query, request):
         if path == '/api/sales/report-metadata':
@@ -245,6 +271,7 @@ async def main():
                 browser = await pw.chromium.launch(headless=True)
                 try:
                     await section_choices_flow(browser)
+                    await access_denied_flow(browser)
                     await metadata_only_flow(browser)
                     for key in NEW_NOTES:
                         await annotation_flow(browser, key)

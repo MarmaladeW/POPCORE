@@ -62,8 +62,11 @@ def dismiss_insight(insight_id):
 @bp.route('/api/insights/generate', methods=['POST'])
 @role_required('admin')
 def trigger_generate():
-    from insights import generate_daily_insights
-    count = generate_daily_insights()
+    from insights import InsightRunBusy, generate_daily_insights
+    try:
+        count = generate_daily_insights()
+    except InsightRunBusy:
+        return jsonify({'error': 'Insights are already being generated. Try again in a minute.'}), 409
     return jsonify({'generated': count})
 
 

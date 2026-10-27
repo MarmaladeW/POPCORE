@@ -10,6 +10,8 @@ import { useRole } from '../../auth/useRole'
 import ManualCheckout from './ManualCheckout'
 import CloverOrder from './CloverOrder'
 import ManualPayment from './ManualPayment'
+import BoxChoices from './BoxChoices'
+import CloverFailures from './CloverFailures'
 import useCheckoutMutation from './useCheckoutMutation'
 import { autoOpenCandidate, groupLines } from './cloverOrderView'
 import { cnyCharged, historyQuery, missingPhotos, paymentSummary, TENDER_FILTERS } from './checkoutHistory'
@@ -57,6 +59,7 @@ function CurrentOrder({order,draft,setDraft,updated,refresh,onBusy,cnyPerCad,cny
     <OrderNotes order={order} updated={updated} disabled={blocked} onBusy={setNoteBusy}/>
     {mutation.notice}
     {order.clover_send&&order.status==='open'&&<CloverSend send={order.clover_send} busy={blocked} saving={mutation.saving} run={name=>mutation.run(`/checkouts/${order.id}/${name}`,{},60000)}/>}
+    {!!order.box_choices?.length&&<BoxChoices questions={order.box_choices} required={!!order.box_choice_required} disabled={blocked||!order.can_choose_boxes} answer={body=>run('boxes',body)}/>}
     {pricing?.can_receive&&pricing.collect&&<ManualPayment order={order} draft={draft} setDraft={setDraft} busy={blocked} saving={mutation.saving} run={run} cnyPerCad={cnyPerCad} cnyRateSource={cnyRateSource}/>}
     {order.abandoned_reason&&<Alert type="warning" message={`${formatCents(order.refund_due_cents)} still to refund`} description={order.abandoned_reason}/>}
     {!order.can_process&&order.status==='open'&&!order.abandoned_reason&&<p className="co-muted">View only. Recording payments needs the cashier’s account and an assigned shift at this location today.</p>}
@@ -214,6 +217,7 @@ export default function CheckoutPage() {
         <div className="co-toolbar"><span className={'co-connection'+(connected?' co-connected':'')}><span aria-hidden="true"/>{cloverStore?(connected?`Clover connected${queue?.clover.environment==='sandbox'?' · sandbox':''}${queue?.clover.writes===false?' · read only':''}`:'Clover not responding'):'Clover disconnected'}</span>
           {phone&&<span className="co-toolbar-links">{refreshButton}<Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?<>当前订单<span className="pc-sr"> Current orders</span></>:<>订单记录<span className="pc-sr"> Order history</span></>}</Link></span>}</div>
         {cloverStore&&queue?.clover.message&&<p className="co-muted">{queue.clover.message}</p>}
+        {cloverStore&&!!queue?.clover.failures?.length&&selectedStore&&<CloverFailures failures={queue.clover.failures} storeId={selectedStore.id} disabled={busy} resolved={()=>setRefresh(n=>n+1)}/>}
         {cloverOn&&<div className="co-clover-find"><Input prefix={<Icon name="search" size={18}/>} aria-label="Clover order ID" placeholder="Clover 订单号 Order ID" value={findText} maxLength={13} onChange={e=>{setFindText(e.target.value);setFindError('')}} onPressEnter={findClover}/><Button disabled={busy} onClick={findClover}>查找<span className="pc-sr"> Find</span></Button></div>}
         {cloverOn&&findError&&<Alert type="error" showIcon message={findError}/>}
         {locationPicker}

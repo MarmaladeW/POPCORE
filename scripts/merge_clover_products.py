@@ -153,14 +153,23 @@ def merge(con, legacy_id, clover_id):
         raise ValueError('source is itself a Clover product')
     con.execute('SAVEPOINT merge_product')
     try:
-        # Both are the same real item, so daily totals of the same day and store add up.
-        for row in con.execute('''SELECT l.id AS legacy_row, t.id AS target_row, l.qty_sold, l.qty_pos, l.qty_cash, l.notes
+        # Both are the same real item, so daily totals of the same day and store add up, channel by channel.
+        for row in con.execute('''SELECT l.id AS legacy_row, t.id AS target_row, l.date, l.store,
+                                         l.qty_sold, l.qty_pos, l.qty_cash, l.qty_claw, l.qty_display, l.qty_employee,
+                                         l.notes, l.unit_price AS legacy_price, t.unit_price AS target_price
                                     FROM daily_sales l JOIN daily_sales t
                                       ON t.product_id=? AND t.date=l.date AND t.store=l.store
                                    WHERE l.product_id=?''', (clover_id, legacy_id)).fetchall():
+            # One row keeps one price snapshot; two different prices need a person to decide.
+            if (row['legacy_price'] is not None and row['target_price'] is not None
+                    and abs(row['legacy_price'] - row['target_price']) >= 0.005):
+                raise ValueError(f"the two products have different prices on {row['date']} at {row['store']} "
+                                 f"({row['legacy_price']:g} and {row['target_price']:g}); correct that day's sales first")
             con.execute('''UPDATE daily_sales SET qty_sold=qty_sold+?, qty_pos=qty_pos+?, qty_cash=qty_cash+?,
+                                  qty_claw=qty_claw+?, qty_display=qty_display+?, qty_employee=qty_employee+?,
                                   notes=TRIM(COALESCE(notes, '') || ' ' || COALESCE(?, '')) WHERE id=?''',
-                        (row['qty_sold'], row['qty_pos'], row['qty_cash'], row['notes'], row['target_row']))
+                        (row['qty_sold'], row['qty_pos'], row['qty_cash'], row['qty_claw'], row['qty_display'],
+                         row['qty_employee'], row['notes'], row['target_row']))
             con.execute('DELETE FROM daily_sales WHERE id=?', (row['legacy_row'],))
         for table, column in references(con):
             con.execute(f'UPDATE OR IGNORE "{table}" SET "{column}"=? WHERE "{column}"=?', (clover_id, legacy_id))

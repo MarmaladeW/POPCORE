@@ -266,6 +266,33 @@ async def navigation_checks(browser):
         await context.close()
 
 
+async def settings_checks(browser):
+    """Settings that failed to load are never saved over the real configuration."""
+    state = {'mode': 'data', 'get_status_for_path': {'/api/settings': (503, {'error': 'unavailable'})}}
+    context, page = await context_with_api(browser, state)
+    await page.goto(BASE + '/settings')
+    failed = page.get_by_role('alert').filter(has_text='Settings could not be loaded')
+    await expect(failed).to_be_visible()
+    save = page.get_by_role('button', name='保存 / Save', exact=True)
+    await expect(save).to_be_disabled()
+    state['get_status_for_path'] = {}
+    await failed.get_by_role('button', name='重试 / Retry').click()
+    await expect(failed).to_have_count(0)
+    await expect(save).to_be_enabled()
+
+    # Stores that fail to load (after the app has started) block Scheduling, which saves one entry per store.
+    state['get_status_for_path'] = {'/api/stores': (503, {'error': 'unavailable'})}
+    navigate = "path => { history.pushState({}, '', path); dispatchEvent(new PopStateEvent('popstate')) }"
+    await page.evaluate(navigate, '/')   # leave Settings without reloading the app
+    await expect(page.get_by_role('tab', name='排班 / Scheduling')).to_have_count(0)
+    await page.evaluate(navigate, '/settings')
+    await expect(page.get_by_role('alert').filter(has_text='Stores could not be loaded')).to_be_visible()
+    await page.get_by_role('tab', name='排班 / Scheduling').click()
+    await expect(page.get_by_role('tabpanel').get_by_role('button', name='保存 / Save', exact=True)).to_be_disabled()
+    assert not [r for r in state['requests'] if r['method'] != 'GET'], 'settings were written'
+    await context.close()
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
@@ -286,6 +313,7 @@ async def main():
                 await wrong_store_check(browser)
                 await schedule_checks(browser)
                 await navigation_checks(browser)
+                await settings_checks(browser)
             except Exception:
                 for context in browser.contexts:
                     if context.pages:

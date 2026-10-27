@@ -22,6 +22,14 @@ class OperationalReportTests(IsolatedApiCase):
         self.assertEqual({r['tender']:r['recorded_cents'] for r in data['items']},{'card':2000,'cash':1000})
         self.assertEqual({r['tender']:r['refund_cents'] for r in data['items']},{'card':0,'cash':200})
         self.assertEqual(self.client.get('/api/reports/tenders?store_code=MK',headers=self.headers('manager')).status_code,403)
+    def test_tender_report_applies_manager_corrections_and_keeps_refunds_separate(self):
+        with closing(self.connect()) as con:
+            cash,card=[row[0] for row in con.execute('SELECT id FROM sale_payments ORDER BY id')]
+            con.execute("INSERT INTO payment_events(payment_id,event_type,direction,amount_cents,reason,actor_sub) VALUES (?,'correction','increase',130,'Counted 11.30','auth0|manager')",(cash,))
+            con.execute("INSERT INTO payment_events(payment_id,event_type,direction,amount_cents,reason,actor_sub) VALUES (?,'correction','decrease',500,'Terminal showed 15.00','auth0|manager')",(card,))
+            con.commit()
+        data=self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('manager')).get_json()
+        self.assertEqual({r['tender']:(r['recorded_cents'],r['verified_cents'],r['refund_cents']) for r in data['items']},{'cash':(1130,1130,200),'card':(1500,0,0)})
     def test_inventory_report_keeps_native_units_separate(self):
         data=self.client.get('/api/reports/inventory?store_code=DT',headers=self.headers('staff')).get_json()
         self.assertIn('items',data);self.assertNotIn('combined_quantity',data)

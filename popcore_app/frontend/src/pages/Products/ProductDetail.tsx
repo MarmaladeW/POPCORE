@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Button, Input, Spin, Tag } from 'antd'
+import { Alert, Button, Input, Spin, Tag } from 'antd'
 import { Link } from 'react-router-dom'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
@@ -46,15 +46,20 @@ export interface ProductDetailData {
 export function useProductDetail(productId: number | null) {
   const [product, setProduct] = useState<ProductDetailData | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [aliases, setAliases] = useState<{ id: number; alias: string }[]>([])
   const [aliasInput, setAliasInput] = useState('')
   const [version, setVersion] = useState(0)
   useEffect(() => {
-    if (!productId) { setProduct(null); setAliases([]); return }
+    setError('')
+    if (!productId) { setProduct(null); setAliases([]); setLoading(false); return }
+    let current = true
     setLoading(true)
     client.get(`/products/${productId}`)
-      .then(r => { setProduct(r.data); setAliases(r.data.aliases ?? []) })
-      .finally(() => setLoading(false))
+      .then(r => { if (current) { setProduct(r.data); setAliases(r.data.aliases ?? []) } })
+      .catch(() => { if (current) setError('Unable to load this product.') })
+      .finally(() => { if (current) setLoading(false) })
+    return () => { current = false }
   }, [productId, version])
   const reload = () => setVersion(value => value + 1)
   async function addAlias() {
@@ -71,7 +76,10 @@ export function useProductDetail(productId: number | null) {
     await deleteAlias(product.id, aliasId)
     setAliases(prev => prev.filter(a => a.id !== aliasId))
   }
-  return { product, loading, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload }
+  // Only the open product's facts are shown: never the previous product's (nor its Edit and Images buttons) while
+  // another loads or after its load failed.
+  const shown = product?.id === productId ? product : null
+  return { product: shown, loading, error, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload }
 }
 
 const forms: Record<string, string> = { sealed_set: '整端', random_box: '盲盒单盒', confirmed_design: '确认款', ordinary: '普通' }
@@ -115,9 +123,10 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
 export function ProductDetailBody({ detail, stockTotal, onOpen }: {
   detail: ReturnType<typeof useProductDetail>; stockTotal: number | null; onOpen?: (id: number) => void
 }) {
-  const { product, loading, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload } = detail
+  const { product, loading, error, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload } = detail
   const hasSecrets = product && product.hidden_count && product.hidden_count !== '0'
   return <Spin spinning={loading}>
+    {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={reload}>Retry</Button>} />}
     {product && <div className="pc-prod-detail-body">
       <div className="pc-prod-facts">
         <div><span>价格 Price (CA$)</span><strong>{product.price != null ? `$${product.price.toFixed(2)}` : '—'}</strong></div>

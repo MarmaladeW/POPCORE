@@ -6,15 +6,17 @@ import { useBeforeUnload, useNavigate } from 'react-router-dom'
 
 import client from '../../api/client'
 import { searchGoodsProducts, type GoodsProduct } from '../../api/goods'
-import { addPayments, createSale, fetchSale, newRequestKey, postSale, type SaleEntryMode, type SaleInput, type SaleResult } from '../../api/salesDocuments'
+import { addPayments, createSale, fetchBoxOptions, fetchSale, newRequestKey, postSale, type SaleEntryMode, type SaleInput, type SaleResult } from '../../api/salesDocuments'
 import { formatCents, parseMoneyToCents } from '../../lib/money'
 import { useHistoryReconciliationGuard } from '../../lib/reconciliationNavigation'
 import { useAppStore, type Store } from '../../store'
 import { torontoDate } from '../Dashboard/todayPresentation'
+import { BoxQuestionButtons } from './BoxChoices'
+import { BOX_CHOICES, boxAnswerFields, boxAnswerReady, needsBoxAnswer, type BoxAnswer, type BoxOptions } from './boxChoice'
 
 const { Title, Text } = Typography
 type Tender = { tender: string; amount_cents: number | null }
-type CreateIntent = { key: string; body: SaleInput; product: GoodsProduct; tenders: Tender[] }
+type CreateIntent = { key: string; body: SaleInput; product: GoodsProduct; tenders: Tender[]; boxes?: BoxAnswer }
 interface FormValues {
   business_date: dayjs.Dayjs; entry_mode: SaleEntryMode; source_reference: string
   product_id: number; quantity: number; unit_price: string; source_tax: string; from_display?: boolean
@@ -40,6 +42,21 @@ export default function SaleEntryPage() {
   const postIntent = useRef<{ key: string; version: number } | null>(null)
   const paymentIntent = useRef<{ key: string; version: number; payments: Tender[] } | null>(null)
   const productRequest = useRef(0), restoringStore = useRef(false), guard = dirty || pending !== null
+  // Blind boxes over half a set (owner, 2026-10-27): say where they came from before saving.
+  const productId = Form.useWatch('product_id', form), quantity = Form.useWatch('quantity', form), fromDisplay = Form.useWatch('from_display', form)
+  const [boxOptions, setBoxOptions] = useState<{ productId: number; options: BoxOptions | null } | null>(null), [boxAnswer, setBoxAnswer] = useState<BoxAnswer>()
+  useEffect(() => {
+    setBoxAnswer(undefined)
+    if (!scope || scope.code === 'ALL' || !productId) { setBoxOptions(null); return }
+    const controller = new AbortController()
+    fetchBoxOptions(scope.id, productId, controller.signal).then(options => setBoxOptions({ productId, options }))
+      .catch(cause => { if (cause?.code !== 'ERR_CANCELED') setBoxOptions({ productId, options: null }) })
+    return () => controller.abort()
+  }, [scope?.id, productId])
+  const options = boxOptions && boxOptions.productId === productId ? boxOptions.options : null
+  const asksBoxes = needsBoxAnswer(options, quantity ?? 0)
+  // A display piece is sold on its own: only loose boxes can answer for it.
+  useEffect(() => { if (fromDisplay) setBoxAnswer(answer => answer?.choice === 'loose' ? answer : undefined) }, [fromDisplay])
 
   useHistoryReconciliationGuard(guard, pending ? 'This request is not confirmed. Leave it reconciliation-pending and exit this page?' : 'Discard this unsaved sale entry?')
   useBeforeUnload(event => { if (guard) event.preventDefault() })
@@ -89,6 +106,7 @@ export default function SaleEntryPage() {
       if (!values || !scope || scope.code === 'ALL') return
       const product = products.find(item => item.id === values.product_id)
       if (!product?.stock_unit) { setError('Choose a product with verified inventory units.'); return }
+      if (asksBoxes && !boxAnswerReady(boxAnswer, options!)) { setError('Say where the blind boxes came from: a new sealed set, an opened set or loose boxes.'); return }
       try {
         if (!Number.isSafeInteger(values.quantity) || values.quantity < 1) throw new RangeError('Quantity must be a positive whole number.')
         const unitPrice = readMoney(values.unit_price), tax = readMoney(values.source_tax), collected = readMoney(values.collected)
@@ -101,9 +119,10 @@ export default function SaleEntryPage() {
           source: { system: 'manual', account: scope.code, reference: values.source_reference }, subtotal_cents: subtotal,
           source_tax_cents: tax, gross_cents: gross, reduction_cents: gross == null || collected == null ? null : Math.max(0, gross - collected),
           rounding_cents: gross == null || collected == null ? null : 0, collected_cents: collected,
-          lines: [{ product_id: product.id, unit: product.stock_unit, quantity: values.quantity, unit_price_cents: unitPrice, source_tax_cents: tax, ...(values.from_display ? { from_display: true } : {}) }],
+          lines: [{ product_id: product.id, unit: product.stock_unit, quantity: values.quantity, unit_price_cents: unitPrice, source_tax_cents: tax, ...(values.from_display ? { from_display: true } : {}),
+            ...(asksBoxes && boxAnswer && options ? boxAnswerFields(boxAnswer, options) : {}) }],
         }
-        intent = { key: newRequestKey(), body, product, tenders }; createIntent.current = intent
+        intent = { key: newRequestKey(), body, product, tenders, boxes: asksBoxes ? boxAnswer : undefined }; createIntent.current = intent
       } catch (cause) { setError((cause as Error).message); return }
     }
     setSaving(true); setPending('create'); setError('')
@@ -182,6 +201,7 @@ export default function SaleEntryPage() {
         <Descriptions.Item label="Subtotal">{formatCents(submitted.body.subtotal_cents)}</Descriptions.Item>
         <Descriptions.Item label="Gross">{formatCents(submitted.body.gross_cents)}</Descriptions.Item>
         <Descriptions.Item label="Collected">{formatCents(submitted.body.collected_cents)}</Descriptions.Item>
+        {submitted.boxes && <Descriptions.Item label="Blind boxes from">{BOX_CHOICES.find(item => item.value === submitted.boxes!.choice)?.label}{submitted.boxes.openSetId ? ` #${submitted.boxes.openSetId}` : ''}</Descriptions.Item>}
         <Descriptions.Item label="Expected stock effect">-{submitted.body.lines[0].quantity} {submitted.product.stock_unit}s from saleable {submitted.body.lines[0].from_display ? 'display' : 'floor'} stock after posting</Descriptions.Item>
       </Descriptions>
       <List size="small" header="Actual tenders" locale={{ emptyText: 'No tender facts entered' }} dataSource={submitted.tenders} renderItem={item => <List.Item>{item.tender.replace('_', ' ')} · {formatCents(item.amount_cents)}</List.Item>} />
@@ -196,6 +216,9 @@ export default function SaleEntryPage() {
         <Form.Item name="product_id" label="Product" rules={[{ required: true }]}><Select showSearch filterOption={false} onSearch={searchProducts} options={products.map(product => ({ value: product.id, label: productLabel(product) }))} /></Form.Item>
         <Form.Item name="quantity" label="Quantity" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="from_display" valuePropName="checked"><Checkbox>陈列品 Display piece <Text type="secondary">· taken from display, not the floor</Text></Checkbox></Form.Item>
+        {asksBoxes && options && <BoxQuestionButtons name={productLabel(products.find(item => item.id === productId) ?? { id: productId, sku: '', jizhanming: '' })} quantity={quantity}
+          setSize={options.set_size} fromDisplay={!!fromDisplay} options={options} choice={boxAnswer?.choice ?? null} openSetId={boxAnswer?.openSetId ?? null}
+          disabled={pending === 'create'} answer={(choice, openSetId) => { setBoxAnswer({ choice, openSetId }); setDirty(true) }} />}
         <Title level={5}>Actual money</Title>
         {[['unit_price', 'Actual unit price ($)'], ['source_tax', 'Actual tax ($)'], ['collected', 'Actual collected total ($)'], ['cash', 'Cash ($)'], ['card', 'Card ($)'], ['e_transfer', 'E-transfer ($)'], ['wechat', 'WeChat Pay ($)'], ['alipay', 'Alipay ($)']].map(([name, label]) =>
           <Form.Item key={name} name={name} label={label} rules={[{ validator: async (_, value) => { try { readMoney(value) } catch (cause) { throw new Error((cause as Error).message) } } }]}><Input prefix="$" inputMode="decimal" placeholder="Unknown when blank" /></Form.Item>)}

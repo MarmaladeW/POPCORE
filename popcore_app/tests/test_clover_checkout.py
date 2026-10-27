@@ -368,9 +368,9 @@ class CloverCheckoutTests(ReceivingFixture):
         order = self.detail(self.queue()['orders'][0]['id'])
         collect = order['clover']['collect']
         self.assertEqual(collect['pay'], {'due_cents': 4600, 'mode': 'cash_discount', 'label': 'Cash discount',
-                                          'rest_cents': 4600})
+                                          'rest_cents': 4600, 'cash_rest_cents': 4600})
         self.assertEqual(collect['split_card'], {'due_cents': 4800, 'mode': 'split_card', 'label': 'Rounding',
-                                                 'rest_cents': 4800})
+                                                 'rest_cents': 4800, 'cash_rest_cents': 4800})
         self.assertEqual(collect['card'], {'due_cents': 4813, 'rest_cents': 4813})
         part = self.receive(order, 'part', 'cash', 2000, plan='split_card', expected_due_cents=4800)
         collect = part['clover']['collect']
@@ -382,6 +382,35 @@ class CloverCheckoutTests(ReceivingFixture):
         collect = self.detail(self.checkout_for('ORDERBBBBBBBB'))['clover']['collect']
         self.assertEqual((collect['pay']['rest_cents'], collect['split_card']['rest_cents'], collect['card']['rest_cents']),
                          (2500, 2500, 2513))
+
+    def test_cash_is_rounded_to_five_cents_on_a_clover_order(self):
+        # Owner, 2026-10-27: card $20.37 on Clover; the rest of the $42.00 split is $21.63, collected as $21.65.
+        self.clover.put(clover_order(prices=(3770,), total=4260, mapped=False, payments=[card('CARDPAYMENT01', 2037)],
+                                     state='PARTIALLY_PAID'))
+        order = self.detail(self.queue()['orders'][0]['id'])
+        rest = order['clover']['collect']['split_card']
+        self.assertEqual((rest['due_cents'], rest['rest_cents'], rest['cash_rest_cents']), (4200, 2163, 2165))
+        self.receive(order, 'odd-cash', 'cash', 2163, plan='split_card', expect=400)
+        done = self.receive(order, 'cash-rest', 'cash', 2165, plan='split_card', expected_due_cents=4200)
+        self.assertEqual((done['status'], done['received_cents'], done['clover']['due_cents']), ('completed', 4202, 4202))
+        self.assertIsNone(done['clover']['review'])
+        sale = self.one('SELECT * FROM sale_documents WHERE id=?', done['sale_id'])
+        self.assertEqual((sale['gross_cents'], sale['reduction_cents'], sale['collected_cents']), (4260, 58, 4202))
+
+    def test_pay_mode_never_writes_more_than_the_clover_total(self):
+        # Cash rounded up past an exact Clover total ($19.13 collected as $19.15): Clover is paid its total.
+        with patch.dict(os.environ, {'CLOVER_WRITEBACK': 'pay'}):
+            legacy = [{'id': 'D00000000002', 'name': 'CA$0.89 Off', 'amount': -89, 'percentage': None}]
+            self.clover.put(clover_order(prices=(1770,), total=1913, mapped=False, discounts=legacy))
+            order = self.detail(self.queue()['orders'][0]['id'])
+            self.assertEqual(order['clover']['collect']['pay']['cash_rest_cents'], 1915)
+            done = self.receive(order, 'cash-1', 'cash', 1915, expected_due_cents=1913)
+            self.assertEqual((done['status'], done['received_cents'], done['clover']['writeback']['state']),
+                             ('completed', 1915, 'done'))
+            (_, path, body, _), = self.clover.writes()
+            self.assertEqual((path, body['target_total'], body['discount_name'], [p['amount'] for p in body['payments']]),
+                             ('/orders/ORDERAAAAAAAA/settle', 1913, None, [1913]))
+            self.assertEqual(self.one('SELECT amount_cents FROM sale_payments WHERE sale_id=?', done['sale_id'])[0], 1915)
 
     def test_a_manager_can_take_payment_on_another_cashiers_order(self):
         self.clover.put(clover_order(mapped=False))
@@ -503,6 +532,108 @@ class CloverCheckoutTests(ReceivingFixture):
         del self.clover.fail['GET /orders/scan']
         detail = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager')).get_json()
         self.assertNotIn('clover_sync_stale', detail['hard_blockers'])
+
+    def closing_detail(self, key='closing-1'):
+        closing_id = self.client.post('/api/closing', json={'store_id': self.store_id, 'business_date': '2026-10-20'},
+                                      headers={**self.headers('manager'), 'Idempotency-Key': key}).get_json()['closing_id']
+        detail = self.client.get(f'/api/closing/{closing_id}', headers=self.headers('manager'))
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        return detail.get_json()
+
+    def test_a_clover_payment_without_items_waits_for_a_manager_and_counts_at_closing(self):
+        # A custom amount or quick sale on Clover: paid by card, no items (owner, 2026-10-27).
+        self.clover.put(clover_order('QUICKSALE0001', prices=(), total=5000, payments=[card('QUICKPAYMENT1', 5000)],
+                                     state='PAID'), clover_order('EMPTYAAAAAAAA', prices=(), total=0))
+        self.queue()
+        self.assertIsNone(self.checkout_for('EMPTYAAAAAAAA'))  # an empty order is still not an order
+        checkout = self.one('SELECT * FROM checkout_orders WHERE id=?', self.checkout_for('QUICKSALE0001'))
+        sale = self.one('SELECT * FROM sale_documents WHERE id=?', checkout['sale_id'])
+        self.assertEqual((checkout['status'], sale['collected_cents'], sale['allocation_status'], sale['allocation_reason']),
+                         ('completed', 5000, 'pending', 'product_mapping_required'))
+        self.assertEqual(self.one('SELECT raw_product_text FROM sale_lines WHERE sale_id=?', sale['id'])[0],
+                         'Clover payment with no items')
+        detail = self.closing_detail()
+        self.assertIn(f"pending_allocation:{sale['id']}", detail['hard_blockers'])
+        self.assertEqual(detail['tender_totals_cents']['card'], 5000)
+        # The manager records it as a charge that moves no stock.
+        allocated =self.client.post(f"/api/sale-documents/{sale['id']}/allocate", json={
+            'expected_version': sale['version'], 'reason': 'Deposit for a special order',
+            'mappings': [{'line_no': 1, 'non_stock': True}]}, headers={**self.headers('manager'), 'Idempotency-Key': 'alloc'})
+        self.assertEqual(allocated.status_code, 200, allocated.get_json())
+        self.assertEqual((allocated.get_json()['allocation_status'], allocated.get_json()['inventory_document_id']),
+                         ('allocated', None))
+        self.assertEqual(self.one('SELECT reason FROM sale_allocations WHERE sale_id=?', sale['id'])[0],
+                         'non_stock_charge: Deposit for a special order')
+        self.assertNotIn(f"pending_allocation:{sale['id']}", self.closing_detail('closing-2')['hard_blockers'])
+
+    def test_a_clover_order_that_cannot_be_imported_holds_closing_until_it_imports_or_is_resolved(self):
+        with closing(self.connect()) as con:  # an admin removed the register's grant
+            clover_checkout.ensure_feed(con, clover_checkout.config())
+            con.execute('DELETE FROM inventory_access WHERE auth0_sub=?', (REGISTER_SUB,))
+            con.commit()
+        self.clover.put(clover_order('CARDSALE00001', mapped='all', payments=[card('CARDPAYMENT01', 4259)], state='PAID'))
+        detail = self.closing_detail()
+        self.assertIn('clover_import_failed:CARDSALE00001', detail['hard_blockers'])
+        self.assertNotIn('clover_sync_stale', detail['hard_blockers'])
+        self.assertEqual(detail['issue_targets']['clover_import_failed:CARDSALE00001'],
+                         {'href': '/checkout', 'label': 'Clover order CARDSALE00001'})
+        failures = self.queue('manager')['clover']['failures']
+        self.assertEqual([(f['order_id'], f['business_date']) for f in failures], [('CARDSALE00001', '2026-10-20')])
+        # Once the grant is back the next scan imports it, and closing counts the card.
+        with closing(self.connect()) as con:
+            con.execute('INSERT INTO inventory_access(auth0_sub,store_id) VALUES (?,?)', (REGISTER_SUB, self.store_id))
+            con.commit()
+        detail = self.closing_detail()
+        self.assertNotIn('clover_import_failed:CARDSALE00001', detail['hard_blockers'])
+        self.assertEqual(detail['tender_totals_cents']['card'], 4259)
+        self.assertEqual(self.queue('manager')['clover']['failures'], [])
+        # Another one a manager resolves instead; it is then never imported, so it is never counted twice.
+        with closing(self.connect()) as con:
+            con.execute('DELETE FROM inventory_access WHERE auth0_sub=?', (REGISTER_SUB,))
+            con.commit()
+        self.clover.put(clover_order('CARDSALE00002', mapped='all', payments=[card('CARDPAYMENT02', 4259)], state='PAID'))
+        self.assertIn('clover_import_failed:CARDSALE00002', self.closing_detail()['hard_blockers'])
+        path, body = '/api/checkouts/clover/CARDSALE00002/resolve', {'store_id': self.store_id, 'reason': 'Recorded by hand'}
+        self.assertEqual(self.client.post(path, json=body, headers={**self.headers(), 'Idempotency-Key': 'r-0'}).status_code, 403)
+        self.assertEqual(self.client.post(path, json={**body, 'reason': ' '},
+                                          headers={**self.headers('manager'), 'Idempotency-Key': 'r-1'}).status_code, 400)
+        resolved = self.client.post(path, json=body, headers={**self.headers('manager'), 'Idempotency-Key': 'r-2'})
+        self.assertEqual((resolved.status_code, resolved.get_json()), (200, {'failures': []}))
+        self.assertNotIn('clover_import_failed:CARDSALE00002', self.closing_detail()['hard_blockers'])
+        with closing(self.connect()) as con:
+            con.execute('INSERT INTO inventory_access(auth0_sub,store_id) VALUES (?,?)', (REGISTER_SUB, self.store_id))
+            con.commit()
+        self.closing_detail()
+        self.assertIsNone(self.checkout_for('CARDSALE00002'))
+
+    def test_clover_orders_from_before_the_store_went_live_are_never_imported(self):
+        # Owner, 2026-10-27: the opening count already holds what was sold before it.
+        with closing(self.connect()) as con:
+            opened = datetime.fromtimestamp(CREATED / 1000, ZoneInfo('UTC')).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            document = con.execute("""INSERT INTO inventory_documents(kind,request_key,payload_hash,actor_sub,business_date,
+                posted_at,status) VALUES ('opening','opening-dt','x','auth0|admin','2026-10-20',?,'posted')""",
+                (opened,)).lastrowid
+            con.execute('UPDATE inventory_scope_state SET opening_document_id=? WHERE store_id=?', (document, self.store_id))
+            con.commit()
+        self.clover.put(clover_order('BEFOREOPENING', mapped='all', payments=[card('CARDPAYMENT01', 4259)], state='PAID',
+                                     created=CREATED - 3600_000),
+                        clover_order('AFTEROPENING1', mapped='all', created=CREATED + 3600_000))
+        self.queue()
+        detail = self.closing_detail()
+        self.assertEqual((self.checkout_for('BEFOREOPENING'), bool(self.checkout_for('AFTEROPENING1'))), (None, True))
+        self.assertEqual(self.one('SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?',
+                                  self.product_id, self.floor)['quantity'], 5)
+        self.assertNotIn('clover_sync_stale', detail['hard_blockers'])
+        # A store that has not gone live takes no Clover orders, and says so.
+        with closing(self.connect()) as con:
+            con.execute('UPDATE inventory_scope_state SET opening_verified=0 WHERE store_id=?', (self.store_id,))
+            con.commit()
+        self.clover.put(clover_order('NOTLIVEORDER1', mapped='all', created=CREATED + 7200_000))
+        with closing(self.connect()) as con:
+            clover_checkout.sync(con, clover_checkout.config(), force=True)
+            message = con.execute('SELECT error FROM clover_feed').fetchone()[0]
+        self.assertIsNone(self.checkout_for('NOTLIVEORDER1'))
+        self.assertEqual(message, 'Clover orders are not imported until this store goes live with its opening count.')
 
     def test_find_by_clover_id_and_cny_rate(self):
         self.clover.put(clover_order())

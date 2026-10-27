@@ -6,7 +6,9 @@ import {
 import { PlusOutlined, DeleteOutlined, SendOutlined, LockOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
+import { useAppStore } from '../../store'
 import type { RestockSession, RestockItem } from './index'
+import { withUnit } from './units'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -44,6 +46,8 @@ export default function RequestStep({ session, onRefresh }: Props) {
 
   const isReadOnly = session.status !== 'pending'
   const addedIds   = new Set(session.items.map(i => i.product_id))
+  // 仓库库存 is the sheet's own store's back stock, not another store's.
+  const storeCode  = useAppStore(state => state.stores.find(store => store.id === session.store_id)?.code)
 
   // ── Search (debounced 300ms) ───────────────────────────────────────────────
 
@@ -52,13 +56,13 @@ export default function RequestStep({ session, onRefresh }: Props) {
     setSearching(true)
     try {
       const { data } = await client.get<SearchProduct[]>('/products/search', {
-        params: { q: val, include_stock: 1, limit: 20 },
+        params: { q: val, include_stock: 1, limit: 20, store_code: storeCode },
       })
       setSearchResults(data)
     } finally {
       setSearching(false)
     }
-  }, [])
+  }, [storeCode])
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const val = e.target.value
@@ -251,7 +255,7 @@ export default function RequestStep({ session, onRefresh }: Props) {
       key: 'requested_qty',
       width: 120,
       render: (_, r) => {
-        if (isReadOnly) return <Tag>{r.requested_qty} 端</Tag>
+        if (isReadOnly) return <Tag>{withUnit(r.requested_qty, r.stock_unit)}</Tag>
         return (
           <InputNumber
             min={1} max={999} precision={0}

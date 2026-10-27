@@ -77,7 +77,9 @@ class AttendanceTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute('UPDATE employees SET is_active=0 WHERE id=?', (self.employee,))
             con.commit()
-        self.assertIsNone(self.client.get(URL, headers=self.headers()).get_json()['shift'])
+        # A removed employee's sign-in is refused outright.
+        status = self.client.get(URL, headers=self.headers())
+        self.assertEqual((status.status_code, status.get_json()['code']), (403, 'account_disabled'))
         self.assertEqual(self.client.post(URL, json={'shift_id': self.shift}, headers=self.headers()).status_code, 403)
 
     def test_new_toronto_day_requires_todays_assigned_shift(self):

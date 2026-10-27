@@ -50,6 +50,12 @@ export default function CoveragePanel({
   const [noteDirty, setNoteDirty] = useState(false)
   const [noteSavedAt, setNoteSavedAt] = useState<string | null>(null)
   const [savingNote, setSavingNote] = useState(false)
+  // Saving is allowed only over a note that loaded: an empty box after a failed load must not replace the stored note.
+  const [noteLoad, setNoteLoad] = useState<'loading' | 'loaded' | 'failed'>('loading')
+  // Unsaved notes per period: changing the period keeps them for that period instead of dropping them.
+  const noteDrafts = useRef<Record<string, string>>({})
+  const shownKey = useRef(periodKey)
+  const noteRequest = useRef(0)
   const [msgApi, msgCtx] = message.useMessage()
   const [placement, setPlacement] = useState(savedPlacement)
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -111,10 +117,28 @@ export default function CoveragePanel({
   const keyRef = useRef(periodKey)
   keyRef.current = periodKey
 
+  const loadNote = (key: string) => {
+    const request = ++noteRequest.current
+    setNoteLoad('loading')
+    getScheduleNote(key)
+      .then(n => {
+        if (request !== noteRequest.current) return
+        if (!(key in noteDrafts.current)) setNoteContent(n.content)
+        setNoteSavedAt(n.updated_at)
+        setNoteLoad('loaded')
+      })
+      .catch(() => { if (request === noteRequest.current) setNoteLoad('failed') })
+  }
+
   useEffect(() => {
+    if (shownKey.current !== periodKey && shownKey.current in noteDrafts.current) {
+      msgApi.warning('Unsaved period notes were kept. Go back to that period to save them.')
+    }
+    shownKey.current = periodKey
     setEntries({})
-    setNoteContent('')
-    setNoteDirty(false)
+    const draft = noteDrafts.current[periodKey]
+    setNoteContent(draft ?? '')
+    setNoteDirty(draft !== undefined)
     setNoteSavedAt(null)
     getChecklist(periodKey)
       .then(rows => {
@@ -124,14 +148,8 @@ export default function CoveragePanel({
         setEntries(m)
       })
       .catch(() => {})
-    getScheduleNote(periodKey)
-      .then(n => {
-        if (keyRef.current !== periodKey) return
-        setNoteContent(n.content)
-        setNoteSavedAt(n.updated_at)
-      })
-      .catch(() => {})
-  }, [periodKey])
+    loadNote(periodKey)
+  }, [periodKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const people = useMemo(
     () => [...employees].sort((a, b) =>
@@ -167,10 +185,15 @@ export default function CoveragePanel({
   }
 
   const handleSaveNote = async () => {
+    const key = periodKey, content = noteContent
+    if (noteLoad !== 'loaded') return
     setSavingNote(true)
     try {
-      const saved = await saveScheduleNote(periodKey, noteContent)
-      setNoteDirty(false)
+      const saved = await saveScheduleNote(key, content)
+      // Text typed while saving stays unsaved; a save that finishes after a period change only clears its own draft.
+      if (noteDrafts.current[key] === content) delete noteDrafts.current[key]
+      if (keyRef.current !== key) return
+      setNoteDirty(key in noteDrafts.current)
       setNoteSavedAt(saved.updated_at)
       msgApi.success('Notes saved')
     } catch {
@@ -248,11 +271,18 @@ export default function CoveragePanel({
                 autoSize={{ minRows: 2, maxRows: 5 }}
                 placeholder={`Notes for ${periodLabel} (visible to managers)…`}
                 value={noteContent}
-                onChange={e => { setNoteContent(e.target.value); setNoteDirty(true) }}
+                disabled={noteLoad !== 'loaded'}
+                onChange={e => { setNoteContent(e.target.value); setNoteDirty(true); noteDrafts.current[periodKey] = e.target.value }}
               />
+              {noteLoad === 'failed' && (
+                <div className="mt-1.5 flex items-center gap-2 text-[11px] text-destructive" role="alert">
+                  Notes could not be loaded, so they cannot be saved yet.
+                  <Button size="sm" variant="outline" onClick={() => loadNote(periodKey)}>Retry</Button>
+                </div>
+              )}
               {noteDirty && (
                 <div className="mt-1.5">
-                  <Button size="sm" onClick={handleSaveNote} disabled={savingNote}>
+                  <Button size="sm" onClick={handleSaveNote} disabled={savingNote || noteLoad !== 'loaded'}>
                     {savingNote ? 'Saving…' : 'Save notes'}
                   </Button>
                 </div>

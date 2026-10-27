@@ -31,6 +31,45 @@ class PricingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pricing.suggest_payable(value)
 
+    # The same vectors are in popcore_app/frontend/src/lib/checkoutPricing.test.ts: both sides must agree.
+    def test_under_ten_dollars_the_cash_price_is_the_previous_whole_dollar(self):
+        # Owner, 2026-10-27: $5.10 is $5, $9.99 is $9; a whole-dollar total keeps its price.
+        for total, expected in ((510, 500), (999, 900), (712, 700), (101, 100), (199, 100), (950, 900),
+                                (100, 100), (500, 500), (900, 900), (1000, 900), (1099, 1000)):
+            self.assertEqual(pricing.suggest_payable(total), expected, total)
+        self.assertEqual(due(order(442, total=500), popcore=1, plan='pay'), (500, 'exact'))
+        self.assertEqual(due(order(452, total=510), popcore=1, plan='pay'), (500, 'cash_discount'))
+
+    def test_cash_is_rounded_to_five_cents_the_canadian_way(self):
+        for cents, expected in ((2160, 2160), (2161, 2160), (2162, 2160), (2163, 2165), (2164, 2165), (2165, 2165),
+                                (2166, 2165), (2167, 2165), (2168, 2170), (2169, 2170), (747, 745), (0, 0)):
+            self.assertEqual(pricing.nickel(cents), expected, cents)
+        for rest, expected in ((747, 745), (2163, 2165), (19, 20), (97, 95), (3, 5), (2, 2), (1, 1), (0, 0)):
+            self.assertEqual(pricing.cash_rest(rest), expected, rest)
+        # The cash part of a card split: $20.37 by card on $42.00 leaves $21.63, collected as $21.65.
+        self.assertEqual(pricing.cash_limit(4200, cash_cents=0, other_cents=2037), 2165)
+        self.assertEqual(pricing.settled_due(4200, cash_cents=2165, other_cents=2037), 4202)
+        # An agreed-discount order of $7.47 paid in cash: $7.45.
+        self.assertEqual(pricing.settled_due(747, cash_cents=745, other_cents=0), 745)
+        # Exact payments, or cash that does not pay the rest, leave the amount due as it was.
+        self.assertEqual(pricing.settled_due(747, cash_cents=0, other_cents=747), 747)
+        self.assertEqual(pricing.settled_due(4200, cash_cents=1000, other_cents=0), 4200)
+        self.assertEqual(pricing.cash_limit(4100, cash_cents=1000, other_cents=0), 3100)
+        collect = pricing.collect(pricing.summarize(order(700, total=747, discounts=[
+            {'id': 'D00000000005', 'name': 'Agreed', 'amount': -44, 'percentage': None}])),
+            clover_cents=0, popcore_cents=0, verified=True)
+        self.assertEqual((collect['pay']['rest_cents'], collect['pay']['cash_rest_cents']), (747, 745))
+
+    def test_cash_rounding_shows_in_the_sale_money(self):
+        down = pricing.sale_money(pricing.summarize(order(700, total=791)), 745)
+        self.assertEqual((down['gross_cents'], down['reduction_cents'], down['rounding_cents'], down['collected_cents']),
+                         (791, 46, 0, 745))
+        # Cash rounded up past an order with no discount: $7.48 collected as $7.50.
+        up = pricing.sale_money(pricing.summarize(order(662, total=748)), 750)
+        self.assertEqual((up['gross_cents'], up['reduction_cents'], up['rounding_cents'], up['collected_cents']),
+                         (748, 0, 2, 750))
+        self.assertEqual(up['gross_cents'] - up['reduction_cents'] + up['rounding_cents'], up['collected_cents'])
+
     def test_whole_dollar_matches_the_card_split_vectors(self):
         for total, expected in ((2831, 2800), (3191, 3100), (999, 999), (1000, 1000), (1099, 1000)):
             self.assertEqual(pricing.whole_dollar(total), expected, total)
@@ -93,8 +132,8 @@ class PricingTests(unittest.TestCase):
         money = pricing.sale_money(pricing.summarize(weighted), 2655)
         self.assertEqual((money['subtotal_cents'], money['source_tax_cents'], money['gross_cents'],
                           money['reduction_cents']), (None, None, 2655, 0))
-        with self.assertRaises(ValueError):
-            pricing.sale_money(pricing.summarize(order(1770, total=2000)), 2001)
+        with self.assertRaises(ValueError):  # only cash rounding (at most 2¢) may pass the order total
+            pricing.sale_money(pricing.summarize(order(1770, total=2000)), 2003)
 
     def test_fingerprint_ignores_popcore_writes_but_not_other_changes(self):
         before = order(1770, total=2000, payments=[{'id': 'PAY000000001', 'amount': 500, 'result': 'SUCCESS'}])

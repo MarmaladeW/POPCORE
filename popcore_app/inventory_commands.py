@@ -515,6 +515,12 @@ def _validate_restock_complete(con, payload):
     if session is None or session['status'] not in {'submitted', 'picking'}:
         raise InventoryConflict('Restock session cannot be completed',
                                 'restock_state_conflict')
+    # Picked goods already move through the sheet's delivery; completing would move them again.
+    if con.execute(
+        'SELECT 1 FROM inventory_deliveries WHERE restock_session_id=?', (session_id,)
+    ).fetchone():
+        raise InventoryConflict('Receive or resolve picked goods before completion',
+                                'delivery_receipt_required')
     pending = con.execute(
         """SELECT 1 FROM restock_items
            WHERE session_id=? AND pick_status='pending' LIMIT 1""", (session_id,)

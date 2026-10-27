@@ -22,7 +22,8 @@ import requests
 import clover_pricing as pricing
 import db
 from checkout_access import REGISTER_NAME, REGISTER_SUB, register_actor, require_checkout
-from checkout_operations import checkout_detail, checkout_row, cny_charge, finalize_sale, manager
+from checkout_operations import (cash_amount_limit, checkout_detail, checkout_row, cny_charge, finalize_sale, manager,
+                                 require_box_choice)
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryConflict, InventoryError, InventoryValidationError
 from sales_operations import _sale_input, record_late_adjustment
@@ -213,8 +214,16 @@ def product_for_line(con, item, sent):
     return product_for_item(con, item.get('itemId'), item.get('itemCode'))
 
 
+ITEMLESS_LINE = 'Clover payment with no items'
+
+
 def lines_for(con, snapshot):
-    """Sale lines: matched products merged per product; anything else stays as Clover's text."""
+    """Sale lines: matched products merged per product; anything else stays as Clover's text.
+
+    An order with no items (a custom amount or quick sale on Clover) is one line of text, so its sale
+    waits for a manager to match products or record it as a charge without stock."""
+    if not snapshot['items']:
+        return [{'quantity': 1, 'raw_product_text': ITEMLESS_LINE, 'unit_price_cents': None}]
     mapped, raw = {}, []
     sent = sent_lines(con, snapshot['id'])
     for item in snapshot['items']:
@@ -239,17 +248,49 @@ def lines_for(con, snapshot):
             for (product_id, display), entry in mapped.items()] + raw
 
 
-def _intent(con, store_id, snapshot, *, due):
+def _box_answers(con, store_id, payload):
+    """Where the cashier said each blind box came from, as sale line input keyed by (product, display)."""
+    floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (store_id,)).fetchone()
+    answers = {}
+    for line in json.loads(payload)['lines'] if payload else []:
+        if line.get('product_id') is None:
+            continue
+        if line.get('open_set_id'):
+            answer = {'open_set_id': line['open_set_id']}
+        elif line.get('fresh_set_product_id'):
+            answer = {'fresh_set': {'product_id': line['fresh_set_product_id'],
+                                    'conversion_id': line['fresh_set_conversion_id'],
+                                    'conversion_factor': line['fresh_set_conversion_factor']}}
+        elif line.get('loose_boxes'):
+            answer = {'loose_boxes': True}
+        else:
+            continue
+        answers[(line['product_id'], bool(floor) and line['location_id'] != floor['id'])] = answer
+    return answers
+
+
+def _intent(con, store_id, snapshot, *, due, payload=None):
+    """The sale of a Clover order. `payload` is the order's current one: the cashier's blind-box answers
+    stay with their products when Clover's lines are read again."""
     summary = pricing.summarize(snapshot)
     # A sale POPCORE started keeps its own date and reference; a Clover order's are Clover's.
     started = con.execute('''SELECT o.reference,o.business_date FROM clover_sends s
         JOIN checkout_orders o ON o.id=s.checkout_id WHERE s.order_id=?''', (snapshot['id'],)).fetchone()
-    return _sale_input(con, {
+    data = {
         'store_id': store_id, 'entry_mode': 'already_paid',
         'business_date': started['business_date'] if started else toronto_date(snapshot['createdTime']),
         'source': {'system': 'popcore_checkout', 'account': str(store_id),
                    'reference': started['reference'] if started else snapshot['id']},
-        **pricing.sale_money(summary, due), 'lines': lines_for(con, snapshot)}, register_actor())
+        **pricing.sale_money(summary, due), 'lines': lines_for(con, snapshot)}
+    answers = _box_answers(con, store_id, payload)
+    if answers:
+        lines = [{**line, **answers.get((line.get('product_id'), bool(line.get('from_display'))), {})}
+                 for line in data['lines']]
+        try:
+            return _sale_input(con, {**data, 'lines': lines}, register_actor())
+        except InventoryError:
+            pass  # an answer no longer fits (its set changed): the cashier is asked again
+    return _sale_input(con, data, register_actor())
 
 
 def _verified(snapshot, cfg):
@@ -349,6 +390,12 @@ def _received(con, checkout_id):
     return clover_cents, popcore_cents
 
 
+def _cash_received(con, checkout_id):
+    """Cash recorded in POPCORE: it is rounded to 5¢, unlike every other tender."""
+    return con.execute("""SELECT COALESCE(SUM(amount_cents),0) FROM checkout_attempts WHERE checkout_id=?
+        AND status='completed' AND origin='popcore' AND tender='cash'""", (checkout_id,)).fetchone()[0]
+
+
 def _settle_if_paid(con, cfg, checkout_id, *, actor):
     """Inside the caller's transaction: finalize once the money received equals the amount due."""
     checkout = con.execute('SELECT * FROM checkout_orders WHERE id=?', (checkout_id,)).fetchone()
@@ -360,6 +407,13 @@ def _settle_if_paid(con, cfg, checkout_id, *, actor):
     summary = pricing.summarize(snapshot)
     due, mode = pricing.amount_due(summary, clover_cents=clover_cents, popcore_cents=popcore_cents,
                                    plan=link['plan'], verified=_verified(snapshot, cfg))
+    cash_cents = _cash_received(con, checkout_id)
+    settled = pricing.settled_due(due, cash_cents=cash_cents, other_cents=clover_cents + popcore_cents - cash_cents)
+    if settled != due:
+        # Cash paid the rest rounded to 5¢. Below Clover's total that is a discount Clover can name.
+        if settled < summary['total'] and pricing.discount_label(mode) is None:
+            mode = 'rounding'
+        due = settled
     received = clover_cents + popcore_cents
     if received > due and popcore_cents:
         if link['review_reason'] is None:
@@ -377,7 +431,7 @@ def _settle_if_paid(con, cfg, checkout_id, *, actor):
         return False
     if popcore_cents == 0 and snapshot.get('paymentState') != 'PAID':
         return False  # paid only on Clover: wait until Clover itself says the order is paid
-    intent = _intent(con, checkout['store_id'], snapshot, due=due)
+    intent = _intent(con, checkout['store_id'], snapshot, due=due, payload=checkout['payload'])
     finalize_sale(con, dict(checkout), intent, actor=actor, key=f"clover:{link['merchant_id']}:{link['order_id']}")
     # Clover already shows a sale it was paid for in full; only money recorded in POPCORE is marked there.
     writes = bool(cfg and len(cfg['writer_key']) >= 32 and popcore_cents)
@@ -388,6 +442,31 @@ def _settle_if_paid(con, cfg, checkout_id, *, actor):
     record_late_adjustment(con, checkout['store_id'], checkout['business_date'], 'checkout', checkout_id,
                            'Clover sale recorded after store-day close', actor['sub'])
     return True
+
+
+def _importable(snapshot):
+    """An order with a total and items, or money without items (a custom amount or quick sale)."""
+    return snapshot['total'] is not None and bool(snapshot['items'] or snapshot['total'] > 0)
+
+
+def opening_ms(con, store_id):
+    """When the store went live: its first opening count, in ms. 0 for a live store without an opening
+    document (set up by hand); None while the store is not live."""
+    rows = con.execute('''SELECT d.posted_at FROM inventory_scope_state ss
+        JOIN inventory_locations l ON l.id=ss.location_id
+        LEFT JOIN inventory_documents d ON d.id=ss.opening_document_id AND d.kind='opening' AND d.status='posted'
+        WHERE l.store_id=? AND l.is_active=1 AND ss.opening_verified=1''', (store_id,)).fetchall()
+    if not rows:
+        return None
+    posted = [datetime.fromisoformat(row['posted_at'].replace('Z', '+00:00')) for row in rows if row['posted_at']]
+    return int(min(posted).timestamp() * 1000) if posted else 0
+
+
+def before_opening(con, store_id, created_ms):
+    """Whether a Clover order was made before its store went live (owner, 2026-10-27). Its stock was
+    counted by the opening, or sold under legacy stock, so it is never imported against the count."""
+    opened = opening_ms(con, store_id)
+    return opened is None or created_ms < opened
 
 
 def apply_order(con, cfg, feed, snapshot, *, pricing_facts=None):
@@ -401,8 +480,11 @@ def apply_order(con, cfg, feed, snapshot, *, pricing_facts=None):
         started = _awaiting(con, cfg, snapshot)
         if started is not None:
             return _attach(con, cfg, started, snapshot)
-        if snapshot['createdTime'] < feed['import_since_ms'] or snapshot['total'] is None or not snapshot['items']:
-            return None
+        if (snapshot['createdTime'] < feed['import_since_ms'] or not _importable(snapshot)
+                or before_opening(con, cfg['store_id'], snapshot['createdTime'])
+                or con.execute('''SELECT 1 FROM clover_import_failures WHERE merchant_id=? AND order_id=?
+                    AND resolved_at IS NOT NULL''', (cfg['merchant'], snapshot['id'])).fetchone()):
+            return None  # a failed import a manager resolved was handled another way
         return _create(con, cfg, snapshot)
     if snapshot['seen_at'] < link['seen_at']:
         return link['checkout_id']
@@ -473,7 +555,7 @@ def _attach(con, cfg, checkout_id, snapshot):
             (checkout_id, cfg['merchant'], snapshot['id'], snapshot['createdTime'], json.dumps(snapshot),
              pricing.fingerprint(snapshot, payments=False), snapshot['source'],
              snapshot['paymentState'] or 'DEVICE', snapshot['seen_at']))
-        intent = _intent(con, checkout['store_id'], snapshot, due=snapshot['total'])
+        intent = _intent(con, checkout['store_id'], snapshot, due=snapshot['total'], payload=checkout['payload'])
         con.execute('UPDATE checkout_orders SET payload=?,version=version+1 WHERE id=?', (json.dumps(intent), checkout_id))
         link = con.execute('SELECT * FROM clover_orders WHERE checkout_id=?', (checkout_id,)).fetchone()
         if snapshot['source'] == 'cloud':
@@ -519,8 +601,8 @@ def _refresh(con, cfg, link, snapshot):
         if checkout['status'] == 'open':
             changed = (pricing.fingerprint(merged, payments=False) != link['fingerprint']
                        or merged['total'] != stored.get('total'))
-            if changed and merged['total'] is not None and merged['items']:
-                intent = _intent(con, checkout['store_id'], merged, due=merged['total'])
+            if changed and _importable(merged):
+                intent = _intent(con, checkout['store_id'], merged, due=merged['total'], payload=checkout['payload'])
                 con.execute('UPDATE checkout_orders SET payload=?,version=version+1 WHERE id=?',
                             (json.dumps(intent), checkout_id))
                 if '_pricing' not in snapshot and cfg['writeback'] == 'pay':
@@ -623,18 +705,99 @@ def sync(con, cfg, *, force=False):
                    next_in=max(2, exc.retry_after or 2))
         return False
     problems, seen = [], set()
+    today = datetime.now(TORONTO).date().isoformat()
     for raw in rows:
-        try:
-            snapshot = validate(raw)
-            seen.add(snapshot['id'])
-            apply_order(con, cfg, feed, snapshot)
-        except (ValueError, InventoryError, PermissionError, sqlite3.IntegrityError) as exc:
-            problems.append(f"{raw.get('id') if isinstance(raw, dict) else 'order'}: {exc}")
+        problem = _import_one(con, cfg, feed, raw, today)
+        if problem is None or problem['validated']:
+            seen.add(raw['id'])
+        if problem:
+            problems.append(problem['text'])
     follow_up(con, cfg, seen=seen)
     message = '; '.join(problems)[:300] or (
-        'Clover cloud delayed. Items still update from the device; payments wait.' if data.get('cloud_unavailable') else '')
+        'Clover cloud delayed. Items still update from the device; payments wait.' if data.get('cloud_unavailable') else
+        'Clover orders are not imported until this store goes live with its opening count.'
+        if opening_ms(con, cfg['store_id']) is None else '')
     _feed_done(con, cfg, error=message, next_in=1, fetched=fetched)
     return True
+
+
+def _import_one(con, cfg, feed, raw, fallback_date):
+    """Apply one order of a Clover read. An order that cannot be imported is recorded against its store
+    day, so closing waits until it imports or a manager resolves it. Returns the problem, or None."""
+    order_id = raw.get('id') if isinstance(raw, dict) and IDENTIFIER.fullmatch(str(raw.get('id', ''))) else None
+    snapshot = None
+    try:
+        snapshot = validate(raw)
+        apply_order(con, cfg, feed, snapshot)
+    except (ValueError, InventoryError, PermissionError, sqlite3.IntegrityError) as exc:
+        created = raw.get('createdTime') if isinstance(raw, dict) else None
+        day = toronto_date(created) if type(created) is int and 0 < created < 32_503_680_000_000 else fallback_date
+        text = f"{order_id or 'order'}: {exc}"
+        linked = order_id and con.execute('SELECT 1 FROM clover_orders WHERE merchant_id=? AND order_id=?',
+                                          (cfg['merchant'], order_id)).fetchone()
+        if order_id and not linked:  # an order already in POPCORE keeps its own checkout and review
+            _record_failure(con, cfg, order_id, day, text)
+        return {'text': text, 'recorded': bool(order_id), 'validated': snapshot is not None}
+    if order_id and con.execute('''SELECT 1 FROM clover_import_failures WHERE merchant_id=? AND order_id=?
+            AND resolved_at IS NULL''', (cfg['merchant'], order_id)).fetchone():
+        with con:  # it imported (or no longer needs to): closing stops waiting for it
+            con.execute('DELETE FROM clover_import_failures WHERE merchant_id=? AND order_id=? AND resolved_at IS NULL',
+                        (cfg['merchant'], order_id))
+    return None
+
+
+def _record_failure(con, cfg, order_id, business_date, text):
+    known = con.execute('SELECT error,business_date FROM clover_import_failures WHERE merchant_id=? AND order_id=?',
+                        (cfg['merchant'], order_id)).fetchone()
+    if known and (known['error'], known['business_date']) == (text[:300], business_date):
+        return  # already recorded; the feed reads Clover every second
+    with con:
+        new = known is None
+        # A failure a manager already resolved stays resolved.
+        con.execute('''INSERT INTO clover_import_failures(merchant_id,order_id,store_id,business_date,error,failed_at)
+            VALUES (?,?,?,?,?,?) ON CONFLICT(merchant_id,order_id) DO UPDATE SET error=excluded.error,
+            failed_at=excluded.failed_at,business_date=excluded.business_date''',
+            (cfg['merchant'], order_id, cfg['store_id'], business_date, text[:300], time.time()))
+        if new:
+            record_late_adjustment(con, cfg['store_id'], business_date, 'clover_import_failure', order_id,
+                                   'Clover order could not be imported after store-day close', REGISTER_SUB)
+
+
+def import_failures(con, store_id):
+    """Clover orders of this store that could not be imported and wait for a manager."""
+    return [dict(row) for row in con.execute('''SELECT order_id,business_date,error FROM clover_import_failures
+        WHERE store_id=? AND resolved_at IS NULL ORDER BY business_date,order_id''', (store_id,))]
+
+
+def resolve_failure(con, store_id, order_id, data, actor, request_key):
+    """A manager settles a Clover order that cannot be imported, giving the reason (for example, recorded
+    with Record sale). It is then never imported, so its money is never counted twice."""
+    reason = str(data.get('reason') or '').strip()
+    if not manager(actor):
+        raise PermissionError('A manager resolves Clover orders that did not import')
+    if not reason:
+        raise InventoryValidationError('Enter how this Clover order was handled')
+    require_checkout(con, {'store_id': store_id}, actor, write=True)
+    _begin(con)
+    try:
+        key, digest, prior = _replay(con, request_key, 'clover_failure_resolve', actor,
+                                     {'store_id': store_id, 'order_id': order_id, 'reason': reason})
+        if prior is None:
+            failure = con.execute('''SELECT * FROM clover_import_failures WHERE store_id=? AND order_id=?
+                AND resolved_at IS NULL''', (store_id, order_id)).fetchone()
+            if failure is None:
+                raise InventoryConflict('This Clover order is not waiting to be resolved', 'checkout_state_conflict')
+            con.execute('''UPDATE clover_import_failures SET resolved_by=?,resolved_reason=?,
+                resolved_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE merchant_id=? AND order_id=?''',
+                        (actor['sub'], reason[:300], failure['merchant_id'], order_id))
+            record_late_adjustment(con, store_id, failure['business_date'], 'clover_import_failure', order_id,
+                                   'Clover order resolved after store-day close', actor['sub'])
+            _remember(con, key, 'clover_failure_resolve', None, actor, digest, {'order_id': order_id})
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return import_failures(con, store_id)
 
 
 def follow_up(con, cfg, *, seen=()):
@@ -676,21 +839,22 @@ def sync_day(con, cfg, business_date):
     since = int(day.timestamp() * 1000)
     until = int((day + timedelta(days=1)).timestamp() * 1000)
     feed = ensure_feed(con, cfg)
-    offset = 0
+    offset, unrecorded = 0, False
     try:
         while True:
             data = call(cfg, 'GET', '/orders/scan', params={'since': since, 'until': until, 'offset': offset},
                         timeout=(3, 25))
             for raw in data.get('orders') or []:
-                try:
-                    apply_order(con, cfg, feed, validate(raw))
-                except (ValueError, InventoryError, PermissionError, sqlite3.IntegrityError):
-                    pass
+                # A failure no longer passes silently: it is recorded and holds closing (owner, 2026-10-27).
+                problem = _import_one(con, cfg, feed, raw, business_date)
+                unrecorded = unrecorded or bool(problem and not problem['recorded'])
             if not data.get('more') or offset >= 2000:
                 break
             offset += 100
     except ConnectorError:
         return False
+    if unrecorded:
+        return False  # an order without a usable ID: the day stays unchecked
     with con:
         con.execute('UPDATE clover_feed SET day_scan_date=?,day_scan_at=? WHERE merchant_id=?',
                     (business_date, time.time(), cfg['merchant']))
@@ -751,11 +915,19 @@ def write_back(con, cfg, checkout_id, *, now_ok=False):
     if cfg['writeback'] == 'label':
         path, body = f"/orders/{link['order_id']}/label", {'label': label}
     else:
+        # Cash rounded to 5¢ can end 1-2¢ above Clover's total; Clover never shows more than its total,
+        # so the largest cash payment carries that difference there. POPCORE keeps what was received.
+        target = min(link['due_cents'], link['clover_total_cents'])
+        over = link['due_cents'] - target
+        amounts = {a['id']: a['amount_cents'] for a in popcore}
+        cash = max((a for a in popcore if a['tender'] == 'cash'), key=lambda a: a['amount_cents'], default=None)
+        if over and cash is not None:
+            amounts[cash['id']] -= over
         path, body = f"/orders/{link['order_id']}/settle", {
-            'target_total': link['due_cents'],
-            'discount_name': pricing.discount_label(link['pricing_mode']) if link['due_cents'] < link['clover_total_cents'] else None,
+            'target_total': target,
+            'discount_name': pricing.discount_label(link['pricing_mode']) if target < link['clover_total_cents'] else None,
             'payments': [{'key': pricing.payment_key(cfg['instance'], checkout_id, a['id']), 'tender': a['tender'],
-                          'amount': a['amount_cents']} for a in popcore],
+                          'amount': amounts[a['id']]} for a in popcore],
             'expected': {
                 'items': [[i.get('id'), i.get('price'), i.get('unitQty')] for i in snapshot['items']],
                 'discounts': [[d.get('id'), d.get('amount'), d.get('percentage')] for d in snapshot['discounts']
@@ -922,12 +1094,14 @@ def receive(con, cfg, row, data, actor, request_key):
         snapshot = json.loads(link['snapshot'])
         if snapshot.get('total') is None:
             raise InventoryConflict('Clover has not confirmed a total yet', 'clover_total_pending')
+        require_box_choice(con, json.loads(current['payload']))
         clover_cents, popcore_cents = _received(con, row['id'])
         due, _ = pricing.amount_due(pricing.summarize(snapshot), clover_cents=clover_cents,
                                     popcore_cents=popcore_cents + amount, plan=plan, verified=_verified(snapshot, cfg))
         if expected_due is not None and expected_due != due:
             raise InventoryConflict('The amount due changed. Check the new amount.', 'price_changed')
-        if amount > due - clover_cents - popcore_cents:
+        if amount > cash_amount_limit(tender, amount, due, cash_cents=_cash_received(con, row['id']),
+                                      received_cents=clover_cents + popcore_cents):
             raise InventoryValidationError('That is more than the amount still to collect')
         attempt_id = con.execute('''INSERT INTO checkout_attempts(checkout_id,tender,amount_cents,assigned_to,status,
             recorded_by,origin,cny_fen,cny_per_cad) VALUES (?,?,?,?,'completed',?,'popcore',?,?)''',
@@ -1203,8 +1377,10 @@ def clover_block(con, row, actor, *, writable):
     has_money = bool(clover_cents or popcore_cents)
     state = link['state'] or 'DEVICE'  # kept current by every Clover read and write
     blocked = link['review_reason'] in OPEN_BLOCKERS
-    collect = pricing.collect(summary, clover_cents=clover_cents, popcore_cents=popcore_cents, verified=verified) \
-        if is_open and summary['total'] is not None else None
+    cash_cents = sum(a['amount_cents'] for a in row['attempts'] if a['status'] == 'completed'
+                     and a.get('origin') != 'clover' and a['tender'] == 'cash')
+    collect = pricing.collect(summary, clover_cents=clover_cents, popcore_cents=popcore_cents, cash_cents=cash_cents,
+                              verified=verified) if is_open and summary['total'] is not None else None
     may_undo = writable and is_open
     undo_ids = [a['id'] for a in row['attempts'] if may_undo and a['status'] == 'completed' and a.get('origin') == 'popcore'
                 and (a['recorded_by'] == actor['sub'] or is_manager)]
@@ -1240,7 +1416,7 @@ def feed_status(con, cfg):
     return {'enabled': True, 'environment': cfg['environment'], 'connected': connected,
             'writes': len(cfg['writer_key']) >= 32, 'fetched_at': feed['fetched_at'],
             'message': feed['error'] or ('' if connected else 'Waiting for Clover'),
-            'server_ms': int(time.time() * 1000)}
+            'server_ms': int(time.time() * 1000), 'failures': import_failures(con, cfg['store_id'])}
 
 
 def find(con, store_id, order_id):

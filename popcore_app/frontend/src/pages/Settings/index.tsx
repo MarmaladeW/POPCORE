@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import {
-  Card, Tabs, TimePicker, InputNumber, Select, Input, Button,
+  Alert, Card, Tabs, TimePicker, InputNumber, Select, Input, Button,
   message, Typography, Space, Table, Popconfirm,
 } from 'antd'
 import type { TabsProps } from 'antd'
@@ -68,6 +68,8 @@ export default function SettingsPage() {
 
   // ── Settings load ────────────────────────────────────────────────────────
   const [settingsLoading, setSettingsLoading] = useState(true)
+  // Saving needs a successful load: after a failed load the form holds defaults that would overwrite the real configuration.
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [saving1, setSaving1] = useState(false)
   const [saving2, setSaving2] = useState(false)
 
@@ -97,13 +99,20 @@ export default function SettingsPage() {
 
   // ── Stores tab ────────────────────────────────────────────────────────────
   const [stores,        setStores]        = useState<StoreRow[]>([])
-  const [storesLoading, setStoresLoading] = useState(false)
+  const [storesLoading, setStoresLoading] = useState(true)
+  const [storesLoaded,  setStoresLoaded]  = useState(false)
   const [newCode,       setNewCode]       = useState('')
   const [newName,       setNewName]       = useState('')
   const [adding,        setAdding]        = useState(false)
 
   useEffect(() => {
     if (!isAdmin) { navigate('/'); return }
+    loadSettings()
+    loadStores()
+  }, [isAdmin, navigate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function loadSettings() {
+    setSettingsLoading(true)
     client.get<RawSettings>('/settings')
       .then(r => {
         const s = r.data
@@ -123,17 +132,18 @@ export default function SettingsPage() {
         setShiftPresets(parseShiftPresets(s.schedule_shift_presets))
         setPositions(parsePositions(s.schedule_positions))
         setCnyPerCad(s.checkout_cny_per_cad || '')
+        setSettingsLoaded(true)
       })
-      .catch(() => message.error('加载设置失败 / Failed to load settings'))
+      .catch(() => { setSettingsLoaded(false); message.error('加载设置失败 / Failed to load settings') })
       .finally(() => setSettingsLoading(false))
-    loadStores()
-  }, [isAdmin, navigate]) // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
+  // Scheduling saves one entry per store: never save it from a store list that failed to load.
   function loadStores() {
     setStoresLoading(true)
     client.get<StoreRow[]>('/stores')
-      .then(r => setStores(r.data))
-      .catch(() => message.error('加载门店失败 / Failed to load stores'))
+      .then(r => { setStores(r.data); setStoresLoaded(true) })
+      .catch(() => { setStoresLoaded(false); message.error('加载门店失败 / Failed to load stores') })
       .finally(() => setStoresLoading(false))
   }
 
@@ -287,6 +297,8 @@ export default function SettingsPage() {
   }
 
   if (!isAdmin) return null
+  const settingsFailed = !settingsLoading && !settingsLoaded
+  const storesFailed   = !storesLoading && !storesLoaded
 
   // ── Store table columns ───────────────────────────────────────────────────
   const storeCols: ColumnsType<StoreRow> = [
@@ -404,7 +416,7 @@ export default function SettingsPage() {
           />
         </div>
 
-        <Button type="primary" onClick={saveInsight} loading={saving1}>
+        <Button type="primary" onClick={saveInsight} loading={saving1} disabled={!settingsLoaded}>
           保存 / Save
         </Button>
       </Card>
@@ -470,7 +482,7 @@ export default function SettingsPage() {
         </div>
 
         <Space direction="vertical" size={8}>
-          <Button type="primary" onClick={saveReport} loading={saving2}>
+          <Button type="primary" onClick={saveReport} loading={saving2} disabled={!settingsLoaded}>
             保存 / Save
           </Button>
           <Text type="secondary" style={{ fontSize: 12 }}>
@@ -647,7 +659,7 @@ export default function SettingsPage() {
           />
         </div>
 
-        <Button type="primary" onClick={saveScheduling} loading={saving3}>
+        <Button type="primary" onClick={saveScheduling} loading={saving3} disabled={!settingsLoaded || !storesLoaded}>
           保存 / Save
         </Button>
       </Card>
@@ -711,7 +723,7 @@ export default function SettingsPage() {
         <p style={{ color: '#596273', fontSize: 13, margin: '8px 0 16px' }}>
           Used for WeChat Pay and Alipay collection guidance. Clover and POPCORE order totals stay in CAD. Leave blank to hide the CNY quote.
         </p>
-        <Button type="primary" onClick={saveCheckoutRate} loading={savingCheckout}>Save rate</Button>
+        <Button type="primary" onClick={saveCheckoutRate} loading={savingCheckout} disabled={!settingsLoaded}>Save rate</Button>
       </Card>
     </div>
   )
@@ -728,6 +740,11 @@ export default function SettingsPage() {
   return (
     <div className="pc-settings">
       <PageHeader title="设置" sub="Settings · 只有管理员" />
+      {(settingsFailed || storesFailed) && <Alert type="error" showIcon style={{ marginBottom: 16 }}
+        message={settingsFailed
+          ? '设置加载失败，暂不能保存 / Settings could not be loaded. Saving is disabled until they load.'
+          : '门店加载失败，排班暂不能保存 / Stores could not be loaded. Scheduling cannot be saved until they load.'}
+        action={<Button onClick={() => { if (settingsFailed) loadSettings(); if (storesFailed) loadStores() }}>重试 / Retry</Button>} />}
       {/* Groups as a list on the left on desktop (Figma Settings), tabs on top on phone. */}
       <Tabs className="pc-settings-tabs" items={tabs} tabPosition={isMobile ? 'top' : 'left'} />
     </div>

@@ -181,7 +181,49 @@ def update_product_identity(con, product_id, updates):
         f'UPDATE products SET {set_clause} WHERE id=?',
         (*values.values(), product_id),
     )
+    if candidate.get('identity_status') == 'verified' and product.get('identity_status') != 'verified':
+        _clear_uncounted_legacy_stock(con, product_id)
     return candidate
+
+
+# Legacy stock columns and the inventory locations each one stands for at a live store.
+_LEGACY_COLUMNS = (('instore_qty', ('floor',)), ('upstairs_qty', ('upstairs', 'warehouse')),
+                   ('claw_qty', ('claw',)))
+
+
+def _clear_uncounted_legacy_stock(con, product_id):
+    """A store that went live without counting this product trusts none of its legacy numbers
+    there: clear them with a history row, as its opening does for a count of 0, so the stock
+    screens match the ledger and the next store's opening reconciles."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo('America/Toronto')).date().isoformat()
+    for store_id, in con.execute(
+        """SELECT DISTINCT l.store_id FROM inventory_locations l
+           JOIN inventory_scope_state ss ON ss.location_id=l.id
+           WHERE l.is_active=1 AND ss.opening_verified=1""").fetchall():
+        row = con.execute('SELECT * FROM stock WHERE product_id=? AND store_id=?',
+                          (product_id, store_id)).fetchone()
+        for column, codes in _LEGACY_COLUMNS:
+            if row is None or not row[column]:
+                continue
+            marks = ','.join('?' for _ in codes)
+            locations = [loc[0] for loc in con.execute(
+                f'SELECT id FROM inventory_locations WHERE store_id=? AND is_active=1 AND code IN ({marks})',
+                (store_id, *codes))]
+            if not locations or con.execute(
+                    f"""SELECT 1 FROM inventory_balances WHERE product_id=?
+                        AND location_id IN ({','.join('?' for _ in locations)})""",
+                    (product_id, *locations)).fetchone():
+                continue
+            con.execute(f'UPDATE stock SET {column}=0, last_updated=? WHERE product_id=? AND store_id=?',
+                        (today, product_id, store_id))
+            con.execute(
+                """INSERT INTO stock_transactions (product_id, txn_type, qty, location, date, notes, store_id)
+                   VALUES (?, 'inventory_opening', 0, ?, ?, ?, ?)""",
+                (product_id, codes[0], today,
+                 f'Verified after the store went live without an opening count; legacy {column} '
+                 f'{row[column]} is not trusted. Count it to record stock.', store_id))
 
 
 def add_conversion(con, source_product_id, target_product_id,

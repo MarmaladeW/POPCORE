@@ -7,16 +7,19 @@ import { CheckOutlined, CloseOutlined, ShopOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import type { RestockSession, RestockItem } from './index'
+import { withUnit } from './units'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
 
 interface Props {
   session:   RestockSession
-  onRefresh: () => void
+  live:      boolean   // the sheet's store is on the inventory ledger
+  onRefresh: () => Promise<void> | void
+  onReceive: () => void
 }
 
-export default function PickingStep({ session, onRefresh }: Props) {
+export default function PickingStep({ session, live, onRefresh, onReceive }: Props) {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
 
@@ -26,6 +29,9 @@ export default function PickingStep({ session, onRefresh }: Props) {
   const requestKey = useRef(crypto.randomUUID())
 
   const isCompleted   = session.status === 'completed'
+  // Once goods are dispatched the pick is fixed: they are received on the floor, never picked twice.
+  const dispatched    = session.delivery?.lines.some(line => line.dispatched_quantity > 0) ?? false
+  const locked        = isCompleted || dispatched
   const pendingCount  = session.items.filter(i => i.pick_status === 'pending').length
   const foundCount    = session.items.filter(i => i.pick_status === 'found').length
   const notFoundCount = session.items.filter(i => i.pick_status === 'not_found').length
@@ -37,12 +43,13 @@ export default function PickingStep({ session, onRefresh }: Props) {
     i => i.pick_status === 'found' && (i.found_qty ?? 0) > 0
   )
 
+  // What the box shows is what 找到 saves: the typed quantity, else the saved one, else the request.
+  const shownFoundQty = (item: RestockItem) => localFoundQty[item.id] ?? (item.found_qty || item.requested_qty)
+
   // ── Pick update ───────────────────────────────────────────────────────────
 
   async function handlePickUpdate(item: RestockItem, pickStatus: 'found' | 'not_found') {
-    const foundQty = pickStatus === 'found'
-      ? (localFoundQty[item.id] ?? item.requested_qty)
-      : undefined
+    const foundQty = pickStatus === 'found' ? shownFoundQty(item) : undefined
     try {
       await client.patch(`/restock/items/${item.id}/pick`, {
         pick_status: pickStatus,
@@ -60,6 +67,14 @@ export default function PickingStep({ session, onRefresh }: Props) {
   async function handleComplete() {
     setCompleting(true)
     try {
+      if (!live) {
+        // A store not on the ledger yet moves its legacy stock when the sheet completes.
+        await client.post(`/restock/session/${session.id}/complete`)
+        message.success('补货完成')
+        setPreviewOpen(false)
+        onRefresh()
+        return
+      }
       const foundLines = session.items.flatMap((item, index) => (
         item.pick_status === 'found' && (item.found_qty ?? 0) > 0
           ? [{ line_no: index + 1, quantity: item.found_qty }]
@@ -77,7 +92,8 @@ export default function PickingStep({ session, onRefresh }: Props) {
       requestKey.current = crypto.randomUUID()
       message.success(foundLines.length ? 'Physical pick confirmed' : 'No-stock restock closed')
       setPreviewOpen(false)
-      onRefresh()
+      await onRefresh()
+      if (foundLines.length) onReceive()
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
       message.error(msg || '完成失败')
@@ -103,22 +119,22 @@ export default function PickingStep({ session, onRefresh }: Props) {
       title: '仓库快照',
       dataIndex: 'warehouse_stock_snapshot',
       width: 90,
-      render: v => <Tag color="blue">{v} 端</Tag>,
+      render: (v, r) => <Tag color="blue">{withUnit(v, r.stock_unit)}</Tag>,
     },
     {
       title: '申请数',
       dataIndex: 'requested_qty',
       width: 80,
-      render: v => `${v} 端`,
+      render: (v, r) => withUnit(v, r.stock_unit),
     },
     {
       title: '找到数量',
       key: 'found_qty',
       width: 130,
       render: (_, r) => {
-        if (isCompleted) {
+        if (locked) {
           return r.pick_status === 'found'
-            ? <Tag color="success">{r.found_qty} 端</Tag>
+            ? <Tag color="success">{withUnit(r.found_qty, r.stock_unit)}</Tag>
             : <Tag color="default">—</Tag>
         }
         return (
@@ -126,7 +142,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
             min={1}
             max={r.requested_qty}   // ← max = requested_qty (not 999)
             precision={0}
-            value={localFoundQty[r.id] ?? r.requested_qty}
+            value={shownFoundQty(r)}
             onChange={v => setLocalFoundQty(prev => ({ ...prev, [r.id]: v ?? 1 }))}
             style={{ width: 85 }}
             size="small"
@@ -138,9 +154,9 @@ export default function PickingStep({ session, onRefresh }: Props) {
     {
       title: '状态',
       key: 'status',
-      width: isCompleted ? 90 : 180,
+      width: locked ? 90 : 180,
       render: (_, r) => {
-        if (isCompleted) {
+        if (locked) {
           if (r.pick_status === 'found')     return <Tag color="success">已找到</Tag>
           if (r.pick_status === 'not_found') return <Tag color="error">缺货</Tag>
           return <Tag>待确认</Tag>
@@ -180,14 +196,14 @@ export default function PickingStep({ session, onRefresh }: Props) {
       title: '找到数量',
       dataIndex: 'found_qty',
       width: 100,
-      render: v => <Tag color="success">{v} 端</Tag>,
+      render: (v, r) => <Tag color="success">{withUnit(v, r.stock_unit)}</Tag>,
     },
   ]
 
   return (
     <div style={{ paddingTop: 16 }}>
       {/* Instruction banner */}
-      {!isCompleted && (
+      {!locked && (
         <Alert
           type="info"
           message="仓库拣货"
@@ -198,7 +214,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
       )}
 
       {/* Progress bar */}
-      {!isCompleted && totalCount > 0 && (
+      {!locked && totalCount > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
             <Text style={{ fontSize: 13 }}>
@@ -219,7 +235,7 @@ export default function PickingStep({ session, onRefresh }: Props) {
       )}
 
       {/* Stats + complete button (completed state) */}
-      {isCompleted && (
+      {locked && (
         <div style={{ marginBottom: 16 }}>
           <Space wrap>
             <Tag color="success">已找到 {foundCount}</Tag>
@@ -228,8 +244,20 @@ export default function PickingStep({ session, onRefresh }: Props) {
         </div>
       )}
 
+      {/* Dispatched: the goods are in transit and are received in the next step */}
+      {dispatched && !isCompleted && (
+        <Alert
+          type="success"
+          message="已确认拣货 · Pick confirmed"
+          description="商品已转为运输中，请在「收货」确认到店数量。Receive what arrived on the floor."
+          action={<Button type="primary" size="small" onClick={onReceive}>去收货 Receive</Button>}
+          style={{ marginBottom: 16 }}
+          showIcon
+        />
+      )}
+
       {/* "Complete picking" button */}
-      {!isCompleted && (
+      {!locked && (
         <div style={{ marginBottom: 16, textAlign: 'right' }}>
           <Tooltip title={pendingCount > 0 ? `还有 ${pendingCount} 项未处理` : ''}>
             <Button
@@ -279,7 +307,9 @@ export default function PickingStep({ session, onRefresh }: Props) {
         width={500}
       >
         <p style={{ marginBottom: 12 }}>
-          以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存：
+          {live
+            ? '以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存：'
+            : '以下商品将从仓库库存转入门店库存：'}
         </p>
         {previewItems.length === 0
           ? <Text type="secondary">没有找到任何商品（全部缺货）</Text>

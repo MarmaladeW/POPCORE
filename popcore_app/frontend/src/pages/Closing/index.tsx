@@ -1,4 +1,4 @@
-import { Alert, Button, Checkbox, DatePicker, Form, Input, InputNumber, Select, Spin, Typography } from 'antd'
+import { Alert, Button, Checkbox, DatePicker, Form, Input, InputNumber, Select, Spin, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useBeforeUnload, useSearchParams } from 'react-router-dom'
@@ -22,22 +22,26 @@ const eventNames: Record<string, string> = { paid_in: '放入 Paid in', refund: 
 const denominations = [['10000', '$100'], ['5000', '$50'], ['2000', '$20'], ['1000', '$10'], ['500', '$5'], ['200', '$2'], ['100', '$1'], ['25', '25¢'], ['10', '10¢'], ['5', '5¢']]
 const responseStatus = (cause: unknown) => (cause as {response?:{status?:number}})?.response?.status
 const inputDollars = (cents: number | null | undefined) => cents == null ? '' : formatCents(cents).replace('$', '')
-type PendingMutation = { name: string; key: string; run: (key: string) => Promise<unknown> }
+type PendingMutation = { name: string; key: string; run: (key: string) => Promise<unknown>; done?: () => void }
 
 function issueLabel(code: string, subject?: string) {
   const [kind, id] = code.split(':')
+  // Staff get some codes without an id (owner, 2026-10-27): a label only, not whose order it is.
+  const name = (noun: string, unnamed: string) => subject || (id ? `${noun} #${id}` : unnamed)
   const labels: Record<string,string> = {
     sales_intake_incomplete: 'Sales intake declaration is incomplete.', cash_count_missing: 'A deliberate cash count is required.',
     retained_float_shortfall: 'Counted cash is below the retained float; no removal can be calculated.',
-    checkout_unresolved: `${subject || `Checkout #${id}`} is still open. Complete or cancel it before closing.`,
-    checkout_cash_unresolved: `${subject || `Checkout payment #${id}`} needs cash payment review.`,
-    pending_allocation: `${subject || `Sale #${id}`} still needs stock allocation.`, cash_payment_unresolved: `${subject || `Cash payment #${id}`} has an unknown or unverified amount.`,
-    delivery_unresolved: `${subject || `Delivery #${id}`} is still open.`, restock_unresolved: `${subject || `Restock #${id}`} is still open.`,
-    hot_item_count_missing: `Required hot-item count for ${subject || `product #${id}`} is missing.`, payment_unverified: `${subject || `Payment #${id}`} is not verified.`,
-    evidence_pending: `${subject || `Evidence #${id}`} is pending review.`, evidence_rejected: `${subject || `Evidence #${id}`} was rejected.`,
+    checkout_unresolved: `${name('Checkout', 'An order')} is still open. Complete or cancel it before closing.`,
+    checkout_cash_unresolved: `${name('Checkout payment', 'A checkout cash payment')} needs cash payment review.`,
+    pending_allocation: `${name('Sale', 'A sale')} still needs stock allocation.`, cash_payment_unresolved: `${name('Cash payment', 'A cash payment')} has an unknown or unverified amount.`,
+    delivery_unresolved: `${name('Delivery', 'A delivery')} is still open.`, restock_unresolved: `${name('Restock', 'A restock')} is still open.`,
+    hot_item_count_missing: `Required hot-item count for ${subject || (id ? `product #${id}` : 'a product')} is missing.`, payment_unverified: `${name('Payment', 'A payment')} is not verified.`,
+    payment_mismatch: `${name('Sale', 'A sale')}: its payments do not add up to what it collected.`,
+    evidence_pending: `${name('Evidence', 'A payment photo')} is pending review.`, evidence_rejected: `${name('Evidence', 'A payment photo')} was rejected.`,
     clover_sync_stale: 'Clover’s orders for this day were not checked in the last 10 minutes. Keep Clover connected, then refresh.',
-    clover_writeback_pending: `${subject || `Clover order #${id}`} is paid in POPCORE but not marked paid on Clover yet. Open it and retry.`,
-    clover_review: `${subject || `Clover order #${id}`} changed on Clover after the sale was recorded. Review it on Clover.`,
+    clover_writeback_pending: `${name('Clover order', 'A Clover order')} is paid in POPCORE but not marked paid on Clover yet. Open it and retry.`,
+    clover_review: `${name('Clover order', 'A Clover order')} changed on Clover after the sale was recorded. Review it on Clover.`,
+    clover_import_failed: `${subject || (id ? `Clover order ${id}` : 'A Clover order')} could not be imported into POPCORE. Fix the cause and refresh, or a manager resolves it on the Checkout page.`,
   }
   return labels[kind] || code
 }
@@ -97,12 +101,13 @@ export default function ClosingPage() {
     try { await load(session.closing_id); setError(''); return true }
     catch { setRefreshNeeded(true); setError('Saved; refresh needed before another closing action.'); return false }
   }
-  async function mutate(name: string, run: (key: string) => Promise<unknown>) {
+  // `done` runs once the server confirms the request (also after a retry), e.g. to clear a recorded cash event's inputs.
+  async function mutate(name: string, run: (key: string) => Promise<unknown>, done?: () => void) {
     if (working || refreshNeeded || (pendingMutation.current && pendingMutation.current.name !== name)) return
-    const intent = pendingMutation.current ?? { name, key: newRequestKey(), run }; pendingMutation.current = intent
+    const intent = pendingMutation.current ?? { name, key: newRequestKey(), run, done }; pendingMutation.current = intent
     setWorking(true); setPendingName(name); setError('')
     try {
-      await intent.run(intent.key); pendingMutation.current = null; setPendingName(''); await refresh()
+      await intent.run(intent.key); pendingMutation.current = null; setPendingName(''); intent.done?.(); await refresh()
     } catch (cause) {
       const status = responseStatus(cause)
       if (status === 409) {
@@ -135,7 +140,10 @@ export default function ClosingPage() {
     try {
       const amount = parseMoneyToCents(cashEventAmount)
       if (!amount) throw new RangeError('Enter a cash-event amount greater than zero.')
-      await mutate('cash-event', key => addCashEvent(session.closing_id, session, cashEventType, amount, cashEventReason.trim(), key))
+      // A recorded event leaves nothing to click again: the next event needs a new amount and reason.
+      await mutate('cash-event', key => addCashEvent(session.closing_id, session, cashEventType, amount, cashEventReason.trim(), key), () => {
+        setCashEventAmount(''); setCashEventReason(''); message.success('Cash event recorded')
+      })
     } catch (cause) { setError((cause as Error).message) }
   }
 
@@ -149,7 +157,8 @@ export default function ClosingPage() {
   const count = session?.latest_cash_count
   const initialCount = count ? { opening_coin: inputDollars(count.opening_coin_cents), retained_coin: inputDollars(count.retained_coin_cents), ...Object.fromEntries(denominations.map(([key]) => [`d_${key}`, count.denomination_counts[key]])) } : undefined
 
-  const visibleBlockers = isManager ? session?.hard_blockers : session?.actionable_blockers
+  // Staff get every blocker and exception too, as labels (owner, 2026-10-27); the server decides what they see.
+  const visibleBlockers = session?.hard_blockers ?? session?.actionable_blockers
   const storeLine = session ? `${session.store_name || (store?.id === session.store_id ? store.name : `Store #${session.store_id}`)} · ${session.business_date}` : store?.name
   const reviewing = Boolean(session && session.status === 'submitted' && isManager && mutableScope && !closed)
   const canSubmit = Boolean(session && session.status === 'draft' && mutableScope && count && !closed)
@@ -222,30 +231,34 @@ export default function ClosingPage() {
     </dl>
     {session.status === 'draft' && mutableScope && <div className="pc-close-event">
       <p>记一笔现金 <small>Add cash event</small></p>
+      {cashEventType === 'refund' && <p className="pc-close-event-hint"><small>只用于POPCORE里没有销售单的退款。销售单的退款由经理在那张销售单上记录，已经算在当天的现金退款里，不要再记一次。 Only for money returned with no sale in POPCORE. A refund of a recorded sale is entered on that sale by a manager and is already in this day’s cash refunds: do not record it here too.</small></p>}
       <div className="pc-close-event-row">
-        <Select aria-label="Cash event type" disabled={busy} value={cashEventType} options={[['paid_in', '放入 Paid in'], ['refund', '现金退款 Cash refund'], ['payout', '支出 Paid out']].map(([value, label]) => ({ value, label }))} onChange={setCashEventType} />
+        <Select aria-label="Cash event type" disabled={busy} value={cashEventType} options={[['paid_in', '放入 Paid in'], ['refund', '现金退款 Cash refund, no sale'], ['payout', '支出 Paid out']].map(([value, label]) => ({ value, label }))} onChange={setCashEventType} />
         <Input aria-label="Cash event amount ($)" disabled={busy} prefix="$" inputMode="decimal" placeholder="金额 Amount" value={cashEventAmount} onChange={event => setCashEventAmount(event.target.value)} />
       </div>
       <div className="pc-close-event-row">
-        <Input aria-label="Cash event reason" disabled={busy} placeholder="原因 Required reason" value={cashEventReason} onChange={event => setCashEventReason(event.target.value)} />
+        <Input aria-label="Cash event reason" disabled={busy} placeholder={cashEventType === 'refund' ? '备注 Required note: who was refunded and why' : '原因 Required reason'} value={cashEventReason} onChange={event => setCashEventReason(event.target.value)} />
         <Button disabled={busy || !cashEventAmount || !cashEventReason.trim()} onClick={saveCashEvent}>记录 Record cash event</Button>
       </div>
     </div>}
   </section>
-  const tenders = isManager && session.tender_totals_cents && <section className="pc-panel" aria-label="Tender review">
+  // Day totals per tender: staff see them too; only managers get the payment references behind them.
+  const tenders = session.tender_totals_cents && <section className="pc-panel" aria-label="Tender review">
     <PanelHead zh="付款方式" en="Tender review" />
     <dl className="pc-close-rows">{tenderOrder(session.tender_totals_cents).map(([name, value]) => { const label = methodLabel(name); return <Row key={name} label={`${label.zh} ${label.en}`.trim()} value={formatCents(value)} /> })}</dl>
-    {session.unknown_payment_ids?.length ? <p className="pc-notice pc-close-inline"><strong>Unknown payment amounts</strong> {session.unknown_payment_ids.map(id => `Payment #${id}`).join(', ')}</p> : <p className="pc-quiet">No unknown manager-visible payment amounts.</p>}
+    {session.unknown_payment_ids === undefined ? null : session.unknown_payment_ids.length ? <p className="pc-notice pc-close-inline"><strong>Unknown payment amounts</strong> {session.unknown_payment_ids.map(id => `Payment #${id}`).join(', ')}</p> : <p className="pc-quiet">No unknown manager-visible payment amounts.</p>}
   </section>
   const review = !closed && mutableScope && <section id="closing-review" className="pc-panel" aria-label={session.status === 'submitted' ? 'Manager review' : 'Blockers and review'}>
-    <PanelHead zh={session.status === 'submitted' ? '审核事项' : '还需处理'} en={session.status === 'submitted' ? 'Review exceptions' : 'Blockers and review'} count={(visibleBlockers ?? []).length + (reviewing ? (session.review_exceptions ?? []).length : 0) || undefined} />
+    <PanelHead zh={session.status === 'submitted' ? '审核事项' : '还需处理'} en={session.status === 'submitted' ? 'Review exceptions' : 'Blockers and review'} count={(visibleBlockers ?? []).length + (reviewing || !isManager ? (session.review_exceptions ?? []).length : 0) || undefined} />
     <ul className="pc-close-issues">
-      {(visibleBlockers ?? []).map(code => <li key={code}><i className="pc-dot pc-dot-warn" aria-hidden="true" /><Issue code={code} target={session.issue_targets?.[code]} /></li>)}
+      {/* A staff label has no id, so the same label can appear more than once. */}
+      {(visibleBlockers ?? []).map((code, index) => <li key={`${code}-${index}`}><i className="pc-dot pc-dot-warn" aria-hidden="true" /><Issue code={code} target={session.issue_targets?.[code]} /></li>)}
       {reviewing && (session.review_exceptions ?? []).map(code => <li key={`x-${code}`} className="pc-close-exception"><i className="pc-dot pc-dot-warn" aria-hidden="true" /><div><Issue code={code} target={session.issue_targets?.[code]} /><Input aria-label={`${code} acceptance reason`} disabled={busy} value={exceptionReasons[code] ?? ''} onChange={event => setExceptionReasons({ ...exceptionReasons, [code]: event.target.value })} placeholder="接受原因 Separate acceptance reason" /></div></li>)}
+      {!isManager && (session.review_exceptions ?? []).map((code, index) => <li key={`x-${code}-${index}`}><i className="pc-dot pc-dot-warn" aria-hidden="true" /><Text>经理审核 Manager reviews: {issueLabel(code)}</Text></li>)}
       {reviewing && !(session.review_exceptions ?? []).length && <li className="pc-quiet">No review exceptions.</li>}
-      {!(visibleBlockers ?? []).length && isManager && session.hard_blockers !== undefined && <li className="pc-quiet">No current hard blockers.</li>}
+      {!(visibleBlockers ?? []).length && session.hard_blockers !== undefined && <li className="pc-quiet">No current hard blockers.</li>}
     </ul>
-    {!isManager && <p className="pc-close-note">A manager reviews any remaining payment or evidence blockers.</p>}
+    {!isManager && <p className="pc-close-note">A manager reviews the payment items and signs off the day.</p>}
     {reviewing && <div className="pc-close-return"><Input aria-label="Return-for-changes reason" disabled={busy} value={reviewReason} onChange={event => setReviewReason(event.target.value)} placeholder="退回原因 Separate reason for returning this closing" /></div>}
     {phone && stepActions && <div className="pc-close-actions">{stepActions}</div>}
   </section>

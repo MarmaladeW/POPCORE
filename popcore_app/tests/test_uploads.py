@@ -117,3 +117,72 @@ class ProductImageUploadTests(IsolatedApiCase):
         files = list(self.upload_dir.rglob('*')) if self.upload_dir.exists() else []
         self.assertFalse(any(path.is_file() for path in files))
         self.assertEqual(self.snapshot(('hidden_images',))['hidden_images'], [])
+
+
+class ProductImageDeleteTests(IsolatedApiCase):
+    upload = ProductImageUploadTests.upload
+
+    def spare_product_with_image(self):
+        with closing(self.connect()) as con:
+            product_id = con.execute(
+                "INSERT INTO products (sku, name_cn_en) VALUES ('DEL-1', 'Old figure')"
+            ).lastrowid
+            con.commit()
+        response = self.upload(product_id, png_1x1(), 'a.png')
+        self.assertEqual(response.status_code, 201)
+        image = response.get_json()
+        return product_id, image, self.upload_dir / image['filename']
+
+    def bulk_delete(self, product_ids):
+        return self.client.post('/api/products/bulk_delete', json=product_ids,
+                                headers=self.headers('manager'))
+
+    def delete_image(self, product_id, image):
+        return self.client.delete(f"/api/products/{product_id}/hidden_images/{image['id']}",
+                                  headers=self.headers('manager'))
+
+    def test_refused_bulk_delete_keeps_the_product_its_images_and_their_files(self):
+        product_id, _, path = self.spare_product_with_image()
+        with closing(self.connect()) as con:
+            # A nightly insight still names the product, so the database refuses the delete.
+            con.execute(
+                """INSERT INTO insights (store, check_type, severity, title, body, product_id)
+                   VALUES ('DT', 'dead_stock', 'info', 'No sales', 'x', ?)""",
+                (product_id,),
+            )
+            con.commit()
+        tables = ('products', 'hidden_images', 'insights')
+        before = self.snapshot(tables)
+
+        response = self.bulk_delete([product_id])
+
+        self.assertEqual((response.status_code, response.get_json()['code']),
+                         (409, 'product_history_retained'))
+        self.assertEqual(self.snapshot(tables), before)
+        self.assertTrue(path.is_file())
+
+    def test_failed_image_delete_keeps_its_file(self):
+        product_id, image, path = self.spare_product_with_image()
+        with closing(self.connect()) as con:
+            con.execute(
+                """CREATE TRIGGER keep_hidden_image
+                   BEFORE DELETE ON hidden_images
+                   BEGIN SELECT RAISE(ABORT, 'fixture failure'); END"""
+            )
+            con.commit()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.delete_image(product_id, image)
+
+        self.assertTrue(path.is_file())
+        self.assertEqual(len(self.snapshot(('hidden_images',))['hidden_images']), 1)
+
+    def test_deleting_an_image_or_its_product_removes_the_files(self):
+        product_id, image, path = self.spare_product_with_image()
+        self.assertEqual(self.delete_image(product_id, image).status_code, 200)
+        self.assertFalse(path.exists())
+
+        second = self.upload(product_id, png_1x1(), 'b.png').get_json()
+        self.assertEqual(self.bulk_delete([product_id]).get_json(), {'ok': True, 'deleted': 1})
+        self.assertFalse((self.upload_dir / second['filename']).exists())
+        self.assertEqual(self.snapshot(('hidden_images',))['hidden_images'], [])

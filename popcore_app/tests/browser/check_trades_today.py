@@ -105,6 +105,34 @@ async def checks(browser):
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE+'/trades');await expect(page.get_by_text('Trades',exact=True).first).to_be_visible();assert await page.evaluate('document.body.scrollWidth')<=1442;await context.close()
 
+async def trade_reset_checks(browser):
+    """After a confirmed swap the next customer's inspection starts empty: no answer of the previous trade is reused."""
+    state={'mode':'data'};staff=api_for('staff',state)
+    def api(path,query,request):
+        if path=='/api/trade-slots/9/inspections': return {'inspection_id':71,'incoming_unit_id':12,'decision':'accepted'}
+        if path=='/api/trade-slots/9/swap': return {'slot_id':9}
+        return staff(path,query,request)
+    state['api_payload']=api
+    context,page=await context_with_api(browser,state,viewport={'width':1280,'height':900},auth={'role':'staff'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/trades');await expect(page.get_by_text('Occupied:',exact=False)).to_be_visible()
+    await page.get_by_label('Incoming verified design').click();await page.locator('.ant-select-item-option').filter(has_text='Long bilingual design').click()
+    await page.get_by_label('Proof type').click();await page.locator('.ant-select-item-option').filter(has_text='Legacy sticker reviewed').click()
+    await page.get_by_label('Proof reference').fill('STICKER-1');await page.get_by_label('Observed condition').fill('Mint')
+    await page.get_by_label('Customer disclosure').fill('Complete, box opened');await page.get_by_label('Box checked').check()
+    await page.get_by_role('button',name='Record inspection').click()
+    swap=page.get_by_role('button',name='Confirm physical swap');await swap.click()
+    await expect(page.get_by_text('Swap confirmed',exact=True)).to_be_visible()
+    # The next customer: the swap button and every answer are gone, so nothing can be recorded with the last trade's answers.
+    await expect(swap).to_have_count(0)
+    for label in ('Proof reference','Observed condition','Customer disclosure'): await expect(page.get_by_label(label)).to_have_value('')
+    await expect(page.get_by_label('Box checked')).not_to_be_checked()
+    await page.get_by_role('button',name='Record inspection').click()
+    await expect(page.locator('.ant-form-item-explain-error').first).to_be_visible();await page.wait_for_timeout(300)
+    inspections=[r for r in state['requests'] if r['path']=='/api/trade-slots/9/inspections']
+    assert len(inspections)==1 and inspections[0]['post_data']['proof_reference']=='STICKER-1', inspections
+    await context.close()
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1',5174))==0: raise RuntimeError('Port 5174 is already in use')
@@ -114,7 +142,7 @@ async def main():
         await wait_for_server(process)
         async with async_playwright() as pw:
             browser=await pw.chromium.launch(headless=True)
-            try: await checks(browser)
+            try: await checks(browser);await trade_reset_checks(browser)
             except Exception:
                 for c in browser.contexts:
                     if c.pages: await c.pages[-1].screenshot(path=OUT/'failure.png',full_page=True);break

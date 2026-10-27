@@ -6,19 +6,25 @@ import { formatCents, tryParseMoneyToCents } from '../../lib/money'
 import { useHasRole } from '../../auth/useRole'
 import useCheckoutMutation from './useCheckoutMutation'
 import type { CloverBlock } from './cloverOrderView'
+import type { BoxChoice, BoxOptions } from './boxChoice'
 
 // Shared by manual checkouts and Clover orders.
 export type Store = { id:number; code:string; name:string }
 export type Access = { business_date:string; role:string; live_stores:Store[]; history_stores:Store[]; cny_per_cad:string; cny_rate_source?:string|null; clover_store_id?:number|null; clover_environment?:string|null }
-export type Collect = { due_cents:number; mode?:string|null; label?:string|null; rest_cents:number }
+/** `cash_rest_cents`: what cash collects for the rest, rounded to 5¢; every other tender collects `rest_cents`. */
+export type Collect = { due_cents:number; mode?:string|null; label?:string|null; rest_cents:number; cash_rest_cents?:number }
+/** A blind box over half a set on an order, and where the cashier said the boxes came from. */
+export type BoxQuestion = { product_id:number; from_display:boolean; name:string; quantity:number; set_size:number; choice:BoxChoice|null; open_set_id:number|null; options:BoxOptions|null }
 export type ManualPricing = { total_cents:number; card_cents:number; other_cents:number; can_receive:boolean; undo_attempt_ids:number[]; collect:{ pay:Collect; split_card:Collect; card:Collect }|null }
 export type Photo = { id:number }
 export type Attempt = { id:number; origin?:'clover'|'popcore'; tender:string; amount_cents:number; status:string; can_upload:boolean; photos:Photo[]; refundable_cents?:number; recorded_by?:string|null; cancel_reason?:string|null; provider_payment_id?:string|null; cny_fen?:number|null; cny_per_cad?:string|null }
 export type Line = { product_name_snapshot:string; quantity:number; unit:string }
-export type Order = { id:number; store_id:number; reference:string; register_name?:string; business_date:string; status:string; version:number; sale_id:number|null; cashier_name:string; cashier_sub:string; can_note:boolean; note:string; can_manage:boolean; can_process:boolean; can_refund:boolean; received_cents:number; remaining_cents:number; refunded_cents:number; refund_due_cents:number; abandoned_reason:string|null; attempts:Attempt[]; refunds:{id:number;amount_cents:number;reference:string;business_date:string;tender:string}[]; order:{ subtotal_cents:number;source_tax_cents:number;gross_cents:number;reduction_cents:number;collected_cents:number;lines:Line[] }; clover?:CloverBlock|null; pricing?:ManualPricing|null; clover_send?:CloverSend|null }
+export type Order = { id:number; store_id:number; reference:string; register_name?:string; business_date:string; status:string; version:number; sale_id:number|null; cashier_name:string; cashier_sub:string; can_note:boolean; note:string; can_manage:boolean; can_process:boolean; can_refund:boolean; received_cents:number; remaining_cents:number; refunded_cents:number; refund_due_cents:number; abandoned_reason:string|null; attempts:Attempt[]; refunds:{id:number;amount_cents:number;reference:string;business_date:string;tender:string}[]; order:{ subtotal_cents:number;source_tax_cents:number;gross_cents:number;reduction_cents:number;collected_cents:number;lines:Line[] }; clover?:CloverBlock|null; pricing?:ManualPricing|null; clover_send?:CloverSend|null; box_choices?:BoxQuestion[]; box_choice_required?:boolean; can_choose_boxes?:boolean }
 /** Sending a POPCORE order to Clover so the customer pays by card on the device. */
 export type CloverSend = { pending:boolean; error:string|null; can_send:boolean; can_stop:boolean }
-export type CloverStatus = { enabled:boolean; connected:boolean; environment?:string; writes?:boolean; fetched_at?:number; message?:string; server_ms?:number }
+/** A Clover order of this store that could not be imported: closing waits until it imports or a manager resolves it. */
+export type CloverFailure = { order_id:string; business_date:string; error:string }
+export type CloverStatus = { enabled:boolean; connected:boolean; environment?:string; writes?:boolean; fetched_at?:number; message?:string; server_ms?:number; failures?:CloverFailure[] }
 export type Queue = { orders:Order[]; next_before_id:number|null; clover:CloverStatus }
 export type Draft = { target:string; tender:string; split:string; includesCard:boolean; sourceTotal?:number; photos?:Record<number,File>; cloverSplit?:''|'card'|'tenders' }
 export type DraftUpdate = Partial<Draft> | ((draft:Draft)=>Draft)

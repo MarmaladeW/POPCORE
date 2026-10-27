@@ -1,0 +1,2 @@
+# Shell scripts run on the Linux droplet; CRLF from a Windows or autocrlf checkout breaks bash.
+*.sh text eol=lf

@@ -143,9 +143,19 @@ def search_products():
     limit_raw     = request.args.get('limit')
     limit         = int(limit_raw) if limit_raw else None
     include_stock = request.args.get('include_stock', '0') == '1'
+    store_code    = (request.args.get('store_code') or '').strip().upper()
 
     con = get_db()
     cur = con.cursor()
+
+    # With store_code, include_stock reads that store's stock; without one (or ALL) it keeps the old unfiltered read.
+    stock_filter, stock_params = '', []
+    if include_stock and store_code and store_code != 'ALL':
+        store = cur.execute('SELECT id FROM stores WHERE code = ? AND is_active = 1', (store_code,)).fetchone()
+        if store is None:
+            con.close()
+            return jsonify({'error': 'Invalid store code'}), 400
+        stock_filter, stock_params = ' AND store_id = ?', [store['id']]
 
     search_source = f"""(SELECT p.*, ps.name AS series_name,
         {product_alias_text_sql('p')} AS alias_text,
@@ -193,8 +203,8 @@ def search_products():
             pids = [r['id'] for r in rows]
             cur.execute(
                 'SELECT product_id, COALESCE(upstairs_qty,0) AS upstairs_qty FROM stock'
-                f' WHERE product_id IN ({",".join("?"*len(pids))})',
-                pids,
+                f' WHERE product_id IN ({",".join("?"*len(pids))}){stock_filter}',
+                pids + stock_params,
             )
             sm = {r['product_id']: r['upstairs_qty'] for r in cur.fetchall()}
             for r in rows:
@@ -281,8 +291,8 @@ def search_products():
         pids = [c['id'] for c in final]
         cur.execute(
             'SELECT product_id, COALESCE(upstairs_qty,0) AS upstairs_qty FROM stock'
-            f' WHERE product_id IN ({",".join("?"*len(pids))})',
-            pids,
+            f' WHERE product_id IN ({",".join("?"*len(pids))}){stock_filter}',
+            pids + stock_params,
         )
         sm = {r['product_id']: r['upstairs_qty'] for r in cur.fetchall()}
         for c in final:
@@ -371,7 +381,7 @@ def list_all_aliases():
 
 
 @bp.route('/api/products/aliases', methods=['POST'])
-@login_required
+@role_required('staff')
 def save_alias():
     data = request.get_json(silent=True) or {}
     pid  = data.get('product_id')
@@ -422,7 +432,7 @@ def get_section_aliases():
 
 
 @bp.route('/api/section-aliases', methods=['POST'])
-@login_required
+@role_required('staff')
 def save_section_alias():
     data         = request.get_json(silent=True) or {}
     alias        = (data.get('alias') or '').strip()
@@ -436,8 +446,15 @@ def save_section_alias():
         return jsonify({'error': 'alias normalises to empty'}), 400
     con = get_db()
     try:
+        con.execute('BEGIN IMMEDIATE')
+        # A learned heading keeps its section; changing it is a conflict (as when a report import learns it).
+        saved = con.execute('SELECT section_type FROM section_aliases WHERE alias_norm=?',
+                            (alias_norm,)).fetchone()
+        if saved and saved['section_type'] != section_type:
+            return jsonify({'error': 'Heading already has a different section',
+                            'code': 'section_choice_conflict'}), 409
         con.execute(
-            'INSERT OR REPLACE INTO section_aliases (alias_norm, section_type) VALUES (?,?)',
+            'INSERT OR IGNORE INTO section_aliases (alias_norm, section_type) VALUES (?,?)',
             (alias_norm, section_type),
         )
         con.commit()
@@ -565,11 +582,14 @@ def delete_hidden_image(pid, img_id):
         con.close()
         return jsonify({'error': 'Not found'}), 404
     filepath = os.path.join(HIDDEN_IMG_DIR, row['filename'])
-    if os.path.exists(filepath):
-        os.remove(filepath)
     cur.execute('DELETE FROM hidden_images WHERE id = ?', (img_id,))
     con.commit()
     con.close()
+    # The file goes only once its row is gone, so a failed delete never leaves a row without its file.
+    try:
+        os.remove(filepath)
+    except OSError:
+        pass
     return jsonify({'ok': True})
 
 
@@ -1691,23 +1711,33 @@ def bulk_delete_products():
         }), 409
 
     cur.execute(f'SELECT filename FROM hidden_images WHERE product_id IN ({ph})', pids)
-    for row in cur.fetchall():
-        fp = os.path.join(HIDDEN_IMG_DIR, row['filename'])
+    files = [os.path.join(HIDDEN_IMG_DIR, row['filename']) for row in cur.fetchall()]
+
+    try:
+        cur.execute(f'DELETE FROM hidden_images     WHERE product_id IN ({ph})', pids)
+        cur.execute(f'DELETE FROM daily_sales        WHERE product_id IN ({ph})', pids)
+        cur.execute(f'DELETE FROM stock_transactions WHERE product_id IN ({ph})', pids)
+        cur.execute(f'DELETE FROM stock              WHERE product_id IN ({ph})', pids)
+        cur.execute(f'DELETE FROM products           WHERE id         IN ({ph})', pids)
+        deleted = cur.rowcount
+        con.commit()
+    except sqlite3.IntegrityError:
+        # Another record still references a product (an insight, for one), so the database refused.
+        con.rollback()
+        con.close()
+        return jsonify({
+            'error': 'Products with stock or operational history are retained',
+            'code': 'product_history_retained',
+        }), 409
+    con.close()
+
+    # Image files go only once their rows are gone, so a refused delete keeps every image.
+    for fp in files:
         if os.path.exists(fp):
             try:
                 os.remove(fp)
             except OSError:
                 pass
-
-    cur.execute(f'DELETE FROM hidden_images     WHERE product_id IN ({ph})', pids)
-    cur.execute(f'DELETE FROM daily_sales        WHERE product_id IN ({ph})', pids)
-    cur.execute(f'DELETE FROM stock_transactions WHERE product_id IN ({ph})', pids)
-    cur.execute(f'DELETE FROM stock              WHERE product_id IN ({ph})', pids)
-    cur.execute(f'DELETE FROM products           WHERE id         IN ({ph})', pids)
-    deleted = cur.rowcount
-
-    con.commit()
-    con.close()
     return jsonify({'ok': True, 'deleted': deleted})
 
 

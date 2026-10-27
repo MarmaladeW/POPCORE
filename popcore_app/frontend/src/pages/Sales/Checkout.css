@@ -115,6 +115,15 @@
 .co-methods button[aria-pressed='true'] { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
 .co-methods button[aria-pressed='true'] .co-method-en { color: var(--text-on-ink-tertiary); }
 .co-methods button:disabled { cursor: default; opacity: .5; }
+/* Blind boxes over half a set: where they came from, before payment */
+.co-box-questions { margin-top: 16px; }
+.co-boxes legend .co-muted { display: block; }
+.co-boxes .co-method-en { text-align: center; }
+.co-methods > .co-box-sets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.co-methods > .co-box-sets button { min-height: 40px; padding: 6px 12px; flex-direction: row; }
+.co-clover-failures { display: grid; gap: 8px; margin-bottom: 8px; }
+.co-clover-failures ul { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.co-clover-failures .ant-input { min-height: 40px; }
 .co-collect { display: grid; gap: 4px; margin: 0 0 8px; padding: 16px; border: 1px solid var(--line-hair); background: var(--surface-default); }
 .co-collect > span { color: var(--text-secondary); font-size: 12px; line-height: 18px; }
 .co-collect strong { font-size: 28px; font-weight: 600; line-height: 34px; letter-spacing: -.6px; }

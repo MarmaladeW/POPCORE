@@ -9,6 +9,8 @@ from flask import request, jsonify
 from jose import jwt as jose_jwt
 import requests as http_req
 
+from db import get_db
+
 AUTH0_DOMAIN             = os.environ.get('AUTH0_DOMAIN', '')
 AUTH0_AUDIENCE           = os.environ.get('AUTH0_AUDIENCE', 'https://popcore/api')
 AUTH0_MGMT_CLIENT_ID     = os.environ.get('AUTH0_MGMT_CLIENT_ID', '')
@@ -23,28 +25,32 @@ ROLE_HIERARCHY = {'viewer': 0, 'staff': 1, 'manager': 2, 'admin': 3}
 # ─── JWT helpers ──────────────────────────────────────────────────────────────
 
 _jwks_cache: dict | None = None
+# Unknown key ids (rotation, or anyone's forged token) refetch JWKS at most once per interval.
+JWKS_REFETCH_INTERVAL = 300
+_jwks_refetch_after = 0.0
 
 
-def _get_jwks() -> dict:
+def _get_jwks(refresh: bool = False) -> dict:
     global _jwks_cache
-    if _jwks_cache is None:
+    if _jwks_cache is None or refresh:
         resp = http_req.get(
             f'https://{AUTH0_DOMAIN}/.well-known/jwks.json', timeout=10
         )
         resp.raise_for_status()
-        _jwks_cache = resp.json()
+        jwks = resp.json()
+        _jwks_cache = jwks  # replaced only by a good fetch; a failed refetch keeps the cached keys
     return _jwks_cache
 
 
 def _decode_token(token: str) -> dict:
-    global _jwks_cache
+    global _jwks_refetch_after
     jwks = _get_jwks()
     header = jose_jwt.get_unverified_header(token)
     key = next((k for k in jwks['keys'] if k['kid'] == header['kid']), None)
-    if key is None:
+    if key is None and time.monotonic() >= _jwks_refetch_after:
         # Refresh JWKS once in case of key rotation
-        _jwks_cache = None
-        jwks = _get_jwks()
+        _jwks_refetch_after = time.monotonic() + JWKS_REFETCH_INTERVAL
+        jwks = _get_jwks(refresh=True)
         key = next((k for k in jwks['keys'] if k['kid'] == header['kid']), None)
     if key is None:
         raise ValueError(f'Unknown key id: {header.get("kid")}')
@@ -64,6 +70,24 @@ def _no_role():
                     'code': 'no_role'}), 403
 
 
+def _account_disabled(payload):
+    """A 403 when this sign-in's employees row exists and is inactive (removed or blocked in Users).
+
+    Accounts without a row yet (rows are created lazily), trainees and service subjects pass.
+    Its token can stay valid for hours after removal, so this is checked on every request.
+    """
+    subject = payload.get('sub')
+    if not isinstance(subject, str) or not subject:
+        return None
+    row = get_db().execute(
+        'SELECT is_active FROM employees WHERE auth0_id = ?', (subject,)
+    ).fetchone()
+    if row is None or row[0]:
+        return None
+    return jsonify({'error': 'This account has been removed; ask a manager',
+                    'code': 'account_disabled'}), 403
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -81,6 +105,9 @@ def login_required(f):
             return jsonify({'error': 'Unauthorized', 'login_required': True}), 401
         if request.jwt_payload.get(ROLE_CLAIM) not in ROLE_HIERARCHY:
             return _no_role()
+        disabled = _account_disabled(request.jwt_payload)
+        if disabled:
+            return disabled
         return f(*args, **kwargs)
     return decorated
 
@@ -106,6 +133,9 @@ def role_required(*allowed_roles):
             role = payload.get(ROLE_CLAIM)
             if role not in ROLE_HIERARCHY:
                 return _no_role()
+            disabled = _account_disabled(payload)
+            if disabled:
+                return disabled
             if ROLE_HIERARCHY[role] < min_level:
                 return jsonify({'error': 'Forbidden'}), 403
             return f(*args, **kwargs)

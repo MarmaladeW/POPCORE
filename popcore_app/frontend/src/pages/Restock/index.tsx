@@ -40,6 +40,7 @@ export interface RestockItem {
   name_cn_en: string
   ip_series: string
   product_type: string
+  stock_unit?: 'box' | 'set' | 'piece' | null
   upstairs_qty: number
   instore_qty: number
 }

@@ -7,6 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 from support import IsolatedApiCase  # noqa: E402
+import clover_match_review  # noqa: E402
+import db  # noqa: E402
 import import_clover_items as importer  # noqa: E402
 import merge_clover_products as merger  # noqa: E402
 
@@ -76,6 +78,42 @@ class CloverProductMergeTests(IsolatedApiCase):
             again = merger.apply(con, [{'legacy_id': self.product_id, 'decision': str(self.clover_id)}])
             self.assertEqual(again[0][1], 'refused')
             self.assertEqual(con.execute('SELECT COUNT(*) FROM product_aliases').fetchone()[0], 3)
+
+    def add_day_sales(self, con, product_id, price, pos=0, claw=0, display=0, employee=0):
+        con.execute('''INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_claw, qty_display,
+                                                qty_employee, qty_sold, unit_price)
+                       VALUES (?, '2026-10-01', 'DT', ?, 0, ?, ?, ?, ?, ?)''',
+                    (product_id, pos, claw, display, employee, pos + claw + display + employee, price))
+
+    def test_same_day_sales_keep_every_channel_when_merged(self):
+        with closing(self.connect()) as con:
+            # Same day and store: claw, display and employee sales on the legacy row; a POS sale on Clover's.
+            self.add_day_sales(con, self.product_id, 19.99, claw=2, display=1, employee=1)
+            self.add_day_sales(con, self.clover_id, 19.99, pos=1)
+            con.commit()
+            results = merger.apply(con, [{'legacy_id': self.product_id, 'decision': str(self.clover_id)}])
+            self.assertEqual(results[0][1], 'ok', results)
+            rows = con.execute('''SELECT product_id, qty_sold, qty_pos, qty_cash, qty_claw, qty_display, qty_employee,
+                                         unit_price FROM daily_sales''').fetchall()
+        self.assertEqual([tuple(r) for r in rows], [(self.clover_id, 5, 1, 0, 2, 1, 1, 19.99)])
+
+    def test_same_day_sales_at_different_prices_are_refused_and_the_review_stays_open(self):
+        with closing(self.connect()) as con:
+            self.add_day_sales(con, self.product_id, 15.0, claw=2)
+            self.add_day_sales(con, self.clover_id, 19.99, pos=1)
+            con.execute('''INSERT INTO clover_match_reviews (legacy_product_id, legacy_sku, legacy_jizhanming,
+                               legacy_name, decision, target_product_id, source)
+                           VALUES (?, 'TEST-1', '测试产品', 'Test Product', 'merge', ?, 'owner')''',
+                        (self.product_id, self.clover_id))
+            con.commit()
+        tables = ['products', 'daily_sales', 'stock', 'product_aliases', 'clover_match_reviews']
+        before = self.snapshot(tables)
+
+        [result] = clover_match_review.apply_reviews(db.DB_PATH, [self.product_id], 'auth0|manager')
+
+        self.assertEqual(result['status'], 'refused')
+        self.assertIn('different prices on 2026-10-01 at DT', result['message'])
+        self.assertEqual(self.snapshot(tables), before)
 
     def test_colliding_stock_is_refused_and_nothing_changes(self):
         with closing(self.connect()) as con:

@@ -17,6 +17,7 @@ export default function TradesPage() {
   const [error, setError] = useState('')
   const [inspection, setInspection] = useState<number | null>(null)
   const [form] = Form.useForm()
+  const [round, setRound] = useState(0)
   const request = useRef(0)
 
   async function load(preferred?: number) {
@@ -33,7 +34,14 @@ export default function TradesPage() {
       if (current === request.current) setSlot(detail)
     } catch (e) { if(current===request.current)setError(errText(e)) } finally { if(current===request.current)setBusy(false) }
   }
-  useEffect(() => { request.current++; setSlot(null); setSlots([]); setSetup(null); setInspection(null); void load(); return()=>{request.current++} }, [store?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { request.current++; clearTrade(); setSlot(null); setSlots([]); setSetup(null); void load(); return()=>{request.current++} }, [store?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The next customer starts from empty answers: the previous trade's inspection, answers and typed sale or
+  // condition values never carry over (the trade forms exist only while a slot is shown; the series picked for a new slot stays).
+  function clearTrade() {
+    if (slot) { const series = form.getFieldValue('series_id'); form.resetFields(); form.setFieldValue('series_id', series) }
+    setInspection(null); setRound(value => value + 1)
+  }
 
   async function act(run: () => Promise<any>, success: string) {
     setBusy(true); setError('')
@@ -50,8 +58,8 @@ export default function TradesPage() {
       <Select aria-label="Series" placeholder="Series" style={{minWidth:240}} options={setup.series.map(s=>({value:s.series_id,label:s.name}))} onChange={v=>form.setFieldValue('series_id',v)} />
       <Button style={{minHeight:44}} onClick={()=>act(()=>createTradeSlot({store_id:store.id,series_id:form.getFieldValue('series_id'),location_id:setup.floor_location_id}),'Trade slot created')}>Create slot</Button>
     </Space></Card>}
-    <Card title="Trade slot"><Select aria-label="Trade slot" value={slot?.slot_id} placeholder="Select a slot" style={{width:'100%',maxWidth:440}} options={slots.map(s=>({value:s.slot_id,label:`Series ${s.series_id} · slot ${s.slot_id}`}))} onChange={id=>{setInspection(null);void load(id)}} />
-      {slot && <Space direction="vertical" size={12} style={{display:'flex',marginTop:16}}>
+    <Card title="Trade slot"><Select aria-label="Trade slot" value={slot?.slot_id} placeholder="Select a slot" style={{width:'100%',maxWidth:440}} options={slots.map(s=>({value:s.slot_id,label:`Series ${s.series_id} · slot ${s.slot_id}`}))} onChange={id=>{clearTrade();void load(id)}} />
+      {slot && <Space key={round} direction="vertical" size={12} style={{display:'flex',marginTop:16}}>
         <Space wrap><Tag>Version {slot.version}</Tag><Tag color={slot.occupant ? 'green':'orange'}>{slot.occupant ? `Occupied: ${slot.occupant.design_name}`:'Empty · replacement needed'}</Tag></Space>
         {slot.occupant ? <>
           <Form layout="vertical" form={form} preserve>
@@ -63,14 +71,14 @@ export default function TradesPage() {
             <Space wrap><Form.Item name="box_checked" valuePropName="checked"><Checkbox>Box checked</Checkbox></Form.Item><Form.Item name="accessories_checked" valuePropName="checked"><Checkbox>Accessories checked</Checkbox></Form.Item></Space>
             <Button type="primary" style={{minHeight:44}} onClick={async()=>{ const v=await form.validateFields(); const r=await act(()=>inspectTrade(slot.slot_id,{...v,origin:'inspected_trade',decision:'accepted',expected_version:slot.version}),'Inspection accepted'); if(r)setInspection(r.inspection_id)}}>Record inspection</Button>
           </Form>
-          {inspection && <Button type="primary" danger style={{minHeight:44}} onClick={()=>act(()=>swapTrade(slot.slot_id,{expected_version:slot.version,inspection_id:inspection,outgoing_balance_version:slot.products?.find(p=>p.product_id===slot.occupant?.design_product_id)?.balance_version,incoming_balance_version:slot.products?.find(p=>p.product_id===form.getFieldValue('design_product_id'))?.balance_version}),'Swap confirmed')}>Confirm physical swap</Button>}
-          <Space wrap><InputNumber aria-label="Reviewed sale ID" placeholder="Reviewed sale ID" min={1} onChange={v=>form.setFieldValue('sale_id',v)}/><InputNumber aria-label="Sale version" placeholder="Sale version" min={1} onChange={v=>form.setFieldValue('sale_version',v)}/><Button style={{minHeight:44}} onClick={()=>act(()=>sellTrade(slot.slot_id,{expected_version:slot.version,sale_id:form.getFieldValue('sale_id'),sale_expected_version:form.getFieldValue('sale_version'),trade_balance_version:slot.products?.find(p=>p.product_id===slot.occupant?.design_product_id)?.balance_version}),'Trade unit sold; slot needs replacement')}>Sell current unit</Button></Space>
+          {inspection && <Button type="primary" danger style={{minHeight:44}} onClick={async()=>{ if(await act(()=>swapTrade(slot.slot_id,{expected_version:slot.version,inspection_id:inspection,outgoing_balance_version:slot.products?.find(p=>p.product_id===slot.occupant?.design_product_id)?.balance_version,incoming_balance_version:slot.products?.find(p=>p.product_id===form.getFieldValue('design_product_id'))?.balance_version}),'Swap confirmed')) clearTrade() }}>Confirm physical swap</Button>}
+          <Space wrap><InputNumber aria-label="Reviewed sale ID" placeholder="Reviewed sale ID" min={1} onChange={v=>form.setFieldValue('sale_id',v)}/><InputNumber aria-label="Sale version" placeholder="Sale version" min={1} onChange={v=>form.setFieldValue('sale_version',v)}/><Button style={{minHeight:44}} onClick={async()=>{ if(await act(()=>sellTrade(slot.slot_id,{expected_version:slot.version,sale_id:form.getFieldValue('sale_id'),sale_expected_version:form.getFieldValue('sale_version'),trade_balance_version:slot.products?.find(p=>p.product_id===slot.occupant?.design_product_id)?.balance_version}),'Trade unit sold; slot needs replacement')) clearTrade() }}>Sell current unit</Button></Space>
           <Space wrap><Input aria-label="Condition concern" placeholder="Condition concern" onChange={e=>form.setFieldValue('case_condition',e.target.value)} /><Button style={{minHeight:44}} onClick={async()=>{const r=await act(()=>createConditionCase({unit_id:slot.occupant_unit_id,observed_condition:form.getFieldValue('case_condition'),disclosed_condition:slot.occupant?.condition_disclosure,reason:'Recorded from trade slot'}),'Condition case created'); if(r)window.location.assign(`/trades/cases/${r.case_id}`)}}>Record condition case</Button></Space>
         </> : <Form layout="vertical" form={form} preserve>
           <Form.Item label="Random box to open" name="random_product_id" rules={[{required:true}]}><Select options={randoms.map(p=>({value:p.product_id,label:`${p.name} · ${p.quantity} ${p.stock_unit}`}))}/></Form.Item>
           <Form.Item label="Observed verified design" name="open_design_id" rules={[{required:true}]}><Select showSearch optionFilterProp="search" options={designs.map(p=>({value:p.product_id,label:p.name,search:`${p.name} ${p.search_text??''}`}))}/></Form.Item>
           <Form.Item label="Condition disclosure" name="open_disclosure" rules={[{required:true}]}><Input.TextArea /></Form.Item>
-          <Button type="primary" style={{minHeight:44}} onClick={async()=>{const v=await form.validateFields();const rp=randoms.find(p=>p.product_id===v.random_product_id);const dp=designs.find(p=>p.product_id===v.open_design_id);await act(()=>openTradeSlot(slot.slot_id,{expected_version:slot.version,random_product_id:rp?.product_id,design_product_id:dp?.product_id,condition_disclosure:v.open_disclosure,random_balance_version:rp?.balance_version,trade_balance_version:dp?.balance_version}),'Replacement placed in slot')}}>Open box and place replacement</Button>
+          <Button type="primary" style={{minHeight:44}} onClick={async()=>{const v=await form.validateFields();const rp=randoms.find(p=>p.product_id===v.random_product_id);const dp=designs.find(p=>p.product_id===v.open_design_id);if(await act(()=>openTradeSlot(slot.slot_id,{expected_version:slot.version,random_product_id:rp?.product_id,design_product_id:dp?.product_id,condition_disclosure:v.open_disclosure,random_balance_version:rp?.balance_version,trade_balance_version:dp?.balance_version}),'Replacement placed in slot')) clearTrade()}}>Open box and place replacement</Button>
         </Form>}
       </Space>}
     </Card>

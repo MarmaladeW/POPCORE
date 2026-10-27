@@ -40,6 +40,7 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
   const [inventoryLocations, setInventoryLocations] = useState<any[]>([])
   const [inventoryBalances, setInventoryBalances] = useState<any[]>([])
   const requestIntent = useRef<{ signature: string; key: string } | null>(null)
+  const selection = useRef(0)
 
   // Multi-unit inputs: 端, 盒
   const [qDan,   setQDan]   = useState<number>(0)
@@ -62,7 +63,9 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
     return qDan * bpd + qHe
   }, [op, isBlindBox, qDan, qHe, bpd, newQty, inventoryMode])
 
-  // Pre-seed product when opened from a row's quick-adjust button
+  // Pre-seed product when opened from a row's quick-adjust button. Keyed on the
+  // product id: the Stock page passes a new object on every render, and a
+  // re-render must not replace a product the user picked in the search box.
   useEffect(() => {
     if (open && initialProduct) {
       selectProduct(initialProduct)
@@ -70,16 +73,21 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
     } else if (!open) {
       reset()
     }
-  }, [open, initialProduct])
+  }, [open, initialProduct?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Every opening starts from 入库（楼上）: the previous product's operation and
+  // location must never apply to the next product.
   function reset() {
     setStep(0); setProduct(null); setSearch(''); setNotes(''); setResult(null)
+    setOp('restock_upstairs'); setLoc('upstairs')
     setDate(dayjs()); setQDan(0); setQHe(0); setNewQty(0)
     setInventoryMode('legacy'); setInventoryLocations([]); setInventoryBalances([])
     requestIntent.current = null
+    selection.current++
   }
 
   async function selectProduct(selected: any) {
+    const current = ++selection.current
     setProduct(selected)
     const storeCode = selectedStore?.code
     if (!storeCode || storeCode === 'ALL') return
@@ -89,11 +97,14 @@ export default function RestockModal({ open, onClose, onDone, initialProduct }: 
         client.get('/inventory/locations', { params: { store_code: storeCode } }),
         client.get('/inventory/balances', { params: { store_code: storeCode } }),
       ])
+      // A later pick (or closing the dialog) wins over this product's late details.
+      if (current !== selection.current) return
       setProduct(detail.data)
       setInventoryLocations(locations.data)
       setInventoryBalances(balances.data.items)
       setInventoryMode(balances.data.mode)
     } catch (err: any) {
+      if (current !== selection.current) return
       if (err?.response?.data?.code === 'inventory_forbidden') {
         message.error('You do not have inventory access for this store')
       }

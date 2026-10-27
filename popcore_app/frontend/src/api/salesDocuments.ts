@@ -1,4 +1,5 @@
 import client from './client'
+import type { BoxOptions } from '../pages/Sales/boxChoice'
 
 export type SaleEntryMode = 'planned_entry' | 'already_paid'
 
@@ -9,10 +10,15 @@ export interface SaleLineInput {
   quantity: number
   unit_price_cents?: number | null
   source_tax_cents?: number | null
-  open_set_id?: number
+  /** Where blind boxes over half a set came from: an opened set, a new sealed set, or loose boxes. */
+  open_set_id?: number | null
+  fresh_set?: { product_id: number; conversion_id: number; conversion_factor: number } | null
+  loose_boxes?: boolean
   /** Sold from the store's display location instead of the floor. */
   from_display?: boolean
 }
+
+export type AllocationMapping = { line_no: number; product_id?: number; non_stock?: boolean } & Pick<SaleLineInput, 'open_set_id' | 'fresh_set' | 'loose_boxes'>
 
 export interface SaleInput {
   store_id: number
@@ -30,6 +36,7 @@ export interface SaleInput {
 
 export interface SaleResult {
   sale_id: number
+  store_id?: number
   version: number
   status: 'draft' | 'posted'
   financial_status?: 'draft' | 'recorded'
@@ -57,12 +64,17 @@ export interface SaleResult {
     cny_fen?: number | null
     cny_per_cad?: string | null
     state: 'recorded' | 'verified' | 'rejected'
-    events?: Array<{ id:number; event_type:string; direction:string; amount_cents:number|null; reason:string }>
+    /** Refunds of this payment; each counts on its own business_date, the day the money left. */
+    refunded_cents?: number
+    events?: Array<{ id:number; event_type:string; direction:string; amount_cents:number|null; reason:string; business_date?:string|null }>
     evidence?: Array<{ id:number; status:'pending'|'accepted'|'rejected'; mime_type:string; byte_size:number }>
   }>
-  returns?: Array<{ id:number; sale_line_no:number; quantity:number; disposition:string; reason:string }>
+  returns?: Array<{ id:number; sale_line_no:number; quantity:number; disposition:string; reason:string; business_date?:string|null }>
+  /** Money received, as corrected; a rejected payment is not in it (it is in rejected_cents). */
   payment_total_cents?: number | null
   payment_difference_cents?: number | null
+  rejected_cents?: number
+  refunded_cents?: number
 }
 
 export const newRequestKey = () => crypto.randomUUID()
@@ -97,11 +109,17 @@ export async function addPayments(
 }
 
 export async function allocateSale(id: number, version: number, reason: string,
-  mappings: Array<{line_no:number;product_id:number;open_set_id?:number}>, key: string) {
+  mappings: AllocationMapping[], key: string) {
   return (await client.post(`/sale-documents/${id}/allocate`, {
     expected_version: version,
     reason, mappings,
   }, { headers: { 'Idempotency-Key': key } })).data as SaleResult
+}
+
+/** A blind box at a store's floor: its set size and what each answer has on hand; null for other products. */
+export async function fetchBoxOptions(storeId: number, productId: number, signal?: AbortSignal) {
+  const { data } = await client.get('/sale-documents/box-options', { params: { store_id: storeId, product_id: productId }, signal })
+  return (data?.options ?? null) as BoxOptions | null
 }
 
 export async function reviewPayment(paymentId:number, saleVersion:number,

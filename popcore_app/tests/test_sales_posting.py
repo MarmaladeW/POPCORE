@@ -267,6 +267,162 @@ class SalePostingTests(ReceivingFixture):
             ).fetchall()
         self.assertEqual([row[0] for row in rows], [None, None])
 
+    def allocate(self, sale, mappings, key):
+        with closing(self.connect()) as con:
+            con.execute(
+                "INSERT OR IGNORE INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)",
+                (self.store_id,),
+            )
+            con.commit()
+        return self.client.post(
+            f"/api/sale-documents/{sale['sale_id']}/allocate",
+            headers={**self.headers('manager'), 'Idempotency-Key': key},
+            json={'expected_version': sale['version'], 'reason': 'Stock received',
+                  'mappings': mappings},
+        )
+
+    def add_display_piece(self):
+        with closing(self.connect()) as con:
+            display = con.execute(
+                "SELECT id FROM inventory_locations WHERE store_id=? AND code='display'",
+                (self.store_id,),
+            ).fetchone()[0]
+            con.execute(
+                """INSERT INTO inventory_balances (product_id, location_id, disposition, quantity, version)
+                   VALUES (?, ?, 'saleable', 1, 1)""", (self.product_id, display),
+            )
+            con.commit()
+        return display
+
+    def saleable(self, product_id):
+        with closing(self.connect()) as con:
+            return {row['location_id']: row['quantity'] for row in con.execute(
+                """SELECT location_id, quantity FROM inventory_balances
+                   WHERE product_id=? AND disposition='saleable'""", (product_id,))}
+
+    def test_allocation_keeps_a_display_piece_on_display(self):
+        display = self.add_display_piece()
+        with closing(self.connect()) as con:
+            other = con.execute(
+                """INSERT INTO products
+                   (sku, name_cn_en, jizhanming, product_type, boxes_per_dan,
+                    stock_form, stock_unit, identity_status)
+                   VALUES ('TEST-B', 'Product B', 'Product B', 'ordinary', 1,
+                           'ordinary', 'piece', 'verified')"""
+            ).lastrowid
+            con.commit()
+        body = self.sale_body(entry_mode='already_paid', reference='display-pending')
+        line = {**body['lines'][0], 'quantity': 1, 'source_tax_cents': 260}
+        body['lines'] = [{**line, 'from_display': True}, {**line, 'product_id': other}]
+        draft = self.create(body, 'display-pending-create').get_json()
+        pending = self.post(draft, 'display-pending-post').get_json()
+        self.assertEqual(pending['unresolved_reasons'], ['insufficient_stock'])
+        with closing(self.connect()) as con:
+            con.execute(
+                """INSERT INTO inventory_balances (product_id, location_id, disposition, quantity, version)
+                   VALUES (?, ?, 'saleable', 1, 1)""", (other, self.floor),
+            )
+            con.commit()
+        allocated = self.allocate(pending, [
+            {'line_no': 1, 'product_id': self.product_id},
+            {'line_no': 2, 'product_id': other},
+        ], 'display-pending-allocate')
+        self.assertEqual(allocated.status_code, 200, allocated.get_json())
+        with closing(self.connect()) as con:
+            locations = [row[0] for row in con.execute(
+                'SELECT location_id FROM sale_lines WHERE sale_id=? ORDER BY line_no',
+                (draft['sale_id'],))]
+        self.assertEqual(locations, [display, self.floor])
+        left = self.saleable(self.product_id)
+        self.assertEqual((left[self.floor], left[display]), (5, 0))
+
+    def test_pending_display_and_floor_pieces_of_one_product_can_be_allocated(self):
+        display = self.add_display_piece()
+        body = self.sale_body(entry_mode='already_paid', reference='display-floor-pending')
+        line = {**body['lines'][0], 'source_tax_cents': 260}
+        body['lines'] = [{**line, 'quantity': 1, 'from_display': True}, {**line, 'quantity': 6}]
+        draft = self.create(body, 'display-floor-create').get_json()
+        pending = self.post(draft, 'display-floor-post').get_json()
+        self.assertEqual(pending['allocation_status'], 'pending')
+        with closing(self.connect()) as con:
+            con.execute(
+                """UPDATE inventory_balances SET quantity=10, version=version+1
+                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+                (self.product_id, self.floor),
+            )
+            con.commit()
+        allocated = self.allocate(pending, [
+            {'line_no': 1, 'product_id': self.product_id},
+            {'line_no': 2, 'product_id': self.product_id},
+        ], 'display-floor-allocate')
+        self.assertEqual(allocated.status_code, 200, allocated.get_json())
+        left = self.saleable(self.product_id)
+        self.assertEqual((left[self.floor], left[display]), (4, 0))
+
+    def test_allocation_keeps_the_opened_set_chosen_for_a_line(self):
+        with closing(self.connect()) as con:
+            set_id = con.execute(
+                """INSERT INTO products
+                   (sku, name_cn_en, jizhanming, stock_form, stock_unit, identity_status)
+                   VALUES ('KEEP-SET-12', 'Keep Set', 'Keep Set', 'sealed_set', 'set', 'verified')"""
+            ).lastrowid
+            random_id = con.execute(
+                """INSERT INTO products
+                   (sku, name_cn_en, jizhanming, stock_form, stock_unit, identity_status)
+                   VALUES ('KEEP-RANDOM-12', 'Keep Random', 'Keep Random', 'random_box',
+                           'box', 'verified')"""
+            ).lastrowid
+            conversion_id = con.execute(
+                """INSERT INTO product_conversions
+                   (source_product_id, target_product_id, output_per_input, version)
+                   VALUES (?, ?, 12, 1)""", (set_id, random_id),
+            ).lastrowid
+            con.execute(
+                """INSERT INTO inventory_balances
+                   (product_id, location_id, disposition, quantity, version)
+                   VALUES (?, ?, 'saleable', 1, 1)""", (set_id, self.floor),
+            )
+            con.commit()
+        box = {'product_id': random_id, 'unit': 'box', 'unit_price_cents': 100,
+               'source_tax_cents': 0}
+        body = self.sale_body(reference='keep-set-open')
+        body['lines'] = [{**box, 'quantity': 7, 'fresh_set': {
+            'product_id': set_id, 'conversion_id': conversion_id, 'conversion_factor': 12,
+        }}]
+        opened = self.post(self.create(body, 'keep-set-open-create').get_json(), 'keep-set-open-post')
+        self.assertEqual(opened.get_json()['allocation_status'], 'allocated')
+        with closing(self.connect()) as con:
+            open_set_id = con.execute(
+                'SELECT id FROM inventory_open_sets WHERE random_product_id=?', (random_id,),
+            ).fetchone()[0]
+        body = self.sale_body(entry_mode='already_paid', reference='keep-set-pending')
+        body['lines'] = [{**box, 'quantity': 1, 'open_set_id': open_set_id},
+                         {**self.sale_body()['lines'][0], 'quantity': 6}]
+        draft = self.create(body, 'keep-set-pending-create').get_json()
+        pending = self.post(draft, 'keep-set-pending-post').get_json()
+        self.assertEqual(pending['unresolved_reasons'], ['insufficient_stock'])
+        with closing(self.connect()) as con:
+            con.execute(
+                """UPDATE inventory_balances SET quantity=10, version=version+1
+                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
+                (self.product_id, self.floor),
+            )
+            con.commit()
+        allocated = self.allocate(pending, [
+            {'line_no': 1, 'product_id': random_id},
+            {'line_no': 2, 'product_id': self.product_id},
+        ], 'keep-set-allocate')
+        self.assertEqual(allocated.status_code, 200, allocated.get_json())
+        with closing(self.connect()) as con:
+            remaining = con.execute(
+                'SELECT remaining_qty FROM inventory_open_sets WHERE id=?', (open_set_id,),
+            ).fetchone()[0]
+            kept = con.execute(
+                'SELECT open_set_id FROM sale_lines WHERE sale_id=? AND line_no=1',
+                (draft['sale_id'],),
+            ).fetchone()[0]
+        self.assertEqual((remaining, kept), (4, open_set_id))
+
     def test_lost_create_response_replays_same_draft(self):
         first = self.create(self.sale_body(reference='lost-create'), 'lost-key')
         replay = self.create(self.sale_body(reference='lost-create'), 'lost-key')

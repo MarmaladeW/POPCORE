@@ -46,6 +46,15 @@ const localDateTime = (value: string | null) => value
   ? new Date(new Date(value).getTime() - new Date(value).getTimezoneOffset() * 60000).toISOString().slice(0, 16)
   : ''
 
+const sameRequest = (a: Omit<Mutation, 'key'>, b: Omit<Mutation, 'key'>) =>
+  a.method === b.method && a.url === b.url && JSON.stringify(a.body) === JSON.stringify(b.body)
+
+const describeRequest = (intent: Mutation) => {
+  const order = intent.url.match(/^\/special-orders\/(\d+)/)?.[1]
+  const action = { create: 'new special order', payment: 'payment', complete: 'customer handoff', correct: 'order correction' }[intent.kind]
+  return order ? `${action} for order #${order}` : action
+}
+
 export default function SpecialOrdersPage() {
   const admin = useHasRole('admin')
   const phone = useIsPhone()
@@ -60,6 +69,8 @@ export default function SpecialOrdersPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef<Mutation>()
+  // An unconfirmed request blocks every other change until it is retried or explicitly discarded.
+  const [unconfirmed, setUnconfirmed] = useState<Mutation>()
   const paymentForm = useRef<HTMLFormElement>(null)
 
   const load = async (nextStatus = status) => {
@@ -89,6 +100,11 @@ export default function SpecialOrdersPage() {
 
   const mutate = async (next?: Omit<Mutation, 'key'>) => {
     if (saving) return
+    // Resubmitting the same request retries it with its key; a different action never replaces or re-sends it silently.
+    if (pending.current && next && !sameRequest(pending.current, next)) {
+      setError('The previous request is still unconfirmed. Retry it or discard it before making another change.')
+      return
+    }
     if (!pending.current && next) pending.current = { ...next, key: crypto.randomUUID() }
     if (!pending.current) return
     setSaving(true); setError('')
@@ -99,12 +115,21 @@ export default function SpecialOrdersPage() {
         headers: { 'Idempotency-Key': intent.key }, timeout: 15000,
       })
       pending.current = undefined
+      setUnconfirmed(undefined)
       accept(response.data, intent.kind)
     } catch (cause) {
       const responseStatus = (cause as { response?: { status?: number } })?.response?.status
       if (responseStatus && responseStatus < 500) pending.current = undefined
+      setUnconfirmed(pending.current)
       setError(errorText(cause, 'Unable to confirm this request. Retry to check its result.'))
     } finally { setSaving(false) }
+  }
+
+  // Discarding does not undo a request the server may have saved: reload to show what was recorded.
+  const discard = () => {
+    pending.current = undefined
+    setUnconfirmed(undefined)
+    void load()
   }
 
   const create = (event: React.FormEvent<HTMLFormElement>) => {
@@ -162,9 +187,11 @@ export default function SpecialOrdersPage() {
     {!phone && <CheckoutTabs specialCount={status === 'open' && !loading ? orders.length : undefined} />}
     <p className="so-lead">不在产品列表里的预订 · Unique requests, separate payments and customer pickup.</p>
 
-    {error && <Alert role="alert" type="error" showIcon message={error} action={pending.current
-      ? <Button onClick={() => void mutate()} disabled={saving}>Retry</Button>
-      : <Button onClick={() => void load()} disabled={loading}>Refresh</Button>} />}
+    {(error || unconfirmed) && <Alert role="alert" type="error" showIcon message={error || 'Unable to confirm this request. Retry to check its result.'}
+      description={unconfirmed && `Unconfirmed: ${describeRequest(unconfirmed)}. Other changes are disabled until you retry or discard it.`}
+      action={unconfirmed
+        ? <><Button onClick={() => void mutate()} disabled={saving}>Retry</Button> <Button onClick={discard} disabled={saving}>Discard</Button></>
+        : <Button onClick={() => void load()} disabled={loading}>Refresh</Button>} />}
 
     {creating && <form className="so-form" onSubmit={create}>
       <h2>New special order</h2>
@@ -177,7 +204,7 @@ export default function SpecialOrdersPage() {
         <label>Amount paid now<input name="paid" inputMode="decimal" defaultValue="0.00" required /></label>
         <label>Initial payment method<select name="initial_tender" defaultValue=""><option value="">Select if taking payment</option>{tenders.map(tender => <option key={tender.value} value={tender.value}>{tender.label}</option>)}</select></label>
       </div>
-      <div className="so-form-actions"><Button onClick={() => setCreating(false)}>Cancel</Button><Button type="primary" htmlType="submit" loading={saving}>Create order</Button></div>
+      <div className="so-form-actions"><Button onClick={() => setCreating(false)}>Cancel</Button><Button type="primary" htmlType="submit" loading={saving} disabled={!!unconfirmed}>Create order</Button></div>
     </form>}
 
     <Tabs className="so-tabs" activeKey={status} onChange={key => setStatus(key as Status)} items={[
@@ -226,21 +253,21 @@ export default function SpecialOrdersPage() {
                 })
               }}>
                 <label>Pickup location<select name="pickup_store_id" defaultValue={String(selected.pickup_store_id || '')} required><option value="" disabled>Select location</option>{stores.map(store => <option key={store.id} value={store.id}>{store.name} · {store.code}</option>)}</select></label>
-                <Button htmlType="submit" loading={saving}>Update pickup location</Button>
+                <Button htmlType="submit" loading={saving} disabled={!!unconfirmed}>Update pickup location</Button>
               </form>
               {selected.remaining_cents > 0 && <form className="so-action-form" ref={paymentForm} onSubmit={addPayment}>
                 <label>Payment amount<input name="amount" inputMode="decimal" placeholder="0.00" required /></label>
                 <label>Payment method<select name="tender" defaultValue="" required><option value="" disabled>Select method</option>{tenders.map(tender => <option key={tender.value} value={tender.value}>{tender.label}</option>)}</select></label>
-                <Button htmlType="submit" loading={saving && pending.current?.kind === 'payment'}>Add payment</Button>
+                <Button htmlType="submit" loading={saving && pending.current?.kind === 'payment'} disabled={!!unconfirmed}>Add payment</Button>
               </form>}
-              <Button type="primary" size="large" disabled={selected.remaining_cents !== 0} loading={saving} onClick={() => void mutate({
+              <Button type="primary" size="large" disabled={selected.remaining_cents !== 0 || !!unconfirmed} loading={saving} onClick={() => void mutate({
                 method: 'post', url: `/special-orders/${selected.id}/complete`, kind: 'complete',
                 body: { expected_version: selected.version },
               })}>Mark customer received</Button>
               {selected.remaining_cents !== 0 && <small>Full payment is required before customer handoff.</small>}
             </div>}
             {selected.status === 'completed' && <Alert type="success" showIcon message="Customer received the item" />}
-            {admin && <AdminCorrection order={selected} employees={employees} stores={stores} saving={saving} save={body => void mutate({
+            {admin && <AdminCorrection order={selected} employees={employees} stores={stores} saving={saving} blocked={!!unconfirmed} save={body => void mutate({
               method: 'patch', url: `/special-orders/${selected.id}`, kind: 'correct', body,
             })} />}
           </>}
@@ -250,36 +277,42 @@ export default function SpecialOrdersPage() {
   </main>
 }
 
-function AdminCorrection({ order, employees, stores, saving, save }: {
+function AdminCorrection({ order, employees, stores, saving, blocked, save }: {
   order: SpecialOrder
   employees: Employee[]
   stores: { id: number; code: string; name: string }[]
   saving: boolean
+  blocked: boolean
   save: (body: Record<string, unknown>) => void
 }) {
-  return <details className="so-admin"><summary>Admin corrections</summary><form key={order.version} onSubmit={event => {
+  // The order's own people stay selectable even before the employee list loads or after they leave.
+  const people = (current: string | null, currentName: string | null) => [
+    ...(current && !employees.some(employee => employee.auth0_id === current) ? [{ auth0_id: current, name: currentName || current }] : []),
+    ...employees,
+  ].map(employee => <option key={employee.auth0_id} value={employee.auth0_id}>{employee.name || employee.email || employee.auth0_id}</option>)
+  // Keyed per order (and per employee load) so another order's values never stay in the form.
+  return <details className="so-admin"><summary>Admin corrections</summary><form key={`${order.id}:${order.version}:${employees.length}`} onSubmit={event => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
-    const body: Record<string, unknown> = {
-      expected_version: order.version,
-      created_by: data.get('created_by'),
-      created_at: new Date(String(data.get('created_at'))).toISOString(),
-    }
+    // Send only what the admin changed, so untouched fields keep their saved values.
+    const body: Record<string, unknown> = { expected_version: order.version }
+    if (data.get('created_by') !== order.created_by) body.created_by = data.get('created_by')
+    if (data.get('created_at') !== localDateTime(order.created_at)) body.created_at = new Date(String(data.get('created_at'))).toISOString()
     if (order.status === 'completed') {
       const pickupStoreId = Number(data.get('pickup_store_id'))
-      if (pickupStoreId) body.pickup_store_id = pickupStoreId
-      body.completed_by = data.get('completed_by')
-      body.completed_at = new Date(String(data.get('completed_at'))).toISOString()
+      if (pickupStoreId && pickupStoreId !== order.pickup_store_id) body.pickup_store_id = pickupStoreId
+      if (data.get('completed_by') !== order.completed_by) body.completed_by = data.get('completed_by')
+      if (data.get('completed_at') !== localDateTime(order.completed_at)) body.completed_at = new Date(String(data.get('completed_at'))).toISOString()
     }
     save(body)
   }}>
-    <label>Created by<select name="created_by" defaultValue={order.created_by} required>{employees.map(employee => <option key={employee.auth0_id} value={employee.auth0_id}>{employee.name || employee.email || employee.auth0_id}</option>)}</select></label>
+    <label>Created by<select name="created_by" defaultValue={order.created_by} required>{people(order.created_by, order.created_by_name)}</select></label>
     <label>Created date<input name="created_at" type="datetime-local" defaultValue={localDateTime(order.created_at)} required /></label>
     {order.status === 'completed' && <>
       <label>Pickup location<select name="pickup_store_id" defaultValue={String(order.pickup_store_id || '')}><option value="">Not recorded</option>{stores.map(store => <option key={store.id} value={store.id}>{store.name} · {store.code}</option>)}</select></label>
-      <label>Completed by<select name="completed_by" defaultValue={order.completed_by || ''} required>{employees.map(employee => <option key={employee.auth0_id} value={employee.auth0_id}>{employee.name || employee.email || employee.auth0_id}</option>)}</select></label>
+      <label>Completed by<select name="completed_by" defaultValue={order.completed_by || ''} required>{people(order.completed_by, order.completed_by_name)}</select></label>
       <label>Completion date<input name="completed_at" type="datetime-local" defaultValue={localDateTime(order.completed_at)} required /></label>
     </>}
-    <Button htmlType="submit" loading={saving}>Save corrections</Button>
+    <Button htmlType="submit" loading={saving} disabled={blocked}>Save corrections</Button>
   </form></details>
 }

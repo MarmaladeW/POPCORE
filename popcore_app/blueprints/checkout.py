@@ -7,8 +7,8 @@ import clover_checkout
 import exchange_rates
 from auth import role_required
 from checkout_access import REGISTER_SUB, checkout_access, require_checkout
-from checkout_operations import (attach_photo, change_checkout, checkout_detail, receive_manual, undo_manual,
-    checkout_row, create_checkout, is_clover, manager, read_order_note)
+from checkout_operations import (attach_photo, change_checkout, checkout_detail, choose_boxes, receive_manual,
+    undo_manual, checkout_row, create_checkout, is_clover, manager, read_order_note)
 from db import get_db
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryError, InventoryConflict
@@ -141,6 +141,16 @@ def find_clover(order_id):
     return jsonify(checkout_detail(con, checkout_id, actor))
 
 
+@bp.post('/api/checkouts/clover/<order_id>/resolve')
+@role_required('manager')
+def resolve_clover_failure(order_id):
+    """A manager settles a Clover order that could not be imported; closing stops waiting for it."""
+    data = body()
+    store_id = read_int(data.get('store_id'), 'store_id', minimum=1)
+    return jsonify(failures=clover_checkout.resolve_failure(get_db(), store_id, order_id.strip().upper(), data,
+                                                           request.jwt_payload, request.headers.get('Idempotency-Key')))
+
+
 @bp.post('/api/checkouts')
 @role_required('staff')
 def create():
@@ -191,6 +201,9 @@ def change(checkout_id,action):
         # A POPCORE order sent to Clover so the customer pays by card on the device.
         operation = clover_checkout.send if action == 'clover-send' else clover_checkout.unsend
         return jsonify(operation(con, checkout_id, request.jwt_payload))
+    if action == 'boxes':
+        # Where blind boxes over half a set came from, before payment (manual and Clover orders).
+        return jsonify(choose_boxes(con, checkout_id, body(), request.jwt_payload, request.headers.get('Idempotency-Key')))
     if action in clover_checkout.ACTIONS and is_clover(con, checkout_id):
         return jsonify(clover_checkout.change(con,checkout_id,action,body(),request.jwt_payload,
                                               request.headers.get('Idempotency-Key')))

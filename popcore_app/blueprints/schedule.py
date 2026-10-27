@@ -100,9 +100,14 @@ def _wage_period(year: int, month: int, start_day: int):
     return start, nxt - _dt.timedelta(days=1)
 
 
+def _toronto_today():
+    """Today in Toronto; the server clock is UTC, which is already tomorrow from 20:00 (19:00 in winter)."""
+    return _dt.datetime.now(_dt.timezone.utc).astimezone(ZoneInfo('America/Toronto')).date()
+
+
 def _current_wage_anchor(start_day: int):
     """Return (year, month) of the wage period containing today."""
-    today = _dt.date.today()
+    today = _toronto_today()
     year, month = today.year, today.month
     if today.day < start_day:
         month -= 1
@@ -915,7 +920,7 @@ def schedule_shifts_delete(shift_id):
 # ─── Conflict check ────────────────────────────────────────────────────────────
 
 @bp.route('/api/schedule/conflicts', methods=['GET'])
-@login_required
+@role_required('manager')
 def schedule_conflicts():
     try:
         employee_id = int(request.args.get('employee_id', ''))
@@ -1089,7 +1094,16 @@ def schedule_report_monthly():
         con.close()
         return err
 
-    emps = con.execute('SELECT * FROM employees WHERE is_active = 1 ORDER BY name').fetchall()
+    shift_filter = 'date >= ? AND date <= ?'
+    filter_params: list = [str(first_day), str(last_day)]
+    if store_code != 'ALL':
+        shift_filter += ' AND store_id = ?'
+        filter_params.append(store_id)
+
+    # Removed employees and trainees keep the hours they worked in this period.
+    emps = con.execute(f'''SELECT * FROM employees WHERE is_active = 1
+        OR id IN (SELECT employee_id FROM shifts WHERE {shift_filter})
+        ORDER BY name''', filter_params).fetchall()
     emp_ids = [e['id'] for e in emps]
 
     if not emp_ids:
@@ -1103,13 +1117,9 @@ def schedule_report_monthly():
     placeholders = ','.join('?' * len(emp_ids))
     query = f'''SELECT * FROM shifts
                 WHERE employee_id IN ({placeholders})
-                  AND date >= ? AND date <= ?'''
-    params = emp_ids + [str(first_day), str(last_day)]
-    if store_code != 'ALL':
-        query += ' AND store_id = ?'
-        params.append(store_id)
-    query += ' ORDER BY date'
-    shifts = con.execute(query, params).fetchall()
+                  AND {shift_filter}
+                ORDER BY date'''
+    shifts = con.execute(query, emp_ids + filter_params).fetchall()
     con.close()
 
     shifts_by_emp: dict = defaultdict(list)
@@ -1262,14 +1272,15 @@ def schedule_ical_feed(token):
     if not token or len(token) < 16:
         return jsonify({'error': 'Not found'}), 404
     con = get_db()
+    # A removed or blocked employee's feed stops at once, even if the URL was shared.
     emp = con.execute(
-        'SELECT * FROM employees WHERE ical_token = ?', (token,)
+        'SELECT * FROM employees WHERE ical_token = ? AND is_active = 1', (token,)
     ).fetchone()
     if not emp:
         con.close()
         return jsonify({'error': 'Not found'}), 404
 
-    window_start = _dt.date.today() - _dt.timedelta(days=90)
+    window_start = _toronto_today() - _dt.timedelta(days=90)
     rows = con.execute('''
         SELECT s.*, COALESCE(st.code, '') AS store_code,
                COALESCE(st.name, '') AS store_name,

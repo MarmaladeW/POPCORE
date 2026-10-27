@@ -6,7 +6,7 @@ from db import get_db
 from inventory_commands import InventoryError
 from sales_operations import (
     add_sale_payments, add_sale_source, allocate_sale, create_sale,
-    create_sale_reconciliation, post_sale, record_sale_return, sale_detail,
+    create_sale_reconciliation, post_sale, record_sale_return, sale_box_options, sale_detail,
     update_sale,
 )
 
@@ -34,6 +34,17 @@ def create():
         return jsonify(create_sale(
             get_db(), _body(), actor=request.jwt_payload,
             request_key=request.headers.get('Idempotency-Key'))), 201
+    except (InventoryError, PermissionError, ValueError) as exc:
+        return _error(exc)
+
+
+@bp.get('/api/sale-documents/box-options')
+@role_required('staff')
+def box_options():
+    """A blind box over half a set: a new sealed set, an opened set or loose boxes, with what is on hand."""
+    try:
+        return jsonify(options=sale_box_options(
+            get_db(), request.args.get('store_id'), request.args.get('product_id'), actor=request.jwt_payload))
     except (InventoryError, PermissionError, ValueError) as exc:
         return _error(exc)
 

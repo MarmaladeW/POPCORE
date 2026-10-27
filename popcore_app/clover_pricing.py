@@ -1,10 +1,10 @@
 """What a Clover order costs, how its sale records the money, and the keys tying both systems.
 
 Pure functions only. The cash prices mirror popcore_app/frontend/src/lib/checkoutPricing.ts:
-non-card tenders get about 2.5% off to a whole dollar, and above $15 at least $1 off rounded
-down ("Cash discount"); a split that includes
+non-card tenders get the cash price ("Cash discount", see suggest_payable); a split that includes
 card, or an order that already carries another discount (RewardUp loyalty), is only floored to
-the whole dollar ("Rounding"); card alone pays Clover's total.
+the whole dollar ("Rounding"); card alone pays Clover's total. Physical cash is then rounded to
+5¢, because Canada has no pennies (cash_rest); e-transfer, WeChat Pay, Alipay and card stay exact.
 """
 import hashlib
 import json
@@ -32,22 +32,65 @@ def safe_cents(value):
 
 
 def suggest_payable(total):
-    """The cash price: about 2.5% off to a whole dollar, always below the total.
+    """The cash price, for cash, e-transfer, WeChat Pay and Alipay (before cash is rounded to 5¢).
 
-    Up to $15 it is the nearest whole dollar (ties down). Above $15 it takes at least $1 off, or
-    2.5% when that is more, and rounds down: $22.59 to $21, $41.34 to $40, $99.14 to $96."""
+    Under $1: about 2.5% off, at least 1¢. From $1 to $9.99: down to the previous whole dollar, so
+    $5.10 is $5, $9.99 is $9 and $7.12 is $7 (owner, 2026-10-27); a whole-dollar total is
+    whole_dollar_under_ten. From $10 to $15: the nearest whole dollar to 2.5% off, ties down and
+    always below the total. Above $15: at least $1 off, or 2.5% when that is more, rounded down:
+    $22.59 to $21, $41.34 to $40, $99.14 to $96."""
     if not safe_cents(total):
         raise ValueError('Total cents must be a nonnegative safe integer')
     if total == 0:
         return 0
     if total < 100:
         return max(1, (total * 390 + 199) // 400)
+    if total < 1000:
+        if total % 100 == 0:
+            return whole_dollar_under_ten(total)
+        return total - total % 100
     if total > 1500:
         return min(total * 975 // 100_000, (total - 100) // 100) * 100
     suggestion = ((total * 1950 + 99_999) // 200_000) * 100
     if suggestion >= total:
         suggestion -= 100
     return max(1, suggestion)
+
+
+def whole_dollar_under_ten(total):
+    """The cash price of a whole-dollar total from $1 to $9: the total itself, $5.00 stays $5.00.
+
+    Owner, 2026-10-27. The owner may switch this to one dollar less; change it here and in
+    wholeDollarUnderTen in checkoutPricing.ts."""
+    return total
+
+
+def nickel(cents):
+    """Canadian cash rounding to 5¢: ending in 1-2 goes down to 0, 3-4 up to 5, 6-7 down to 5, 8-9 up to 10."""
+    return (cents + 2) // 5 * 5
+
+
+def cash_rest(rest):
+    """What the customer hands over in cash for `rest` cents still owed, rounded to 5¢.
+
+    A rest of 1-2¢ would round to nothing, so it stays exact."""
+    return nickel(rest) or rest
+
+
+def cash_limit(due, *, cash_cents, other_cents):
+    """The most cash that may still be received: the rest after every non-cash payment, rounded to 5¢,
+    less the cash already in. Paying exactly this settles the order (see settled_due)."""
+    return cash_rest(max(0, due - other_cents)) - cash_cents
+
+
+def settled_due(due, *, cash_cents, other_cents):
+    """What the customer owes once cash has paid the rest rounded to 5¢: what was received, within 2¢ of
+    `due`. Otherwise `due`. The difference is rounding, recorded in the sale's reduction (or, above the
+    order's total, its rounding)."""
+    rest = due - other_cents
+    if cash_cents and rest > 0 and cash_cents == cash_rest(rest):
+        return other_cents + cash_cents
+    return due
 
 
 def whole_dollar(total):
@@ -133,7 +176,8 @@ def amount_due(summary, *, clover_cents, popcore_cents, plan, verified):
     if summary['ext_discount']:
         floor = whole_dollar(total)
         return (floor, 'rounding') if floor < total else (total, 'exact')
-    return suggest_payable(total), 'cash_discount'
+    price = suggest_payable(total)
+    return (price, 'cash_discount') if price < total else (total, 'exact')
 
 
 def price_options(summary, *, verified):
@@ -150,18 +194,24 @@ def price_options(summary, *, verified):
     }
 
 
-def collect(summary, *, clover_cents, popcore_cents, verified):
+def collect(summary, *, clover_cents, popcore_cents, verified, cash_cents=0):
     """What is still to collect for each way of paying the rest, after the money already in.
 
     `clover_cents` is card money (taken on Clover, or recorded by card in a manual order);
-    `popcore_cents` is every other tender. The server prices; screens only show these."""
+    `popcore_cents` is every other tender, of which `cash_cents` is cash. `cash_rest_cents` is what
+    cash collects for the rest, rounded to 5¢; other tenders collect `rest_cents` exactly.
+    The server prices; screens only show these."""
     result = {}
     for plan in ('pay', 'split_card'):
         due, mode = amount_due(summary, clover_cents=clover_cents, popcore_cents=popcore_cents, plan=plan,
                                verified=verified)
+        rest = max(0, due - clover_cents - popcore_cents)
         result[plan] = {'due_cents': due, 'mode': mode,
                         'label': discount_label(mode) if due < summary['total'] else None,
-                        'rest_cents': max(0, due - clover_cents - popcore_cents)}
+                        'rest_cents': rest,
+                        'cash_rest_cents': cash_limit(due, cash_cents=cash_cents,
+                                                      other_cents=clover_cents + popcore_cents - cash_cents)
+                        if rest else 0}
     card_due = result['split_card']['due_cents'] if popcore_cents else summary['total']
     result['card'] = {'due_cents': card_due, 'rest_cents': max(0, card_due - clover_cents - popcore_cents)}
     return result
@@ -171,8 +221,19 @@ def discount_label(mode):
     return CASH_DISCOUNT if mode == 'cash_discount' else ROUNDING if mode in ('rounding', 'split_card') else None
 
 
+def collected_money(gross, collected):
+    """The reduction and rounding that take a sale's gross to the money collected.
+
+    Everything below the gross is the reduction (cash discount, agreed discount, rounding). Cash
+    rounded to 5¢ can end 1-2¢ above an order with no discount; only that goes in rounding."""
+    if collected > gross + 2:
+        raise ValueError('Amount due is more than the order')
+    return {'reduction_cents': max(0, gross - collected), 'rounding_cents': max(0, collected - gross),
+            'collected_cents': collected}
+
+
 def sale_money(summary, due):
-    """Sale totals that keep `_sale_input`'s invariants; the whole reduction sits in reduction."""
+    """Sale totals that keep `_sale_input`'s invariants: gross less reduction, plus rounding, is collected."""
     total = summary['total']
     if summary['simple']:
         subtotal = summary['subtotal']
@@ -181,10 +242,8 @@ def sale_money(summary, due):
     else:
         subtotal = tax = None
         gross = total
-    if due > gross:
-        raise ValueError('Amount due is more than the order')
     return {'subtotal_cents': subtotal, 'source_tax_cents': tax, 'gross_cents': gross,
-            'reduction_cents': gross - due, 'rounding_cents': 0, 'collected_cents': due}
+            **collected_money(gross, due)}
 
 
 def _items_key(snapshot):

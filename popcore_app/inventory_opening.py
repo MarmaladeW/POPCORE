@@ -305,7 +305,6 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
                       'change it in Products first', product_id=product['id'])
                 continue
             native = FORMS_TO_UNITS[form]
-            unit = unit or native
             earlier = verify.get(product['id'])
             if earlier and earlier['stock_form'] != form:
                 error(row, 'identity_conflict',
@@ -313,6 +312,8 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
                       f'in {earlier["file"]} row {earlier["row"]} and as {form} here',
                       product_id=product['id'])
                 continue
+        # A blank unit is the native one, also once an earlier apply of these files verified the product.
+        unit = unit or native
         if unit != native:
             error(row, 'unit_mismatch',
                   f'unit {unit or "(blank)"} does not match native unit {native}',
@@ -341,7 +342,7 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
             'product_id': product['id'], 'sku': product['sku'],
             'store': location['store_code'], 'location': location['code'],
             'location_id': location['id'], 'unit': unit, 'count': count,
-            'legacy_qty': legacy_qty,
+            'stock_form': form, 'legacy_qty': legacy_qty,
             'difference': count - (legacy_qty or 0),
         }
     for slot, line in list(accepted.items()):
@@ -407,6 +408,22 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
                         'claw_qty is not a physical balance and is not opened'),
         })
 
+    # A restock sheet left open would post its old pick against the counted balances once
+    # the store is live, so staff finish it in legacy mode or delete it before the count.
+    for store_code in sorted(opening_stores - live_codes):
+        sheets = [dict(row) for row in con.execute(
+            """SELECT rs.id, rs.date, rs.status FROM restock_sessions rs
+               JOIN stores s ON s.id=rs.store_id
+               WHERE s.code=? AND (rs.status IN ('submitted','picking') OR (
+                     rs.status='pending' AND EXISTS (
+                         SELECT 1 FROM restock_items ri WHERE ri.session_id=rs.id)))
+               ORDER BY rs.date, rs.id""", (store_code,))]
+        if sheets:
+            error(None, 'open_restock_sessions',
+                  f'{store_code} has open restock sheets '
+                  + ', '.join(f'#{s["id"]} ({s["date"]}, {s["status"]})' for s in sheets)
+                  + '; complete or delete them before the count', sessions=sheets)
+
     mode = con.execute('SELECT mode FROM inventory_mode WHERE id=1').fetchone()['mode']
     for store_code in sorted((opening_stores | closed) & live_codes):
         error(None, 'opening_closed', f'{store_code} is already live; its opening is closed')
@@ -443,14 +460,14 @@ def review_opening_counts(con, rows, *, empty_locations=(), actor_sub=None,
         {key: item[key] for key in ('product_id', 'sku', 'stock_form', 'stock_unit')}
         for _, item in sorted(verify.items())
     ]
+    # Only the submitted rows, each with the form written on it, so rerunning the same files
+    # after an apply that verified their products finds the applied opening.
     intent = {
         'business_date': business_date, 'reason': reason,
-        'counts': [[line['product_id'], line['location_id'], line['count']] for line in lines],
+        'counts': [[line['product_id'], line['location_id'], line['count'], line['stock_form']]
+                   for line in lines],
         'empty_locations': empty,
     }
-    if verified_by_count:
-        intent['verified_by_count'] = [[item['product_id'], item['stock_form']]
-                                       for item in verified_by_count]
     digest = hashlib.sha256(
         json.dumps(intent, sort_keys=True, separators=(',', ':')).encode('utf-8')
     ).hexdigest()

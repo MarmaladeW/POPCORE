@@ -117,7 +117,8 @@ export default function BatchStockModal({ open, onClose, onDone }: Props) {
   const [results, setResults] = useState<any[]>([])
   const requestIntent = useRef<{ signature: string; key: string } | null>(null)
 
-  function reset() { setStep(0); setText(''); setItems([]); setResults([]); setProgress(0); requestIntent.current = null }
+  // The next batch starts from 入库（楼上） today, never the previous batch's operation or date.
+  function reset() { setStep(0); setOp('restock_upstairs'); setDate(dayjs()); setText(''); setItems([]); setResults([]); setProgress(0); requestIntent.current = null }
 
   async function match() {
     // Two-stage split: newlines first, then commas — explicit ordering

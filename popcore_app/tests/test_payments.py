@@ -88,7 +88,9 @@ class PaymentTests(SalePostingTests):
         detail = self.client.get(
             f"/api/sale-documents/{sale['sale_id']}", headers=self.headers('manager')
         ).get_json()
-        self.assertEqual(detail['payments'][0]['effective_amount_cents'], 3000)
+        # The money received stays as received; the refund is listed on its own (owner, 2026-10-27).
+        self.assertEqual(detail['payments'][0]['effective_amount_cents'], 4000)
+        self.assertEqual((detail['payments'][0]['refunded_cents'], detail['refunded_cents']), (1000, 1000))
         self.assertEqual([event['event_type'] for event in detail['payments'][0]['events']],
                          ['verify', 'refund'])
 

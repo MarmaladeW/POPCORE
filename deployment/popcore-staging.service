@@ -1,0 +1,56 @@
+# /etc/systemd/system/popcore-staging.service: POPCORE staging on the production droplet.
+#
+# Runs the checkout in /opt/popcore-staging with ONE gunicorn worker on 127.0.0.1:5002
+# against its own copy of the data in /var/lib/popcore-staging (refresh_staging.sh fills
+# it). It runs as the unprivileged popcore-staging user and cannot read /root, so it
+# cannot reach production's database or uploads. The settings on ExecStart override
+# anything in the env file: the scheduler and Clover background sync are off, and Clover
+# and Auth0 user management have no credentials.
+#
+# Not enabled at boot: start it when you need it and stop it when you are done, because
+# the droplet has 1 GB of RAM. It also stops itself after 12 hours; `systemctl status`
+# then shows "failed (Result: timeout)", which is expected.
+#   systemctl start popcore-staging     systemctl stop popcore-staging
+#
+# Install once (docs/operations-resilience.md, "Staging"):
+#   install -m 644 deployment/popcore-staging.service /etc/systemd/system/
+#   systemctl daemon-reload            (do not enable it)
+
+[Unit]
+Description=POPCORE staging (gunicorn, 1 worker, 127.0.0.1:5002)
+After=network.target
+
+[Service]
+Type=simple
+User=popcore-staging
+Group=popcore-staging
+WorkingDirectory=/opt/popcore-staging/popcore_app
+EnvironmentFile=/etc/popcore/staging.env
+ExecStart=/usr/bin/env \
+    POPCORE_DB_PATH=/var/lib/popcore-staging/popcore.db \
+    POPCORE_HIDDEN_IMG_DIR=/var/lib/popcore-staging/uploads/hidden_imgs \
+    POPCORE_PAYMENT_EVIDENCE_DIR=/var/lib/popcore-staging/uploads/payment_evidence \
+    POPCORE_CONDITION_EVIDENCE_DIR=/var/lib/popcore-staging/uploads/condition_evidence \
+    DISABLE_SCHEDULER=1 CLOVER_BACKGROUND_SYNC=0 \
+    CLOVER_CONNECTOR_URL= CLOVER_CONNECTOR_PASSWORD= CLOVER_CONNECTOR_WRITER_KEY= \
+    AUTH0_MGMT_CLIENT_ID= AUTH0_MGMT_CLIENT_SECRET= \
+    APP_ENV=staging PYTHONDONTWRITEBYTECODE=1 \
+    /opt/popcore-staging/venv/bin/gunicorn -c /etc/popcore/gunicorn-staging.conf.py app:app
+# No automatic restart: gunicorn already replaces a crashed worker, and a restart would
+# also undo the 12-hour stop below.
+Restart=no
+RuntimeMaxSec=12h
+# Production comes first: staging is throttled, capped and the first thing the kernel
+# kills if memory runs out.
+MemoryHigh=300M
+MemoryMax=400M
+OOMScoreAdjust=800
+Nice=10
+CPUWeight=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+StateDirectory=popcore-staging
+StateDirectoryMode=0700
+UMask=0077

@@ -1,0 +1,32 @@
+# Litestream: continuous off-site copy of the POPCORE production database.
+#
+# Install as /etc/litestream.yml (see docs/operations-resilience.md). Every site value
+# comes from /etc/litestream.env (mode 600, outside git; template: litestream.env.example),
+# which the litestream service loads. Litestream expands ${VARS} in this file and reads
+# LITESTREAM_ACCESS_KEY_ID and LITESTREAM_SECRET_ACCESS_KEY from the environment itself.
+#
+# Written for Litestream 0.5.x (0.5.14 or newer). Only production is listed here: never
+# point staging or a second server at the same bucket path, or restores can break.
+
+# A full snapshot every day; snapshots and the change files between them stay 30 days,
+# so any moment of the last 30 days can be restored.
+snapshot:
+  interval: 24h
+  retention: 720h
+
+# Optional: Litestream calls this URL every 10 minutes while replication is healthy, so a
+# free check at healthchecks.io (or similar) can alert you when the calls stop. Empty = off.
+heartbeat-url: ${LITESTREAM_HEARTBEAT_URL}
+heartbeat-interval: 10m
+
+dbs:
+  - path: /root/POPCORE/popcore_app/popcore.db
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: popcore/production
+      endpoint: ${LITESTREAM_ENDPOINT}
+      region: ${LITESTREAM_REGION}
+      # Ship changes every 10 s at most: at most ~10 s of writes are at risk if the droplet
+      # dies, and the uploads stay far inside the free tiers' request allowances.
+      sync-interval: 10s

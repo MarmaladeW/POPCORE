@@ -75,6 +75,8 @@ const YN_OPTIONS = [
   { value: 1, label: 'Yes' },
 ]
 
+const IDENTITY_FIELDS = ['series_id', 'identity_status', 'stock_form', 'stock_unit', 'design_name'] as const
+
 export default function ProductModal({ open, product, onClose, onSaved }: Props) {
   const [form] = Form.useForm()
   const { series, productTypes } = useAppStore()
@@ -102,13 +104,20 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
 
   useEffect(() => {
     if (!open || !isEdit) return
+    let current = true
     Promise.all([
       client.get(`/products/${product!.id}/inventory-identity`),
       client.get('/product-series'),
     ]).then(([identity, seriesResponse]) => {
-      form.setFieldsValue(identity.data)
+      // A late answer for a product that is no longer open must not reach this form, and
+      // only the identity fields are filled: never ones the user already edited (nor the SKU).
+      if (!current) return
+      form.setFieldsValue(Object.fromEntries(IDENTITY_FIELDS
+        .filter(name => !form.isFieldTouched(name))
+        .map(name => [name, identity.data[name]])))
       setCatalogSeries(seriesResponse.data)
-    }).catch(() => message.error('Unable to load inventory identity'))
+    }).catch(() => { if (current) message.error('Unable to load inventory identity') })
+    return () => { current = false }
   }, [open, isEdit, product, form])
 
   async function handleOk() {

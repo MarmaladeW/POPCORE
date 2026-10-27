@@ -23,6 +23,9 @@ export default function Receiving({products,locations,storeId}:{products:GoodsPr
   const[reference,setReference]=useState(''),[disposition,setDisposition]=useState<'saleable'|'damaged'|'hold'>('saleable')
   const[error,setError]=useState(''),[loading,setLoading]=useState(false)
   const[refreshNeeded,setRefreshNeeded]=useState(false)
+  // Scans resolve after a lookup: they read the latest selection from this ref, and saving waits until none is in flight.
+  const selectedProduct=useRef<number>(),[scanning,setScanning]=useState(0)
+  const chooseProduct=(id?:number)=>{selectedProduct.current=id;setProductId(id)}
   const keys=useRef({create:requestKey()})
   const createIntent=useRef<{key:string;body:object}|null>(null)
   const actionIntent=useRef<ReceiptIntent|null>(null)
@@ -43,12 +46,12 @@ export default function Receiving({products,locations,storeId}:{products:GoodsPr
   useEffect(()=>{
     if(params.has('receipt_id')||!params.has('product_id'))return
     const requested=Number(params.get('product_id'))
-    setProductId(undefined)
+    chooseProduct(undefined)
     if(!Number.isInteger(requested)||requested<1){setError('Product reference is invalid.');return}
     const controller=new AbortController()
     client.get<GoodsProduct>(`/products/${requested}`,{signal:controller.signal}).then(({data})=>{
       if(controller.signal.aborted)return
-      setProductOptions(current=>[...current.filter(item=>item.id!==data.id),data]);setProductId(data.id)
+      setProductOptions(current=>[...current.filter(item=>item.id!==data.id),data]);chooseProduct(data.id)
     }).catch(()=>{if(!controller.signal.aborted)setError('Unable to load this product. Search for the exact design before receiving.')})
     return()=>controller.abort()
   },[params])
@@ -58,19 +61,26 @@ export default function Receiving({products,locations,storeId}:{products:GoodsPr
   },[params,locations])
 
   async function scan(code:string){
+    setScanning(count=>count+1)
     try{
       const result=await resolveGoodsBarcode(code)
       if(result.status!=='exact'){setError(result.status==='unknown'?'Unknown barcode. The receipt is unchanged.':'Barcode is ambiguous. Select the exact product.');return}
       const candidate=result.candidates[0]
       if(receipt){
-        const matched=receipt.lines.some(line=>line.product_id===candidate.product_id&&line.native_unit===candidate.stock_unit)
-        const added:ReceiptLine={line_no:Math.max(0,...receipt.lines.map(line=>line.line_no))+1,product_id:candidate.product_id,native_unit:candidate.stock_unit,expected_quantity:null,saleable_quantity:candidate.quantity_per_scan,damaged_quantity:0,hold_quantity:0,discrepancy_note:null}
-        setReceipt({...receipt,lines:matched?receipt.lines.map(line=>line.product_id===candidate.product_id&&line.native_unit===candidate.stock_unit?{...line,saleable_quantity:line.saleable_quantity+candidate.quantity_per_scan}:line):[...receipt.lines,added]})
+        // Apply the scan to the latest state of the receipt it was scanned for, so overlapping scans and edits typed during the lookup all count.
+        setReceipt(current=>{
+          if(!current||current.id!==receipt.id)return current
+          const matched=current.lines.some(line=>line.product_id===candidate.product_id&&line.native_unit===candidate.stock_unit)
+          const added:ReceiptLine={line_no:Math.max(0,...current.lines.map(line=>line.line_no))+1,product_id:candidate.product_id,native_unit:candidate.stock_unit,expected_quantity:null,saleable_quantity:candidate.quantity_per_scan,damaged_quantity:0,hold_quantity:0,discrepancy_note:null}
+          return {...current,lines:matched?current.lines.map(line=>line.product_id===candidate.product_id&&line.native_unit===candidate.stock_unit?{...line,saleable_quantity:line.saleable_quantity+candidate.quantity_per_scan}:line):[...current.lines,added]}
+        })
         return
       }
-      if(!productOptions.some(item=>item.id===candidate.product_id))setProductOptions(current=>[...current,{id:candidate.product_id,sku:code,jizhanming:`Product reference ${candidate.product_id}`,stock_unit:candidate.stock_unit,identity_status:'verified'}])
-      setProductId(candidate.product_id);setQuantity(current=>productId===candidate.product_id?current+candidate.quantity_per_scan:candidate.quantity_per_scan)
+      setProductOptions(current=>current.some(item=>item.id===candidate.product_id)?current:[...current,{id:candidate.product_id,sku:code,jizhanming:`Product reference ${candidate.product_id}`,stock_unit:candidate.stock_unit,identity_status:'verified'}])
+      const same=selectedProduct.current===candidate.product_id
+      chooseProduct(candidate.product_id);setQuantity(current=>same?current+candidate.quantity_per_scan:candidate.quantity_per_scan)
     }catch{setError('Unable to resolve the scan. The receipt is unchanged.')}
+    finally{setScanning(count=>count-1)}
   }
   async function searchProducts(value:string){if(value.trim()){const results=await searchGoodsProducts(value);setProductOptions(product&&!results.some(item=>item.id===product.id)?[product,...results]:results)}}
   function draftBody(detail:ReceiptDetail){return {store_id:detail.store_id,destination_location_id:detail.destination_location_id,business_date:detail.business_date,shipment_reference:detail.shipment_reference,supplier:detail.supplier,lines:detail.lines.map(line=>({product_id:line.product_id,unit:line.native_unit,expected_quantity:line.expected_quantity,saleable_quantity:line.saleable_quantity,damaged_quantity:line.damaged_quantity,hold_quantity:line.hold_quantity,discrepancy_note:line.discrepancy_note}))}}
@@ -94,6 +104,6 @@ export default function Receiving({products,locations,storeId}:{products:GoodsPr
     {short&&<p className="pc-receipt-short"><i className="pc-dot pc-dot-warn" aria-hidden="true"/>{total<line.expected_quantity!?`少 ${line.expected_quantity!-total}`:`多 ${total-line.expected_quantity!}`} · Shipment quantity differs</p>}
     <label className="pc-receipt-note"><span>差异说明 Discrepancy</span><Input aria-label={`Line ${line.line_no} discrepancy`} disabled={locked} value={line.discrepancy_note||''} onChange={event=>changeLine(line.line_no,{discrepancy_note:event.target.value||null})}/></label>
     <p className="pc-receipt-effect"><span>{line.saleable_quantity} {line.native_unit}s saleable</span><span>{line.damaged_quantity} {line.native_unit}s damaged</span><span>{line.hold_quantity} {line.native_unit}s hold</span></p>
-  </section>})}</div><Typography.Text strong>Status: {receipt.status}</Typography.Text>{receipt.status==='draft'&&<div className="pc-receipt-actions"><Button disabled={!!pendingAction} onClick={saveDraft}>存草稿 Save draft changes</Button><Button type="primary" disabled={!!pendingAction||receiptDirty} title={receiptDirty?'Save draft changes before posting':undefined} onClick={()=>transition('post')}>入库 Post receipt</Button><Button danger disabled={!!pendingAction} onClick={()=>transition('cancel')}>取消草稿 Cancel draft</Button></div>}{receipt.status==='posted'&&<Alert type="success" showIcon message="Receipt posted to inventory."/>}</Space></Card>
-  return <Card className="pc-goods-card" title={<>收货 <span>Receive shipment</span></>}><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error}/>}<Form className="pc-receive-form" layout="vertical" disabled={pendingCreate}><div className="pc-receive-pair"><Form.Item label="单号 Shipment reference"><Input value={reference} onChange={event=>setReference(event.target.value)}/></Form.Item><Form.Item label="放到 Destination" required><Select value={locationId} onChange={setLocationId} options={locations.map(item=>({value:item.id,label:item.name}))}/></Form.Item></div></Form><OperationScanInput onScan={scan} disabled={loading||pendingCreate}/><Form className="pc-receive-form" layout="vertical" disabled={pendingCreate}><Form.Item label="产品 Product" required><Select showSearch filterOption={false} onSearch={searchProducts} optionFilterProp="label" placeholder="搜索 记账名 / SKU" value={productId} onChange={setProductId} options={productOptions.map(item=>({value:item.id,label:productLabel(item)}))}/></Form.Item><div className="pc-receipt-cells"><Form.Item label="应到 Expected (optional)"><InputNumber aria-label="Expected quantity" min={0} precision={0} value={expected} onChange={setExpected}/></Form.Item><Form.Item className="pc-receipt-actual" label="实到 Actual quantity"><InputNumber aria-label="Actual quantity" min={0} precision={0} value={quantity} onChange={value=>setQuantity(value||0)}/></Form.Item><Form.Item label="状况 Condition"><Select value={disposition} onChange={setDisposition} options={[['saleable','完好 saleable'],['damaged','损坏 damaged'],['hold','暂扣 hold']].map(([value,label])=>({value,label}))}/></Form.Item></div></Form><Typography.Text className="pc-receipt-effect">Effect after posting: +{quantity} {product?.stock_unit||'units'} at {locations.find(item=>item.id===locationId)?.name||'selected destination'} ({disposition}).</Typography.Text><Button className="pc-receive-save" type="primary" loading={loading} disabled={!product?.stock_unit||!locationId||quantity<1} onClick={saveNew}>保存草稿 Save draft for review</Button></Space></Card>
+  </section>})}</div><Typography.Text strong>Status: {receipt.status}</Typography.Text>{receipt.status==='draft'&&<div className="pc-receipt-actions"><Button disabled={!!pendingAction||scanning>0} onClick={saveDraft}>存草稿 Save draft changes</Button><Button type="primary" disabled={!!pendingAction||receiptDirty||scanning>0} title={receiptDirty?'Save draft changes before posting':undefined} onClick={()=>transition('post')}>入库 Post receipt</Button><Button danger disabled={!!pendingAction} onClick={()=>transition('cancel')}>取消草稿 Cancel draft</Button></div>}{receipt.status==='posted'&&<Alert type="success" showIcon message="Receipt posted to inventory."/>}</Space></Card>
+  return <Card className="pc-goods-card" title={<>收货 <span>Receive shipment</span></>}><Space direction="vertical" style={{width:'100%'}}>{error&&<Alert type="error" showIcon message={error}/>}<Form className="pc-receive-form" layout="vertical" disabled={pendingCreate}><div className="pc-receive-pair"><Form.Item label="单号 Shipment reference"><Input value={reference} onChange={event=>setReference(event.target.value)}/></Form.Item><Form.Item label="放到 Destination" required><Select value={locationId} onChange={setLocationId} options={locations.map(item=>({value:item.id,label:item.name}))}/></Form.Item></div></Form><OperationScanInput onScan={scan} disabled={loading||pendingCreate}/><Form className="pc-receive-form" layout="vertical" disabled={pendingCreate}><Form.Item label="产品 Product" required><Select showSearch filterOption={false} onSearch={searchProducts} optionFilterProp="label" placeholder="搜索 记账名 / SKU" value={productId} onChange={chooseProduct} options={productOptions.map(item=>({value:item.id,label:productLabel(item)}))}/></Form.Item><div className="pc-receipt-cells"><Form.Item label="应到 Expected (optional)"><InputNumber aria-label="Expected quantity" min={0} precision={0} value={expected} onChange={setExpected}/></Form.Item><Form.Item className="pc-receipt-actual" label="实到 Actual quantity"><InputNumber aria-label="Actual quantity" min={0} precision={0} value={quantity} onChange={value=>setQuantity(value||0)}/></Form.Item><Form.Item label="状况 Condition"><Select value={disposition} onChange={setDisposition} options={[['saleable','完好 saleable'],['damaged','损坏 damaged'],['hold','暂扣 hold']].map(([value,label])=>({value,label}))}/></Form.Item></div></Form><Typography.Text className="pc-receipt-effect">Effect after posting: +{quantity} {product?.stock_unit||'units'} at {locations.find(item=>item.id===locationId)?.name||'selected destination'} ({disposition}).</Typography.Text><Button className="pc-receive-save" type="primary" loading={loading} disabled={!product?.stock_unit||!locationId||quantity<1||scanning>0} onClick={saveNew}>保存草稿 Save draft for review</Button></Space></Card>
 }

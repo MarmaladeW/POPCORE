@@ -91,6 +91,24 @@ class ProductSearchShopNameTests(IsolatedApiCase):
         self.assertIn('hirono shelter plush', text[self.plush])
         self.assertIn('萌粒dimoo皮克斯', text[self.pixar])
 
+    def test_restock_search_reads_the_selected_stores_warehouse_stock(self):
+        with closing(self.connect()) as con:
+            mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty) VALUES (?, ?, 0, 5)',
+                        (self.plush, mk))
+            con.commit()
+        for store_code, upstairs in (('DT', 1), ('mk', 0)):
+            for q in ('', '暗场毛绒'):  # the plain list and the scored search read stock separately
+                with self.subTest(store_code=store_code, q=q):
+                    response = self.client.get('/api/products/search', headers=self.headers(), query_string={
+                        'q': q, 'include_stock': 1, 'limit': 20, 'store_code': store_code})
+                    self.assertEqual(response.status_code, 200, response.get_json())
+                    rows = {row['id']: row for row in response.get_json()}
+                    self.assertEqual(rows[self.plush]['upstairs_qty'], upstairs)
+        unknown = self.client.get('/api/products/search', headers=self.headers(),
+                                  query_string={'q': '暗场', 'include_stock': 1, 'store_code': 'XX'})
+        self.assertEqual(unknown.status_code, 400)
+
     def test_clover_target_options_carry_shop_names_for_search(self):
         with closing(self.connect()) as con:
             options = {row['id']: row for row in review.list_reviews(con)['clover_products']}

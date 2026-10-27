@@ -21,9 +21,15 @@ def esc_csv(v):
     return s
 
 
+# How long a request waits for another connection's write lock before "database is locked".
+# Writes are short, so 15 s rides out a slow import or a Litestream checkpoint and still
+# fails well inside nginx's 60 s proxy timeout and gunicorn's 120 s worker timeout.
+SQLITE_BUSY_TIMEOUT = 15.0
+
+
 def get_db():
     if 'db' not in g:
-        con = sqlite3.connect(DB_PATH)
+        con = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT)
         con.row_factory = sqlite3.Row
         con.execute('PRAGMA journal_mode=WAL')
         con.execute('PRAGMA foreign_keys = ON')
@@ -1926,6 +1932,43 @@ def _migration_clover_sends(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('clover_sends')")
 
 
+def _migration_sale_line_loose_boxes(con, cur):
+    # Blind boxes over half a set (owner, 2026-10-27): besides a new sealed set or an opened set, the
+    # cashier may say they were loose boxes from the floor. Kept on the line until it is posted.
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(sale_lines)')}
+    if 'loose_boxes' not in columns:
+        cur.execute('ALTER TABLE sale_lines ADD COLUMN loose_boxes INTEGER NOT NULL DEFAULT 0 CHECK(loose_boxes IN (0,1))')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('sale_line_loose_boxes')")
+
+
+def _migration_clover_import_failures(con, cur):
+    # A Clover order of a scanned store day that could not be imported. Closing waits until it imports
+    # or a manager resolves it with a reason (owner, 2026-10-27).
+    cur.execute("""CREATE TABLE IF NOT EXISTS clover_import_failures (
+        merchant_id TEXT NOT NULL CHECK(length(merchant_id)=13),
+        order_id TEXT NOT NULL,
+        store_id INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT NOT NULL,
+        error TEXT NOT NULL,
+        failed_at REAL NOT NULL,
+        resolved_by TEXT,
+        resolved_reason TEXT,
+        resolved_at TEXT,
+        PRIMARY KEY(merchant_id, order_id)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS clover_import_failures_day ON clover_import_failures(store_id, business_date)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('clover_import_failures')")
+
+
+def _migration_payment_refund_business_date(con, cur):
+    # A refund recorded on a sale counts on the Toronto business date it is recorded, the day the money
+    # leaves (owner, 2026-10-27). Refunds from before have none and stay on their sale's day.
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(payment_events)')}
+    if 'business_date' not in columns:
+        cur.execute('ALTER TABLE payment_events ADD COLUMN business_date TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('payment_refund_business_date')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -1986,6 +2029,9 @@ def _get_migrations():
         ('display_locations',                          _migration_display_locations),
         ('series_owned_by_product',                    _migration_series_owned_by_product),
         ('clover_sends',                               _migration_clover_sends),
+        ('sale_line_loose_boxes',                      _migration_sale_line_loose_boxes),
+        ('clover_import_failures',                     _migration_clover_import_failures),
+        ('payment_refund_business_date',               _migration_payment_refund_business_date),
     ]
 
 
@@ -1994,7 +2040,20 @@ def _run_migrations(con, cur):
         cur.execute('SELECT 1 FROM _migrations WHERE name = ?', (name,))
         if cur.fetchone():
             continue
-        fn(con, cur)
+        # One transaction per migration, so its changes and its _migrations row commit or roll back
+        # together. IMMEDIATE takes the write lock first: another process migrating the same database
+        # waits here, then finds the row and skips. (Older migrations that BEGIN themselves or use
+        # executescript commit early; they are atomic or idempotent on their own.)
+        con.commit()
+        cur.execute('BEGIN IMMEDIATE')
+        try:
+            cur.execute('SELECT 1 FROM _migrations WHERE name = ?', (name,))
+            if not cur.fetchone():
+                fn(con, cur)
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
 
 
 def migrate_db():
@@ -2112,9 +2171,6 @@ def migrate_db():
         cur.execute("ALTER TABLE daily_sales ADD COLUMN store TEXT NOT NULL DEFAULT 'DT'")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ds_store ON daily_sales(store)")
 
-    # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒'
-    cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
-
     # ── Stock column renames: *_dan → *_qty ────────────────────────────────
     cur.execute("PRAGMA table_info(stock)")
     stock_col_names = {r['name'] for r in cur.fetchall()}
@@ -2138,6 +2194,12 @@ def migrate_db():
             applied_at TEXT DEFAULT (datetime('now'))
         )
     ''')
+    # Merge '盲盒毛绒' and '盲盒Figure' into '盲盒' once (before the stock conversion below reads 盲盒);
+    # recorded, so a type a manager sets later is never rewritten by a restart.
+    cur.execute("SELECT 1 FROM _migrations WHERE name='merge_blind_box_product_types'")
+    if not cur.fetchone():
+        cur.execute("UPDATE products SET product_type = '盲盒' WHERE product_type IN ('盲盒毛绒', '盲盒Figure')")
+        cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('merge_blind_box_product_types')")
     cur.execute("SELECT 1 FROM _migrations WHERE name='blind_box_stock_to_he'")
     if not cur.fetchone():
         cur.execute('''
