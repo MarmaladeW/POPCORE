@@ -1,6 +1,6 @@
 # Operations resilience
 
-How POPCORE production on the droplet (1 vCPU, 1 GB RAM + 2 GB swap) is kept safe from bad releases, lost servers, mistaken edits and unnoticed outages, at almost no cost. Everything here runs on the existing droplet or on free tiers. Nothing in this document is installed yet: each server step needs the owner's go-ahead.
+How POPCORE production on the droplet (1 vCPU, 1 GB RAM + 2 GB swap) is kept safe from bad releases, lost servers, mistaken edits and unnoticed outages, at almost no cost. Everything here runs on the existing droplet or on free tiers. The owner approved the server installs on 2026-10-27; what still needs the owner's own accounts is under [Owner actions](#owner-actions-one-time).
 
 ## What protects against what
 
@@ -11,7 +11,7 @@ How POPCORE production on the droplet (1 vCPU, 1 GB RAM + 2 GB swap) is kept saf
 | A migration succeeds but breaks the old code after a rollback | Every deploy keeps a pre-deploy backup; `rollback_production.sh --restore-db` puts it back (writes made after it are lost, and kept aside) | Decide whether to restore | $0 |
 | The droplet dies or its disk is corrupted | Litestream copies every database change off-site within about 10 s; DigitalOcean weekly backups keep the whole server; the nightly backup reaches the Mac | Restore on a new or restored droplet | $0 (R2 or B2 free tier) + about $1.20 (DO weekly backups) |
 | Someone deletes or changes data by mistake | Litestream point-in-time restore for 30 days; nightly backups (30 days on the server, 60 on the Mac); pre-deploy backups | Restore a copy from before the mistake and copy rows back | $0 |
-| An outage nobody notices | A free uptime monitor on `/api/health` sends an email or phone push; an optional Litestream heartbeat warns when off-site copying stops | Act on the alert | $0 |
+| An outage nobody notices | A GitHub Actions check of `/api/health` every 10 minutes emails on failure; an optional uptime service adds phone push; an optional Litestream heartbeat warns when off-site copying stops | Act on the alert | $0 |
 | A release needs testing on real data first | Staging on the same droplet, started only when needed | `refresh_staging.sh`, then test | $0 |
 
 Uploads (product images, payment and condition evidence) are not in Litestream. They are in the nightly backup, so after a server loss they can be up to a day old.
@@ -22,7 +22,7 @@ Uploads (product images, payment and condition evidence) are not in Litestream. 
 
 ## Deploying
 
-The scripts live in `scripts/`. Install copies once, so they keep working after a rollback to a commit that predates them:
+The scripts live in `scripts/` and run as commands installed in `/usr/local/sbin`, so they keep working after a rollback to a commit that predates them. Install them by hand once:
 
 ```sh
 install -m 755 /root/POPCORE/scripts/deploy_production.sh /usr/local/sbin/popcore-deploy
@@ -31,7 +31,7 @@ install -m 755 /root/POPCORE/scripts/refresh_staging.sh /usr/local/sbin/popcore-
 install -m 755 /root/POPCORE/scripts/restore_from_litestream.sh /usr/local/sbin/popcore-restore
 ```
 
-Repeat the `install` lines when the scripts change. Then, as root:
+From then on `popcore-deploy` keeps all four current (step 6 below), and a rollback never changes them. Running `popcore-deploy` when production is already up to date also brings them in line. As root:
 
 ```sh
 popcore-deploy --rehearse-only     # optional dry run: backup + rehearsal, production untouched
@@ -46,6 +46,7 @@ The script:
 3. Checks the release out in a temporary git worktree and imports its app against a copy of that backup, with the scheduler off and no secrets. This runs the release's migrations on real data. An import error, a failed migration, a failed `integrity_check` or new foreign-key violations stop the deploy here. It prints the schema changes and how long the start took (about the downtime of the restart).
 4. Fast-forwards `/root/POPCORE` and restarts `popcore`.
 5. Waits up to 90 s for `/api/health` to report the new commit twice and for the app shell to load. If it does not, it resets the code to the previous commit, restarts, and prints whether the database needs attention.
+6. Once the new commit is healthy, it installs that commit's versions of the four commands where they changed. Each must pass `bash -n` and goes in with a single rename, so the running copy of `popcore-deploy` is not disturbed. One that fails `bash -n` keeps its previous version, with a warning.
 
 Exit codes: 0 deployed and healthy; 1 refused or stopped before production changed; 2 the release failed and the previous code is back and healthy; 3 production is not healthy, act now.
 
@@ -69,16 +70,25 @@ With `--restore-db` it first copies the backup next to the live database, stops 
 
 Litestream streams every change of `/root/POPCORE/popcore_app/popcore.db` to an S3-compatible bucket at most every 10 s, takes a full snapshot daily and keeps 30 days, so any moment of the last month can be restored. It uses about 20–60 MB of RAM.
 
-Install (needs the bucket from the owner actions below; use Litestream 0.5.14 or newer, see the [releases](https://github.com/benbjohnson/litestream/releases)):
+Install (Litestream 0.5.14 or newer, see the [releases](https://github.com/benbjohnson/litestream/releases); 0.5.17 is on the droplet). The package leaves its service off, and it stays off until the bucket exists:
 
 ```sh
 uname -m                                   # x86_64 on a regular droplet
-cd /root && wget https://github.com/benbjohnson/litestream/releases/download/v0.5.14/litestream-0.5.14-linux-x86_64.deb
-dpkg -i litestream-0.5.14-linux-x86_64.deb
-install -m 600 /root/POPCORE/deployment/litestream.env.example /etc/litestream.env    # fill in the bucket and key
+cd "$(mktemp -d)"
+curl -fsSLO https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-0.5.17-linux-x86_64.deb
+curl -fsSLO https://github.com/benbjohnson/litestream/releases/download/v0.5.17/checksums.txt
+sha256sum --ignore-missing -c checksums.txt   # must say OK for the .deb
+dpkg -i litestream-0.5.17-linux-x86_64.deb
+install -m 600 /root/POPCORE/deployment/litestream.env.example /etc/litestream.env    # the bucket and key go here
 install -m 644 /root/POPCORE/deployment/litestream.yml /etc/litestream.yml
 install -m 644 /root/POPCORE/deployment/litestream.service /etc/systemd/system/litestream.service
-systemctl daemon-reload && systemctl enable litestream && systemctl restart litestream
+systemctl daemon-reload
+```
+
+Once `/etc/litestream.env` holds the bucket and key (`nano /etc/litestream.env`):
+
+```sh
+systemctl enable --now litestream
 journalctl -u litestream -n 30             # no errors; the first snapshot is uploaded
 popcore-restore                            # proves the copy: restores into a new file and checks it
 ```
@@ -104,7 +114,7 @@ One-time setup, as root (clone the repository the same way `/root/POPCORE` was c
 useradd --system --home-dir /var/lib/popcore-staging --shell /usr/sbin/nologin popcore-staging
 git clone https://github.com/MarmaladeW/POPCORE.git /opt/popcore-staging
 install -d -m 755 /etc/popcore
-install -m 600 /root/POPCORE/deployment/popcore-staging.env.example /etc/popcore/staging.env   # fill in Auth0 + CORS
+install -m 600 /root/POPCORE/deployment/popcore-staging.env.example /etc/popcore/staging.env   # Auth0: the public VITE_AUTH0_DOMAIN/AUDIENCE in popcore_app/frontend/.env.production
 install -m 644 /root/POPCORE/deployment/gunicorn-staging.conf.py /etc/popcore/gunicorn-staging.conf.py
 install -m 644 /root/POPCORE/deployment/popcore-staging.service /etc/systemd/system/popcore-staging.service
 systemctl daemon-reload                     # do not enable it
@@ -127,15 +137,16 @@ Then open `https://staging.popcore.store`. Staging uses production's Auth0 login
 
 ## Uptime alerts
 
-Add an HTTP monitor for `https://popcore.store/api/health` every 5 minutes that alerts when the status is not 200 or the body lacks `"ok":true`, with email and the provider's phone-app push. SMS costs money with every provider. UptimeRobot is the usual choice, but reports say its free plan has been limited to non-commercial use since December 2024 (its paid plan is about $8–10 a month), so read its terms. Better Stack's free tier (10 monitors, 3-minute checks, email alerts) is an alternative. For the optional Litestream heartbeat, create a free healthchecks.io check with a 10-minute period and 1-hour grace and put its URL in `LITESTREAM_HEARTBEAT_URL`.
+`.github/workflows/uptime.yml` asks `https://popcore.store/api/health` for `"ok":true` every 10 minutes and fails after three tries a minute apart. A failed run emails the GitHub account that last changed its schedule; check that GitHub's Settings, Notifications, Actions has email on for failed workflows (the default). It is free because the repository is public. To test it, run it from the Actions tab (Uptime, Run workflow). It is a floor, not a pager: GitHub can start scheduled runs late when it is busy, and it switches schedules off after 60 days without any repository activity, with an email first.
+
+For phone pushes, add an HTTP monitor for the same URL every 5 minutes that alerts when the status is not 200 or the body lacks `"ok":true`. SMS costs money with every provider. UptimeRobot is the usual choice, but reports say its free plan has been limited to non-commercial use since December 2024 (its paid plan is about $8–10 a month), so read its terms. Better Stack's free tier (10 monitors, 3-minute checks, email alerts) is an alternative. For the optional Litestream heartbeat, create a free healthchecks.io check with a 10-minute period and 1-hour grace and put its URL in `LITESTREAM_HEARTBEAT_URL`.
 
 ## Owner actions (one time)
 
-1. Create a private Cloudflare R2 bucket (Cloudflare asks for a payment method to turn on R2, even on the free tier) or a private Backblaze B2 bucket, and an API key limited to that bucket. Put both in `/etc/litestream.env`.
+1. Create a private Cloudflare R2 bucket (Cloudflare asks for a payment method to turn on R2, even on the free tier) or a private Backblaze B2 bucket, and an API key limited to that bucket. Put both in `/etc/litestream.env`, then start Litestream (see [Off-site database copy](#off-site-database-copy-litestream)).
 2. Turn on weekly backups for the droplet in the DigitalOcean control panel (Droplet, then Backups). They cost 20% of the droplet's price, about $1.20 a month on a $6 droplet.
-3. Approve installing Litestream and the deploy scripts on the droplet (sections above).
-4. For staging: a DNS A record `staging.popcore.store` pointing at the droplet, and in Auth0 add `https://staging.popcore.store` to the SPA application's Allowed Callback URLs, Allowed Logout URLs and Allowed Web Origins.
-5. Create the uptime monitor and, optionally, the healthchecks.io check.
+3. For staging: a DNS A record `staging.popcore.store` pointing at the droplet, and in Auth0 add `https://staging.popcore.store` to the SPA application's Allowed Callback URLs, Allowed Logout URLs and Allowed Web Origins. Then, on the droplet, `certbot --nginx -d staging.popcore.store`.
+4. Optionally, an uptime service with phone push and the healthchecks.io heartbeat check ([Uptime alerts](#uptime-alerts)).
 
 ## When something goes wrong
 
@@ -171,5 +182,6 @@ Add an HTTP monitor for `https://popcore.store/api/health` every 5 minutes that 
 | Health check, deploy and rollback scripts, staging | $0 |
 | Litestream to R2 or B2 (database about 5 MB; well under 1 GB stored; at most one upload every 10 s) | $0 within the free tiers |
 | DigitalOcean weekly backups | 20% of the droplet price (about $1.20) |
-| Uptime monitor and heartbeat check | $0 on free plans; SMS is extra |
+| GitHub Actions uptime check | $0 (public repository) |
+| Phone-push uptime monitor and heartbeat check (optional) | $0 on free plans; SMS is extra |
 | Staging DNS record and TLS certificate | $0 |

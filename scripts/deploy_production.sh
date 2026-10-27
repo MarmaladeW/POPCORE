@@ -21,6 +21,13 @@
 #      the app shell loads. If that does not happen within HEALTH_TIMEOUT seconds, the
 #      code goes back to the previous commit and is restarted, and the script prints how
 #      to restore the pre-deploy backup if the release changed the schema.
+#   6. Once the new commit is healthy, its operations scripts replace the installed
+#      commands in /usr/local/sbin that differ from them: popcore-deploy (this script),
+#      popcore-rollback, popcore-staging-refresh and popcore-restore. Each must pass
+#      bash -n and goes in with one rename, which a running copy does not notice. A
+#      rollback never changes them, so they keep working on commits that predate them.
+#      Running this script when production is already at COMMIT and healthy brings the
+#      commands in line too.
 #
 # Why the database is never restored automatically: once the new release has started it
 # may have run its migrations and taken real writes (sales, counts, shifts). Copying the
@@ -43,7 +50,8 @@
 # POPCORE_BACKUP_DIR (/root/popcore-backups), POPCORE_SERVICE (popcore),
 # POPCORE_HEALTH_URL (http://127.0.0.1:5000/api/health), HEALTH_TIMEOUT (90),
 # POPCORE_REMOTE (origin), POPCORE_BRANCH (main), POPCORE_SKIP_FETCH=1 (no git fetch),
-# POPCORE_DEPLOY_TMP (<backup dir>/tmp), POPCORE_LOCK_FILE (/run/lock/popcore-deploy.lock).
+# POPCORE_DEPLOY_TMP (<backup dir>/tmp), POPCORE_LOCK_FILE (/run/lock/popcore-deploy.lock),
+# POPCORE_SBIN_DIR (/usr/local/sbin).
 set -euo pipefail
 
 REPO_DIR="${POPCORE_REPO_DIR:-/root/POPCORE}"
@@ -59,7 +67,11 @@ REMOTE="${POPCORE_REMOTE:-origin}"
 BRANCH="${POPCORE_BRANCH:-main}"
 TMP_BASE="${POPCORE_DEPLOY_TMP:-$BACKUP_DIR/tmp}"
 LOCK_FILE="${POPCORE_LOCK_FILE:-/run/lock/popcore-deploy.lock}"
+SBIN_DIR="${POPCORE_SBIN_DIR:-/usr/local/sbin}"
 HISTORY="$BACKUP_DIR/deploy-history.log"
+# The operations scripts kept installed as commands (step 6), as script:command pairs.
+COMMANDS="deploy_production.sh:popcore-deploy rollback_production.sh:popcore-rollback
+refresh_staging.sh:popcore-staging-refresh restore_from_litestream.sh:popcore-restore"
 SAFE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 FROM_SHA="" TARGET_SHA="" BACKUP_PATH="" SCHEMA_CHANGED="unknown" NEW_MIGRATIONS="" SCHEMA_SUMMARY=""
@@ -244,6 +256,39 @@ wait_for_health() {  # expected_sha timeout_seconds
   done
 }
 
+install_commands() {  # commit: its operations scripts become the installed commands (step 6)
+  local pair script name new updated=""
+  if [ ! -d "$SBIN_DIR" ] || [ ! -w "$SBIN_DIR" ]; then
+    warn "Cannot write to $SBIN_DIR; the installed commands were not updated."
+    return 0
+  fi
+  for pair in $COMMANDS; do
+    script="scripts/${pair%%:*}" name="${pair##*:}"
+    g cat-file -e "$1:$script" 2>/dev/null || continue
+    new="$SBIN_DIR/.$name.new"
+    if ! g show "$1:$script" >"$new" || ! bash -n "$new"; then
+      rm -f "$new"
+      warn "$script at $(short "$1") could not be read or fails bash -n; $name stays as it was."
+      continue
+    fi
+    if [ -f "$SBIN_DIR/$name" ] && cmp -s "$new" "$SBIN_DIR/$name"; then
+      rm -f "$new"
+      continue
+    fi
+    # A rename, never a copy over the old file: bash reads a running script as it goes,
+    # and the running script may be the installed popcore-deploy itself.
+    if chmod 755 "$new" && mv -f "$new" "$SBIN_DIR/$name"; then
+      updated="$updated $name"
+    else
+      rm -f "$new"
+      warn "Could not install $SBIN_DIR/$name; it stays as it was."
+    fi
+  done
+  if [ -n "$updated" ]; then
+    log "Installed from $(short "$1") into $SBIN_DIR:$updated"
+  fi
+}
+
 rollback_command() {
   if command -v popcore-rollback >/dev/null 2>&1; then
     printf 'popcore-rollback'
@@ -385,7 +430,10 @@ main() {
   if [ "$FROM_SHA" = "$TARGET_SHA" ]; then
     log "Production is already at this commit; checking its health only."
     [ "$rehearse_only" -eq 1 ] && exit 0
-    wait_for_health "$TARGET_SHA" 30 && exit 0
+    if wait_for_health "$TARGET_SHA" 30; then
+      install_commands "$TARGET_SHA"
+      exit 0
+    fi
     die "Production is at the target commit but not healthy. See docs/operations-resilience.md." 3
   fi
   log "$(g rev-list --count "$FROM_SHA..$TARGET_SHA") new commits:"
@@ -413,6 +461,7 @@ main() {
   systemctl restart "$SERVICE" || warn "systemctl restart $SERVICE reported an error."
   if wait_for_health "$TARGET_SHA" "$HEALTH_TIMEOUT"; then
     record healthy
+    install_commands "$TARGET_SHA"
     step "Deployed $(short "$TARGET_SHA"). Pre-deploy backup: $BACKUP_PATH"
     exit 0
   fi
