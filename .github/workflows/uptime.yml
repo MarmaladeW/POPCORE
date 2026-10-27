@@ -1,0 +1,32 @@
+name: Uptime
+
+# Asks https://popcore.store/api/health for "ok":true every 10 minutes, three tries a
+# minute apart. A failed run emails the GitHub account that last changed this schedule,
+# so an outage reaches the owner even when nobody is looking. Free for a public
+# repository. GitHub can start scheduled runs late when it is busy and switches schedules
+# off after 60 days without repository activity: see docs/operations-resilience.md,
+# "Uptime alerts".
+on:
+  schedule:
+    - cron: '4-59/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: popcore.store answers ok
+        run: |
+          for try in 1 2 3; do
+            body="$(curl --silent --show-error --max-time 20 https://popcore.store/api/health || true)"
+            case "$body" in
+              *'"ok":true'*) echo "ok: $body"; exit 0 ;;
+            esac
+            echo "try $try: ${body:-no answer}"
+            if [ "$try" -lt 3 ]; then sleep 60; fi
+          done
+          echo "::error title=POPCORE is down::https://popcore.store/api/health did not answer ok three times in a row"
+          exit 1

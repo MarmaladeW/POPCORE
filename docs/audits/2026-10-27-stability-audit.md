@@ -161,6 +161,8 @@ There is no snapshot before Oct 8. Of the 37 shifts edited between Aug 11 and Oc
 
 Owner actions: create an R2 or B2 bucket and key; enable DigitalOcean backups; add a `staging.popcore.store` DNS record and its Auth0 URLs; set up a free uptime monitor; approve the server installs. The runbook is `docs/operations-resilience.md`.
 
+Update, later on 2026-10-27: the owner approved the installs. The droplet now has the four commands (kept current by `popcore-deploy`), Litestream 0.5.17 with its config (off until the bucket exists) and staging (tested on a copy of live data, waiting for its DNS record, Auth0 URLs and certificate). A GitHub Actions check now watches `/api/health`. The bucket and key, DigitalOcean backups and the staging DNS and Auth0 entries still need the owner's accounts.
+
 ## Lower priority (not changed)
 
 - **L1:** Today hides between-store transfers from both stores' staff. They are still listed under 入店 → 调入 and flagged at closing.
