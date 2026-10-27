@@ -158,12 +158,12 @@ export default function ShiftModal({
   ].map(p => ({ value: p, label: p }))
 
   /** Times for a preset — custom slots are fixed, built-ins follow store hours. */
-  const timesForPreset = (p: Exclude<Preset, 'custom'>): { start: string; end: string } => {
+  const timesForPreset = (p: Exclude<Preset, 'custom'>, hours = openHours): { start: string; end: string } => {
     if (p.startsWith('slot:')) {
       const slot = shiftPresets[Number(p.slice(5))]
-      return slot ? { start: slot.start, end: slot.end } : presetTimes(date, openHours).full
+      return slot ? { start: slot.start, end: slot.end } : presetTimes(date, hours).full
     }
-    return presetTimes(date, openHours)[p as 'full' | 'first' | 'second']
+    return presetTimes(date, hours)[p as 'full' | 'first' | 'second']
   }
 
   const syncPresetFromForm = () => {
@@ -204,19 +204,19 @@ export default function ShiftModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, existing, form])
 
-  // When the Location changes, a selected preset re-applies with that store's
-  // hours (e.g. full day becomes 12:00–21:00 at MK); custom times just get
-  // re-checked against the new store's presets.
-  useEffect(() => {
-    if (!open) return
+  // When the manager changes the Location, a selected preset re-applies with
+  // that store's hours (e.g. full day becomes 12:00–21:00 at MK); custom times
+  // just get re-checked against the new store's presets. Only on this change:
+  // reopening the dialog must not apply the previous shift's preset.
+  const handleStoreChange = (code: string) => {
+    const hours = hoursForStore(code, storeHours)
     if (preset !== 'custom') {
-      const t = timesForPreset(preset)
+      const t = timesForPreset(preset, hours)
       form.setFieldsValue({ start_time: t.start, end_time: t.end })
     } else {
-      syncPresetFromForm()
+      setPreset(matchPreset(date, hours, shiftPresets, form.getFieldValue('start_time'), form.getFieldValue('end_time')))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchedStore])
+  }
 
   const handleEmployeeChange = (empId: number) => {
     if (existing) return
@@ -468,6 +468,7 @@ export default function ShiftModal({
                   >
                     <Select
                       placeholder="Store"
+                      onChange={handleStoreChange}
                       getPopupContainer={(trigger) => trigger.parentElement!}
                       options={realStores.map((s) => ({
                         value: s.code,

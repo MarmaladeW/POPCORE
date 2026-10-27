@@ -19,7 +19,8 @@ export default function FinishInput({ value, onChange, id }: { value?: string; o
     autoComplete="off"
     placeholder="2134"
     value={text}
-    suffix={parsed ? <span className="pc-finish-read">= {parsed}</span> : undefined}
+    // Always render the suffix: antd rebuilds the input when a suffix appears or disappears, dropping focus mid-typing.
+    suffix={<span className="pc-finish-read">{parsed ? `= ${parsed}` : ''}</span>}
     onChange={event => {
       const next = event.target.value.replace(/\D/g, '').slice(0, 4)
       setText(next)
