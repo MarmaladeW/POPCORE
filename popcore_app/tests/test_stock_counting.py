@@ -324,8 +324,15 @@ class StockCountingTests(IsolatedApiCase):
         card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
         self.assertEqual(([(i['role'], i.get('count', {}).get('quantity')) for i in card['items']], card['new_sealed_set']),
                          ([('box', 5), ('set', 2)], None))
+        # A second phone saving the same box's first whole sets a moment later counts against that set.
         again = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='k2')
-        self.assertEqual((again.status_code, again.get_json()['code']), (409, 'whole_set_unavailable'))
+        self.assertEqual(again.status_code, 200, again.get_json())
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku LIKE 'ECHO-1-SET%'").fetchone()[0], 1)
+            self.assertEqual(con.execute('SELECT quantity FROM opening_counts WHERE product_id=?',
+                                         (whole['id'],)).fetchone()[0], 1)
+        changed = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 6}, key='k3')
+        self.assertEqual((changed.status_code, changed.get_json()['code']), (409, 'whole_set_changed'))
 
     def test_whole_sets_are_only_added_to_blind_boxes(self):
         for number, (product, new_set, code) in enumerate([

@@ -453,14 +453,26 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
         scope = _scope(con, actor, store_code, location_code)
         head, series_id = _family(con, product_id)
         if new_set:
-            if _whole_set_offer(head, _members(con, head, series_id)) is None:
-                raise InventoryConflict('Whole sets are added for a blind box that has none yet; '
-                                        'this one is not a blind box or already has its whole set', 'whole_set_unavailable')
-            # Counting the first whole sets of a blind box gives it its sealed set (owner, 2026-10-27).
-            set_id = sealed_set_for(con, head['id'], new_set['boxes_per_set'])
-            entries = [*entries, {'product_id': set_id, 'quantity': new_set['quantity'],
-                                  'stock_form': None, 'balance_version': None}]
-            head = _product(con, head['id'])
+            current = _members(con, head, series_id)
+            existing = [(product['id'], boxes) for role, product, boxes in current if role == 'set']
+            if existing:
+                # Two people counted the same blind box and the other save added its whole set a
+                # moment ago: count against that set when it holds the same number of boxes.
+                set_id, boxes = existing[0]
+                if boxes != new_set['boxes_per_set']:
+                    raise InventoryConflict(f"This box's whole set was just added with {boxes} boxes per set, "
+                                            f"not {new_set['boxes_per_set']}; check it and count again",
+                                            'whole_set_changed')
+            elif _whole_set_offer(head, current) is None:
+                raise InventoryConflict('Whole sets are counted for a blind box; this product is not one',
+                                        'whole_set_unavailable')
+            else:
+                # Counting the first whole sets of a blind box gives it its sealed set (owner, 2026-10-27).
+                set_id = sealed_set_for(con, head['id'], new_set['boxes_per_set'])
+                head = _product(con, head['id'])
+            if all(entry['product_id'] != set_id for entry in entries):
+                entries = [*entries, {'product_id': set_id, 'quantity': new_set['quantity'],
+                                      'stock_form': None, 'balance_version': None}]
         members = {product['id']: (role, product) for role, product, _ in _members(con, head, series_id)}
         if any(entry['product_id'] not in members for entry in entries):
             raise InventoryValidationError('Count only this product, its sealed sets and its designs')

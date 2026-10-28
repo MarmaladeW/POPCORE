@@ -188,6 +188,8 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
   const manager = useHasRole('manager')
   const [card, setCard] = useState<CountCard | null>(null)
   const [error, setError] = useState('')
+  // A refused save reloads the card; its warning has to outlive that reload.
+  const [notice, setNotice] = useState('')
   const [reload, setReload] = useState(0)
   const [values, setValues] = useState<Record<number, number | null>>({})
   const [forms, setForms] = useState<Record<number, CountForm>>({})
@@ -256,6 +258,7 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
     if (!key.current) key.current = countRequestKey()
     setSaving(true)
     setError('')
+    setNotice('')
     try {
       const response = await saveCount({
         store_code: storeCode, location, product_id: card.product_id, entries,
@@ -267,9 +270,15 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
       onSaved()
       setReload(n => n + 1)
     } catch (cause) {
-      if (codeOf(cause) === 'count_stale') {
+      const code = codeOf(cause)
+      if (code === 'count_stale') {
         key.current = ''
-        setError('Stock changed while you were counting (a sale or a move). Count it again.')
+        setNotice('Stock changed while you were counting (a sale or a move). Count it again.')
+        setReload(n => n + 1)
+      } else if (code && ['whole_set_changed', 'whole_set_unavailable', 'identity_changed', 'sealed_set_exists'].includes(code)) {
+        // The product changed under this card (another phone added its whole set): show it as it is now.
+        key.current = ''
+        setNotice(messageOf(cause, 'This product changed while you were counting. Check the card and count again.'))
         setReload(n => n + 1)
       } else {
         setError(messageOf(cause, 'Could not save. Check the connection and press Save again; it will not be counted twice.'))
@@ -357,6 +366,7 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
       {head && <>{amount(head)} {headUnit ? UNITS[headUnit] : ''}</>}
       {designs.length > 0 && <> · 确认款 {designTotal} 个</>}
     </p>
+    {notice && <Alert type="warning" showIcon message={notice} />}
     {error && <Alert type="error" showIcon message={error} />}
     {saved && <div className="pc-count-saved" role="status">
       <strong>已保存 Saved</strong>
