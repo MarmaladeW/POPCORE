@@ -174,9 +174,20 @@ async def run(browser, width):
         await card.get_by_label(re.compile('^散盒 Single boxes')).fill('6')
         await card.get_by_role('button', name='保存 Save').click()
         await expect(card.get_by_role('status')).to_contain_text('库存 7 → 6')
+        # Another phone recounts the same box first: this card's save is refused, the card reloads,
+        # and the warning stays up so the counter knows to count again.
+        other = fixture.save([{'product_id': fixture.box, 'quantity': 5}], key='other-phone')
+        assert other.status_code == 200, other.get_json()
+        await card.get_by_label(re.compile('^散盒 Single boxes')).fill('4')
+        await card.get_by_role('button', name='保存 Save').click()
+        stale = card.get_by_text('Stock changed while you were counting (a sale or a move). Count it again.')
+        await expect(stale).to_be_visible()
+        await expect(card.get_by_label(re.compile('^散盒 Single boxes'))).to_have_value('')
+        await page.wait_for_timeout(500)
+        await expect(stale).to_be_visible()
         assert rows("""SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
                        WHERE b.product_id=? AND l.store_id=? AND l.code='floor' AND b.disposition='saleable'""",
-                    fixture.box, fixture.dt) == [(6,)]
+                    fixture.box, fixture.dt) == [(5,)]
         await fits(page, f'live-{width}.png')
     finally:
         await context.close()
