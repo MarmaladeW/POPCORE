@@ -9,7 +9,7 @@ import InventoryPhoto from '../Stock/InventoryPhoto'
 import {
   addDesigns, countRequestKey, getCountCard, getCountProgress, getCountScope, removeDesign, saveCount, searchCount,
   type CountCard, type CountEntry, type CountForm, type CountItem, type CountProgress, type CountResult,
-  type CountScope, type SavedCount,
+  type CountScope, type SavedCard,
 } from '../../api/counting'
 import '../Stock/seriesInventory.css'
 import './count.css'
@@ -21,7 +21,7 @@ const PLACES: Record<string, string> = {
 }
 const UNITS: Record<string, string> = { box: '盒', set: '端', piece: '个' }
 
-type Failure = { _serverMessage?: string; response?: { data?: { code?: string } } }
+type Failure = { _serverMessage?: string; response?: { data?: { code?: string; product_ids?: number[] } } }
 const messageOf = (cause: unknown, fallback: string) => (cause as Failure)?._serverMessage || fallback
 const codeOf = (cause: unknown) => (cause as Failure)?.response?.data?.code
 const placeName = (code: string, name: string) => PLACES[code] || name
@@ -54,8 +54,10 @@ export default function CountPage() {
   const [scopeVersion, setScopeVersion] = useState(0)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<CountResult[] | null>(null)
+  const [resultsFor, setResultsFor] = useState('')
   const [searchError, setSearchError] = useState('')
-  const openSingle = useRef(false)
+  // The text Enter was pressed on before its results came: its single match opens when they do.
+  const openSingle = useRef('')
   const searchBox = useRef<InputRef>(null)
 
   const go = (next: { location?: string; product?: number }) => {
@@ -91,10 +93,11 @@ export default function CountPage() {
     const timer = window.setTimeout(() => {
       searchCount(storeCode, location, text, controller.signal).then(found => {
         setResults(found)
+        setResultsFor(text)
         setSearchError('')
         // A scanner types the code and presses Enter: one match opens straight away.
-        if (openSingle.current && found.length === 1) { setQuery(''); go({ product: found[0].product_id }) }
-        openSingle.current = false
+        if (openSingle.current === text && found.length === 1) { setQuery(''); go({ product: found[0].product_id }) }
+        openSingle.current = ''
       }).catch(cause => { if (!controller.signal.aborted) setSearchError(messageOf(cause, 'Search failed. Try again.')) })
     }, 250)
     return () => { controller.abort(); window.clearTimeout(timer) }
@@ -122,14 +125,16 @@ export default function CountPage() {
         </p>
         {productId && location
           ? <CountCardPanel key={`${location}:${productId}`} storeCode={storeCode} location={location} productId={productId}
-              onSaved={() => setScopeVersion(n => n + 1)} onNext={next} />
+              live={scope.live} refreshScope={() => setScopeVersion(n => n + 1)} onNext={next} />
           : location && <>
             <Input ref={searchBox} autoFocus allowClear value={query} className="pc-count-search"
               aria-label="Search or scan a product" placeholder="搜索名称 / 记账名 / SKU，或扫码 Search or scan"
               onChange={event => setQuery(event.target.value)}
               onPressEnter={() => {
-                openSingle.current = true
-                if (results && results.length === 1 && query.trim()) { openSingle.current = false; setQuery(''); go({ product: results[0].product_id }) }
+                const text = query.trim()
+                // Results of the text before this one are not this text's match.
+                if (text && resultsFor === text && results?.length === 1) { setQuery(''); go({ product: results[0].product_id }) }
+                else openSingle.current = text
               }} />
             {searchError && <Alert type="error" showIcon message={searchError} />}
             {results && (results.length ? <ul className="pc-count-results" aria-label="Products">
@@ -141,7 +146,10 @@ export default function CountPage() {
                     {result.counted ? `已点 ${result.counted}/${result.members}` : '未点'}</span>}
                 </button>
               </li>)}
-            </ul> : <p className="pc-count-quiet">No product matches. Try another word, the 记账名 or the SKU.</p>)}
+            </ul> : <p className="pc-count-quiet">{/^\d{8,}$/.test(query.trim())
+              // No product has a barcode saved yet (2026-10-28), so a scan only finds what was linked.
+              ? '这个条码还没存进 POPCORE · This barcode is not saved in POPCORE yet. Search by name, 记账名 or SKU instead.'
+              : 'No product matches. Try another word, the 记账名 or the SKU.'}</p>)}
             {!scope.live && here && <ProgressPanel storeCode={storeCode} location={location} counted={here.counted}
               onOpen={product => go({ product })} />}
           </>}
@@ -171,10 +179,11 @@ function ProgressPanel({ storeCode, location, counted, onOpen }: { storeCode: st
       : !progress.missing_total ? <p className="pc-count-quiet">Everything POPCORE has here is counted.</p>
       : <>
         <p className="pc-count-quiet">POPCORE has stock here for these, and nobody has counted them yet. Count each one, entering 0 if there is none.
-          {progress.missing.some(item => item.blocks_opening) && ' The ones marked 必点 must be counted before the store can go live.'}</p>
+          {progress.missing.some(item => item.blocks_opening) && ' The ones marked 必点 must be counted before the store can go live.'}
+          {progress.missing.some(item => item.recount) && ' 重点 Recount: its type changed in Products after it was counted here, so count it again.'}</p>
         <ul className="pc-count-missing">
           {progress.missing.map(item => <li key={item.product_id}><button type="button" onClick={() => onOpen(item.product_id)}>
-            <span>{item.name}<small>{item.sku}</small></span>{item.blocks_opening && <em>必点</em>}
+            <span>{item.name}<small>{item.sku}</small></span>{item.blocks_opening && <em>{item.recount ? '重点 Recount' : '必点'}</em>}
           </button></li>)}
         </ul>
         {progress.missing_total > progress.missing.length && <p className="pc-count-quiet">…and {progress.missing_total - progress.missing.length} more.</p>}
@@ -182,8 +191,8 @@ function ProgressPanel({ storeCode, location, counted, onOpen }: { storeCode: st
   </section>
 }
 
-function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
-  storeCode: string; location: string; productId: number; onSaved: () => void; onNext: () => void
+function CountCardPanel({ storeCode, location, productId, live, refreshScope, onNext }: {
+  storeCode: string; location: string; productId: number; live: boolean; refreshScope: () => void; onNext: () => void
 }) {
   const manager = useHasRole('manager')
   const [card, setCard] = useState<CountCard | null>(null)
@@ -192,10 +201,15 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
   const [notice, setNotice] = useState('')
   const [reload, setReload] = useState(0)
   const [values, setValues] = useState<Record<number, number | null>>({})
+  // What this counter typed: only these are saved, so a count shown from earlier is never saved
+  // again in this counter's name, nor over someone else's newer one.
+  const [typed, setTyped] = useState<Record<number, true>>({})
+  // Typed numbers that the next reload keeps (a design was added or removed, or other counts went stale).
+  const keepTyped = useRef<Set<number> | null>(null)
   const [forms, setForms] = useState<Record<number, CountForm>>({})
   const [designsOk, setDesignsOk] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState<SavedCount[] | null>(null)
+  const [saved, setSaved] = useState<SavedCard | null>(null)
   const [newDesigns, setNewDesigns] = useState('')
   const [fixing, setFixing] = useState(false)
   const [newSets, setNewSets] = useState<number | null>(null)
@@ -206,20 +220,30 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
     const controller = new AbortController()
     setError('')
     getCountCard(storeCode, location, productId, controller.signal).then(data => {
+      const keep = keepTyped.current
+      keepTyped.current = null
+      const kept = (id: number) => Boolean(keep?.has(id))
       setCard(data)
-      setValues(Object.fromEntries(data.items.map(item => [item.product_id, item.count?.quantity ?? null])))
-      const chosen: Record<number, CountForm> = {}
-      data.items.forEach(item => {
-        const form = item.stock_form || item.suggested_form
-        if (item.identity_status !== 'verified' && form) chosen[item.product_id] = form
+      setValues(current => Object.fromEntries(data.items.map(item =>
+        [item.product_id, kept(item.product_id) ? current[item.product_id] ?? null : item.count?.quantity ?? null])))
+      setTyped(Object.fromEntries(data.items.filter(item => kept(item.product_id)).map(item => [item.product_id, true])))
+      setForms(current => {
+        const chosen: Record<number, CountForm> = {}
+        data.items.forEach(item => {
+          const form = (kept(item.product_id) && current[item.product_id]) || item.stock_form || item.counted_form || item.suggested_form
+          if (item.identity_status !== 'verified' && form) chosen[item.product_id] = form
+        })
+        return chosen
       })
-      setForms(chosen)
-      setDesignsOk(Boolean(data.designs_checked))
-      setNewSets(null)
-      setBoxesPerSet(data.new_sealed_set?.boxes_per_set ?? null)
+      setDesignsOk(current => Boolean(data.designs_checked) || (keep !== null && current))
+      setNewSets(current => keep && data.new_sealed_set ? current : null)
+      setBoxesPerSet(current => keep && data.new_sealed_set ? current : data.new_sealed_set?.boxes_per_set ?? null)
     }).catch(cause => { if (!controller.signal.aborted) setError(messageOf(cause, 'Unable to load this product.')) })
     return () => controller.abort()
   }, [storeCode, location, productId, reload])
+
+  // The store went live (or its scope changed) while this page was open: update the banner.
+  useEffect(() => { if (card && card.live !== live) refreshScope() }, [card?.live, live])
 
   if (!card) return error ? <Alert type="error" showIcon message={error} action={<Button onClick={() => setReload(n => n + 1)}>Retry</Button>} />
     : <Skeleton active paragraph={{ rows: 4 }} />
@@ -228,7 +252,10 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
   const sets = card.items.filter(item => item.role === 'set')
   const designs = card.items.filter(item => item.role === 'design')
   const changed = () => { key.current = ''; setSaved(null) }
-  const setValue = (item: CountItem, value: number | null) => { changed(); setValues(current => ({ ...current, [item.product_id]: value })) }
+  const touch = (item: CountItem) => setTyped(current => ({ ...current, [item.product_id]: true }))
+  const setValue = (item: CountItem, value: number | null) => {
+    changed(); touch(item); setValues(current => ({ ...current, [item.product_id]: value }))
+  }
   const formOf = (item: CountItem) => item.identity_status === 'verified' ? item.stock_form : forms[item.product_id]
   const amount = (item?: CountItem) => (item && values[item.product_id]) || 0
   const boxesInSets = sets.reduce((sum, item) => sum + amount(item) * (item.boxes_per_set || 0), 0)
@@ -241,20 +268,30 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
   const wantsNewSet = offerSet && (newSets ?? 0) > 0
   const wholeSets = sets.reduce((sum, item) => sum + amount(item), 0) + (offerSet ? newSets || 0 : 0)
   const boxesInWholeSets = boxesInSets + (offerSet ? (newSets || 0) * (boxesPerSet || 0) : 0)
-  const entries: CountEntry[] = card.items.filter(item => values[item.product_id] != null).map(item => ({
+  const entries: CountEntry[] = card.items.filter(item => typed[item.product_id] && values[item.product_id] != null).map(item => ({
     product_id: item.product_id, quantity: values[item.product_id] as number,
     ...(item.identity_status !== 'verified' && forms[item.product_id] ? { stock_form: forms[item.product_id] } : {}),
-    ...(card.live && item.balance_version != null ? { balance_version: item.balance_version } : {}),
+    // The version this card showed: the save is refused if stock moved or someone else counted since.
+    ...(card.live ? { balance_version: item.balance_version } : { count_version: item.count?.version ?? null }),
   }))
   const designsCounted = entries.some(entry => designs.some(item => item.product_id === entry.product_id))
+  const headCounted = Boolean(head && (head.count || entries.some(entry => entry.product_id === head.product_id)))
 
   const save = async () => {
     if (!entries.length && !wantsNewSet) { setError('Enter at least one count. Enter 0 when there are none.'); return }
-    if (wantsNewSet && !(boxesPerSet && boxesPerSet >= 1)) { setError('Enter how many boxes make one whole set (每端几盒).'); return }
+    if (wantsNewSet && !(boxesPerSet && boxesPerSet >= 2)) { setError('Enter how many boxes make one whole set (每端几盒).'); return }
     if (designsCounted && !designsOk) { setError('Tick “款式正确 Designs are right” before counting the designs.'); return }
-    if (head && head.identity_status !== 'verified' && values[head.product_id] != null && !forms[head.product_id]) {
+    // A blank 散盒 next to whole sets or designs would leave POPCORE's boxes here uncounted.
+    if (!card.live && head && !headCounted) {
+      setError(headUnit === 'box' ? '散盒 Enter the single boxes too, 0 if there are none.' : `Enter the count of ${card.title} too, 0 if there are none.`)
+      return
+    }
+    if (head && entries.some(entry => entry.product_id === head.product_id) && head.identity_status !== 'verified' && !forms[head.product_id]) {
       setError('Choose blind box or item first.'); return
     }
+    // Boxes per set is kept on the product; a number the counter typed is checked once more.
+    if (wantsNewSet && boxesPerSet !== card.new_sealed_set?.boxes_per_set
+      && !window.confirm(`每端 ${boxesPerSet} 盒: one whole set of ${card.title} holds ${boxesPerSet} boxes? This is saved to the product.`)) return
     if (!key.current) key.current = countRequestKey()
     setSaving(true)
     setError('')
@@ -266,16 +303,21 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
         ...(wantsNewSet ? { new_sealed_set: { quantity: newSets as number, boxes_per_set: boxesPerSet as number } } : {}),
       }, key.current)
       key.current = ''
-      setSaved(response.results)
-      onSaved()
+      setSaved(response)
+      refreshScope()
       setReload(n => n + 1)
     } catch (cause) {
       const code = codeOf(cause)
-      if (code === 'count_stale') {
+      const typedIds = Object.keys(typed).map(Number)
+      if (code === 'count_stale' || code === 'card_changed') {
+        // Keep what this counter typed, except the products that changed: those are counted again.
+        const stale = (cause as Failure).response?.data?.product_ids || []
+        keepTyped.current = new Set(typedIds.filter(id => !stale.includes(id)))
         key.current = ''
-        setNotice('Stock changed while you were counting (a sale or a move). Count it again.')
+        setNotice(messageOf(cause, 'This card changed while you were counting. Check it and save again.')
+          + (keepTyped.current.size ? ' Your other numbers are still filled in.' : ''))
         setReload(n => n + 1)
-      } else if (code && ['whole_set_changed', 'whole_set_unavailable', 'identity_changed', 'sealed_set_exists'].includes(code)) {
+      } else if (code && ['whole_set_changed', 'whole_set_unavailable', 'identity_changed', 'identity_conflict', 'sealed_set_exists'].includes(code)) {
         // The product changed under this card (another phone added its whole set): show it as it is now.
         key.current = ''
         setNotice(messageOf(cause, 'This product changed while you were counting. Check the card and count again.'))
@@ -291,7 +333,12 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
   const fixDesigns = async (work: () => Promise<unknown>, failure: string) => {
     setFixing(true)
     setError('')
-    try { await work(); changed(); setReload(n => n + 1) } catch (cause) { setError(messageOf(cause, failure)) } finally { setFixing(false) }
+    try {
+      await work()
+      changed()
+      keepTyped.current = new Set(Object.keys(typed).map(Number))
+      setReload(n => n + 1)
+    } catch (cause) { setError(messageOf(cause, failure)) } finally { setFixing(false) }
   }
   const addNew = () => {
     const names = newDesigns.split('\n').map(name => name.trim()).filter(Boolean)
@@ -315,7 +362,7 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
 
     {asksKind && head && <fieldset className="pc-count-kind">
       <legend>这是什么? What is it?</legend>
-      <Radio.Group value={forms[head.product_id]} onChange={event => { changed(); setForms(current => ({ ...current, [head.product_id]: event.target.value })) }}
+      <Radio.Group value={forms[head.product_id]} onChange={event => { changed(); touch(head); setForms(current => ({ ...current, [head.product_id]: event.target.value })) }}
         options={[{ value: 'random_box', label: '盲盒 Blind box (盒)' }, { value: 'ordinary', label: '单品 Item (个)' }]} />
     </fieldset>}
 
@@ -370,20 +417,32 @@ function CountCardPanel({ storeCode, location, productId, onSaved, onNext }: {
     {error && <Alert type="error" showIcon message={error} />}
     {saved && <div className="pc-count-saved" role="status">
       <strong>已保存 Saved</strong>
-      <ul>{saved.map(row => <li key={row.product_id}>
+      <ul>{saved.results.map(row => <li key={row.product_id}>
         <span>{nameOf(row.product_id)}</span>
         <span>{row.popcore_quantity == null ? `点到 ${row.quantity}` : card.live ? `库存 ${row.popcore_quantity} → ${row.quantity}`
           : `POPCORE ${row.popcore_quantity} · 点到 ${row.quantity}`}
-          {row.popcore_quantity != null && row.popcore_quantity !== row.quantity &&
-            <em className={row.quantity > row.popcore_quantity ? 'is-more' : 'is-less'}>{row.quantity > row.popcore_quantity ? '+' : ''}{row.quantity - row.popcore_quantity}</em>}
+          {row.popcore_quantity != null && <Difference counted={row.quantity} popcore={row.popcore_quantity} />}
         </span>
-      </li>)}</ul>
+      </li>)}
+      {saved.boxes && <li>
+        <span>盒合计 All boxes here</span>
+        <span>POPCORE {saved.boxes.popcore} 盒 · 点到 {saved.boxes.counted} 盒<Difference counted={saved.boxes.counted} popcore={saved.boxes.popcore} /></span>
+      </li>}</ul>
     </div>}
     <div className="pc-count-actions">
       <Button onClick={onNext}>{saved ? '下一个 Next' : '返回 Back'}</Button>
       <Button type="primary" loading={saving} onClick={() => void save()}>保存 Save</Button>
     </div>
   </section>
+}
+
+function Difference({ counted, popcore }: { counted: number; popcore: number }) {
+  if (counted === popcore) return null
+  return <em className={counted > popcore ? 'is-more' : 'is-less'}>{counted > popcore ? '+' : ''}{counted - popcore}</em>
+}
+
+const SET_ASIDE: Record<string, string> = {
+  hold: '暂扣 on hold', damaged: '损坏 damaged', trade: '交换 trade', display: '陈列 display', transit: '在途 in transit',
 }
 
 function CountField({ item, label, unit, note, value, onChange, disabled, action }: {
@@ -395,6 +454,7 @@ function CountField({ item, label, unit, note, value, onChange, disabled, action
       <span>{label}</span>
       {note && <small>{note}</small>}
       {item.count && <small>已点 {item.count.quantity} · {item.count.counted_by} {localTime(item.count.counted_at)}</small>}
+      {item.other_stock && <small>另有 {item.other_stock.map(other => `${SET_ASIDE[other.disposition] || other.disposition} ${other.quantity}`).join(' · ')}: not part of this count</small>}
     </label>
     <span className="pc-count-input">
       <InputNumber id={`count-${item.product_id}`} min={0} max={100000} precision={0} inputMode="numeric" disabled={disabled}

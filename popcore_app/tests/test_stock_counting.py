@@ -2,6 +2,7 @@
 one card, and take the store live from those counts. Before go-live a count only records what
 was found; once the store is live a count corrects its stock at once."""
 import io
+import json
 import sys
 from contextlib import closing, redirect_stdout
 from pathlib import Path
@@ -105,9 +106,10 @@ class StockCountingTests(IsolatedApiCase):
         before = self.snapshot(['stock', 'inventory_balances', 'stock_transactions'])
         response = self.save([{'product_id': self.box, 'quantity': 7}, {'product_id': self.set, 'quantity': 1}])
         self.assertEqual(response.status_code, 200, response.get_json())
-        self.assertEqual(response.get_json(), {'live': False, 'results': [
-            {'product_id': self.box, 'quantity': 7, 'previous_count': None, 'popcore_quantity': 5},
-            {'product_id': self.set, 'quantity': 1, 'previous_count': None, 'popcore_quantity': 0},
+        # POPCORE kept whole sets as boxes, so only the box total is compared: 7 + 1 x 12 against 5.
+        self.assertEqual(response.get_json(), {'live': False, 'boxes': {'popcore': 5, 'counted': 19}, 'results': [
+            {'product_id': self.box, 'quantity': 7, 'previous_count': None, 'popcore_quantity': None},
+            {'product_id': self.set, 'quantity': 1, 'previous_count': None, 'popcore_quantity': None},
         ]})
         recount = self.save([{'product_id': self.box, 'quantity': 8}], key='k2').get_json()
         self.assertEqual(recount['results'][0]['previous_count'], 7)
@@ -123,20 +125,37 @@ class StockCountingTests(IsolatedApiCase):
         self.assertEqual(card['items'][0]['count']['quantity'], 8)
 
     def test_designs_are_counted_only_once_they_are_checked(self):
-        unchecked = self.save([{'product_id': self.rider, 'quantity': 2}])
+        entries = [{'product_id': self.box, 'quantity': 0}, {'product_id': self.rider, 'quantity': 2}]
+        unchecked = self.save(entries)
         self.assertEqual((unchecked.status_code, unchecked.get_json()['code']), (400, 'designs_unchecked'))
-        checked = self.save([{'product_id': self.rider, 'quantity': 2}], checked=True, key='k2')
+        checked = self.save(entries, checked=True, key='k2')
         self.assertEqual(checked.status_code, 200, checked.get_json())
         later = self.save([{'product_id': self.lantern, 'quantity': 0}], key='k3')
         self.assertEqual(later.status_code, 200, later.get_json())
         card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
         self.assertEqual(card['designs_checked']['by'], 'someone')
         self.assertEqual({i['product_id']: i.get('count', {}).get('quantity') for i in card['items']},
-                         {self.box: None, self.set: None, self.rider: 2, self.lantern: 0})
+                         {self.box: 0, self.set: None, self.rider: 2, self.lantern: 0})
+
+    def test_whole_sets_or_designs_need_the_single_boxes_counted_too(self):
+        # A blank 散盒 would leave POPCORE's boxes here uncounted, so it has to be a number, 0 included.
+        alone = self.save([{'product_id': self.set, 'quantity': 2}])
+        self.assertEqual((alone.status_code, alone.get_json()['code']), (400, 'head_uncounted'))
+        new_sets = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='k2')
+        self.assertEqual(new_sets.get_json()['code'], 'head_uncounted')
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku='ECHO-1-SET'").fetchone()[0], 0)
+        self.assertEqual(self.save([{'product_id': self.box, 'quantity': 0}], key='k3').status_code, 200)
+        later = self.save([{'product_id': self.set, 'quantity': 2}], key='k4')
+        self.assertEqual(later.status_code, 200, later.get_json())
+        self.assertEqual(later.get_json()['boxes'], {'popcore': 5, 'counted': 24})
+        # Elsewhere in the store the boxes are counted again.
+        upstairs = self.save([{'product_id': self.set, 'quantity': 1}], location='upstairs', key='k5')
+        self.assertEqual(upstairs.get_json()['code'], 'head_uncounted')
 
     def test_counts_must_belong_to_the_card_and_be_whole_numbers(self):
         cases = [
-            ([{'product_id': self.card_item, 'quantity': 1}], 'invalid_input'),
+            ([{'product_id': self.card_item, 'quantity': 1}], 'card_changed'),
             ([{'product_id': self.box, 'quantity': -1}], 'invalid_input'),
             ([{'product_id': self.box, 'quantity': 1.5}], 'invalid_input'),
             ([{'product_id': self.box, 'quantity': 1}, {'product_id': self.box, 'quantity': 2}], 'invalid_input'),
@@ -178,7 +197,9 @@ class StockCountingTests(IsolatedApiCase):
     def test_who_may_count(self):
         entries = [{'product_id': self.box, 'quantity': 1}]
         self.assertEqual(self.save(entries, role='viewer').status_code, 403)
-        self.assertEqual(self.save(entries, role='staff:newcomer', key='n1').get_json()['code'], 'inventory_forbidden')
+        refused = self.save(entries, role='staff:newcomer', key='n1').get_json()
+        self.assertEqual(refused['code'], 'inventory_forbidden')
+        self.assertIn('a shift there today', refused['error'])
         with closing(self.connect()) as con:
             employee = con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|newcomer', 'Newcomer')").lastrowid
             con.execute("""INSERT INTO shifts(employee_id, store_id, date, start_time, end_time, assigned_by)
@@ -220,6 +241,15 @@ class StockCountingTests(IsolatedApiCase):
                             '--empty-location', 'DT-claw', '--empty-location', 'DT-display',
                             '--business-date', '2026-11-01', '--actor-sub', 'auth0|admin', *extra])
 
+    def _review(self):
+        """The go-live dry run's report, also when it finds errors."""
+        report = Path(self.tempdir.name) / 'review.json'
+        try:
+            self._go_live('--report', str(report))
+        except SystemExit:
+            pass
+        return json.loads(report.read_text())
+
     def test_going_live_applies_the_counts_saved_in_the_app(self):
         self._count_the_store()
         review = self._go_live()
@@ -253,8 +283,11 @@ class StockCountingTests(IsolatedApiCase):
         self.assertEqual(result.get_json()['results'], [
             {'product_id': self.box, 'quantity': 6, 'previous_count': None, 'popcore_quantity': 7}])
         stale = self.save([{'product_id': self.box, 'quantity': 5, 'balance_version': version}], key='live-2')
-        self.assertEqual((stale.status_code, stale.get_json()['code']), (409, 'count_stale'))
-        same = self.save([{'product_id': self.box, 'quantity': 6}], key='live-3')
+        self.assertEqual((stale.status_code, stale.get_json()['code'], stale.get_json()['product_ids']),
+                         (409, 'count_stale', [self.box]))
+        fresh = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()['items'][0]
+        same = self.save([{'product_id': self.box, 'quantity': 6, 'balance_version': fresh['balance_version']}],
+                         key='live-3')
         self.assertEqual(same.status_code, 200, same.get_json())
         with closing(self.connect()) as con:
             location = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'",
@@ -324,14 +357,19 @@ class StockCountingTests(IsolatedApiCase):
         card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
         self.assertEqual(([(i['role'], i.get('count', {}).get('quantity')) for i in card['items']], card['new_sealed_set']),
                          ([('box', 5), ('set', 2)], None))
-        # A second phone saving the same box's first whole sets a moment later counts against that set.
-        again = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='k2')
-        self.assertEqual(again.status_code, 200, again.get_json())
+        # A second phone whose card showed no whole set: here the first phone's count stands...
+        same_shelf = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='k2')
+        self.assertEqual((same_shelf.status_code, same_shelf.get_json()['code'], same_shelf.get_json()['product_ids']),
+                         (409, 'count_stale', [whole['id']]))
+        # ...and upstairs it counts against the set the first phone added.
+        upstairs = self.save([{'product_id': self.echo, 'quantity': 0}], location='upstairs', product=self.echo,
+                             new_set={'quantity': 1, 'boxes_per_set': 12}, key='k3')
+        self.assertEqual(upstairs.status_code, 200, upstairs.get_json())
         with closing(self.connect()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku LIKE 'ECHO-1-SET%'").fetchone()[0], 1)
-            self.assertEqual(con.execute('SELECT quantity FROM opening_counts WHERE product_id=?',
-                                         (whole['id'],)).fetchone()[0], 1)
-        changed = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 6}, key='k3')
+            self.assertEqual([r[0] for r in con.execute('SELECT quantity FROM opening_counts WHERE product_id=? '
+                                                        'ORDER BY location_id', (whole['id'],))], [2, 1])
+        changed = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 6}, key='k4')
         self.assertEqual((changed.status_code, changed.get_json()['code']), (409, 'whole_set_changed'))
 
     def test_whole_sets_are_only_added_to_blind_boxes(self):
@@ -339,14 +377,170 @@ class StockCountingTests(IsolatedApiCase):
             (self.card_item, {'quantity': 1, 'boxes_per_set': 6}, 'whole_set_unavailable'),
             (self.echo, {'quantity': 0, 'boxes_per_set': 12}, 'invalid_input'),
             (self.echo, {'quantity': 1, 'boxes_per_set': 0}, 'invalid_input'),
+            (self.echo, {'quantity': 1, 'boxes_per_set': 1}, 'invalid_input'),
             (self.echo, {'quantity': 1}, 'invalid_input'),
         ]):
             response = self.save([], product=product, new_set=new_set, key=f'set-{number}')
             self.assertEqual(response.get_json()['code'], code, new_set)
         with closing(self.connect()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE stock_form='sealed_set'").fetchone()[0], 1)
-        only_sets = self.save([], product=self.echo, new_set={'quantity': 3, 'boxes_per_set': 6}, key='set-ok')
+        only_sets = self.save([{'product_id': self.echo, 'quantity': 0}], product=self.echo,
+                              new_set={'quantity': 3, 'boxes_per_set': 6}, key='set-ok')
         self.assertEqual(only_sets.status_code, 200, only_sets.get_json())
+
+    def test_whole_sets_are_not_offered_without_a_free_set_sku(self):
+        def offer():
+            return self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()['new_sealed_set']
+        with closing(self.connect()) as con:
+            taken = self._product(con, 'ECHO-1-SET', 'Someone else', '周边', 'ordinary', 'piece')
+            con.commit()
+        self.assertIsNone(offer())
+        refused = self.save([{'product_id': self.echo, 'quantity': 0}], product=self.echo,
+                            new_set={'quantity': 1, 'boxes_per_set': 12})
+        self.assertEqual((refused.status_code, refused.get_json()['code']), (409, 'whole_set_unavailable'))
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET sku='OTHER-1' WHERE id=?", (taken,))
+            con.execute("UPDATE products SET sku='' WHERE id=?", (self.echo,))
+            con.commit()
+        self.assertIsNone(offer())
+
+    def test_a_card_opened_before_someone_else_saved_does_not_overwrite_their_count(self):
+        def shown(product):
+            card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+            return next(item.get('count', {}).get('version') for item in card['items'] if item['product_id'] == product)
+        self.assertIsNone(shown(self.box))
+        first = self.save([{'product_id': self.box, 'quantity': 7, 'count_version': None}])
+        self.assertEqual(first.status_code, 200, first.get_json())
+        # Another phone's card still shows no count of the box.
+        late = self.save([{'product_id': self.box, 'quantity': 5, 'count_version': None},
+                          {'product_id': self.set, 'quantity': 1, 'count_version': None}], key='k2')
+        self.assertEqual((late.status_code, late.get_json()['code'], late.get_json()['product_ids']),
+                         (409, 'count_stale', [self.box]))
+        with closing(self.connect()) as con:
+            self.assertEqual([tuple(r) for r in con.execute('SELECT product_id, quantity FROM opening_counts')],
+                             [(self.box, 7)])
+        # Counted again on the reloaded card, it saves.
+        again = self.save([{'product_id': self.box, 'quantity': 5, 'count_version': shown(self.box)},
+                           {'product_id': self.set, 'quantity': 1, 'count_version': None}], key='k3')
+        self.assertEqual(again.status_code, 200, again.get_json())
+        self.assertEqual(again.get_json()['results'][0]['previous_count'], 7)
+
+    def test_a_card_opened_before_go_live_cannot_change_live_stock(self):
+        self._count_the_store()
+        self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
+        before = self.snapshot(['inventory_balances', 'inventory_counts'])
+        # A card loaded before the store went live has saved counts and no balance versions.
+        blind = self.save([{'product_id': self.box, 'quantity': 3, 'count_version': 9},
+                           {'product_id': self.set, 'quantity': 0}], key='late')
+        self.assertEqual((blind.status_code, blind.get_json()['code'], blind.get_json()['product_ids']),
+                         (409, 'count_stale', sorted([self.box, self.set])))
+        self.assertIn('went live', blind.get_json()['error'])
+        self.assertEqual(self.snapshot(['inventory_balances', 'inventory_counts']), before)
+
+    def test_a_live_card_names_only_the_products_whose_stock_moved(self):
+        self._count_the_store()
+        self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
+        card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+        versions = {item['product_id']: item['balance_version'] for item in card['items']}
+        moved = self.save([{'product_id': self.rider, 'quantity': 1, 'balance_version': versions[self.rider]}],
+                          key='sale')
+        self.assertEqual(moved.status_code, 200, moved.get_json())
+        stale = self.save([{'product_id': product, 'quantity': 1, 'balance_version': versions[product]}
+                           for product in (self.box, self.set, self.rider)], key='mine')
+        self.assertEqual((stale.status_code, stale.get_json()['product_ids']), (409, [self.rider]))
+        self.assertIn('Warmth Rider', stale.get_json()['error'])
+
+    def test_a_live_whole_set_added_by_another_phone_is_counted_again(self):
+        self._count_the_store()
+        self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
+        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        box = {'product_id': self.echo, 'quantity': 2, 'balance_version': card['items'][0]['balance_version']}
+        first = self.save([box], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='a')
+        self.assertEqual(first.status_code, 200, first.get_json())
+        late = self.save([], product=self.echo, new_set={'quantity': 3, 'boxes_per_set': 12}, key='b')
+        whole = next(r['product_id'] for r in first.get_json()['results'] if r['product_id'] != self.echo)
+        self.assertEqual((late.status_code, late.get_json()['product_ids']), (409, [whole]))
+        self.assertIn('Someone just added the whole set', late.get_json()['error'])
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("""SELECT SUM(quantity) FROM inventory_balances
+                                            WHERE product_id=? AND disposition='saleable'""", (whole,)).fetchone()[0], 1)
+
+    def test_a_live_card_shows_units_not_counted_as_sellable(self):
+        self._count_the_store()
+        self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
+        with closing(self.connect()) as con:
+            floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'",
+                                (self.dt,)).fetchone()[0]
+            con.execute("""INSERT INTO inventory_balances(product_id, location_id, disposition, quantity, version)
+                           VALUES (?, ?, 'hold', 2, 1)""", (self.box, floor))
+            con.commit()
+        items = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()['items']
+        self.assertEqual([(i['product_id'], i.get('other_stock')) for i in items if i.get('other_stock')],
+                         [(self.box, [{'disposition': 'hold', 'quantity': 2}])])
+
+    def test_whats_left_marks_what_going_live_needs(self):
+        def left(location):
+            progress = self.get('/api/counting/progress', location=location).get_json()
+            return {item['product_id']: (item['blocks_opening'], item.get('recount', False))
+                    for item in progress['missing']}
+        self.assertEqual(left('floor')[self.product_id], (False, False))
+        # Counted upstairs, going live verifies it, so its POPCORE stock on the floor must be counted too.
+        upstairs = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'ordinary'}],
+                             location='upstairs', product=self.product_id)
+        self.assertEqual(upstairs.status_code, 200, upstairs.get_json())
+        self.assertEqual(left('floor')[self.product_id], (True, False))
+        # Set up as another form in Products after it was counted: count it again.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET stock_form='random_box', stock_unit='box', identity_status='verified' "
+                        'WHERE id=?', (self.product_id,))
+            con.commit()
+        self.assertEqual(left('upstairs')[self.product_id], (True, True))
+        self.assertIn('identity_changed', {error['code'] for error in self._review()['errors']})
+
+    def test_an_untyped_product_keeps_the_form_it_was_first_counted_as(self):
+        floor = self.save([{'product_id': self.product_id, 'quantity': 2, 'stock_form': 'random_box'}],
+                          product=self.product_id)
+        self.assertEqual(floor.status_code, 200, floor.get_json())
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.product_id).get_json()
+        self.assertEqual(card['items'][0]['counted_form'], 'random_box')
+        other = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'ordinary'}],
+                          location='upstairs', product=self.product_id, key='k2')
+        self.assertEqual((other.status_code, other.get_json()['code']), (409, 'identity_conflict'))
+        self.assertIn('DT', other.get_json()['error'])
+        same = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'random_box'}],
+                         location='upstairs', product=self.product_id, key='k3')
+        self.assertEqual(same.status_code, 200, same.get_json())
+        # Counted as an item at one place, it gets no whole set (which would make it a blind box) at another.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET product_type='' WHERE id=?", (self.card_item,))
+            con.commit()
+        item = self.save([{'product_id': self.card_item, 'quantity': 1, 'stock_form': 'ordinary'}],
+                         location='upstairs', product=self.card_item, key='k4')
+        self.assertEqual(item.status_code, 200, item.get_json())
+        boxed = self.save([{'product_id': self.card_item, 'quantity': 0, 'stock_form': 'random_box'}],
+                          product=self.card_item, new_set={'quantity': 1, 'boxes_per_set': 6}, key='k5')
+        self.assertEqual((boxed.status_code, boxed.get_json()['code']), (409, 'identity_conflict'))
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku='HANG-1-SET'").fetchone()[0], 0)
+        self.assertNotIn('identity_conflict', {error['code'] for error in self._review()['errors']})
+
+    def test_every_product_is_on_its_own_card(self):
+        with closing(self.connect()) as con:
+            # Not a design, yet inside the Warmth series; and a design whose series no product owns.
+            con.execute('UPDATE products SET series_id=? WHERE id=?', (self.series, self.card_item))
+            loose = con.execute("INSERT INTO product_series(name) VALUES ('Loose')").lastrowid
+            orphan = self._product(con, 'LOOSE-01', 'Loose One', '盲盒', 'confirmed_design', 'piece',
+                                   series=loose, design='One')
+            con.commit()
+            products = [row[0] for row in con.execute('SELECT id FROM products')]
+        for product in products:
+            card = self.get('/api/counting/card', location='floor', product_id=product).get_json()
+            self.assertIn(product, [item['product_id'] for item in card['items']], card)
+        self.assertEqual([(r['product_id'], r['kind']) for r in self.search('hanging card')],
+                         [(self.card_item, 'item')])
+        self.assertEqual([r['kind'] for r in self.search('loose one')], ['series'])
+        self.assertEqual(self.get('/api/counting/card', location='floor', product_id=orphan).get_json()['title'],
+                         'Loose')
 
     def test_a_mistyped_design_can_be_removed_with_its_count(self):
         self.save([{'product_id': self.rider, 'quantity': 1}], checked=True)

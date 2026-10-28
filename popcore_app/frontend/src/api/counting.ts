@@ -31,8 +31,13 @@ export interface CountItem {
   image: string | null
   boxes_per_set?: number
   suggested_form?: CountForm | null
+  // An unverified product already counted in this store keeps that form (going live verifies one).
+  counted_form?: CountForm
   balance_version?: number
-  count?: { quantity: number; counted_at: string; counted_by: string }
+  // A live store's held or damaged units here, which a count of sellable stock leaves out.
+  other_stock?: Array<{ disposition: string; quantity: number }>
+  // version: the saved count this card shows, so a save notices someone else's newer count.
+  count?: { quantity: number; counted_at: string; counted_by: string; version: number }
 }
 
 export interface CountCard {
@@ -47,12 +52,16 @@ export interface CountCard {
   new_sealed_set: { boxes_per_set: number | null } | null
 }
 
-export interface CountEntry { product_id: number; quantity: number; stock_form?: CountForm; balance_version?: number }
+export interface CountEntry {
+  product_id: number; quantity: number; stock_form?: CountForm; balance_version?: number; count_version?: number | null
+}
 export interface SavedCount { product_id: number; quantity: number; previous_count: number | null; popcore_quantity: number | null }
+// boxes: a blind box with whole sets, compared as all its boxes here (POPCORE kept whole sets as boxes).
+export interface SavedCard { live: boolean; results: SavedCount[]; boxes?: { popcore: number; counted: number } }
 export interface CountProgress {
   live: boolean
   counted: number
-  missing: Array<{ product_id: number; name: string; sku: string; blocks_opening: boolean }>
+  missing: Array<{ product_id: number; name: string; sku: string; blocks_opening: boolean; recount?: boolean }>
   missing_total: number
 }
 
@@ -80,7 +89,7 @@ export async function saveCount(
   },
   key: string,
 ) {
-  return (await client.post('/counting/counts', body, { headers: { 'Idempotency-Key': key } })).data as { live: boolean; results: SavedCount[] }
+  return (await client.post('/counting/counts', body, { headers: { 'Idempotency-Key': key } })).data as SavedCard
 }
 
 export async function addDesigns(productId: number, names: string[], key: string) {

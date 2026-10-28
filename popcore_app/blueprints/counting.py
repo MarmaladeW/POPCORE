@@ -15,9 +15,9 @@ def _answer(work):
     try:
         return jsonify(work(get_db()))
     except InventoryError as exc:
-        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
-    except PermissionError:
-        return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
+        return jsonify({'error': str(exc), 'code': exc.code, **getattr(exc, 'details', {})}), exc.status
+    except PermissionError as exc:
+        return jsonify({'error': str(exc) or 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
     except ValueError as exc:
         return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
 
