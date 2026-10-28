@@ -49,7 +49,7 @@ interface Product {
 }
 
 interface StockRow {
-  product_id:  number
+  id:           number  // /api/stock rows are keyed by the product's id
   upstairs_qty: number
   instore_qty:  number
 }
@@ -235,7 +235,7 @@ export default function ProductsPage() {
       if (requestId !== requestRef.current) return
       const m = new Map<number, number>()
       ;(stockR.data as StockRow[]).forEach(r => {
-        m.set(r.product_id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
+        m.set(r.id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
       })
       setStockMap(m)
     }).catch(() => {
