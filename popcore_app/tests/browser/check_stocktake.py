@@ -77,8 +77,8 @@ async def run(browser, width):
         await result.click()
         card = page.get_by_role('region', name='Count Warmth 盲盒')
         await expect(card.get_by_label(re.compile('^Rider'))).to_be_disabled()
-        await card.get_by_label(re.compile('^整端 Sealed sets')).fill('1')
-        await card.get_by_label(re.compile('^散盒 Loose boxes')).fill('7')
+        await card.get_by_label(re.compile('^整端 Whole sets')).fill('1')
+        await card.get_by_label(re.compile('^散盒 Single boxes')).fill('7')
         await card.get_by_role('checkbox', name='款式正确 Designs are right').check()
         await card.get_by_label(re.compile('^Rider')).fill('2')
         await card.get_by_label(re.compile('^Lantern')).fill('0')
@@ -107,18 +107,37 @@ async def run(browser, width):
         await search.fill(BARCODE)
         await search.press('Enter')
         card = page.get_by_role('region', name='Count Warmth 盲盒')
-        await expect(card.get_by_label(re.compile('^散盒 Loose boxes'))).to_have_value('7')
+        await expect(card.get_by_label(re.compile('^散盒 Single boxes'))).to_have_value('7')
         await expect(card.get_by_role('checkbox', name='款式正确 Designs are right')).to_be_disabled()
         await card.get_by_role('button', name='返回 Back').click()
 
-        # An unverified item: the counter confirms what it is (suggested from its type) and counts it.
+        # The product type decides: a 吊卡 is counted in pieces, without asking what it is.
         await search.fill('hanging')
         await page.get_by_role('button', name=re.compile('^Hanging Card Bear')).click()
         card = page.get_by_role('region', name='Count Hanging Card Bear')
-        await expect(card.get_by_role('radio', name='单品 Item (个)')).to_be_checked()
-        await card.get_by_label(re.compile('^数量 Count')).fill('4')
+        await expect(card.get_by_text('这是什么? What is it?')).to_have_count(0)
+        await expect(card.get_by_label(re.compile('^整端 Whole sets'))).to_have_count(0)
+        await card.get_by_label(re.compile('^数量 Pieces')).fill('4')
         await card.get_by_role('button', name='保存 Save').click()
         await expect(card.get_by_role('status')).to_contain_text('POPCORE 3 · 点到 4')
+        await card.get_by_role('button', name='下一个 Next').click()
+
+        # A 盲盒 with no whole set yet: whole sets and single boxes; the first whole-set count adds the set.
+        await search.fill('echo')
+        await page.get_by_role('button', name=re.compile('^Echo')).click()
+        card = page.get_by_role('region', name='Count Echo')
+        await expect(card.get_by_text('这是什么? What is it?')).to_have_count(0)
+        await expect(card.get_by_label(re.compile('^每端几盒 Boxes per set'))).to_have_value('12')
+        await card.get_by_label(re.compile('^整端 Whole sets')).fill('2')
+        await card.get_by_label(re.compile('^散盒 Single boxes')).fill('5')
+        await expect(card.get_by_text('合计 Total: 2 端 (24 盒) + 5 盒')).to_be_visible()
+        await fits(page, f'whole-set-{width}.png')
+        await card.get_by_role('button', name='保存 Save').click()
+        await expect(card.get_by_role('status')).to_contain_text('已保存 Saved')
+        assert rows("SELECT p.sku, oc.quantity FROM opening_counts oc JOIN products p ON p.id=oc.product_id "
+                    "WHERE p.sku LIKE 'ECHO-1%' ORDER BY p.sku") == [('ECHO-1', 5), ('ECHO-1-SET', 2)]
+        await expect(card.get_by_label(re.compile('^每端几盒 Boxes per set'))).to_have_count(0)
+        await expect(card.get_by_label(re.compile('^整端 Whole sets'))).to_have_value('2')
         await card.get_by_role('button', name='下一个 Next').click()
 
         # What is left: POPCORE stock here with no count yet.
@@ -152,7 +171,7 @@ async def run(browser, width):
         await search.fill('warmth')
         await page.get_by_role('button', name=re.compile('^Warmth 盲盒')).click()
         card = page.get_by_role('region', name='Count Warmth 盲盒')
-        await card.get_by_label(re.compile('^散盒 Loose boxes')).fill('6')
+        await card.get_by_label(re.compile('^散盒 Single boxes')).fill('6')
         await card.get_by_role('button', name='保存 Save').click()
         await expect(card.get_by_role('status')).to_contain_text('库存 7 → 6')
         assert rows("""SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id

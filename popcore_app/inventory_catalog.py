@@ -331,6 +331,29 @@ def add_designs(con, product_id, data, *, actor, request_key):
         raise
 
 
+def sealed_set_for(con, product_id, boxes):
+    """Give a blind box its 整端 sealed set (SKU <product SKU>-SET), 1 set = `boxes` boxes, inside the
+    caller's transaction; returns the set's product id. An untyped product becomes a verified blind
+    box here, since only blind boxes come in sealed sets."""
+    product = _parent_product(con, product_id)
+    if con.execute('SELECT 1 FROM product_conversions WHERE target_product_id=?', (product_id,)).fetchone():
+        raise InventoryConflict('This product already has a sealed set', 'sealed_set_exists')
+    if product['stock_form'] not in (None, 'random_box'):
+        raise InventoryConflict('Only a blind box can have a sealed set', 'not_blind_box')
+    if (product['stock_form'], product['identity_status']) != ('random_box', 'verified'):
+        update_product_identity(con, product_id, {'stock_form': 'random_box', 'stock_unit': 'box',
+                                                  'identity_status': 'verified'})
+    con.execute('UPDATE products SET boxes_per_dan=? WHERE id=?', (boxes, product_id))
+    item = sealed_set_item(product, boxes)
+    if not item['set_sku'] or con.execute('SELECT 1 FROM products WHERE sku=?', (item['set_sku'],)).fetchone():
+        raise InventoryConflict(f"{item['set_sku'] or 'A SKU'} is already taken", 'sku_taken')
+    try:
+        # A sealed set is a variation, not a reason to become a series.
+        return create_sealed_set(con, {**item, 'series_id': product['series_id']})['set_product_id']
+    except CatalogConflict as exc:
+        raise InventoryConflict(str(exc), exc.code) from exc
+
+
 def add_sealed_set(con, product_id, data, *, actor, request_key):
     """Give a blind box its 整端 sealed set (SKU <product SKU>-SET), 1 set = N boxes.
 
@@ -348,21 +371,9 @@ def add_sealed_set(con, product_id, data, *, actor, request_key):
         if prior is not None:
             con.commit()
             return prior
-        product = _parent_product(con, product_id)
-        if con.execute('SELECT 1 FROM product_conversions WHERE target_product_id=?', (product_id,)).fetchone():
-            raise InventoryConflict('This product already has a sealed set', 'sealed_set_exists')
-        if product['stock_form'] not in (None, 'random_box'):
-            raise InventoryConflict('Only a blind box can have a sealed set', 'not_blind_box')
-        series_id = product['series_id']  # a sealed set is a variation, not a reason to become a series
-        if (product['stock_form'], product['identity_status']) != ('random_box', 'verified'):
-            update_product_identity(con, product_id, {'stock_form': 'random_box', 'stock_unit': 'box',
-                                                      'identity_status': 'verified'})
-        con.execute('UPDATE products SET boxes_per_dan=? WHERE id=?', (boxes, product_id))
-        item = sealed_set_item(product, boxes)
-        if not item['set_sku'] or con.execute('SELECT 1 FROM products WHERE sku=?', (item['set_sku'],)).fetchone():
-            raise InventoryConflict(f"{item['set_sku'] or 'A SKU'} is already taken", 'sku_taken')
-        created = create_sealed_set(con, {**item, 'series_id': series_id})
-        result = {'product_id': product_id, 'series_id': series_id, 'set_product_id': created['set_product_id']}
+        set_id = sealed_set_for(con, product_id, boxes)
+        series_id = con.execute('SELECT series_id FROM products WHERE id=?', (product_id,)).fetchone()['series_id']
+        result = {'product_id': product_id, 'series_id': series_id, 'set_product_id': set_id}
         _remember(con, key, 'product_sealed_set', product_id, actor, digest, result)
         con.commit()
         return result

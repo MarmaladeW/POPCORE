@@ -34,6 +34,8 @@
 .pc-count-input .ant-input-number { width: 96px; }
 .pc-count-input .ant-input-number-input { min-height: 44px; font-size: 18px; text-align: right; font-variant-numeric: tabular-nums; }
 .pc-count-unit { width: 18px; color: var(--text-secondary); }
+.pc-count-per-set { min-height: 44px; }
+.pc-count-per-set label span { color: var(--text-secondary); font-size: 14px; }
 .pc-count-designs { display: grid; gap: 4px; padding-top: 12px; border-top: 1px solid var(--line-hair, #eceef1); }
 .pc-count-designs-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .pc-count-designs-head h3 { margin: 0; font-size: 1rem; }
