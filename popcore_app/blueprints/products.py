@@ -20,7 +20,8 @@ from catalog_identity import (
     CatalogConflict, add_conversion, assign_barcode, product_alias_text_sql,
     product_search_text_sql, resolve_barcode, update_product_identity,
 )
-from inventory_commands import require_inventory_access
+from goods_operations import _remember, _replay
+from inventory_commands import InventoryConflict, require_inventory_access
 from inventory_opening import (
     OpeningCountError, count_sheet_csv, count_sheet_rows, find_location,
 )
@@ -732,6 +733,20 @@ def create_product():
 
     con = get_db()
     cur = con.cursor()
+    # On a weak connection Create is pressed again after a lost response: the same request key
+    # returns the product the first press made instead of adding it twice.
+    request_key = (request.headers.get('Idempotency-Key') or '').strip()
+    if request_key:
+        con.execute('BEGIN IMMEDIATE')
+        try:
+            request_key, digest, prior = _replay(con, request_key, 'product_create', request.jwt_payload, data)
+        except InventoryConflict as exc:
+            con.close()
+            return jsonify({'error': 'This form was already saved as a product. Close it and find the product '
+                                     'in the list (sort by 最新添加 Newest added).', 'code': exc.code}), 409
+        if prior is not None:
+            con.close()
+            return jsonify(prior), 201
 
     if not sku:
         code = _brand_code(con, brand, ip_series)
@@ -762,13 +777,16 @@ def create_product():
               brand, release_date, edition_size, channel, hidden, style_notes, notes,
               boxes_per_dan, search_blob))
         new_id = cur.lastrowid
+        result = {'ok': True, 'id': new_id, 'sku': sku}
+        if request_key:
+            _remember(con, request_key, 'product_create', new_id, request.jwt_payload, digest, result)
         con.commit()
     except sqlite3.IntegrityError:
         con.close()
         return jsonify({'error': f'SKU {sku} 已存在'}), 409
 
     con.close()
-    return jsonify({'ok': True, 'id': new_id, 'sku': sku}), 201
+    return jsonify(result), 201
 
 
 @bp.route('/api/series')
