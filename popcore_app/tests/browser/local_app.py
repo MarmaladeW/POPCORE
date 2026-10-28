@@ -7,7 +7,6 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -39,6 +38,7 @@ def main():
     from flask import Flask
     from blueprints import closing, goods, inventory, payments, products, reports
     from blueprints import restock, sale_documents, sales, schedule, stock, stores, trades, today
+    from checkout_access import business_date
 
     secret = os.environ.get('POPCORE_FIXTURE_SECRET', 'build6-local-key-only')
     def decode_fixture(token):
@@ -75,9 +75,11 @@ def main():
                 (f'auth0|{subject}', subject.title(), f'{subject}@example.invalid')).lastrowid
             con.execute('INSERT OR IGNORE INTO employee_stores(employee_id,store_id) VALUES (?,?)',
                         (employee_id, stores_by_code['DT']))
+            # Today's shift on the Toronto business date the closing rules use; a UTC runner's
+            # date.today() is already tomorrow from 20:00 Toronto.
             if subject.startswith('staff'):
                 con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,notes,store_id,position)
-                    VALUES (?,?,?,?,?,?,?,?)""", (employee_id,date.today().isoformat(),'09:00','17:00',
+                    VALUES (?,?,?,?,?,?,?,?)""", (employee_id,business_date(),'09:00','17:00',
                     'auth0|manager','Pilot shift',stores_by_code['DT'],'Floor'))
         con.commit()
     finally:
