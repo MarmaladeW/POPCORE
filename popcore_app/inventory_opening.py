@@ -1,8 +1,9 @@
 """Count sheets and reviewed opening-count intake for real inventory activation.
 
 The public commands route never posts an opening. Opening counts enter only
-through ``scripts/inventory_opening.py``, which reviews completed count files
-here and applies them as one opening document inside a held write lock. Each
+through ``scripts/inventory_opening.py``, which reviews completed count files,
+or the counts saved in the app's 盘点 Count screen, here and applies them as
+one opening document inside a held write lock. Each
 store goes live with its own opening, and a counted product that is not yet
 verified is verified by the stock form written on its count row.
 """
@@ -158,6 +159,32 @@ def read_count_file(path):
             values['_row'] = reader.line_num
             rows.append(values)
         return rows
+
+
+def app_count_rows(con, stores=None):
+    """Counts saved in the app (盘点 Count) as count-sheet rows, so going live reviews and applies
+    them exactly like count files. ``stores`` limits them to the stores going live."""
+    codes = {code.strip().upper() for code in (stores or ())}
+    rows = []
+    for row in con.execute(
+        """SELECT s.code AS store, l.code AS location, p.id AS product_id, p.sku,
+                  oc.stock_form, oc.quantity
+           FROM opening_counts oc JOIN inventory_locations l ON l.id=oc.location_id
+           JOIN stores s ON s.id=l.store_id JOIN products p ON p.id=oc.product_id
+           ORDER BY s.code, l.id, p.id"""
+    ):
+        if codes and row['store'] not in codes:
+            continue
+        rows.append({
+            'store': row['store'], 'location': row['location'], 'product_id': str(row['product_id']),
+            'sku': row['sku'] or '',
+            # The form it was counted as: an unverified product is verified as it, and a product whose
+            # identity changed after it was counted is flagged rather than read in another unit.
+            'stock_form': row['stock_form'],
+            'unit': '', 'count': str(row['quantity']), 'notes': '',
+            '_file': 'app', '_row': f"{row['store']}-{row['location']} #{row['product_id']}",
+        })
+    return rows
 
 
 def _unsheeted(value):
@@ -573,13 +600,14 @@ def connect(path, *, read_only):
 
 def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path,
                          empty_locations=(), reason=DEFAULT_OPENING_REASON,
-                         busy_timeout_ms=5000, stores=None):
+                         busy_timeout_ms=5000, stores=None, app_counts=False):
     """Back up, verify counted identities, post one opening document, verify
     every location of the opening stores, then commit.
 
     The write lock is taken before review and held through commit, so no app
     writer can change stock between the reviewed comparison, the backup and
-    the posting. Any failed check rolls the whole cutover back.
+    the posting. With ``app_counts`` the counts saved in the app for ``stores``
+    are read under that lock too. Any failed check rolls the whole cutover back.
     """
     if not actor_sub or not business_date:
         raise OpeningCountError('apply needs an actor and a business date', 'invalid_input')
@@ -592,6 +620,8 @@ def apply_opening_counts(db_path, rows, *, actor_sub, business_date, backup_path
     try:
         con.execute(f'PRAGMA busy_timeout={int(busy_timeout_ms)}')
         con.execute('BEGIN IMMEDIATE')
+        if app_counts:
+            rows = [*rows, *app_count_rows(con, stores)]
         review = review_opening_counts(
             con, rows, empty_locations=empty_locations, actor_sub=actor_sub,
             business_date=business_date, reason=reason, stores=stores,

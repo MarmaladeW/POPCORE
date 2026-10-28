@@ -20,13 +20,14 @@ export function useHasClaw() {
 }
 
 const links: Array<{ to: string; zh: string; en: string; icon: IconName; claw?: boolean }> = [
+  { to: '/count', zh: '盘点', en: 'Stocktake', icon: 'check' },
   { to: '/goods/receiving', zh: '入库', en: 'Receive', icon: 'in' },
   { to: '/goods/transfers', zh: '调拨', en: 'Transfer', icon: 'swap' },
   { to: '/stock/count', zh: '晚盘', en: 'Count', icon: 'count' },
   { to: '/stock/claw', zh: '娃娃机', en: 'Claw machine', icon: 'gift', claw: true },
 ]
 
-// Inventory's tools (Figma: 入库 · 调拨 · 晚盘 in the header on desktop, a row on phone).
+// Inventory's tools (Figma: 入库 · 调拨 · 晚盘 in the header on desktop, a row on phone), with 盘点 first.
 export default function InventoryNav({ hasClaw, phone }: { hasClaw: boolean; phone: boolean }) {
   const path = useLocation().pathname
   return <nav className={phone ? 'pc-inv-nav pc-inv-nav-phone' : 'pc-inv-nav'} aria-label="Inventory sections">

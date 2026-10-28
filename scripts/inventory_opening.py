@@ -1,7 +1,9 @@
 """Export opening count sheets and review or apply completed opening counts.
 
 Dry-run is the default: the database is opened read-only and a JSON report
-compares every count with legacy stock. ``--store`` opens one store at a time
+compares every count with legacy stock. Counts come from completed count CSV
+files, from the app's 盘点 Count screen (``--from-app``), or both. ``--store``
+opens one store at a time
 (default: every store not live yet). ``--apply`` additionally needs a
 business date, an admin Auth0 subject with inventory access to the opening
 stores, and a new backup path; see docs/inventory-core.md (Opening counts).
@@ -24,7 +26,7 @@ os.environ.setdefault('DISABLE_SCHEDULER', '1')
 
 from inventory_opening import (  # noqa: E402
     COUNT_SHEET_SCOPES, DEFAULT_OPENING_REASON, OpeningCountError,
-    apply_opening_counts, connect, count_sheet_csv, count_sheet_rows,
+    app_count_rows, apply_opening_counts, connect, count_sheet_csv, count_sheet_rows,
     read_count_file, review_opening_counts,
 )
 
@@ -50,9 +52,17 @@ def export_sheet(args):
 
 def intake(args):
     database = _existing_database(args.db)
+    if not args.counts and not args.from_app:
+        raise SystemExit('give completed count files, or --from-app for the counts saved in the app')
+    if args.from_app and not args.store:
+        raise SystemExit('--from-app needs --store, the store going live (e.g. --store DT)')
     rows = []
     for path in args.counts:
         rows.extend(read_count_file(path))
+    app_rows = 0
+    if args.from_app:
+        with closing(connect(database, read_only=True)) as con:
+            app_rows = len(app_count_rows(con, args.store))
     if args.apply:
         missing = [flag for flag, value in (('--business-date', args.business_date),
                                             ('--actor-sub', args.actor_sub),
@@ -63,12 +73,14 @@ def intake(args):
             database, rows, actor_sub=args.actor_sub,
             business_date=date.fromisoformat(args.business_date).isoformat(),
             backup_path=args.backup, empty_locations=args.empty_location,
-            reason=args.reason, stores=args.store,
+            reason=args.reason, stores=args.store, app_counts=args.from_app,
         )
     else:
         business_date = date.fromisoformat(
             args.business_date or date.today().isoformat()).isoformat()
         with closing(connect(database, read_only=True)) as con:
+            if args.from_app:
+                rows.extend(app_count_rows(con, args.store))
             report = review_opening_counts(
                 con, rows, empty_locations=args.empty_location,
                 actor_sub=args.actor_sub, business_date=business_date,
@@ -78,6 +90,7 @@ def intake(args):
         report['dry_run'] = True
     report['database'] = str(database)
     report['count_files'] = [str(path) for path in args.counts]
+    report['app_counts'] = app_rows if args.from_app else None
     text = json.dumps(report, indent=2, ensure_ascii=False, default=str)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +115,9 @@ def main(argv=None):
 
     review = commands.add_parser('intake', help='review (default) or apply completed counts')
     review.add_argument('--db', type=Path, required=True)
-    review.add_argument('counts', type=Path, nargs='+', help='completed count CSV files')
+    review.add_argument('counts', type=Path, nargs='*', help='completed count CSV files')
+    review.add_argument('--from-app', action='store_true',
+                        help="also use the counts saved in the app's 盘点 Count screen for --store")
     review.add_argument('--store', action='append', default=[], metavar='STORE',
                         help='store going live with these counts, e.g. DT (repeatable; '
                              'default: every store not live yet)')

@@ -1,0 +1,55 @@
+/* 盘点 Count: one location at a time, search or scan, then one card per product. Phone first. */
+.pc-count { display: grid; gap: 14px; max-width: 720px; }
+.pc-count-places { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-count-places button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; font: inherit; color: var(--text-primary); background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; cursor: pointer; }
+.pc-count-places button.is-on { color: var(--text-on-ink); background: var(--surface-ink); border-color: var(--surface-ink); }
+.pc-count-places small { color: inherit; opacity: .75; font-variant-numeric: tabular-nums; }
+.pc-count-mode { margin: 0; font-size: 13px; color: var(--text-secondary); }
+.pc-count-mode.is-live { color: var(--status-restock-ink); }
+.pc-count-search.ant-input-affix-wrapper { min-height: 48px; font-size: 16px; }
+.pc-count-quiet { margin: 0; color: var(--text-secondary); font-size: 13px; }
+.pc-count-results, .pc-count-missing { display: grid; margin: 0; padding: 0; list-style: none; background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; }
+.pc-count-results li + li, .pc-count-missing li + li { border-top: 1px solid var(--line-hair, #eceef1); }
+.pc-count-results button, .pc-count-missing button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 8px 12px; font: inherit; text-align: left; color: inherit; background: none; border: 0; cursor: pointer; }
+.pc-count-result-text { display: grid; flex: 1; min-width: 0; }
+.pc-count-result-text strong { overflow-wrap: anywhere; }
+.pc-count-result-text small, .pc-count-missing small { color: var(--text-secondary); }
+.pc-count-done { flex: none; font-size: 12px; color: var(--text-tertiary); }
+.pc-count-done.is-done { color: var(--status-ok-ink); }
+.pc-count-progress { display: grid; gap: 10px; }
+.pc-count-progress-toggle { justify-self: start; min-height: 44px; padding: 0; font: inherit; color: var(--text-secondary); background: none; border: 0; cursor: pointer; }
+.pc-count-missing button span { display: grid; flex: 1; }
+.pc-count-missing em { flex: none; font-style: normal; font-size: 12px; color: var(--status-out-ink); }
+.pc-count-card { display: grid; gap: 12px; padding: 16px; background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; }
+.pc-count-card-head { display: flex; gap: 12px; align-items: center; }
+.pc-count-card-head h2 { margin: 0; font-size: 1.125rem; overflow-wrap: anywhere; }
+.pc-count-card-head p { margin: 2px 0 0; color: var(--text-secondary); font-size: 13px; }
+.pc-count-kind { margin: 0; padding: 0; border: 0; }
+.pc-count-kind legend { margin-bottom: 6px; font-size: 13px; color: var(--text-secondary); }
+.pc-count-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; }
+.pc-count-field label { display: grid; min-width: 0; }
+.pc-count-field label span { overflow-wrap: anywhere; }
+.pc-count-field label small { color: var(--text-secondary); font-size: 12px; }
+.pc-count-input { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.pc-count-input .ant-input-number { width: 96px; }
+.pc-count-input .ant-input-number-input { min-height: 44px; font-size: 18px; text-align: right; font-variant-numeric: tabular-nums; }
+.pc-count-unit { width: 18px; color: var(--text-secondary); }
+.pc-count-designs { display: grid; gap: 4px; padding-top: 12px; border-top: 1px solid var(--line-hair, #eceef1); }
+.pc-count-designs-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pc-count-designs-head h3 { margin: 0; font-size: 1rem; }
+.pc-count-designs-head .ant-checkbox-wrapper { min-height: 44px; align-items: center; }
+.pc-count-add-designs { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; }
+.pc-count-add-designs .ant-btn { min-height: 40px; }
+.pc-count-total { margin: 0; padding: 10px 12px; font-variant-numeric: tabular-nums; background: var(--surface-soft); border-radius: 8px; }
+.pc-count-saved { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--status-ok-dot); border-radius: 8px; }
+.pc-count-saved ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.pc-count-saved li { display: flex; justify-content: space-between; gap: 12px; font-variant-numeric: tabular-nums; }
+.pc-count-saved em { margin-left: 8px; font-style: normal; }
+.pc-count-saved em.is-more { color: var(--status-ok-ink); }
+.pc-count-saved em.is-less { color: var(--status-out-ink); }
+.pc-count-actions { display: flex; gap: 10px; }
+.pc-count-actions .ant-btn { flex: 1; min-height: 48px; }
+@media (max-width: 480px) {
+  .pc-count-card { padding: 12px; }
+  .pc-count-input .ant-input-number { width: 84px; }
+}

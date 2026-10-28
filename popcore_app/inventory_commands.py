@@ -602,7 +602,8 @@ def _project_compatibility(con, document_id, kind, business_date, affected,
 
 def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
                     access_store_ids=None, allow_transit=False,
-                    allow_delivery_provenance=False, allow_trade=False):
+                    allow_delivery_provenance=False, allow_trade=False,
+                    minimum_role=None):
     if owns_transaction and con.in_transaction:
         raise InventoryValidationError(
             'post_inventory must own the write transaction',
@@ -648,14 +649,16 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
                 'delivery_context_required',
             )
         locations, store_ids = _validate_catalog_and_locations(con, normalized)
-        minimum_role = {
+        # An in-process workflow may set its own role for what it posts (a 盘点 count's correction);
+        # the public commands route never does.
+        required_role = minimum_role or {
             'opening': 'admin',
             'correction': 'manager',
         }.get(normalized['kind'], 'staff')
         required_stores = tuple(access_store_ids) if access_store_ids is not None else store_ids
         if not set(required_stores).issubset(store_ids):
             raise InventoryValidationError('access_store_ids is outside this command')
-        require_inventory_access(con, actor, required_stores, minimum_role)
+        require_inventory_access(con, actor, required_stores, required_role)
         digest = _payload_hash(normalized)
 
         prior = con.execute(
@@ -863,14 +866,14 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
 def _post_inventory_in_transaction(con, payload, *, actor, request_key,
                                    access_store_ids=None, allow_transit=False,
                                    allow_delivery_provenance=False,
-                                   allow_trade=False):
+                                   allow_trade=False, minimum_role=None):
     """Post inventory inside a caller-owned transaction without committing it."""
     return _post_inventory(
         con, payload, actor=actor, request_key=request_key,
         owns_transaction=False, access_store_ids=access_store_ids,
         allow_transit=allow_transit,
         allow_delivery_provenance=allow_delivery_provenance,
-        allow_trade=allow_trade,
+        allow_trade=allow_trade, minimum_role=minimum_role,
     )
 
 

@@ -1795,6 +1795,22 @@ def remove_product_designs(pid):
         con.close()
 
 
+@bp.post('/api/products/<int:pid>/design/remove')
+@role_required('manager')
+def remove_product_design(pid):
+    from inventory_catalog import remove_design
+    from inventory_commands import InventoryError
+    con = get_db()
+    try:
+        return jsonify(remove_design(con, pid, actor=request.jwt_payload))
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
 @bp.post('/api/products/<int:pid>/sealed-set')
 @role_required('manager')
 def add_product_sealed_set(pid):
