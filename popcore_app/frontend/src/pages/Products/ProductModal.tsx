@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Modal, Form, Input, InputNumber, Select, Divider, Radio, message } from 'antd'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import client from '../../api/client'
+import { newRequestKey } from '../../api/salesDocuments'
 import { useAppStore } from '../../store'
 import {
   Select as ShadcnSelect,
@@ -86,6 +87,10 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
 
   // Track whether this product is a blind box so we can show/hide hierarchy fields
   const [isBlindBox, setIsBlindBox] = useState(false)
+  const [saving, setSaving] = useState(false)
+  // One key per new product: pressing Create again after a lost response returns the product
+  // the first press made instead of adding it twice.
+  const createKey = useRef('')
 
   useEffect(() => {
     if (open) {
@@ -99,6 +104,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
     } else {
       form.resetFields()
       setIsBlindBox(false)
+      createKey.current = ''
     }
   }, [open, product, form])
 
@@ -121,8 +127,10 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
   }, [open, isEdit, product, form])
 
   async function handleOk() {
+    if (saving) return
     try {
       const values = await form.validateFields()
+      setSaving(true)
       // Derive product_type from the blind-box toggle
       const payload = { ...values }
       delete payload._is_blind_box
@@ -136,13 +144,18 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
         await client.patch(`/products/${product!.id}`, payload)
         message.success('Product updated')
       } else {
-        await client.post('/products', payload)
-        message.success('Product created')
+        if (!createKey.current) createKey.current = newRequestKey()
+        const created = await client.post('/products', payload, { headers: { 'Idempotency-Key': createKey.current } })
+        createKey.current = ''
+        message.success(`Product created · ${created.data.sku}`)
       }
       onSaved()
     } catch (err: any) {
       if (err?.errorFields) return
-      message.error(err?.response?.data?.error ?? 'Save failed')
+      message.error(err?.response?.data?.error
+        ?? (isEdit ? 'Save failed' : 'Could not reach POPCORE. Press Create again: it will not be added twice.'))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -168,6 +181,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
       onCancel={onClose}
       width={Math.min(640, window.innerWidth - 32)}
       okText={isEdit ? 'Save' : 'Create'}
+      confirmLoading={saving}
       cancelText="Cancel"
       destroyOnClose
       getContainer={false}

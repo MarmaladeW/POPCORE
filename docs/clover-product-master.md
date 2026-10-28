@@ -68,6 +68,10 @@ Products → Add product with a blank SKU numbers the product the same way: the 
 brand or series (`BRAND_CODES` in `blueprints/products.py`, e.g. POPMART → PM, Smiski & SA → DR), else
 the code most products of that brand or series already carry (Labubu → PM), then the next number after
 every ID with that code. With neither, it asks for a brand, series or typed SKU (`brand_code_unknown`).
+Each Add product form sends one `Idempotency-Key`: pressing Create again after a lost response returns
+the product the first press made (`operation_requests`, operation `product_create`) instead of adding it
+twice, a changed form under that key is refused (`idempotency_conflict`), and Create is locked while it
+saves. The Products list sorts by ID or by time added (newest or oldest first, by product id).
 
 Report matching trusts an exact 记账名: it is checked against the product's own type, not against the
 long official Clover name.

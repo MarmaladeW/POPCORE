@@ -159,6 +159,57 @@ async def flow(browser, viewport):
         await context.close()
 
 
+async def create_once_and_sort_flow(browser):
+    """A weak connection: Create pressed again after a lost response sends the same request key, a
+    press while saving sends nothing, and the list sorts by when products were added (their ids)."""
+    rows = [{**product(), 'id': pid, 'sku': sku, 'jizhanming': name, 'name_cn_en': name}
+            for pid, sku, name in ((1, 'PM0001', 'Oldest box'), (3, 'PM0002', 'Newest box'), (2, 'PM0003', 'Middle box'))]
+    state = {'api_payload': lambda path, query, request: rows if path == '/api/products/search'
+             else foundation_payload(path, query, False)}
+    context, page = await context_with_api(browser, state, viewport={'width': 1440, 'height': 1000}, auth={'role': 'manager'})
+    keys, release = [], asyncio.Event()
+
+    async def create(route):
+        if route.request.method != 'POST':
+            await route.fallback(); return
+        keys.append(route.request.headers.get('idempotency-key'))
+        if len(keys) == 1:
+            await route.abort('failed'); return  # saved on the server, the answer lost on the way
+        await release.wait()
+        await route.fulfill(status=201, json={'ok': True, 'id': 4, 'sku': 'PM0004'})
+    await page.route('**/api/products', create)
+    names = page.locator('.pc-prod-name strong')
+    sort = page.get_by_role('combobox', name='Sort products')
+    try:
+        await page.goto(BASE + '/products')
+        await expect(names).to_have_text(['Oldest box', 'Newest box', 'Middle box'])
+        await sort.click()
+        await page.get_by_role('option', name='最新添加 Newest added').click()
+        await expect(names).to_have_text(['Newest box', 'Middle box', 'Oldest box'])
+        await sort.click()
+        await page.get_by_role('option', name='最早添加 Oldest added').click()
+        await expect(names).to_have_text(['Oldest box', 'Middle box', 'Newest box'])
+
+        await page.get_by_role('button', name='Add Product').click()
+        dialog = page.get_by_role('dialog')
+        await dialog.get_by_label('Full Product Name').fill('Pressed twice')
+        await dialog.get_by_role('button', name='Create').click()
+        await expect(page.get_by_text('Could not reach POPCORE. Press Create again: it will not be added twice.')).to_be_visible()
+        await dialog.get_by_role('button', name='Create').click()
+        for _ in range(100):
+            if len(keys) == 2:
+                break
+            await asyncio.sleep(.05)
+        await dialog.get_by_role('button', name='Create').click()  # still saving: ignored
+        await page.wait_for_timeout(300)
+        assert len(keys) == 2, keys
+        release.set()
+        await expect(page.get_by_text('Product created · PM0004')).to_be_visible()
+        assert keys[0] and keys[0] == keys[1], keys
+    finally:
+        await context.close()
+
+
 async def staff_flow(browser):
     context, page = await context_with_api(browser, {}, auth={'role': 'staff'})
     try:
@@ -183,12 +234,13 @@ async def main():
                     for viewport in ({'width': 1440, 'height': 1000}, {'width': 390, 'height': 844}):
                         await flow(browser, viewport)
                     await staff_flow(browser)
+                    await create_once_and_sort_flow(browser)
                 finally:
                     await browser.close()
         finally:
             process.terminate()
             process.wait(timeout=10)
-    print('Catalog import browser checks passed (manager desktop/mobile, Sheet preview/confirm, stock 403, CSV/TSV, stale/retry, pending, catalog-only writes)')
+    print('Catalog import browser checks passed (manager desktop/mobile, Sheet preview/confirm, stock 403, CSV/TSV, stale/retry, pending, catalog-only writes, Add product saved once on retry, sort by time added)')
 
 
 if __name__ == '__main__':

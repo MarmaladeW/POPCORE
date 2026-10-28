@@ -18,6 +18,7 @@ import PasteImportModal from './PasteImportModal'
 import { IdentityExportModal, IdentityImportModal } from './IdentitySheetModals'
 import CountSheetModal from './CountSheetModal'
 import ProductSearchBar from './ProductSearchBar'
+import { Select as UiSelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import ProductDetailDrawer from './ProductDetailDrawer'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useHasRole } from '../../auth/useRole'
@@ -166,6 +167,8 @@ function SubCount({ product }: { product: { sub_item_count?: number } }) {
   return <span className="pc-prod-subcount" title="Sealed set and confirmed designs">+{product.sub_item_count} 子项</span>
 }
 
+type ProductOrder = 'id' | 'newest' | 'oldest'
+
 export default function ProductsPage() {
   const isMobile = useIsMobile()
   const manager = useHasRole('manager')
@@ -182,6 +185,15 @@ export default function ProductsPage() {
   const [searchSeries, setSearchSeries] = useState('')
   const [searchType,   setSearchType]   = useState('')
   const [selected,  setSelected]  = useState<number[]>([])
+  // Products are numbered in the order they were added, so the newest have the highest ids.
+  const [order, setOrder] = useState<ProductOrder>(() => {
+    try { const saved = localStorage.getItem('pc-products-order'); return saved === 'newest' || saved === 'oldest' ? saved : 'id' } catch { return 'id' }
+  })
+  const chooseOrder = (next: ProductOrder) => {
+    setOrder(next)
+    try { localStorage.setItem('pc-products-order', next) } catch { /* private mode */ }
+  }
+  const shown = order === 'id' ? products : [...products].sort((a, b) => order === 'newest' ? b.id - a.id : a.id - b.id)
 
   const [exporting,      setExporting]      = useState(false)
   const [editProduct,    setEditProduct]    = useState<Product | null>(null)
@@ -487,6 +499,14 @@ export default function ProductsPage() {
           productTypes={productTypes}
           onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
         />
+        <UiSelect value={order} onValueChange={value => chooseOrder(value as ProductOrder)}>
+          <SelectTrigger aria-label="Sort products" style={{ width: isMobile ? '100%' : 168 }}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="id">按编号 By ID</SelectItem>
+            <SelectItem value="newest">最新添加 Newest added</SelectItem>
+            <SelectItem value="oldest">最早添加 Oldest added</SelectItem>
+          </SelectContent>
+        </UiSelect>
         {!isMobile && <span className="pc-prod-hint">库存 = 本店合计 · 点一行看详情</span>}
       </div>
 
@@ -509,7 +529,7 @@ export default function ProductsPage() {
             <Spin spinning={loading}>
               {!loading && !loadError && products.length === 0 && <p className="pc-quiet">No products found</p>}
               <ul className="pc-prod-rows">
-                {products.map(p => (
+                {shown.map(p => (
                   <li key={p.id}>
                     <button type="button" className="pc-prod-open" onClick={() => setDetailId(p.id)}>
                       <span className="pc-prod-name">
@@ -528,7 +548,7 @@ export default function ProductsPage() {
             <Table
               rowKey="id"
               loading={loading}
-              dataSource={products}
+              dataSource={shown}
               columns={columns}
               size="middle"
               rowSelection={manager ? {
