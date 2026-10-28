@@ -730,11 +730,6 @@ def create_product():
     except (TypeError, ValueError):
         price = None
 
-    search_blob = ' '.join([
-        sku.lower(), jizhanming.lower(), name_cn_en.lower(),
-        brand.lower(), product_type.lower(), ip_series.lower(),
-    ])
-
     con = get_db()
     cur = con.cursor()
 
@@ -745,6 +740,12 @@ def create_product():
             return jsonify({'error': 'Choose the brand or series so POPCORE can number it (e.g. PM0651), '
                                      'or type the SKU.', 'code': 'brand_code_unknown'}), 400
         sku = _next_popcore_id(con, code)
+
+    # After numbering, so a product is found by the ID it was given.
+    search_blob = ' '.join([
+        sku.lower(), jizhanming.lower(), name_cn_en.lower(),
+        brand.lower(), product_type.lower(), ip_series.lower(),
+    ])
 
     try:
         boxes_per_dan = int(boxes_per_dan_raw) if boxes_per_dan_raw not in (None, '', 'null') else None

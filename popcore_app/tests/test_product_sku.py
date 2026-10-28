@@ -31,6 +31,9 @@ class BlankSkuTests(IsolatedApiCase):
         self.assertEqual(self.create(brand='Sonny Angel').get_json()['sku'], 'DR0113')
         self.assertEqual(self.create(ip_series='Smiski & SA').get_json()['sku'], 'DR0114')
         self.assertEqual(self.create(brand='Hitoy').get_json()['sku'], 'HT0001')
+        with closing(self.connect()) as con:
+            blob = con.execute("SELECT search_blob FROM products WHERE sku='PM0651'").fetchone()[0]
+        self.assertTrue(blob.startswith('pm0651 '), blob)
 
     def test_an_ip_series_takes_the_code_its_products_carry(self):
         self.assertEqual(self.create(ip_series='labubu').get_json()['sku'], 'PM0651')
