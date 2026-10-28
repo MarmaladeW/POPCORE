@@ -78,7 +78,8 @@ export default function CountPage() {
       if (!codes.includes(location)) {
         const saved = remembered(storeCode)
         const place = codes.includes(saved) ? saved : codes[0]
-        if (place) setParams({ location: place }, { replace: true })
+        // A link from Inventory names only the product: it opens here at the counter's location.
+        if (place) setParams({ location: place, ...(productId ? { product: String(productId) } : {}) }, { replace: true })
       }
     }).catch(cause => { if (!controller.signal.aborted) setScopeError(messageOf(cause, 'Unable to load this store.')) })
     return () => controller.abort()

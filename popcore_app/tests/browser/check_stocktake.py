@@ -206,6 +206,13 @@ async def run(browser, width):
         await expect(left.get_by_role('button', name=re.compile('^Test Product'))).to_be_visible()
         await expect(left.get_by_role('button', name=re.compile('^Warmth'))).to_have_count(0)
 
+        # Inventory's 盘点 link names only a product, here a design: its card opens at the counter's location.
+        await page.goto(BASE + f'/count?product={fixture.rider}')
+        await expect(page).to_have_url(re.compile(rf'/count\?location=floor&product={fixture.rider}$'))
+        card = page.get_by_role('region', name='Count Warmth 盲盒')
+        await expect(card.get_by_label(re.compile('^Rider'))).to_have_value('3')
+        await card.get_by_role('button', name='返回 Back').click()
+
         # A manager adds a missing design and removes a mistyped one, from the card.
         state['role'] = 'manager'
         await page.evaluate("() => {window.__FOUNDATION_AUTH={role:'manager',token:'manager'};window.dispatchEvent(new Event('foundation-auth'))}")
