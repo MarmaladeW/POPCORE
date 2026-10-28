@@ -195,6 +195,29 @@ async def twelve_design_checks(browser,width):
     await context.close()
 
 
+async def prelive_checks(browser,width):
+    # Before go-live, counting is 盘点: every row's count opens its 盘点 card and nothing offers Receive.
+    def prelive_payload(path,query,request):
+        data=payload(path,query,request)
+        if path=='/api/inventory/series':
+            data['mode']='legacy'
+        return data
+    state={'api_payload':prelive_payload,'mode':'data'}
+    context,page=await context_with_api(browser,state,viewport={'width':width,'height':900},auth={'role':'staff'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/stock?series_id=7')
+    await expect(page.get_by_text('Not live yet: quantities stay Unknown until the store goes live.',exact=False)).to_be_visible()
+    await expect(page.get_by_role('link',name='盘点 Count',exact=True)).to_have_attribute('href','/count?product=11')
+    await expect(page.get_by_role('link',name='盘点 Count Sun',exact=True)).to_have_attribute('href','/count?product=14')
+    for name in ('Receive Sun','Count Sun'):
+        await expect(page.get_by_role('link',name=name,exact=True)).to_have_count(0)
+    for name in ('按系列晚盘 Count series','整系列入库 Receive series'):
+        await expect(page.get_by_role('button',name=name,exact=True)).to_have_count(0)
+    await no_overflow(page)
+    await page.screenshot(animations='disabled',path=OUT/f'prelive-{width}.png')
+    await context.close()
+
+
 async def mixed_quantities_checks(browser):
     def mixed_payload(path,query,request):
         data=payload(path,query,request)
@@ -234,6 +257,7 @@ async def main():
                 try:
                     for width,role in ((390,'staff'),(768,'manager'),(1440,'manager')): await checks(browser,width,role)
                     for width in (390,768,1440): await twelve_design_checks(browser,width)
+                    for width in (390,1440): await prelive_checks(browser,width)
                     await mixed_quantities_checks(browser)
                 finally: await browser.close()
         finally:

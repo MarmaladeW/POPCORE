@@ -148,13 +148,15 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
     {!panel&&mutation.notice}
     {!current?<Skeleton active paragraph={{rows:5}}/>:current.error?<Alert type="error" showIcon message={current.error} action={<Button disabled={locked} onClick={()=>setRefresh(value=>value+1)}>Retry inventory</Button>}/>:
       data&&<>
-        {data.mode!=='authoritative'&&<Alert type="warning" showIcon message="Inventory opening has not been activated. Quantities remain unknown until reviewed."/>}
+        {data.mode!=='authoritative'&&<Alert type="warning" showIcon message="Not live yet: quantities stay Unknown until the store goes live. Counts saved in 盘点 Stocktake are kept and show here from then."/>}
         <div className="pc-series-filterbar"><label>Stock view<select aria-label="Inventory status" value={stockFilter} onChange={event=>setStockFilter(event.target.value as typeof stockFilter)} disabled={locked}>
           <option value="all">All stock</option><option value="attention">Needs attention</option><option value="out_of_stock">Out of stock</option><option value="replenish">Replenish floor</option><option value="unverified">Unverified stock</option><option value="condition">On hold / damaged</option>
         </select></label>{selected&&<Input aria-label="Find design in this series" placeholder="Find a design" value={designQuery} onChange={event=>setDesignQuery(event.target.value)} disabled={locked} allowClear/>}
           {selected&&data.locations.some(location=>SIDE_LOCATIONS.includes(location.code))&&<label className="pc-series-side-toggle"><input type="checkbox" checked={showSideLocations} onChange={event=>setShowSideLocations(event.target.checked)}/>陈列 · 娃娃机 Display &amp; claw</label>}</div>
         {(rawId&&!selectedId)||(rawProductId&&!productId)?<Alert type="error" message="Invalid inventory reference."/>:opened&&!selected?<Alert type="warning" message="This product is unavailable in the selected scope."/>:selected?<>
-          {canWork&&<div className="pc-series-batch pc-series-batch-top">{<><Button disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('count')}>{standalone?'晚盘 Count':'按系列晚盘 Count series'}</Button><Button type="primary" disabled={locked||data.mode!=='authoritative'||!selected.products.length} onClick={()=>setWorksheet('receive')}>{standalone?'入库 Receive':'整系列入库 Receive series'}</Button></>}</div>}
+          {/* Before go-live, counting is 盘点 and there is no stock to receive into. */}
+          {canWork&&<div className="pc-series-batch pc-series-batch-top">{data.mode==='authoritative'?<><Button disabled={locked||!selected.products.length} onClick={()=>setWorksheet('count')}>{standalone?'晚盘 Count':'按系列晚盘 Count series'}</Button><Button type="primary" disabled={locked||!selected.products.length} onClick={()=>setWorksheet('receive')}>{standalone?'入库 Receive':'整系列入库 Receive series'}</Button></>
+            :(selected.product_id||selected.products[0])&&<Link className="pc-btn pc-btn-ink" to={`/count?product=${selected.product_id||selected.products[0].id}`}>盘点 Count</Link>}</div>}
           {sections.map(section=>{
             const products=section.products.filter(matchesStock)
             if(!section.products.length&&(section.key!=='confirmed_design'||standalone))return null
@@ -242,7 +244,8 @@ function StockTable({products,data,canWork,onDetail,label,locations}:{products:S
         </th>
         {locations.map(location=><td key={location.id} className={'pc-series-location'+(['upstairs','warehouse'].includes(location.code)?' pc-kraft-cell':'')}>{saleable(product,location.id)?.quantity??<span className="pc-series-unknown">Unknown</span>}</td>)}
         <td className={`pc-series-available ${known&&total===0?'pc-series-zero':''}`}><strong>{known?units(total,product.stock_unit):'Unknown'}</strong>{known&&total===0&&<span>Out of stock</span>}{!known&&<span>Not yet verified</span>}</td>
-        {canWork&&<td className="pc-series-product-actions">{product.identity_status==='verified'&&product.stock_unit&&<><Link aria-label={`Receive ${name}`} to={`/goods/receiving?product_id=${product.id}`}>Receive</Link><Link aria-label={`Count ${name}`} to={`/goods/counts?product_id=${product.id}`}>Count</Link></>}</td>}
+        {canWork&&<td className="pc-series-product-actions">{data.mode!=='authoritative'?<Link aria-label={`盘点 Count ${name}`} to={`/count?product=${product.id}`}>盘点</Link>
+          :product.identity_status==='verified'&&product.stock_unit&&<><Link aria-label={`Receive ${name}`} to={`/goods/receiving?product_id=${product.id}`}>Receive</Link><Link aria-label={`Count ${name}`} to={`/goods/counts?product_id=${product.id}`}>Count</Link></>}</td>}
       </tr>
     })}</tbody>
   </table></div>

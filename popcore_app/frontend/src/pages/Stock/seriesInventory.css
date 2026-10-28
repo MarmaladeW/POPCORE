@@ -146,7 +146,7 @@
   .pc-series-filterbar label, .pc-series-filterbar > .ant-input-affix-wrapper { flex: 1 1 140px; max-width: none; }
   .pc-series-filterbar select { min-width: 0; width: 100%; }
   .pc-series-batch { width: 100%; margin-top: 4px; }
-  .pc-series-batch .ant-btn { flex: 1; padding-inline: 10px; }
+  .pc-series-batch .ant-btn, .pc-series-batch .pc-btn { flex: 1; padding-inline: 10px; }
   .pc-series-batch .pc-series-count { margin-right: auto; }
 }
 
