@@ -656,6 +656,52 @@ def update_product(pid):
         con.close()
     return jsonify({'ok': True})
 
+# A POPCORE ID is a brand code and 4 digits, e.g. PM0651 (owner, 2026-10-24). Brand and series names
+# that name their code outright; any other series takes the code its products already carry.
+BRAND_CODES = {
+    'PM': ('pop mart', 'popmart', 'the monsters'),
+    'DR': ('dreams', 'sonny angel', 'smiski', 'smiski & sa', 'hippers', 'animal bakery'),
+    'TT': ('top toy', 'toptoy', 'sanrio', 'hello kitty', 'vipo', 'vipo miffy', 'miffy'),
+    'HT': ('hitoy', 'nommi', 'maymei'),
+    'B3': ('baby three', '娃三岁'),
+    'TZ': ('toyzero', 'toyzero+', 'toyzeroplus'),
+    'LV': ('letsvan', 'wakuku'),
+    'FU': ('finding unicorn',),
+    '52': ('52toys', '52 toys'),
+    'PK': ('pokemon', 'pokémon'),
+    'AC': ('accessories',),
+    'GC': ('gift card', 'gift cards'),
+    'OT': ('other',),
+}
+_BRAND_CODE_OF = {name: code for code, names in BRAND_CODES.items() for name in names}
+_POPCORE_ID = re.compile(r'([A-Z0-9]{2})([0-9]{4,})(?:-.*)?')
+
+
+def _brand_code(con, brand, ip_series):
+    names = [' '.join(value.lower().split()) for value in (brand, ip_series) if value and value.strip()]
+    for name in names:
+        if name in _BRAND_CODE_OF:
+            return _BRAND_CODE_OF[name]
+    for column, name in (('brand', brand), ('ip_series', ip_series)):
+        if not (name or '').strip():
+            continue
+        codes = {}
+        for row in con.execute(f'SELECT sku FROM products WHERE lower(trim({column}))=lower(trim(?))', (name,)):
+            match = _POPCORE_ID.fullmatch(row['sku'] or '')
+            if match and match.group(1) in BRAND_CODES:
+                codes[match.group(1)] = codes.get(match.group(1), 0) + 1
+        if codes:
+            return max(codes, key=codes.get)
+    return None
+
+
+def _next_popcore_id(con, code):
+    """The next number after every ID with this code, designs and sealed sets included."""
+    numbers = [int(match.group(2)) for (sku,) in con.execute('SELECT sku FROM products WHERE sku LIKE ?', (f'{code}%',))
+               if (match := _POPCORE_ID.fullmatch(sku or '')) and match.group(1) == code]
+    return f'{code}{max(numbers, default=0) + 1:04d}'
+
+
 @bp.route('/api/products', methods=['POST'])
 @role_required('manager')
 def create_product():
@@ -684,26 +730,22 @@ def create_product():
     except (TypeError, ValueError):
         price = None
 
-    search_blob = ' '.join([
-        sku.lower(), jizhanming.lower(), name_cn_en.lower(),
-        brand.lower(), product_type.lower(), ip_series.lower(),
-    ])
-
     con = get_db()
     cur = con.cursor()
 
     if not sku:
-        cur.execute("SELECT sku FROM products WHERE sku LIKE 'SP%' ORDER BY sku DESC LIMIT 1")
-        row = cur.fetchone()
-        if row:
-            try:
-                last_num = int(row[0].replace('SP', '').lstrip('0') or '0')
-            except ValueError:
-                con.close()
-                return jsonify({'error': 'Could not auto-generate SKU: existing SKU format is non-numeric. Please provide a SKU manually.'}), 400
-            sku = f'SP{last_num + 1:05d}'
-        else:
-            sku = 'SP00001'
+        code = _brand_code(con, brand, ip_series)
+        if code is None:
+            con.close()
+            return jsonify({'error': 'Choose the brand or series so POPCORE can number it (e.g. PM0651), '
+                                     'or type the SKU.', 'code': 'brand_code_unknown'}), 400
+        sku = _next_popcore_id(con, code)
+
+    # After numbering, so a product is found by the ID it was given.
+    search_blob = ' '.join([
+        sku.lower(), jizhanming.lower(), name_cn_en.lower(),
+        brand.lower(), product_type.lower(), ip_series.lower(),
+    ])
 
     try:
         boxes_per_dan = int(boxes_per_dan_raw) if boxes_per_dan_raw not in (None, '', 'null') else None

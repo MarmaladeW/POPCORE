@@ -64,6 +64,11 @@ brand-prefixed IDs (`PM0001`, `DR0001`, `PK0006-01` for a design under `PK0006`)
 were left unchanged. The run refuses as a whole if the product count or any review decision differs from
 what the plan was built on. The Google Sheet sync is retired; POPCORE is the only 记账名 list.
 
+Products → Add product with a blank SKU numbers the product the same way: the brand code named by its
+brand or series (`BRAND_CODES` in `blueprints/products.py`, e.g. POPMART → PM, Smiski & SA → DR), else
+the code most products of that brand or series already carry (Labubu → PM), then the next number after
+every ID with that code. With neither, it asks for a brand, series or typed SKU (`brand_code_unknown`).
+
 Report matching trusts an exact 记账名: it is checked against the product's own type, not against the
 long official Clover name.
 
