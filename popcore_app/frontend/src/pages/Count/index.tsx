@@ -200,6 +200,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const [error, setError] = useState('')
   // A refused save reloads the card; its warning has to outlive that reload.
   const [notice, setNotice] = useState('')
+  const [info, setInfo] = useState('')
   const [reload, setReload] = useState(0)
   const [values, setValues] = useState<Record<number, number | null>>({})
   // What this counter typed: only these are saved, so a count shown from earlier is never saved
@@ -237,8 +238,11 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
         return chosen
       })
       setDesignsOk(current => Boolean(data.designs_checked) || (keep !== null && current))
-      setNewSets(current => keep && data.new_sealed_set ? current : null)
-      setBoxesPerSet(current => keep && data.new_sealed_set ? current : data.new_sealed_set?.boxes_per_set ?? null)
+      // Until a whole set is counted there is no set to hold the number: a box counted here with no
+      // set has 0 whole sets, and what this counter typed stays on the card through its reloads.
+      const boxCounted = data.items.some(item => item.role === 'box' && item.count)
+      setNewSets(current => data.new_sealed_set ? current ?? (boxCounted ? 0 : null) : null)
+      setBoxesPerSet(current => data.new_sealed_set ? current ?? data.new_sealed_set.boxes_per_set ?? null : null)
     }).catch(cause => { if (!controller.signal.aborted) setError(messageOf(cause, 'Unable to load this product.')) })
     return () => controller.abort()
   }, [storeCode, location, productId, reload])
@@ -252,7 +256,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const head = card.items.find(item => item.role === 'box' || item.role === 'item')
   const sets = card.items.filter(item => item.role === 'set')
   const designs = card.items.filter(item => item.role === 'design')
-  const changed = () => { key.current = ''; setSaved(null) }
+  const changed = () => { key.current = ''; setSaved(null); setInfo('') }
   const touch = (item: CountItem) => setTyped(current => ({ ...current, [item.product_id]: true }))
   const setValue = (item: CountItem, value: number | null) => {
     changed(); touch(item); setValues(current => ({ ...current, [item.product_id]: value }))
@@ -279,7 +283,13 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const headCounted = Boolean(head && (head.count || entries.some(entry => entry.product_id === head.product_id)))
 
   const save = async () => {
-    if (!entries.length && !wantsNewSet) { setError('Enter at least one count. Enter 0 when there are none.'); return }
+    if (!entries.length && !wantsNewSet) {
+      // Only typed numbers are sent: with none, everything shown is already saved.
+      if (card.items.some(item => item.count) && !(card.series_id && designsOk && !card.designs_checked)) {
+        setError(''); setInfo('没有新的数字 · Nothing new to save: the numbers shown are saved. Change one to save it again.')
+      } else setError('Enter at least one count. Enter 0 when there are none.')
+      return
+    }
     if (wantsNewSet && !(boxesPerSet && boxesPerSet >= 2)) { setError('Enter how many boxes make one whole set (每端几盒).'); return }
     if (designsCounted && !designsOk) { setError('Tick “款式正确 Designs are right” before counting the designs.'); return }
     // A blank 散盒 next to whole sets or designs would leave POPCORE's boxes here uncounted.
@@ -297,6 +307,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
     setSaving(true)
     setError('')
     setNotice('')
+    setInfo('')
     try {
       const response = await saveCount({
         store_code: storeCode, location, product_id: card.product_id, entries,
@@ -415,6 +426,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       {designs.length > 0 && <> · 确认款 {designTotal} 个</>}
     </p>
     {notice && <Alert type="warning" showIcon message={notice} />}
+    {info && <Alert type="info" showIcon message={info} />}
     {error && <Alert type="error" showIcon message={error} />}
     {saved && <div className="pc-count-saved" role="status">
       <strong>已保存 Saved</strong>
