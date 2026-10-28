@@ -32,6 +32,8 @@ async def run(browser, width):
     fixture.setUp()
     with closing(fixture.connect()) as con:
         con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)", (fixture.dt,))
+        # Like 85 blind boxes in production: no whole set and no boxes per set yet.
+        fixture._product(con, 'NOVA-1', 'Nova', '盲盒', None, None)
         con.commit()
     state = {'role': 'staff', 'saves': [], 'lose_next_save': False}
     context = await browser.new_context(viewport={'width': width, 'height': 900})
@@ -211,6 +213,34 @@ async def run(browser, width):
         await expect(page).to_have_url(re.compile(rf'/count\?location=floor&product={fixture.rider}$'))
         card = page.get_by_role('region', name='Count Warmth 盲盒')
         await expect(card.get_by_label(re.compile('^Rider'))).to_have_value('3')
+        await card.get_by_role('button', name='返回 Back').click()
+
+        # 0 whole sets of a box with no set makes no set; after the save the card still shows the 0
+        # and the boxes per set typed, and Save again with nothing new sends nothing.
+        await search.fill('nova')
+        await page.get_by_role('button', name=re.compile('^Nova')).click()
+        card = page.get_by_role('region', name='Count Nova')
+        await expect(card.get_by_label(re.compile('^每端几盒 Boxes per set'))).to_have_value('')
+        await card.get_by_label(re.compile('^整端 Whole sets')).fill('0')
+        await card.get_by_label(re.compile('^每端几盒 Boxes per set')).fill('9')
+        await card.get_by_label(re.compile('^散盒 Single boxes')).fill('3')
+        await card.get_by_role('button', name='保存 Save').click()
+        await expect(card.get_by_role('status')).to_contain_text('已保存 Saved')
+        await expect(card.get_by_text(re.compile('^已点 3 · '))).to_be_visible()  # the card reloaded
+        await expect(card.get_by_label(re.compile('^整端 Whole sets'))).to_have_value('0')
+        await expect(card.get_by_label(re.compile('^每端几盒 Boxes per set'))).to_have_value('9')
+        saves = len(state['saves'])
+        await card.get_by_role('button', name='保存 Save').click()
+        await expect(card.get_by_text(re.compile('Nothing new to save'))).to_be_visible()
+        await expect(card.get_by_text('Enter at least one count', exact=False)).to_have_count(0)
+        assert len(state['saves']) == saves
+        assert rows("SELECT p.sku, oc.quantity FROM opening_counts oc JOIN products p ON p.id=oc.product_id "
+                    "WHERE p.sku LIKE 'NOVA-1%'") == [('NOVA-1', 3)]
+        await card.get_by_role('button', name='下一个 Next').click()
+        # Opened again, a box counted here with no set shows 0 whole sets.
+        await search.fill('nova')
+        await page.get_by_role('button', name=re.compile('^Nova')).click()
+        await expect(card.get_by_label(re.compile('^整端 Whole sets'))).to_have_value('0')
         await card.get_by_role('button', name='返回 Back').click()
 
         # A manager adds a missing design and removes a mistyped one, from the card.
