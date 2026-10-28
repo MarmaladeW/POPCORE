@@ -22,7 +22,7 @@ import db  # noqa: E402
 import exchange_rates  # noqa: E402,F401
 import payment_evidence  # noqa: E402
 import condition_evidence  # noqa: E402
-from blueprints import checkout, closing as closing_blueprint, goods, inventory, payments, products, reports, restock, sale_documents, sales, schedule, special_orders, stock, store_events, stores, trades, today  # noqa: E402
+from blueprints import checkout, closing as closing_blueprint, counting, goods, inventory, payments, products, reports, restock, sale_documents, sales, schedule, special_orders, stock, store_events, stores, trades, today  # noqa: E402
 
 
 class IsolatedApiCase(unittest.TestCase):
@@ -71,6 +71,7 @@ class IsolatedApiCase(unittest.TestCase):
         for blueprint in (
             sales.bp, stock.bp, restock.bp, inventory.bp, products.bp, stores.bp,
             goods.bp,
+            counting.bp,
             sale_documents.bp,
             payments.bp,
             checkout.bp,

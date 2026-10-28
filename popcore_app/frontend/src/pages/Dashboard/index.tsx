@@ -22,7 +22,7 @@ const shownTotal = (name: string, total: number) => name === 'catalog' && total 
 
 // On the manager home, long notice lists collapse to one summary row (Figma 产品资料 panel).
 const summaries: Record<string, { title: (total: string | number) => string; meta: string; action: string; to: string }> = {
-  catalog: { title: total => `${total} 个产品还没审核`, meta: 'Products need identity review before counting', action: '去审核 Review', to: '/products' },
+  catalog: { title: total => `${total} 个产品还没确认`, meta: 'Counting a product confirms what it is', action: '去盘点 Count', to: '/count' },
   inventory: { title: total => `${total} 条缺货提醒`, meta: 'Out-of-stock notices (product and location)', action: '查看 View', to: '/stock' },
 }
 

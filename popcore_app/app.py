@@ -76,6 +76,7 @@ from blueprints.reports   import bp as reports_bp
 from blueprints.special_orders import bp as special_orders_bp
 from blueprints.clover_matches import bp as clover_matches_bp
 from blueprints.health    import bp as health_bp
+from blueprints.counting  import bp as counting_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 app.register_blueprint(users_bp)
@@ -89,6 +90,7 @@ app.register_blueprint(schedule_bp)
 app.register_blueprint(insights_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(goods_bp)
+app.register_blueprint(counting_bp)
 app.register_blueprint(sale_documents_bp)
 app.register_blueprint(payments_bp)
 app.register_blueprint(checkout_bp)

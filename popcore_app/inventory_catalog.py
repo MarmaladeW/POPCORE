@@ -375,15 +375,35 @@ def add_sealed_set(con, product_id, data, *, actor, request_key):
 
 
 def _product_references(con, product_id):
-    """Rows in other tables that point at a product (its own aliases don't count: they go with it)."""
+    """Rows in other tables that point at a product (its own aliases and counts saved before go-live
+    don't count: they go with it)."""
     count = 0
     for (table,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
-        if table == 'product_aliases':
+        if table in ('product_aliases', 'opening_counts'):
             continue
         for fk in con.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
             if fk['table'] == 'products':
                 count += con.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{fk["from"]}"=?', (product_id,)).fetchone()[0]
     return count
+
+
+def remove_design(con, design_id, *, actor):
+    """Remove one confirmed design added by mistake (a typo, or a design the series does not have),
+    refused once it has stock, sales or other records. A count saved before go-live goes with it."""
+    design_id = read_int(design_id, 'design_id', minimum=1)
+    _begin(con)
+    try:
+        design = con.execute('SELECT id, sku, stock_form FROM products WHERE id=?', (design_id,)).fetchone()
+        if design is None or design['stock_form'] != 'confirmed_design':
+            raise InventoryError('Design not found', 'not_found', 404)
+        if _product_references(con, design_id):
+            raise InventoryConflict(f"{design['sku']} already has stock, sales or other records", 'design_in_use')
+        con.execute('DELETE FROM products WHERE id=?', (design_id,))
+        con.commit()
+        return {'removed_design': design_id}
+    except Exception:
+        con.rollback()
+        raise
 
 
 def remove_designs(con, product_id, *, actor):

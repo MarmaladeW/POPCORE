@@ -259,7 +259,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
                   { value: 'sealed_set', label: 'Sealed set' },
                   { value: 'random_box', label: 'Random box' },
                   { value: 'confirmed_design', label: 'Confirmed design' },
-                  { value: 'piece', label: 'Piece' },
+                  { value: 'ordinary', label: 'Ordinary item' },
                 ]} />
               </Form.Item>
               <Form.Item name="stock_unit" label="Native Unit">

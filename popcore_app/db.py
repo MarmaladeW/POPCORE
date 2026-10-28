@@ -1969,6 +1969,39 @@ def _migration_payment_refund_business_date(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('payment_refund_business_date')")
 
 
+def _migration_opening_counts(con, cur):
+    # 盘点 Count (owner, 2026-10-27): before a store goes live, the latest count of each product at
+    # each location, with its history; going live applies them (stock_counting.py). A count goes
+    # with its product, like an alias, so fixing a mistyped design also drops its count.
+    if not cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_series'").fetchone():
+        return  # runs again once create_catalog_identity has made the table
+    cur.execute("""CREATE TABLE IF NOT EXISTS opening_counts (
+        location_id INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE CASCADE,
+        product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        stock_form  TEXT NOT NULL CHECK (stock_form IN ('random_box','sealed_set','confirmed_design','ordinary')),
+        quantity    INTEGER NOT NULL CHECK (quantity >= 0),
+        counted_by  TEXT NOT NULL,
+        counted_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (location_id, product_id)
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS opening_count_events (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        location_id       INTEGER NOT NULL,
+        product_id        INTEGER NOT NULL,
+        quantity          INTEGER NOT NULL,
+        previous_quantity INTEGER,
+        counted_by        TEXT NOT NULL,
+        counted_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS opening_count_events_location ON opening_count_events(location_id, id)')
+    # Who checked that a series' designs match the shelf, and when.
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(product_series)')}
+    for column in ('designs_checked_at', 'designs_checked_by'):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE product_series ADD COLUMN {column} TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('opening_counts')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -2032,6 +2065,7 @@ def _get_migrations():
         ('sale_line_loose_boxes',                      _migration_sale_line_loose_boxes),
         ('clover_import_failures',                     _migration_clover_import_failures),
         ('payment_refund_business_date',               _migration_payment_refund_business_date),
+        ('opening_counts',                             _migration_opening_counts),
     ]
 
 
