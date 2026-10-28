@@ -43,6 +43,8 @@ export interface CountCard {
   series_id: number | null
   designs_checked: { at: string; by: string } | null
   items: CountItem[]
+  // A blind box with no whole set yet: saving a whole-set count creates it.
+  new_sealed_set: { boxes_per_set: number | null } | null
 }
 
 export interface CountEntry { product_id: number; quantity: number; stock_form?: CountForm; balance_version?: number }
@@ -72,7 +74,10 @@ export const getCountProgress = (store: string, location: string, signal?: Abort
     .then(response => response.data)
 
 export async function saveCount(
-  body: { store_code: string; location: string; product_id: number; entries: CountEntry[]; designs_checked?: boolean },
+  body: {
+    store_code: string; location: string; product_id: number; entries: CountEntry[]; designs_checked?: boolean
+    new_sealed_set?: { quantity: number; boxes_per_set: number }
+  },
   key: string,
 ) {
   return (await client.post('/counting/counts', body, { headers: { 'Idempotency-Key': key } })).data as { live: boolean; results: SavedCount[] }

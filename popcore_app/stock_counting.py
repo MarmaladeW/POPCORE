@@ -15,6 +15,7 @@ from catalog_identity import (
 from checkout_access import business_date
 from goods_operations import _balance, _begin, _remember, _replay
 from identity_sheet import SUGGESTED_IDENTITY
+from inventory_catalog import sealed_set_for
 from inventory_commands import (
     InventoryConflict, InventoryError, InventoryValidationError,
     _post_inventory_in_transaction, require_inventory_access, store_is_live,
@@ -273,8 +274,35 @@ def count_card(con, actor, store_code, location_code, product_id):
             'product_id': head['id'] if head is not None else members[0][1]['id'],
             'title': head['label'] if head is not None else series['name'],
             'series_id': series_id, 'designs_checked': designs_checked, 'items': items,
+            'new_sealed_set': _whole_set_offer(head, members),
         }
     return _read(con, work)
+
+
+def _whole_set_offer(head, members):
+    """A blind box always counts whole sets and single boxes (owner, 2026-10-27). One with no
+    sealed set yet offers it here, with boxes per set from the product, and the save creates it.
+    An untyped product offers it too, for when the counter says it is a blind box."""
+    if head is None or any(role == 'set' for role, _, _ in members):
+        return None
+    if head['stock_form'] not in (None, 'random_box') or _suggested_form(head) not in (None, 'random_box'):
+        return None
+    return {'boxes_per_set': head['boxes_per_dan'] if (head['boxes_per_dan'] or 0) > 1 else None}
+
+
+def _read_new_set(data):
+    new_set = data.get('new_sealed_set')
+    if new_set is None:
+        return None
+    if not isinstance(new_set, dict) or set(new_set) != {'quantity', 'boxes_per_set'}:
+        raise InventoryValidationError('new_sealed_set needs quantity and boxes_per_set')
+    boxes = read_int(new_set['boxes_per_set'], 'boxes_per_set', minimum=1)
+    if boxes > 100:
+        raise InventoryValidationError('A whole set cannot hold more than 100 boxes')
+    quantity = read_int(new_set['quantity'], 'quantity', minimum=1)
+    if quantity > MAX_QUANTITY:
+        raise InventoryValidationError(f'A count cannot be more than {MAX_QUANTITY}')
+    return {'quantity': quantity, 'boxes_per_set': boxes}
 
 
 def _count_form(product, entry):
@@ -294,9 +322,12 @@ def _count_form(product, entry):
     return form
 
 
-def _read_entries(data):
+def _read_entries(data, allow_empty=False):
     raw = data.get('entries')
-    if not isinstance(raw, list) or not raw or len(raw) > MAX_ENTRIES or any(not isinstance(e, dict) for e in raw):
+    if raw is None and allow_empty:
+        raw = []
+    if (not isinstance(raw, list) or (not raw and not allow_empty) or len(raw) > MAX_ENTRIES
+            or any(not isinstance(e, dict) for e in raw)):
         raise InventoryValidationError('Enter at least one count')
     entries, seen = [], set()
     for item in raw:
@@ -405,12 +436,14 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
     if not isinstance(data, dict):
         raise InventoryValidationError('Send the counts as JSON')
     product_id = read_int(data.get('product_id'), 'product_id', minimum=1)
-    entries = _read_entries(data)
+    new_set = _read_new_set(data)
+    entries = _read_entries(data, allow_empty=new_set is not None)
     designs_checked = data.get('designs_checked')
     if designs_checked not in (None, True, False):
         raise InventoryValidationError('designs_checked must be true or false')
     intent = {'store_code': (store_code or '').strip().upper(), 'location': (location_code or '').strip().lower(),
-              'product_id': product_id, 'entries': entries, 'designs_checked': designs_checked}
+              'product_id': product_id, 'entries': entries, 'designs_checked': designs_checked,
+              **({'new_sealed_set': new_set} if new_set else {})}
     _begin(con)
     try:
         key, digest, prior = _replay(con, request_key, 'count_save', actor, intent)
@@ -419,6 +452,15 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             return prior
         scope = _scope(con, actor, store_code, location_code)
         head, series_id = _family(con, product_id)
+        if new_set:
+            if _whole_set_offer(head, _members(con, head, series_id)) is None:
+                raise InventoryConflict('Whole sets are added for a blind box that has none yet; '
+                                        'this one is not a blind box or already has its whole set', 'whole_set_unavailable')
+            # Counting the first whole sets of a blind box gives it its sealed set (owner, 2026-10-27).
+            set_id = sealed_set_for(con, head['id'], new_set['boxes_per_set'])
+            entries = [*entries, {'product_id': set_id, 'quantity': new_set['quantity'],
+                                  'stock_form': None, 'balance_version': None}]
+            head = _product(con, head['id'])
         members = {product['id']: (role, product) for role, product, _ in _members(con, head, series_id)}
         if any(entry['product_id'] not in members for entry in entries):
             raise InventoryValidationError('Count only this product, its sealed sets and its designs')

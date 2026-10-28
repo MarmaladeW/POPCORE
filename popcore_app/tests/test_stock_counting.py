@@ -41,6 +41,9 @@ class StockCountingTests(IsolatedApiCase):
             self.lantern = self._product(con, 'WARM-BOX-02', 'Warmth Lantern', '盲盒', 'confirmed_design',
                                          'piece', series=self.series, design='Lantern')
             self.card_item = self._product(con, 'HANG-1', 'Hanging Card Bear', '吊卡', None, None)
+            # A blind box like most in production: typed 盲盒, unverified, 12 boxes per set, no whole set yet.
+            self.echo = self._product(con, 'ECHO-1', 'Echo', '盲盒', None, None)
+            con.execute('UPDATE products SET boxes_per_dan=12 WHERE id=?', (self.echo,))
             con.execute("""INSERT INTO product_barcodes(code, product_id, code_kind, input_unit, quantity_per_scan)
                            VALUES (?, ?, 'manufacturer', 'box', 1)""", (BARCODE, self.box))
             con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 2, 5, 0)',
@@ -63,10 +66,12 @@ class StockCountingTests(IsolatedApiCase):
     def get(self, path, role='staff', **params):
         return self.client.get(path, query_string={'store_code': 'DT', **params}, headers=self.headers(role))
 
-    def save(self, entries, *, location='floor', product=None, checked=None, key='k1', role='staff'):
+    def save(self, entries, *, location='floor', product=None, checked=None, key='k1', role='staff', new_set=None):
         body = {'store_code': 'DT', 'location': location, 'product_id': product or self.box, 'entries': entries}
         if checked is not None:
             body['designs_checked'] = checked
+        if new_set is not None:
+            body['new_sealed_set'] = new_set
         headers = {**self.headers(role), 'Idempotency-Key': key} if key else self.headers(role)
         return self.client.post('/api/counting/counts', json=body, headers=headers)
 
@@ -284,6 +289,57 @@ class StockCountingTests(IsolatedApiCase):
                 """SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
                    WHERE b.product_id=? AND l.code='upstairs' AND l.store_id=? AND b.disposition='saleable'""",
                 (self.product_id, self.dt)).fetchone()[0], 10)
+
+    def test_the_product_type_decides_what_is_counted(self):
+        def card(product):
+            return self.get('/api/counting/card', location='floor', product_id=product).get_json()
+        echo = card(self.echo)
+        self.assertEqual([(i['role'], i['suggested_form']) for i in echo['items']], [('box', 'random_box')])
+        self.assertEqual(echo['new_sealed_set'], {'boxes_per_set': 12})
+        hanging = card(self.card_item)
+        self.assertEqual(([(i['role'], i['suggested_form']) for i in hanging['items']], hanging['new_sealed_set']),
+                         ([('item', 'ordinary')], None))
+        self.assertIsNone(card(self.box)['new_sealed_set'])  # it already has its whole set
+        untyped = card(self.product_id)  # no known type: the counter is asked, and may say blind box
+        self.assertEqual(([i['suggested_form'] for i in untyped['items']], untyped['new_sealed_set']),
+                         ([None], {'boxes_per_set': None}))
+
+    def test_counting_the_first_whole_sets_gives_the_blind_box_its_whole_set(self):
+        saved = self.save([{'product_id': self.echo, 'quantity': 5}], product=self.echo,
+                          new_set={'quantity': 2, 'boxes_per_set': 12})
+        self.assertEqual(saved.status_code, 200, saved.get_json())
+        with closing(self.connect()) as con:
+            whole = con.execute("SELECT * FROM products WHERE sku='ECHO-1-SET'").fetchone()
+            self.assertEqual((whole['stock_form'], whole['stock_unit'], whole['identity_status']),
+                             ('sealed_set', 'set', 'verified'))
+            self.assertEqual(con.execute('SELECT output_per_input FROM product_conversions WHERE source_product_id=? '
+                                         'AND target_product_id=?', (whole['id'], self.echo)).fetchone()[0], 12)
+            self.assertEqual(tuple(con.execute('SELECT stock_form, identity_status, boxes_per_dan FROM products WHERE id=?',
+                                               (self.echo,)).fetchone()), ('random_box', 'verified', 12))
+            self.assertEqual(sorted(tuple(r) for r in con.execute(
+                'SELECT product_id, quantity, stock_form FROM opening_counts ORDER BY product_id')),
+                [(self.echo, 5, 'random_box'), (whole['id'], 2, 'sealed_set')])
+        self.assertEqual(sorted((r['product_id'], r['quantity']) for r in saved.get_json()['results']),
+                         [(self.echo, 5), (whole['id'], 2)])
+        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        self.assertEqual(([(i['role'], i.get('count', {}).get('quantity')) for i in card['items']], card['new_sealed_set']),
+                         ([('box', 5), ('set', 2)], None))
+        again = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='k2')
+        self.assertEqual((again.status_code, again.get_json()['code']), (409, 'whole_set_unavailable'))
+
+    def test_whole_sets_are_only_added_to_blind_boxes(self):
+        for number, (product, new_set, code) in enumerate([
+            (self.card_item, {'quantity': 1, 'boxes_per_set': 6}, 'whole_set_unavailable'),
+            (self.echo, {'quantity': 0, 'boxes_per_set': 12}, 'invalid_input'),
+            (self.echo, {'quantity': 1, 'boxes_per_set': 0}, 'invalid_input'),
+            (self.echo, {'quantity': 1}, 'invalid_input'),
+        ]):
+            response = self.save([], product=product, new_set=new_set, key=f'set-{number}')
+            self.assertEqual(response.get_json()['code'], code, new_set)
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE stock_form='sealed_set'").fetchone()[0], 1)
+        only_sets = self.save([], product=self.echo, new_set={'quantity': 3, 'boxes_per_set': 6}, key='set-ok')
+        self.assertEqual(only_sets.status_code, 200, only_sets.get_json())
 
     def test_a_mistyped_design_can_be_removed_with_its_count(self):
         self.save([{'product_id': self.rider, 'quantity': 1}], checked=True)
