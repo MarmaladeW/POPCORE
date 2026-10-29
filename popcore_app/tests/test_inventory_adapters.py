@@ -72,7 +72,7 @@ class InventoryAdapterTests(IsolatedApiCase):
             'date': str(date.today()), 'store_code': 'DT',
             'items': [{'product_id': self.product_id, 'section': 'stock_out',
                        'qty': 1}],
-        }, headers=self.headers('staff'))
+        }, headers=self.headers('manager'))
         self.assertEqual(report.status_code, 409)
         self.assertEqual(report.get_json()['code'], 'migration_required')
 
