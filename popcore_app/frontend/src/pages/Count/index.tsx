@@ -232,7 +232,8 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       setForms(current => {
         const chosen: Record<number, CountForm> = {}
         data.items.forEach(item => {
-          const form = (kept(item.product_id) && current[item.product_id]) || item.stock_form || item.counted_form || item.suggested_form
+          // The product's type wins over an earlier count's guess (that count is then counted again).
+          const form = (kept(item.product_id) && current[item.product_id]) || item.stock_form || item.suggested_form || item.counted_form
           if (item.identity_status !== 'verified' && form) chosen[item.product_id] = form
         })
         return chosen

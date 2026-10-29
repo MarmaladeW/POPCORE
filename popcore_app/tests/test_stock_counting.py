@@ -524,6 +524,34 @@ class StockCountingTests(IsolatedApiCase):
             self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku='HANG-1-SET'").fetchone()[0], 0)
         self.assertNotIn('identity_conflict', {error['code'] for error in self._review()['errors']})
 
+    def test_a_type_set_in_products_wins_over_an_earlier_count(self):
+        # Untyped, counted as an item at the claw; then a manager types it 盲盒 in Products.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET product_type='' WHERE id=?", (self.echo,))
+            con.commit()
+        claw = self.save([{'product_id': self.echo, 'quantity': 0, 'stock_form': 'ordinary'}],
+                         location='claw', product=self.echo)
+        self.assertEqual(claw.status_code, 200, claw.get_json())
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET product_type='盲盒' WHERE id=?", (self.echo,))
+            con.commit()
+        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        self.assertEqual(card['items'][0]['suggested_form'], 'random_box')
+        floor = self.save([{'product_id': self.echo, 'quantity': 3, 'stock_form': 'random_box'}],
+                          product=self.echo, key='k2')
+        self.assertEqual(floor.status_code, 200, floor.get_json())
+        # The claw count, in the form the type no longer has, is counted again.
+        left = self.get('/api/counting/progress', location='claw').get_json()['missing']
+        self.assertIn((self.echo, True), [(row['product_id'], row.get('recount', False)) for row in left])
+        again = self.save([{'product_id': self.echo, 'quantity': 0, 'stock_form': 'random_box'}],
+                          location='claw', product=self.echo, key='k3')
+        self.assertEqual(again.status_code, 200, again.get_json())
+        left = self.get('/api/counting/progress', location='claw').get_json()['missing']
+        self.assertNotIn(self.echo, [row['product_id'] for row in left])
+        with closing(self.connect()) as con:
+            self.assertEqual({row[0] for row in con.execute(
+                'SELECT stock_form FROM opening_counts WHERE product_id=?', (self.echo,))}, {'random_box'})
+
     def test_every_product_is_on_its_own_card(self):
         with closing(self.connect()) as con:
             # Not a design, yet inside the Warmth series; and a design whose series no product owns.
