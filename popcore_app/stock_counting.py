@@ -105,10 +105,13 @@ def _family(con, product_id):
     return product, owned['id'] if owned else None
 
 
-def _suggested_form(product):
-    if product['stock_form']:
-        return product['stock_form']
+def _type_form(product):
+    """The form a product's type names (盲盒 → blind box, 吊卡 → item ...), or None."""
     return (SUGGESTED_IDENTITY.get((product['product_type'] or '').strip()) or (None, None))[0]
+
+
+def _suggested_form(product):
+    return product['stock_form'] or _type_form(product)
 
 
 def _members(con, head, series_id):
@@ -395,7 +398,11 @@ def _read_entries(data, allow_empty=False):
 
 def _same_form(con, product, location, form):
     """Going live verifies one form per product, so an unverified product counted elsewhere
-    as another form would stop the opening."""
+    as another form would stop the opening. The product type decides (owner, 2026-10-27): a count
+    in the form its type names goes through, and counts elsewhere in another form are counted
+    again (重点 Recount)."""
+    if form == _type_form(product):
+        return
     other = con.execute(
         """SELECT oc.stock_form, s.code || ' ' || l.name AS place FROM opening_counts oc
            JOIN inventory_locations l ON l.id=oc.location_id JOIN stores s ON s.id=l.store_id
@@ -624,15 +631,16 @@ def count_progress(con, actor, store_code, location_code):
                 (location['id'], business_date(), DIRECT_COUNT_REASON)).fetchone()[0]
             return {'live': True, 'counted': counted, 'missing': [], 'missing_total': 0}
         counted = con.execute('SELECT COUNT(*) FROM opening_counts WHERE location_id=?', (location['id'],)).fetchone()[0]
-        # Counted as a form its product no longer has (changed in Products since): going live
-        # stops on these until they are counted again.
+        # Counted as a form its product no longer has (set up or typed otherwise in Products since):
+        # going live stops on these until they are counted again.
         missing = [{'product_id': row['id'], 'name': row['label'], 'sku': row['sku'], 'blocks_opening': True,
                     'recount': True}
                    for row in con.execute(
-                       f"""SELECT p.id, p.sku, {LABEL_SQL} AS label FROM opening_counts oc
+                       f"""SELECT p.id, p.sku, p.stock_form, p.product_type, oc.stock_form AS counted_form,
+                                  {LABEL_SQL} AS label FROM opening_counts oc
                            JOIN products p ON p.id=oc.product_id
-                           WHERE oc.location_id=? AND p.stock_form IS NOT NULL AND p.stock_form<>oc.stock_form
-                           ORDER BY label COLLATE NOCASE, p.id""", (location['id'],))]
+                           WHERE oc.location_id=? ORDER BY label COLLATE NOCASE, p.id""", (location['id'],))
+                   if (row['stock_form'] or _type_form(row) or row['counted_form']) != row['counted_form']]
         if trusts_legacy(location['code']):
             column = legacy_column(location['code'])
             # As going live checks: POPCORE stock here of a verified product, or of one counted
