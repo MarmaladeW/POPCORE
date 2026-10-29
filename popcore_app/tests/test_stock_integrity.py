@@ -100,7 +100,7 @@ class StockIntegrityTests(IsolatedApiCase):
 
         report = self.client.post(
             '/api/sales/submit_daily_report',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'store_code': 'DT', 'date': '2026-09-08',
                 'items': [{
@@ -300,7 +300,7 @@ class StockIntegrityTests(IsolatedApiCase):
         before = self.snapshot(tables)
         response = self.client.post(
             '/api/sales/submit_daily_report',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'store_code': 'DT',
                 'date': '2026-09-08',
@@ -337,7 +337,7 @@ class StockIntegrityTests(IsolatedApiCase):
 
         response = self.client.post(
             '/api/sales/submit_daily_report',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={'store_code': 'DT', 'date': '2026-09-08', 'items': []},
         )
 

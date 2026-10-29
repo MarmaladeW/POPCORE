@@ -60,7 +60,7 @@ export const checkoutSections = ['/special-orders', '/checkout/cash-exchange', '
 
 export function activeSection(pathname: string, manager: boolean): string {
   if (pathname === '/checkout/history' || pathname === '/sales/entry' || pathname === '/special-orders' || pathname === '/checkout/cash-exchange') return '/checkout'
-  if (pathname === '/closing' || pathname === '/sales' || pathname.startsWith('/sales/day/')) return '/summary'
+  if (pathname === '/closing' || pathname === '/sales' || pathname.startsWith('/sales/day/') || pathname === '/sales/report-stock') return '/summary'
   if (pathname === '/sales/matching') return '/reports'
   if (pathname === '/incoming/display') return '/incoming'
   if (pathname.startsWith('/goods/receiving') || pathname.startsWith('/goods/transfers')) return '/incoming'

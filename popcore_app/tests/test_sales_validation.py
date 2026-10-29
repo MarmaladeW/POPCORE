@@ -38,17 +38,17 @@ class IntegerValidationTests(unittest.TestCase):
 class SalesRouteValidationTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
-        # Legacy writes need access to the store (store_access.py): the test staff gets DT.
+        # Legacy writes need access to the store (store_access.py): the test staff and manager get DT.
         with closing(self.connect()) as con:
-            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)",
-                        (self.store_id,))
+            for subject in ('auth0|staff', 'auth0|manager'):
+                con.execute('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)', (subject, self.store_id))
             con.commit()
 
     def test_negative_sale_leaves_all_rows_unchanged(self):
         before = self.snapshot(('daily_sales', 'stock', 'stock_transactions'))
         response = self.client.post(
             '/api/sales/upsert',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'product_id': self.product_id,
                 'store_code': 'DT',
@@ -67,7 +67,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
     def test_fractional_sale_is_not_truncated(self):
         response = self.client.post(
             '/api/sales/upsert',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'product_id': self.product_id,
                 'store_code': 'DT',
@@ -84,7 +84,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
             with self.subTest(value=value):
                 response = self.client.post(
                     '/api/sales/upsert',
-                    headers=self.headers(),
+                    headers=self.headers('manager'),
                     json={
                         'product_id': self.product_id,
                         'store_code': 'DT',
@@ -99,7 +99,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
         before = self.snapshot(('daily_sales',))
         response = self.client.post(
             '/api/sales/batch_upsert',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'store_code': 'DT',
                 'items': [
@@ -116,7 +116,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
     def test_invalid_business_date_is_rejected(self):
         response = self.client.post(
             '/api/sales/upsert',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'product_id': self.product_id,
                 'store_code': 'DT',
@@ -134,7 +134,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
             with self.subTest(store_code=store_code):
                 response = self.client.post(
                     '/api/sales/upsert',
-                    headers=self.headers(),
+                    headers=self.headers('manager'),
                     json={
                         'product_id': self.product_id,
                         'store_code': store_code,
@@ -149,7 +149,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
         before = self.snapshot(('daily_sales', 'stock', 'stock_transactions'))
         response = self.client.post(
             '/api/sales/submit_daily_report',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'store_code': 'DT',
                 'date': '2026-09-08',
@@ -182,7 +182,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
 
         response = self.client.post(
             '/api/sales/submit_daily_report',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'store_code': 'DT',
                 'date': '2026-09-08',
@@ -203,7 +203,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
         before = self.snapshot(('daily_sales', 'stock', 'stock_transactions'))
         response = self.client.post(
             '/api/sales/submit_daily_report',
-            headers=self.headers(),
+            headers=self.headers('manager'),
             json={
                 'store_code': 'DT',
                 'date': '2026-09-08',
@@ -226,10 +226,10 @@ class SalesRouteValidationTests(IsolatedApiCase):
 class StockRouteValidationTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
-        # Legacy writes need access to the store (store_access.py): the test staff gets DT.
+        # Legacy writes need access to the store (store_access.py): the test staff and manager get DT.
         with closing(self.connect()) as con:
-            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)",
-                        (self.store_id,))
+            for subject in ('auth0|staff', 'auth0|manager'):
+                con.execute('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)', (subject, self.store_id))
             con.commit()
 
     def test_missing_product_stock_move_is_not_a_server_error(self):

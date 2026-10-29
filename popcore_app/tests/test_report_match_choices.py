@@ -7,21 +7,21 @@ from support import IsolatedApiCase
 class ReportMatchChoiceTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
-        # Daily report writes need access to the store (store_access.py): the test staff gets DT.
+        # Daily report writes need access to the store (store_access.py): the test manager gets DT.
         with closing(self.connect()) as con:
-            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)",
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)",
                         (self.store_id,))
             con.commit()
 
     def parse(self, line, header='随手记汇总：'):
-        response = self.client.post('/api/sales/parse_report', headers=self.headers(),
+        response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
                                     json={'text': '2026.9.14 DT\n' + header + '\n' + line,
                                           'store_code': 'DT', 'engine': 'rules'})
         self.assertEqual(response.status_code, 200)
         return response.get_json()
 
     def submit(self, items, **extra):
-        return self.client.post('/api/sales/submit_daily_report', headers=self.headers(),
+        return self.client.post('/api/sales/submit_daily_report', headers=self.headers('manager'),
                                 json={'date': '2026-09-14', 'store_code': 'DT',
                                       'classification': 'summary_only', 'items': items, **extra})
 

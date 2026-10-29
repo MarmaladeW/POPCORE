@@ -2066,7 +2066,50 @@ def _get_migrations():
         ('clover_import_failures',                     _migration_clover_import_failures),
         ('payment_refund_business_date',               _migration_payment_refund_business_date),
         ('opening_counts',                             _migration_opening_counts),
+        ('report_stock_takes',                         _migration_report_stock_takes),
+        ('report_stock_issues',                        _migration_report_stock_issues),
     ]
+
+
+def _migration_report_stock_takes(con, cur):
+    # A live store's daily report takes its sales off the floor (owner, 2026-10-29): how much
+    # each product's sales on each day already took, so a changed report moves only the difference.
+    cur.execute("""CREATE TABLE IF NOT EXISTS report_stock_takes (
+        store_id      INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT    NOT NULL,
+        product_id    INTEGER NOT NULL REFERENCES products(id),
+        taken         INTEGER NOT NULL CHECK (taken >= 0),
+        updated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (store_id, business_date, product_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_stock_takes')")
+
+
+def _migration_report_stock_issues(con, cur):
+    # Every mismatch a live store's daily report finds is kept for managers and admins until a
+    # later save settles it or a manager checks it (owner, 2026-10-29). A checked shortfall is
+    # already reflected in the floor count, so `checked` keeps it from ever being taken off.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(report_stock_takes)')}
+    if 'checked' not in columns:
+        cur.execute('ALTER TABLE report_stock_takes ADD COLUMN checked INTEGER NOT NULL DEFAULT 0 CHECK (checked >= 0)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS report_stock_issues (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id      INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT    NOT NULL,
+        product_id    INTEGER NOT NULL REFERENCES products(id),
+        reason        TEXT    NOT NULL CHECK (reason IN ('not_counted', 'not_enough_on_floor',
+                                                         'set_size_unknown', 'counted_same_day')),
+        quantity      INTEGER NOT NULL CHECK (quantity > 0),
+        detail        TEXT,
+        status        TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'checked', 'resolved')),
+        checked_by    TEXT,
+        checked_at    TEXT,
+        created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (store_id, business_date, product_id, reason)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_report_stock_issues_open ON report_stock_issues(status, store_id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_stock_issues')")
 
 
 def _run_migrations(con, cur):

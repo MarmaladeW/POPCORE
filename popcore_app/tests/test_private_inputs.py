@@ -21,7 +21,7 @@ class PrivateInputTests(IsolatedApiCase):
         ) as parse_llm:
             response = self.client.post(
                 '/api/sales/parse_report',
-                headers=self.headers(),
+                headers=self.headers('manager'),
                 json={'store_code': 'DT', 'text': '2026-09-08 DT'},
             )
 
@@ -38,7 +38,7 @@ class PrivateInputTests(IsolatedApiCase):
             ) as parse_llm:
                 response = self.client.post(
                     '/api/sales/parse_report',
-                    headers=self.headers(),
+                    headers=self.headers('manager'),
                     json={
                         'store_code': 'DT',
                         'text': '2026-09-08 DT',
@@ -65,7 +65,7 @@ class PrivateInputTests(IsolatedApiCase):
             ):
                 response = self.client.post(
                     '/api/sales/parse_report',
-                    headers=self.headers(),
+                    headers=self.headers('manager'),
                     json={
                         'store_code': 'DT',
                         'text': '2026-09-08 DT',

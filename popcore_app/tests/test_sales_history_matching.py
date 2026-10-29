@@ -135,9 +135,9 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
 
     def test_explicit_type_variant_and_packaging_notes_require_review(self):
         for note in ('plush S3','sealed set','single box','100%','隐藏','Molly secret'):
-            response=self.client.post('/api/sales/parse_report',headers=self.headers(),json={'store_code':'DT','engine':'rules','text':f'卡机汇总:\nTest Product*1 ({note})'})
+            response=self.client.post('/api/sales/parse_report',headers=self.headers('manager'),json={'store_code':'DT','engine':'rules','text':f'卡机汇总:\nTest Product*1 ({note})'})
             self.assertFalse(response.get_json()['confirmed'],note)
-        paid=self.client.post('/api/sales/parse_report',headers=self.headers(),json={'store_code':'DT','engine':'rules','text':'卡机汇总:\nTest Product*1 (cash30+card9)'})
+        paid=self.client.post('/api/sales/parse_report',headers=self.headers('manager'),json={'store_code':'DT','engine':'rules','text':'卡机汇总:\nTest Product*1 (cash30+card9)'})
         self.assertEqual(len(paid.get_json()['confirmed']),1)
 
     def test_explicit_confirmed_design_notes_do_not_auto_confirm_bare_alias(self):
@@ -150,7 +150,7 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
                                     ('',True),('cash30+card9',True)):
             with self.subTest(note=note):
                 suffix=f' ({note})' if note else ''
-                response=self.client.post('/api/sales/parse_report',headers=self.headers(),json={
+                response=self.client.post('/api/sales/parse_report',headers=self.headers('manager'),json={
                     'store_code':'DT','engine':'rules','text':f'卡机汇总:\nGarden*1{suffix}'})
                 self.assertEqual(response.status_code,200,response.get_json())
                 parsed=response.get_json()

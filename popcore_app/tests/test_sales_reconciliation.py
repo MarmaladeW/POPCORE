@@ -118,11 +118,11 @@ class SaleReconciliationTests(SalePostingTests):
                        'qty_pos': 2, 'qty_cash': 0, 'qty': 2}],
         }
         unclassified = self.client.post(
-            '/api/sales/submit_daily_report', headers=self.headers(), json=payload,
+            '/api/sales/submit_daily_report', headers=self.headers('manager'), json=payload,
         )
         self.assertEqual(unclassified.status_code, 409, unclassified.get_json())
         classified = self.client.post(
-            '/api/sales/submit_daily_report', headers=self.headers(),
+            '/api/sales/submit_daily_report', headers=self.headers('manager'),
             json={**payload, 'classification': 'summary_only'},
         )
         self.assertEqual(classified.status_code, 200, classified.get_json())
