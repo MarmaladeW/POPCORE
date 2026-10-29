@@ -47,10 +47,13 @@ class StockCountingTests(IsolatedApiCase):
             con.execute('UPDATE products SET boxes_per_dan=12 WHERE id=?', (self.echo,))
             con.execute("""INSERT INTO product_barcodes(code, product_id, code_kind, input_unit, quantity_per_scan)
                            VALUES (?, ?, 'manufacturer', 'box', 1)""", (BARCODE, self.box))
-            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 2, 5, 0)',
+            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 5, 2, 0)',
                         (self.box, self.dt))
-            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 0, 3, 0)',
+            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 3, 0, 0)',
                         (self.card_item, self.dt))
+            # Whole sets are counted upstairs (the floor keeps blind boxes as boxes), so these tests
+            # count upstairs what they used to count on the floor, with the legacy stock swapped too.
+            con.execute('UPDATE stock SET upstairs_qty=2, instore_qty=10 WHERE product_id=?', (self.product_id,))
             for subject in (STAFF, 'auth0|admin'):
                 con.execute('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)', (subject, self.dt))
             con.commit()
@@ -67,7 +70,7 @@ class StockCountingTests(IsolatedApiCase):
     def get(self, path, role='staff', **params):
         return self.client.get(path, query_string={'store_code': 'DT', **params}, headers=self.headers(role))
 
-    def save(self, entries, *, location='floor', product=None, checked=None, key='k1', role='staff', new_set=None):
+    def save(self, entries, *, location='upstairs', product=None, checked=None, key='k1', role='staff', new_set=None):
         body = {'store_code': 'DT', 'location': location, 'product_id': product or self.box, 'entries': entries}
         if checked is not None:
             body['designs_checked'] = checked
@@ -77,7 +80,7 @@ class StockCountingTests(IsolatedApiCase):
         return self.client.post('/api/counting/counts', json=body, headers=headers)
 
     def search(self, query):
-        response = self.get('/api/counting/search', location='floor', q=query)
+        response = self.get('/api/counting/search', location='upstairs', q=query)
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()['results']
 
@@ -91,7 +94,7 @@ class StockCountingTests(IsolatedApiCase):
         self.assertEqual(self.search('   '), [])
 
     def test_the_card_holds_the_box_its_sealed_set_and_its_designs(self):
-        card = self.get('/api/counting/card', location='floor', product_id=self.lantern).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.lantern).get_json()
         self.assertEqual(card['product_id'], self.box)
         self.assertEqual([(i['role'], i['product_id']) for i in card['items']],
                          [('box', self.box), ('set', self.set), ('design', self.lantern), ('design', self.rider)])
@@ -99,8 +102,28 @@ class StockCountingTests(IsolatedApiCase):
         self.assertIsNone(card['designs_checked'])
         self.assertFalse(card['live'])
         self.assertTrue(all('count' not in item and 'balance_version' not in item for item in card['items']))
-        item = self.get('/api/counting/card', location='floor', product_id=self.card_item).get_json()
+        item = self.get('/api/counting/card', location='upstairs', product_id=self.card_item).get_json()
         self.assertEqual([(i['role'], i['suggested_form']) for i in item['items']], [('item', 'ordinary')])
+
+    def test_the_floor_counts_a_blind_box_as_boxes_only(self):
+        # Sets opened on the floor are never recorded, so the floor keeps boxes and whole sets are
+        # counted upstairs (owner, 2026-10-29); the box shows its set size for '≈ N 端'.
+        card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+        self.assertEqual([(i['role'], i['product_id']) for i in card['items']],
+                         [('box', self.box), ('design', self.lantern), ('design', self.rider)])
+        self.assertEqual((card['items'][0]['set_size'], card['new_sealed_set']), (12, None))
+        self.assertIsNone(self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()['new_sealed_set'])
+        self.assertEqual(self.get('/api/counting/search', location='floor', q='warm').get_json()['results'][0]['sets'], 0)
+        for number, (entries, new_set) in enumerate([
+                ([{'product_id': self.box, 'quantity': 3}, {'product_id': self.set, 'quantity': 1}], None),
+                ([{'product_id': self.echo, 'quantity': 3}], {'quantity': 1, 'boxes_per_set': 12})]):
+            refused = self.save(entries, location='floor', product=entries[0]['product_id'], new_set=new_set,
+                                key=f'floor-{number}')
+            self.assertEqual((refused.status_code, refused.get_json()['code']), (400, 'whole_sets_upstairs'))
+        boxes = self.save([{'product_id': self.box, 'quantity': 30}], location='floor', key='floor-boxes')
+        self.assertEqual(boxes.status_code, 200, boxes.get_json())
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku='ECHO-1-SET'").fetchone()[0], 0)
 
     def test_before_go_live_a_count_is_recorded_and_stock_is_untouched(self):
         before = self.snapshot(['stock', 'inventory_balances', 'stock_transactions'])
@@ -121,7 +144,7 @@ class StockCountingTests(IsolatedApiCase):
             self.assertEqual([tuple(r) for r in con.execute(
                 'SELECT product_id, quantity, previous_quantity FROM opening_count_events ORDER BY id')],
                 [(self.box, 7, None), (self.set, 1, None), (self.box, 8, 7)])
-        card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()
         self.assertEqual(card['items'][0]['count']['quantity'], 8)
 
     def test_designs_are_counted_only_once_they_are_checked(self):
@@ -132,7 +155,7 @@ class StockCountingTests(IsolatedApiCase):
         self.assertEqual(checked.status_code, 200, checked.get_json())
         later = self.save([{'product_id': self.lantern, 'quantity': 0}], key='k3')
         self.assertEqual(later.status_code, 200, later.get_json())
-        card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()
         self.assertEqual(card['designs_checked']['by'], 'someone')
         self.assertEqual({i['product_id']: i.get('count', {}).get('quantity') for i in card['items']},
                          {self.box: 0, self.set: None, self.rider: 2, self.lantern: 0})
@@ -149,9 +172,11 @@ class StockCountingTests(IsolatedApiCase):
         later = self.save([{'product_id': self.set, 'quantity': 2}], key='k4')
         self.assertEqual(later.status_code, 200, later.get_json())
         self.assertEqual(later.get_json()['boxes'], {'popcore': 5, 'counted': 24})
-        # Elsewhere in the store the boxes are counted again.
-        upstairs = self.save([{'product_id': self.set, 'quantity': 1}], location='upstairs', key='k5')
-        self.assertEqual(upstairs.get_json()['code'], 'head_uncounted')
+        # Elsewhere in the store the boxes are counted again; the floor counts no whole sets at all.
+        display = self.save([{'product_id': self.set, 'quantity': 1}], location='display', key='k5')
+        self.assertEqual(display.get_json()['code'], 'head_uncounted')
+        floor = self.save([{'product_id': self.set, 'quantity': 1}], location='floor', key='k6')
+        self.assertEqual((floor.status_code, floor.get_json()['code']), (400, 'whole_sets_upstairs'))
 
     def test_counts_must_belong_to_the_card_and_be_whole_numbers(self):
         cases = [
@@ -213,24 +238,24 @@ class StockCountingTests(IsolatedApiCase):
                          'invalid_input')
 
     def test_progress_lists_what_has_pos_stock_here_but_no_count(self):
-        progress = self.get('/api/counting/progress', location='floor').get_json()
+        progress = self.get('/api/counting/progress', location='upstairs').get_json()
         missing = {item['product_id']: item['blocks_opening'] for item in progress['missing']}
         self.assertEqual(missing, {self.product_id: False, self.box: True, self.card_item: False})
         self.save([{'product_id': self.box, 'quantity': 5}])
-        progress = self.get('/api/counting/progress', location='floor').get_json()
+        progress = self.get('/api/counting/progress', location='upstairs').get_json()
         self.assertEqual(progress['counted'], 1)
         self.assertNotIn(self.box, {item['product_id'] for item in progress['missing']})
         scope = self.get('/api/counting/scope').get_json()
         self.assertEqual({location['code']: location['counted'] for location in scope['locations']},
-                         {'floor': 1, 'upstairs': 0, 'claw': 0, 'display': 0})
+                         {'upstairs': 1, 'floor': 0, 'claw': 0, 'display': 0})
 
     def _count_the_store(self):
         saves = [
-            ('floor', self.box, [{'product_id': self.box, 'quantity': 7}, {'product_id': self.set, 'quantity': 1},
+            ('upstairs', self.box, [{'product_id': self.box, 'quantity': 7}, {'product_id': self.set, 'quantity': 1},
                                  {'product_id': self.rider, 'quantity': 2}, {'product_id': self.lantern, 'quantity': 0}],
              True),
-            ('floor', self.card_item, [{'product_id': self.card_item, 'quantity': 4}], None),
-            ('upstairs', self.box, [{'product_id': self.box, 'quantity': 2}], None),
+            ('upstairs', self.card_item, [{'product_id': self.card_item, 'quantity': 4}], None),
+            ('floor', self.box, [{'product_id': self.box, 'quantity': 2}], None),
         ]
         for number, (location, product, entries, checked) in enumerate(saves):
             response = self.save(entries, location=location, product=product, checked=checked, key=f'count-{number}')
@@ -264,8 +289,8 @@ class StockCountingTests(IsolatedApiCase):
                    JOIN inventory_locations l ON l.id=b.location_id
                    WHERE l.store_id=? AND b.disposition='saleable'""", (self.dt,))}
             self.assertEqual({key: value for key, value in balances.items() if value},
-                             {(self.box, 'floor'): 7, (self.set, 'floor'): 1, (self.rider, 'floor'): 2,
-                              (self.card_item, 'floor'): 4, (self.box, 'upstairs'): 2})
+                             {(self.box, 'upstairs'): 7, (self.set, 'upstairs'): 1, (self.rider, 'upstairs'): 2,
+                              (self.card_item, 'upstairs'): 4, (self.box, 'floor'): 2})
             self.assertEqual(con.execute('SELECT stock_form, identity_status FROM products WHERE id=?',
                                          (self.card_item,)).fetchone()[:], ('ordinary', 'verified'))
         again = self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'again.db'))
@@ -274,7 +299,7 @@ class StockCountingTests(IsolatedApiCase):
     def test_once_live_a_count_corrects_stock_at_once(self):
         self._count_the_store()
         self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
-        card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()
         self.assertTrue(card['live'])
         version = card['items'][0]['balance_version']
         self.assertTrue(all('count' not in item for item in card['items']))
@@ -285,12 +310,12 @@ class StockCountingTests(IsolatedApiCase):
         stale = self.save([{'product_id': self.box, 'quantity': 5, 'balance_version': version}], key='live-2')
         self.assertEqual((stale.status_code, stale.get_json()['code'], stale.get_json()['product_ids']),
                          (409, 'count_stale', [self.box]))
-        fresh = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()['items'][0]
+        fresh = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()['items'][0]
         same = self.save([{'product_id': self.box, 'quantity': 6, 'balance_version': fresh['balance_version']}],
                          key='live-3')
         self.assertEqual(same.status_code, 200, same.get_json())
         with closing(self.connect()) as con:
-            location = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'",
+            location = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='upstairs'",
                                    (self.dt,)).fetchone()[0]
             self.assertEqual(con.execute("""SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?
                                             AND disposition='saleable'""", (self.box, location)).fetchone()[0], 6)
@@ -299,20 +324,20 @@ class StockCountingTests(IsolatedApiCase):
                           line.observed_quantity FROM inventory_counts c
                    JOIN inventory_count_lines line ON line.count_id=c.id ORDER BY c.id""")]
             self.assertEqual(counts, [('approved', '盘点 Count', 1, 7, 6), ('approved', '盘点 Count', 0, 6, 6)])
-            self.assertEqual(con.execute("SELECT instore_qty FROM stock WHERE product_id=? AND store_id=?",
+            self.assertEqual(con.execute("SELECT upstairs_qty FROM stock WHERE product_id=? AND store_id=?",
                                          (self.box, self.dt)).fetchone()[0], 6)
-        progress = self.get('/api/counting/progress', location='floor').get_json()
+        progress = self.get('/api/counting/progress', location='upstairs').get_json()
         self.assertEqual((progress['live'], progress['counted']), (True, 1))
 
     def test_once_live_a_product_missed_on_count_day_is_verified_by_its_recount(self):
         self._count_the_store()
         self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
-        card = self.get('/api/counting/card', location='upstairs', product_id=self.product_id).get_json()
+        card = self.get('/api/counting/card', location='floor', product_id=self.product_id).get_json()
         self.assertEqual([(i['identity_status'], i['suggested_form']) for i in card['items']], [('unverified', None)])
         entry = {'product_id': self.product_id, 'quantity': 10, 'balance_version': card['items'][0]['balance_version']}
-        missing_form = self.save([entry], location='upstairs', product=self.product_id, key='late-1')
+        missing_form = self.save([entry], location='floor', product=self.product_id, key='late-1')
         self.assertEqual(missing_form.get_json()['code'], 'identity_unverified')
-        saved = self.save([{**entry, 'stock_form': 'ordinary'}], location='upstairs', product=self.product_id, key='late-2')
+        saved = self.save([{**entry, 'stock_form': 'ordinary'}], location='floor', product=self.product_id, key='late-2')
         self.assertEqual(saved.status_code, 200, saved.get_json())
         self.assertEqual(saved.get_json()['results'][0]['popcore_quantity'], 0)
         with closing(self.connect()) as con:
@@ -320,12 +345,12 @@ class StockCountingTests(IsolatedApiCase):
                                                (self.product_id,)).fetchone()), ('ordinary', 'piece', 'verified'))
             self.assertEqual(con.execute(
                 """SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
-                   WHERE b.product_id=? AND l.code='upstairs' AND l.store_id=? AND b.disposition='saleable'""",
+                   WHERE b.product_id=? AND l.code='floor' AND l.store_id=? AND b.disposition='saleable'""",
                 (self.product_id, self.dt)).fetchone()[0], 10)
 
     def test_the_product_type_decides_what_is_counted(self):
         def card(product):
-            return self.get('/api/counting/card', location='floor', product_id=product).get_json()
+            return self.get('/api/counting/card', location='upstairs', product_id=product).get_json()
         echo = card(self.echo)
         self.assertEqual([(i['role'], i['suggested_form']) for i in echo['items']], [('box', 'random_box')])
         self.assertEqual(echo['new_sealed_set'], {'boxes_per_set': 12})
@@ -354,17 +379,17 @@ class StockCountingTests(IsolatedApiCase):
                 [(self.echo, 5, 'random_box'), (whole['id'], 2, 'sealed_set')])
         self.assertEqual(sorted((r['product_id'], r['quantity']) for r in saved.get_json()['results']),
                          [(self.echo, 5), (whole['id'], 2)])
-        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()
         self.assertEqual(([(i['role'], i.get('count', {}).get('quantity')) for i in card['items']], card['new_sealed_set']),
                          ([('box', 5), ('set', 2)], None))
         # A second phone whose card showed no whole set: here the first phone's count stands...
         same_shelf = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='k2')
         self.assertEqual((same_shelf.status_code, same_shelf.get_json()['code'], same_shelf.get_json()['product_ids']),
                          (409, 'count_stale', [whole['id']]))
-        # ...and upstairs it counts against the set the first phone added.
-        upstairs = self.save([{'product_id': self.echo, 'quantity': 0}], location='upstairs', product=self.echo,
-                             new_set={'quantity': 1, 'boxes_per_set': 12}, key='k3')
-        self.assertEqual(upstairs.status_code, 200, upstairs.get_json())
+        # ...and elsewhere it counts against the set the first phone added.
+        display = self.save([{'product_id': self.echo, 'quantity': 0}], location='display', product=self.echo,
+                            new_set={'quantity': 1, 'boxes_per_set': 12}, key='k3')
+        self.assertEqual(display.status_code, 200, display.get_json())
         with closing(self.connect()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku LIKE 'ECHO-1-SET%'").fetchone()[0], 1)
             self.assertEqual([r[0] for r in con.execute('SELECT quantity FROM opening_counts WHERE product_id=? '
@@ -390,7 +415,7 @@ class StockCountingTests(IsolatedApiCase):
 
     def test_whole_sets_are_not_offered_without_a_free_set_sku(self):
         def offer():
-            return self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()['new_sealed_set']
+            return self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()['new_sealed_set']
         with closing(self.connect()) as con:
             taken = self._product(con, 'ECHO-1-SET', 'Someone else', '周边', 'ordinary', 'piece')
             con.commit()
@@ -406,7 +431,7 @@ class StockCountingTests(IsolatedApiCase):
 
     def test_a_card_opened_before_someone_else_saved_does_not_overwrite_their_count(self):
         def shown(product):
-            card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+            card = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()
             return next(item.get('count', {}).get('version') for item in card['items'] if item['product_id'] == product)
         self.assertIsNone(shown(self.box))
         first = self.save([{'product_id': self.box, 'quantity': 7, 'count_version': None}])
@@ -440,7 +465,7 @@ class StockCountingTests(IsolatedApiCase):
     def test_a_live_card_names_only_the_products_whose_stock_moved(self):
         self._count_the_store()
         self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
-        card = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()
         versions = {item['product_id']: item['balance_version'] for item in card['items']}
         moved = self.save([{'product_id': self.rider, 'quantity': 1, 'balance_version': versions[self.rider]}],
                           key='sale')
@@ -453,7 +478,7 @@ class StockCountingTests(IsolatedApiCase):
     def test_a_live_whole_set_added_by_another_phone_is_counted_again(self):
         self._count_the_store()
         self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
-        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()
         box = {'product_id': self.echo, 'quantity': 2, 'balance_version': card['items'][0]['balance_version']}
         first = self.save([box], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 12}, key='a')
         self.assertEqual(first.status_code, 200, first.get_json())
@@ -469,12 +494,12 @@ class StockCountingTests(IsolatedApiCase):
         self._count_the_store()
         self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
         with closing(self.connect()) as con:
-            floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'",
+            upstairs = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='upstairs'",
                                 (self.dt,)).fetchone()[0]
             con.execute("""INSERT INTO inventory_balances(product_id, location_id, disposition, quantity, version)
-                           VALUES (?, ?, 'hold', 2, 1)""", (self.box, floor))
+                           VALUES (?, ?, 'hold', 2, 1)""", (self.box, upstairs))
             con.commit()
-        items = self.get('/api/counting/card', location='floor', product_id=self.box).get_json()['items']
+        items = self.get('/api/counting/card', location='upstairs', product_id=self.box).get_json()['items']
         self.assertEqual([(i['product_id'], i.get('other_stock')) for i in items if i.get('other_stock')],
                          [(self.box, [{'disposition': 'hold', 'quantity': 2}])])
 
@@ -483,39 +508,39 @@ class StockCountingTests(IsolatedApiCase):
             progress = self.get('/api/counting/progress', location=location).get_json()
             return {item['product_id']: (item['blocks_opening'], item.get('recount', False))
                     for item in progress['missing']}
-        self.assertEqual(left('floor')[self.product_id], (False, False))
-        # Counted upstairs, going live verifies it, so its POPCORE stock on the floor must be counted too.
-        upstairs = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'ordinary'}],
-                             location='upstairs', product=self.product_id)
-        self.assertEqual(upstairs.status_code, 200, upstairs.get_json())
-        self.assertEqual(left('floor')[self.product_id], (True, False))
+        self.assertEqual(left('upstairs')[self.product_id], (False, False))
+        # Counted floor, going live verifies it, so its POPCORE stock on the upstairs must be counted too.
+        floor = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'ordinary'}],
+                             location='floor', product=self.product_id)
+        self.assertEqual(floor.status_code, 200, floor.get_json())
+        self.assertEqual(left('upstairs')[self.product_id], (True, False))
         # Set up as another form in Products after it was counted: count it again.
         with closing(self.connect()) as con:
             con.execute("UPDATE products SET stock_form='random_box', stock_unit='box', identity_status='verified' "
                         'WHERE id=?', (self.product_id,))
             con.commit()
-        self.assertEqual(left('upstairs')[self.product_id], (True, True))
+        self.assertEqual(left('floor')[self.product_id], (True, True))
         self.assertIn('identity_changed', {error['code'] for error in self._review()['errors']})
 
     def test_an_untyped_product_keeps_the_form_it_was_first_counted_as(self):
-        floor = self.save([{'product_id': self.product_id, 'quantity': 2, 'stock_form': 'random_box'}],
+        upstairs = self.save([{'product_id': self.product_id, 'quantity': 2, 'stock_form': 'random_box'}],
                           product=self.product_id)
-        self.assertEqual(floor.status_code, 200, floor.get_json())
-        card = self.get('/api/counting/card', location='upstairs', product_id=self.product_id).get_json()
+        self.assertEqual(upstairs.status_code, 200, upstairs.get_json())
+        card = self.get('/api/counting/card', location='floor', product_id=self.product_id).get_json()
         self.assertEqual(card['items'][0]['counted_form'], 'random_box')
         other = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'ordinary'}],
-                          location='upstairs', product=self.product_id, key='k2')
+                          location='floor', product=self.product_id, key='k2')
         self.assertEqual((other.status_code, other.get_json()['code']), (409, 'identity_conflict'))
         self.assertIn('DT', other.get_json()['error'])
         same = self.save([{'product_id': self.product_id, 'quantity': 10, 'stock_form': 'random_box'}],
-                         location='upstairs', product=self.product_id, key='k3')
+                         location='floor', product=self.product_id, key='k3')
         self.assertEqual(same.status_code, 200, same.get_json())
         # Counted as an item at one place, it gets no whole set (which would make it a blind box) at another.
         with closing(self.connect()) as con:
             con.execute("UPDATE products SET product_type='' WHERE id=?", (self.card_item,))
             con.commit()
         item = self.save([{'product_id': self.card_item, 'quantity': 1, 'stock_form': 'ordinary'}],
-                         location='upstairs', product=self.card_item, key='k4')
+                         location='floor', product=self.card_item, key='k4')
         self.assertEqual(item.status_code, 200, item.get_json())
         boxed = self.save([{'product_id': self.card_item, 'quantity': 0, 'stock_form': 'random_box'}],
                           product=self.card_item, new_set={'quantity': 1, 'boxes_per_set': 6}, key='k5')
@@ -535,11 +560,11 @@ class StockCountingTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute("UPDATE products SET product_type='盲盒' WHERE id=?", (self.echo,))
             con.commit()
-        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()
         self.assertEqual(card['items'][0]['suggested_form'], 'random_box')
-        floor = self.save([{'product_id': self.echo, 'quantity': 3, 'stock_form': 'random_box'}],
+        upstairs = self.save([{'product_id': self.echo, 'quantity': 3, 'stock_form': 'random_box'}],
                           product=self.echo, key='k2')
-        self.assertEqual(floor.status_code, 200, floor.get_json())
+        self.assertEqual(upstairs.status_code, 200, upstairs.get_json())
         # The claw count, in the form the type no longer has, is counted again.
         left = self.get('/api/counting/progress', location='claw').get_json()['missing']
         self.assertIn((self.echo, True), [(row['product_id'], row.get('recount', False)) for row in left])
@@ -562,12 +587,12 @@ class StockCountingTests(IsolatedApiCase):
             con.commit()
             products = [row[0] for row in con.execute('SELECT id FROM products')]
         for product in products:
-            card = self.get('/api/counting/card', location='floor', product_id=product).get_json()
+            card = self.get('/api/counting/card', location='upstairs', product_id=product).get_json()
             self.assertIn(product, [item['product_id'] for item in card['items']], card)
         self.assertEqual([(r['product_id'], r['kind']) for r in self.search('hanging card')],
                          [(self.card_item, 'item')])
         self.assertEqual([r['kind'] for r in self.search('loose one')], ['series'])
-        self.assertEqual(self.get('/api/counting/card', location='floor', product_id=orphan).get_json()['title'],
+        self.assertEqual(self.get('/api/counting/card', location='upstairs', product_id=orphan).get_json()['title'],
                          'Loose')
 
     def test_a_mistyped_design_can_be_removed_with_its_count(self):
@@ -577,7 +602,7 @@ class StockCountingTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM opening_counts WHERE product_id=?',
                                          (self.rider,)).fetchone()[0], 0)
-            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 0, 1, 0)',
+            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 1, 0, 0)',
                         (self.lantern, self.dt))
             con.commit()
         in_use = self.client.post(f'/api/products/{self.lantern}/design/remove', headers=self.headers('manager'))

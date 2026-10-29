@@ -267,6 +267,8 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const boxesInSets = sets.reduce((sum, item) => sum + amount(item) * (item.boxes_per_set || 0), 0)
   const designTotal = designs.reduce((sum, item) => sum + amount(item), 0)
   const headUnit = head ? (formOf(head) === 'random_box' ? 'box' : formOf(head) === 'ordinary' ? 'piece' : head.stock_unit) : null
+  // The floor keeps blind boxes as boxes only; whole sets are counted upstairs (owner, 2026-10-29).
+  const floorBoxes = card.location.code === 'floor' && headUnit === 'box'
   // The product type decides (owner, 2026-10-27): only an untyped product asks what it is.
   const asksKind = Boolean(head && head.identity_status !== 'verified' && !head.suggested_form)
   // A blind box always counts whole sets; one with no whole set yet gets it on the first count.
@@ -400,8 +402,9 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       </div>
     </>}
     {head && <CountField item={head} value={values[head.product_id]} onChange={setValue}
-      label={headUnit === 'box' ? '散盒 Single boxes' : headUnit === 'piece' ? '数量 Pieces' : '数量 Count'}
-      unit={headUnit ? UNITS[headUnit] : ''} />}
+      label={headUnit === 'box' ? (floorBoxes ? '盒数 All boxes' : '散盒 Single boxes') : headUnit === 'piece' ? '数量 Pieces' : '数量 Count'}
+      unit={headUnit ? UNITS[headUnit] : ''}
+      note={floorBoxes && head.set_size ? `每端 ${head.set_size} 盒 · ≈ ${Math.floor(amount(head) / head.set_size)} 端` : undefined} />}
 
     {(designs.length > 0 || (manager && head && headUnit === 'box')) && <div className="pc-count-designs">
       <div className="pc-count-designs-head">

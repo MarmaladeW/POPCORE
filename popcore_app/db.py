@@ -2066,7 +2066,22 @@ def _get_migrations():
         ('clover_import_failures',                     _migration_clover_import_failures),
         ('payment_refund_business_date',               _migration_payment_refund_business_date),
         ('opening_counts',                             _migration_opening_counts),
+        ('report_stock_takes',                         _migration_report_stock_takes),
     ]
+
+
+def _migration_report_stock_takes(con, cur):
+    # A live store's daily report takes its sales off the floor (owner, 2026-10-29): how much
+    # each product's sales on each day already took, so a changed report moves only the difference.
+    cur.execute("""CREATE TABLE IF NOT EXISTS report_stock_takes (
+        store_id      INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT    NOT NULL,
+        product_id    INTEGER NOT NULL REFERENCES products(id),
+        taken         INTEGER NOT NULL CHECK (taken >= 0),
+        updated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (store_id, business_date, product_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_stock_takes')")
 
 
 def _run_migrations(con, cur):

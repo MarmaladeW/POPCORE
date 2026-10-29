@@ -21,6 +21,7 @@ from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm,
                      load_report_match_choices, report_match_query)
 from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
 from goods_operations import _begin, _hash, _replay, _remember
+from report_stock import sync_report_stock
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
 bp = Blueprint('sales', __name__)
@@ -297,18 +298,25 @@ def upsert_sale():
         con.close()
         return jsonify({'error': 'Product not found', 'code': 'not_found',
                         'field': 'product_id'}), 404
-    cur.execute('''
-        INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(product_id, date, store) DO UPDATE SET
-            qty_pos  = excluded.qty_pos,
-            qty_cash = excluded.qty_cash,
-            qty_sold = excluded.qty_sold,
-            notes    = excluded.notes
-    ''', (pid, d, store_code, qty_pos, qty_cash, qty_sold, notes))
-    con.commit()
-    con.close()
-    return jsonify({'ok': True})
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        cur.execute('''
+            INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, date, store) DO UPDATE SET
+                qty_pos  = excluded.qty_pos,
+                qty_cash = excluded.qty_cash,
+                qty_sold = excluded.qty_sold,
+                notes    = excluded.notes
+        ''', (pid, d, store_code, qty_pos, qty_cash, qty_sold, notes))
+        stock = sync_report_stock(con, request.jwt_payload, store_id, store_code, d)
+        con.commit()
+    except InventoryError as exc:
+        con.rollback()
+        return _inventory_error(exc)
+    finally:
+        con.close()
+    return jsonify({'ok': True, 'stock': stock})
 
 
 @bp.route('/api/sales/add_product', methods=['POST'])
@@ -414,9 +422,17 @@ def delete_sales_record(record_id):
                     'code': 'reconciliation_required',
                 }), 409
     cur.execute('DELETE FROM daily_sales WHERE id = ?', (record_id,))
+    stock = None
+    if record and store:
+        try:
+            stock = sync_report_stock(con, request.jwt_payload, store['id'], record['store'], record['date'])
+        except InventoryError as exc:
+            con.rollback()
+            con.close()
+            return _inventory_error(exc)
     con.commit()
     con.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'stock': stock})
 
 
 @bp.route('/api/stock/batch_operation', methods=['POST'])
@@ -742,18 +758,26 @@ def batch_upsert_sales():
             con.close()
             return jsonify({'error': 'Product not found', 'code': 'not_found',
                             'field': 'product_id', 'line': line}), 404
-    cur.executemany('''
-        INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(product_id, date, store) DO UPDATE SET
-            qty_pos  = excluded.qty_pos,
-            qty_cash = excluded.qty_cash,
-            qty_sold = excluded.qty_sold,
-            notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
-    ''', rows)
-    con.commit()
-    con.close()
-    return jsonify({'ok': True, 'count': len(rows)})
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        cur.executemany('''
+            INSERT INTO daily_sales (product_id, date, store, qty_pos, qty_cash, qty_sold, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, date, store) DO UPDATE SET
+                qty_pos  = excluded.qty_pos,
+                qty_cash = excluded.qty_cash,
+                qty_sold = excluded.qty_sold,
+                notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
+        ''', rows)
+        stock = [summary for day in sorted({row[1] for row in rows})
+                 if (summary := sync_report_stock(con, request.jwt_payload, store_id, store_code, day))]
+        con.commit()
+    except InventoryError as exc:
+        con.rollback()
+        return _inventory_error(exc)
+    finally:
+        con.close()
+    return jsonify({'ok': True, 'count': len(rows), 'stock': stock})
 
 
 # Sections that count as sales, and the daily_sales quantity column each one fills.
@@ -1280,7 +1304,13 @@ def submit_daily_report():
                 VALUES ({','.join('?' for _ in range(4 + len(_REPORT_NOTE_FIELDS)))})""",
                 (d, store_code, cash_actual, cash_expected,
                  *(annotation_lists[key] for key in _REPORT_NOTE_FIELDS)))
+        # A live store's floor follows the day's sales (owner, 2026-10-29).
+        stock = sync_report_stock(con, request.jwt_payload, store_id, store_code, d)
         con.commit()
+    except InventoryError as exc:
+        con.rollback()
+        con.close()
+        return _inventory_error(exc)
     except ValueError as exc:
         con.rollback()
         con.close()
@@ -1305,6 +1335,7 @@ def submit_daily_report():
         'stock_transactions':  txn_count,
         'replaced_sales_rows': replaced_rows,
         'reverted_stock_txns': reverted_txns,
+        'stock':               stock,
     })
 
 
@@ -1393,9 +1424,15 @@ def clear_sales_day():
     cur.execute('DELETE FROM daily_sales WHERE date = ? AND store = ?', (d, store_code))
     deleted = cur.rowcount
     cur.execute('DELETE FROM daily_report_metadata WHERE date=? AND store=?', (d, store_code))
+    try:
+        stock = sync_report_stock(con, request.jwt_payload, store_id, store_code, d)
+    except InventoryError as exc:
+        con.rollback()
+        con.close()
+        return _inventory_error(exc)
     con.commit()
     con.close()
-    return jsonify({'ok': True, 'deleted': deleted})
+    return jsonify({'ok': True, 'deleted': deleted, 'stock': stock})
 
 
 @bp.route('/api/sales/recorded-dates')

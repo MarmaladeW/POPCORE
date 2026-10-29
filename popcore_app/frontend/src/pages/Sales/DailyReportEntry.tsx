@@ -110,6 +110,12 @@ interface Props {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+interface ReportStock {
+  taken: number
+  returned: number
+  short: Array<{ product_id: number; sku: string | null; name: string; quantity: number; reason: 'not_enough_on_floor' | 'not_counted' }>
+}
+
 export default function DailyReportEntry({ date, onComplete }: Props) {
   const { selectedStore, stores } = useAppStore()
   const defaultStore = selectedStore?.code === 'ALL' ? '' : selectedStore?.code ?? ''
@@ -131,6 +137,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [reportNotes, setReportNotes] = useState<ReportAnnotations>({})
   const [metadataErrors, setMetadataErrors] = useState<string[]>([])
   const [multiDay,      setMultiDay]      = useState(false)
+  // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
+  const [stockResult,   setStockResult]   = useState<ReportStock | null>(null)
 
   // ── Parse (call backend) ──────────────────────────────────────────────────
 
@@ -265,7 +273,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
     setSubmitting(true)
     try {
-      await client.post('/sales/submit_daily_report', {
+      const { data } = await client.post('/sales/submit_daily_report', {
         date: submitDate,
         store_code: submitStore,
         mode: 'replace',
@@ -279,6 +287,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         },
         items: payload,
       })
+      setStockResult(data?.stock ?? null)
       setStep('done')
     } catch (err: any) {
       message.error(err?._serverMessage ?? err?.message ?? '提交失败')
@@ -591,7 +600,23 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         icon={<CheckCircleOutlined />}
         showIcon
         message={`Report imported — ${totalReady} items and report notes saved`}
-        description={parsedDate ? `Date: ${parsedDate}  Store: ${parsedStore}` : undefined}
+        description={<>
+          {parsedDate && <div>Date: {parsedDate}  Store: {parsedStore}</div>}
+          {stockResult && <div>
+            库存 Floor stock: {stockResult.taken} taken off{stockResult.returned ? `, ${stockResult.returned} put back` : ''}
+            {stockResult.short.length > 0 && <>
+              <div style={{ marginTop: 6 }}>
+                未扣 Not taken off, the floor did not have them. 盘点 Count these on the floor; pasting this day again tries again:
+              </div>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                {stockResult.short.map(row => <li key={row.product_id}>
+                  {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity}
+                  {row.reason === 'not_counted' ? ' (never counted at this store)' : ''}
+                </li>)}
+              </ul>
+            </>}
+          </div>}
+        </>}
         action={
           <Button type="primary" onClick={() => onComplete(parsedDate ?? date, parsedStore)}>
             View Sales
