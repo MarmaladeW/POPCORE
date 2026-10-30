@@ -271,7 +271,9 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const asksKind = Boolean(head && head.identity_status !== 'verified' && !head.suggested_form)
   // A blind box always counts whole sets; one with no whole set yet gets it on the first count.
   const offerSet = headUnit === 'box' && Boolean(card.new_sealed_set)
-  const wantsNewSet = offerSet && (newSets ?? 0) > 0
+  // Boxes per set typed with no whole sets yet is saved too, on the product (it is not lost on reopening).
+  const sizeTyped = offerSet && boxesPerSet != null && boxesPerSet !== card.new_sealed_set?.boxes_per_set
+  const wantsNewSet = offerSet && ((newSets ?? 0) > 0 || sizeTyped)
   const wholeSets = sets.reduce((sum, item) => sum + amount(item), 0) + (offerSet ? newSets || 0 : 0)
   const boxesInWholeSets = boxesInSets + (offerSet ? (newSets || 0) * (boxesPerSet || 0) : 0)
   const entries: CountEntry[] = card.items.filter(item => typed[item.product_id] && values[item.product_id] != null).map(item => ({
@@ -313,7 +315,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       const response = await saveCount({
         store_code: storeCode, location, product_id: card.product_id, entries,
         ...(card.series_id && designsOk && !card.designs_checked ? { designs_checked: true } : {}),
-        ...(wantsNewSet ? { new_sealed_set: { quantity: newSets as number, boxes_per_set: boxesPerSet as number } } : {}),
+        ...(wantsNewSet ? { new_sealed_set: { quantity: newSets ?? 0, boxes_per_set: boxesPerSet as number } } : {}),
       }, key.current)
       key.current = ''
       setSaved(response)

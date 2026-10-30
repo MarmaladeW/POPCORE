@@ -48,7 +48,7 @@ export interface CountCard {
   series_id: number | null
   designs_checked: { at: string; by: string } | null
   items: CountItem[]
-  // A blind box with no whole set yet: saving a whole-set count creates it.
+  // A blind box with no whole set yet: saving a whole-set count creates it; 0 whole sets keeps only boxes_per_set.
   new_sealed_set: { boxes_per_set: number | null } | null
 }
 

@@ -372,10 +372,92 @@ class StockCountingTests(IsolatedApiCase):
         changed = self.save([], product=self.echo, new_set={'quantity': 1, 'boxes_per_set': 6}, key='k4')
         self.assertEqual((changed.status_code, changed.get_json()['code']), (409, 'whole_set_changed'))
 
+    def test_boxes_per_set_typed_with_no_whole_sets_is_kept_on_the_product(self):
+        def card():
+            return self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        def boxes_per_dan():
+            with closing(self.connect()) as con:
+                return con.execute('SELECT boxes_per_dan FROM products WHERE id=?', (self.echo,)).fetchone()[0]
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET boxes_per_dan=NULL WHERE id=?', (self.echo,))
+            con.commit()
+        self.assertEqual(card()['new_sealed_set'], {'boxes_per_set': None})
+        # Owner report 2026-10-30: 每端几盒 typed with 0 whole sets was dropped, so it was empty on reopening.
+        saved = self.save([{'product_id': self.echo, 'quantity': 5}], product=self.echo,
+                          new_set={'quantity': 0, 'boxes_per_set': 10})
+        self.assertEqual(saved.status_code, 200, saved.get_json())
+        self.assertEqual(saved.get_json(), {'live': False, 'results': [
+            {'product_id': self.echo, 'quantity': 5, 'previous_count': None, 'popcore_quantity': 0}]})
+        self.assertEqual(boxes_per_dan(), 10)
+        with closing(self.connect()) as con:
+            # No whole set yet, so no set product: it is added when its first whole sets are counted.
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku LIKE 'ECHO-1-SET%'").fetchone()[0], 0)
+            self.assertIsNone(con.execute('SELECT 1 FROM product_conversions WHERE target_product_id=?',
+                                          (self.echo,)).fetchone())
+            self.assertEqual([tuple(r) for r in con.execute('SELECT product_id, quantity FROM opening_counts')],
+                             [(self.echo, 5)])
+        reopened = card()
+        self.assertEqual(reopened['new_sealed_set'], {'boxes_per_set': 10})
+        self.assertEqual([(i['role'], i['count']['quantity']) for i in reopened['items']], [('box', 5)])
+        # A retry is not saved twice; the same key with another size is refused.
+        self.assertEqual(self.save([{'product_id': self.echo, 'quantity': 5}], product=self.echo,
+                                   new_set={'quantity': 0, 'boxes_per_set': 10}).get_json(), saved.get_json())
+        other = self.save([{'product_id': self.echo, 'quantity': 5}], product=self.echo,
+                          new_set={'quantity': 0, 'boxes_per_set': 8})
+        self.assertEqual((other.status_code, other.get_json()['code']), (409, 'idempotency_conflict'))
+        # The size alone saves on a counted box; where the box is not counted yet, nothing is saved.
+        alone = self.save([], product=self.echo, new_set={'quantity': 0, 'boxes_per_set': 12}, key='k2')
+        self.assertEqual((alone.status_code, alone.get_json()), (200, {'live': False, 'results': []}))
+        self.assertEqual(boxes_per_dan(), 12)
+        upstairs = self.save([], location='upstairs', product=self.echo,
+                             new_set={'quantity': 0, 'boxes_per_set': 6}, key='k3')
+        self.assertEqual(upstairs.get_json()['code'], 'head_uncounted')
+        self.assertEqual(boxes_per_dan(), 12)
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM opening_count_events').fetchone()[0], 1)
+        # Counting the first whole sets still adds the set, with the saved size; after that it cannot change.
+        first_sets = self.save([], product=self.echo, new_set={'quantity': 2, 'boxes_per_set': 12}, key='k4')
+        self.assertEqual(first_sets.status_code, 200, first_sets.get_json())
+        with closing(self.connect()) as con:
+            whole = con.execute("SELECT id FROM products WHERE sku='ECHO-1-SET'").fetchone()[0]
+            self.assertEqual(con.execute('SELECT output_per_input FROM product_conversions WHERE source_product_id=?',
+                                         (whole,)).fetchone()[0], 12)
+        self.assertEqual(([(i['role'], i['count']['quantity'], i.get('boxes_per_set')) for i in card()['items']],
+                          card()['new_sealed_set']), ([('box', 5, None), ('set', 2, 12)], None))
+        changed = self.save([], product=self.echo, new_set={'quantity': 0, 'boxes_per_set': 6}, key='k5')
+        self.assertEqual((changed.status_code, changed.get_json()['code']), (409, 'whole_set_changed'))
+        self.assertEqual(boxes_per_dan(), 12)
+
+    def test_once_live_boxes_per_set_alone_moves_no_stock(self):
+        self._count_the_store()
+        self._go_live('--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db'))
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET boxes_per_dan=NULL WHERE id=?', (self.echo,))
+            con.commit()
+        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        self.assertEqual((card['live'], card['new_sealed_set']), (True, {'boxes_per_set': None}))
+        ledger = ['inventory_balances', 'inventory_counts', 'inventory_documents', 'inventory_movements']
+        before = self.snapshot(ledger)
+        # A box count against a balance that moved is refused, and the size typed with it is not saved.
+        stale = self.save([{'product_id': self.echo, 'quantity': 2, 'balance_version': 99}], product=self.echo,
+                          new_set={'quantity': 0, 'boxes_per_set': 10}, key='stale')
+        self.assertEqual((stale.status_code, stale.get_json()['code']), (409, 'count_stale'))
+        with closing(self.connect()) as con:
+            self.assertIsNone(con.execute('SELECT boxes_per_dan FROM products WHERE id=?', (self.echo,)).fetchone()[0])
+        saved = self.save([], product=self.echo, new_set={'quantity': 0, 'boxes_per_set': 10}, key='size')
+        self.assertEqual((saved.status_code, saved.get_json()), (200, {'live': True, 'results': []}))
+        self.assertEqual(self.snapshot(ledger), before)
+        with closing(self.connect()) as con:
+            self.assertEqual(tuple(con.execute('SELECT boxes_per_dan, stock_form FROM products WHERE id=?',
+                                               (self.echo,)).fetchone()), (10, None))
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku='ECHO-1-SET'").fetchone()[0], 0)
+        self.assertEqual(self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()['new_sealed_set'],
+                         {'boxes_per_set': 10})
+
     def test_whole_sets_are_only_added_to_blind_boxes(self):
         for number, (product, new_set, code) in enumerate([
             (self.card_item, {'quantity': 1, 'boxes_per_set': 6}, 'whole_set_unavailable'),
-            (self.echo, {'quantity': 0, 'boxes_per_set': 12}, 'invalid_input'),
+            (self.echo, {'quantity': -1, 'boxes_per_set': 12}, 'invalid_input'),
             (self.echo, {'quantity': 1, 'boxes_per_set': 0}, 'invalid_input'),
             (self.echo, {'quantity': 1, 'boxes_per_set': 1}, 'invalid_input'),
             (self.echo, {'quantity': 1}, 'invalid_input'),
