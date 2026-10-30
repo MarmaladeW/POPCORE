@@ -344,7 +344,8 @@ def _read_new_set(data):
     boxes = read_int(new_set['boxes_per_set'], 'boxes_per_set', minimum=2)
     if boxes > 100:
         raise InventoryValidationError('A whole set cannot hold more than 100 boxes')
-    quantity = read_int(new_set['quantity'], 'quantity', minimum=1)
+    # 0 whole sets still saves the boxes per set the counter typed (see save_counts).
+    quantity = read_int(new_set['quantity'], 'quantity', minimum=0)
     if quantity > MAX_QUANTITY:
         raise InventoryValidationError(f'A count cannot be more than {MAX_QUANTITY}')
     return {'quantity': quantity, 'boxes_per_set': boxes}
@@ -575,13 +576,18 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             elif _whole_set_offer(con, head, current) is None:
                 raise InventoryConflict('Whole sets are counted for a blind box; this product is not one',
                                         'whole_set_unavailable')
+            elif not new_set['quantity']:
+                # No whole sets counted yet: boxes per set stays on the product, where the card and the
+                # first whole-set count read it, and the set itself waits for those whole sets.
+                con.execute('UPDATE products SET boxes_per_dan=? WHERE id=?', (new_set['boxes_per_set'], head['id']))
+                set_id = None
             else:
                 if not scope['live'] and head['identity_status'] != 'verified':
                     _same_form(con, head, location, 'random_box')  # the set makes it a verified blind box
                 # Counting the first whole sets of a blind box gives it its sealed set (owner, 2026-10-27).
                 set_id = sealed_set_for(con, head['id'], new_set['boxes_per_set'])
                 head = _product(con, head['id'])
-            if all(entry['product_id'] != set_id for entry in entries):
+            if set_id is not None and all(entry['product_id'] != set_id for entry in entries):
                 # The card showed no set: someone else's count of it here since then is theirs to
                 # keep, and once live only a set this save added has a balance known to be untouched.
                 version = _balance(con, set_id, location['id'], 'saleable')['version'] if created else None
@@ -606,7 +612,9 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             raise InventoryValidationError('Check the designs are right before counting them', 'designs_unchecked')
         record = _correct_stock if scope['live'] else _record_opening
         kwargs = {'request_key': key} if scope['live'] else {}
-        outcome = record(con, actor, scope['store']['id'], location, members, entries, **kwargs)
+        # Only boxes per set was saved: no count to record, nor an empty one to keep at a live store.
+        outcome = (record(con, actor, scope['store']['id'], location, members, entries, **kwargs)
+                   if entries else {'results': []})
         response = {'live': scope['live'], **outcome}
         _remember(con, key, 'count_save', product_id, actor, digest, response)
         con.commit()
