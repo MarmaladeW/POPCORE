@@ -1,7 +1,8 @@
 // Menu model for the desktop rail, the phone bottom bar and the 更多 page (Figma "Menus" page).
 // Pages that left the menus keep their routes: /trades, /today.
 
-export type NavAccess = { staff: boolean; manager: boolean; admin: boolean }
+// inventory: 库存查看 at the selected store (always true for managers and admins).
+export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inventory: boolean }
 export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count'
 export type NavItem = { key: string; zh: string; en: string; icon: NavIcon; note?: string }
 export type NavGroup = { label: string; items: NavItem[] }
@@ -12,6 +13,8 @@ const item = {
   incoming: { key: '/incoming', zh: '入店', en: 'Receive goods', icon: 'in' },
   summary: { key: '/summary', zh: '汇总', en: 'Summary', icon: 'doc' },
   stock: { key: '/stock', zh: '库存', en: 'Inventory', icon: 'box', note: '晚盘、娃娃机' },
+  // Without 库存查看 the 库存 entry opens 晚盘 only (owner, 2026-11-01).
+  eveningCount: { key: '/stock/count', zh: '晚盘', en: 'Evening count', icon: 'count' },
   restock: { key: '/restock', zh: '补货', en: 'Restock', icon: 'swap' },
   // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs.
   sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
@@ -27,7 +30,8 @@ export const removedFromMenus = ['/trades', '/today']
 export function railGroups(access: NavAccess): NavGroup[] {
   const daily: NavItem[] = [item.home]
   if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock)
-  else if (access.staff) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock)
+  else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock)
+  else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock)
   const planning: NavItem[] = [item.schedule, item.products, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
@@ -38,7 +42,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
 
 export function moreItems(access: NavAccess): NavItem[] {
   return [
-    ...(access.staff ? [item.stock, item.restock] : []),
+    ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock] : []),
     item.products,
     ...(access.manager ? [item.sales, item.reports] : []),
     ...(access.admin ? [item.users, item.settings] : []),
@@ -58,7 +62,8 @@ export const inventorySections = ['/stock/count', '/stock/claw', '/claw']
 // Pages reached from inside Checkout (a row on phone, a tab on desktop).
 export const checkoutSections = ['/special-orders', '/checkout/cash-exchange', '/checkout/history']
 
-export function activeSection(pathname: string, manager: boolean): string {
+export function activeSection(pathname: string, manager: boolean, inventory = true): string {
+  if (!inventory && (pathname === '/stock/count' || pathname === '/goods/counts')) return '/stock/count'
   if (pathname === '/checkout/history' || pathname === '/sales/entry' || pathname === '/special-orders' || pathname === '/checkout/cash-exchange') return '/checkout'
   if (pathname === '/closing' || pathname === '/sales' || pathname.startsWith('/sales/day/') || pathname === '/sales/report-stock') return '/summary'
   if (pathname === '/sales/matching') return '/reports'
@@ -80,5 +85,7 @@ export function navItem(key: string): NavItem | undefined {
 
 // Home tiles (Figma Home): 买单 large, then 入店 / 库存 / 汇总. On phone these are the way to 入店 and 汇总.
 export function homeShortcuts(access: NavAccess): NavItem[] {
-  return access.staff ? [item.checkout, item.incoming, item.stock, item.summary] : []
+  if (!access.staff) return []
+  return access.inventory ? [item.checkout, item.incoming, item.stock, item.summary]
+    : [item.checkout, item.eveningCount, item.restock, item.summary]
 }

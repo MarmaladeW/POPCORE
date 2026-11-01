@@ -4,6 +4,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { getInventorySeries, type InventorySeries, type SeriesInventoryResult, type SeriesProduct } from '../../api/inventorySeries'
 import { useRole } from '../../auth/useRole'
+import { useInventoryVisible } from '../../auth/useInventoryVisible'
 import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
@@ -33,7 +34,9 @@ function SeriesScope({ storeCode, storeName, manager }: { storeCode?: string; st
   const [query, setQuery] = useState('')
   const [refresh, setRefresh] = useState(0)
   const [result, setResult] = useState<{ scope: string; data?: SeriesInventoryResult; error?: string }>()
-  const usable = !!storeCode && storeCode !== 'ALL'
+  // Stock per location: only for accounts with 库存查看 at this store (owner, 2026-11-01).
+  const visible = useInventoryVisible()
+  const usable = !!storeCode && storeCode !== 'ALL' && visible
   const scope = `${storeCode}|${refresh}`
   useEffect(() => {
     if (!usable) return
@@ -52,7 +55,8 @@ function SeriesScope({ storeCode, storeName, manager }: { storeCode?: string; st
   return <div className="pc-ser">
     <PageHeader title="产品" sub={phone ? 'Sets & designs' : `Products · ${data ? `${data.series.length} 个产品有子项` : 'Sets & designs'}${storeName ? ` · ${storeName}` : ''}`} />
     <ProductsTabs />
-    {!usable ? <p className="pc-notice">Choose one store to see stock.</p>
+    {!usable ? <p className="pc-notice">{!storeCode || storeCode === 'ALL' ? 'Choose one store to see stock.'
+        : '库存查看 Inventory view is off for this store. Ask an admin to turn it on in Users.'}</p>
       : current?.error ? <Alert role="alert" type="error" showIcon message={current.error} action={<Button onClick={() => setRefresh(value => value + 1)}>Retry</Button>} />
       : !data ? <Skeleton active />
       : !data.series.length ? <p className="pc-notice">No product has a sealed set or confirmed designs yet. Open a product in the Catalog and add them there.</p>

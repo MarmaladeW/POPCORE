@@ -21,6 +21,7 @@ from inventory_commands import (
     _post_inventory_in_transaction, require_inventory_access, store_is_live,
 )
 from inventory_opening import COUNT_VERIFIABLE_FORMS, legacy_column, trusts_legacy
+from inventory_visibility import require_inventory_visible
 from sealed_sets import SET_SUFFIX
 from store_access import can_write_legacy_store
 from validation import read_int
@@ -67,6 +68,8 @@ def _scope(con, actor, store_code, location_code=None):
     elif not can_write_legacy_store(con, actor, store['id']):
         raise PermissionError(f"To count at {store['code']} you need a shift there today, {store['code']} on your "
                               'staff profile, or 门店操作权限 Store operations access. Ask a manager or an admin.')
+    # 盘点 is for the workers picked to see the store's stock (owner, 2026-11-01).
+    require_inventory_visible(con, actor, (store['id'],), store['code'])
     locations = [dict(row) for row in con.execute(
         'SELECT id, code, name FROM inventory_locations WHERE store_id=? AND is_active=1 ORDER BY id',
         (store['id'],))]

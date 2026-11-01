@@ -6,6 +6,8 @@ from test_receiving import ReceivingFixture
 class TransferTests(ReceivingFixture):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|viewer')
         with closing(self.connect()) as con:
             self.mk_id = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
             self.source = con.execute(

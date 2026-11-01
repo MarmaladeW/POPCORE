@@ -16,6 +16,7 @@ from inventory_commands import (
     post_inventory, require_inventory_access,
 )
 from goods_operations import act_on_delivery, create_delivery, delivery_detail
+from inventory_visibility import can_see_inventory, hide_balances, hide_quantities
 
 bp = Blueprint('restock', __name__)
 
@@ -51,7 +52,12 @@ def _restock_session_items(cur, sid, store_id):
         WHERE ri.session_id = ?
         ORDER BY ri.id
     ''', (store_id, sid))
-    return [dict(r) for r in cur.fetchall()]
+    items = [dict(r) for r in cur.fetchall()]
+    if not can_see_inventory(cur.connection, request.jwt_payload, (store_id,)):
+        # Without 库存查看, 补货 says only whether upstairs is out of stock (owner, 2026-11-01).
+        items = [hide_quantities({**item, 'instore_qty': None, 'warehouse_stock_snapshot': None},
+                                 'upstairs_qty') for item in items]
+    return items
 
 
 @bp.route('/api/restock/sessions/today')
@@ -561,9 +567,11 @@ def complete_restock_session(sid):
                 con.close()
                 return jsonify({'error': 'Inventory access denied',
                                 'code': 'inventory_forbidden'}), 403
+            visible = can_see_inventory(con, request.jwt_payload, (store_id,))
             con.close()
             if prior and prior['stored_result']:
-                return jsonify(json.loads(prior['stored_result']))
+                result = json.loads(prior['stored_result'])
+                return jsonify(result if visible else hide_balances(result))
             return jsonify({'error': 'Completed restock has no inventory document',
                             'code': 'reconciliation_required'}), 409
         if sess['status'] not in ('submitted', 'picking'):
@@ -641,6 +649,8 @@ def complete_restock_session(sid):
                       'reason': f'Restock session {sid}', 'lines': lines},
                 actor=request.jwt_payload, request_key=f'restock-session-{sid}',
             )
+            if not can_see_inventory(con, request.jwt_payload, (store_id,)):
+                result = hide_balances(result)
             con.close()
             return jsonify(result)
         except PermissionError:
@@ -692,9 +702,11 @@ def complete_restock_session(sid):
         instore = stock_row['instore_qty'] if stock_row else 0
         if item['found_qty'] > available:
             con.rollback()
+            visible = can_see_inventory(con, request.jwt_payload, (store_id,))
             con.close()
             return jsonify({
-                'error': f'Insufficient upstairs stock ({available})',
+                'error': f'Insufficient upstairs stock ({available})' if visible
+                         else 'Insufficient upstairs stock',
                 'code': 'insufficient_stock',
                 'product_id': item['product_id'],
             }), 409

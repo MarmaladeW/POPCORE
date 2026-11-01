@@ -5,6 +5,7 @@ from checkout_operations import checkout_funds
 from closing_operations import REFUND_DATE
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_commands import InventoryValidationError
+from inventory_visibility import InventoryHidden, HIDDEN_MESSAGE, visible_store_ids, sees_every_store
 
 from catalog_identity import FORMS_TO_UNITS
 
@@ -47,6 +48,10 @@ def query_report(con,name,*,actor,filters):
     if name in FINANCIAL:
         for store in stores:
             require_checkout_history_store(con, store['id'], actor, start, end)
+    elif not sees_every_store(actor):
+        # The stock reports leave out stores whose stock this account may not see (owner, 2026-11-01).
+        visible=visible_store_ids(con,actor);stores=[s for s in stores if s['id'] in visible]
+        if scope!='ALL' and not stores: raise InventoryHidden(HIDDEN_MESSAGE.format(where=f' at {scope}'))
     ids=[s['id'] for s in stores];items=[];totals={}
     if ids:
         marks=','.join('?' for _ in ids)

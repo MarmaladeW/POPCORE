@@ -9,6 +9,7 @@ import client from '../../api/client'
 import { useAppStore } from '../../store'
 import type { RestockSession, RestockItem } from './index'
 import { withUnit } from './units'
+import HiddenStock from './HiddenStock'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -21,7 +22,9 @@ interface SearchProduct {
   ip_series:    string
   product_type: string
   is_bestseller: number
-  upstairs_qty: number   // warehouse stock (via include_stock=1)
+  upstairs_qty: number | null   // warehouse stock (via include_stock=1); null without 库存查看
+  stock_hidden?: boolean
+  out_of_stock?: boolean
 }
 
 interface Props {
@@ -207,7 +210,7 @@ export default function RequestStep({ session, onRefresh }: Props) {
       title: '仓库库存',
       dataIndex: 'upstairs_qty',
       width: 90,
-      render: v => <Tag color={v > 0 ? 'blue' : 'red'}>{v}</Tag>,
+      render: (v, r) => r.stock_hidden ? <HiddenStock out={r.out_of_stock} /> : <Tag color={v > 0 ? 'blue' : 'red'}>{v}</Tag>,
     },
     {
       title: '数量',

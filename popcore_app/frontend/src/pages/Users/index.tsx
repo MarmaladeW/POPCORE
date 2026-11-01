@@ -45,9 +45,64 @@ interface User {
   last_login: string
 }
 
-interface InventoryAccess {
+interface StoreGrants {
   stores: { id: number; code: string; name: string }[]
   grants: { auth0_sub: string; store_id: number }[]
+}
+
+type StoreGrantState = ReturnType<typeof useStoreGrants>
+
+// One per-store grant list an admin edits here; each change saves at once.
+function useStoreGrants(path: string, enabled: boolean, viewer: string | undefined, name: string) {
+  const [data, setData] = useState<StoreGrants>()
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const request = useRef(0)
+  const busy = useRef(false)
+
+  async function load() {
+    const current = ++request.current
+    setData(undefined)
+    setError('')
+    try {
+      const response = await client.get<StoreGrants>(path)
+      if (current === request.current) setData(response.data)
+    } catch (err: any) {
+      if (current === request.current) setError(err?.response?.data?.error ?? `Unable to load ${name.toLowerCase()}.`)
+    }
+  }
+
+  useEffect(() => {
+    if (enabled) void load()
+    return () => { ++request.current }
+  }, [enabled, viewer]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function change(subject: string, storeId: number, granted: boolean) {
+    if (!enabled || !data || busy.current) return
+    busy.current = true
+    setSaving(true)
+    const current = ++request.current
+    const body = { auth0_sub: subject, store_id: storeId }
+    try {
+      if (granted) await client.post(path, body)
+      else await client.delete(path, { data: body })
+      if (current !== request.current) return
+      setData(previous => previous && ({ ...previous, grants: [
+        ...previous.grants.filter(grant => grant.auth0_sub !== subject || grant.store_id !== storeId),
+        ...(granted ? [body] : []),
+      ] }))
+      message.success(`${name} ${granted ? 'granted' : 'revoked'}`)
+    } catch (err: any) {
+      if (current !== request.current) return
+      message.error(err?.response?.data?.error ?? 'Could not confirm the access change. Reloading saved permissions.')
+      await load()
+    } finally {
+      busy.current = false
+      setSaving(false)
+    }
+  }
+
+  return { data, error, saving, load, change }
 }
 
 interface FutureShift {
@@ -280,63 +335,28 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
 
   // Map: auth0_id → { empId, stores[] }
   const [empStoreMap, setEmpStoreMap] = useState<Record<string, EmpStoreEntry>>({})
-  const [inventoryAccess, setInventoryAccess] = useState<InventoryAccess>()
-  const [accessError, setAccessError] = useState('')
-  const [accessSaving, setAccessSaving] = useState(false)
-  const accessRequest = useRef(0)
-  const accessBusy = useRef(false)
+  // Per-store grants an admin ticks: 门店操作权限 and 库存查看 (owner, 2026-11-01).
+  const operations = useStoreGrants('/inventory/access', isAdmin, me?.sub, 'Store operations access')
+  const view = useStoreGrants('/inventory/viewers', isAdmin, me?.sub, 'Inventory view')
+  const accessSaving = operations.saving || view.saving
+  const accessError = operations.error || view.error
+  function loadAccess() { void operations.load(); void view.load() }
 
-  async function loadAccess() {
-    const request = ++accessRequest.current
-    setInventoryAccess(undefined)
-    setAccessError('')
-    try {
-      const response = await client.get<InventoryAccess>('/inventory/access')
-      if (request === accessRequest.current) setInventoryAccess(response.data)
-    } catch (err: any) {
-      if (request === accessRequest.current) setAccessError(err?.response?.data?.error ?? 'Unable to load store operations access.')
-    }
-  }
-
-  useEffect(() => {
-    if (isAdmin) void loadAccess()
-    return () => { ++accessRequest.current }
-  }, [isAdmin, me?.sub])
-
-  async function changeAccess(subject: string, storeId: number, granted: boolean) {
-    if (!isAdmin || !inventoryAccess || accessBusy.current) return
-    accessBusy.current = true
-    setAccessSaving(true)
-    const request = ++accessRequest.current
-    const data = { auth0_sub: subject, store_id: storeId }
-    try {
-      if (granted) await client.post('/inventory/access', data)
-      else await client.delete('/inventory/access', { data })
-      if (request !== accessRequest.current) return
-      setInventoryAccess(previous => previous && ({ ...previous, grants: [
-        ...previous.grants.filter(grant => grant.auth0_sub !== subject || grant.store_id !== storeId),
-        ...(granted ? [data] : []),
-      ] }))
-      message.success(granted ? 'Store operations access granted' : 'Store operations access revoked')
-    } catch (err: any) {
-      if (request !== accessRequest.current) return
-      message.error(err?.response?.data?.error ?? 'Could not confirm the access change. Reloading saved permissions.')
-      await loadAccess()
-    } finally {
-      accessBusy.current = false
-      setAccessSaving(false)
-    }
-  }
-
-  function accessCheckboxes(u: User) {
-    if (!inventoryAccess) return <span>{accessError ? 'Access unavailable' : 'Loading access…'}</span>
-    if (!inventoryAccess.stores.length) return <span>No operations stores configured</span>
-    return <Space wrap>{inventoryAccess.stores.map(store => <Checkbox key={store.id}
-      aria-label={`${u.username}: ${store.code} operations access`} title={store.name}
+  function grantCheckboxes(grants: StoreGrantState, u: User, label: string, empty: string) {
+    const data = grants.data
+    if (!data) return <span>{grants.error ? 'Access unavailable' : 'Loading access…'}</span>
+    if (!data.stores.length) return <span>{empty}</span>
+    return <Space wrap>{data.stores.map(store => <Checkbox key={store.id}
+      aria-label={`${u.username}: ${store.code} ${label}`} title={store.name}
       style={{ minHeight: 44, alignItems: 'center' }} disabled={accessSaving}
-      checked={inventoryAccess.grants.some(grant => grant.auth0_sub === u.id && grant.store_id === store.id)}
-      onChange={event => void changeAccess(u.id, store.id, event.target.checked)}>{store.code}</Checkbox>)}</Space>
+      checked={data.grants.some(grant => grant.auth0_sub === u.id && grant.store_id === store.id)}
+      onChange={event => void grants.change(u.id, store.id, event.target.checked)}>{store.code}</Checkbox>)}</Space>
   }
+  const accessCheckboxes = (u: User) => grantCheckboxes(operations, u, 'operations access', 'No operations stores configured')
+  // Managers and admins always see stock, so only other roles are picked.
+  const viewCheckboxes = (u: User) => u.role === 'manager' || u.role === 'admin'
+    ? <span className="text-xs text-muted-foreground">总是可见 Always</span>
+    : grantCheckboxes(view, u, 'inventory view', 'No stores configured')
 
   function load() {
     if (!isAdmin) return
@@ -564,6 +584,12 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
       render: (_, user) => accessCheckboxes(user),
     },
     {
+      title: '库存查看 / Inventory view',
+      key: 'inventory_view',
+      width: 230,
+      render: (_, user) => viewCheckboxes(user),
+    },
+    {
       title: '颜色',
       key: 'color',
       width: 155,
@@ -659,7 +685,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
           : <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} actions={actions} />
       })()}
 
-      <p className="pc-users-note">Store operations access enables Today, inventory and other store workflows within each user's role. Changes save immediately; scheduling stores are separate.</p>
+      <p className="pc-users-note">Store operations access enables Today, inventory and other store workflows within each user's role. Inventory view picks which staff see a store's stock (库存, 盘点, 入店, stock numbers in Products and 补货); managers and admins always do. Changes save immediately; scheduling stores are separate.</p>
       {accessError && <Alert type="error" showIcon message={accessError} style={{ marginBottom: 16 }}
         action={<Button variant="outline" disabled={accessSaving} onClick={() => void loadAccess()}>Retry access</Button>} />}
 
@@ -713,6 +739,11 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
                   <div style={{ marginTop: 12 }}>
                     <div className="text-xs text-muted-foreground">门店操作权限 / Store operations access</div>
                     {accessCheckboxes(u)}
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    <div className="text-xs text-muted-foreground">库存查看 / Inventory view</div>
+                    {viewCheckboxes(u)}
                   </div>
 
                   {/* Row 3: employee-only scheduling controls (managers only) */}
@@ -774,7 +805,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
           loading={loading}
           dataSource={users}
           columns={columns}
-          scroll={{ x: 1450 }}
+          scroll={{ x: 1680 }}
           pagination={false}
         />
       )}

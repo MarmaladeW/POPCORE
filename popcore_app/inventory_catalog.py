@@ -16,6 +16,7 @@ from inventory_commands import (
     INVENTORY_DISPOSITIONS, InventoryConflict, InventoryError,
     InventoryValidationError, inventory_mode_for, require_inventory_access,
 )
+from inventory_visibility import require_inventory_visible
 from validation import read_int
 
 
@@ -33,6 +34,7 @@ def _locations(con, actor, store_code):
             raise InventoryValidationError('Valid store_code is required')
         stores = [store['id']]
     require_inventory_access(con, actor, stores, 'viewer')
+    require_inventory_visible(con, actor, stores, None if code == 'ALL' else code)
     marks = ','.join('?' for _ in stores)
     return [{**dict(row), 'opening_verified': bool(row['opening_verified'])}
             for row in con.execute(

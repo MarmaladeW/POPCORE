@@ -6,6 +6,8 @@ from support import IsolatedApiCase
 class TransferReceivingTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff')
         with closing(self.connect()) as con:
             self.other_store = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
             self.source = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='warehouse'", (self.other_store,)).fetchone()[0]

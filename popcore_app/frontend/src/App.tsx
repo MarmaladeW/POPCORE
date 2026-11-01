@@ -5,6 +5,7 @@ import { Button, ConfigProvider, Modal, Result } from 'antd'
 
 import ProtectedRoute from './auth/ProtectedRoute'
 import { useHasRole, type Role } from './auth/useRole'
+import { useInventoryVisible } from './auth/useInventoryVisible'
 import AppLayout from './components/AppLayout'
 import ErrorBoundary from './components/ErrorBoundary'
 import { lazyPage } from './lib/lazyPage'
@@ -46,12 +47,22 @@ const UsersPage=lazyPage(()=>import('./pages/Users'))
 const SettingsPage=lazyPage(()=>import('./pages/Settings'))
 const NotFound=lazyPage(()=>import('./pages/NotFound'))
 const Unauthorized=lazyPage(()=>import('./pages/Unauthorized'))
+const InventoryHidden=lazyPage(()=>import('./pages/InventoryHidden'))
 const TradesPage=lazyPage(()=>import('./pages/Trades'))
 const TradeCasePage=lazyPage(()=>import('./pages/Trades/TradeCase'))
 const ReportsPage=lazyPage(()=>import('./pages/Reports'))
 
 function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
   return useHasRole(minRole) ? <>{element}</> : <Unauthorized />
+}
+
+// 库存 and the tools reached from it (盘点, 入店/入库, 调拨, 娃娃机) need 库存查看 at the selected store.
+function InventoryRoute({ element }: { element: React.ReactNode }) {
+  const staff = useHasRole('staff'), visible = useInventoryVisible()
+  const storesLoaded = useAppStore(state => state.stores.length > 0)
+  if (!staff) return <Unauthorized />
+  if (visible) return <>{element}</>
+  return storesLoaded ? <InventoryHidden /> : <div role="status" aria-live="polite">Loading page…</div>
 }
 
 function AppInner() {
@@ -150,20 +161,20 @@ function AppInner() {
           <Route path="/checkout/cash-exchange" element={<RoleRoute minRole="staff" element={<EventEntry exchange />} />} />
           <Route path="/checkout/:id" element={<RoleRoute minRole="staff" element={<CheckoutPage />} />} />
           <Route path="/special-orders" element={<RoleRoute minRole="staff" element={<SpecialOrdersPage />} />} />
-          <Route path="/incoming" element={<RoleRoute minRole="staff" element={<IncomingPage />} />} />
-          <Route path="/incoming/display" element={<RoleRoute minRole="staff" element={<EventEntry display />} />} />
-          <Route path="/claw" element={<RoleRoute minRole="staff" element={<ClawPage />} />} />
-          <Route path="/stock/claw" element={<RoleRoute minRole="staff" element={<ClawPage />} />} />
+          <Route path="/incoming" element={<InventoryRoute element={<IncomingPage />} />} />
+          <Route path="/incoming/display" element={<InventoryRoute element={<EventEntry display />} />} />
+          <Route path="/claw" element={<InventoryRoute element={<ClawPage />} />} />
+          <Route path="/stock/claw" element={<InventoryRoute element={<ClawPage />} />} />
           <Route path="/stock/count" element={<RoleRoute minRole="staff" element={<CountHub />} />} />
-          <Route path="/count" element={<RoleRoute minRole="staff" element={<CountPage />} />} />
+          <Route path="/count" element={<InventoryRoute element={<CountPage />} />} />
           <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
           <Route path="/products/series" element={<SeriesCatalogPage />} />
           <Route path="/products/clover-matching" element={<RoleRoute minRole="manager" element={<CloverMatchingPage />} />} />
-          <Route path="/stock"          element={<RoleRoute minRole="staff"   element={<SeriesInventory />} />} />
-          <Route path="/stock/products" element={<RoleRoute minRole="staff" element={<StockPage />} />} />
-          <Route path="/goods/receiving" element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="receiving" />} />} />
-          <Route path="/goods/transfers" element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="transfers" />} />} />
+          <Route path="/stock"          element={<InventoryRoute element={<SeriesInventory />} />} />
+          <Route path="/stock/products" element={<InventoryRoute element={<StockPage />} />} />
+          <Route path="/goods/receiving" element={<InventoryRoute element={<GoodsPage initialTab="receiving" />} />} />
+          <Route path="/goods/transfers" element={<InventoryRoute element={<GoodsPage initialTab="transfers" />} />} />
           <Route path="/goods/counts"    element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="counts" />} />} />
           <Route path="/restock"        element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
           <Route path="/sales/entry"    element={<RoleRoute minRole="staff"   element={<SaleEntryPage />} />} />

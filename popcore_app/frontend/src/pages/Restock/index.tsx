@@ -12,6 +12,7 @@ import dayjs from 'dayjs'
 import { useSearchParams } from 'react-router-dom'
 import client from '../../api/client'
 import { useHasRole } from '../../auth/useRole'
+import HiddenStock from './HiddenStock'
 import { useAppStore } from '../../store'
 import { RestockHistory } from './HistoryTab'
 import { Link } from 'react-router-dom'
@@ -32,7 +33,7 @@ export interface RestockItem {
   product_id: number
   session_id?: number
   requested_qty: number
-  warehouse_stock_snapshot: number
+  warehouse_stock_snapshot: number | null  // null without 库存查看, which sends out_of_stock instead
   found_qty: number | null
   pick_status: 'pending' | 'found' | 'not_found'
   sku: string
@@ -41,8 +42,10 @@ export interface RestockItem {
   ip_series: string
   product_type: string
   stock_unit?: 'box' | 'set' | 'piece' | null
-  upstairs_qty: number
-  instore_qty: number
+  upstairs_qty: number | null
+  instore_qty: number | null
+  stock_hidden?: boolean
+  out_of_stock?: boolean
 }
 
 export interface RestockSession {
@@ -285,14 +288,15 @@ export default function RestockPage() {
   )
 }
 
-interface Suggestion {product_id:number;sku:string;name:string;unit:string;floor_quantity:number;available_back_quantity:number;outstanding_inbound:number;min_quantity:number;max_quantity:number;suggested_quantity:number}
+// Without 库存查看 the quantities are null and out_of_stock says whether upstairs is empty.
+interface Suggestion {product_id:number;sku:string;name:string;unit:string;floor_quantity:number|null;available_back_quantity:number|null;outstanding_inbound:number|null;min_quantity:number;max_quantity:number;suggested_quantity:number|null;stock_hidden?:boolean;out_of_stock?:boolean}
 function RestockSuggestions(){
   const selectedStore=useAppStore(state=>state.selectedStore)
   const[data,setData]=useState<Suggestion[]>(),[error,setError]=useState('')
   useEffect(()=>{if(!selectedStore||selectedStore.code==='ALL'){setData(undefined);setError('Select one store to view floor suggestions.');return}let current=true;setData(undefined);setError('');client.get('/inventory/locations').then(response=>{const floor=response.data.find((location:{store_id:number;code:string})=>location.store_id===selectedStore.id&&location.code==='floor');if(!floor)throw new Error('floor');return client.get('/goods/restock-suggestions',{params:{location_id:floor.id}})}).then(response=>{if(current)setData(response.data.items)}).catch(cause=>{if(current)setError(cause?.response?.data?.error||'Restock suggestions are unavailable because reviewed floor/back-stock configuration is missing.')});return()=>{current=false}},[selectedStore])
   const head=(zh:string,en:string)=><span className="pc-th">{zh}<small>{en}</small></span>
   const phone=useIsPhone()
-  const body=<>{error&&<Alert type="info" showIcon message={error}/>} {data&&<Table className="pc-restock-table" rowKey="product_id" pagination={false} size="small" dataSource={data} columns={[{title:head('产品','Product'),render:(_,row)=><span className="pc-td-name">{row.name||row.sku}<small>{row.sku}</small></span>},{title:head('目标','Target'),align:'right',render:(_,row)=>`${row.min_quantity}–${row.max_quantity} ${row.unit}s`},{title:head('楼面','Floor'),align:'right',dataIndex:'floor_quantity'},{title:head('楼上','Back'),align:'right',className:'pc-kraft-cell',dataIndex:'available_back_quantity'},{title:head('在途','Inbound'),align:'right',dataIndex:'outstanding_inbound'},{title:head('建议','Suggest'),align:'right',render:(_,row)=><strong>{row.suggested_quantity} {row.unit}s</strong>}]}/>}<p className="pc-restock-note">Read-only guidance. Suggestions never move stock or create a shipment; target editing requires a versioned read contract.</p></>
+  const body=<>{error&&<Alert type="info" showIcon message={error}/>} {data&&<Table className="pc-restock-table" rowKey="product_id" pagination={false} size="small" dataSource={data} columns={[{title:head('产品','Product'),render:(_,row)=><span className="pc-td-name">{row.name||row.sku}<small>{row.sku}</small></span>},{title:head('目标','Target'),align:'right',render:(_,row)=>`${row.min_quantity}–${row.max_quantity} ${row.unit}s`},{title:head('楼面','Floor'),align:'right',dataIndex:'floor_quantity',render:value=>value??'—'},{title:head('楼上','Back'),align:'right',className:'pc-kraft-cell',dataIndex:'available_back_quantity',render:(value,row)=>row.stock_hidden?<HiddenStock out={row.out_of_stock}/>:value},{title:head('在途','Inbound'),align:'right',dataIndex:'outstanding_inbound',render:value=>value??'—'},{title:head('建议','Suggest'),align:'right',render:(_,row)=>row.suggested_quantity==null?'—':<strong>{row.suggested_quantity} {row.unit}s</strong>}]}/>}<p className="pc-restock-note">Read-only guidance. Suggestions never move stock or create a shipment; target editing requires a versioned read contract.</p></>
   // Phone: one row that opens the list (Figma Restock · Phone 1); desktop: the table beside today's sheets.
   if(phone)return <details className="pc-restock-suggest pc-restock-fold" aria-label="Floor suggestions"><summary><Icon name="up-2" size={18}/><span className="pc-nav-text"><strong>楼面建议补货 {data?data.length:'—'} 项</strong><small>Floor suggestions · 楼上有货</small></span><Icon name="right" size={16}/></summary>{body}</details>
   return <section className="pc-restock-suggest" aria-label="Floor suggestions"><SectionHeading zh="楼面建议" en={`Floor suggestions${data?` · ${data.length}`:''}`}/>{body}</section>

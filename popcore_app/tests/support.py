@@ -126,6 +126,13 @@ class IsolatedApiCase(unittest.TestCase):
     def headers(role='staff'):
         return {'Authorization': f'Bearer {role}'}
 
+    def grant_inventory_view(self, *subjects):
+        """库存查看 Inventory view at every store for these accounts, as an admin ticks it in Users."""
+        with closing(self.connect()) as con:
+            con.executemany('INSERT OR IGNORE INTO inventory_viewers(auth0_sub, store_id) SELECT ?, id FROM stores',
+                            [(subject,) for subject in subjects])
+            con.commit()
+
     def connect(self):
         con = sqlite3.connect(db.DB_PATH)
         con.row_factory = sqlite3.Row

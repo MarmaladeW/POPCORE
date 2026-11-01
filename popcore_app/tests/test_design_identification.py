@@ -12,6 +12,8 @@ class DesignIdentificationTests(ReceivingFixture):
 
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff', 'auth0|outsider')
         with closing(self.connect()) as con:
             self.series_id = con.execute("INSERT INTO product_series(name) VALUES ('Identification Series')").lastrowid
             con.execute("UPDATE products SET series_id=?,stock_form='random_box',stock_unit='box' WHERE id=?",

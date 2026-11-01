@@ -9,6 +9,8 @@ from inventory_commands import post_inventory
 class SeriesHistoryTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff', 'auth0|outside')
         with closing(self.connect()) as con:
             self.series_id = con.execute("INSERT INTO product_series(name) VALUES ('Audit Garden')").lastrowid
             self.floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (self.store_id,)).fetchone()[0]

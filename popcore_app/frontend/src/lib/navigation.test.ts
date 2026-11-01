@@ -3,11 +3,13 @@ import test from 'node:test'
 import { activeSection, bottomItems, checkoutSections, homeShortcuts, inventorySections, moreItems, railGroups, removedFromMenus, type NavAccess } from './navigation.ts'
 
 const roles: Record<string, NavAccess> = {
-  viewer: { staff: false, manager: false, admin: false },
-  staff: { staff: true, manager: false, admin: false },
-  manager: { staff: true, manager: true, admin: false },
-  admin: { staff: true, manager: true, admin: true },
+  viewer: { staff: false, manager: false, admin: false, inventory: false },
+  staff: { staff: true, manager: false, admin: false, inventory: true },
+  manager: { staff: true, manager: true, admin: false, inventory: true },
+  admin: { staff: true, manager: true, admin: true, inventory: true },
 }
+// Staff an admin has not picked for 库存查看 at the selected store.
+const unpicked: NavAccess = { ...roles.staff, inventory: false }
 
 // Every page each role could open from the menus before the redesign.
 const before: Record<string, string[]> = {
@@ -102,4 +104,15 @@ test('nested pages light up their section', () => {
   assert.equal(activeSection('/sales/documents/4', false), '/checkout')
   assert.equal(activeSection('/products/clover-matching', true), '/products')
   assert.equal(activeSection('/closing', true), '/summary')
+})
+
+test('without 库存查看, 库存 becomes 晚盘 and 入店 leaves the menus', () => {
+  assert.deepEqual(railGroups(unpicked)[0].items.map(entry => entry.zh), ['首页', '买单', '汇总', '晚盘', '补货'])
+  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/stock/count', '/restock', '/products'])
+  assert.deepEqual(homeShortcuts(unpicked).map(entry => entry.key), ['/checkout', '/stock/count', '/restock', '/summary'])
+  const everywhere = [...rail(unpicked), ...phone(unpicked)]
+  for (const key of ['/stock', '/incoming', '/claw']) assert.ok(!everywhere.includes(key), key)
+  assert.equal(activeSection('/stock/count', false, false), '/stock/count')
+  assert.equal(activeSection('/goods/counts', false, false), '/stock/count')
+  assert.deepEqual(bottomItems(unpicked, '/stock/count').map(entry => entry.zh), ['首页', '买单', '晚盘', '排班'])
 })

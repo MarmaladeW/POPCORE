@@ -17,7 +17,8 @@ def _answer(work):
     except InventoryError as exc:
         return jsonify({'error': str(exc), 'code': exc.code, **getattr(exc, 'details', {})}), exc.status
     except PermissionError as exc:
-        return jsonify({'error': str(exc) or 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
+        return jsonify({'error': str(exc) or 'Inventory access denied',
+                        'code': getattr(exc, 'code', 'inventory_forbidden')}), 403
     except ValueError as exc:
         return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
 

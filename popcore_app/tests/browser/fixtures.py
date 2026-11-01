@@ -2,9 +2,10 @@ from datetime import date
 from urllib.parse import parse_qs
 
 
+# Synthetic accounts may see both stores' stock (库存查看); check_inventory_visibility covers hiding it.
 STORES = [
-    {'id': 1, 'code': 'DT', 'name': 'Downtown', 'color': '#6366f1'},
-    {'id': 2, 'code': 'MK', 'name': 'Markham', 'color': '#10b981'},
+    {'id': 1, 'code': 'DT', 'name': 'Downtown', 'color': '#6366f1', 'inventory_visible': True},
+    {'id': 2, 'code': 'MK', 'name': 'Markham', 'color': '#10b981', 'inventory_visible': True},
 ]
 
 

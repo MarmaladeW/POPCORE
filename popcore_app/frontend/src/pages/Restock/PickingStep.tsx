@@ -8,6 +8,7 @@ import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import type { RestockSession, RestockItem } from './index'
 import { withUnit } from './units'
+import HiddenStock from './HiddenStock'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -119,7 +120,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
       title: '仓库快照',
       dataIndex: 'warehouse_stock_snapshot',
       width: 90,
-      render: (v, r) => <Tag color="blue">{withUnit(v, r.stock_unit)}</Tag>,
+      render: (v, r) => r.stock_hidden ? <HiddenStock out={r.out_of_stock} /> : <Tag color="blue">{withUnit(v, r.stock_unit)}</Tag>,
     },
     {
       title: '申请数',

@@ -25,6 +25,8 @@ import { useHasRole } from '../../auth/useRole'
 import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { ProductDetailPane, StockFigure } from './ProductDetail'
+import { useInventoryVisible } from '../../auth/useInventoryVisible'
+import { stockFigureValue, type StockFigureValue } from '../../lib/inventoryView'
 import { ProductsTabs } from './ProductsNav'
 import './products.css'
 
@@ -51,8 +53,10 @@ interface Product {
 
 interface StockRow {
   id:           number  // /api/stock rows are keyed by the product's id
-  upstairs_qty: number
-  instore_qty:  number
+  upstairs_qty: number | null  // null without 库存查看 at the store, which sends out_of_stock instead
+  instore_qty:  number | null
+  stock_hidden?: boolean
+  out_of_stock?: boolean
 }
 
 interface SyncCandidate {
@@ -150,7 +154,7 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 // Stock as dot plus number: red 0, yellow low, green otherwise (Figma Products · Catalog).
-function stockBadge(total: number | null) {
+function stockBadge(total: StockFigureValue) {
   return <StockFigure value={total} />
 }
 
@@ -174,7 +178,9 @@ export default function ProductsPage() {
   const manager = useHasRole('manager')
   const { series, productTypes, selectedStore } = useAppStore()
   const [products,  setProducts]  = useState<Product[]>([])
-  const [stockMap,  setStockMap]  = useState<Map<number, number> | null>(null)
+  const [stockMap,  setStockMap]  = useState<Map<number, StockFigureValue> | null>(null)
+  // A product without a stock row has none: 0, or 缺货 where only that is shown.
+  const noStock: StockFigureValue = useInventoryVisible() ? 0 : 'out'
   const [stockError, setStockError] = useState(false)
   const [loading,   setLoading]   = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -245,9 +251,9 @@ export default function ProductsPage() {
     })
     client.get('/stock', { params: stockParams }).then(stockR => {
       if (requestId !== requestRef.current) return
-      const m = new Map<number, number>()
+      const m = new Map<number, StockFigureValue>()
       ;(stockR.data as StockRow[]).forEach(r => {
-        m.set(r.id, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0))
+        m.set(r.id, stockFigureValue(r, (r.upstairs_qty ?? 0) + (r.instore_qty ?? 0)))
       })
       setStockMap(m)
     }).catch(() => {
@@ -402,7 +408,7 @@ export default function ProductsPage() {
       title: '库存',
       width: 80,
       align: 'right',
-      render: (_, r) => stockBadge(stockMap ? stockMap.get(r.id) ?? 0 : null),
+      render: (_, r) => stockBadge(stockMap ? stockMap.get(r.id) ?? noStock : null),
     },
     {
       title: <span className="pc-sr">Actions</span>,
@@ -537,7 +543,7 @@ export default function ProductsPage() {
                         {p.name_cn_en && p.jizhanming && <small>{p.name_cn_en}</small>}
                         <small>{p.sku}</small>
                       </span>
-                      {stockBadge(stockMap ? stockMap.get(p.id) ?? 0 : null)}
+                      {stockBadge(stockMap ? stockMap.get(p.id) ?? noStock : null)}
                       <span className="pc-prod-price">{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</span>
                     </button>
                   </li>
@@ -572,7 +578,7 @@ export default function ProductsPage() {
         {showPane && <ProductDetailPane
           key={detailId}
           productId={detailId!}
-          stockTotal={stockMap ? stockMap.get(detailId!) ?? 0 : null}
+          stockTotal={stockMap ? stockMap.get(detailId!) ?? noStock : null}
           onClose={() => setDetailId(null)}
           onOpen={setDetailId}
           onEdit={(p) => openEdit(p as unknown as Product)}
@@ -611,7 +617,7 @@ export default function ProductsPage() {
       </RoleGuard>
       <ProductDetailDrawer
         productId={isMobile ? detailId : null}
-        stockTotal={stockMap ? stockMap.get(detailId ?? 0) ?? 0 : null}
+        stockTotal={stockMap ? stockMap.get(detailId ?? 0) ?? noStock : null}
         onClose={() => setDetailId(null)}
         onOpen={setDetailId}
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}

@@ -14,6 +14,8 @@ export interface Store {
   code: string
   name: string
   color: string
+  /** 库存查看: whether this account may see the store's stock (from /api/stores). */
+  inventory_visible?: boolean
 }
 
 /** Sentinel representing "all stores combined" — read-only, never written to. */
