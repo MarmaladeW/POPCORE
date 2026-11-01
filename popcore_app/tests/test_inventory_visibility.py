@@ -1,5 +1,6 @@
 from contextlib import closing
 
+from test_checkout_blind_boxes import BOX_PRICE, BlindBoxFixture
 from test_receiving import ReceivingFixture
 
 # 库存查看 Inventory view (owner, 2026-11-01): only the workers an admin picks see a store's stock.
@@ -250,3 +251,37 @@ class InventoryVisibilityTests(ReceivingFixture):
             'location_id': self.floor, 'business_date': '2026-11-01',
             'lines': [{'product_id': self.product_id, 'unit': 'piece', 'observed_quantity': 5}]}, 'visibility-count')
         self.assertEqual(count.status_code, 201, count.get_json())
+
+
+class CheckoutBoxCountTests(BlindBoxFixture):
+    """Checkout asks where a blind box over half a set came from; without 库存查看 its answers say only
+    whether there is a sealed set and loose boxes, never how many (owner, 2026-11-01)."""
+
+    def setUp(self):
+        super().setUp()
+        with closing(self.connect()) as con:  # this cashier is not picked for DT
+            con.execute("DELETE FROM inventory_viewers WHERE auth0_sub='auth0|staff'")
+            con.commit()
+
+    def test_unpicked_cashiers_see_no_box_counts_but_still_sell(self):
+        order = self.manual()
+        hidden = {'set_size': 12, 'open_sets': [], 'loose_units': None, 'loose_out_of_stock': False, 'stock_hidden': True,
+                  'fresh_set': {'product_id': self.set_id, 'conversion_id': self.conversion_id, 'conversion_factor': 12,
+                                'name': 'Series Set', 'sets_on_hand': None, 'out_of_stock': False, 'stock_hidden': True}}
+        self.assertEqual(order['box_choices'][0]['options'], hidden)
+        path = f'/api/sale-documents/box-options?store_id={self.store_id}&product_id={self.box_id}'
+        self.assertEqual(self.client.get(path, headers=self.headers('staff')).get_json()['options'], hidden)
+        shown = self.client.get(path, headers=self.headers('manager')).get_json()['options']
+        self.assertEqual((shown['loose_units'], shown['fresh_set']['sets_on_hand']), (10, 2))
+        self.assertNotIn('stock_hidden', shown)
+
+        opened = self.choose(order, 'fresh', 'fresh_set')
+        self.assertEqual(opened['box_choices'][0]['choice'], 'fresh_set')
+        self.assertIsNone(opened['box_choices'][0]['options']['loose_units'])
+        paid = self.receive(opened, 'pay', 'card', 7 * BOX_PRICE, card_reference='4242')
+        self.assertEqual(paid['status'], 'completed', paid)
+        with closing(self.connect()) as con:
+            remaining = con.execute('SELECT remaining_qty FROM inventory_open_sets').fetchone()[0]
+        self.assertEqual(remaining, 5)  # a set of 12 opened, 7 sold
+        later = self.manual(key='create-2')
+        self.assertEqual(later['box_choices'][0]['options']['open_sets'][0]['remaining_qty'], None)

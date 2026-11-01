@@ -14,6 +14,7 @@ from sales_operations import (
     TENDERS, _create_sale_in_transaction, _optional_cents, _post_sale_in_transaction,
     _sale_input, _sale_row, box_choice_fields, box_options, needs_box_choice, record_late_adjustment, set_size,
 )
+from inventory_visibility import can_see_inventory, hide_box_options
 from validation import read_date, read_int
 
 
@@ -105,6 +106,9 @@ def checkout_detail(con, checkout_id, actor):
         row['remaining_cents'] = row['clover']['remaining_cents']
     is_open = row['status'] == 'open' and not row['abandoned_reason']
     row['box_choices'] = box_choices(con, row) if is_open else []
+    if not can_see_inventory(con, actor, (row['store_id'],)):  # 库存查看: no counts on the answers
+        for question in row['box_choices']:
+            hide_box_options(question['options'])
     row['box_choice_required'] = any(choice['choice'] is None for choice in row['box_choices'])
     row['can_choose_boxes'] = writable and is_open and (
         row['created_by'] in (actor['sub'], REGISTER_SUB if row['clover'] else None) or manager(actor))

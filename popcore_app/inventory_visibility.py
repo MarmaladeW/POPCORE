@@ -82,3 +82,18 @@ def hide_balances(result):
     for balance in result.get('balances') or ():
         balance['quantity'] = None
     return result
+
+
+def hide_box_options(options):
+    """A blind box's checkout answers (sealed set, opened sets, loose boxes) without their counts:
+    only whether there is a sealed set and loose boxes to take (owner, 2026-11-01)."""
+    if options is None:
+        return None
+    if options['fresh_set']:
+        hide_quantities(options['fresh_set'], 'sets_on_hand')
+    for open_set in options['open_sets']:
+        open_set['remaining_qty'] = None
+    options['loose_out_of_stock'] = (options['loose_units'] or 0) <= 0
+    options['loose_units'] = None
+    options['stock_hidden'] = True
+    return options

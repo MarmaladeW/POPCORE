@@ -9,6 +9,7 @@ from inventory_commands import (
     InventoryConflict, InventoryValidationError,
     _post_inventory_in_transaction, require_inventory_access,
 )
+from inventory_visibility import can_see_inventory, hide_box_options
 from validation import SQLITE_INTEGER_MAX, read_date, read_int
 
 
@@ -314,7 +315,8 @@ def sale_box_options(con, store_id, product_id, *, actor):
     floor = con.execute(
         "SELECT id FROM inventory_locations WHERE store_id=? AND code='floor' AND is_active=1", (store_id,),
     ).fetchone()
-    return box_options(con, product_id, floor['id']) if floor else None
+    options = box_options(con, product_id, floor['id']) if floor else None
+    return options if can_see_inventory(con, actor, (store_id,)) else hide_box_options(options)
 
 
 def box_options(con, product_id, location_id):

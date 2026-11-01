@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BOX_CHOICES, boxChoiceNote, type BoxChoice, type BoxOptions } from './boxChoice'
+import { BOX_CHOICES, boxChoiceNote, openSetLabel, type BoxChoice, type BoxOptions } from './boxChoice'
 import './Checkout.css'
 
 /** One question per blind box over half a set: where did these boxes come from? Answered before payment
@@ -25,7 +25,7 @@ export function BoxQuestionButtons({ name, quantity, setSize, fromDisplay, optio
       onClick={() => choose(item.value)}><span className="co-method-zh">{item.zh}</span> <span className="co-method-en">{item.label}</span><small>{boxChoiceNote(item.value, options)}</small></button>)}</div>
     {(picking || (choice === 'open_set' && sets.length > 1)) && <div className="co-box-sets" role="group" aria-label="Which opened set">
       {sets.map(set => <button key={set.id} type="button" aria-pressed={choice === 'open_set' && openSetId === set.id}
-        onClick={() => { setPicking(false); answer('open_set', set.id) }}>Opened set #{set.id} · {set.remaining_qty} left</button>)}
+        onClick={() => { setPicking(false); answer('open_set', set.id) }}>{openSetLabel(set)}</button>)}
     </div>}
   </fieldset>
 }
