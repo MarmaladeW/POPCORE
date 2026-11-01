@@ -399,7 +399,7 @@ class StockCountingTests(IsolatedApiCase):
 
     def test_boxes_per_set_typed_with_no_whole_sets_is_kept_on_the_product(self):
         def card():
-            return self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+            return self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()
         def boxes_per_dan():
             with closing(self.connect()) as con:
                 return con.execute('SELECT boxes_per_dan FROM products WHERE id=?', (self.echo,)).fetchone()[0]
@@ -434,9 +434,9 @@ class StockCountingTests(IsolatedApiCase):
         alone = self.save([], product=self.echo, new_set={'quantity': 0, 'boxes_per_set': 12}, key='k2')
         self.assertEqual((alone.status_code, alone.get_json()), (200, {'live': False, 'results': []}))
         self.assertEqual(boxes_per_dan(), 12)
-        upstairs = self.save([], location='upstairs', product=self.echo,
-                             new_set={'quantity': 0, 'boxes_per_set': 6}, key='k3')
-        self.assertEqual(upstairs.get_json()['code'], 'head_uncounted')
+        display = self.save([], location='display', product=self.echo,
+                            new_set={'quantity': 0, 'boxes_per_set': 6}, key='k3')
+        self.assertEqual(display.get_json()['code'], 'head_uncounted')
         self.assertEqual(boxes_per_dan(), 12)
         with closing(self.connect()) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM opening_count_events').fetchone()[0], 1)
@@ -459,7 +459,7 @@ class StockCountingTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute('UPDATE products SET boxes_per_dan=NULL WHERE id=?', (self.echo,))
             con.commit()
-        card = self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()
+        card = self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()
         self.assertEqual((card['live'], card['new_sealed_set']), (True, {'boxes_per_set': None}))
         ledger = ['inventory_balances', 'inventory_counts', 'inventory_documents', 'inventory_movements']
         before = self.snapshot(ledger)
@@ -476,7 +476,7 @@ class StockCountingTests(IsolatedApiCase):
             self.assertEqual(tuple(con.execute('SELECT boxes_per_dan, stock_form FROM products WHERE id=?',
                                                (self.echo,)).fetchone()), (10, None))
             self.assertEqual(con.execute("SELECT COUNT(*) FROM products WHERE sku='ECHO-1-SET'").fetchone()[0], 0)
-        self.assertEqual(self.get('/api/counting/card', location='floor', product_id=self.echo).get_json()['new_sealed_set'],
+        self.assertEqual(self.get('/api/counting/card', location='upstairs', product_id=self.echo).get_json()['new_sealed_set'],
                          {'boxes_per_set': 10})
 
     def test_whole_sets_are_only_added_to_blind_boxes(self):
