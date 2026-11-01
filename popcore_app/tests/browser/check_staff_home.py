@@ -88,16 +88,20 @@ async def flow(browser, width):
     def api(path, query, request):
         if path == '/api/store-events':
             if request.method == 'POST':
-                body = request.post_data_json
+                body = dict(request.post_data_json)
                 assert body['store_id'] == 1
-                event = dict(body, id=len(state['events'])+1, actor_name='Cashier', created_at='2026-09-16T14:00:00Z',
-                             business_date=state['day'], product_name='Test Product')
-                state['events'].append(event)
-                return event
+                lines = body.pop('lines', None)   # a display arrival lists several products, one event each
+                events = []
+                for line in lines or [{}]:
+                    events.append(dict(body, **line, id=len(state['events'])+1, actor_name='Cashier', created_at='2026-09-16T14:00:00Z',
+                                       business_date=state['day'], product_name='Test Product'))
+                    state['events'].append(events[-1])
+                return {'events': events} if lines else events[0]
             return dict(business_date=state['day'], scope='personal', events=state['events'],
                         checkouts=[], receipts=[], transfers=[], summary_text='2026.9.16 DT\n娃娃机：\nTest Product*1')
         if path == '/api/products/search':
-            return [dict(id=1, sku='TEST-1', jizhanming='Test Product', stock_unit='piece')]
+            return [dict(id=1, sku='TEST-1', jizhanming='Test Product', stock_unit='piece'),
+                    dict(id=2, sku='TEST-2', jizhanming='Second Product', stock_unit='piece')]
         if path == '/api/inventory/locations':
             assert 'store_code=DT' in query, query
             return [dict(id=code_id, store_id=1, store_code='DT', code=code, name=name, is_active=1, opening_verified=1)
@@ -199,19 +203,28 @@ async def flow(browser, width):
         await actions.get_by_role('link', name='入店', exact=False).click()
         await page.get_by_role('link', name='入 display Display arrival', exact=False).click()
         await expect(page.get_by_text('This adds a record to the daily summary. Once inventory counts are live, it also puts the piece on display: taken from store stock, or added as an opened arrival.', exact=True)).to_be_visible()
-        await page.get_by_role('spinbutton', name='Quantity').fill('2')
-        await page.get_by_role('combobox', name='Product').fill('Test')
-        await page.get_by_title('TEST-1 · Test Product', exact=True).click()
-        await expect(page.get_by_role('spinbutton', name='Quantity')).to_have_value('2')
-        # Where the piece came from is required: store stock or an opened arrival.
         await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
-        await expect(page.get_by_text('Choose where the display piece came from.', exact=True)).to_be_visible()
-        await page.get_by_role('combobox', name='Where from').click()
+        await expect(page.get_by_text('Add at least one product.', exact=True)).to_be_visible()
+        # One entry lists several products; picking a listed product again adds one more to its line.
+        for title in ('TEST-1 · Test Product', 'TEST-2 · Second Product', 'TEST-1 · Test Product'):
+            await page.get_by_role('combobox', name='Product').fill('Test')
+            await page.get_by_title(title, exact=True).click()
+        await expect(page.get_by_role('spinbutton', name='Line 1 quantity')).to_have_value('2')
+        await expect(page.get_by_role('spinbutton', name='Line 2 quantity')).to_have_value('1')
+        await expect(page.get_by_role('spinbutton', name='Line 3 quantity')).to_have_count(0)
+        # Where each piece came from is required: store stock or an opened arrival.
+        await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
+        await expect(page.get_by_text('Choose where the display piece came from.', exact=True).first).to_be_visible()
+        await page.get_by_role('combobox', name='Line 1 where from').click()
         await page.get_by_title('新到 · 已拆开 Arrived opened', exact=True).click()
+        await page.get_by_role('combobox', name='Line 2 where from').click()
+        await page.get_by_title('从楼面拿 · Floor', exact=True).last.click()
+        await page.screenshot(path=OUT / f'display-arrival-{width}.png', full_page=True)
         await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
-        assert last['kind'] == 'display_in' and last['quantity'] == 2 and 'source_location_id' not in last, last
+        assert last['kind'] == 'display_in' and last['lines'] == [
+            {'product_id': 1, 'quantity': 2}, {'product_id': 2, 'quantity': 1, 'source_location_id': 1}], last
         await page.get_by_label('Operations store').select_option('ALL')
         await open_claw()
         await expect(page.get_by_role('button', name='保存记录 Save record', exact=True)).to_have_count(0)
