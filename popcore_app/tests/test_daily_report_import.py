@@ -17,13 +17,13 @@ class DailyReportImportTests(IsolatedApiCase):
             con.commit()
 
     def parse(self, text, **extra):
-        response = self.client.post('/api/sales/parse_report', headers=self.headers(),
+        response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
                                     json={'text': text, 'store_code': 'MK', **extra})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()
 
     def submit(self, items, **extra):
-        return self.client.post('/api/sales/submit_daily_report', headers=self.headers(),
+        return self.client.post('/api/sales/submit_daily_report', headers=self.headers('manager'),
                                 json={'date': '2026-09-14', 'store_code': 'DT',
                                       'classification': 'summary_only', 'items': items, **extra})
 

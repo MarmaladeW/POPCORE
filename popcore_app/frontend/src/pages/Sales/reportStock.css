@@ -1,0 +1,7 @@
+/* 日报库存核对: panels stack with the page gap; row actions wrap under the text on a phone. */
+.pc-report-stock { display: grid; gap: 16px; }
+.pc-report-stock .pc-row-actions { display: flex; flex: none; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+@media (max-width: 600px) {
+  .pc-report-stock .pc-row { flex-wrap: wrap; }
+  .pc-report-stock .pc-row-actions { width: 100%; justify-content: flex-start; }
+}
