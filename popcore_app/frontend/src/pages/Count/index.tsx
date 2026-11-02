@@ -267,11 +267,15 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const boxesInSets = sets.reduce((sum, item) => sum + amount(item) * (item.boxes_per_set || 0), 0)
   const designTotal = designs.reduce((sum, item) => sum + amount(item), 0)
   const headUnit = head ? (formOf(head) === 'random_box' ? 'box' : formOf(head) === 'ordinary' ? 'piece' : head.stock_unit) : null
+  // The floor keeps blind boxes as boxes only; whole sets are counted upstairs (owner, 2026-10-29).
+  const floorBoxes = card.location.code === 'floor' && headUnit === 'box'
   // The product type decides (owner, 2026-10-27): only an untyped product asks what it is.
   const asksKind = Boolean(head && head.identity_status !== 'verified' && !head.suggested_form)
   // A blind box always counts whole sets; one with no whole set yet gets it on the first count.
   const offerSet = headUnit === 'box' && Boolean(card.new_sealed_set)
-  const wantsNewSet = offerSet && (newSets ?? 0) > 0
+  // Boxes per set typed with no whole sets yet is saved too, on the product (it is not lost on reopening).
+  const sizeTyped = offerSet && boxesPerSet != null && boxesPerSet !== card.new_sealed_set?.boxes_per_set
+  const wantsNewSet = offerSet && ((newSets ?? 0) > 0 || sizeTyped)
   const wholeSets = sets.reduce((sum, item) => sum + amount(item), 0) + (offerSet ? newSets || 0 : 0)
   const boxesInWholeSets = boxesInSets + (offerSet ? (newSets || 0) * (boxesPerSet || 0) : 0)
   const entries: CountEntry[] = card.items.filter(item => typed[item.product_id] && values[item.product_id] != null).map(item => ({
@@ -313,7 +317,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       const response = await saveCount({
         store_code: storeCode, location, product_id: card.product_id, entries,
         ...(card.series_id && designsOk && !card.designs_checked ? { designs_checked: true } : {}),
-        ...(wantsNewSet ? { new_sealed_set: { quantity: newSets as number, boxes_per_set: boxesPerSet as number } } : {}),
+        ...(wantsNewSet ? { new_sealed_set: { quantity: newSets ?? 0, boxes_per_set: boxesPerSet as number } } : {}),
       }, key.current)
       key.current = ''
       setSaved(response)
@@ -400,8 +404,9 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       </div>
     </>}
     {head && <CountField item={head} value={values[head.product_id]} onChange={setValue}
-      label={headUnit === 'box' ? '散盒 Single boxes' : headUnit === 'piece' ? '数量 Pieces' : '数量 Count'}
-      unit={headUnit ? UNITS[headUnit] : ''} />}
+      label={headUnit === 'box' ? (floorBoxes ? '盒数 All boxes' : '散盒 Single boxes') : headUnit === 'piece' ? '数量 Pieces' : '数量 Count'}
+      unit={headUnit ? UNITS[headUnit] : ''}
+      note={floorBoxes && head.set_size ? `每端 ${head.set_size} 盒 · ≈ ${Math.floor(amount(head) / head.set_size)} 端` : undefined} />}
 
     {(designs.length > 0 || (manager && head && headUnit === 'box')) && <div className="pc-count-designs">
       <div className="pc-count-designs-head">

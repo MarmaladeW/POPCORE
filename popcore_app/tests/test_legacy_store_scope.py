@@ -72,12 +72,12 @@ class LegacyStoreScopeTests(IsolatedApiCase):
                                                     'items': [{'product_id': pid, 'qty': 1}]}, 'staff'),
             ('delete', '/api/stock/rows', {'store_code': 'DT', 'product_ids': [pid]}, 'manager'),
             ('post', '/api/sales/upsert', {'store_code': 'DT', 'product_id': pid, 'date': day,
-                                           'qty_pos': 0, 'qty_cash': 0}, 'staff'),
+                                           'qty_pos': 0, 'qty_cash': 0}, 'manager'),
             ('post', '/api/sales/add_product', {'store_code': 'DT', 'product_id': pid, 'date': '2026-10-25'}, 'staff'),
             ('post', '/api/sales/batch_upsert', {'store_code': 'DT', 'items': [
-                {'product_id': pid, 'date': day, 'qty_pos': 9}]}, 'staff'),
+                {'product_id': pid, 'date': day, 'qty_pos': 9}]}, 'manager'),
             ('post', '/api/sales/submit_daily_report', {'store_code': 'DT', 'date': day,
-                'classification': 'summary_only', 'items': [{'product_id': pid, 'section': 'pos', 'qty_pos': 1}]}, 'staff'),
+                'classification': 'summary_only', 'items': [{'product_id': pid, 'section': 'pos', 'qty_pos': 1}]}, 'manager'),
             ('delete', f'/api/sales/clear_day?date={day}&store_code=DT', None, 'manager'),
             ('delete', f'/api/sales/record/{self.record_id}', None, 'manager'),
             ('post', '/api/restock/sessions', {'store_code': 'DT'}, 'staff'),
@@ -122,7 +122,9 @@ class LegacyStoreScopeTests(IsolatedApiCase):
                     'store_code': 'DT', 'product_id': self.product_id, 'new_qty': 10 + n,
                     'location': 'upstairs', 'notes': 'count'})
                 self.assertEqual(adjust.status_code, 200, adjust.get_json())
-                report = self.client.post('/api/sales/submit_daily_report', headers=headers, json={
+                # Only managers and admins paste reports; their grant, membership or shift opens the store.
+                report = self.client.post('/api/sales/submit_daily_report',
+                                          headers=self.headers(subject.replace('staff:', 'manager:')), json={
                     'store_code': 'DT', 'date': f'2026-10-0{n}', 'classification': 'summary_only',
                     'items': [{'product_id': self.product_id, 'section': 'pos', 'qty_pos': n}]})
                 self.assertEqual(report.status_code, 200, report.get_json())

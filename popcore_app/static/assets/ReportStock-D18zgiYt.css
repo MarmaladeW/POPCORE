@@ -1,0 +1,1 @@
+.pc-report-stock{gap:16px;display:grid}.pc-report-stock .pc-row-actions{flex-wrap:wrap;flex:none;justify-content:flex-end;gap:6px;display:flex}@media (width<=600px){.pc-report-stock .pc-row{flex-wrap:wrap}.pc-report-stock .pc-row-actions{justify-content:flex-start;width:100%}}

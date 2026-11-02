@@ -30,6 +30,9 @@ MISSING_LIMIT = 200
 MAX_ENTRIES = 300
 MAX_QUANTITY = 100000
 DIRECT_COUNT_REASON = '盘点 Count'
+# On the floor a blind box is just boxes (owner, 2026-10-29): sets opened there are never recorded,
+# so whole sets are counted upstairs and the floor shows its boxes as about so many sets.
+BOXES_ONLY = {'floor'}
 LABEL_SQL = "COALESCE(NULLIF(jizhanming,''), NULLIF(name_cn_en,''), sku)"
 FORM_NAMES = {'random_box': '盲盒 blind box', 'ordinary': '单品 item'}
 
@@ -131,6 +134,17 @@ def _members(con, head, series_id):
                 WHERE series_id=? AND stock_form='confirmed_design' AND id<>?
                 ORDER BY design_name COLLATE NOCASE, id""", (series_id, head['id'] if head else 0)))
     return members
+
+
+def _here(members, location):
+    """The members counted at a location: the floor leaves out whole sets."""
+    if location is None or location['code'] not in BOXES_ONLY:
+        return members
+    return [member for member in members if member[0] != 'set']
+
+
+def _set_size(members):
+    return next((boxes for role, _, boxes in members if role == 'set'), None)
 
 
 def _names(con, subjects):
@@ -236,7 +250,7 @@ def search_targets(con, actor, store_code, location_code, query):
         results = []
         for anchor in cards.values():
             head, series_id = _family(con, anchor)
-            members = _members(con, head, series_id)
+            members = _here(_members(con, head, series_id), scope['location'])
             if not members:
                 continue
             ids = [product['id'] for _, product, _ in members]
@@ -264,10 +278,11 @@ def count_card(con, actor, store_code, location_code, product_id):
     def work():
         scope = _scope(con, actor, store_code, location_code)
         head, series_id = _family(con, product_id)
-        members = _members(con, head, series_id)
+        location = scope['location']
+        everything = _members(con, head, series_id)
+        members = _here(everything, location)
         if not members:
             raise InventoryError('This series has nothing to count yet; add its designs first', 'not_found', 404)
-        location = scope['location']
         saved = {} if scope['live'] else _saved_counts(con, location['id'], [p['id'] for _, p, _ in members])
         series = con.execute('SELECT id, name, designs_checked_at, designs_checked_by FROM product_series WHERE id=?',
                              (series_id,)).fetchone() if series_id is not None else None
@@ -283,6 +298,8 @@ def count_card(con, actor, store_code, location_code, product_id):
             }
             if boxes_per_set is not None:
                 item['boxes_per_set'] = boxes_per_set
+            if role == 'box' and members is not everything and _set_size(everything):
+                item['set_size'] = _set_size(everything)
             if product['identity_status'] != 'verified':
                 item['suggested_form'] = _suggested_form(product)
                 # Going live verifies one form per product, so a recount keeps the one already counted.
@@ -316,7 +333,7 @@ def count_card(con, actor, store_code, location_code, product_id):
             'product_id': head['id'] if head is not None else members[0][1]['id'],
             'title': head['label'] if head is not None else series['name'],
             'series_id': series_id, 'designs_checked': designs_checked, 'items': items,
-            'new_sealed_set': _whole_set_offer(con, head, members),
+            'new_sealed_set': None if members is not everything else _whole_set_offer(con, head, members),
         }
     return _read(con, work)
 
@@ -344,7 +361,8 @@ def _read_new_set(data):
     boxes = read_int(new_set['boxes_per_set'], 'boxes_per_set', minimum=2)
     if boxes > 100:
         raise InventoryValidationError('A whole set cannot hold more than 100 boxes')
-    quantity = read_int(new_set['quantity'], 'quantity', minimum=1)
+    # 0 whole sets still saves the boxes per set the counter typed (see save_counts).
+    quantity = read_int(new_set['quantity'], 'quantity', minimum=0)
     if quantity > MAX_QUANTITY:
         raise InventoryValidationError(f'A count cannot be more than {MAX_QUANTITY}')
     return {'quantity': quantity, 'boxes_per_set': boxes}
@@ -556,6 +574,11 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
         scope = _scope(con, actor, store_code, location_code)
         location = scope['location']
         head, series_id = _family(con, product_id)
+        if location['code'] in BOXES_ONLY and (new_set or any(
+                role == 'set' and product['id'] in {entry['product_id'] for entry in entries}
+                for role, product, _ in _members(con, head, series_id))):
+            raise InventoryValidationError('整端 Whole sets are counted upstairs. On the floor, count every box '
+                                           'as single boxes.', 'whole_sets_upstairs')
         if new_set:
             current = _members(con, head, series_id)
             existing = [(product['id'], boxes) for role, product, boxes in current if role == 'set']
@@ -575,19 +598,25 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             elif _whole_set_offer(con, head, current) is None:
                 raise InventoryConflict('Whole sets are counted for a blind box; this product is not one',
                                         'whole_set_unavailable')
+            elif not new_set['quantity']:
+                # No whole sets counted yet: boxes per set stays on the product, where the card and the
+                # first whole-set count read it, and the set itself waits for those whole sets.
+                con.execute('UPDATE products SET boxes_per_dan=? WHERE id=?', (new_set['boxes_per_set'], head['id']))
+                set_id = None
             else:
                 if not scope['live'] and head['identity_status'] != 'verified':
                     _same_form(con, head, location, 'random_box')  # the set makes it a verified blind box
                 # Counting the first whole sets of a blind box gives it its sealed set (owner, 2026-10-27).
                 set_id = sealed_set_for(con, head['id'], new_set['boxes_per_set'])
                 head = _product(con, head['id'])
-            if all(entry['product_id'] != set_id for entry in entries):
+            if set_id is not None and all(entry['product_id'] != set_id for entry in entries):
                 # The card showed no set: someone else's count of it here since then is theirs to
                 # keep, and once live only a set this save added has a balance known to be untouched.
                 version = _balance(con, set_id, location['id'], 'saleable')['version'] if created else None
                 entries = [*entries, {'product_id': set_id, 'quantity': new_set['quantity'], 'stock_form': None,
                                       'balance_version': version, 'checks_count': True, 'count_version': None}]
-        members = {product['id']: (role, product, boxes) for role, product, boxes in _members(con, head, series_id)}
+        members = {product['id']: (role, product, boxes)
+                   for role, product, boxes in _here(_members(con, head, series_id), location)}
         if any(entry['product_id'] not in members for entry in entries):
             raise InventoryConflict('This card changed while you were counting (a design was added or removed). '
                                     'Check it and save again.', 'card_changed')
@@ -606,7 +635,9 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             raise InventoryValidationError('Check the designs are right before counting them', 'designs_unchecked')
         record = _correct_stock if scope['live'] else _record_opening
         kwargs = {'request_key': key} if scope['live'] else {}
-        outcome = record(con, actor, scope['store']['id'], location, members, entries, **kwargs)
+        # Only boxes per set was saved: no count to record, nor an empty one to keep at a live store.
+        outcome = (record(con, actor, scope['store']['id'], location, members, entries, **kwargs)
+                   if entries else {'results': []})
         response = {'live': scope['live'], **outcome}
         _remember(con, key, 'count_save', product_id, actor, digest, response)
         con.commit()

@@ -74,6 +74,18 @@ async def run(browser, width):
         await expect(page.get_by_text('盘点中 · Counts are saved; stock changes when the store goes live.')).to_be_visible()
         search = page.get_by_label('Search or scan a product')
 
+        # On the floor a blind box is boxes only (owner, 2026-10-29): no whole sets, about so many sets.
+        await search.fill('rider')
+        await page.get_by_role('button', name=re.compile('^Warmth 盲盒')).click()
+        card = page.get_by_role('region', name='Count Warmth 盲盒')
+        await expect(card.get_by_label(re.compile('^整端 Whole sets'))).to_have_count(0)
+        await expect(card.get_by_label(re.compile('^盒数 All boxes'))).to_be_visible()
+        await expect(card.get_by_text('每端 12 盒 · ≈ 0 端')).to_be_visible()
+        await card.get_by_role('button', name='返回 Back').click()
+        # Whole sets are counted upstairs, where the rest of this walk-through counts.
+        await places.get_by_role('button', name=re.compile('^楼上 Upstairs')).click()
+        await expect(places.get_by_role('button', name=re.compile('^楼上 Upstairs'))).to_have_attribute('aria-pressed', 'true')
+
         # A design's name finds its blind box; the card holds the box, its sealed set and its designs.
         await search.fill('rider')
         result = page.get_by_role('button', name=re.compile('^Warmth 盲盒'))
@@ -104,7 +116,7 @@ async def run(browser, width):
             [(fixture.box, 7), (fixture.set, 1), (fixture.rider, 2), (fixture.lantern, 0)])
         assert rows('SELECT COUNT(*) FROM opening_count_events') == [(4,)]
         assert rows('SELECT designs_checked_by FROM product_series WHERE id=?', fixture.series) == [(STAFF,)]
-        assert rows('SELECT instore_qty FROM stock WHERE product_id=? AND store_id=?', fixture.box, fixture.dt) == [(5,)]
+        assert rows('SELECT upstairs_qty FROM stock WHERE product_id=? AND store_id=?', fixture.box, fixture.dt) == [(5,)]
         await fits(page, f'saved-{width}.png')
 
         # Next: back to the search. A scanner types the code and presses Enter; one match opens.
@@ -119,7 +131,7 @@ async def run(browser, width):
         # Another phone recounts the single boxes while this card shows 7. Changing only Lantern here
         # saves only Lantern: the 7 it showed is not saved again over the other phone's 9.
         def shown(product):
-            items = fixture.get('/api/counting/card', location='floor', product_id=fixture.box).get_json()['items']
+            items = fixture.get('/api/counting/card', location='upstairs', product_id=fixture.box).get_json()['items']
             return next(item['count']['version'] for item in items if item['product_id'] == product)
         other = fixture.save([{'product_id': fixture.box, 'quantity': 9, 'count_version': shown(fixture.box)}],
                              key='other-phone-1')
@@ -210,13 +222,14 @@ async def run(browser, width):
 
         # Inventory's 盘点 link names only a product, here a design: its card opens at the counter's location.
         await page.goto(BASE + f'/count?product={fixture.rider}')
-        await expect(page).to_have_url(re.compile(rf'/count\?location=floor&product={fixture.rider}$'))
+        await expect(page).to_have_url(re.compile(rf'/count\?location=upstairs&product={fixture.rider}$'))
         card = page.get_by_role('region', name='Count Warmth 盲盒')
         await expect(card.get_by_label(re.compile('^Rider'))).to_have_value('3')
         await card.get_by_role('button', name='返回 Back').click()
 
-        # 0 whole sets of a box with no set makes no set; after the save the card still shows the 0
-        # and the boxes per set typed, and Save again with nothing new sends nothing.
+        # 0 whole sets of a box with no set makes no set, but the boxes per set typed is saved on the
+        # product (confirmed first); after the save the card still shows the 0 and the boxes per set,
+        # and Save again with nothing new sends nothing.
         await search.fill('nova')
         await page.get_by_role('button', name=re.compile('^Nova')).click()
         card = page.get_by_role('region', name='Count Nova')
@@ -224,6 +237,7 @@ async def run(browser, width):
         await card.get_by_label(re.compile('^整端 Whole sets')).fill('0')
         await card.get_by_label(re.compile('^每端几盒 Boxes per set')).fill('9')
         await card.get_by_label(re.compile('^散盒 Single boxes')).fill('3')
+        page.once('dialog', lambda dialog: asyncio.ensure_future(dialog.accept()))
         await card.get_by_role('button', name='保存 Save').click()
         await expect(card.get_by_role('status')).to_contain_text('已保存 Saved')
         await expect(card.get_by_text(re.compile('^已点 3 · '))).to_be_visible()  # the card reloaded
@@ -236,11 +250,14 @@ async def run(browser, width):
         assert len(state['saves']) == saves
         assert rows("SELECT p.sku, oc.quantity FROM opening_counts oc JOIN products p ON p.id=oc.product_id "
                     "WHERE p.sku LIKE 'NOVA-1%'") == [('NOVA-1', 3)]
+        assert state['saves'][-1][0]['new_sealed_set'] == {'quantity': 0, 'boxes_per_set': 9}
+        assert rows("SELECT boxes_per_dan FROM products WHERE sku='NOVA-1'") == [(9,)]
         await card.get_by_role('button', name='下一个 Next').click()
-        # Opened again, a box counted here with no set shows 0 whole sets.
+        # Opened again, a box counted here with no set shows 0 whole sets and the boxes per set saved.
         await search.fill('nova')
         await page.get_by_role('button', name=re.compile('^Nova')).click()
         await expect(card.get_by_label(re.compile('^整端 Whole sets'))).to_have_value('0')
+        await expect(card.get_by_label(re.compile('^每端几盒 Boxes per set'))).to_have_value('9')
         await card.get_by_role('button', name='返回 Back').click()
 
         # A manager adds a missing design and removes a mistyped one, from the card.
@@ -276,7 +293,7 @@ async def run(browser, width):
         await expect(page.get_by_text('这家店已上线 · Saving a count changes this store’s stock now.')).to_be_visible()
         await expect(card.get_by_label(re.compile('^散盒 Single boxes'))).to_have_value('')
         assert rows("""SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
-                       WHERE b.product_id=? AND l.store_id=? AND l.code='floor' AND b.disposition='saleable'""",
+                       WHERE b.product_id=? AND l.store_id=? AND l.code='upstairs' AND b.disposition='saleable'""",
                     fixture.box, fixture.dt) == [(7,)]
         # Afterwards a recount corrects stock at once.
         await card.get_by_label(re.compile('^散盒 Single boxes')).fill('6')
@@ -284,7 +301,7 @@ async def run(browser, width):
         await expect(card.get_by_role('status')).to_contain_text('库存 7 → 6')
         # Another phone recounts the same box first: this card's save is refused, the card reloads,
         # and the warning stays up so the counter knows to count again.
-        version = fixture.get('/api/counting/card', location='floor', product_id=fixture.box).get_json()['items'][0]
+        version = fixture.get('/api/counting/card', location='upstairs', product_id=fixture.box).get_json()['items'][0]
         other = fixture.save([{'product_id': fixture.box, 'quantity': 5, 'balance_version': version['balance_version']}],
                              key='other-phone')
         assert other.status_code == 200, other.get_json()
@@ -296,7 +313,7 @@ async def run(browser, width):
         await page.wait_for_timeout(500)
         await expect(stale).to_be_visible()
         assert rows("""SELECT b.quantity FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
-                       WHERE b.product_id=? AND l.store_id=? AND l.code='floor' AND b.disposition='saleable'""",
+                       WHERE b.product_id=? AND l.store_id=? AND l.code='upstairs' AND b.disposition='saleable'""",
                     fixture.box, fixture.dt) == [(5,)]
         await fits(page, f'live-{width}.png')
     finally:

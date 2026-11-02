@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from auth import ROLE_CLAIM
 from inventory_commands import InventoryValidationError
+from report_stock import open_notices
 
 
 def _section(rows, limit=50):
@@ -107,6 +108,11 @@ def get_today(con, *, actor, store_code=None, business_date=None):
                     WHERE c.store_id IN ({marks}) AND x.revision=(SELECT MAX(y.revision) FROM closing_cash_counts y WHERE y.closing_session_id=c.id)
                       AND x.variance_cents!=0 ORDER BY c.business_date,c.id""", ids))
         sections['financial'] = _section(financial)
+        # Daily report mismatches at live stores, until settled or checked (owner, 2026-10-29).
+        sections['report_stock'] = _section(
+            {'source_id': n['id'], 'type': 'report_stock', 'link': '/sales/report-stock', 'store_id': n['store_id'],
+             'status': n['reason'], 'version': None, 'updated_at': n['business_date'],
+             'label': f"{n['name']} × {n['quantity']}"} for n in open_notices(con, ids))
     def visible(row):
         try:
             kind, source = row['type'], row['source_id']

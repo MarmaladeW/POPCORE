@@ -30,6 +30,8 @@ export interface CountItem {
   identity_status: 'verified' | 'unverified'
   image: string | null
   boxes_per_set?: number
+  // On the floor a blind box is boxes only: its set size shows them as about so many whole sets.
+  set_size?: number
   suggested_form?: CountForm | null
   // An unverified product already counted in this store keeps that form (going live verifies one).
   counted_form?: CountForm
@@ -48,7 +50,7 @@ export interface CountCard {
   series_id: number | null
   designs_checked: { at: string; by: string } | null
   items: CountItem[]
-  // A blind box with no whole set yet: saving a whole-set count creates it.
+  // A blind box with no whole set yet: saving a whole-set count creates it; 0 whole sets keeps only boxes_per_set.
   new_sealed_set: { boxes_per_set: number | null } | null
 }
 
