@@ -77,6 +77,7 @@ from blueprints.special_orders import bp as special_orders_bp
 from blueprints.clover_matches import bp as clover_matches_bp
 from blueprints.health    import bp as health_bp
 from blueprints.counting  import bp as counting_bp
+from blueprints.website   import bp as website_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 app.register_blueprint(users_bp)
@@ -101,6 +102,7 @@ app.register_blueprint(today_bp)
 app.register_blueprint(reports_bp)
 app.register_blueprint(special_orders_bp)
 app.register_blueprint(clover_matches_bp)
+app.register_blueprint(website_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.
@@ -148,6 +150,32 @@ if not os.environ.get('DISABLE_SCHEDULER') or os.environ.get('CLOVER_BACKGROUND_
                                   max_instances=1, coalesce=True)
         _clover_scheduler.start()
         atexit.register(lambda: _clover_scheduler.shutdown(wait=False))
+
+# ─── Website stock sync (popcore.ca) ─────────────────────────────────────────
+# Reads web orders and pushes stock every 30 seconds once WEBSITE_* is set; it writes to the
+# website only after an admin turns the sync on (docs/website-sync.md).
+if not os.environ.get('DISABLE_SCHEDULER'):
+    import atexit
+    from apscheduler.schedulers.background import BackgroundScheduler
+    import website_sync
+
+    def _website_job():
+        try:
+            website_sync.background_sync()
+        except Exception:
+            app.logger.exception('Website sync failed')
+
+    try:
+        _website_configured = website_sync.config() is not None
+    except ValueError:
+        app.logger.error('Website settings are invalid; website sync is off')
+        _website_configured = False
+    if _website_configured:
+        _website_scheduler = BackgroundScheduler(daemon=True)
+        _website_scheduler.add_job(_website_job, 'interval', seconds=30, id='website_sync',
+                                   max_instances=1, coalesce=True)
+        _website_scheduler.start()
+        atexit.register(lambda: _website_scheduler.shutdown(wait=False))
 
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
 @app.errorhandler(404)

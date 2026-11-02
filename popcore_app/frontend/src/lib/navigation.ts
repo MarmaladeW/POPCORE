@@ -3,7 +3,7 @@
 
 // inventory: 库存查看 at the selected store (always true for managers and admins).
 export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inventory: boolean }
-export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count'
+export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count' | 'web'
 export type NavItem = { key: string; zh: string; en: string; icon: NavIcon; note?: string }
 export type NavGroup = { label: string; items: NavItem[] }
 
@@ -19,6 +19,8 @@ const item = {
   // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs.
   sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
   reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '经理' },
+  // popcore.ca stock sync and web orders (owner, 2026-11-01).
+  website: { key: '/website', zh: '网站', en: 'Website', icon: 'web', note: '经理' },
   schedule: { key: '/schedule', zh: '排班', en: 'Schedule', icon: 'cal' },
   products: { key: '/products', zh: '产品', en: 'Products', icon: 'grid', note: '系列与款式' },
   users: { key: '/users', zh: '员工', en: 'Users', icon: 'user', note: '管理员' },
@@ -35,7 +37,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
   const planning: NavItem[] = [item.schedule, item.products, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
-    ...(access.manager ? [{ label: '查看', items: [item.sales, item.reports] }] : []),
+    ...(access.manager ? [{ label: '查看', items: [item.sales, item.reports, item.website] }] : []),
     { label: access.manager ? '计划与管理' : '计划', items: planning },
   ]
 }
@@ -44,7 +46,7 @@ export function moreItems(access: NavAccess): NavItem[] {
   return [
     ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock] : []),
     item.products,
-    ...(access.manager ? [item.sales, item.reports] : []),
+    ...(access.manager ? [item.sales, item.reports, item.website] : []),
     ...(access.admin ? [item.users, item.settings] : []),
   ]
 }

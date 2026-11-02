@@ -90,7 +90,7 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
     for row in con.execute(
         f'''SELECT id,sku,COALESCE(NULLIF(jizhanming,''),NULLIF(name_cn_en,''),sku) AS name,
                   jizhanming,name_cn_en,{product_alias_text_sql('products')} AS alias_text,
-                  series_id,stock_form,stock_unit,design_name,identity_status,
+                  series_id,stock_form,stock_unit,design_name,identity_status,created_at,
                   (SELECT filename FROM hidden_images i WHERE i.product_id=products.id
                    ORDER BY CASE WHEN i.image_type='general' THEN 0 ELSE 1 END,i.id LIMIT 1) AS image_filename
            FROM products ORDER BY id'''):
