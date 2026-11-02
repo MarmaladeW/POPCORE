@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { getInventoryOverview, type InventoryOverview as Overview, type OverviewChange, type OverviewFigure, type OverviewItem } from '../../api/inventoryOverview'
 import { Panel } from '../../components/pc/Panel'
 import { useIsPhone } from '../../components/pc/useIsPhone'
+import { useInventoryVisible } from '../../auth/useInventoryVisible'
 
 // What the floor needs, what is selling and what changed, above the product list (owner, 2026-11-01).
 // Stock is the live ledger; sales are the pasted 日报, so the selling lists fill in as reports come in.
@@ -25,20 +26,26 @@ const pace = (value:number) => value>=10 ? String(Math.round(value)) : value.toF
 const lasts = (days:number) => days<1 ? 'less than a day' : `about ${plural(Math.round(days),'day')}`
 const backName = (figure:OverviewFigure):[string,string] => figure.codes.length>1 ? ['楼上 · 仓库','Back stock'] : figure.codes[0]==='warehouse' ? ['仓库','Warehouse'] : ['楼上','Upstairs']
 
-export default function InventoryOverview({storeCode,refresh}:{storeCode:string;refresh:number}) {
-  const [result,setResult] = useState<{key:string;data?:Overview;error?:boolean}>()
+// Only for accounts with 库存查看 at this store (owner, 2026-11-01): anyone else gets no overview.
+export default function InventoryOverview(props:{storeCode:string;refresh:number}) {
+  return useInventoryVisible() ? <LoadedOverview {...props}/> : null
+}
+
+function LoadedOverview({storeCode,refresh}:{storeCode:string;refresh:number}) {
+  const [result,setResult] = useState<{key:string;data?:Overview;error?:boolean;hidden?:boolean}>()
   const [retry,setRetry] = useState(0)
   const key = `${storeCode}|${refresh}|${retry}`
   useEffect(()=>{
     const controller = new AbortController()
     getInventoryOverview(storeCode,controller.signal)
       .then(data=>{if(!controller.signal.aborted)setResult({key,data})})
-      .catch(()=>{if(!controller.signal.aborted)setResult({key,error:true})})
+      .catch(cause=>{if(!controller.signal.aborted)setResult({key,error:true,hidden:cause?.response?.data?.code==='inventory_hidden'})})
     return ()=>controller.abort()
   },[key,storeCode])
   const current = result?.key===key ? result : undefined
   // Keep the last overview on screen while a refresh loads.
   const data = current?.data ?? (current ? undefined : result?.data)
+  if (current?.hidden) return null
   if (!current && !data) return <div className="pc-inv-overview" aria-busy="true"><Skeleton active paragraph={{rows:4}}/></div>
   if (current?.error) return <p className="pc-panel pc-quiet pc-inv-overview">The overview didn't load. The product list below is unaffected. <Button size="small" onClick={()=>setRetry(value=>value+1)}>Retry overview</Button></p>
   if (!data?.live) return null

@@ -1115,6 +1115,8 @@ def get_inventory_overview():
     con = get_db()
     try:
         return jsonify(inventory_overview(con, request.jwt_payload, request.args.get('store_code')))
+    except InventoryHidden as exc:
+        return hidden_response(exc)
     except PermissionError:
         return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
     except InventoryError as exc:

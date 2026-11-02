@@ -87,6 +87,7 @@ class InventoryVisibilityTests(ReceivingFixture):
                                                             'to_location_id': self.upstairs, 'to_disposition': 'saleable',
                                                             'expected_versions': {'from': 1, 'to': 0}}]}),
             ('GET', f'/api/inventory/series?{dt}', None),
+            ('GET', f'/api/inventory/overview?{dt}', None),
             ('GET', f'/api/inventory/series/{self.series_id}/history?{dt}', None),
             ('GET', f'/api/counting/scope?{dt}', None),
             ('GET', f'/api/counting/search?{dt}&location=floor&q=Test', None),
@@ -160,6 +161,16 @@ class InventoryVisibilityTests(ReceivingFixture):
                     continue
                 with self.subTest(role=role, path=path):
                     self.assertNotHidden(self.call(method, path, role))
+
+    def test_the_inventory_overview_is_for_picked_workers(self):
+        self.assertHidden(self.call('GET', '/api/inventory/overview?store_code=DT', HIDDEN))
+        self.assertHidden(self.call('GET', '/api/inventory/overview?store_code=ALL', HIDDEN))
+        for role in (PICKED, 'manager'):
+            with self.subTest(role=role):
+                response = self.call('GET', '/api/inventory/overview?store_code=DT', role)
+                self.assertEqual(response.status_code, 200, response.get_json())
+                self.assertTrue(response.get_json()['live'])
+                self.assertIn('figures', response.get_json())
 
     def test_a_pick_covers_only_its_store(self):
         with closing(self.connect()) as con:  # 门店操作权限 at MK too, so only 库存查看 refuses it there
