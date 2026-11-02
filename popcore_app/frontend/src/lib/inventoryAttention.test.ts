@@ -20,3 +20,10 @@ test('hold and damage remain visible without treating transit or display as prob
   assert.deepEqual(inventoryAttention(product([2,0],[{location_id:1,disposition:'hold',quantity:1}]),locations.slice(0,2)), ['condition'])
   assert.deepEqual(inventoryAttention(product([2,0],[{location_id:1,disposition:'transit',quantity:4},{location_id:1,disposition:'display',quantity:2}]),locations.slice(0,2)), [])
 })
+test('sealed sets and confirmed designs are never floor refills, and a box counts its whole sets upstairs',()=>{
+  const here=locations.slice(0,2)
+  assert.deepEqual(inventoryAttention({...product([0,4]),stock_form:'sealed_set'},here), [])
+  assert.deepEqual(inventoryAttention({...product([0,4]),stock_form:'confirmed_design'},here), [])
+  assert.deepEqual(inventoryAttention({...product([0,0]),stock_form:'random_box'},here,product([0,2])), ['out_of_stock','replenish'])
+  assert.deepEqual(inventoryAttention({...product([3,0]),stock_form:'random_box'},here,product([0,2])), [])
+})

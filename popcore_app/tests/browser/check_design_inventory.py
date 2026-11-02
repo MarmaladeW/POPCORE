@@ -1,5 +1,6 @@
 """Series inventory UX regression with isolated API fixtures; no live data."""
 import asyncio
+import re
 import subprocess
 from urllib.parse import parse_qs
 from playwright.async_api import async_playwright, expect
@@ -65,7 +66,21 @@ async def checks(browser, width, role):
     await expect(page.get_by_role('table').first).to_be_visible()
     await expect(page.get_by_text('2 sets',exact=True)).to_be_visible()
     await expect(page.get_by_text('8 boxes',exact=True)).to_be_visible()
+    # Designs known to be out of stock fold into one line; opening it lists each one.
+    folded=page.get_by_role('button',name=re.compile(r'^1 out of stock'))
+    await expect(folded).to_have_attribute('aria-expanded','false')
+    await expect(folded).to_have_text('1 out of stock · Sun')
+    await expect(page.get_by_text('0 pieces',exact=True)).to_have_count(0)
+    await expect(page.get_by_text('1 of 2 in stock',exact=True)).to_be_visible()
+    designs=page.get_by_role('table',name='Confirmed design inventory',exact=True)
+    await expect(designs.get_by_role('row').nth(1)).to_contain_text('合计 Total')
+    await expect(designs.get_by_role('row').nth(2)).to_contain_text('Moon')
+    await folded.click()
+    await expect(folded).to_have_attribute('aria-expanded','true')
     await expect(page.get_by_text('0 pieces',exact=True)).to_be_visible()
+    # Receiving or counting one design starts from its stock details.
+    await expect(page.get_by_role('link',name='Receive Sun',exact=True)).to_have_count(0)
+    await page.get_by_label('Stock details for Sun',exact=True).click()
     await expect(page.get_by_role('link',name='Receive Sun',exact=True)).to_have_attribute('href','/goods/receiving?product_id=14')
     await expect(page.get_by_role('link',name='Count Sun',exact=True)).to_have_attribute('href','/goods/counts?product_id=14')
     await page.get_by_role('link',name='Receive Sun',exact=True).click()
@@ -177,8 +192,10 @@ async def twelve_design_checks(browser,width):
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE+'/stock?series_id=7')
     await expect(page.get_by_role('heading',name='确认款 Confirmed designs',exact=True)).to_be_visible()
-    await expect(page.get_by_role('link',name='Receive Design 12',exact=True)).to_be_visible()
-    await expect(page.get_by_role('table',name='Confirmed design inventory',exact=True).get_by_role('row')).to_have_count(13)
+    rows=page.get_by_role('table',name='Confirmed design inventory',exact=True).get_by_role('row')
+    await expect(rows).to_have_count(4)  # heading, total, Moon, and the 11 out of stock folded into one line
+    await page.get_by_role('button',name=re.compile(r'^11 out of stock')).click()
+    await expect(rows).to_have_count(15)
     for name in ('Moon','Sun',*[f'Design {number}' for number in range(3,13)]):
         trigger=page.get_by_label(f'Stock details for {name}',exact=True)
         await trigger.scroll_into_view_if_needed()
@@ -186,6 +203,7 @@ async def twelve_design_checks(browser,width):
     await page.get_by_label('Stock details for Design 12',exact=True).click()
     await expect(page.get_by_role('dialog',name='Stock details',exact=True)).to_be_visible()
     await expect(page.get_by_text('GARDEN-12 · Reviewed identity',exact=True)).to_be_visible()
+    await expect(page.get_by_role('link',name='Receive Design 12',exact=True)).to_be_visible()
     await no_overflow(page)
     await page.screenshot(animations='disabled',path=OUT/f'twelve-designs-details-{width}.png')
     await close_drawer(page)
@@ -208,7 +226,8 @@ async def prelive_checks(browser,width):
     await page.goto(BASE+'/stock?series_id=7')
     await expect(page.get_by_text('Not live yet: quantities stay Unknown until the store goes live.',exact=False)).to_be_visible()
     await expect(page.get_by_role('link',name='盘点 Count',exact=True)).to_have_attribute('href','/count?product=11')
-    await expect(page.get_by_role('link',name='盘点 Count Sun',exact=True)).to_have_attribute('href','/count?product=14')
+    await page.get_by_label('Stock details for Moon',exact=True).click()
+    await expect(page.get_by_role('link',name='盘点 Count Moon',exact=True)).to_have_attribute('href','/count?product=13')
     for name in ('Receive Sun','Count Sun'):
         await expect(page.get_by_role('link',name=name,exact=True)).to_have_count(0)
     for name in ('按系列晚盘 Count series','整系列入库 Receive series'):
@@ -235,7 +254,8 @@ async def mixed_quantities_checks(browser):
     available=moon.get_by_role('cell').filter(has_text='Not yet verified')
     await expect(available.get_by_text('Unknown',exact=True)).to_be_visible()
     await moon.scroll_into_view_if_needed()  # designs sit below sealed sets and single boxes
-    await expect(moon.get_by_role('link',name='Count Moon',exact=True)).to_be_in_viewport()
+    await moon.get_by_label('Stock details for Moon',exact=True).click()
+    await expect(page.get_by_role('link',name='Count Moon',exact=True)).to_be_in_viewport()
     await no_overflow(page)
     await page.screenshot(animations='disabled',path=OUT/'mixed-quantities-768.png')
     await context.close()
