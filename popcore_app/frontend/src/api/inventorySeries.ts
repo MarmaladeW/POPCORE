@@ -20,6 +20,8 @@ export interface SeriesProduct {
   design_name: string | null
   identity_status: string
   image_filename?: string | null
+  /** When the product was added (UTC); null for products added before times were recorded. */
+  created_at?: string | null
   balances: SeriesBalance[]
   open_sets?: Array<{id:number;location_id:number;purpose:string;remaining_qty:number;opening_document_id:number}>
   /** A plain blind box's sealed set (its "Whole set" variation). */

@@ -161,9 +161,11 @@ async def flow(browser, viewport):
 
 async def create_once_and_sort_flow(browser):
     """A weak connection: Create pressed again after a lost response sends the same request key, a
-    press while saving sends nothing, and the list sorts by when products were added (their ids)."""
-    rows = [{**product(), 'id': pid, 'sku': sku, 'jizhanming': name, 'name_cn_en': name}
-            for pid, sku, name in ((1, 'PM0001', 'Oldest box'), (3, 'PM0002', 'Newest box'), (2, 'PM0003', 'Middle box'))]
+    press while saving sends nothing, and the list shows the newest added first (their ids), with the
+    time each was added where it was recorded; a search keeps its best matches first."""
+    rows = [{**product(), 'id': pid, 'sku': sku, 'jizhanming': name, 'name_cn_en': name, 'created_at': added}
+            for pid, sku, name, added in ((1, 'PM0001', 'Oldest box', None), (3, 'PM0002', 'Newest box', '2026-10-31 18:05:00'),
+                                          (2, 'PM0003', 'Middle box', None))]
     state = {'api_payload': lambda path, query, request: rows if path == '/api/products/search'
              else foundation_payload(path, query, False)}
     context, page = await context_with_api(browser, state, viewport={'width': 1440, 'height': 1000}, auth={'role': 'manager'})
@@ -182,13 +184,26 @@ async def create_once_and_sort_flow(browser):
     sort = page.get_by_role('combobox', name='Sort products')
     try:
         await page.goto(BASE + '/products')
-        await expect(names).to_have_text(['Oldest box', 'Newest box', 'Middle box'])
-        await sort.click()
-        await page.get_by_role('option', name='最新添加 Newest added').click()
         await expect(names).to_have_text(['Newest box', 'Middle box', 'Oldest box'])
+        await expect(sort).to_have_text('最新添加 Newest added')
+        added = page.locator('.ant-table-tbody tr').filter(has_text='Newest box').locator('td').nth(6)
+        await expect(added).to_contain_text('2026')
+        await expect(page.locator('.ant-table-tbody tr').filter(has_text='Oldest box').locator('td').nth(6)).to_have_text('—')
+        await sort.click()
+        await page.get_by_role('option', name='按编号 By ID').click()
+        await expect(names).to_have_text(['Oldest box', 'Newest box', 'Middle box'])
         await sort.click()
         await page.get_by_role('option', name='最早添加 Oldest added').click()
         await expect(names).to_have_text(['Oldest box', 'Middle box', 'Newest box'])
+        await sort.click()
+        await page.get_by_role('option', name='最新添加 Newest added').click()
+        await page.get_by_label('Search name, SKU, 记账名').fill('box')
+        await expect(sort).to_have_text('最相关 Best match')
+        await expect(sort).to_be_disabled()
+        await expect(names).to_have_text(['Oldest box', 'Newest box', 'Middle box'])
+        await page.get_by_label('Search name, SKU, 记账名').fill('')
+        await expect(names).to_have_text(['Newest box', 'Middle box', 'Oldest box'])
+        await page.screenshot(path=str(OUT / 'catalog-newest-first.png'))
 
         await page.get_by_role('button', name='Add Product').click()
         dialog = page.get_by_role('dialog')
@@ -240,7 +255,7 @@ async def main():
         finally:
             process.terminate()
             process.wait(timeout=10)
-    print('Catalog import browser checks passed (manager desktop/mobile, Sheet preview/confirm, stock 403, CSV/TSV, stale/retry, pending, catalog-only writes, Add product saved once on retry, sort by time added)')
+    print('Catalog import browser checks passed (manager desktop/mobile, Sheet preview/confirm, stock 403, CSV/TSV, stale/retry, pending, catalog-only writes, Add product saved once on retry, newest added first with time added, search keeps best match)')
 
 
 if __name__ == '__main__':

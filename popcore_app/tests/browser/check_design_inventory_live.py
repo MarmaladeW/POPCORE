@@ -1,5 +1,6 @@
 """Real Flask design identification and ambiguous-response retry using disposable data."""
 import asyncio
+import re
 import json
 import subprocess
 import sys
@@ -41,6 +42,8 @@ async def checks(browser, fixture):
     await page.route('**/api/goods/identify',uncertain_identify)
     await page.goto(BASE+f'/stock?series_id={fixture.series_id}')
     await expect(page.get_by_text('5 boxes',exact=True)).to_be_visible()
+    # Designs with no stock fold into one line until opened.
+    await page.get_by_role('button',name=re.compile(r'^\d+ out of stock')).click()
     await expect(page.get_by_text('0 pieces',exact=True)).to_be_visible()
     await page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True).click()
     await expect(page.get_by_role('dialog',name='Identify boxes',exact=True)).to_be_visible()
