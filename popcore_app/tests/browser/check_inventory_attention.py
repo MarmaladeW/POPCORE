@@ -21,6 +21,8 @@ def payload(path, query, request):
     products = data['series'][0]['products']
     for product in products:
         product['balances'].append({'location_id':2,'disposition':'saleable','quantity':5 if product['id']==14 else 0,'version':1})
+        if product['id']==14:  # designs are never floor refills, so Sun is a plain product here
+            product.update(stock_form='ordinary',design_name=None)
         if product['id']==13 and store=='DT':
             product['image_filename']='reference moon.png'
         if product['id']==15:

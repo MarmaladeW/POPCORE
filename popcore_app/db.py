@@ -2002,6 +2002,19 @@ def _migration_opening_counts(con, cur):
     cur.execute("INSERT INTO _migrations(name) VALUES ('opening_counts')")
 
 
+def _migration_product_created_at(con, cur):
+    # When each product was added, so the catalog can list the newest first (owner, 2026-10-31).
+    # The trigger stamps every way a product is made (Add product, sheet sync, imports, scripts).
+    # Products from before have none: nothing recorded when they were added.
+    columns = {row['name'] for row in cur.execute('PRAGMA table_info(products)')}
+    if 'created_at' not in columns:
+        cur.execute('ALTER TABLE products ADD COLUMN created_at TEXT')
+    cur.execute("""CREATE TRIGGER IF NOT EXISTS products_created_at AFTER INSERT ON products
+        WHEN NEW.created_at IS NULL
+        BEGIN UPDATE products SET created_at = datetime('now') WHERE id = NEW.id; END""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('product_created_at')")
+
+
 def _get_migrations():
     return [
         ('create_stores_table',                 _migration_create_stores_table),
@@ -2068,6 +2081,7 @@ def _get_migrations():
         ('opening_counts',                             _migration_opening_counts),
         ('report_stock_takes',                         _migration_report_stock_takes),
         ('report_stock_issues',                        _migration_report_stock_issues),
+        ('product_created_at',                         _migration_product_created_at),
     ]
 
 
