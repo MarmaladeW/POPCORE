@@ -2082,6 +2082,7 @@ def _get_migrations():
         ('report_stock_takes',                         _migration_report_stock_takes),
         ('report_stock_issues',                        _migration_report_stock_issues),
         ('product_created_at',                         _migration_product_created_at),
+        ('website_sync',                               _migration_website_sync),
     ]
 
 
@@ -2124,6 +2125,60 @@ def _migration_report_stock_issues(con, cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_report_stock_issues_open ON report_stock_issues(status, store_id)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('report_stock_issues')")
+
+
+def _migration_website_sync(con, cur):
+    # popcore.ca takes its stock from POPCORE (owner, 2026-10-25 and 2026-11-01); see website_sync.py.
+    # website_items: the website's products and variations as last read or written, linked by SKU.
+    cur.execute("""CREATE TABLE IF NOT EXISTS website_items (
+        wc_id          INTEGER PRIMARY KEY,
+        parent_id      INTEGER,
+        kind           TEXT    NOT NULL CHECK (kind IN ('simple', 'variable', 'variation', 'other')),
+        sku            TEXT    NOT NULL DEFAULT '',
+        name           TEXT    NOT NULL DEFAULT '',
+        status         TEXT,
+        manage_stock   INTEGER NOT NULL DEFAULT 0 CHECK (manage_stock IN (0, 1)),
+        stock_quantity INTEGER,
+        stock_status   TEXT,
+        pickup         TEXT,
+        product_id     INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        error          TEXT,
+        pushed_at      TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_website_items_product ON website_items(product_id)')
+    # Paid web orders, kept apart from the stores' sales and closing (owner, 2026-11-01). No names,
+    # emails, phones or addresses are kept.
+    cur.execute("""CREATE TABLE IF NOT EXISTS website_orders (
+        wc_order_id           INTEGER PRIMARY KEY,
+        number                TEXT    NOT NULL,
+        wc_status             TEXT    NOT NULL,
+        paid_at               TEXT,
+        modified_at           TEXT,
+        total_cents           INTEGER,
+        tax_cents             INTEGER,
+        payment               TEXT,
+        transaction_id        TEXT,
+        fulfilment            TEXT,
+        pickup_store          TEXT,
+        lines                 TEXT    NOT NULL DEFAULT '[]',
+        state                 TEXT    NOT NULL CHECK (state IN ('new', 'recorded', 'needs_review', 'cancelled',
+                                                               'cancel_failed', 'dismissed')),
+        problem               TEXT,
+        refunded              INTEGER NOT NULL DEFAULT 0 CHECK (refunded IN (0, 1)),
+        store_id              INTEGER REFERENCES stores(id),
+        inventory_document_id INTEGER REFERENCES inventory_documents(id),
+        reversal_document_id  INTEGER REFERENCES inventory_documents(id),
+        dismissed_by          TEXT,
+        dismiss_reason        TEXT,
+        created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_website_orders_state ON website_orders(state)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS website_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_sync')")
 
 
 def _run_migrations(con, cur):

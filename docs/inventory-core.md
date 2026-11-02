@@ -104,6 +104,7 @@ Balances are derived from immutable movements and use optimistic versions. Corre
 | batch `ru_dian_claw` | Blocked with `migration_required`; claw overlap has no reviewed physical meaning. |
 | daily report sales sections | Take that day's sales off the live store's floor (owner, 2026-10-29); see **Daily reports at a live store** below. Stock sections stay blocked. |
 | daily report stock sections | Blocked with `migration_required`; old pack and provenance assumptions are not trusted. |
+| paid web order (popcore.ca) | One `consume` by the `popcore:website` actor, back stock first; a cancel is its exact `correction`. See `website-sync.md`. |
 | report resubmission with old stock history | Remains blocked with `reconciliation_required`. |
 | restock completion | Authoritative sessions use the Build 3 delivery lifecycle: pick to owned transit, then receive, return, loss resolution, or reasoned short-close. Older completed `restock_complete` documents remain history. |
 | completed restock deletion | Rejected; use a later correction. Draft session deletion remains available. |

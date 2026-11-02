@@ -1,0 +1,9 @@
+/* 网站 Website: panels stack with the page gap; row actions wrap under the text on a phone. */
+.pc-website { display: grid; gap: 16px; }
+.pc-website .pc-row-actions { display: flex; flex: none; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.pc-website-unknown summary { cursor: pointer; padding: 8px 0; }
+@media (max-width: 600px) {
+  .pc-website .pc-row { flex-wrap: wrap; }
+  .pc-website .pc-row-actions { width: 100%; justify-content: flex-start; }
+  .pc-website .pc-panel-head { flex-wrap: wrap; }
+}
