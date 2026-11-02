@@ -14,7 +14,7 @@ const before: Record<string, string[]> = {
   viewer: ['/', '/schedule', '/products'],
   staff: ['/', '/checkout', '/incoming', '/claw', '/summary', '/stock', '/restock', '/special-orders', '/today', '/trades', '/schedule', '/products'],
 }
-before.manager = [...before.staff, '/sales', '/reports']
+before.manager = [...before.staff, '/sales', '/reports', '/website']
 before.admin = [...before.manager, '/users', '/settings']
 
 // Special orders sit inside Checkout, so anyone who can open Checkout reaches them from there.
@@ -50,8 +50,8 @@ test('menus never offer a page above the role', () => {
   assert.ok(!moreItems(roles.manager).some(entry => entry.key === '/settings'))
 })
 
-test('更多 lists 库存, 补货, 产品, 销售, 报表, 员工, 设置 in order, by role', () => {
-  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['库存', '补货', '产品', '销售', '报表', '员工', '设置'])
+test('更多 lists 库存, 补货, 产品, 销售, 报表, 网站, 员工, 设置 in order, by role', () => {
+  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['库存', '补货', '产品', '销售', '报表', '网站', '员工', '设置'])
   assert.equal(moreItems(roles.admin).find(entry => entry.zh === '销售')?.key, '/summary')
   assert.deepEqual(moreItems(roles.viewer).map(entry => entry.key), ['/products'])
 })
@@ -59,7 +59,7 @@ test('更多 lists 库存, 补货, 产品, 销售, 报表, 员工, 设置 in ord
 test('rails follow the Figma groups', () => {
   assert.deepEqual(railGroups(roles.admin).map(group => group.label), ['日常', '查看', '计划与管理'])
   assert.deepEqual(railGroups(roles.staff).map(group => group.label), ['日常', '计划'])
-  assert.deepEqual(railGroups(roles.manager)[1].items.map(entry => entry.zh), ['销售', '报表'])
+  assert.deepEqual(railGroups(roles.manager)[1].items.map(entry => entry.zh), ['销售', '报表', '网站'])
   assert.deepEqual(railGroups(roles.manager)[0].items.map(entry => entry.zh), ['首页', '买单', '入店', '库存', '补货'])
   assert.deepEqual(railGroups(roles.staff)[0].items.map(entry => entry.zh), ['首页', '买单', '入店', '汇总', '库存', '补货'])
 })

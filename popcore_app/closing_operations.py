@@ -249,12 +249,15 @@ def _source_facts(con, session):
             (store_id,),
         )],
         # Posted documents are immutable, so their ids cover every stock change of this store day.
+        # Web orders stay out of the store's closing (owner, 2026-11-01).
         'inventory_documents': [tuple(row) for row in con.execute(
             """SELECT DISTINCT d.id, d.kind, d.status
                FROM inventory_documents d
                JOIN inventory_movements m ON m.document_id=d.id
                JOIN inventory_locations l ON l.id=m.location_id
-               WHERE l.store_id=? AND d.business_date=? ORDER BY d.id""",
+               WHERE l.store_id=? AND d.business_date=?
+                 AND COALESCE(d.source_type, '') NOT IN ('website_order', 'website_order_cancel')
+               ORDER BY d.id""",
             (store_id, business_date),
         )],
     }
