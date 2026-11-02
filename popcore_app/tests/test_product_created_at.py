@@ -52,6 +52,7 @@ class ProductCreatedAtTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute("INSERT INTO inventory_access VALUES ('auth0|staff',?)", (self.store_id,))
             con.commit()
+        self.grant_inventory_view('auth0|staff')
         response = self.client.get('/api/inventory/series?store_code=DT', headers=self.headers())
         self.assertEqual(response.status_code, 200, response.get_json())
         row = next(row for row in response.get_json()['products'] if row['id'] == self.product_id)

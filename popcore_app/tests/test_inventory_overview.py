@@ -13,6 +13,8 @@ def days_ago(days):
 class InventoryOverviewTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about the overview itself; their staff may see stock (库存查看).
+        self.grant_inventory_view('auth0|staff')
         with closing(self.connect()) as con:
             self.series_id = con.execute("INSERT INTO product_series(name) VALUES ('Garden')").lastrowid
             self.loc = {code: con.execute('SELECT id FROM inventory_locations WHERE store_id=? AND code=?', (self.store_id, code)).fetchone()[0]
