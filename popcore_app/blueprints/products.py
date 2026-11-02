@@ -191,7 +191,7 @@ def search_products():
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                    stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-                   parent_product_id, sub_item_count
+                   parent_product_id, sub_item_count, created_at
             FROM {search_source}
             {where}
             ORDER BY sku DESC
@@ -221,7 +221,7 @@ def search_products():
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-               parent_product_id, sub_item_count
+               parent_product_id, sub_item_count, created_at
         FROM {search_source}
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
@@ -234,7 +234,7 @@ def search_products():
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-               parent_product_id, sub_item_count
+               parent_product_id, sub_item_count, created_at
         FROM {search_source}
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
@@ -249,7 +249,7 @@ def search_products():
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                    stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-                   parent_product_id, sub_item_count
+                   parent_product_id, sub_item_count, created_at
             FROM {search_source}
             WHERE {char_conditions} {filter_sql}
             LIMIT 200
@@ -265,7 +265,7 @@ def search_products():
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                    stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-                   parent_product_id, sub_item_count
+                   parent_product_id, sub_item_count, created_at
             FROM {search_source}
             WHERE ({bi_cond}) {filter_sql}
             LIMIT 200

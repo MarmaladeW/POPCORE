@@ -47,6 +47,7 @@ interface Product {
   stock_unit?: 'set' | 'box' | 'piece' | null
   identity_status?: 'unverified' | 'verified'
   sub_item_count?: number
+  created_at?: string | null
 }
 
 interface StockRow {
@@ -169,6 +170,15 @@ function SubCount({ product }: { product: { sub_item_count?: number } }) {
 
 type ProductOrder = 'id' | 'newest' | 'oldest'
 
+// The server keeps UTC ("YYYY-MM-DD HH:MM:SS"); show the device's local time. Products added
+// before times were recorded have none.
+function addedAt(text?: string | null) {
+  if (!text) return null
+  const when = new Date(`${text.replace(' ', 'T')}Z`)
+  if (Number.isNaN(when.getTime())) return text
+  return when.toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 export default function ProductsPage() {
   const isMobile = useIsMobile()
   const manager = useHasRole('manager')
@@ -185,15 +195,16 @@ export default function ProductsPage() {
   const [searchSeries, setSearchSeries] = useState('')
   const [searchType,   setSearchType]   = useState('')
   const [selected,  setSelected]  = useState<number[]>([])
-  // Products are numbered in the order they were added, so the newest have the highest ids.
+  // Products are numbered in the order they were added, so the newest have the highest ids, and the
+  // catalog lists the newest first (owner, 2026-10-31). A search keeps its best matches first.
   const [order, setOrder] = useState<ProductOrder>(() => {
-    try { const saved = localStorage.getItem('pc-products-order'); return saved === 'newest' || saved === 'oldest' ? saved : 'id' } catch { return 'id' }
+    try { const saved = localStorage.getItem('pc-products-order'); return saved === 'id' || saved === 'oldest' ? saved : 'newest' } catch { return 'newest' }
   })
   const chooseOrder = (next: ProductOrder) => {
     setOrder(next)
     try { localStorage.setItem('pc-products-order', next) } catch { /* private mode */ }
   }
-  const shown = order === 'id' ? products : [...products].sort((a, b) => order === 'newest' ? b.id - a.id : a.id - b.id)
+  const shown = order === 'id' || searchQ ? products : [...products].sort((a, b) => order === 'newest' ? b.id - a.id : a.id - b.id)
 
   const [exporting,      setExporting]      = useState(false)
   const [editProduct,    setEditProduct]    = useState<Product | null>(null)
@@ -399,6 +410,13 @@ export default function ProductsPage() {
       render: v => v != null ? `$${v.toFixed(2)}` : <span className="pc-prod-muted">—</span>,
     },
     {
+      title: '添加时间',
+      dataIndex: 'created_at',
+      width: 150,
+      sorter: (a, b) => a.id - b.id,
+      render: v => addedAt(v) ?? <span className="pc-prod-muted" title="Added before times were recorded">—</span>,
+    },
+    {
       title: '库存',
       width: 80,
       align: 'right',
@@ -499,9 +517,10 @@ export default function ProductsPage() {
           productTypes={productTypes}
           onChange={(q, s, t) => { setSearchQ(q); setSearchSeries(s); setSearchType(t) }}
         />
-        <UiSelect value={order} onValueChange={value => chooseOrder(value as ProductOrder)}>
-          <SelectTrigger aria-label="Sort products" style={{ width: isMobile ? '100%' : 168 }}><SelectValue /></SelectTrigger>
+        <UiSelect value={searchQ ? 'match' : order} disabled={!!searchQ} onValueChange={value => chooseOrder(value as ProductOrder)}>
+          <SelectTrigger aria-label="Sort products" style={{ width: isMobile ? '100%' : 196 }}><SelectValue /></SelectTrigger>
           <SelectContent>
+            {searchQ && <SelectItem value="match">最相关 Best match</SelectItem>}
             <SelectItem value="id">按编号 By ID</SelectItem>
             <SelectItem value="newest">最新添加 Newest added</SelectItem>
             <SelectItem value="oldest">最早添加 Oldest added</SelectItem>
@@ -535,7 +554,7 @@ export default function ProductsPage() {
                       <span className="pc-prod-name">
                         <strong>{p.jizhanming || p.name_cn_en || 'Unnamed product'}<Secrets product={p} /><SubCount product={p} /></strong>
                         {p.name_cn_en && p.jizhanming && <small>{p.name_cn_en}</small>}
-                        <small>{p.sku}</small>
+                        <small><span>{p.sku}</span>{p.created_at && <span> · 添加 {addedAt(p.created_at)}</span>}</small>
                       </span>
                       {stockBadge(stockMap ? stockMap.get(p.id) ?? 0 : null)}
                       <span className="pc-prod-price">{p.price != null ? `$${p.price.toFixed(2)}` : '—'}</span>
@@ -557,7 +576,7 @@ export default function ProductsPage() {
               } : undefined}
               rowClassName={r => r.id === detailId ? 'pc-prod-row-active' : ''}
               pagination={{ pageSize: 50, showTotal: t => `${t} products`, showSizeChanger: false }}
-              scroll={{ x: 820 }}
+              scroll={{ x: 970 }}
               onRow={(r) => ({
                 onClick: (e) => {
                   const target = e.target as HTMLElement
