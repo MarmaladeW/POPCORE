@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from checkout_access import require_checkout_history_store
 from inventory_commands import InventoryValidationError, inventory_mode_for
+from inventory_overview import BACK, needs_refill, sealed_set_of_box
 from operational_reports import _scope, _inventory_identity_valid, _product_name
 from validation import read_date
 
@@ -20,6 +21,7 @@ def _current_inventory(con, ids):
         f'''SELECT b.* FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
             WHERE l.is_active=1 AND l.store_id IN ({marks})''',ids)}
     items=[];counts=Counter({key:0 for key in ('out_of_stock','replenish','condition','unverified')})
+    set_of=sealed_set_of_box(con)
     for row in con.execute('SELECT p.*,ps.name series_name FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id ORDER BY p.id'):
         valid=_inventory_identity_valid(row)
         def available(location):
@@ -28,7 +30,10 @@ def _current_inventory(con, ids):
         reasons=[]
         if not known: reasons.append('unverified')
         elif all(available(location)==0 for location in locations): reasons.append('out_of_stock')
-        if any(floor['code']=='floor' and available(floor)==0 and any(back['store_id']==floor['store_id'] and back['code'] in ('upstairs','warehouse') and (available(back) or 0)>0 for back in locations) for floor in locations):
+        def back_stock(location):  # a blind box's whole sets upstairs refill its floor too
+            pair=set_of.get(row['id'])
+            return (available(location) or 0)+(balances.get((pair,location['id'],'saleable'),0) if pair and location['opening_verified'] else 0)
+        if any(floor['code']=='floor' and needs_refill(row['stock_form'],available(floor),sum(back_stock(back) for back in locations if back['store_id']==floor['store_id'] and back['code'] in BACK)) for floor in locations):
             reasons.append('replenish')
         if valid and any(location['opening_verified'] and any(balances.get((row['id'],location['id'],kind),0)>0 for kind in ('hold','damaged')) for location in locations):
             reasons.append('condition')

@@ -31,9 +31,6 @@
 .pc-series-available strong { font-weight: 600; }
 .pc-series-available > span { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 11px; }
 .pc-series-zero strong, .pc-series-zero > span { color: var(--status-restock-ink); }
-.pc-series-product-actions { width: 142px; white-space: nowrap; text-align: right; }
-.pc-series-product-actions a { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 8px; color: var(--text-primary); font-size: 13px; font-weight: 500; }
-.pc-series-product-actions a:last-child { padding-right: 0; margin-left: 6px; }
 .pc-series-exceptions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 1px 0 4px; font-size: 11px; font-weight: 400; color: var(--status-restock-ink); }
 .pc-series-warning { display: block; color: var(--status-restock-ink); font-size: 12px; font-weight: 400; }
 .pc-series-unknown { font-size: 12px; }
@@ -47,7 +44,7 @@
 .pc-series-search > span { flex-shrink: 0; color: var(--text-secondary); font-size: 13px; }
 .pc-series-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line-hair); background: var(--surface-default); overflow: hidden; }
 .pc-series-list li + li { border-top: 1px solid var(--line-hair); }
-.pc-series-list a { display: flex; align-items: center; gap: 24px; padding: 22px 24px; color: var(--text-primary); }
+.pc-series-list a { display: flex; align-items: center; gap: 24px; padding: 22px 24px; color: var(--text-primary); text-decoration: none; }
 .pc-series-list a:hover { background: var(--surface-subtle); }
 .pc-series-list-name { flex: 1; min-width: 0; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
 .pc-series-list-name > span { display: block; margin-top: 5px; color: var(--text-secondary); font-size: 12px; font-weight: 400; }
@@ -83,7 +80,7 @@
 .pc-series-stock-details dd { margin: 0; font-variant-numeric: tabular-nums; }
 .pc-series-inventory :focus-visible, .pc-inventory-drawer :focus-visible { outline: 3px solid #a5b4fc; outline-offset: 2px; }
 @media (pointer: coarse) {
-  .pc-series-product-name button, .pc-series-product-actions a, .pc-inventory-drawer .ant-drawer-close { min-height: 44px; }
+  .pc-series-product-name button, .pc-inventory-drawer .ant-drawer-close { min-height: 44px; }
 }
 @media (max-width: 767px) {
   .pc-series-header { margin-bottom: 24px; }
@@ -106,12 +103,9 @@
   .pc-series-table .pc-series-available { padding-top: 8px; font-size: 14px; }
   .pc-series-mobile-locations { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 0 0 7px; color: var(--text-secondary); font-size: 12px; font-weight: 400; }
   .pc-series-mobile-locations b { color: var(--text-secondary); font-weight: 500; }
-  .pc-series-table .pc-series-product-actions { grid-column: 1 / -1; width: auto; border-top: 1px solid #f0f2f5; margin-top: 4px; }
-  .pc-series-product-actions a { min-width: 64px; min-height: 44px; }
-  .pc-series-product-actions a:last-child { padding-right: 0; margin-left: 12px; }
-  .pc-series-product:not(:has(.pc-series-product-actions)) { padding-bottom: 12px; }
+  .pc-series-product { padding-bottom: 12px; }
   .pc-series-exceptions { margin: 3px 0 7px; }
-  .pc-series-search { gap: 12px; }
+  .pc-series-search { flex-wrap: wrap; gap: 8px 12px; }
   .pc-series-list a { padding: 18px 16px; gap: 12px; }
   .pc-series-list-name { font-size: 16px; }
   .pc-series-list-count { font-size: 12px; }
@@ -124,7 +118,6 @@
 @media (min-width: 768px) and (max-width: 1023px) {
   .pc-series-table th, .pc-series-table td { padding: 10px; }
   .pc-series-product-name { min-width: 115px; width: auto; }
-  .pc-series-product-actions { width: 130px; }
 }
 .pc-series-filterbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 0 0 24px; }
 .pc-series-filterbar label { display: grid; gap: 6px; font-size: 12px; color: var(--text-secondary); }
@@ -182,4 +175,73 @@
   .pc-stock-strip { grid-template-columns: 1fr 1fr; }
   .pc-stock-strip > div:nth-child(3) { border-left: 0; }
   .pc-stock-strip > div:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
+}
+
+/* Clearer stock (owner, 2026-11-01): real quantities in ink, zeros quiet, a total row first, out-of-stock designs folded. */
+.pc-series-table .pc-series-location .pc-series-qty { color: var(--text-primary); font-weight: 600; }
+.pc-series-table .pc-series-location .pc-series-nil { color: var(--text-tertiary); }
+.pc-series-total { border-top: 1px solid var(--line-hair); background: var(--surface-subtle); }
+.pc-series-total .pc-series-product-name { color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.pc-series-folded { border-top: 1px solid var(--line-hair); }
+.pc-series-table .pc-series-folded td { padding: 0; }
+.pc-series-folded button { display: flex; align-items: baseline; gap: 10px; width: 100%; min-height: 44px; padding: 12px 16px; border: 0; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.pc-series-folded button:hover { background: var(--surface-subtle); }
+.pc-series-folded button > .anticon { flex: none; font-size: 11px; }
+.pc-series-folded-count { color: var(--status-out-ink); font-weight: 500; white-space: nowrap; }
+.pc-series-folded-names { overflow-wrap: anywhere; }
+.pc-series-out .pc-series-available strong, .pc-series-out .pc-series-available > span { color: var(--text-secondary); }
+.pc-series-stock-details .pc-btn { min-height: 44px; }
+@media (min-width: 1024px) {
+  .pc-series-table-wrap { overflow: visible; }
+  .pc-series-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-subtle); }
+}
+@media (max-width: 767px) {
+  .pc-series-total { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 10px 14px 12px; border-top: 0; }
+  .pc-series-total .pc-series-location { display: none; }
+  .pc-series-folded { display: block; }
+  .pc-series-folded td { display: block; }
+  .pc-series-folded button { padding: 12px 14px; }
+}
+/* 库存 overview (owner, 2026-11-01): stock per place, then what needs doing, then what sells and what changed.
+   Back stock keeps its kraft tile; status is a dot plus words, as everywhere else. */
+.pc-inv-overview { display: grid; gap: 16px; margin: 0 0 32px; }
+.pc-inv-figures { grid-template-columns: repeat(var(--figures, 4), minmax(0, 1fr)); margin-bottom: 0; }
+.pc-inv-figures span small { color: var(--text-tertiary); font-size: 12px; }
+.pc-inv-figures strong { font-size: 26px; line-height: 30px; letter-spacing: -.52px; }
+.pc-inv-figures .pc-inv-back { background: var(--kraft-tile); }
+.pc-inv-figures .pc-inv-back span, .pc-inv-figures .pc-inv-back span small, .pc-inv-figures .pc-inv-back strong, .pc-inv-figures .pc-inv-back > small { color: var(--kraft-ink); }
+.pc-inv-meta { margin: -6px 0 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
+.pc-inv-meta a { border-bottom: 1px solid var(--line-soft); color: var(--text-secondary); }
+.pc-inv-meta a:hover { color: var(--text-primary); }
+.pc-inv-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.pc-inv-panels-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.pc-inv-rows { margin: 0; padding: 0; list-style: none; }
+.pc-inv-rows > li + li { border-top: 1px solid var(--line-hair); }
+.pc-inv-row { min-height: 56px; padding: 10px 16px; color: var(--text-primary); text-decoration: none; }
+a.pc-inv-row:hover { background: var(--surface-subtle); color: var(--text-primary); }
+a.pc-inv-row:focus-visible, .pc-inv-more:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-inv-row .pc-row-label { width: auto; min-width: 22px; }
+.pc-inv-en { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-inv-num { display: grid; flex: none; justify-items: end; color: var(--text-primary); font-size: 17px; font-weight: 600; line-height: 22px; letter-spacing: -.17px; white-space: nowrap; }
+.pc-inv-num small { color: var(--text-tertiary); font-size: 11px; font-weight: 400; line-height: 15px; letter-spacing: 0; }
+.pc-inv-kraft, .pc-inv-kraft small, .pc-inv-kraft-text { color: var(--kraft-ink); }
+.pc-inv-more { display: block; width: 100%; min-height: 40px; padding: 0 16px; border: 0; border-top: 1px solid var(--line-hair); background: none; color: var(--text-secondary); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.pc-inv-more:hover { background: var(--surface-subtle); color: var(--text-primary); }
+.pc-series-list-stock { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 4px 16px; color: var(--text-secondary); font-size: 12.5px; white-space: nowrap; }
+.pc-series-list-stock b { color: var(--text-primary); font-size: 15px; font-weight: 600; }
+.pc-series-list-stock .pc-series-list-back, .pc-series-list-stock .pc-series-list-back b { color: var(--kraft-ink); }
+.pc-series-list-stock .pc-series-nil, .pc-series-list-stock .pc-series-nil b { color: var(--text-tertiary); font-weight: 400; }
+.pc-series-list-quiet { color: var(--text-tertiary); }
+.pc-series-flag { display: inline-flex; align-items: center; gap: 6px; color: var(--status-restock-ink); font-weight: 500; }
+.pc-series-flag-out { color: var(--status-out-ink); }
+@media (max-width: 767px) {
+  .pc-inv-overview { gap: 12px; margin-bottom: 24px; }
+  .pc-inv-figures { grid-template-columns: 1fr 1fr; }
+  .pc-inv-figures > div:nth-child(odd) { border-left: 0; }
+  .pc-inv-figures > div:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
+  .pc-inv-figures strong { font-size: 22px; line-height: 28px; }
+  .pc-inv-panels, .pc-inv-panels-2 { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .pc-inv-row { min-height: 52px; }
+  .pc-series-list a { flex-wrap: wrap; row-gap: 8px; }
+  .pc-series-list-stock { order: 3; width: 100%; justify-content: flex-start; }
 }

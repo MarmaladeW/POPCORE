@@ -79,7 +79,8 @@ class StoreOverviewTests(IsolatedApiCase):
 
     def test_inventory_exceptions_are_current_reviewed_and_native(self):
         current=self.get().get_json()['current_inventory']
-        self.assertEqual(current['exception_counts'],{'out_of_stock':0,'replenish':1,'condition':1,'unverified':0})
+        # A confirmed design kept upstairs is not a floor refill (owner, 2026-11-01).
+        self.assertEqual(current['exception_counts'],{'out_of_stock':0,'replenish':0,'condition':1,'unverified':0})
         self.assertEqual(current['items'][0]['native_unit'],'piece')
         self.assertEqual(current['items'][0]['product_name'],'Garden · New label')
         with closing(self.connect()) as con:
