@@ -6,6 +6,8 @@ from test_receiving import ReceivingFixture
 class RestockLifecycleTests(ReceivingFixture):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|outsider')
         with closing(self.connect()) as con:
             self.back = con.execute(
                 "SELECT id FROM inventory_locations WHERE store_id=? AND code='upstairs'",

@@ -226,6 +226,8 @@ class SalesRouteValidationTests(IsolatedApiCase):
 class StockRouteValidationTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff')
         # Legacy writes need access to the store (store_access.py): the test staff and manager get DT.
         with closing(self.connect()) as con:
             for subject in ('auth0|staff', 'auth0|manager'):

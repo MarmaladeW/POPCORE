@@ -7,6 +7,8 @@ from inventory_commands import post_inventory
 class InventorySeriesTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff', 'auth0|outside')
         with closing(self.connect()) as con:
             self.series_id = con.execute("INSERT INTO product_series(name) VALUES ('Garden')").lastrowid
             self.other_store = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]

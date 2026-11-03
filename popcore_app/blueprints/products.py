@@ -22,6 +22,7 @@ from catalog_identity import (
 )
 from goods_operations import _remember, _replay
 from inventory_commands import InventoryConflict, require_inventory_access
+from inventory_visibility import can_see_inventory, hide_quantities
 from inventory_opening import (
     OpeningCountError, count_sheet_csv, count_sheet_rows, find_location,
 )
@@ -157,6 +158,9 @@ def search_products():
             con.close()
             return jsonify({'error': 'Invalid store code'}), 400
         stock_filter, stock_params = ' AND store_id = ?', [store['id']]
+    # 补货 searches with include_stock; without 库存查看 it says only whether upstairs is out of stock.
+    stock_visible = include_stock and can_see_inventory(
+        con, request.jwt_payload, (stock_params[0],) if stock_params else None)
 
     search_source = f"""(SELECT p.*, ps.name AS series_name,
         {product_alias_text_sql('p')} AS alias_text,
@@ -210,6 +214,8 @@ def search_products():
             sm = {r['product_id']: r['upstairs_qty'] for r in cur.fetchall()}
             for r in rows:
                 r['upstairs_qty'] = sm.get(r['id'], 0)
+                if not stock_visible:
+                    hide_quantities(r, 'upstairs_qty')
         con.close()
         return jsonify(rows)
 
@@ -298,6 +304,8 @@ def search_products():
         sm = {r['product_id']: r['upstairs_qty'] for r in cur.fetchall()}
         for c in final:
             c['upstairs_qty'] = sm.get(c['id'], 0)
+            if not stock_visible:
+                hide_quantities(c, 'upstairs_qty')
 
     con.close()
     return jsonify(final)

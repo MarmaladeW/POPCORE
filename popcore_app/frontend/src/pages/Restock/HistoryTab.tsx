@@ -8,6 +8,7 @@ import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
+import HiddenStock from './HiddenStock'
 
 const { RangePicker } = DatePicker
 const { Text } = Typography
@@ -30,7 +31,9 @@ interface RestockItemRow {
   id: number
   product_id: number
   requested_qty: number
-  warehouse_stock_snapshot: number
+  warehouse_stock_snapshot: number | null
+  stock_hidden?: boolean
+  out_of_stock?: boolean
   found_qty: number | null
   pick_status: 'pending' | 'found' | 'not_found'
   sku: string
@@ -163,7 +166,7 @@ export function RestockHistory() {
     { title: '申请', dataIndex: 'requested_qty', width: 60, align: 'center' },
     {
       title: '仓库快照', dataIndex: 'warehouse_stock_snapshot', width: 80, align: 'center',
-      render: v => <Text type="secondary">{v}</Text>,
+      render: (v, r) => r.stock_hidden ? <HiddenStock out={r.out_of_stock} /> : <Text type="secondary">{v}</Text>,
     },
     {
       title: '找到', dataIndex: 'found_qty', width: 60, align: 'center',

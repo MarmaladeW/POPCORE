@@ -4,11 +4,13 @@ from auth import login_required
 from db import get_db,esc_csv
 from inventory_commands import InventoryError
 from operational_reports import query_report
+from inventory_visibility import InventoryHidden,hidden_response
 
 bp=Blueprint('reports',__name__)
 def _run(name): return query_report(get_db(),name,actor=request.jwt_payload,filters=request.args.to_dict())
 def _error(exc):
     if isinstance(exc,KeyError): return jsonify({'error':'Unknown report'}),404
+    if isinstance(exc,InventoryHidden): return hidden_response(exc)
     if isinstance(exc,PermissionError): return jsonify({'error':'Report access denied'}),403
     if isinstance(exc,(InventoryError,ValueError)): return jsonify({'error':str(exc)}),400
     raise exc

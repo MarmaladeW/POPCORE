@@ -6,6 +6,8 @@ import RoleGuard from '../../components/RoleGuard'
 import { saveAlias, deleteAlias } from '../../api/matcher'
 import RemoveDesigns from './RemoveDesigns'
 import SubItemAdd from './SubItemAdd'
+import { useInventoryVisible } from '../../auth/useInventoryVisible'
+import type { StockFigureValue } from '../../lib/inventoryView'
 
 export interface ProductDetailData {
   id: number
@@ -89,14 +91,18 @@ function Fact({ label, value }: { label: ReactNode; value?: ReactNode }) {
   return <div><dt>{label}</dt><dd>{value}</dd></div>
 }
 
-export function StockFigure({ value }: { value: number | null }) {
+export function StockFigure({ value }: { value: StockFigureValue }) {
   if (value == null) return <span className="pc-prod-muted">Unknown</span>
+  // Without 库存查看 at this store: only whether it is out of stock.
+  if (value === 'out') return <span className="pc-prod-stock pc-prod-stock-out"><i className="pc-dot pc-dot-out" aria-hidden="true" />缺货<span className="pc-sr"> Out of stock</span></span>
+  if (value === 'in') return <span className="pc-prod-stock"><i className="pc-dot pc-dot-ok" aria-hidden="true" />有货<span className="pc-sr"> In stock</span></span>
   const tone = value === 0 ? 'out' : value <= 3 ? 'warn' : 'ok'
   return <span className={value === 0 ? 'pc-prod-stock pc-prod-stock-out' : 'pc-prod-stock'}><i className={`pc-dot pc-dot-${tone}`} aria-hidden="true" />{value}</span>
 }
 
 // A product's sub-items (整端 sealed set, confirmed designs), or the product a sub-item belongs to.
 function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; onOpen?: (id: number) => void; onSaved: () => void }) {
+  const inventory = useInventoryVisible()
   const open = (id: number, label: ReactNode) => onOpen
     ? <button type="button" className="pc-prod-link" onClick={() => onOpen(id)}>{label}</button> : label
   if (product.parent) return <>
@@ -114,14 +120,14 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
         <small>{item.sku}</small>
       </li>)}
     </ul> : <p className="pc-sub-empty">None yet. Add them when you count or open boxes.</p>}
-    {items.length > 0 && <p className="pc-sub-stock"><Link to={product.series_id ? `/stock?series_id=${product.series_id}` : `/stock?product_id=${product.id}`}>各位置库存 Stock by location →</Link></p>}
+    {items.length > 0 && inventory && <p className="pc-sub-stock"><Link to={product.series_id ? `/stock?series_id=${product.series_id}` : `/stock?product_id=${product.id}`}>各位置库存 Stock by location →</Link></p>}
     <RoleGuard minRole="manager"><SubItemAdd productId={product.id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} />
       <RemoveDesigns productId={product.id} designCount={items.filter(item => item.stock_form === 'confirmed_design').length} onDone={onSaved} /></RoleGuard>
   </>
 }
 
 export function ProductDetailBody({ detail, stockTotal, onOpen }: {
-  detail: ReturnType<typeof useProductDetail>; stockTotal: number | null; onOpen?: (id: number) => void
+  detail: ReturnType<typeof useProductDetail>; stockTotal: StockFigureValue; onOpen?: (id: number) => void
 }) {
   const { product, loading, error, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload } = detail
   const hasSecrets = product && product.hidden_count && product.hidden_count !== '0'
@@ -179,7 +185,7 @@ export function ProductDetailBody({ detail, stockTotal, onOpen }: {
 
 // Desktop: the detail beside the catalog table (Figma Products · Catalog).
 export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages, onOpen }: {
-  productId: number; stockTotal: number | null; onClose: () => void
+  productId: number; stockTotal: StockFigureValue; onClose: () => void
   onEdit: (p: ProductDetailData) => void; onImages: (p: ProductDetailData) => void; onOpen?: (id: number) => void
 }) {
   const detail = useProductDetail(productId)

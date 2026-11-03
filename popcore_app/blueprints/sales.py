@@ -22,6 +22,7 @@ from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm,
 from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
 from goods_operations import _begin, _hash, _replay, _remember
 from report_stock import check_notice, open_notices, sync_report_stock
+from inventory_visibility import inventory_hidden
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
 bp = Blueprint('sales', __name__)
@@ -477,6 +478,8 @@ def batch_stock_operation():
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, (store_id,), store_code)
     if err:
         con.close()
         return err

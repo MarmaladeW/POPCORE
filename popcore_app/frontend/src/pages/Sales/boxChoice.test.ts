@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { boxAnswerFields, boxAnswerReady, boxChoiceNote, needsBoxAnswer, type BoxOptions } from './boxChoice.ts'
+import { boxAnswerFields, boxAnswerReady, boxChoiceNote, needsBoxAnswer, openSetLabel, type BoxOptions } from './boxChoice.ts'
 
 const options: BoxOptions = {
   set_size: 12,
@@ -35,4 +35,16 @@ test('an answer is ready only with something to take from', () => {
   assert.equal(boxChoiceNote('open_set', options), '16 left in 2 opened')
   assert.equal(boxChoiceNote('fresh_set', { ...options, fresh_set: null }), 'No sealed set')
   assert.equal(boxChoiceNote('loose', options), '4 loose')
+})
+
+test('without 库存查看 the answers say only in or out of stock', () => {
+  const hidden: BoxOptions = { set_size: 12, stock_hidden: true, loose_units: null, loose_out_of_stock: true,
+    fresh_set: { ...options.fresh_set!, sets_on_hand: null, out_of_stock: false },
+    open_sets: options.open_sets.map(set => ({ ...set, remaining_qty: null })) }
+  assert.equal(boxChoiceNote('fresh_set', hidden), '有货 In stock')
+  assert.equal(boxChoiceNote('fresh_set', { ...hidden, fresh_set: { ...hidden.fresh_set!, out_of_stock: true } }), '缺货 Out of stock')
+  assert.equal(boxChoiceNote('open_set', hidden), '2 opened')
+  assert.equal(boxChoiceNote('loose', hidden), '缺货 Out of stock')
+  assert.equal(openSetLabel(hidden.open_sets[0]), 'Opened set #41')
+  assert.equal(openSetLabel(options.open_sets[0]), `Opened set #41 · ${options.open_sets[0].remaining_qty} left`)
 })

@@ -4,6 +4,8 @@ from support import IsolatedApiCase
 class OperationalReportTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff')
         with closing(self.connect()) as con:
             con.execute("INSERT OR IGNORE INTO inventory_access(auth0_sub,store_id) VALUES ('auth0|staff',?)",(self.store_id,))
             con.execute("INSERT OR IGNORE INTO inventory_access(auth0_sub,store_id) VALUES ('auth0|manager',?)",(self.store_id,))

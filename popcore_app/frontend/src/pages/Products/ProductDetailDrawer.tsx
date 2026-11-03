@@ -1,12 +1,13 @@
 import { Button, Drawer, Grid, Space } from 'antd'
 import RoleGuard from '../../components/RoleGuard'
 import { ProductDetailBody, useProductDetail, type ProductDetailData } from './ProductDetail'
+import type { StockFigureValue } from '../../lib/inventoryView'
 
 const { useBreakpoint } = Grid
 
 interface Props {
   productId: number | null
-  stockTotal: number | null
+  stockTotal: StockFigureValue
   onClose: () => void
   onEdit: (p: ProductDetailData) => void
   onImages: (p: ProductDetailData) => void

@@ -25,6 +25,9 @@ class _Clock(datetime):
 class LegacyStoreScopeTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff', 'auth0|granted', 'auth0|member', 'auth0|onshift', 'auth0|viewer',
+                                  'auth0|mkstaff')
         _Clock.now_utc = SHIFT_DAY
         clock = patch('checkout_access.datetime', _Clock)
         clock.start()

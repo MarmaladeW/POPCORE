@@ -2,11 +2,15 @@
 // floor, or 散盒 loose boxes from the floor. The server asks; these helpers word the answers the way it takes them.
 
 export type BoxChoice = 'fresh_set' | 'open_set' | 'loose'
+// Without 库存查看 at the store (owner, 2026-11-01) the counts are null: the server says only whether
+// there is a sealed set (out_of_stock) and loose boxes (loose_out_of_stock) to take.
 export type BoxOptions = {
   set_size: number
-  fresh_set: { product_id: number; conversion_id: number; conversion_factor: number; name: string; sets_on_hand: number } | null
-  open_sets: { id: number; remaining_qty: number }[]
-  loose_units: number
+  fresh_set: { product_id: number; conversion_id: number; conversion_factor: number; name: string; sets_on_hand: number | null; out_of_stock?: boolean } | null
+  open_sets: { id: number; remaining_qty: number | null }[]
+  loose_units: number | null
+  stock_hidden?: boolean
+  loose_out_of_stock?: boolean
 }
 export type BoxAnswer = { choice: BoxChoice; openSetId?: number | null }
 
@@ -39,13 +43,25 @@ export function boxAnswerFields(answer: BoxAnswer, options: BoxOptions) {
   }
 }
 
+const inStock = (out?: boolean) => out ? '缺货 Out of stock' : '有货 In stock'
+
 /** What each answer has on hand, for its button. */
 export function boxChoiceNote(choice: BoxChoice, options: BoxOptions | null) {
   if (!options) return ''
-  if (choice === 'fresh_set') return options.fresh_set ? `${options.fresh_set.sets_on_hand} sealed on hand` : 'No sealed set'
-  if (choice === 'open_set') {
-    const left = options.open_sets.reduce((sum, set) => sum + set.remaining_qty, 0)
-    return options.open_sets.length ? `${left} left in ${options.open_sets.length} opened` : 'None opened'
+  if (choice === 'fresh_set') {
+    if (!options.fresh_set) return 'No sealed set'
+    return options.stock_hidden ? inStock(options.fresh_set.out_of_stock) : `${options.fresh_set.sets_on_hand} sealed on hand`
   }
-  return `${options.loose_units} loose`
+  if (choice === 'open_set') {
+    if (!options.open_sets.length) return 'None opened'
+    if (options.stock_hidden) return `${options.open_sets.length} opened`
+    const left = options.open_sets.reduce((sum, set) => sum + (set.remaining_qty ?? 0), 0)
+    return `${left} left in ${options.open_sets.length} opened`
+  }
+  return options.stock_hidden ? inStock(options.loose_out_of_stock) : `${options.loose_units} loose`
+}
+
+/** An opened set's button: which set, and how many are left in it where that is shown. */
+export function openSetLabel(set: { id: number; remaining_qty: number | null }) {
+  return set.remaining_qty == null ? `Opened set #${set.id}` : `Opened set #${set.id} · ${set.remaining_qty} left`
 }

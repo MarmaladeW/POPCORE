@@ -45,6 +45,7 @@ async def check(browser, case):
     await page.route(BASE + '/api/users', users)
     await page.route(BASE + '/api/schedule/trainees', api)
     await page.route(BASE + '/api/inventory/access', api)
+    await page.route(BASE + '/api/inventory/viewers', api)
     await page.route(BASE + '/api/today*', api)
     await page.goto(BASE + '/today')
     # Without store access Today shows only what is not tied to a store: no work lists, no access error.

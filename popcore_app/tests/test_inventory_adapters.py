@@ -8,6 +8,8 @@ from inventory_commands import InventoryConflict, post_inventory
 class InventoryAdapterTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        # These tests are about operations scope; their accounts may all see stock (库存查看).
+        self.grant_inventory_view('auth0|staff')
         with closing(self.connect()) as con:
             for role in ('staff', 'manager', 'admin'):
                 con.execute(

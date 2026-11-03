@@ -2083,6 +2083,7 @@ def _get_migrations():
         ('report_stock_issues',                        _migration_report_stock_issues),
         ('product_created_at',                         _migration_product_created_at),
         ('website_sync',                               _migration_website_sync),
+        ('inventory_viewers',                          _migration_inventory_viewers),
     ]
 
 
@@ -2179,6 +2180,19 @@ def _migration_website_sync(con, cur):
         value TEXT
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_sync')")
+
+
+def _migration_inventory_viewers(con, cur):
+    # Only the workers an admin picks see a store's stock (owner, 2026-11-01). Managers and admins
+    # always do; everyone else needs a row here, per store, and nobody starts with one.
+    cur.execute("""CREATE TABLE IF NOT EXISTS inventory_viewers (
+        auth0_sub  TEXT    NOT NULL,
+        store_id   INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+        granted_by TEXT,
+        granted_at TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (auth0_sub, store_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('inventory_viewers')")
 
 
 def _run_migrations(con, cur):

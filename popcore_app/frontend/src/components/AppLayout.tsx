@@ -6,6 +6,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import dayjs from 'dayjs'
 
 import { useHasRole, useRole } from '../auth/useRole'
+import { useInventoryVisible } from '../auth/useInventoryVisible'
 import { activeSection, bottomItems, navItem, railGroups, type NavItem } from '../lib/navigation'
 import Icon from './pc/Icon'
 import { PageHeaderSlots, PhoneTopBar } from './pc/PageHeader'
@@ -39,8 +40,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const admin = useHasRole('admin')
   const manager = useHasRole('manager')
   const staff = useHasRole('staff')
-  const access = useMemo(() => ({ staff, manager, admin }), [staff, manager, admin])
-  const active = activeSection(location.pathname, manager)
+  const inventory = useInventoryVisible()
+  const access = useMemo(() => ({ staff, manager, admin, inventory }), [staff, manager, admin, inventory])
+  const active = activeSection(location.pathname, manager, inventory)
   const onMore = location.pathname === '/more'
   // Schedule opens with the rail collapsed to give the calendar room (existing behaviour).
   const [userCollapsed, setUserCollapsed] = useState(false)

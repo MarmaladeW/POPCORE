@@ -16,6 +16,9 @@ from inventory_commands import (
     InventoryError, inventory_mode_for, live_store_ids, post_inventory,
     require_inventory_access, store_is_live,
 )
+from inventory_visibility import (
+    InventoryHidden, can_see_inventory, hidden_response, hide_quantities, inventory_hidden,
+)
 
 
 def _missing_product(cur, product_id):
@@ -151,6 +154,16 @@ def _authoritative_stock_adapter(con, data, store_id, operation, product_id,
             'instore_qty': floor_balance['quantity'] if floor_balance else 0}
 
 
+def _command_store_ids(con, payload):
+    """The stores whose locations a ledger command names; unknown ids are left to post_inventory."""
+    location_ids = {line.get(key) for line in payload.get('lines') or () if isinstance(line, dict)
+                    for key in ('from_location_id', 'to_location_id')}
+    location_ids = [value for value in location_ids if type(value) is int]
+    marks = ','.join('?' for _ in location_ids)
+    return {row[0] for row in con.execute(
+        f'SELECT store_id FROM inventory_locations WHERE id IN ({marks})', location_ids)} if location_ids else set()
+
+
 @bp.route('/api/inventory/commands', methods=['POST'])
 @login_required
 def post_inventory_command():
@@ -167,6 +180,10 @@ def post_inventory_command():
                         'code': 'opening_not_public'}), 400
     con = get_db()
     try:
+        store_ids = _command_store_ids(con, payload)
+        hidden = store_ids and inventory_hidden(con, request.jwt_payload, store_ids)
+        if hidden:
+            return hidden
         existed = con.execute(
             'SELECT 1 FROM inventory_documents WHERE request_key=?',
             (request_key,),
@@ -205,6 +222,9 @@ def get_inventory_balances():
         except PermissionError:
             return jsonify({'error': 'Inventory access denied',
                             'code': 'inventory_forbidden'}), 403
+        hidden = inventory_hidden(con, request.jwt_payload, (store_id,), store_code)
+        if hidden:
+            return hidden
         rows = con.execute(
             """SELECT b.product_id, p.sku, p.jizhanming, p.name_cn_en,
                       p.stock_unit AS unit, p.identity_status,
@@ -256,6 +276,9 @@ def get_inventory_document(document_id):
         except PermissionError:
             return jsonify({'error': 'Inventory access denied',
                             'code': 'inventory_forbidden'}), 403
+        hidden = inventory_hidden(con, request.jwt_payload, store_ids)
+        if hidden:
+            return hidden
         lines = [dict(row) for row in con.execute(
             """SELECT line_no, product_id, native_unit, quantity,
                       from_location_id, from_disposition,
@@ -421,6 +444,10 @@ def get_all_stock():
         ''', [store_id] + params + ([page_size, offset] if paginated else []))
 
     items = [dict(r) for r in cur.fetchall()]
+    if not can_see_inventory(con, request.jwt_payload, None if store_code == 'ALL' else (store_id,)):
+        # The catalog still shows what is out of stock (owner, 2026-11-01).
+        items = [hide_quantities({**item, 'last_updated': None, 'stock_notes': None},
+                                 'upstairs_qty', 'instore_qty') for item in items]
     con.close()
     if paginated:
         return jsonify({'items': items, 'total': total, 'page': page, 'page_size': page_size})
@@ -449,9 +476,13 @@ def get_stock(product_id):
         WHERE p.id = ?
     ''', (store_id, product_id))
     row = cur.fetchone()
+    visible = can_see_inventory(con, request.jwt_payload, None if store_code == 'ALL' else (store_id,))
     con.close()
     if not row:
         return jsonify({'error': 'Not found'}), 404
+    if not visible:
+        return jsonify(hide_quantities({**dict(row), 'last_updated': None, 'stock_notes': None},
+                                       'upstairs_qty', 'instore_qty'))
     return jsonify(dict(row))
 
 
@@ -462,6 +493,8 @@ def patch_stock(product_id):
     notes = data.get('notes', '')
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, (store_id,), store_code)
     if err:
         con.close()
         return err
@@ -496,6 +529,8 @@ def ru_dian():
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, (store_id,), store_code)
     if err:
         con.close()
         return err
@@ -587,6 +622,8 @@ def restock_upstairs():
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, (store_id,), store_code)
     if err:
         con.close()
         return err
@@ -674,6 +711,8 @@ def adjust_stock():
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, (store_id,), store_code)
     if err:
         con.close()
         return err
@@ -753,6 +792,8 @@ def get_transactions():
 
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, None if store_code == 'ALL' else (store_id,), store_code)
     if err:
         con.close()
         return err
@@ -797,6 +838,8 @@ def get_transactions():
 def stock_summary():
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
+    if not err:
+        err = inventory_hidden(con, request.jwt_payload, None if store_code == 'ALL' else (store_id,), store_code)
     if err:
         con.close()
         return err
@@ -1053,6 +1096,8 @@ def get_inventory_series():
         return jsonify(series_inventory(con, request.jwt_payload, request.args.get('store_code'),
                                         request.args.get('q', ''), request.args.get('series_id'),
                                         request.args.get('product_id')))
+    except InventoryHidden as exc:
+        return hidden_response(exc)
     except PermissionError:
         return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
     except InventoryError as exc:
@@ -1070,6 +1115,8 @@ def get_inventory_overview():
     con = get_db()
     try:
         return jsonify(inventory_overview(con, request.jwt_payload, request.args.get('store_code')))
+    except InventoryHidden as exc:
+        return hidden_response(exc)
     except PermissionError:
         return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
     except InventoryError as exc:
@@ -1088,6 +1135,8 @@ def get_inventory_series_history(series_id):
             product_id=request.args.get('product_id'), date_from=request.args.get('date_from'),
             date_to=request.args.get('date_to'), before_id=request.args.get('before_id'),
             limit=request.args.get('limit', 100)))
+    except InventoryHidden as exc:
+        return hidden_response(exc)
     except PermissionError:
         return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
     except InventoryError as exc:

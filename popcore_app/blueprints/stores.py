@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify
 from db import get_db
 from auth import login_required, role_required
 from inventory_commands import require_inventory_access
+from inventory_visibility import visible_store_ids
 
 bp = Blueprint('stores', __name__)
 
@@ -34,8 +35,10 @@ def list_stores():
         "SELECT id, code, name, COALESCE(color, '#6366f1') AS color"
         " FROM stores WHERE is_active = 1 ORDER BY id"
     ).fetchall()
+    # Whether this account may see each store's stock (库存查看), so the app shows or hides 库存.
+    visible = visible_store_ids(con, request.jwt_payload)
     con.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([{**dict(r), 'inventory_visible': r['id'] in visible} for r in rows])
 
 
 @bp.route('/api/stores/<int:store_id>/color', methods=['PATCH'])
@@ -208,5 +211,49 @@ def grant_inventory_access():
         con.commit()
         return jsonify({'ok': True, 'auth0_sub': subject.strip(),
                         'store_id': store_id}), 201
+    finally:
+        con.close()
+
+
+# 库存查看 Inventory view: the workers an admin picks to see a store's stock (owner, 2026-11-01).
+# Managers and admins always see it, so only other accounts need a grant.
+@bp.route('/api/inventory/viewers', methods=['GET'])
+@role_required('admin')
+def list_inventory_viewers():
+    con = get_db()
+    try:
+        stores = con.execute('SELECT id, code, name FROM stores WHERE is_active=1 ORDER BY id').fetchall()
+        grants = con.execute('SELECT auth0_sub, store_id FROM inventory_viewers ORDER BY auth0_sub, store_id').fetchall()
+        return jsonify({'stores': [dict(row) for row in stores],
+                        'grants': [dict(row) for row in grants]})
+    finally:
+        con.close()
+
+
+@bp.route('/api/inventory/viewers', methods=['POST', 'DELETE'])
+@role_required('admin')
+def change_inventory_viewer():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object', 'code': 'invalid_input'}), 400
+    subject = data.get('auth0_sub')
+    store_id = data.get('store_id')
+    if not isinstance(subject, str) or not subject.strip():
+        return jsonify({'error': 'auth0_sub is required', 'code': 'invalid_input'}), 400
+    if type(store_id) is not int or store_id < 1:
+        return jsonify({'error': 'store_id must be a positive integer', 'code': 'invalid_input'}), 400
+    subject = subject.strip()
+    con = get_db()
+    try:
+        if request.method == 'DELETE':
+            con.execute('DELETE FROM inventory_viewers WHERE auth0_sub=? AND store_id=?', (subject, store_id))
+            con.commit()
+            return jsonify({'ok': True, 'auth0_sub': subject, 'store_id': store_id})
+        if not con.execute('SELECT 1 FROM stores WHERE id=? AND is_active=1', (store_id,)).fetchone():
+            return jsonify({'error': 'Store not found', 'code': 'not_found'}), 404
+        con.execute('INSERT OR IGNORE INTO inventory_viewers(auth0_sub, store_id, granted_by) VALUES (?, ?, ?)',
+                    (subject, store_id, request.jwt_payload.get('sub')))
+        con.commit()
+        return jsonify({'ok': True, 'auth0_sub': subject, 'store_id': store_id}), 201
     finally:
         con.close()
