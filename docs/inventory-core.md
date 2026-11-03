@@ -109,7 +109,7 @@ Inventory → 损耗 Loss (`/stock/loss`) records stock that broke, was stolen o
 - **撤销 Undo** (`POST /api/losses/<id>/undo`) posts the exact `correction` of the record's document (source type `stock_loss_undo`). A broken record can be undone only while its goods are still on the damaged pile (`pile_changed`); an undone record keeps its row and counts for nothing.
 - `GET /api/losses?store_code=&month=YYYY-MM` returns the month's records (newest first), totals per reason in units and cents (unpriced units apart), and the damaged pile now. Money is the price recorded with each loss, never today's price.
 
-**Stock value (owner, 2026-11-03).** The 库存 overview's `value` is the retail value of the saleable stock in its figures (price × units, in cents), with the units and products that have no price; it is `null` for anyone but managers and admins, as the approved Figma strip's 库存价值 cell is for managers. Damaged goods are not in it. Recent changes count a loss by what left sale (`saleable`), so a broken item shows as −1 even though it stays on the pile.
+**Stock value (owner, 2026-11-03).** The 库存 overview's `value` is the retail value of the saleable stock in its figures (price × units, in cents), with the units and products that have no price, and each figure carries its own `value_cents` and `unpriced_units` (shown as 价值 under the place's units); it is `null` for anyone but managers and admins, as the approved Figma strip's 库存价值 cell is for managers. Damaged goods are not in it. Recent changes count a loss by what left sale (`saleable`), so a broken item shows as −1 even though it stays on the pile.
 
 ## Existing writer classifications
 

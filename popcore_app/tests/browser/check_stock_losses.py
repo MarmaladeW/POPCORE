@@ -39,8 +39,10 @@ def payload(path, query, request):
         return {'loss': {**RECORD, 'undone': True}}
     if path == '/api/inventory/overview':
         return {'live': True, 'stores': ['DT'], 'today': '2026-11-03', 'in_stock_products': 1273, 'report_days': 3, 'last_report': '2026-10-31',
-                'figures': [{'key': 'floor', 'codes': ['floor'], 'units': 7495, 'products': 512, 'by_unit': {'box': 6640, 'piece': 855}},
-                            {'key': 'back', 'codes': ['upstairs'], 'units': 4178, 'products': 655, 'by_unit': {'set': 1783, 'piece': 2386, 'box': 9}}],
+                'figures': [{'key': 'floor', 'codes': ['floor'], 'units': 7495, 'products': 512, 'by_unit': {'box': 6640, 'piece': 855},
+                             'value_cents': 24092560, 'unpriced_units': 21},
+                            {'key': 'back', 'codes': ['upstairs'], 'units': 4178, 'products': 655, 'by_unit': {'set': 1783, 'piece': 2386, 'box': 9},
+                             'value_cents': 64753386, 'unpriced_units': 147}],
                 'refill': [], 'refill_count': 0, 'running_low': [], 'sold_out': [], 'best_sellers': [],
                 'recent_changes': [{'business_date': '2026-11-03', 'kind': 'loss', 'store_code': 'DT', 'added': 2, 'removed': 5, 'saleable': -5, 'documents': 2}],
                 'not_set_up': 0,
@@ -69,6 +71,9 @@ async def check(browser, width):
     overview = page.get_by_role('region', name='库存概况 Inventory overview', exact=True)
     await expect(overview.get_by_text('$888,459', exact=True)).to_be_visible()
     await expect(overview.get_by_text('At retail · 168 without a price', exact=True)).to_be_visible()
+    # Each place's worth sits under its units.
+    await expect(overview.get_by_text('价值 $240,926', exact=True)).to_be_visible()
+    await expect(overview.get_by_text('价值 $647,534', exact=True)).to_be_visible()
     await expect(overview.get_by_text('−5', exact=True)).to_be_visible()
     await page.get_by_role('link', name=re.compile('损耗')).first.click()
     await expect(page).to_have_url(re.compile(r'/stock/loss$'))

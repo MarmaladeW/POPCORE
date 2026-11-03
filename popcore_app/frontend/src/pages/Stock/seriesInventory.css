@@ -210,6 +210,11 @@
 .pc-inv-figures strong { font-size: 26px; line-height: 30px; letter-spacing: -.52px; }
 .pc-inv-figures .pc-inv-back { background: var(--kraft-tile); }
 .pc-inv-figures .pc-inv-value strong { white-space: nowrap; overflow-wrap: normal; }
+/* Each place's worth under its units (managers): a hairline above keeps it apart from the unit split. */
+.pc-inv-figures .pc-inv-worth { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line-hair); color: var(--text-secondary); }
+.pc-inv-figures .pc-inv-worth b { color: var(--text-primary); font-weight: 600; }
+.pc-inv-figures .pc-inv-back .pc-inv-worth { border-top-color: color-mix(in srgb, var(--kraft-ink) 18%, transparent); }
+.pc-inv-figures .pc-inv-back .pc-inv-worth, .pc-inv-figures .pc-inv-back .pc-inv-worth b { color: var(--kraft-ink); }
 /* Between phone and wide desktop the strip is too narrow for a money cell: it takes a row of its own. */
 @media (min-width: 768px) and (max-width: 1199px) {
   .pc-inv-figures { grid-template-columns: repeat(var(--places, 4), minmax(0, 1fr)); }

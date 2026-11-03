@@ -73,6 +73,7 @@ function OverviewBody({data}:{data:Overview}) {
           <span>{zh} <small>{en}</small></span>
           <strong>{number(figure.units)}</strong>
           <small>{split.length ? split.map(([unit,amount])=>measure(amount,unit)).join(' · ') : 'Empty'}</small>
+          {figure.value_cents!=null&&figure.units>0&&<small className="pc-inv-worth">价值 <b>{formatWholeDollars(figure.value_cents)}</b></small>}
         </div>
       })}
       {value&&<div className="pc-inv-value">
