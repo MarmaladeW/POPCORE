@@ -99,6 +99,18 @@ The command owns `BEGIN IMMEDIATE` through commit or rollback. Authorization, re
 
 Balances are derived from immutable movements and use optimistic versions. Corrections append exact compensating movements and require a manager and reason. Opening documents cannot be casually reversed. A successful full correction can occur only once. Fresh opened-set allocations are explicit provenance; generic consumption uses loose stock first and requires selection before consuming protected stock.
 
+## 损耗 Loss (owner, 2026-11-03)
+
+Inventory → 损耗 Loss (`/stock/loss`) records stock that broke, was stolen or went missing. Only managers and admins see the tool and record losses (owner's choice), at a live store and with its 门店操作权限 Store operations access; staff tell a manager. The rules live in `stock_losses.py`, the routes in `blueprints/losses.py`, and each record in `stock_losses` (product, location, quantity, reason, note, the product's price then, who, and its ledger document).
+
+- **破损 Broken** is kept aside (owner's choice): a `move` from saleable stock to the `damaged` disposition at the same location. The damaged pile on the page lists what is set aside; a manager puts it back on sale (to sell as 瑕疵, a `move` back to saleable) or throws it away (a `consume` from damaged), `POST /api/losses/pile`, source type `damaged_pile`.
+- **被偷 Stolen**, **丢失 Missing** and **其他 Other** (a note is required) leave stock at once: a `consume` from saleable, source type `stock_loss`.
+- `POST /api/losses` needs an `Idempotency-Key` and the saleable balance version the screen showed (`stale_version` if it moved). It takes at most the loose stock there: blind boxes kept for an opened set are not offered (`insufficient_stock`). `GET /api/losses/search` lists only products with stock at the store, with what each location has.
+- **撤销 Undo** (`POST /api/losses/<id>/undo`) posts the exact `correction` of the record's document (source type `stock_loss_undo`). A broken record can be undone only while its goods are still on the damaged pile (`pile_changed`); an undone record keeps its row and counts for nothing.
+- `GET /api/losses?store_code=&month=YYYY-MM` returns the month's records (newest first), totals per reason in units and cents (unpriced units apart), and the damaged pile now. Money is the price recorded with each loss, never today's price.
+
+**Stock value (owner, 2026-11-03).** The 库存 overview's `value` is the retail value of the saleable stock in its figures (price × units, in cents), with the units and products that have no price; it is `null` for anyone but managers and admins, as the approved Figma strip's 库存价值 cell is for managers. Damaged goods are not in it. Recent changes count a loss by what left sale (`saleable`), so a broken item shows as −1 even though it stays on the pile.
+
 ## Existing writer classifications
 
 | Existing path | Authoritative behavior |
@@ -112,6 +124,7 @@ Balances are derived from immutable movements and use optimistic versions. Corre
 | batch `ru_dian_claw` | Blocked with `migration_required`; claw overlap has no reviewed physical meaning. |
 | daily report sales sections | Take that day's sales off the live store's floor (owner, 2026-10-29); see **Daily reports at a live store** below. Stock sections stay blocked. |
 | daily report stock sections | Blocked with `migration_required`; old pack and provenance assumptions are not trusted. |
+| 损耗 Loss (managers and admins) | Broken: a `move` to `damaged` at the same location; stolen, missing, other: a `consume`. The pile's back-to-sale is a `move`, throwing away a `consume` from `damaged`; an undo is the exact `correction`. See **损耗 Loss** above. |
 | paid web order (popcore.ca) | One `consume` by the `popcore:website` actor, back stock first; a cancel is its exact `correction`. See `website-sync.md`. |
 | report resubmission with old stock history | Remains blocked with `reconciliation_required`. |
 | restock completion | Authoritative sessions use the Build 3 delivery lifecycle: pick to owned transit, then receive, return, loss resolution, or reasoned short-close. Older completed `restock_complete` documents remain history. |

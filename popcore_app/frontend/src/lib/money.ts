@@ -24,3 +24,9 @@ export function formatCents(value: number | null | undefined): string {
   const fraction = String(absolute % 100n).padStart(2, '0')
   return `${cents < 0 ? '-' : ''}$${wholeDollars.format(Number(whole))}.${fraction}`
 }
+
+/** Large totals (the 库存 stock value) in whole dollars: $1,280,512. */
+export function formatWholeDollars(value: number): string {
+  if (!Number.isSafeInteger(value)) throw new RangeError('Cents must be a safe integer.')
+  return `${value < 0 ? '-' : ''}$${wholeDollars.format(Math.round(Math.abs(value) / 100))}`
+}

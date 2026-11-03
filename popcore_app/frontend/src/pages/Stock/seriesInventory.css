@@ -209,6 +209,12 @@
 .pc-inv-figures span small { color: var(--text-tertiary); font-size: 12px; }
 .pc-inv-figures strong { font-size: 26px; line-height: 30px; letter-spacing: -.52px; }
 .pc-inv-figures .pc-inv-back { background: var(--kraft-tile); }
+.pc-inv-figures .pc-inv-value strong { white-space: nowrap; overflow-wrap: normal; }
+/* Between phone and wide desktop the strip is too narrow for a money cell: it takes a row of its own. */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .pc-inv-figures { grid-template-columns: repeat(var(--places, 4), minmax(0, 1fr)); }
+  .pc-inv-figures > .pc-inv-value { grid-column: 1 / -1; border-top: 1px solid var(--line-hair); border-left: 0; }
+}
 .pc-inv-figures .pc-inv-back span, .pc-inv-figures .pc-inv-back span small, .pc-inv-figures .pc-inv-back strong, .pc-inv-figures .pc-inv-back > small { color: var(--kraft-ink); }
 .pc-inv-meta { margin: -6px 0 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .pc-inv-meta a { border-bottom: 1px solid var(--line-soft); color: var(--text-secondary); }
@@ -240,6 +246,8 @@ a.pc-inv-row:focus-visible, .pc-inv-more:focus-visible { outline: 2px solid var(
   .pc-inv-figures > div:nth-child(odd) { border-left: 0; }
   .pc-inv-figures > div:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
   .pc-inv-figures strong { font-size: 22px; line-height: 28px; }
+  /* The value cell takes a row of its own when it would sit alone. */
+  .pc-inv-figures > .pc-inv-value:nth-child(odd) { grid-column: 1 / -1; }
   .pc-inv-panels, .pc-inv-panels-2 { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .pc-inv-row { min-height: 52px; }
   .pc-series-list a { flex-wrap: wrap; row-gap: 8px; }

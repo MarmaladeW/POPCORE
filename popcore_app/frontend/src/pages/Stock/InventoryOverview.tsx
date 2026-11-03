@@ -5,9 +5,11 @@ import { getInventoryOverview, type InventoryOverview as Overview, type Overview
 import { Panel } from '../../components/pc/Panel'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useInventoryVisible } from '../../auth/useInventoryVisible'
+import { formatWholeDollars } from '../../lib/money'
 
 // What the floor needs, what is selling and what changed, above the product list (owner, 2026-11-01).
 // Stock is the live ledger; sales are the pasted 日报, so the selling lists fill in as reports come in.
+// Managers and admins also see the stock's retail value (the approved Figma strip's 库存价值 cell).
 
 const MEASURE:Record<string,string> = {box:'盒', set:'端', piece:'个'}
 const PLACES:Record<string,[string,string]> = {floor:['楼面','Floor'], display:['陈列','Display'], claw:['娃娃机','Claw machine']}
@@ -15,6 +17,7 @@ const CHANGES:Record<string,[string,string]> = {
   report:['日报','Daily report'], checkout:['买单','Checkout'], identify:['识别盲盒','Identified boxes'], count:['盘点','Count corrections'],
   receipt:['入库','Received'], delivery:['调拨','Transfers and refills'], restock:['补货','Restock'], opening:['开业盘点','Opening count'],
   move:['移动','Moved'], consume:['出库','Taken out'], open_set:['开端','Opened sets'], correction:['更正','Corrections'],
+  loss:['损耗','Loss'], damaged:['损坏处理','Damaged goods'],
 }
 const MOVES = ['move','delivery','identify','open_set']
 const number = (value:number) => value.toLocaleString('en-US')
@@ -58,10 +61,11 @@ function OverviewBody({data}:{data:Overview}) {
   const multi = (data.stores?.length ?? 0) > 1
   const where = (item:{store_code:string}) => multi ? `${item.store_code} · ` : ''
   const figures = data.figures ?? []
+  const value = data.value
   const noSales = !data.report_days
   const salesEmpty = noSales ? 'No 日报 in the last 7 days. Selling lists fill in once one is pasted in 销售 Sales.' : undefined
   return <section className="pc-inv-overview" aria-label="库存概况 Inventory overview">
-    <div className="pc-figures pc-inv-figures" style={{'--figures':figures.length} as CSSProperties}>
+    <div className="pc-figures pc-inv-figures" style={{'--figures':figures.length+(value?1:0),'--places':figures.length} as CSSProperties}>
       {figures.map(figure=>{
         const [zh,en] = figure.key==='back' ? backName(figure) : PLACES[figure.key] ?? [figure.codes.join(' · '),'']
         const split = Object.keys(MEASURE).map(unit=>[unit,figure.by_unit[unit as keyof typeof figure.by_unit] ?? 0] as const).filter(([,amount])=>amount)
@@ -71,6 +75,11 @@ function OverviewBody({data}:{data:Overview}) {
           <small>{split.length ? split.map(([unit,amount])=>measure(amount,unit)).join(' · ') : 'Empty'}</small>
         </div>
       })}
+      {value&&<div className="pc-inv-value">
+        <span>库存价值 <small>Stock value</small></span>
+        <strong>{formatWholeDollars(value.value_cents)}</strong>
+        <small>{value.unpriced_units ? `At retail · ${number(value.unpriced_units)} without a price` : 'At retail price'}</small>
+      </div>}
     </div>
     <p className="pc-inv-meta">{number(data.in_stock_products ?? 0)} products in stock · {data.last_report ? <>sales from 日报 through {shortDate(data.last_report)}</> : 'no 日报 pasted yet'}</p>
     <div className="pc-inv-panels">
@@ -133,8 +142,11 @@ function Row({item,label,meta,trailing}:{item:OverviewItem;label?:ReactNode;meta
 function Change({change,multi}:{change:OverviewChange;multi:boolean}) {
   const [zh,en] = CHANGES[change.kind] ?? [change.kind.replaceAll('_',' '),'']
   const net = change.added-change.removed
+  // A loss shows what left sale, broken goods included; damaged goods show how many were handled.
+  const shown = change.kind==='loss' ? change.saleable : net
   const value = MOVES.includes(change.kind) ? <>{number(Math.max(change.added,change.removed))}<small>moved</small></>
-    : net>0 ? `+${number(net)}` : net<0 ? `−${number(-net)}` : '0'
+    : change.kind==='damaged' ? <>{number(change.removed)}<small>handled</small></>
+    : shown>0 ? `+${number(shown)}` : shown<0 ? `−${number(-shown)}` : '0'
   return <li className="pc-row pc-inv-row">
     <span className="pc-row-label">{shortDate(change.business_date)}</span>
     <span className="pc-row-main"><strong>{zh} <small className="pc-inv-en">{en}</small></strong><small>{multi&&`${change.store_code} · `}{plural(change.documents,'record')}</small></span>

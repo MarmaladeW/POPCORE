@@ -2084,6 +2084,7 @@ def _get_migrations():
         ('product_created_at',                         _migration_product_created_at),
         ('website_sync',                               _migration_website_sync),
         ('inventory_viewers',                          _migration_inventory_viewers),
+        ('stock_losses',                               _migration_stock_losses),
     ]
 
 
@@ -2193,6 +2194,32 @@ def _migration_inventory_viewers(con, cur):
         PRIMARY KEY (auth0_sub, store_id)
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('inventory_viewers')")
+
+
+def _migration_stock_losses(con, cur):
+    # 损耗 Loss (owner, 2026-11-03): stock a manager records as broken, stolen, missing or otherwise
+    # lost, with the product's price then. Its stock moves through the ledger document; an undo is that
+    # document's exact correction.
+    cur.execute("""CREATE TABLE IF NOT EXISTS stock_losses (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id           INTEGER NOT NULL REFERENCES stores(id),
+        location_id        INTEGER NOT NULL REFERENCES inventory_locations(id),
+        product_id         INTEGER NOT NULL REFERENCES products(id),
+        quantity           INTEGER NOT NULL CHECK (quantity > 0),
+        unit               TEXT    NOT NULL,
+        reason             TEXT    NOT NULL CHECK (reason IN ('broken','stolen','missing','other')),
+        note               TEXT,
+        unit_price         REAL,
+        business_date      TEXT    NOT NULL,
+        document_id        INTEGER REFERENCES inventory_documents(id),
+        actor_sub          TEXT    NOT NULL,
+        created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+        undo_document_id   INTEGER REFERENCES inventory_documents(id),
+        undone_by          TEXT,
+        undone_at          TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_losses_store_date ON stock_losses(store_id, business_date)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('stock_losses')")
 
 
 def _run_migrations(con, cur):

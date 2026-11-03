@@ -1,0 +1,103 @@
+/* 损耗 Loss (owner, 2026-11-03): record on the left, the damaged pile beside it, the month below.
+   Inventory's world: white boxes on the ground, hairlines, sharp corners, ink for the chosen option,
+   kraft for back stock, a dot plus words for status. */
+.pc-loss { display: grid; gap: 16px; }
+.pc-loss-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); grid-template-areas: "record pile" "month month" "records records"; gap: 16px; align-items: start; }
+.pc-loss-record { grid-area: record; padding: 16px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-loss-pile { grid-area: pile; }
+.pc-loss-month { grid-area: month; display: grid; gap: 12px; padding-top: 8px; }
+.pc-loss-records { grid-area: records; }
+.pc-loss-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 0; color: var(--text-primary); font-size: 13.5px; font-weight: 600; line-height: 20px; }
+.pc-loss-title small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-loss-quiet { margin: 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
+.pc-loss .ant-btn small { color: inherit; font-size: 11.5px; opacity: .72; }
+
+/* Search, then one card for the chosen product. */
+.pc-loss-search { display: grid; gap: 12px; }
+.pc-loss-search-input.ant-input-affix-wrapper { min-height: 48px; font-size: 16px; }
+.pc-loss-search-input .ant-input-prefix { margin-inline-end: 8px; color: var(--text-tertiary); }
+.pc-loss-results { display: grid; margin: 0; padding: 0; border: 1px solid var(--line-hair); list-style: none; }
+.pc-loss-results li + li { border-top: 1px solid var(--line-hair); }
+.pc-loss-results button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 8px 12px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pc-loss-results button:hover { background: var(--surface-subtle); }
+.pc-loss-results button:focus-visible, .pc-loss-choices button:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-loss-where { display: flex; flex: none; gap: 12px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.pc-loss-where b { color: var(--text-primary); font-size: 14px; font-weight: 600; }
+.pc-loss-where .is-back, .pc-loss-where .is-back b { color: var(--kraft-ink); }
+.pc-loss-saved { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border: 1px solid var(--status-ok-dot); color: var(--text-secondary); font-size: 13px; line-height: 19px; }
+.pc-loss-saved .pc-icon { margin-top: 2px; color: var(--status-ok-ink); }
+.pc-loss-saved strong { display: block; color: var(--status-ok-ink); font-weight: 600; }
+
+.pc-loss-card { display: grid; gap: 16px; }
+.pc-loss-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.pc-loss-card-head h2 { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
+.pc-loss-card-head p { margin: 2px 0 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
+.pc-loss-again { justify-self: start; }
+.pc-loss-field { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.pc-loss-field legend, .pc-loss-amount label, .pc-loss-note > span { margin-bottom: 0; padding: 0; color: var(--text-secondary); font-size: 12px; font-weight: 500; line-height: 18px; }
+.pc-loss-field legend { margin-bottom: 8px; }
+.pc-loss-field legend small, .pc-loss-amount label small, .pc-loss-note > span small { color: var(--text-tertiary); font-weight: 400; }
+.pc-loss-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.pc-loss-reasons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pc-loss-choices button { display: grid; align-content: start; gap: 2px; min-height: 56px; padding: 8px 12px; border: 1px solid var(--line-soft); background: var(--surface-default); color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; transition: background-color .15s ease-out, border-color .15s ease-out; }
+.pc-loss-choices button:hover { border-color: var(--line-strong); }
+.pc-loss-choices button > span { font-size: 13.5px; font-weight: 500; line-height: 20px; }
+.pc-loss-choices button > span small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-loss-choices button > small { color: var(--text-tertiary); font-size: 11.5px; line-height: 16px; }
+.pc-loss-choices button[aria-pressed='true'] { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.pc-loss-choices button[aria-pressed='true'] small { color: var(--text-on-ink-secondary); }
+.pc-loss-choices button:disabled { cursor: default; opacity: .6; }
+.pc-loss-amount { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding-top: 4px; border-top: 1px solid var(--line-hair); }
+.pc-loss-stepper { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.pc-loss-stepper .ant-btn { width: 44px; min-width: 44px; height: 44px; }
+.pc-loss-stepper .ant-input-number { width: 72px; }
+.pc-loss-stepper .ant-input-number-input { min-height: 42px; font-size: 18px; font-weight: 500; text-align: center; }
+.pc-loss-stepper > span:last-child { width: 18px; }
+.pc-loss-note { display: grid; gap: 6px; }
+.pc-loss-note textarea { font-size: 16px; }
+.pc-loss-effect { margin: 0; padding: 10px 12px; background: var(--surface-soft); color: var(--text-secondary); font-size: 13px; line-height: 19px; }
+.pc-loss-effect b { color: var(--text-primary); font-weight: 600; }
+.pc-loss-actions { display: flex; gap: 8px; }
+.pc-loss-actions .ant-btn { min-height: 44px; }
+
+/* The damaged pile and the month's records: rows in panels, numbers on one right edge. */
+.pc-loss-rows { margin: 0; padding: 0; list-style: none; }
+.pc-loss-panel-notice { padding: 12px 16px 0; }
+.pc-loss-pile-row { flex-wrap: wrap; row-gap: 8px; min-height: 0; }
+.pc-loss-pile-actions { display: flex; flex-basis: 100%; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.pc-loss-pile-actions .ant-input-number { width: 72px; }
+.pc-loss-pile-actions .ant-input-number-input { min-height: 38px; text-align: center; }
+.pc-loss-num { display: grid; flex: none; min-width: 72px; justify-items: end; color: var(--text-primary); font-size: 17px; font-weight: 600; line-height: 22px; letter-spacing: -.17px; white-space: nowrap; }
+.pc-loss-num small { color: var(--text-tertiary); font-size: 11px; font-weight: 400; line-height: 15px; letter-spacing: 0; }
+.pc-loss-when { display: grid; gap: 4px; align-self: flex-start; padding-top: 1px; }
+.pc-loss-record-row { align-items: flex-start; }
+.pc-loss-record-row .pc-row-main small { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.pc-loss-undo { display: flex; flex: none; justify-content: flex-end; width: 84px; }
+.pc-loss-undo .ant-btn { height: 36px; padding-inline: 8px; }
+.pc-loss-undone { color: var(--text-tertiary); font-size: 12px; line-height: 36px; }
+.pc-loss-record-row.is-undone .pc-row-main strong, .pc-loss-record-row.is-undone .pc-loss-num { color: var(--text-tertiary); }
+.pc-loss-record-row.is-undone .pc-loss-num { text-decoration: line-through; }
+
+/* The month: ‹ 2026年11月 ›, then the total and each reason, in money with units beneath. */
+.pc-loss-month-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.pc-loss-months .pc-day-date { min-width: 132px; cursor: default; }
+.pc-loss-figures { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 0; }
+.pc-loss-figures span small { color: var(--text-tertiary); font-size: 12px; }
+.pc-loss-figures .is-none strong { color: var(--text-tertiary); }
+
+@media (max-width: 1023px) {
+  .pc-loss-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "record" "pile" "month" "records"; gap: 12px; }
+}
+@media (max-width: 767px) {
+  .pc-loss-record { padding: 14px 12px; }
+  .pc-loss-actions .ant-btn { flex: 1; min-height: 48px; }
+  .pc-loss-month-head { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .pc-loss-month-head .pc-day { width: 100%; margin-bottom: 0; }
+  .pc-loss-figures { grid-template-columns: 1fr 1fr; }
+  .pc-loss-figures > .pc-loss-total { grid-column: 1 / -1; }
+  .pc-loss-figures > div:nth-child(2n) { border-left: 0; }
+  .pc-loss-figures > div:nth-child(n + 2) { border-top: 1px solid var(--line-hair); }
+  .pc-loss-undo { width: auto; }
+  .pc-loss-undo .ant-btn small { display: none; }
+  .pc-loss-where { flex-direction: column; align-items: flex-end; gap: 0; }
+}

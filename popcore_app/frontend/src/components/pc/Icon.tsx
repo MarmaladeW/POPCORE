@@ -7,7 +7,7 @@ const urls = Object.fromEntries(Object.entries(files).map(([path, url]) => [path
 
 export type IconName = 'home' | 'pay' | 'in' | 'gift' | 'doc' | 'cal' | 'dots' | 'box' | 'swap' | 'chart' | 'grid' | 'right'
   | 'clock' | 'camera' | 'up' | 'search' | 'back' | 'refresh' | 'plus' | 'check' | 'alert' | 'user' | 'gear' | 'up-2'
-  | 'count' | 'down' | 'sort' | 'web'
+  | 'count' | 'down' | 'sort' | 'web' | 'loss' | 'minus'
 
 export default function Icon({ name, size = 18, className }: { name: IconName; size?: number; className?: string }) {
   const style = { '--pc-icon': `url("${urls[name]}")`, width: size, height: size } as CSSProperties
