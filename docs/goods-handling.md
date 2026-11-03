@@ -20,6 +20,8 @@ New count-create request keys hash the explicit observations rather than changin
 
 Saved receipts, transfers, and counts keep their document IDs in the URL for reload and resuming. Draft counts and recounts allow observation edits; save these before submission. Submitted, approved, and returned observations remain frozen, and returned counts link to their replacement recount.
 
+A receipt or transfer can hold several products. Scan a barcode or search to add each one; scanning or picking a product already listed adds to its line. Products with an unverified identity or no stock unit appear in search but cannot be added, and the server refuses them too. A draft receipt can add and remove lines until it is posted, keeping at least one. On a transfer each line has its own quantity, and **Dispatch all** / **Receive all** act on every open line in one request with one idempotency key and version check.
+
 Barcode input is text, so leading zeroes are retained. Enter adds one configured `quantity_per_scan`. Unknown or ambiguous scans do not change the draft. The receipt screen warns before a browser close or reload when local input is unsaved.
 
 ## Identify an existing blind box

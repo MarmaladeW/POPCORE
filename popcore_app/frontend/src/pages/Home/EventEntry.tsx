@@ -15,6 +15,8 @@ import useCheckoutMutation from '../Sales/useCheckoutMutation'
 import { eventNames } from './storeDay'
 import './Home.css'
 
+type DisplayLine = { product_id: number; quantity?: number; source_location_id?: number | 'opened' }
+
 // display: 入 display (Receive goods). exchange: 换现金, a tab of Checkout. Otherwise the claw machine.
 export default function EventEntry({ display = false, exchange: exchangeOnly = false, inline = false }: { display?: boolean; exchange?: boolean; inline?: boolean }) {
   const store = useAppStore(state => state.selectedStore)
@@ -30,6 +32,8 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
   const phone = useIsPhone()
   const specialCount = useOpenSpecialOrders(exchangeOnly)
   const [options, setOptions] = useState<GoodsProduct[]>([])
+  // Display arrivals list several products; this keeps each listed product's name after the search moves on.
+  const [picked, setPicked] = useState<Record<number, GoodsProduct>>({})
   const [searchError, setSearchError] = useState('')
   const [searching, setSearching] = useState(false)
   const [form] = Form.useForm()
@@ -75,13 +79,27 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
     } finally { if (!controller.signal.aborted) setSearching(false) }
   }
 
-  function save(values: { product_id?: number; quantity?: number; source_location_id?: number | 'opened'; tender?: string; amount?: string; note?: string }) {
+  // Picking a product already listed adds one more to its line.
+  function addDisplayProduct(id: number, add: (line: DisplayLine) => void) {
+    const product = options.find(item => item.id === id)
+    if (!product) return
+    setPicked(current => ({ ...current, [id]: product }))
+    const lines: DisplayLine[] = form.getFieldValue('lines') || []
+    const index = lines.findIndex(line => line.product_id === id)
+    if (index >= 0) form.setFieldValue(['lines', index, 'quantity'], (lines[index].quantity || 0) + 1)
+    else add({ product_id: id, quantity: 1 })
+  }
+
+  function save(values: { product_id?: number; quantity?: number; source_location_id?: number | 'opened'; lines?: DisplayLine[]; tender?: string; amount?: string; note?: string }) {
     if (!store || store.code === 'ALL' || denied) return
+    const source = (id?: number | 'opened') => typeof id === 'number' ? { source_location_id: id } : {}
     const details = exchange
       ? { tender: values.tender, amount_cents: tryParseMoneyToCents(values.amount || '') }
-      : { product_id: values.product_id, quantity: values.quantity, ...(needsSource && typeof values.source_location_id === 'number' ? { source_location_id: values.source_location_id } : {}) }
+      : display ? { lines: (values.lines || []).map(line => ({ product_id: line.product_id, quantity: line.quantity, ...source(line.source_location_id) })) }
+      : { product_id: values.product_id, quantity: values.quantity, ...(refill ? source(values.source_location_id) : {}) }
     void mutation.run('/store-events', { store_id: store.id, kind, ...details, note: values.note?.trim() || '' })
   }
+  const productOptions = options.map(product => ({ value: product.id, label: `${product.sku} · ${productNames(product)}` }))
 
   if (exchangeOnly) return <div className="pc-exchange">
     <PageHeader title={phone ? '换现金' : '买单'} sub={phone ? undefined : `Checkout${store?.name ? ` · ${store.name}` : ''}`} back={phone ? { label: '买单', to: '/checkout' } : undefined} />
@@ -136,18 +154,38 @@ function EventForm({ display, exchangeOnly, inline }: { display: boolean; exchan
               const cents = tryParseMoneyToCents(value || '')
               return cents != null && cents > 0 ? Promise.resolve() : Promise.reject(new Error('Enter a positive amount, with at most two decimal places.'))
             } }]}><Input inputMode="decimal" prefix="$" /></Form.Item>
-          </> : <>
+          </> : display ? <Form.List name="lines" rules={[{ validator: async (_, lines) => { if (!lines?.length) throw new Error('Add at least one product.') } }]}>
+            {(fields, { add, remove }, { errors }) => <>
+              <Form.Item label="产品 Product" extra="选中即加入，再选一次加一件。 Each product you pick is added below; pick it again to add one more.">
+                <Select aria-label="Product" showSearch filterOption={false} loading={searching} onSearch={findProduct} value={null} placeholder="Search product name or SKU"
+                  options={productOptions} onChange={(id: number) => addDisplayProduct(id, add)} />
+              </Form.Item>
+              {fields.map((field, index) => {
+                const product = picked[form.getFieldValue(['lines', field.name, 'product_id'])]
+                return <section key={field.key} className="pc-display-line" aria-label={`Line ${index + 1}`}>
+                  <div className="pc-display-line-head">
+                    <strong>{product ? `${product.sku} · ${productNames(product)}` : 'Product'}</strong>
+                    <Button type="text" size="small" aria-label={`Remove line ${index + 1}`} onClick={() => remove(field.name)}>移除 Remove</Button>
+                  </div>
+                  <Form.Item name={[field.name, 'product_id']} hidden><InputNumber /></Form.Item>
+                  <Form.Item name={[field.name, 'quantity']} label="数量 Quantity" rules={[{ required: true }, { type: 'integer', min: 1 }]}>
+                    <InputNumber aria-label={`Line ${index + 1} quantity`} min={1} precision={0} />
+                  </Form.Item>
+                  <Form.Item name={[field.name, 'source_location_id']} label="从哪里来 / Where from" rules={[{ required: true, message: 'Choose where the display piece came from.' }]}>
+                    <Select aria-label={`Line ${index + 1} where from`} loading={!sources} options={[...(sources || []).map(location => ({ value: location.id, label: `从${location.code === 'floor' ? '楼面' : location.code === 'upstairs' ? '楼上' : '仓库'}拿 · ${location.name}` })),
+                      { value: 'opened', label: '新到 · 已拆开 Arrived opened' }]} />
+                  </Form.Item>
+                </section>
+              })}
+              <Form.ErrorList errors={errors} />
+            </>}
+          </Form.List> : <>
             <Form.Item name="product_id" label="产品 Product" rules={[{ required: true, message: 'Choose the product from search results.' }]}>
-              <Select showSearch filterOption={false} loading={searching} onSearch={findProduct} placeholder="Search product name or SKU"
-                options={options.map(product => ({ value: product.id, label: `${product.sku} · ${productNames(product)}` }))} />
+              <Select showSearch filterOption={false} loading={searching} onSearch={findProduct} placeholder="Search product name or SKU" options={productOptions} />
             </Form.Item>
             <Form.Item name="quantity" label="数量 Quantity" rules={[{ required: true }, { type: 'integer', min: 1 }]}><InputNumber min={1} precision={0} /></Form.Item>
             {refill && sources?.length !== 0 && <Form.Item name="source_location_id" label="从哪里拿 / Take from" rules={[{ required: true, message: 'Choose where the stock came from.' }]}>
               <Select loading={!sources} options={sources?.map(location => ({ value: location.id, label: location.name }))} />
-            </Form.Item>}
-            {display && <Form.Item name="source_location_id" label="从哪里来 / Where from" rules={[{ required: true, message: 'Choose where the display piece came from.' }]}>
-              <Select loading={!sources} options={[...(sources || []).map(location => ({ value: location.id, label: `从${location.code === 'floor' ? '楼面' : location.code === 'upstairs' ? '楼上' : '仓库'}拿 · ${location.name}` })),
-                { value: 'opened', label: '新到 · 已拆开 Arrived opened' }]} />
             </Form.Item>}
           </>}
           <Form.Item name="note" label={exchange ? 'Payment reference / Note' : display ? '来源 From / Note' : '备注 Note (optional)'} rules={exchange ? [{ required: true, whitespace: true, message: 'Add the payment reference or a note to identify this exchange.' }] : []}>

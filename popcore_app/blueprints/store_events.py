@@ -91,6 +91,24 @@ def _post_display(con, actor, key, store_id, product_id, quantity, source_locati
         actor=actor,request_key=f'{key}:display',access_store_ids=(store_id,))['document_id']
 
 
+MAX_DISPLAY_LINES = 50
+
+
+def _display_lines(raw):
+    """One display arrival can list several products; each becomes its own event, all in one transaction."""
+    if not isinstance(raw,list) or not 1 <= len(raw) <= MAX_DISPLAY_LINES:
+        raise ValueError(f'lines must list 1 to {MAX_DISPLAY_LINES} products')
+    lines = []
+    for line in raw:
+        if not isinstance(line,dict) or set(line) - {'product_id','quantity','source_location_id'}:
+            raise ValueError('each line takes product_id, quantity and an optional source_location_id')
+        lines.append(dict(product_id=read_int(line.get('product_id'),'product_id',minimum=1),
+            quantity=read_int(line.get('quantity'),'quantity',minimum=1),
+            **({} if line.get('source_location_id') is None else
+               {'source_location_id':read_int(line['source_location_id'],'source_location_id',minimum=1)})))
+    return lines
+
+
 def _event(con, event_id):
     row = con.execute('''SELECT e.*,COALESCE(NULLIF(emp.name,''),e.actor_sub) AS actor_name
         FROM store_events e LEFT JOIN employees emp ON emp.auth0_id=e.actor_sub WHERE e.id=?''',(event_id,)).fetchone()
@@ -106,9 +124,12 @@ def create():
     kind = data.get('kind')
     if not isinstance(kind,str) or kind not in OPERATIONAL | {'cash_exchange'}:
         raise ValueError('kind is invalid')
-    allowed = {'store_id','kind','note'} | ({'product_id','quantity'} if kind in OPERATIONAL else {'tender','amount_cents'})
-    if kind in ('claw_refill','display_in'):
-        allowed |= {'source_location_id'}
+    if kind == 'display_in' and 'lines' in data:
+        allowed = {'store_id','kind','note','lines'}
+    else:
+        allowed = {'store_id','kind','note'} | ({'product_id','quantity'} if kind in OPERATIONAL else {'tender','amount_cents'})
+        if kind in ('claw_refill','display_in'):
+            allowed |= {'source_location_id'}
     if set(data) - allowed:
         raise ValueError('Unknown fields')
     store_id = read_int(data.get('store_id'),'store_id',minimum=1)
@@ -116,7 +137,11 @@ def create():
     if not isinstance(note,str) or len(note.strip()) > 500:
         raise ValueError('note must be text up to 500 characters')
     note = note.strip()
-    if kind in OPERATIONAL:
+    lines = None
+    if 'lines' in allowed:
+        lines = _display_lines(data['lines'])
+        product_id = quantity = tender = amount = source_location_id = None
+    elif kind in OPERATIONAL:
         product_id = read_int(data.get('product_id'),'product_id',minimum=1)
         quantity = read_int(data.get('quantity'),'quantity',minimum=1)
         tender = amount = None
@@ -140,44 +165,55 @@ def create():
         _scope(con,actor,store_id,today,write=True)
         if kind == 'cash_exchange':
             require_inventory_access(con,actor,(store_id,),'staff')
-        intent = dict(store_id=store_id,kind=kind,product_id=product_id,quantity=quantity,
+        intent = (dict(store_id=store_id,kind=kind,lines=lines,note=note) if lines is not None else
+            dict(store_id=store_id,kind=kind,product_id=product_id,quantity=quantity,
             tender=tender,amount_cents=amount,note=note,
-            **({'source_location_id':source_location_id} if source_location_id is not None else {}))
+            **({'source_location_id':source_location_id} if source_location_id is not None else {})))
         key,digest,prior = _replay(con,request.headers.get('Idempotency-Key'),'store_event',actor,intent)
         if prior:
             con.commit()
-            return jsonify(_event(con,prior['id'])),201
+            return jsonify({'events':[_event(con,event_id) for event_id in prior['ids']]} if 'ids' in prior
+                else _event(con,prior['id'])),201
         if con.execute("SELECT 1 FROM closing_sessions WHERE store_id=? AND business_date=? AND status='closed'",(store_id,today)).fetchone():
             raise InventoryConflict('Store day is closed','closing_state_conflict')
-        product_name = None
-        if product_id:
-            product = con.execute('''SELECT COALESCE(NULLIF(TRIM(jizhanming),''),
-                NULLIF(TRIM(name_cn_en),''),NULLIF(TRIM(sku),'')) AS name
-                FROM products WHERE id=?''',(product_id,)).fetchone()
-            if not product:
-                raise ValueError('product_id is invalid')
-            product_name = product['name'] or str(product_id)
-        if source_location_id is not None and not con.execute(f'''SELECT 1 FROM inventory_locations
-                WHERE id=? AND store_id=? AND is_active=1 AND code IN ({','.join('?'*len(REFILL_SOURCES))})''',
-                (source_location_id,store_id,*REFILL_SOURCES)).fetchone():
-            raise ValueError('source_location_id must be this store\'s floor or back stock')
-        document_id = (_post_claw(con,actor,key,store_id,kind,product_id,quantity,source_location_id,today)
-            if kind in ('claw_prize','claw_refill') else
-            _post_display(con,actor,key,store_id,product_id,quantity,source_location_id,today)
-            if kind == 'display_in' else None)
-        cash_event_id = None
-        if kind == 'cash_exchange':
-            cash_event_id = con.execute('''INSERT INTO cash_events
-                (store_id,business_date,event_type,amount_cents,reason,actor_sub)
-                VALUES (?,?,'payout',?,?,?)''',(store_id,today,amount,'Cash exchange: '+note,actor['sub'])).lastrowid
-        event_id = con.execute('''INSERT INTO store_events
-            (store_id,business_date,kind,actor_sub,product_id,product_name,quantity,tender,amount_cents,note,cash_event_id,
-             source_location_id,inventory_document_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (store_id,today,kind,actor['sub'],product_id,product_name,quantity,tender,amount,note,cash_event_id,
-             source_location_id,document_id)).lastrowid
-        result = _event(con,event_id)
-        _remember(con,key,'store_event',event_id,actor,digest,{'id':event_id})
+        entries = lines if lines is not None else [dict(product_id=product_id,quantity=quantity,
+            source_location_id=source_location_id)]
+        event_ids = []
+        for number, entry in enumerate(entries, 1):
+            # Each product of a multi-product entry posts under its own key, so each event keeps its own document.
+            entry_key = key if lines is None else f'{key}:{number}'
+            product_id, quantity = entry['product_id'], entry['quantity']
+            source_location_id = entry.get('source_location_id')
+            product_name = None
+            if product_id:
+                product = con.execute('''SELECT COALESCE(NULLIF(TRIM(jizhanming),''),
+                    NULLIF(TRIM(name_cn_en),''),NULLIF(TRIM(sku),'')) AS name
+                    FROM products WHERE id=?''',(product_id,)).fetchone()
+                if not product:
+                    raise ValueError('product_id is invalid')
+                product_name = product['name'] or str(product_id)
+            if source_location_id is not None and not con.execute(f'''SELECT 1 FROM inventory_locations
+                    WHERE id=? AND store_id=? AND is_active=1 AND code IN ({','.join('?'*len(REFILL_SOURCES))})''',
+                    (source_location_id,store_id,*REFILL_SOURCES)).fetchone():
+                raise ValueError('source_location_id must be this store\'s floor or back stock')
+            document_id = (_post_claw(con,actor,entry_key,store_id,kind,product_id,quantity,source_location_id,today)
+                if kind in ('claw_prize','claw_refill') else
+                _post_display(con,actor,entry_key,store_id,product_id,quantity,source_location_id,today)
+                if kind == 'display_in' else None)
+            cash_event_id = None
+            if kind == 'cash_exchange':
+                cash_event_id = con.execute('''INSERT INTO cash_events
+                    (store_id,business_date,event_type,amount_cents,reason,actor_sub)
+                    VALUES (?,?,'payout',?,?,?)''',(store_id,today,amount,'Cash exchange: '+note,actor['sub'])).lastrowid
+            event_ids.append(con.execute('''INSERT INTO store_events
+                (store_id,business_date,kind,actor_sub,product_id,product_name,quantity,tender,amount_cents,note,cash_event_id,
+                 source_location_id,inventory_document_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (store_id,today,kind,actor['sub'],product_id,product_name,quantity,tender,amount,note,cash_event_id,
+                 source_location_id,document_id)).lastrowid)
+        _remember(con,key,'store_event',event_ids[0],actor,digest,
+            {'id':event_ids[0]} if lines is None else {'ids':event_ids})
+        result = _event(con,event_ids[0]) if lines is None else {'events':[_event(con,event_id) for event_id in event_ids]}
         con.commit()
         return jsonify(result),201
     except Exception:

@@ -130,6 +130,56 @@ class ReceivingTests(ReceivingFixture):
             }
         self.assertEqual(balances, {'damaged': 1, 'saleable': 7})
 
+    def test_one_receipt_takes_several_products_and_refuses_unverified_lines(self):
+        with closing(self.connect()) as con:
+            second, unverified = (con.execute(
+                """INSERT INTO products (sku, name_cn_en, jizhanming, product_type, boxes_per_dan,
+                          stock_form, stock_unit, identity_status)
+                   VALUES (?, ?, ?, 'ordinary', 1, 'ordinary', ?, ?)""", row,
+            ).lastrowid for row in (('TEST-2', 'Second', 'Second', 'set', 'verified'),
+                                    ('TEST-3', 'Unreviewed', 'Unreviewed', 'piece', 'unverified')))
+            con.commit()
+        body = {
+            'store_id': self.store_id, 'destination_location_id': self.floor,
+            'business_date': '2026-09-08', 'shipment_reference': 'SHIP-MULTI',
+            'lines': [
+                {'product_id': self.product_id, 'unit': 'piece',
+                 'saleable_quantity': 4, 'damaged_quantity': 1},
+                {'product_id': second, 'unit': 'set', 'expected_quantity': 3,
+                 'saleable_quantity': 2, 'discrepancy_note': 'One set missing'},
+            ],
+        }
+        def create(data, key):
+            return self.client.post('/api/goods/receipts', json=data,
+                                    headers={**self.headers(), 'Idempotency-Key': key})
+        before = self.snapshot(('goods_receipts', 'goods_receipt_lines'))
+        refused = create({**body, 'lines': [*body['lines'], {
+            'product_id': unverified, 'unit': 'piece', 'saleable_quantity': 1,
+        }]}, 'receipt-with-unverified')
+        self.assertEqual((refused.status_code, refused.get_json()['code']),
+                         (409, 'identity_unverified'))
+        self.assertEqual(self.snapshot(('goods_receipts', 'goods_receipt_lines')), before)
+        draft = create(body, 'receipt-multi')
+        self.assertEqual(draft.status_code, 201, draft.get_json())
+        detail = self.client.get(f"/api/goods/receipts/{draft.get_json()['id']}",
+                                 headers=self.headers()).get_json()
+        self.assertEqual([(line['line_no'], line['product_id']) for line in detail['lines']],
+                         [(1, self.product_id), (2, second)])
+        posted = self.client.post(
+            f"/api/goods/receipts/{draft.get_json()['id']}/post",
+            headers={**self.headers(), 'Idempotency-Key': 'receipt-multi-post'},
+            json={'expected_version': 1},
+        )
+        self.assertEqual(posted.status_code, 200, posted.get_json())
+        with closing(self.connect()) as con:
+            balances = {(row['product_id'], row['disposition']): row['quantity'] for row in con.execute(
+                'SELECT product_id, disposition, quantity FROM inventory_balances WHERE location_id=?',
+                (self.floor,))}
+            documents = con.execute('SELECT COUNT(*) FROM inventory_documents').fetchone()[0]
+        self.assertEqual(balances, {(self.product_id, 'saleable'): 4,
+                                    (self.product_id, 'damaged'): 1, (second, 'saleable'): 2})
+        self.assertEqual(documents, 1)
+
     def test_scanner_preserves_code_and_requires_explicit_unknown_resolution(self):
         with closing(self.connect()) as con:
             con.execute(
