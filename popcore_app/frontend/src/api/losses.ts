@@ -9,7 +9,7 @@ export interface LossRecord {
   unit:NativeUnit; quantity:number; reason:LossReason; note:string|null
   location_id:number; location_code:string; location_name:string
   unit_price_cents:number|null; value_cents:number|null
-  actor_name:string; undone:boolean; undone_at:string|null; undone_by_name:string|null
+  actor_name:string|null; undone:boolean; undone_at:string|null; undone_by_name:string|null
 }
 export interface LossTotal { units:number; value_cents:number; unpriced_units:number; records:number }
 export interface DamagedItem {

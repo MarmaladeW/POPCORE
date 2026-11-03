@@ -36,10 +36,16 @@ def cents(price):
     return round(price * 100) if price is not None and price > 0 else None
 
 
+def _store_code(value):
+    if value is not None and not isinstance(value, str):
+        raise InventoryValidationError('Choose one store')
+    return (value or '').strip().upper()
+
+
 def _scope(con, actor, store_code, *, need_live=True):
     """The store and its reviewed locations, if actor may record losses there."""
     store = con.execute('SELECT id, code, name FROM stores WHERE code=? AND is_active=1',
-                        ((store_code or '').strip().upper(),)).fetchone()
+                        (_store_code(store_code),)).fetchone()
     if store is None:
         raise InventoryValidationError('Choose one store')
     store = {**dict(store), 'live': store_is_live(con, store['id'])}
@@ -112,8 +118,7 @@ def _location_of(locations, location_id):
 def _records(con, where, params):
     rows = con.execute(
         f'''SELECT x.*, l.name AS location_name, l.code AS location_code,
-                   COALESCE(NULLIF(e.name,''), x.actor_sub) AS actor_name,
-                   COALESCE(NULLIF(u.name,''), x.undone_by) AS undone_by_name
+                   NULLIF(e.name,'') AS actor_name, NULLIF(u.name,'') AS undone_by_name
             FROM stock_losses x JOIN inventory_locations l ON l.id=x.location_id
             LEFT JOIN employees e ON e.auth0_id=x.actor_sub
             LEFT JOIN employees u ON u.auth0_id=x.undone_by
@@ -167,7 +172,10 @@ def search_products(con, actor, store_code, query):
             if exact or needle in haystack:
                 hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, _product_name(row), row))
         results = []
-        for _, name, product in sorted(hits, key=lambda hit: (hit[0], hit[1]))[:SEARCH_LIMIT]:
+        # Products whose stock here is all kept for opened sets offer nothing, so they take no place in the list.
+        for _, name, product in sorted(hits, key=lambda hit: (hit[0], hit[1])):
+            if len(results) >= SEARCH_LIMIT:
+                break
             places = []
             for location in locations:
                 if location['id'] not in here[product['id']]:
@@ -250,7 +258,7 @@ def record_loss(con, actor, data, *, request_key):
     note = _note(data.get('note'))
     if reason == 'other' and not note:
         raise InventoryValidationError('Say what happened for 其他 Other', 'note_required')
-    intent = {'store_code': (data.get('store_code') or '').strip().upper(),
+    intent = {'store_code': _store_code(data.get('store_code')),
               'product_id': read_int(data.get('product_id'), 'product_id', minimum=1),
               'location_id': read_int(data.get('location_id'), 'location_id', minimum=1),
               'quantity': _quantity(data.get('quantity')), 'reason': reason, 'note': note,
@@ -353,7 +361,7 @@ def act_on_pile(con, actor, data, *, request_key):
     action = data.get('action')
     if action not in PILE_ACTIONS:
         raise InventoryValidationError('action must be restore or discard')
-    intent = {'store_code': (data.get('store_code') or '').strip().upper(), 'action': action,
+    intent = {'store_code': _store_code(data.get('store_code')), 'action': action,
               'product_id': read_int(data.get('product_id'), 'product_id', minimum=1),
               'location_id': read_int(data.get('location_id'), 'location_id', minimum=1),
               'quantity': _quantity(data.get('quantity')), 'note': _note(data.get('note')),

@@ -88,6 +88,8 @@ function RecordLoss({ storeCode, onSaved }:{ storeCode:string; onSaved:()=>void 
   const [quantity, setQuantity] = useState<number|null>(1)
   const [note, setNote] = useState('')
   const [saved, setSaved] = useState<{ name:string; text:string }>()
+  // Checking stock again after a refused save replaces the refusal with fresh numbers.
+  const [rechecked, setRechecked] = useState(false)
   const searchBox = useRef<InputRef>(null)
   const mutation = useCheckoutMutation(data => {
     const loss = data.loss as LossRecord
@@ -122,6 +124,7 @@ function RecordLoss({ storeCode, onSaved }:{ storeCode:string; onSaved:()=>void 
     const fresh = results.find(item => item.product_id === product.product_id)
     if (fresh) { setProduct(fresh); if (!fresh.places.some(item => item.location_id === locationId)) setLocationId(undefined) }
     else { setProduct(undefined); setQuery('') }
+    setRechecked(true)
   }
 
   if (!product) return <div className="pc-loss-search">
@@ -150,6 +153,7 @@ function RecordLoss({ storeCode, onSaved }:{ storeCode:string; onSaved:()=>void 
   const unitLabel = UNITS[product.unit] ?? ''
   function save() {
     if (!valid || !spot || !reason || locked) return
+    setRechecked(false)
     void mutation.run('/losses', { store_code:storeCode, product_id:product!.product_id, location_id:spot.location_id, quantity:count,
       reason, expected_version:spot.version, ...(note.trim() ? { note:note.trim() } : {}) })
   }
@@ -158,8 +162,8 @@ function RecordLoss({ storeCode, onSaved }:{ storeCode:string; onSaved:()=>void 
       <div><h2>{product.name}</h2><p>{[product.sku, product.price_cents != null ? `${formatCents(product.price_cents)} each` : 'No price set, so no value is counted'].filter(Boolean).join(' · ')}</p></div>
       <Button disabled={locked} onClick={() => { setProduct(undefined); window.setTimeout(() => searchBox.current?.focus(), 0) }}>换一个 Change</Button>
     </header>
-    {mutation.notice}
-    {mutation.error && !mutation.pending && <Button className="pc-loss-again" onClick={() => void lookAgain()}>重新查看库存 Check stock again</Button>}
+    {!rechecked && mutation.notice}
+    {mutation.error && !mutation.pending && !rechecked && <Button className="pc-loss-again" onClick={() => void lookAgain()}>重新查看库存 Check stock again</Button>}
     <fieldset className="pc-loss-field" disabled={locked}>
       <legend>在哪里 <small>Where was it</small></legend>
       <div className="pc-loss-choices">{product.places.map(item => <button key={item.location_id} type="button" aria-pressed={item.location_id === locationId}
@@ -282,7 +286,7 @@ function Records({ records, month, onDone }:{ records:LossRecord[]; month:string
           <span className="pc-row-label pc-loss-when"><span>{shortDate(record.business_date)}</span><span className="pc-tag" title={why.en}>{why.zh}</span></span>
           <span className="pc-row-main">
             <strong>{record.name}</strong>
-            <small>{[place(record.location_code, record.location_name), record.note, record.undone ? `撤销 Undone by ${record.undone_by_name ?? '—'}` : `by ${record.actor_name}`].filter(Boolean).join(' · ')}</small>
+            <small>{[place(record.location_code, record.location_name), record.note, record.undone ? `撤销 Undone${record.undone_by_name ? ` by ${record.undone_by_name}` : ''}` : record.actor_name && `by ${record.actor_name}`].filter(Boolean).join(' · ')}</small>
           </span>
           <span className="pc-loss-num">−{units(record.quantity, record.unit)}<small>{record.value_cents != null ? formatCents(record.value_cents) : 'No price'}</small></span>
           <span className="pc-loss-undo">{record.undone ? <span className="pc-loss-undone">已撤销</span>

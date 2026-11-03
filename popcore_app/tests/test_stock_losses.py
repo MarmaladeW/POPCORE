@@ -147,3 +147,9 @@ class StockLossTests(IsolatedApiCase):
         self.assertEqual([(row['kind'], row['saleable']) for row in manager['recent_changes']], [('loss', -1)])
         staff = self.client.get('/api/inventory/overview?store_code=DT', headers=self.headers('staff')).get_json()
         self.assertIsNone(staff['value'])
+
+    def test_a_store_code_that_is_not_text_is_refused(self):
+        response = self.post('/api/losses', {'store_code': 1, 'product_id': self.ids['Squishy'], 'location_id': self.loc['floor'],
+                                             'quantity': 1, 'reason': 'stolen', 'expected_version': 1})
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.record('Squishy', 'floor', 1, 'stolen').get_json()['loss']['actor_name'])  # no employee row
