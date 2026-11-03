@@ -59,7 +59,7 @@ export async function updateReceipt(id:number,body:object,key:string){return (aw
 export async function cancelReceipt(id:number,version:number,key:string){return (await client.post(`/goods/receipts/${id}/cancel`,{expected_version:version},{headers:{'Idempotency-Key':key}})).data as WorkflowResult}
 
 export const requestKey = () => crypto.randomUUID()
-export const searchGoodsProducts=(query:string)=>client.get<GoodsProduct[]>('/products/search',{params:{q:query,limit:20}}).then(response=>response.data)
+export const searchGoodsProducts=(query:string,signal?:AbortSignal)=>client.get<GoodsProduct[]>('/products/search',{params:{q:query,limit:20},signal}).then(response=>response.data)
 
 export async function resolveGoodsBarcode(code: string, purpose = 'receive') {
   const response = await client.get('/goods/barcodes/resolve', { params: { code, purpose } })

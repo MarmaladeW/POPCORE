@@ -21,6 +21,10 @@ PRODUCT = {
     'name_cn_en': 'Long bilingual product 商品名称', 'stock_unit': 'piece',
     'identity_status': 'verified', 'upstairs_qty': 10, 'instore_qty': 2,
 }
+SECOND = {'id': 2, 'sku': '00456', 'jizhanming': 'Second figure 第二款', 'name_cn_en': 'Second figure 第二款',
+          'stock_unit': 'set', 'identity_status': 'verified'}
+UNVERIFIED = {'id': 3, 'sku': '00789', 'jizhanming': 'Unreviewed figure', 'name_cn_en': 'Unreviewed figure',
+              'stock_unit': 'piece', 'identity_status': 'unverified'}
 LOCATIONS = [
     {'id': 10, 'store_id': 1, 'store_code': 'DT', 'code': 'floor',
      'name': 'Downtown Floor', 'opening_verified': True},
@@ -36,6 +40,10 @@ def api_payload(path, query, request):
         return {'items': [PRODUCT], 'total': 1}
     if path == '/api/inventory/locations':
         return LOCATIONS
+    if path == '/api/products/search':
+        return [SECOND, UNVERIFIED]
+    if path == '/api/products/2':
+        return SECOND
     if path == '/api/goods/barcodes/resolve':
         if 'OUTSIDE' in query:
             return {'status': 'exact', 'candidates': [{
@@ -97,6 +105,22 @@ def api_payload(path, query, request):
                            'received_quantity': 3, 'returned_quantity': 0,
                            'loss_quantity': 0, 'short_quantity': 0,
                            'outstanding_transit': 0}]}
+    if path == '/api/goods/transfers/53' and request.method == 'GET':
+        return {'id': 53, 'kind': 'transfer', 'source_location_id': 11,
+                'destination_location_id': 20, 'business_date': '2026-09-11',
+                'status': 'active', 'version': 3, 'restock_session_id': None,
+                'lines': [{'line_no': 1, 'product_id': 1, 'native_unit': 'piece',
+                           'requested_quantity': 4, 'dispatched_quantity': 4,
+                           'received_quantity': 0, 'returned_quantity': 0,
+                           'loss_quantity': 0, 'short_quantity': 0,
+                           'outstanding_transit': 4},
+                          {'line_no': 2, 'product_id': 2, 'native_unit': 'set',
+                           'requested_quantity': 2, 'dispatched_quantity': 2,
+                           'received_quantity': 0, 'returned_quantity': 0,
+                           'loss_quantity': 0, 'short_quantity': 0,
+                           'outstanding_transit': 2}]}
+    if path == '/api/goods/transfers/53/receive':
+        return {'id': 53, 'version': 4, 'status': 'completed', 'inventory_document_id': 65}
     if path == '/api/goods/transfers/52/short_close':
         return {'id': 52, 'version': 10, 'status': 'completed'}
     if path == '/api/goods/counts/71' and request.method == 'GET':
@@ -156,8 +180,21 @@ async def checks(browser, viewport):
     await scan.fill('00123')
     await scan.press('Enter')
     await expect(page.get_by_text('+2 piece', exact=False)).to_be_visible()
+    # Each scanned product keeps its own line; picking a listed product adds to its line.
+    await expect(page.get_by_label('Line 1 saleable')).to_have_value('1')
+    await expect(page.get_by_label('Line 2 saleable')).to_have_value('2')
+    await select_option(page, 1, 'Long bilingual product 商品名称')
+    await expect(page.get_by_label('Line 2 saleable')).to_have_value('3')
+    await page.get_by_label('Line 1 expected').fill('2')
+    await expect(page.get_by_text('少 1 · Shipment quantity differs', exact=True)).to_be_visible()
+    await page.screenshot(path=OUT / f"receive-lines-{viewport['width']}.png", full_page=True)
+    assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
     await page.get_by_role('button', name='Save draft for review').click()
     await expect(page.get_by_text('Receipt #31', exact=True)).to_be_visible()
+    create = [request for request in state['requests'] if request['method'] == 'POST' and request['path'] == '/api/goods/receipts'][-1]
+    assert [(line['product_id'], line['unit'], line['saleable_quantity'], line['expected_quantity'], line['discrepancy_note'])
+            for line in create['post_data']['lines']] == [
+        (999, 'set', 1, 2, 'Shipment quantity differs'), (1, 'piece', 3, None, None)], create
     await page.get_by_role('button', name='Post receipt').click()
 
     await page.goto(BASE + '/goods/transfers')
@@ -219,11 +256,11 @@ async def resume_checks(browser):
     await expect(page.get_by_text('Downtown Upstairs → Markham Warehouse', exact=False)).to_be_visible()
     await expect(page.get_by_text('Outstanding: 3 pieces', exact=True)).to_be_visible()
     assert not [request for request in state['requests'] if request['path'].startswith('/api/goods/transfers/51/')]
-    await page.get_by_label('Action quantity').fill('4')
+    await page.get_by_label('Line 1 quantity').fill('4')
     await page.get_by_role('button', name='确认收到 Receive', exact=True).click()
     await expect(page.get_by_text('Quantity must be between 1 and 3. No transfer action was sent.', exact=True)).to_be_visible()
     assert not [request for request in state['requests'] if request['path'].endswith('/receive')]
-    await page.get_by_label('Action quantity').fill('3')
+    await page.get_by_label('Line 1 quantity').fill('3')
     await page.get_by_role('button', name='确认收到 Receive', exact=True).dblclick()
     receive = next(request for request in state['requests'] if request['path'].endswith('/receive'))
     assert receive['post_data']['expected_version'] == 7
@@ -233,7 +270,7 @@ async def resume_checks(browser):
     state['status_for_path'] = {'/api/goods/transfers/51/return': (503, {'error': 'Synthetic lost response'})}
     await page.get_by_role('button', name='退回 Return to source', exact=True).click()
     await expect(page.get_by_text('Synthetic lost response', exact=True)).to_be_visible()
-    await expect(page.get_by_label('Action quantity')).to_be_disabled()
+    await expect(page.get_by_label('Line 1 quantity')).to_be_disabled()
     await expect(page.get_by_label('Transfer reason')).to_be_disabled()
     await expect(page.get_by_role('button', name='确认收到 Receive', exact=True)).to_be_disabled()
     await page.get_by_role('button', name='Retry identical request', exact=True).click()
@@ -248,7 +285,7 @@ async def resume_checks(browser):
     assert loss['post_data']['reason'] == 'Transit loss reviewed'
 
     await page.goto(BASE + '/goods/transfers?transfer_id=52')
-    await page.get_by_label('Action quantity').fill('2')
+    await page.get_by_label('Line 1 quantity').fill('2')
     await page.get_by_label('Transfer reason').fill('Supplier short shipment')
     await page.get_by_role('button', name='短收结案 Short close', exact=True).click()
     short_close = next(request for request in state['requests'] if request['path'].endswith('/short_close'))
@@ -333,6 +370,72 @@ async def scan_race_checks(browser):
     await context.close()
 
 
+async def multi_product_checks(browser):
+    """A draft receipt and a transfer take several products, found by search; unverified products cannot be added."""
+    state = {'mode': 'data', 'api_payload': api_payload}
+    context, page = await context_with_api(browser, state, viewport={'width': 1280, 'height': 900}, auth={'role': 'manager'})
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    picker = page.get_by_role('combobox', name='添加产品 Add product')
+
+    await page.goto(BASE + '/goods/receiving?receipt_id=31')
+    await expect(page.get_by_text('3 pieces saleable', exact=True)).to_be_visible()
+    await expect(page.get_by_role('button', name='Remove line 1', exact=True)).to_have_count(0)   # a draft keeps one line
+    await picker.fill('figure')
+    await expect(page.locator('.ant-select-item-option-disabled', has_text='Unreviewed figure · 未核实 identity not verified')).to_be_visible()
+    await page.locator('.ant-select-item-option-disabled', has_text='Unreviewed figure').click()
+    await expect(page.get_by_label('Line 2 saleable')).to_have_count(0)
+    for _ in range(2):
+        await picker.fill('figure')
+        await page.get_by_title('Second figure 第二款', exact=True).click()
+    await expect(page.get_by_label('Line 2 saleable')).to_have_value('2')
+    await expect(page.get_by_text('Effect after posting: +5 pieces · +2 sets at Downtown Floor.', exact=True)).to_be_visible()
+    await expect(page.get_by_role('button', name='入库 Post receipt', exact=True)).to_be_disabled()
+    await page.get_by_role('button', name='存草稿 Save draft changes', exact=True).click()
+    await expect(page.get_by_role('button', name='入库 Post receipt', exact=True)).to_be_enabled()
+    patch = next(request for request in state['requests'] if request['method'] == 'PATCH')
+    assert [(line['product_id'], line['unit'], line['saleable_quantity']) for line in patch['post_data']['lines']] == [
+        (1, 'piece', 3), (2, 'set', 2)], patch
+    await picker.fill('figure')
+    await page.get_by_title('Second figure 第二款', exact=True).click()
+    await page.get_by_role('button', name='Remove line 1', exact=True).click()
+    await expect(page.get_by_label('Line 2 saleable')).to_have_value('1')
+    await expect(page.get_by_label('Line 1 saleable')).to_have_count(0)
+    await expect(page.get_by_role('button', name='Remove line 2', exact=True)).to_have_count(0)
+
+    await page.goto(BASE + '/goods/transfers?create=1')
+    await select_option(page, 0, 'DT · Downtown Upstairs')
+    await select_option(page, 1, 'MK · Markham Warehouse')
+    await select_option(page, 2, 'Long bilingual product 商品名称')
+    await picker.fill('figure')
+    await page.get_by_title('Second figure 第二款', exact=True).click()
+    await page.get_by_label('Line 2 requested quantity').fill('3')
+    await expect(page.get_by_text('Effect on dispatch: -1 piece · -3 sets from source saleable, +1 piece · +3 sets in transit.', exact=True)).to_be_visible()
+    await page.get_by_role('button', name='新建调拨 Create transfer', exact=True).click()
+    await expect(page.get_by_text('Transfer #51', exact=True)).to_be_visible()
+    created = next(request for request in state['requests'] if request['method'] == 'POST' and request['path'] == '/api/goods/transfers')
+    assert created['post_data']['lines'] == [
+        {'product_id': 1, 'unit': 'piece', 'requested_quantity': 1},
+        {'product_id': 2, 'unit': 'set', 'requested_quantity': 3}], created
+
+    await page.goto(BASE + '/goods/transfers?transfer_id=53')
+    await expect(page.get_by_label('Line 2 quantity')).to_have_value('2')
+    await page.get_by_label('Line 2 quantity').fill('5')
+    await page.get_by_role('button', name='全部收到 Receive all', exact=True).click()
+    await expect(page.get_by_text('Line 2 quantity must be between 1 and 2. No transfer action was sent.', exact=True)).to_be_visible()
+    assert not [request for request in state['requests'] if request['path'].endswith('/53/receive')]
+    await page.get_by_label('Line 1 quantity').fill('3')
+    await page.get_by_label('Line 2 quantity').fill('2')
+    async with page.expect_response(lambda response: response.url.endswith('/53/receive')):
+        await page.get_by_role('button', name='全部收到 Receive all', exact=True).click()
+    receive = next(request for request in state['requests'] if request['path'].endswith('/53/receive'))
+    assert receive['post_data'] == {'expected_version': 3, 'lines': [
+        {'line_no': 1, 'quantity': 3, 'disposition': 'saleable'},
+        {'line_no': 2, 'quantity': 2, 'disposition': 'saleable'}]}, receive
+    await page.screenshot(path=OUT / 'transfer-receive-all.png', full_page=True)
+    await context.close()
+
+
 async def main():
     with socket.socket() as probe:
         if probe.connect_ex(('127.0.0.1', 5174)) == 0:
@@ -355,6 +458,7 @@ async def main():
                     await checks(browser, viewport)
                 await resume_checks(browser)
                 await scan_race_checks(browser)
+                await multi_product_checks(browser)
             except Exception:
                 for context in browser.contexts:
                     if context.pages:

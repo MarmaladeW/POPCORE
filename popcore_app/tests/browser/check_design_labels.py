@@ -41,15 +41,15 @@ async def receipt_check(browser, width):
         for route,title in (('/goods/counts?count_id=71','Count #71'),('/goods/transfers?transfer_id=51','Transfer #51')):
             await page.goto(BASE+route)
             await expect(page.get_by_text(title,exact=True)).to_be_visible()
-            await expect(page.get_by_text(LABEL,exact=True)).to_be_visible()
+            await expect(page.get_by_text(LABEL,exact=True).first).to_be_visible()   # a transfer names it in the table and on its line
         await page.goto(BASE + '/goods/receiving?product_id=999&location_id=10')
         await expect(page.get_by_text(LABEL, exact=True)).to_be_visible()
-        await page.get_by_label('Actual quantity', exact=True).fill('2')
+        await page.get_by_label('Line 1 saleable', exact=True).fill('2')
         await page.get_by_role('button', name='保存草稿 Save draft for review', exact=True).click()
         await expect(page.get_by_text('Receipt #31', exact=True)).to_be_visible()
         await expect(page.get_by_text(LABEL, exact=True)).to_be_visible()
         created = [r for r in state['requests'] if r['path'] == '/api/goods/receipts' and r['method'] == 'POST']
-        assert len(created) == 1 and created[0]['post_data']['lines'][0]['product_id'] == 999
+        assert len(created) == 1 and [(line['product_id'], line['saleable_quantity']) for line in created[0]['post_data']['lines']] == [(999, 2)], created
     finally:
         await context.close()
 

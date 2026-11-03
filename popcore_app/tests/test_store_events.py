@@ -117,6 +117,74 @@ class StoreEventsTests(ReceivingFixture):
         self.assertEqual((missing.status_code,missing.get_json()['code']),(409,'display_location_missing'))
         self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','store_events')),before)
 
+    def second_product(self, floor_quantity):
+        with closing(self.connect()) as con:
+            second = con.execute("""INSERT INTO products(sku,name_cn_en,jizhanming,product_type,boxes_per_dan,
+                stock_form,stock_unit,identity_status) VALUES ('TEST-2','Second Product','Second Product','ordinary',1,
+                'ordinary','piece','verified')""").lastrowid
+            con.execute('INSERT INTO stock(product_id,store_id,upstairs_qty,instore_qty,claw_qty) VALUES (?,?,0,?,0)',
+                (second,self.store_id,floor_quantity))
+            con.execute("INSERT INTO inventory_balances VALUES (?,?,'saleable',?,1)",(second,self.floor,floor_quantity))
+            con.commit()
+        return second
+
+    def test_display_entry_lists_several_products_in_one_transaction(self):
+        second = self.second_product(1)
+        with closing(self.connect()) as con:
+            display = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='display'",
+                (self.store_id,)).fetchone()[0]
+            con.execute("UPDATE inventory_scope_state SET opening_verified=1 WHERE location_id=?",(display,))
+            con.commit()
+        entry = dict(store_id=self.store_id,kind='display_in',note='Window refresh',lines=[
+            dict(product_id=self.product_id,quantity=2,source_location_id=self.floor),dict(product_id=second,quantity=1)])
+        first = self.post(entry,'window')
+        self.assertEqual(first.status_code,201,first.get_json())
+        events = first.get_json()['events']
+        self.assertEqual([(event['product_name'],event['quantity'],event['source_location_id'],event['note']) for event in events],
+            [('Test Product',2,self.floor,'Window refresh'),('Second Product',1,None,'Window refresh')])
+        self.assertEqual(self.balances(),{self.floor:8,self.claw:5,display:2})
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?",
+                (second,display)).fetchone()[0],1)
+            documents = {row['id']:(row['kind'],row['source_id']) for row in con.execute(
+                'SELECT id,kind,source_id FROM inventory_documents')}
+        # Each product keeps its own event and inventory document.
+        self.assertEqual([documents[event['inventory_document_id']] for event in events],
+            [('move','window:1:display'),('receipt','window:2:display')])
+        self.assertEqual(self.get().get_json()['summary_text'].count('· Window refresh'),2)
+        before = self.snapshot(('inventory_documents','inventory_balances','store_events'))
+        self.assertEqual(self.post(entry,'window').get_json(),first.get_json())
+        changed = self.post({**entry,'lines':entry['lines'][:1]},'window')
+        self.assertEqual((changed.status_code,changed.get_json()['code']),(409,'idempotency_conflict'))
+        # One product that cannot go on display refuses the whole entry.
+        short = self.post({**entry,'lines':[dict(product_id=self.product_id,quantity=1),
+            dict(product_id=second,quantity=5,source_location_id=self.floor)]},'too-many')
+        self.assertEqual((short.status_code,short.get_json()['code']),(409,'insufficient_stock'))
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET identity_status='unverified' WHERE id=?",(second,))
+            con.commit()
+        unverified = self.post(entry,'unverified')
+        self.assertEqual((unverified.status_code,unverified.get_json()['code']),(409,'identity_unverified'))
+        for index, invalid in enumerate(({**entry,'lines':[]},{**entry,'lines':[{'product_id':second}]},
+                {**entry,'product_id':second},{**entry,'lines':[{**entry['lines'][1],'note':'x'}]},
+                {**entry,'lines':'all of them'},{**entry,'kind':'claw_prize'},{**entry,'lines':[entry['lines'][1]]*51})):
+            self.assertEqual(self.post(invalid,f'invalid-{index}').status_code,400,invalid)
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','store_events')),before)
+
+    def test_legacy_display_entry_records_each_product_without_stock(self):
+        second = self.second_product(1)
+        with closing(self.connect()) as con:
+            con.execute("UPDATE inventory_scope_state SET opening_verified=0 WHERE store_id=?",(self.store_id,))
+            con.commit()
+        before = self.snapshot(('inventory_documents','inventory_balances','stock'))
+        entry = dict(store_id=self.store_id,kind='display_in',lines=[dict(product_id=self.product_id,quantity=3),
+            dict(product_id=second,quantity=2,source_location_id=self.upstairs)])
+        saved = self.post(entry,'legacy-window')
+        self.assertEqual(saved.status_code,201,saved.get_json())
+        self.assertEqual(self.snapshot(('inventory_documents','inventory_balances','stock')),before)
+        self.assertEqual([(event['product_id'],event['quantity'],event['source_location_id'],event['inventory_document_id'])
+            for event in self.get().get_json()['events']],[(self.product_id,3,None,None),(second,2,self.upstairs,None)])
+
     def test_refill_needs_a_floor_or_back_source_and_prizes_need_claw_stock(self):
         before = self.snapshot(('inventory_documents','inventory_balances','store_events','stock'))
         refill = dict(store_id=self.store_id,kind='claw_refill',product_id=self.product_id,quantity=1)
