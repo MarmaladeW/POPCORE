@@ -70,7 +70,8 @@ def inventory_overview(con, actor, store_code, today=None):
     value = {'value_cents': 0, 'unpriced_units': 0, 'unpriced_products': set()}
     for location in locations:
         cell = figures.setdefault(_role(location['code']), {'key': _role(location['code']), 'codes': [], 'units': 0,
-                                                             'products': set(), 'by_unit': Counter()})
+                                                             'products': set(), 'by_unit': Counter(),
+                                                             'value_cents': 0, 'unpriced_units': 0})
         if location['code'] not in cell['codes']:
             cell['codes'].append(location['code'])
     marks = ','.join('?' for _ in by_id)
@@ -88,11 +89,14 @@ def inventory_overview(con, actor, store_code, today=None):
         cell['by_unit'][products[row['product_id']]['stock_unit']] += row['quantity']
         if priced:
             price = cents(products[row['product_id']]['price'])
+            # Each place's worth as well as the total (owner, 2026-11-03: "how much each section is worth").
             if price is None:
                 value['unpriced_units'] += row['quantity']
                 value['unpriced_products'].add(row['product_id'])
+                cell['unpriced_units'] += row['quantity']
             else:
                 value['value_cents'] += price * row['quantity']
+                cell['value_cents'] += price * row['quantity']
 
     # 日报 sales: the pace window is the last PACE_DAYS calendar days, divided by the days that have a report.
     store_marks = ','.join('?' for _ in stores)
@@ -174,7 +178,9 @@ def inventory_overview(con, actor, store_code, today=None):
 
     return {
         'live': True, 'stores': stores, 'today': today.isoformat(),
-        'figures': [{**cell, 'products': len(cell['products']), 'by_unit': dict(cell['by_unit'])}
+        'figures': [{**cell, 'products': len(cell['products']), 'by_unit': dict(cell['by_unit']),
+                     'value_cents': cell['value_cents'] if priced else None,
+                     'unpriced_units': cell['unpriced_units'] if priced else None}
                     for role in (*ROLES, *sorted(set(figures) - set(ROLES))) if (cell := figures.get(role))],
         'in_stock_products': len({product_id for (_, product_id), held in stock.items() if sum(held.values())}),
         'report_days': len(set().union(*report_days.values())) if report_days else 0,
@@ -184,6 +190,6 @@ def inventory_overview(con, actor, store_code, today=None):
         'recent_changes': [{key: value for key, value in row.items() if key != 'latest'} | {'documents': len(row['documents'])}
                            for row in recent],
         'not_set_up': len(products) - len(valid),
-        # Retail value of the saleable stock above, for managers and admins only.
+        # Retail value of the saleable stock above (and of each place in figures), for managers and admins only.
         'value': {**value, 'unpriced_products': len(value['unpriced_products'])} if priced else None,
     }

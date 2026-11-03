@@ -1,7 +1,11 @@
 import client from './client'
 import type { NativeUnit } from './goods'
 
-export interface OverviewFigure { key:string; codes:string[]; units:number; products:number; by_unit:Partial<Record<NativeUnit,number>> }
+export interface OverviewFigure {
+  key:string; codes:string[]; units:number; products:number; by_unit:Partial<Record<NativeUnit,number>>
+  // This place's retail value in cents; managers and admins only (null for anyone else).
+  value_cents?:number|null; unpriced_units?:number|null
+}
 export interface OverviewItem {
   product_id:number; store_code:string; name:string; sku:string; unit:NativeUnit|null
   link:{series_id?:number; product_id?:number}; counted:boolean
