@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { formatCents, parseMoneyToCents, tryParseMoneyToCents } from './money.ts'
+import { formatCents, formatWholeDollars, parseMoneyToCents, tryParseMoneyToCents } from './money.ts'
 
 test('money preserves unknown, zero and exact cents', () => {
   assert.equal(parseMoneyToCents(''), null)
@@ -23,4 +23,11 @@ test('tryParseMoneyToCents reads unusable typed amounts as null instead of throw
   for (const value of ['', '4a', '1.234', '-2', '1e2', '90071992547409.92']) {
     assert.equal(tryParseMoneyToCents(value), null)
   }
+})
+
+test('formatWholeDollars rounds a large total to whole dollars', () => {
+  assert.equal(formatWholeDollars(0), '$0')
+  assert.equal(formatWholeDollars(128051249), '$1,280,512')
+  assert.equal(formatWholeDollars(128051250), '$1,280,513')
+  assert.equal(formatWholeDollars(-7998), '-$80')
 })

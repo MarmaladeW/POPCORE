@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import client from '../../api/client'
 import Icon, { type IconName } from '../../components/pc/Icon'
+import { useHasRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
 
 // Whether the selected store has a claw machine location (only DT today).
@@ -19,19 +20,22 @@ export function useHasClaw() {
   return !!store && result?.code === store.code && result.claw
 }
 
-const links: Array<{ to: string; zh: string; en: string; icon: IconName; claw?: boolean }> = [
+const links: Array<{ to: string; zh: string; en: string; icon: IconName; claw?: boolean; manager?: boolean }> = [
   { to: '/count', zh: '盘点', en: 'Stocktake', icon: 'check' },
   { to: '/goods/receiving', zh: '入库', en: 'Receive', icon: 'in' },
   { to: '/goods/transfers', zh: '调拨', en: 'Transfer', icon: 'swap' },
   { to: '/stock/count', zh: '晚盘', en: 'Count', icon: 'count' },
   { to: '/stock/claw', zh: '娃娃机', en: 'Claw machine', icon: 'gift', claw: true },
+  { to: '/stock/loss', zh: '损耗', en: 'Loss', icon: 'loss', manager: true },
 ]
 
-// Inventory's tools (Figma: 入库 · 调拨 · 晚盘 in the header on desktop, a row on phone), with 盘点 first.
+// Inventory's tools (Figma: 入库 · 调拨 · 晚盘 in the header on desktop, a row on phone), with 盘点 first
+// and 损耗 last, for managers and admins only.
 export default function InventoryNav({ hasClaw, phone }: { hasClaw: boolean; phone: boolean }) {
   const path = useLocation().pathname
+  const manager = useHasRole('manager')
   return <nav className={phone ? 'pc-inv-nav pc-inv-nav-phone' : 'pc-inv-nav'} aria-label="Inventory sections">
-    {links.filter(link => !link.claw || hasClaw).map(link => <Link key={link.to} to={link.to} className="pc-btn" aria-current={path === link.to ? 'page' : undefined}>
+    {links.filter(link => (!link.claw || hasClaw) && (!link.manager || manager)).map(link => <Link key={link.to} to={link.to} className="pc-btn" aria-current={path === link.to ? 'page' : undefined}>
       <Icon name={link.icon} size={18} />{link.zh} <small>{link.en}</small>
     </Link>)}
   </nav>
