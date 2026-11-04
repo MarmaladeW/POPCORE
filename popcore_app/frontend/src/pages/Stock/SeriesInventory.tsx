@@ -1,6 +1,6 @@
 import { Alert, Button, Drawer, Input, Skeleton, Space, Typography } from 'antd'
 import { ArrowLeftOutlined, ArrowRightOutlined, DownOutlined, HistoryOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useRole, type Role } from '../../auth/useRole'
@@ -41,6 +41,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const rawProductId = params.get('product_id'), productId = rawProductId && /^\d+$/.test(rawProductId) && Number(rawProductId)>0 ? Number(rawProductId) : undefined
   const opened = selectedId ?? productId
   const [query,setQuery] = useState(''), [search,setSearch] = useState(''), [refresh,setRefresh] = useState(0)
+  const productsRef = useRef<HTMLElement>(null)
   const [result,setResult] = useState<{scope:string;data?:SeriesInventoryResult;error?:string}>()
   const [historyOpen,setHistoryOpen] = useState(false)
   const [panel,setPanel] = useState<'identify'>(), [saved,setSaved] = useState<'identify'|'stock'>()
@@ -136,6 +137,19 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
     ...visiblePlain.map(product=>({key:`p${product.id}`,name:product.name,added:product.id,product}))]
     .sort((a,b)=>order==='name'?a.name.localeCompare(b.name,'zh-CN'):order==='newest'?b.added-a.added:a.added-b.added)
 
+  const filterBar = data&&<div className="pc-series-filterbar"><label>Stock view<select aria-label="Inventory status" value={stockFilter} onChange={event=>setStockFilter(event.target.value as typeof stockFilter)} disabled={locked}>
+          <option value="all">All stock</option><option value="attention">Needs attention</option><option value="out_of_stock">Out of stock</option><option value="replenish">Replenish floor</option><option value="unverified">Unverified stock</option><option value="condition">On hold / damaged</option>
+        </select></label>{!opened&&<label>Order<select aria-label="List order" value={order} onChange={event=>chooseOrder(event.target.value as ListOrder)} disabled={locked}>
+          <option value="newest">最新添加 Newest added</option><option value="oldest">最早添加 Oldest added</option><option value="name">名称 A–Z</option>
+        </select></label>}{selected&&<Input aria-label="Find design in this series" placeholder="Find a design" value={designQuery} onChange={event=>setDesignQuery(event.target.value)} disabled={locked} allowClear/>}
+          {selected&&data.locations.some(location=>SIDE_LOCATIONS.includes(location.code))&&<label className="pc-series-side-toggle"><input type="checkbox" checked={showSideLocations} onChange={event=>setShowSideLocations(event.target.checked)}/>陈列 · 娃娃机 Display &amp; claw</label>}</div>
+  // 商品 Products comes after the dashboard (owner, 2026-11-03); a search brings its results into view.
+  function runSearch(value:string) {
+    setSearch(value.trim())
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    window.requestAnimationFrame(()=>productsRef.current?.scrollIntoView({behavior:reduce?'auto':'smooth',block:'start'}))
+  }
+
   return <main className="pc-series-inventory">
     <PageHeader
       title={selected?.name || '库存'}
@@ -154,18 +168,13 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
           {selected&&!standalone&&canWork&&<Button disabled={locked} onClick={()=>{setPanel('identify');setSaved(undefined)}}>识别盲盒 Identify boxes</Button>}
         </div></div>}
     {storeCode==='ALL'&&<Alert type="info" showIcon message="Viewing all authorized stores. Select one store to receive, count, or identify stock." />}
-    {!opened&&!search&&<InventoryOverview storeCode={storeCode} refresh={refresh}/>}
+    {!opened&&<InventoryOverview storeCode={storeCode} refresh={refresh}/>}
     {saved&&<Alert type="success" showIcon message={`${saved==='stock'?'Stock change':'Identification'} saved. ${data?'Inventory refreshed.':current?.error?'Inventory refresh needed.':'Refreshing inventory.'}`} />}
     {!panel&&mutation.notice}
     {!current?<Skeleton active paragraph={{rows:5}}/>:current.error?<Alert type="error" showIcon message={current.error} action={<Button disabled={locked} onClick={()=>setRefresh(value=>value+1)}>Retry inventory</Button>}/>:
       data&&<>
         {data.mode!=='authoritative'&&<Alert type="warning" showIcon message="Not live yet: quantities stay Unknown until the store goes live. Counts saved in 盘点 Stocktake are kept and show here from then."/>}
-        <div className="pc-series-filterbar"><label>Stock view<select aria-label="Inventory status" value={stockFilter} onChange={event=>setStockFilter(event.target.value as typeof stockFilter)} disabled={locked}>
-          <option value="all">All stock</option><option value="attention">Needs attention</option><option value="out_of_stock">Out of stock</option><option value="replenish">Replenish floor</option><option value="unverified">Unverified stock</option><option value="condition">On hold / damaged</option>
-        </select></label>{!opened&&<label>Order<select aria-label="List order" value={order} onChange={event=>chooseOrder(event.target.value as ListOrder)} disabled={locked}>
-          <option value="newest">最新添加 Newest added</option><option value="oldest">最早添加 Oldest added</option><option value="name">名称 A–Z</option>
-        </select></label>}{selected&&<Input aria-label="Find design in this series" placeholder="Find a design" value={designQuery} onChange={event=>setDesignQuery(event.target.value)} disabled={locked} allowClear/>}
-          {selected&&data.locations.some(location=>SIDE_LOCATIONS.includes(location.code))&&<label className="pc-series-side-toggle"><input type="checkbox" checked={showSideLocations} onChange={event=>setShowSideLocations(event.target.checked)}/>陈列 · 娃娃机 Display &amp; claw</label>}</div>
+        {opened&&filterBar}
         {(rawId&&!selectedId)||(rawProductId&&!productId)?<Alert type="error" message="Invalid inventory reference."/>:opened&&!selected?<Alert type="warning" message="This product is unavailable in the selected scope."/>:selected?<>
           {/* Before go-live, counting is 盘点 and there is no stock to receive into. */}
           {canWork&&<div className="pc-series-batch pc-series-batch-top">{data.mode==='authoritative'?<><Button disabled={locked||!selected.products.length} onClick={()=>setWorksheet('count')}>{standalone?'晚盘 Count':'按系列晚盘 Count series'}</Button><Button type="primary" disabled={locked||!selected.products.length} onClick={()=>setWorksheet('receive')}>{standalone?'入库 Receive':'整系列入库 Receive series'}</Button></>
@@ -181,7 +190,10 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
             </section>
           })}
         </>:!rawId&&!rawProductId&&<>
-          <div className="pc-series-search"><Input.Search aria-label="Search series or design" placeholder="Search product, series, design, or SKU" value={query} onChange={event=>setQuery(event.target.value)} onSearch={value=>setSearch(value.trim())} disabled={locked} allowClear /><span>{entries.length} products · {visibleSeries.length} with designs</span></div>
+          <section ref={productsRef} className="pc-inv-products" aria-labelledby="pc-inv-products-heading">
+          <div className="pc-inv-products-head"><h2 id="pc-inv-products-heading">商品 <small>Products</small></h2><span>{entries.length} products · {visibleSeries.length} with designs</span></div>
+          <div className="pc-series-search"><Input.Search aria-label="Search series or design" placeholder="Search product, series, design, or SKU" value={query} onChange={event=>setQuery(event.target.value)} onSearch={runSearch} disabled={locked} allowClear /></div>
+          {filterBar}
           {!entries.length?<p className="pc-series-empty">No products match this search and stock view.</p>:<ul className="pc-series-list">{entries.map(entry=>{
             const series=entry.series, products=series ? series.products : [entry.product!,...(entry.product!.variations??[])]
             const head=series ? series.products.find(product=>product.id===series.product_id) : entry.product!
@@ -196,6 +208,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
               <ArrowRightOutlined aria-hidden />
             </Link></li>
           })}</ul>}
+          </section>
         </>}
         <footer className="pc-series-footer">
           {selected?.product_id&&manager&&<Link to={`/products?product_id=${selected.product_id}`}>添加确认款或整端 Add designs or a sealed set</Link>}
