@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Alert, Button, Skeleton, message } from 'antd'
 
 import {
-  checkReportStockNotice, getReportStockNotices, reasonText, retryReportStock,
+  checkReportStockNotice, getReportStockNotices, locationText, reasonText, retryReportStock,
   type ReportStockNotice, type ReportStockReason,
 } from '../../api/reportStock'
 import PageHeader from '../../components/pc/PageHeader'
@@ -80,11 +80,14 @@ export default function ReportStockPage() {
               })}>再扣一次 Take off again</Button> : undefined}>
             {rows.map(row => <ListRow key={row.id} label={reasonText[row.reason].zh}
               title={`${row.name}${row.sku ? ` (${row.sku})` : ''} × ${row.quantity}`}
-              meta={[reasonText[row.reason].en, `楼下 Floor ${row.floor}`, `楼上 Upstairs ${row.upstairs}`,
+              meta={[reasonText[row.reason].en,
+                ...(row.reason === 'move_short' && row.where?.length
+                  ? row.where.map(code => code in (row.stock ?? {}) ? `${locationText[code] ?? code} ${row.stock![code]}` : locationText[code] ?? code)
+                  : [`楼下 Floor ${row.floor}`, `楼上 Upstairs ${row.upstairs}`]),
                 row.counted_at ? `盘点 Counted ${torontoTime(row.counted_at)}` : null].filter(Boolean).join(' · ')}
               trailing={<span className="pc-row-actions">
                 {row.reason === 'set_size_unknown' ? <Link className="pc-btn" to="/products">产品 Products</Link>
-                  : <Link className="pc-btn" to={`/count?location=floor&product=${row.product_id}`}>盘点 Count</Link>}
+                  : <Link className="pc-btn" to={`/count?location=${row.where?.find(code => code in (row.stock ?? {})) ?? 'floor'}&product=${row.product_id}`}>盘点 Count</Link>}
                 <Button size="small" loading={busy === `check:${row.id}`} disabled={!!busy && busy !== `check:${row.id}`}
                   aria-label={`Mark ${row.name} checked`}
                   onClick={() => run(`check:${row.id}`, async () => {

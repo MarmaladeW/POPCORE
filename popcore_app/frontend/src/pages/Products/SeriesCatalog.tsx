@@ -11,6 +11,7 @@ import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useAppStore } from '../../store'
 import { ProductsTabs } from './ProductsNav'
 import SubItemAdd from './SubItemAdd'
+import { DesignEditorLoader } from './DesignEditor'
 import './products.css'
 
 const failure = (cause: unknown) => (cause as { _serverMessage?: string })?._serverMessage || 'Unable to load sets and designs. Please retry.'
@@ -46,7 +47,9 @@ function SeriesScope({ storeCode, storeName, manager }: { storeCode?: string; st
       .catch(cause => { if (!controller.signal.aborted) setResult({ scope, error: failure(cause) }) })
     return () => controller.abort()
   }, [scope, storeCode, usable])
-  const current = result?.scope === scope ? result : undefined
+  // After a save the list reloads in place: the last list stays up meanwhile, so an open design editor keeps its place.
+  const current = result && (result.scope === scope || (!!result.data && result.scope.startsWith(`${storeCode}|`)))
+    ? result : undefined
   const data = current?.data
   const needle = query.trim().normalize('NFKC').toLocaleLowerCase()
   const list = useMemo(() => (data?.series || []).filter(series => !needle || series.name.normalize('NFKC').toLocaleLowerCase().includes(needle)), [data, needle])
@@ -81,6 +84,8 @@ function SeriesDetail({ series, locations, manager, phone, onBack, onSaved }: {
   series: InventorySeries; locations: SeriesInventoryResult['locations']; manager: boolean; phone: boolean
   onBack: () => void; onSaved: () => void
 }) {
+  // One design open for editing below its row (owner, 2026-11-03).
+  const [editing, setEditing] = useState<number | null>(null)
   const sets = series.products.filter(product => product.stock_form !== 'confirmed_design')
   const designs = series.products.filter(product => product.stock_form === 'confirmed_design')
   const owner = series.products.find(product => product.id === series.product_id)
@@ -95,14 +100,20 @@ function SeriesDetail({ series, locations, manager, phone, onBack, onSaved }: {
   const sumAt = (filter: (code: string) => boolean) => designs.reduce((sum, product) => sum + locations.filter(location => filter(location.code)).reduce((inner, location) => inner + (saleable(product, location.id) || 0), 0), 0)
   const row = (product: SeriesProduct, index?: number) => {
     const sum = total(product)
-    return <tr key={product.id}>
+    const editable = manager && product.stock_form === 'confirmed_design'
+    return [<tr key={product.id}>
       <td className="pc-ser-muted">{index ?? '—'}</td>
-      <td><strong>{product.design_name || product.jizhanming || product.name}</strong></td>
+      <td><strong>{product.design_name || product.jizhanming || product.name}</strong>
+        {editable && editing !== product.id && <Button size="small" type="text" className="pc-ser-edit"
+          aria-label={`Edit ${product.design_name || product.sku}`} onClick={() => setEditing(product.id)}>编辑</Button>}</td>
       <td className="pc-ser-muted pc-ser-sku">{product.sku}</td>
       <td><span className={product.identity_status === 'verified' ? 'pc-ser-id' : 'pc-ser-id pc-ser-id-warn'}>{product.identity_status === 'verified' ? '已核对' : '未核对'}</span> <small className="pc-ser-muted">{product.stock_unit ? formNames[product.stock_form || ''] || product.stock_unit : '—'}</small></td>
       {locations.map(location => <td key={location.id} className={isBack(location.code) ? 'pc-ser-num pc-kraft-cell' : 'pc-ser-num'}>{saleable(product, location.id) ?? '—'}</td>)}
       <td className="pc-ser-num"><i className={`pc-dot ${sum == null ? '' : sum === 0 ? 'pc-dot-out' : sum <= 2 ? 'pc-dot-warn' : 'pc-dot-ok'}`} aria-hidden="true" /> <b>{sum ?? '—'}</b></td>
-    </tr>
+    </tr>, editable && editing === product.id && <tr key={`edit-${product.id}`} className="pc-ser-editing">
+      <td colSpan={5 + locations.length}>
+        <DesignEditorLoader designId={product.id} onSaved={onSaved} onClose={() => setEditing(null)} /></td>
+    </tr>]
   }
   return <section className="pc-ser-detail" aria-label={series.name}>
     {phone && <button type="button" className="pc-ser-back" onClick={onBack}><Icon name="back" size={14} />全部 All products</button>}

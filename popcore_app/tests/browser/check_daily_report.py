@@ -260,6 +260,75 @@ async def receipt_flow(browser, viewport):
         await context.close()
 
 
+LINE = {'line_key': 'a1', 'section': 'refill', 'label': '出库入店', 'raw': 'Test Product 12*1', 'kind': 'correction',
+        'ratio': 12, 'wanted': 1, 'moved_before': 0, 'checked': 0, 'moving': 1, 'short': 0, 'problem': None,
+        'document_id': None,
+        'from': {'product_id': 3, 'sku': 'TEST-1-SET', 'name': 'Test Product 整端', 'unit': 'set', 'location': 'upstairs',
+                 'per': 1, 'before': 4, 'after': 3},
+        'to': {'product_id': 1, 'sku': 'TEST-1', 'name': 'Test Product', 'unit': 'box', 'location': 'floor',
+               'per': 12, 'before': 5, 'after': 17}}
+STOCK = {'business_date': '2026-11-03', 'documents': [], 'taken': 1, 'returned': 0, 'short': [], 'counted_same_day': [],
+         'lines': [LINE], 'from_display': [], 'moves_short': []}
+
+
+async def live_stock_lines_flow(browser, viewport):
+    """At a live store the report's stock lines move stock: the manager sees each line's change and
+    confirms it before anything saves (owner, 2026-11-03)."""
+    def payload(path, query, request):
+        if path == '/api/sales/parse_report':
+            return {**api_payload(path, query, request), 'stock_mode': 'live', 'detected_date': '2026-11-03',
+                    'review': [{**ITEM, 'raw_name': 'Test Product', 'section': 'refill', 'qty': 1, 'box_size': 12,
+                                'loose_qty': 0, 'candidates': [{**PRODUCT, 'score': 100}]}],
+                    'employee_discounts': [], 'display_sales': [], 'claw_prizes': [],
+                    'store_transfers': ['smiski cheer:12*6']}
+        if path == '/api/sales/submit_daily_report':
+            body = request.post_data_json
+            if body.get('dry_run'):
+                return {'ok': True, 'dry_run': True, 'needs_confirmation': True, 'stock_digest': 'digest-1', 'stock': STOCK}
+            assert body.get('stock_digest') == 'digest-1', body
+            return {'ok': True, 'stock': STOCK}
+        return api_payload(path, query, request)
+
+    state = {'api_payload': payload}
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    try:
+        await page.goto(BASE + '/sales')
+        await page.locator('textarea').fill('2026.11.3 DT\n卡机汇总：\nTest Product*1\n出库入店：\nTest Product 12*1\n出库：\nsmiski cheer:12*6')
+        await page.get_by_role('button', name='Parse Report', exact=True).click()
+        await expect(page.get_by_text('出库 / To the other store', exact=True)).to_be_visible()
+        await expect(page.get_by_text('调拨 Transfer', exact=False).first).to_be_visible()
+        await page.get_by_role('tab', name='Review', exact=False).click()
+        await expect(page.get_by_text('楼上/仓库 → 楼下 Floor', exact=True)).to_be_visible()
+        await page.get_by_role('button', name=re.compile(r'接\s*受')).click()
+        await page.get_by_role('button', name='Confirm & Log', exact=False).click()
+        dialog = page.get_by_role('dialog', name='确认库存变化 Confirm stock changes')
+        await expect(dialog).to_be_visible()
+        await expect(dialog.get_by_text('Test Product 12*1', exact=True)).to_be_visible()
+        await expect(dialog.get_by_text('TEST-1-SET Test Product 整端 · 楼上 Upstairs 4 → 3', exact=False)).to_be_visible()
+        await expect(dialog.get_by_text('TEST-1 Test Product · 楼下 Floor 5 → 17', exact=False)).to_be_visible()
+        posts = [r for r in state['requests'] if r['path'] == '/api/sales/submit_daily_report']
+        assert len(posts) == 1 and posts[0]['post_data']['dry_run'] is True
+        assert posts[0]['post_data']['stock_mode'] == 'live'
+        item = next(i for i in posts[0]['post_data']['items'] if i['section'] == 'refill')
+        assert (item['box_size'], item['num_boxes'], item['loose_qty'], item['to_display']) == (12, 1, 0, False)
+        assert posts[0]['post_data']['report_metadata']['store_transfers'] == ['smiski cheer:12*6']
+        await page.wait_for_timeout(500)  # the dialog's opening animation
+        await page.screenshot(path=OUT / f'stock-lines-{viewport["width"]}.png')
+        await dialog.get_by_role('button', name='确认并保存 Confirm & save').click()
+        await expect(page.get_by_text('Report imported', exact=False)).to_be_visible()
+        await expect(page.get_by_text('库存行 Stock lines: 1 moved', exact=False)).to_be_visible()
+        posts = [r for r in state['requests'] if r['path'] == '/api/sales/submit_daily_report']
+        assert len(posts) == 2 and posts[1]['post_data']['stock_digest'] == 'digest-1'
+        assert 'dry_run' not in posts[1]['post_data']
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
+    except Exception:
+        await page.screenshot(path=OUT / 'stock-lines-failure.png', full_page=True)
+        raise
+    finally:
+        await context.close()
+
+
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / 'vite.log').open('w') as log:
@@ -278,6 +347,7 @@ async def main():
                     for size in ({'width': 1440, 'height': 1000}, {'width': 390, 'height': 844}):
                         await flow(browser, size)
                         await receipt_flow(browser, size)
+                        await live_stock_lines_flow(browser, size)
                 finally:
                     await browser.close()
         finally:

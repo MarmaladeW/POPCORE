@@ -368,7 +368,7 @@ Test Product：2
         self.assertEqual(self.submit([item]).status_code, 200)
         self.assertEqual(len(self.parse(text)['confirmed']), 1)
 
-    def test_conflicting_review_history_never_teaches_one_product_for_both(self):
+    def test_a_later_review_replaces_the_report_pick_and_never_teaches_a_global_alias(self):
         with closing(self.connect()) as con:
             other = con.execute("INSERT INTO products (sku,name_cn_en,jizhanming) VALUES ('OTHER','Other Product','Other Product')").lastrowid
             con.commit()
@@ -378,7 +378,8 @@ Test Product：2
         self.assertEqual(self.submit([{**item, 'product_id': other}]).status_code, 200)
         with closing(self.connect()) as con:
             self.assertIsNone(con.execute('SELECT * FROM product_aliases WHERE alias_norm=?', ('sharednickname',)).fetchone())
-        self.assertFalse(self.parse('2026.9.14 DT\n随手记汇总：shared nickname*1')['confirmed'])
+        # 名称记忆 (owner, 2026-11-03): a change replaces the pick, for reports only.
+        self.assertEqual([row['product']['id'] for row in self.parse('2026.9.14 DT\n随手记汇总：shared nickname*1')['confirmed']], [other])
 
     def test_llm_cannot_omit_duplicate_source_items_or_change_quantities(self):
         for items in (
@@ -423,7 +424,7 @@ Test Product：2
         self.assertEqual(len(parsed['employee_discounts']), 1)
         self.assertIn('EMT24', parsed['employee_discounts'][0])
 
-    def test_existing_manual_alias_conflict_blocks_future_automatic_match(self):
+    def test_a_report_pick_against_a_manual_alias_stays_report_only_and_disputes_the_alias(self):
         with closing(self.connect()) as con:
             other = con.execute("INSERT INTO products (sku,name_cn_en,jizhanming) VALUES ('OTHER','Other Product','Other Product')").lastrowid
             con.execute('INSERT INTO product_aliases (product_id,alias,alias_norm) VALUES (?,?,?)',
@@ -432,7 +433,8 @@ Test Product：2
         item = {'product_id': other, 'section': 'cash', 'qty': 1,
                 'source_bucket': 'review', 'raw_name': 'shared nickname'}
         self.assertEqual(self.submit([item]).status_code, 200)
-        self.assertFalse(self.parse('2026.9.14 DT\n随手记汇总：shared nickname*1')['confirmed'])
+        # The manager's pick is the report's answer (owner, 2026-11-03); everywhere else the alias is disputed.
+        self.assertEqual([row['product']['id'] for row in self.parse('2026.9.14 DT\n随手记汇总：shared nickname*1')['confirmed']], [other])
 
         batch = self.client.post('/api/products/match', headers=self.headers(),
                                  json={'queries': ['shared nickname']}).get_json()

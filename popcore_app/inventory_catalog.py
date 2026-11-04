@@ -400,6 +400,56 @@ def _product_references(con, product_id):
     return count
 
 
+def edit_design(con, design_id, data, *, actor):
+    """A manager renames a confirmed design or changes its price (owner, 2026-11-03), also once it has stock or sales:
+    a design's name is what it is called, so its stock, sales and history stay on the same product. Its 记账名 and full
+    name are rebuilt from its series' product as when it was added; a name another design of the series has is refused."""
+    design_id = read_int(design_id, 'design_id', minimum=1)
+    if not isinstance(data, dict) or not data or set(data) - {'design_name', 'price'}:
+        raise InventoryValidationError('Supply design_name and/or price')
+    name = data.get('design_name')
+    if 'design_name' in data and (not isinstance(name, str) or not name.strip() or len(name.strip()) > 200):
+        raise InventoryValidationError('A design name is 1 to 200 characters')
+    price = data.get('price')
+    if 'price' in data and price is not None and (
+            isinstance(price, bool) or not isinstance(price, (int, float)) or not 0 <= price <= 1_000_000
+            or round(price, 2) != price):
+        raise InventoryValidationError('Price is an amount of at most 1,000,000 with up to two decimals')
+    _begin(con)
+    try:
+        design = con.execute('SELECT * FROM products WHERE id=?', (design_id,)).fetchone()
+        if design is None or design['stock_form'] != 'confirmed_design':
+            raise InventoryError('Design not found', 'not_found', 404)
+        updates = {}
+        if 'price' in data:
+            updates['price'] = price
+        if 'design_name' in data and name.strip() != design['design_name']:
+            name = name.strip()
+            for other in con.execute("""SELECT design_name FROM products WHERE series_id=? AND id<>?
+                                        AND stock_form='confirmed_design'""", (design['series_id'], design_id)):
+                if other['design_name'] and normalize_design_name(other['design_name']) == normalize_design_name(name):
+                    raise InventoryConflict(f"This series already has the design {other['design_name']}", 'design_conflict')
+            head = con.execute('''SELECT p.* FROM product_series s JOIN products p ON p.id=s.product_id
+                                  WHERE s.id=?''', (design['series_id'],)).fetchone()
+            parent_name = _display_name(head) if head else ''
+            full_name = ((head['name_cn_en'] or _display_name(head)).strip() if head else '')
+            updates.update(design_name=name, jizhanming=f'{parent_name} {name}'.strip(),
+                           name_cn_en=f'{full_name} · {name}' if full_name else name)
+            updates['search_blob'] = ' '.join(value for value in (
+                design['sku'], updates['jizhanming'], updates['name_cn_en'], design['brand'], design['ip_series'])
+                if value).lower()
+        if updates:
+            con.execute(f"UPDATE products SET {', '.join(f'{key}=?' for key in updates)} WHERE id=?",
+                        (*updates.values(), design_id))
+        row = con.execute('SELECT id, sku, design_name, jizhanming, name_cn_en, price FROM products WHERE id=?',
+                          (design_id,)).fetchone()
+        con.commit()
+        return dict(row)
+    except Exception:
+        con.rollback()
+        raise
+
+
 def remove_design(con, design_id, *, actor):
     """Remove one confirmed design added by mistake (a typo, or a design the series does not have),
     refused once it has stock, sales or other records. A count saved before go-live goes with it."""

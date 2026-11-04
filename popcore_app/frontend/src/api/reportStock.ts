@@ -2,16 +2,38 @@ import client from './client'
 
 // A live store's daily report takes its sales off the floor; what it could not, or may have taken
 // twice, waits here for a manager or admin (owner, 2026-10-29).
-export type ReportStockReason = 'not_counted' | 'not_enough_on_floor' | 'set_size_unknown' | 'counted_same_day'
+export type ReportStockReason = 'not_counted' | 'not_enough_on_floor' | 'set_size_unknown' | 'counted_same_day' | 'move_short'
 export interface ReportStockNotice {
   id: number; store_id: number; store_code: string; business_date: string; product_id: number
   sku: string | null; name: string; unit: string; reason: ReportStockReason; quantity: number
   counted_at: string | null; floor: number; upstairs: number; updated_at: string
+  // move_short: where the line was short ('not_counted' when the product was never counted), and stock there now.
+  where?: string[]; stock?: Record<string, number>
+}
+// One stock line of a report (出库入店, 入店, 出店, 卖display, 拆display, 入display, 娃娃机; owner, 2026-11-03):
+// what it moves now (negative: put back after a re-paste), what it moved before and what its source lacked.
+export interface ReportStockSide {
+  product_id: number; sku: string | null; name: string; unit: string; location: string; per: number
+  before: number; after: number
+}
+export interface ReportStockLine {
+  line_key: string; section: string; label: string; raw: string; kind: string; ratio: number
+  wanted: number; moved_before: number; checked: number; moving: number; short: number
+  problem: 'not_enough' | 'not_counted' | null; document_id: number | null
+  from?: ReportStockSide; to?: ReportStockSide
 }
 export interface ReportStockResult {
   business_date: string; documents: number[]; taken: number; returned: number
   short: Array<{ product_id: number; sku: string | null; name: string; quantity: number; reason: ReportStockReason }>
   counted_same_day: Array<{ product_id: number; sku: string | null; name: string; quantity: number; counted_at: string }>
+  lines?: ReportStockLine[]
+  from_display?: Array<{ product_id: number; sku: string | null; name: string; quantity: number }>
+  moves_short?: Array<{ product_id: number; sku: string | null; name: string; quantity: number; where: string[] }>
+}
+
+export const locationText: Record<string, string> = {
+  floor: '楼下 Floor', upstairs: '楼上 Upstairs', warehouse: '仓库 Warehouse', display: 'Display', claw: '娃娃机 Claw',
+  not_counted: '还没盘点 Not counted',
 }
 
 export const reasonText: Record<ReportStockReason, { zh: string; en: string; help: string }> = {
@@ -30,6 +52,10 @@ export const reasonText: Record<ReportStockReason, { zh: string; en: string; hel
   counted_same_day: {
     zh: '当天盘点过', en: 'Floor counted the same day',
     help: 'These came off after the floor was counted that day. If the count was after these sales, they came off twice: count the floor again. If it was before opening, mark it checked.',
+  },
+  move_short: {
+    zh: '库存没移完', en: 'Stock line not moved in full',
+    help: 'A stock line on the report (出库入店, 入店, 出店, display, 娃娃机) needed more than where it comes from had, or the product was never counted here, so the rest did not move. Record or count what is missing, then take it off again. If a count after the report already shows it, mark it checked.',
   },
 }
 

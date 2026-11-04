@@ -364,6 +364,10 @@ def get_product(pid):
                         WHERE c.target_product_id=? AND s.stock_form='sealed_set')
            ORDER BY CASE stock_form WHEN 'sealed_set' THEN 0 ELSE 1 END, sku, id''',
         (row['series_id'], 1 if owner_id == pid else 0, pid, pid))]
+    # Each design's other names, edited from its row in the 子项 list (owner, 2026-11-03).
+    for item in sub_items:
+        item['aliases'] = [dict(r) for r in cur.execute(
+            'SELECT id, alias FROM product_aliases WHERE product_id=? ORDER BY id', (item['id'],))]
     con.close()
     return jsonify({**dict(row), 'aliases': aliases, 'barcodes': barcodes,
                     'conversions': conversions, 'parent': parent, 'sub_items': sub_items})
@@ -1871,6 +1875,22 @@ def remove_product_design(pid):
     con = get_db()
     try:
         return jsonify(remove_design(con, pid, actor=request.jwt_payload))
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'code': 'invalid_input'}), 400
+    finally:
+        con.close()
+
+
+@bp.post('/api/products/<int:pid>/design/edit')
+@role_required('manager')
+def edit_product_design(pid):
+    from inventory_catalog import edit_design
+    from inventory_commands import InventoryError
+    con = get_db()
+    try:
+        return jsonify(edit_design(con, pid, request.get_json(silent=True), actor=request.jwt_payload))
     except InventoryError as exc:
         return jsonify({'error': str(exc), 'code': exc.code}), exc.status
     except ValueError as exc:

@@ -171,3 +171,55 @@ class SealedSetVariationTests(ProductSubItemTests):
         refused = self.client.post(f'/api/products/{self.box}/designs/remove', headers=self.headers('manager'))
         self.assertEqual((refused.status_code, refused.get_json()['code']), (409, 'designs_in_use'))
         self.assertEqual(len(self.product(self.box)['sub_items']), 1)
+
+    def edit(self, design, body, role='manager'):
+        return self.client.post(f'/api/products/{design}/design/edit', json=body, headers=self.headers(role))
+
+    def test_a_design_is_renamed_from_its_row_even_with_stock_and_its_names_follow(self):
+        """Owner, 2026-11-03: rename a confirmed design (Santa → Santa Claus) after it has stock; nothing else moves."""
+        sisi, zimomo = self.post(f'/api/products/{self.box}/designs', {'design_names': ['Sisi', 'Zimomo']}, 'd-1').get_json()['product_ids']
+        with closing(self.connect()) as con:
+            floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (self.store_id,)).fetchone()[0]
+            con.execute('INSERT INTO inventory_balances VALUES (?,?,?,?,1)', (sisi, floor, 'saleable', 2))
+            con.commit()
+        self.assertEqual(self.edit(sisi, {'design_name': 'Sisi'}, role='staff').status_code, 403)
+        done = self.edit(sisi, {'design_name': ' Sisi Secret '})
+        self.assertEqual(done.status_code, 200, done.get_json())
+        self.assertEqual((done.get_json()['sku'], done.get_json()['design_name'], done.get_json()['jizhanming'],
+                          done.get_json()['name_cn_en']),
+                         ('PM0123-01', 'Sisi Secret', '坐坐 Sisi Secret', 'THE MONSTERS Have a Seat Vinyl Plush Blind Box · Sisi Secret'))
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT quantity FROM inventory_balances WHERE product_id=?', (sisi,)).fetchone()[0], 2)
+            self.assertIn('sisi secret', con.execute('SELECT search_blob FROM products WHERE id=?', (sisi,)).fetchone()[0])
+        # Another design of the series already has that name.
+        clash = self.edit(zimomo, {'design_name': 'sisi secret'})
+        self.assertEqual((clash.status_code, clash.get_json()['code']), (409, 'design_conflict'))
+        for bad in ({'design_name': '  '}, {'design_name': 'x' * 201}, {}, {'sku': 'X'}):
+            self.assertEqual(self.edit(zimomo, bad).status_code, 400, bad)
+        self.assertEqual(self.edit(self.box, {'design_name': 'A'}).status_code, 404)
+        self.assertEqual(self.edit(self.plush, {'design_name': 'A'}).status_code, 404)
+
+    def test_a_designs_price_and_other_names_are_its_own(self):
+        sisi = self.post(f'/api/products/{self.box}/designs', {'design_names': ['Sisi']}, 'd-1').get_json()['product_ids'][0]
+        self.assertEqual(self.edit(sisi, {'price': 39.99}).get_json()['price'], 39.99)
+        for bad in (-1, 1.005, 'free', True):
+            self.assertEqual(self.edit(sisi, {'price': bad}).status_code, 400, bad)
+        self.assertIsNone(self.edit(sisi, {'price': None}).get_json()['price'])
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT price FROM products WHERE id=?', (self.box,)).fetchone()[0], 26.99)
+            con.execute("INSERT INTO product_aliases(product_id, alias, alias_norm) VALUES (?, '坐坐隐藏', '坐坐隐藏')", (sisi,))
+            con.commit()
+        (item,) = self.product(self.box)['sub_items']
+        self.assertEqual([a['alias'] for a in item['aliases']], ['坐坐隐藏'])
+
+    def test_one_design_is_removed_from_its_row_only_while_it_has_no_records(self):
+        sisi, zimomo = self.post(f'/api/products/{self.box}/designs', {'design_names': ['Sisi', 'Zimomo']}, 'd-1').get_json()['product_ids']
+        with closing(self.connect()) as con:
+            floor = con.execute("SELECT id FROM inventory_locations WHERE store_id=? AND code='floor'", (self.store_id,)).fetchone()[0]
+            con.execute('INSERT INTO inventory_balances VALUES (?,?,?,?,1)', (sisi, floor, 'saleable', 1))
+            con.commit()
+        used = self.client.post(f'/api/products/{sisi}/design/remove', headers=self.headers('manager'))
+        self.assertEqual((used.status_code, used.get_json()['code']), (409, 'design_in_use'))
+        gone = self.client.post(f'/api/products/{zimomo}/design/remove', headers=self.headers('manager'))
+        self.assertEqual(gone.status_code, 200, gone.get_json())
+        self.assertEqual([i['sku'] for i in self.product(self.box)['sub_items']], ['PM0123-01'])

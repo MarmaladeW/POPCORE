@@ -2,31 +2,54 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Input, Button, Table, Tag, Select, Space,
-  Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge,
+  Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge, Modal, Checkbox,
 } from 'antd'
 import {
   CheckCircleOutlined, WarningOutlined, DeleteOutlined,
   QuestionCircleOutlined, CloseCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
-import { reasonText, type ReportStockResult } from '../../api/reportStock'
+import { locationText, reasonText, type ReportStockLine, type ReportStockResult, type ReportStockSide } from '../../api/reportStock'
 import { productNames } from '../../lib/productLabel'
 import { useAppStore } from '../../store'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import {
   parseReportBackend,
   type BackendProduct, type BackendCandidate, type ReportAnnotations,
   type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem,
 } from '../../api/matcher'
-import { cashDifference, hasReportNotes, isReportRowReady, matchFeedback, positiveInteger, REPORT_NOTE_SECTIONS, validReportQuantity } from './dailyReportReview'
+import {
+  cashDifference, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
+  reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, validReportQuantity,
+} from './dailyReportReview'
+import { placeText } from './namePicksView'
 
 // ─── Section display metadata ─────────────────────────────────────────────────
 
-const SECTION_META: Record<string, { label: string; color: string }> = {
+const SECTION_META: Record<string, { label: string; color: string; live?: boolean }> = {
   pos:               { label: '卡机 POS',      color: 'blue'    },
   cash:              { label: '随手记 Non-POS',    color: 'green'   },
+  refill:            { label: '出库入店',  color: 'geekblue', live: true },
   stock_in:          { label: '入店',      color: 'purple'  },
   stock_out:         { label: '出店',      color: 'orange'  },
+  display_sold:      { label: '卖Display', color: 'magenta', live: true },
   break_display:     { label: '拆Display', color: 'red'     },
+  display_stock_in:  { label: '入Display', color: 'cyan', live: true },
+  claw_prize:        { label: '娃娃机出奖', color: 'gold', live: true },
+}
+
+// Section choices for a row: a legacy store keeps its old report sections.
+function sectionOptions(live: boolean, stockOnly = false) {
+  return Object.entries(SECTION_META)
+    .filter(([key, meta]) => (live || !meta.live) && (!stockOnly || (STOCK_LINE_SECTIONS as readonly string[]).includes(key)))
+    .map(([value, meta]) => ({ value, label: meta.label }))
+}
+
+const isStockLine = (section: string) => (STOCK_LINE_SECTIONS as readonly string[]).includes(section)
+
+function sideText(side?: ReportStockSide) {
+  if (!side) return null
+  return `${side.sku ?? ''} ${side.name} · ${locationText[side.location] ?? side.location} ${side.before} → ${side.after}`
 }
 
 function SectionTag({ section }: { section: string }) {
@@ -36,10 +59,53 @@ function SectionTag({ section }: { section: string }) {
     : <Tag style={{ fontSize: 11, margin: 0 }}>{section}</Tag>
 }
 
+/** The stock a report is about to move, for the manager to confirm before it saves (owner, 2026-11-03). */
+function StockLinesList({ lines }: { lines: ReportStockLine[] }) {
+  return (
+    <div role="list" aria-label="Stock lines" style={{ maxHeight: 420, overflowY: 'auto' }}>
+      {lines.map(l => (
+        <div role="listitem" key={l.line_key}
+          style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0', display: 'grid', gap: 2, fontSize: 12 }}>
+          <Space size={6} wrap>
+            <SectionTag section={l.section} />
+            <span style={{ fontSize: 13, fontWeight: 500, overflowWrap: 'anywhere' }}>{l.raw}</span>
+          </Space>
+          {l.from && <span style={{ overflowWrap: 'anywhere' }}>− {sideText(l.from)}</span>}
+          {l.to && <span style={{ overflowWrap: 'anywhere' }}>+ {sideText(l.to)}</span>}
+          <Space size={4} wrap>
+            {l.moving > 0 && <Tag color="blue" style={{ margin: 0 }}>移 Move {l.moving}</Tag>}
+            {l.moving < 0 && <Tag color="volcano" style={{ margin: 0 }}>退回 Put back {-l.moving}</Tag>}
+            {l.short > 0 && <Tag color="orange" style={{ margin: 0 }}>
+              {l.problem === 'not_counted' ? '还没盘点 Not counted' : '不够 Short'} {l.short}
+            </Tag>}
+            {l.moved_before > 0 && <span style={{ color: '#6b7280' }}>之前已移 Moved before {l.moved_before}</span>}
+          </Space>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** 名称记忆: what a remembered pick means for a review row, said where the manager decides (owner, 2026-11-03). */
+function pickNote(row: ReviewRow, store: string): { text: string; tone?: 'warn' | 'out' } | null {
+  const pick = row.pick
+  if (!pick) return null
+  const named = pick.product_ids.map(id => row.candidates.find(c => c.id === id))
+    .map(c => c ? (c.jizhanming || c.name_cn_en || c.sku) : null).filter(Boolean).join(' / ')
+  if (pick.state === 'disputed') return { text: `记住了两个产品 ${named}：你选的会替换两个 Your pick replaces both`, tone: 'out' }
+  if (row.product && !pick.product_ids.includes(row.product.id)) return { text: `会替换记住的 Replaces the remembered ${named}`, tone: 'warn' }
+  if (pick.state === 'stale') return { text: '记住后产品资料改过，请再确认 The product changed since it was picked', tone: 'warn' }
+  if (pick.state === 'confirm') {
+    const here = placeText({ store_code: store, section: row.section, display: !!(row.to_display || row.from_display) })
+    return { text: `记住的 Remembered${pick.places.length ? ` at ${pick.places.map(placeText).join(', ')}` : ''} · ${here} 第一次，接受后这里也记住 first time here` }
+  }
+  return { text: '记住的 Remembered · 接受后照旧 accept to keep it' }
+}
+
 // ─── Extended item types (frontend state adds _key, accepted, overrides) ──────
 
 type ActiveSection =
-  | 'pos' | 'cash' | 'stock_in' | 'stock_out' | 'break_display'
+  | 'pos' | 'cash' | 'refill' | 'stock_in' | 'stock_out' | 'display_sold' | 'break_display' | 'display_stock_in' | 'claw_prize'
 
 interface ConfirmedRow extends BackendConfirmedItem {
   _key: string
@@ -115,6 +181,7 @@ interface Props {
 
 export default function DailyReportEntry({ date, onComplete }: Props) {
   const { selectedStore, stores } = useAppStore()
+  const isMobile = useIsMobile()
   const defaultStore = selectedStore?.code === 'ALL' ? '' : selectedStore?.code ?? ''
 
   const [step,          setStep]         = useState<'input' | 'review' | 'done'>('input')
@@ -136,6 +203,10 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [multiDay,      setMultiDay]      = useState(false)
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
   const [stockResult,   setStockResult]   = useState<ReportStockResult | null>(null)
+  // At a live store the stock lines move stock too; the manager confirms them first (owner, 2026-11-03).
+  const [stockMode,     setStockMode]     = useState<'live' | 'legacy'>('legacy')
+  const [stockPreview,  setStockPreview]  = useState<{ stock: ReportStockResult | null; digest: string; changed?: boolean } | null>(null)
+  const live = stockMode === 'live'
 
   // ── Parse (call backend) ──────────────────────────────────────────────────
 
@@ -149,6 +220,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
       setParsedDate(res.detected_date ?? date)
       setParsedStore(res.store)
+      setStockMode(res.stock_mode ?? 'legacy')
 
       const mk = (prefix: string, i: number, name: string) => `${prefix}-${i}-${name}`
 
@@ -238,6 +310,16 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     setFailed(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r))
   }
 
+  // A remembered line confirmed by itself; Change sends it back through review, where a new pick replaces it.
+  function changeConfirmed(row: ConfirmedRow) {
+    setConfirmed(prev => prev.filter(r => r._key !== row._key))
+    setReview(prev => [...prev, {
+      ...row, _key: `r-${row._key}`, candidates: [{ ...row.product, score: row.score }],
+      originalTopId: row.product.id, accepted: false,
+    }])
+    message.info(`${row.raw_name}: 已移到 Review，选好再接受 Moved to Review; pick and accept it there`)
+  }
+
   function handleManualSelectReview(row: ReviewRow, p: BackendProduct) {
     patchReview(row._key, { product: p, accepted: true })
   }
@@ -248,7 +330,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
   // ── Submit ────────────────────────────────────────────────────────────────
 
-  async function handleSubmit() {
+  async function handleSubmit(confirmedDigest?: string) {
     if (!canSubmit) {
       message.warning('请检查日期、门店和现金金额，并解决或明确移除所有待处理行；多日报告须分开导入。')
       return
@@ -268,59 +350,66 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       })),
     ]
 
+    const body = {
+      date: submitDate,
+      store_code: submitStore,
+      mode: 'replace',
+      classification: 'summary_only',
+      stock_mode: stockMode,
+      section_choices: unknowns.filter(u => u.resolvedSection !== null)
+        .map(u => ({ header: u.headerText, section: u.resolvedSection })),
+      report_metadata: {
+        cash_actual: cashTotalReported,
+        cash_expected: cashExpected,
+        ...reportNotes,
+      },
+      items: payload,
+    }
     setSubmitting(true)
     try {
-      const { data } = await client.post('/sales/submit_daily_report', {
-        date: submitDate,
-        store_code: submitStore,
-        mode: 'replace',
-        classification: 'summary_only',
-        section_choices: unknowns.filter(u => u.resolvedSection !== null)
-          .map(u => ({ header: u.headerText, section: u.resolvedSection })),
-        report_metadata: {
-          cash_actual: cashTotalReported,
-          cash_expected: cashExpected,
-          ...reportNotes,
-        },
-        items: payload,
-      })
+      if (live && !confirmedDigest) {
+        // Nothing saves yet: the server works out what the stock lines move, and the manager confirms it.
+        const { data } = await client.post('/sales/submit_daily_report', { ...body, dry_run: true })
+        if (data?.needs_confirmation) {
+          setStockPreview({ stock: data.stock ?? null, digest: data.stock_digest })
+          return
+        }
+      }
+      const { data } = await client.post('/sales/submit_daily_report', { ...body, stock_digest: confirmedDigest })
+      setStockPreview(null)
       setStockResult(data?.stock ?? null)
       setStep('done')
     } catch (err: any) {
-      message.error(err?._serverMessage ?? err?.message ?? '提交失败')
+      const refused = err?.response?.data
+      if (refused?.code === 'stock_confirmation_required') {
+        // Stock changed since the preview: show what it moves now.
+        setStockPreview({ stock: refused.stock ?? null, digest: refused.stock_digest, changed: true })
+      } else {
+        setStockPreview(null)
+        message.error(err?._serverMessage ?? err?.message ?? '提交失败')
+      }
     } finally {
       setSubmitting(false)
     }
   }
 
   function buildPayloadItem(
-    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string },
+    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string; to_display?: boolean; from_display?: boolean },
     product: BackendProduct,
     source_bucket: string,
   ) {
-    const base: any = {
+    return {
       product_id: product.id, section: row.section, notes: row.notes,
       raw_name: row.raw_name ?? '', source_bucket,
+      ...reportPayloadQuantities(row),
     }
-    if (row.section === 'cash') {
-      base.qty_cash = row.qty
-    } else if (row.section === 'stock_in') {
-      base.box_size  = row.box_size
-      base.num_boxes = row.qty
-      base.loose_qty = row.loose_qty ?? 0
-    } else if (row.section === 'break_display' || row.section === 'stock_out') {
-      base.qty = row.qty
-    } else {
-      base.qty_pos = row.qty
-    }
-    return base
   }
 
   // ── Derived counts ────────────────────────────────────────────────────────
 
-  const confirmedReady = confirmed.filter(r => !r.removed && isReportRowReady(r)).length
-  const reviewAccepted = review.filter(r => !r.removed && isReportRowReady(r)).length
-  const failedAssigned = failed.filter(r => !r.removed && isReportRowReady({ ...r, product: r.assigned_product })).length
+  const confirmedReady = confirmed.filter(r => !r.removed && isReportRowReady(r, live)).length
+  const reviewAccepted = review.filter(r => !r.removed && isReportRowReady(r, live)).length
+  const failedAssigned = failed.filter(r => !r.removed && isReportRowReady({ ...r, product: r.assigned_product }, live)).length
   const totalReady = confirmedReady + reviewAccepted + failedAssigned
   const activeCount = [...confirmed, ...review, ...failed].filter(r => !r.removed).length
   const blockedRows = activeCount - totalReady
@@ -350,12 +439,12 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     return (
       <Space size={4} wrap>
         {row.flagged && <Tag color="red" icon={<WarningOutlined />}>请核对数量/包装</Tag>}
-        {row.section === 'stock_in' && <span>包数</span>}
+        {PACKED_SECTIONS.includes(row.section) && <span>包数</span>}
         <InputNumber size="small" aria-valuemin={1} step={1} changeOnBlur={false}
-          aria-label={`${row.raw_name} ${row.section === 'stock_in' ? '包数' : '数量'}`}
+          aria-label={`${row.raw_name} ${PACKED_SECTIONS.includes(row.section) ? '包数' : '数量'}`}
           value={row.qty || null} status={!positiveInteger(row.qty) ? 'error' : undefined}
           style={{ width: 70 }} onChange={v => updateQuantity(v ?? 0)} />
-        {row.section === 'stock_in' && (
+        {PACKED_SECTIONS.includes(row.section) && (
           <>
             <span>× 件/包</span>
             <InputNumber size="small" aria-valuemin={1} step={1} changeOnBlur={false}
@@ -380,6 +469,31 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     )
   }
 
+  // A stock line shows what it moves; at a live store the manager can re-file it under another stock section.
+  const sectionCell = (row: ReviewRow | FailedRow, patchFn: (key: string, p: any) => void, choose: boolean) => {
+    const effect = live ? stockLineEffect(row) : null
+    const shown = row.section === 'stock_out' ? 'from_display' : 'to_display'
+    return (
+      <Space direction="vertical" size={2}>
+        {choose ? (
+          <Select size="small" value={row.section} style={{ width: 110 }} aria-label={`${row.raw_name} 分区`}
+            options={sectionOptions(live, live && isStockLine(row.section))}
+            onChange={v => patchFn(row._key, {
+              section: v, unknown_header: null,
+              qty_pos: v === 'cash' ? 0 : row.qty, qty_cash: v === 'cash' ? row.qty : 0,
+              box_size: PACKED_SECTIONS.includes(v) ? (row.box_size ?? 1) : row.box_size,
+            })} />
+        ) : <SectionTag section={row.section} />}
+        {effect && <span style={{ fontSize: 11, color: '#6b7280' }}>{effect}</span>}
+        {live && ['refill', 'stock_in', 'stock_out'].includes(row.section) && (
+          <Checkbox checked={!!row[shown]} onChange={e => patchFn(row._key, { [shown]: e.target.checked })}>
+            <span style={{ fontSize: 11 }}>{row.section === 'stock_out' ? '从 Display' : '放 Display'}</span>
+          </Checkbox>
+        )}
+      </Space>
+    )
+  }
+
   const confirmedColumns = [
     {
       title: '产品', key: 'product', width: 220,
@@ -391,6 +505,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           </Space>
           <Space size={4}>
             <Tag style={{ fontSize: 11, margin: 0 }}>{r.product.sku}</Tag>
+            {r.pick && <Tooltip title={`名称记忆：${r.pick.places.map(placeText).join(', ')} 确认过 Confirmed there before`}>
+              <Tag style={{ fontSize: 11, margin: 0 }}>已记住 Remembered</Tag>
+            </Tooltip>}
             {r.warn_blank_jzm && <Tag color="orange" style={{ fontSize: 11 }}>⚠ 记账名为空</Tag>}
           </Space>
         </Space>
@@ -401,8 +518,12 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       render: (v: string) => <span style={{ fontSize: 12, color: '#6b7280' }}>{v}</span>,
     },
     {
-      title: '分区', key: 'sec', width: 80,
-      render: (_: any, r: ConfirmedRow) => <SectionTag section={r.section} />,
+      title: '分区', key: 'sec', width: 110,
+      render: (_: any, r: ConfirmedRow) => {
+        const effect = live ? stockLineEffect(r) : null
+        return effect ? <Space direction="vertical" size={2}><SectionTag section={r.section} />
+          <span style={{ fontSize: 11, color: '#6b7280' }}>{effect}</span></Space> : <SectionTag section={r.section} />
+      },
     },
     {
       title: '数量', key: 'qty', width: 140,
@@ -416,33 +537,50 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       ),
     },
     {
-      title: '', key: 'del', width: 40,
+      title: '', key: 'del', width: 90,
       render: (_: any, r: ConfirmedRow) => (
-        <Tooltip title="移除">
-          <Button size="small" type="text" danger icon={<DeleteOutlined />}
-            onClick={() => patchConfirmed(r._key, { removed: true })} />
-        </Tooltip>
+        <Space size={4}>
+          {r.pick && <Button size="small" aria-label={`Change ${r.raw_name}`} onClick={() => changeConfirmed(r)}>改 Change</Button>}
+          <Tooltip title="移除">
+            <Button size="small" type="text" danger icon={<DeleteOutlined />}
+              onClick={() => patchConfirmed(r._key, { removed: true })} />
+          </Tooltip>
+        </Space>
       ),
     },
   ]
 
+  // 名称记忆 note: under the match on desktop; on a phone under the written name, which a phone sees without scrolling.
+  const pickNoteLine = (r: ReviewRow) => {
+    const note = pickNote(r, parsedStore)
+    return note && <span style={{ fontSize: 11, lineHeight: 1.45, overflowWrap: 'anywhere',
+      color: note.tone === 'out' ? '#b4322a' : note.tone === 'warn' ? '#946200' : '#6b7280' }}>{note.text}</span>
+  }
+
   const reviewColumns = [
     {
       title: '输入', dataIndex: 'raw_name', width: 130,
-      render: (v: string) => <span style={{ fontSize: 13 }}>{v}</span>,
+      render: (v: string, r: ReviewRow) => isMobile && r.pick
+        ? <Space direction="vertical" size={2}><span style={{ fontSize: 13 }}>{v}</span>{pickNoteLine(r)}</Space>
+        : <span style={{ fontSize: 13 }}>{v}</span>,
     },
     {
-      title: '候选匹配', key: 'match', width: 250,
+      title: '候选匹配', key: 'match', width: 300,
       render: (_: any, r: ReviewRow) => {
+        const noteLine = !isMobile && pickNoteLine(r)
         if (r.accepted) return (
-          <Space size={4}>
-            <Tag color="green"><CheckCircleOutlined /></Tag>
-            <span style={{ fontSize: 13 }}>{r.product?.jizhanming || r.product?.name_cn_en || r.product?.sku}</span>
-            <Tag style={{ fontSize: 11 }}>{r.product?.sku}</Tag>
+          <Space size={2} direction="vertical">
+            <Space size={4}>
+              <Tag color="green"><CheckCircleOutlined /></Tag>
+              <span style={{ fontSize: 13 }}>{r.product?.jizhanming || r.product?.name_cn_en || r.product?.sku}</span>
+              <Tag style={{ fontSize: 11 }}>{r.product?.sku}</Tag>
+            </Space>
+            {noteLine}
           </Space>
         )
         return (
           <Space size={4} direction="vertical" style={{ width: '100%' }}>
+            {noteLine}
             <Select
               size="small" value={r.product?.id} style={{ width: 220 }}
               onChange={v => {
@@ -469,8 +607,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       },
     },
     {
-      title: '分区', key: 'sec', width: 80,
-      render: (_: any, r: ReviewRow) => <SectionTag section={r.section} />,
+      title: '分区', key: 'sec', width: 130,
+      render: (_: any, r: ReviewRow) => sectionCell(r, patchReview, live && isStockLine(r.section)),
     },
     {
       title: '数量', key: 'qty', width: 140,
@@ -537,12 +675,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       ),
     },
     {
-      title: '分区', key: 'sec', width: 80,
-      render: (_: any, r: FailedRow) => (
-        <Select size="small" value={r.section} style={{ width: 80 }}
-          options={Object.entries(SECTION_META).map(([k, v]) => ({ value: k, label: v.label }))}
-          onChange={v => patchFailed(r._key, { section: v, unknown_header: null })} />
-      ),
+      title: '分区', key: 'sec', width: 130,
+      render: (_: any, r: FailedRow) => sectionCell(r, patchFailed, true),
     },
     {
       title: '数量', key: 'qty', width: 100,
@@ -600,6 +734,16 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         description={<>
           {parsedDate && <div>Date: {parsedDate}  Store: {parsedStore}</div>}
           {stockResult && <div>
+            {!!stockResult.lines?.length && <div>
+              库存行 Stock lines: {stockResult.lines.filter(l => l.moving > 0).length} moved
+              {stockResult.lines.some(l => l.moving < 0) ? `, ${stockResult.lines.filter(l => l.moving < 0).length} put back` : ''}
+              {stockResult.moves_short?.length ? `, ${stockResult.moves_short.length} short` : ''}
+            </div>}
+            {!!stockResult.moves_short?.length && <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {stockResult.moves_short.map(row => <li key={row.product_id}>
+                {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity} ({reasonText.move_short.zh} {row.where.map(code => locationText[code] ?? code).join(', ')})
+              </li>)}
+            </ul>}
             库存 Floor stock: {stockResult.taken} taken off{stockResult.returned ? `, ${stockResult.returned} put back` : ''}
             {stockResult.short.length > 0 && <>
               <div style={{ marginTop: 6 }}>未扣 Not taken off:</div>
@@ -617,7 +761,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                 </li>)}
               </ul>
             </>}
-            {(stockResult.short.length > 0 || stockResult.counted_same_day.length > 0) && <div style={{ marginTop: 6 }}>
+            {(stockResult.short.length > 0 || stockResult.counted_same_day.length > 0 || !!stockResult.moves_short?.length) && <div style={{ marginTop: 6 }}>
               These wait on the manager home until checked: <Link to="/sales/report-stock">日报库存核对 Report stock checks</Link>
             </div>}
           </div>}
@@ -638,8 +782,30 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const visibleReview    = review.filter(r => !r.removed)
   const visibleFailed    = failed.filter(r => !r.removed)
 
+  const previewLines = stockPreview?.stock?.lines ?? []
+  const previewChanges = previewLines.filter(l => l.moving || l.short)
+  const repasted = previewLines.some(l => l.moved_before > 0 || l.moving < 0)
+
   return (
     <div>
+      <Modal open={!!stockPreview} width={860} title="确认库存变化 Confirm stock changes"
+        okText="确认并保存 Confirm & save" cancelText="返回 Back" confirmLoading={submitting}
+        onCancel={() => setStockPreview(null)}
+        onOk={() => stockPreview && handleSubmit(stockPreview.digest)}>
+        {stockPreview?.changed && <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+          message="库存在预览后变了，下面是现在会移的。Stock changed since the preview; this is what it moves now." />}
+        {repasted && <Alert type="info" showIcon style={{ marginBottom: 8 }}
+          message="这一天之前粘贴过：只移差额，删掉的行会退回。This day was pasted before: only the difference moves, and lines no longer on it are put back." />}
+        {previewChanges.some(l => l.short) && <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+          message="不够的部分不会移，会留在 日报库存核对 等你处理。What a source lacks does not move and waits in Report stock checks." />}
+        <StockLinesList lines={previewChanges} />
+        {stockPreview?.stock && <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+          销售 Sales: {stockPreview.stock.taken} 从楼下扣 off the floor
+          {stockPreview.stock.returned ? `, ${stockPreview.stock.returned} 退回 put back` : ''}
+          {stockPreview.stock.from_display?.length ? `, ${stockPreview.stock.from_display.reduce((n, r) => n + r.quantity, 0)} 从 Display 卖出 sold from display` : ''}
+          {stockPreview.stock.short.length ? `, ${stockPreview.stock.short.length} 未扣 not taken off` : ''}
+        </div>}
+      </Modal>
       {/* Summary bar */}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 }}>
         <label>Date <Input type="date" aria-label="Report date" value={parsedDate ?? ''}
@@ -660,7 +826,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         <div style={{ marginLeft: 'auto' }}>
           <Space>
             <Button onClick={() => setStep('input')}>← Back</Button>
-            <Button type="primary" loading={submitting} disabled={!canSubmit} onClick={handleSubmit}>
+            <Button type="primary" loading={submitting} disabled={!canSubmit} onClick={() => handleSubmit()}>
               Confirm & Log {totalReady} items
             </Button>
           </Space>
@@ -678,7 +844,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         showIcon
         style={{ marginBottom: 8, borderRadius: 8 }}
         message={`对账汇总（summary only）将替换 ${parsedDate ?? '未选日期'} · ${parsedStore || '未选门店'} 已有日报销售及本次报告元数据，不是追加。`}
-        description="销售汇总不创建收款或扣减销售库存；入店/出店/拆 Display 仍属于库存操作。有库存历史的日报可能需先对账，服务器会阻止直接替换。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。"
+        description={live
+          ? '这家店已上线：销售从楼下扣；出库入店、入店、出店、卖/拆/入 Display、娃娃机出奖按行移库存，保存前会让你确认。重新粘贴同一天只移差额。出库和入娃娃机不移库存，请用 调拨 Transfer 和 娃娃机 补货 记录。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。'
+          : '销售汇总不创建收款或扣减销售库存；入店/出店/拆 Display 仍属于库存操作。有库存历史的日报可能需先对账，服务器会阻止直接替换。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。'}
       />
 
       {metadataErrors.length > 0 && (
@@ -719,8 +887,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
             <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{reportNotes[key]!.join('\n')}</div></>} />
       ))}
       <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="匹配修正仅在提交成功后保存；安全且无冲突的名称映射可用于以后的日报。"
-        description="预览中的选择不会保存。请逐行核对同名记录，接受后再提交。" />
+        message="名称记忆：你接受的名字会被记住。同一家店、同一个分区下次自动确认；别的店或分区先问一次，已经选好。"
+        description={<>Picks are saved only when this report saves; a preview saves nothing. A different product replaces the old pick.
+          See, change or forget picks in <Link to="/sales/name-picks">名称记忆 Name picks</Link>.</>} />
 
       {/* Unknown section classification alerts */}
       {unknowns.filter(u => u.resolvedSection === null).map(u => (
@@ -737,7 +906,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                 style={{ width: 130 }}
                 placeholder="Classify..."
                 options={[
-                  ...Object.entries(SECTION_META).map(([k, v]) => ({ value: k, label: v.label })),
+                  ...sectionOptions(false),
                   { value: 'skip', label: '跳过/忽略' },
                 ]}
                 onChange={(v: ActiveSection | 'skip') => classifyUnknown(u.headerText, v)}

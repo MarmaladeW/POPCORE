@@ -70,13 +70,19 @@ class InventoryAdapterTests(IsolatedApiCase):
         self.assertEqual(claw.status_code, 409)
         self.assertEqual(claw.get_json()['code'], 'migration_required')
 
+        # A live store's report stock lines move through the ledger, once the manager confirms them.
         report = self.client.post('/api/sales/submit_daily_report', json={
             'date': str(date.today()), 'store_code': 'DT',
             'items': [{'product_id': self.product_id, 'section': 'stock_out',
                        'qty': 1}],
         }, headers=self.headers('manager'))
         self.assertEqual(report.status_code, 409)
-        self.assertEqual(report.get_json()['code'], 'migration_required')
+        self.assertEqual(report.get_json()['code'], 'stock_confirmation_required')
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute(
+                'SELECT instore_qty FROM stock WHERE product_id=? AND store_id=?',
+                (self.product_id, self.store_id),
+            ).fetchone()[0], 2)
 
     def test_batch_adapter_reuses_versions_for_lost_response_replay(self):
         payload = {'operation': 'restock_upstairs', 'date': str(date.today()),

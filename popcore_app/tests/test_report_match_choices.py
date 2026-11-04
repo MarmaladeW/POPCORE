@@ -1,7 +1,13 @@
-"""Human-reviewed report choices: isolated database, no providers or LLM."""
-from contextlib import closing
+"""Human-reviewed report choices (名称记忆 Name picks): isolated database, no providers or LLM.
 
-from support import IsolatedApiCase
+Owner rules (2026-11-03): a pick is remembered for every section, stock lines included; it confirms a
+line by itself only for the same name and note, store and section, with the product unchanged, and asks
+again with the pick chosen anywhere else; a different product replaces the old pick."""
+from contextlib import closing
+from pathlib import Path
+from unittest.mock import patch
+
+from support import IsolatedApiCase, db
 
 
 class ReportMatchChoiceTests(IsolatedApiCase):
@@ -13,16 +19,16 @@ class ReportMatchChoiceTests(IsolatedApiCase):
                         (self.store_id,))
             con.commit()
 
-    def parse(self, line, header='随手记汇总：'):
+    def parse(self, line, header='随手记汇总：', store='DT'):
         response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
-                                    json={'text': '2026.9.14 DT\n' + header + '\n' + line,
-                                          'store_code': 'DT', 'engine': 'rules'})
+                                    json={'text': f'2026.9.14 {store}\n' + header + '\n' + line,
+                                          'store_code': store, 'engine': 'rules'})
         self.assertEqual(response.status_code, 200)
         return response.get_json()
 
-    def submit(self, items, **extra):
+    def submit(self, items, store='DT', **extra):
         return self.client.post('/api/sales/submit_daily_report', headers=self.headers('manager'),
-                                json={'date': '2026-09-14', 'store_code': 'DT',
+                                json={'date': '2026-09-14', 'store_code': store,
                                       'classification': 'summary_only', 'items': items, **extra})
 
     def choose(self, parsed, product_id=None):
@@ -54,7 +60,11 @@ class ReportMatchChoiceTests(IsolatedApiCase):
         self.assertFalse(self.parse(line)['confirmed'])  # Preview does not learn.
         self.assertEqual(self.submit([self.choose(first)]).status_code, 200)
         self.assert_chosen(line)
-        self.assertEqual(self.assert_chosen('Test Product*2 (秘密)', header='卡机汇总：')['qty'], 2)
+        # 卡机 is another section: asked again there, with the remembered product already picked.
+        again = self.parse('Test Product*2 (秘密)', '卡机汇总：')
+        self.assertFalse(again['confirmed'])
+        self.assertEqual((again['review'][0]['product']['id'], again['review'][0]['qty'], again['review'][0]['pick']['state']),
+                         (self.product_id, 2, 'confirm'))
         for changed in ('Test Product*1 (公开)', 'Test Product*1 (秘密 large)', 'Test Product*1'):
             with self.subTest(changed=changed):
                 self.assertFalse(self.parse(changed)['confirmed'])
@@ -109,35 +119,45 @@ class ReportMatchChoiceTests(IsolatedApiCase):
         self.assertEqual(self.submit([item]).status_code, 200)
         self.assert_chosen(line)
 
-    def test_conflicting_same_submission_or_later_review_never_teaches_last_wins(self):
+    def test_one_report_picking_two_products_is_disputed_and_a_later_pick_replaces_it(self):
         other = self.add_product()
         line = 'Shared Choice*1 (special)'
         item = self.choose(self.parse(line))
         self.assertEqual(self.submit([item, {**item, 'product_id': other}]).status_code, 200)
-        self.assertFalse(self.parse(line)['confirmed'])
+        disputed = self.parse(line)
+        self.assertFalse(disputed['confirmed'])
+        self.assertEqual(disputed['review'][0]['pick']['state'], 'disputed')
+        self.assertEqual({row['id'] for row in disputed['review'][0]['candidates'][:2]}, {self.product_id, other})
+        # A later report picks one; then the manager changes it again. Each change replaces the pick.
         self.assertEqual(self.submit([item]).status_code, 200)
-        self.assertFalse(self.parse(line)['confirmed'])
-        line2 = 'Second Choice*1 (special)'
-        item2 = self.choose(self.parse(line2))
-        self.assertEqual(self.submit([item2]).status_code, 200)
-        self.assert_chosen(line2)
-        self.assertEqual(self.submit([{**item2, 'product_id': other}]).status_code, 200)
-        self.assertFalse(self.parse(line2)['confirmed'])
+        self.assert_chosen(line)
+        self.assertEqual(self.submit([{**item, 'product_id': other}]).status_code, 200)
+        self.assert_chosen(line, other)
+        with closing(self.connect()) as con:
+            self.assertEqual([tuple(row) for row in con.execute('SELECT product_id FROM report_match_choices')], [(other,)])
 
-    def test_upgrade_history_conflict_without_alias_blocks_new_bare_choice(self):
-        from matcher import normalize, clean_name
+    def test_upgrade_history_conflict_vetoes_only_a_choice_made_before_name_picks(self):
+        from matcher import normalize, clean_name, report_identity_signature
         other = self.add_product()
         with closing(self.connect()) as con:
             for raw, pid in (('Legacy Label', self.product_id), ('ＬＥＧＡＣＹ  label', other)):
                 con.execute('INSERT INTO match_corrections(raw_name,norm_name,product_id) VALUES (?,?,?)',
                             (raw, normalize(clean_name(raw)), pid))
-            con.commit()
             self.assertEqual(con.execute('SELECT COUNT(*) FROM product_aliases').fetchone()[0], 0)
-            self.assertEqual(con.execute('SELECT COUNT(*) FROM report_match_choices').fetchone()[0], 0)
+            # A choice saved before name picks (no time), confirmed for DT 随手记 by the upgrade.
+            product = dict(con.execute('SELECT * FROM products WHERE id=?', (self.product_id,)).fetchone())
+            con.execute("""INSERT INTO report_match_choices(name_key,note_key,product_id,identity_signature)
+                           VALUES ('legacy label','',?,?)""", (self.product_id, report_identity_signature(product)))
+            con.execute("""INSERT INTO report_match_situations(name_key,note_key,product_id,store_id,section)
+                           VALUES ('legacy label','',?,?,'cash')""", (self.product_id, self.store_id))
+            con.commit()
         line = 'Legacy Label*1'
-        for _ in range(2):
-            self.assertEqual(self.submit([self.choose(self.parse(line))]).status_code, 200)
-            self.assertFalse(self.parse(line)['confirmed'])
+        vetoed = self.parse(line)
+        self.assertFalse(vetoed['confirmed'])
+        self.assertEqual(vetoed['review'][0]['pick']['state'], 'disputed')
+        # The manager's answer since name picks is the pick: the history no longer outvotes it.
+        self.assertEqual(self.submit([self.choose(vetoed)]).status_code, 200)
+        self.assert_chosen(line)
         # Legacy records cannot establish what a qualified note used to mean.
         qualified = 'Legacy Label*1 (secret)'
         self.assertEqual(self.submit([self.choose(self.parse(qualified))]).status_code, 200)
@@ -275,3 +295,167 @@ class ReportMatchChoiceTests(IsolatedApiCase):
             with self.subTest(choices=choices):
                 self.assertEqual(self.submit([],section_choices=choices).status_code,400)
         self.assertEqual(self.submit([]).status_code,200)
+
+    # ── 名称记忆 Name picks: situations, stock lines and the page ───────────────
+
+    def day(self, store='DT', date='2026-09-14', role='manager'):
+        return self.client.get('/api/sales/name-picks/day', headers=self.headers(role),
+                               query_string={'store_code': store, 'date': date})
+
+    def pick(self, role='manager', **body):
+        return self.client.post('/api/sales/name-picks', headers=self.headers(role), json=body)
+
+    def test_a_pick_confirms_only_in_the_store_and_section_it_was_confirmed_in(self):
+        with closing(self.connect()) as con:
+            mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)", (mk,))
+            con.commit()
+        line = 'Nickname*1'
+        self.assertEqual(self.submit([self.choose(self.parse(line))]).status_code, 200)
+        self.assert_chosen(line)
+        for header, store, section in (('卡机汇总：', 'DT', 'pos'), ('随手记汇总：', 'MK', 'cash')):
+            with self.subTest(store=store, section=section):
+                parsed = self.parse(line, header, store)
+                self.assertFalse(parsed['confirmed'])
+                row = parsed['review'][0]
+                self.assertEqual((row['product']['id'], row['score'], row['pick']['state']), (self.product_id, 100, 'confirm'))
+                self.assertIn({'store_code': 'DT', 'section': 'cash', 'display': False}, row['pick']['places'])
+                # One tap there: accepted once, it confirms there too.
+                self.assertEqual(self.submit([self.choose(parsed)], store).status_code, 200)
+                self.assert_chosen(line, header=header) if store == 'DT' else self.assertEqual(
+                    [r['product']['id'] for r in self.parse(line, header, store)['confirmed']], [self.product_id])
+        self.assert_chosen(line)
+
+    def test_a_changed_pick_replaces_the_old_one_and_where_it_was_confirmed(self):
+        other = self.add_product()
+        line = 'Nickname*1'
+        self.assertEqual(self.submit([self.choose(self.parse(line))]).status_code, 200)
+        self.assertEqual(self.submit([self.choose(self.parse(line, '卡机汇总：'))]).status_code, 200)
+        self.assert_chosen(line, header='卡机汇总：')
+        # In the paste the manager changes a remembered line (it then goes back through review).
+        row = self.assert_chosen(line)
+        changed = {'raw_name': row['raw_name'], 'notes': row['note'], 'section': 'cash', 'qty_cash': 1,
+                   'source_bucket': 'review', 'product_id': other}
+        self.assertEqual(self.submit([changed]).status_code, 200)
+        self.assert_chosen(line, other)
+        again = self.parse(line, '卡机汇总：')
+        self.assertFalse(again['confirmed'])  # 卡机 was confirmed for the old product
+        self.assertEqual((again['review'][0]['product']['id'], again['review'][0]['pick']['state']), (other, 'confirm'))
+        with closing(self.connect()) as con:
+            self.assertEqual([tuple(row) for row in con.execute(
+                'SELECT product_id, section FROM report_match_situations')], [(other, 'cash')])
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM product_aliases').fetchone()[0], 0)
+
+    def test_stock_line_names_are_remembered_by_their_own_section(self):
+        line = 'Nickname*1'
+        parsed = self.parse(line, '出店：')
+        row = parsed['failed'][0]
+        self.assertEqual(row['section'], 'stock_out')
+        item = {'raw_name': row['raw_name'], 'notes': row['note'], 'section': 'stock_out', 'qty': 1,
+                'source_bucket': 'failed', 'product_id': self.product_id}
+        self.assertEqual(self.submit([item]).status_code, 200)
+        remembered = self.parse(line, '出店：')
+        self.assertEqual([(r['section'], r['product']['id'], r['pick']['state']) for r in remembered['confirmed']],
+                         [('stock_out', self.product_id, 'remembered')])
+        # The same name sold is another section: asked again, already picked.
+        sold = self.parse(line)
+        self.assertEqual((sold['review'][0]['product']['id'], sold['review'][0]['pick']['state']), (self.product_id, 'confirm'))
+
+    def test_a_product_changed_since_the_pick_is_asked_again_with_it_picked(self):
+        line = 'Human label*1 (Molly)'
+        self.assertEqual(self.submit([self.choose(self.parse(line))]).status_code, 200)
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET name_cn_en='Replacement' WHERE id=?", (self.product_id,))
+            con.commit()
+        parsed = self.parse(line)
+        self.assertFalse(parsed['confirmed'])
+        row = parsed['review'][0]
+        self.assertEqual((row['product']['id'], row['score'], row['pick']['state']), (self.product_id, 99, 'stale'))
+
+    def test_the_page_lists_each_pasted_day_and_answers_a_name_where_it_was_written(self):
+        other = self.add_product()
+        parsed = self.parse('Nickname*1\nTest Product*1')
+        self.assertEqual([r['raw_name'] for r in parsed['confirmed']], ['Test Product'])
+        days = self.client.get('/api/sales/name-picks', headers=self.headers('manager')).get_json()['days']
+        self.assertEqual([(d['store_code'], d['date'], d['counts']['open'], d['saved']) for d in days],
+                         [('DT', '2026-09-14', 1, False)])
+        names = self.day().get_json()['names']
+        # An exact catalog name is not a name to pick; the paste's guess comes with each name.
+        self.assertEqual([(n['raw_name'], n['section'], n['status'], n['pick']) for n in names],
+                         [('Nickname', 'cash', 'open', None)])
+        self.assertFalse(self.parse('Nickname*1')['confirmed'])  # a preview learns nothing
+        key = {'name_key': names[0]['name_key'], 'note_key': names[0]['note_key']}
+        place = {'store_code': 'DT', 'section': 'cash', 'display': False}
+        self.assertEqual(self.pick(raw_name='Nickname', note='', product_id=self.product_id, replaces=[], **place).status_code, 200)
+        self.assertEqual(self.day().get_json()['names'][0]['status'], 'remembered')
+        self.assert_chosen('Nickname*1')
+        # A pick changed meanwhile is never overwritten unseen.
+        refused = self.pick(raw_name='Nickname', note='', product_id=other, replaces=[], **place)
+        self.assertEqual((refused.status_code, refused.get_json()['code']), (409, 'pick_changed'))
+        # 记住的 All picks: a change there replaces the pick and forgets where it was confirmed.
+        self.assertEqual(self.pick(**key, raw_name='Nickname', note='', product_id=other, replaces=[self.product_id]).status_code, 200)
+        picks = self.client.get('/api/sales/name-picks', headers=self.headers('manager')).get_json()['picks']
+        self.assertEqual([(p['raw_name'], [x['id'] for x in p['products']], p['places'], p['state']) for p in picks],
+                         [('Nickname', [other], [], 'ok')])
+        self.assertEqual(self.day().get_json()['names'][0]['status'], 'confirm')
+        # Forget: the next paste matches the name as if it had never been answered.
+        forget = self.client.delete('/api/sales/name-picks', headers=self.headers('manager'), json={**key, 'replaces': [other]})
+        self.assertEqual(forget.status_code, 200)
+        self.assertNotIn('pick', self.parse('Nickname*1')['failed'][0])
+        # Ignore: the page sets it aside; a paste still asks.
+        ignore = self.client.post('/api/sales/name-picks/ignore', headers=self.headers('manager'), json={**key, 'ignored': True})
+        self.assertEqual(ignore.status_code, 200)
+        self.assertEqual(self.day().get_json()['names'][0]['status'], 'ignored')
+        self.assertTrue(self.parse('Nickname*1')['failed'])
+        # The day's latest paste replaces its names.
+        self.parse('Test Product*1')
+        self.assertEqual(self.day().get_json()['names'], [])
+
+    def test_name_picks_are_for_managers_who_may_save_the_store_reports(self):
+        self.parse('Nickname*1')
+        self.assertEqual(self.client.get('/api/sales/name-picks', headers=self.headers('staff')).status_code, 403)
+        outsider = self.client.get('/api/sales/name-picks', headers=self.headers('manager:other')).get_json()
+        self.assertEqual(outsider['days'], [])
+        self.assertEqual(self.day(role='manager:other').status_code, 403)
+        place = {'store_code': 'DT', 'section': 'cash', 'display': False}
+        self.assertEqual(self.pick('manager:other', raw_name='Nickname', product_id=self.product_id, replaces=[], **place).status_code, 403)
+        self.assertEqual(self.pick('staff', raw_name='Nickname', product_id=self.product_id, replaces=[]).status_code, 403)
+        for bad in ({'raw_name': ' ', 'product_id': self.product_id}, {'raw_name': 'x', 'product_id': 'one'},
+                    {'raw_name': 'x', 'product_id': self.product_id, 'replaces': 'none'},
+                    {'raw_name': 'x', 'product_id': self.product_id, **place, 'section': 'refund'}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.pick(**{'replaces': [], **bad}).status_code, 400)
+        self.assertEqual(self.pick(raw_name='x', product_id=999, replaces=[]).status_code, 404)
+        # An admin may save every store's reports, with or without an inventory grant.
+        self.assertEqual([d['store_code'] for d in self.client.get('/api/sales/name-picks', headers=self.headers('admin')).get_json()['days']], ['DT'])
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM report_match_choices').fetchone()[0], 0)
+
+    def test_the_upgrade_finds_where_each_earlier_pick_was_saved(self):
+        from matcher import report_identity_signature
+        db.DB_PATH = str(Path(self.tempdir.name) / 'upgrade.db')
+        before = db._get_migrations
+        with patch.object(db, '_get_migrations', side_effect=lambda: [m for m in before() if m[0] != 'report_name_picks']):
+            db.migrate_db()
+        with closing(self.connect()) as con:
+            pid = con.execute("INSERT INTO products(sku,name_cn_en,jizhanming) VALUES ('TEST-1','Test Product','Test Product')").lastrowid
+            other = con.execute("INSERT INTO products(sku,name_cn_en,jizhanming) VALUES ('OTHER','Other','Other')").lastrowid
+            dt = con.execute("SELECT id FROM stores WHERE code='DT'").fetchone()[0]
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)", (dt,))
+            signature = report_identity_signature(dict(con.execute('SELECT * FROM products WHERE id=?', (pid,)).fetchone()))
+            con.executemany('INSERT INTO report_match_choices(name_key,note_key,product_id,identity_signature) VALUES (?,?,?,?)',
+                            [('nickname', 'secret', pid, signature), ('shared', '', pid, signature), ('shared', '', other, signature)])
+            con.executemany("""INSERT INTO daily_sales(product_id,date,store,qty_pos,qty_cash,qty_sold,raw_name,notes)
+                               VALUES (?,?, 'DT',?,?,1,?,?)""",
+                            [(pid, '2026-09-01', 0, 1, 'NickName', 'Secret'), (pid, '2026-09-02', 0, 1, 'shared', '')])
+            con.commit()
+        db.migrate_db()
+        with closing(self.connect()) as con:
+            self.assertEqual([tuple(row) for row in con.execute(
+                'SELECT name_key, note_key, product_id, store_id, section, display FROM report_match_situations')],
+                [('nickname', 'secret', pid, dt, 'cash', 0)])
+            self.assertEqual(con.execute("SELECT raw_name, note FROM report_match_choices WHERE name_key='nickname'").fetchone()[:],
+                             ('NickName', 'Secret'))
+        self.assertEqual([r['product']['id'] for r in self.parse('Nickname*1 (secret)')['confirmed']], [pid])
+        self.assertEqual(self.parse('Nickname*1 (secret)', '卡机汇总：')['review'][0]['pick']['state'], 'confirm')
+        self.assertEqual(self.parse('shared*1')['review'][0]['pick']['state'], 'disputed')

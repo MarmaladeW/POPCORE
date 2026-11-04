@@ -2095,6 +2095,8 @@ def _get_migrations():
         ('website_sync',                               _migration_website_sync),
         ('inventory_viewers',                          _migration_inventory_viewers),
         ('stock_losses',                               _migration_stock_losses),
+        ('report_stock_moves',                         _migration_report_stock_moves),
+        ('report_name_picks',                          _migration_report_name_picks),
         ('add_regular_since_to_employees',             _migration_add_regular_since_to_employees),
     ]
 
@@ -2231,6 +2233,125 @@ def _migration_stock_losses(con, cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_stock_losses_store_date ON stock_losses(store_id, business_date)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('stock_losses')")
+
+
+def _migration_report_stock_moves(con, cur):
+    # A live store's daily report moves its stock lines too (owner, 2026-11-03): each line of a day
+    # (出库入店, 入店, 出店, 卖display, 拆display, 入display, 娃娃机) as what it should move (`wanted`),
+    # what it already moved and what a manager checked, so a re-pasted day moves only the difference.
+    # A line is one source balance and/or one destination balance; `ratio` destination units arrive
+    # per source unit (a sealed set opened onto the floor as its boxes).
+    cur.execute("""CREATE TABLE IF NOT EXISTS report_stock_moves (
+        store_id         INTEGER NOT NULL REFERENCES stores(id),
+        business_date    TEXT    NOT NULL,
+        line_key         TEXT    NOT NULL,
+        section          TEXT    NOT NULL,
+        kind             TEXT    NOT NULL CHECK (kind IN ('receipt', 'move', 'consume', 'correction')),
+        from_product_id  INTEGER REFERENCES products(id),
+        from_location_id INTEGER REFERENCES inventory_locations(id),
+        to_product_id    INTEGER REFERENCES products(id),
+        to_location_id   INTEGER REFERENCES inventory_locations(id),
+        ratio            INTEGER NOT NULL DEFAULT 1 CHECK (ratio >= 1),
+        wanted           INTEGER NOT NULL DEFAULT 0 CHECK (wanted >= 0),
+        moved            INTEGER NOT NULL DEFAULT 0 CHECK (moved >= 0),
+        checked          INTEGER NOT NULL DEFAULT 0,
+        posts            INTEGER NOT NULL DEFAULT 0 CHECK (posts >= 0),
+        raw              TEXT    NOT NULL DEFAULT '',
+        updated_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (store_id, business_date, line_key),
+        CHECK (from_location_id IS NOT NULL OR to_location_id IS NOT NULL)
+    )""")
+    # A line that could not move all of it is a notice like a sale the floor could not take.
+    # SQLite cannot widen a CHECK in place, so the notices table is rebuilt with the new reason.
+    cur.execute("""CREATE TABLE report_stock_issues_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id      INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT    NOT NULL,
+        product_id    INTEGER NOT NULL REFERENCES products(id),
+        reason        TEXT    NOT NULL CHECK (reason IN ('not_counted', 'not_enough_on_floor',
+                                                         'set_size_unknown', 'counted_same_day', 'move_short')),
+        quantity      INTEGER NOT NULL CHECK (quantity > 0),
+        detail        TEXT,
+        status        TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'checked', 'resolved')),
+        checked_by    TEXT,
+        checked_at    TEXT,
+        created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (store_id, business_date, product_id, reason)
+    )""")
+    cur.execute('INSERT INTO report_stock_issues_new SELECT * FROM report_stock_issues')
+    cur.execute('DROP TABLE report_stock_issues')
+    cur.execute('ALTER TABLE report_stock_issues_new RENAME TO report_stock_issues')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_report_stock_issues_open ON report_stock_issues(status, store_id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_stock_moves')")
+
+
+def _migration_report_name_picks(con, cur):
+    # 名称记忆 Name picks (owner, 2026-11-03): a manager tells POPCORE once which product a report name
+    # means. A pick confirms a line by itself only where a manager confirmed it: the same store and
+    # section (and display), with the product unchanged. Anywhere else the paste asks again with it picked.
+    from matcher import report_match_key  # local import, as in the jizhanming migration
+    for column in ('raw_name', 'note', 'picked_by', 'picked_at'):
+        cur.execute(f'ALTER TABLE report_match_choices ADD COLUMN {column} TEXT')
+    cur.execute("""CREATE TABLE report_match_situations (
+        name_key     TEXT    NOT NULL,
+        note_key     TEXT    NOT NULL,
+        product_id   INTEGER NOT NULL,
+        store_id     INTEGER NOT NULL REFERENCES stores(id),
+        section      TEXT    NOT NULL,
+        display      INTEGER NOT NULL DEFAULT 0 CHECK (display IN (0, 1)),
+        confirmed_by TEXT,
+        confirmed_at TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (name_key, note_key, product_id, store_id, section, display),
+        FOREIGN KEY (name_key, note_key, product_id)
+            REFERENCES report_match_choices(name_key, note_key, product_id) ON DELETE CASCADE
+    )""")
+    # The names in each store's latest paste of a day that no exact catalog name confirmed, for the page.
+    cur.execute("""CREATE TABLE report_name_log (
+        store_id         INTEGER NOT NULL REFERENCES stores(id),
+        report_date      TEXT    NOT NULL,
+        name_key         TEXT    NOT NULL,
+        note_key         TEXT    NOT NULL,
+        section          TEXT    NOT NULL,
+        display          INTEGER NOT NULL DEFAULT 0 CHECK (display IN (0, 1)),
+        position         INTEGER NOT NULL,
+        raw_name         TEXT    NOT NULL,
+        note             TEXT    NOT NULL DEFAULT '',
+        qty              INTEGER NOT NULL DEFAULT 0,
+        box_size         INTEGER,
+        loose_qty        INTEGER NOT NULL DEFAULT 0,
+        guess_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        parsed_by        TEXT,
+        parsed_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (store_id, report_date, name_key, note_key, section, display)
+    )""")
+    # Names a manager set aside (an outfit, a one-off order): the page stops listing them; pastes still ask.
+    cur.execute("""CREATE TABLE report_name_dismissals (
+        name_key     TEXT NOT NULL,
+        note_key     TEXT NOT NULL,
+        dismissed_by TEXT,
+        dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (name_key, note_key)
+    )""")
+    # Earlier picks were 卡机/随手记 only and kept no store: a saved report line with the same name, note
+    # and product shows where each one was confirmed. A name with two products stays disputed.
+    stores = {row[1]: row[0] for row in cur.execute('SELECT id, code FROM stores')}
+    picks = {(row[0], row[1]): row[2] for row in cur.execute(
+        """SELECT name_key, note_key, MIN(product_id) FROM report_match_choices
+           GROUP BY name_key, note_key HAVING COUNT(*) = 1""")}
+    for product_id, store, raw_name, notes, qty_pos, qty_cash in cur.execute(
+            'SELECT product_id, store, raw_name, notes, qty_pos, qty_cash FROM daily_sales').fetchall():
+        key = report_match_key(raw_name or '', notes or '')
+        if picks.get(key) != product_id or store not in stores:
+            continue
+        cur.execute("""UPDATE report_match_choices SET raw_name=?, note=? WHERE name_key=? AND note_key=?
+                       AND raw_name IS NULL""", ((raw_name or '').strip(), (notes or '').strip(), *key))
+        for section, qty in (('pos', qty_pos), ('cash', qty_cash)):
+            if qty:
+                cur.execute("""INSERT OR IGNORE INTO report_match_situations
+                    (name_key, note_key, product_id, store_id, section) VALUES (?, ?, ?, ?, ?)""",
+                    (*key, product_id, stores[store], section))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_name_picks')")
 
 
 def _run_migrations(con, cur):
@@ -2494,7 +2615,7 @@ def migrate_db():
     """)
 
     report_columns = {row[1] for row in cur.execute('PRAGMA table_info(daily_report_metadata)')}
-    for column in ('cash_exchanges', 'claw_stock_in', 'display_stock_in', 'display_stock_out'):
+    for column in ('cash_exchanges', 'claw_stock_in', 'display_stock_in', 'display_stock_out', 'store_transfers'):
         if column not in report_columns:
             cur.execute(f"ALTER TABLE daily_report_metadata ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
 
