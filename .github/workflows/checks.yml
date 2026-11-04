@@ -95,6 +95,7 @@ jobs:
       - run: python popcore_app/tests/browser/check_transfer_receiving.py
       - run: python popcore_app/tests/browser/check_restock_receiving.py
       - run: python popcore_app/tests/browser/check_restock_steps.py
+      - run: python popcore_app/tests/browser/check_restock_series.py
       - run: python popcore_app/tests/browser/check_special_orders.py
       - run: python popcore_app/tests/browser/check_store_day.py
       - run: python popcore_app/tests/browser/check_trades_today.py

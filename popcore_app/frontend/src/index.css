@@ -335,6 +335,12 @@ html, body {
   }
 }
 
+/* ── No double-tap zoom anywhere (owner, 2026-11-03): manipulation keeps scrolling and pinch zoom. ── */
+html,
+body {
+  touch-action: manipulation;
+}
+
 /* ── Touch UX: remove tap flash, use fast-tap ── */
 button,
 a,

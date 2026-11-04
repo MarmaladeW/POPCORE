@@ -9,6 +9,10 @@ import client from '../../api/client'
 import type { RestockSession, RestockItem } from './index'
 import { withUnit } from './units'
 import HiddenStock from './HiddenStock'
+import Icon from '../../components/pc/Icon'
+import { useIsPhone } from '../../components/pc/useIsPhone'
+import QtyStepper from './QtyStepper'
+import { familyGroups, partLabel } from './series'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -23,6 +27,7 @@ interface Props {
 export default function PickingStep({ session, live, onRefresh, onReceive }: Props) {
   const screens  = useBreakpoint()
   const isMobile = !screens.md
+  const phone    = useIsPhone()
 
   const [localFoundQty, setLocalFoundQty] = useState<Record<number, number>>({})
   const [previewOpen,   setPreviewOpen]   = useState(false)
@@ -201,6 +206,113 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
     },
   ]
 
+  const previewModal = (
+    <Modal
+      open={previewOpen}
+      title="确认入店清单"
+      okText="确认拣货"
+      cancelText="取消"
+      confirmLoading={completing}
+      onOk={handleComplete}
+      onCancel={() => setPreviewOpen(false)}
+      width={500}
+    >
+      <p style={{ marginBottom: 12 }}>
+        {live
+          ? '以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存：'
+          : '以下商品将从仓库库存转入门店库存：'}
+      </p>
+      {previewItems.length === 0
+        ? <Text type="secondary">没有找到任何商品（全部缺货）</Text>
+        : (
+          <Table
+            size="small"
+            columns={previewCols}
+            dataSource={previewItems}
+            rowKey="id"
+            pagination={false}
+          />
+        )
+      }
+      {notFoundCount > 0 && (
+        <Alert
+          type="warning"
+          message={`另有 ${notFoundCount} 件商品缺货，不会同步库存`}
+          style={{ marginTop: 12 }}
+          showIcon
+        />
+      )}
+    </Modal>
+  )
+
+  // Phone: the picker upstairs works series by series, one line per whole set, box or design.
+  const pickLabel = (item: RestockItem) => partLabel(item.role, item.design_name, item.jizhanming || item.name_cn_en)
+  const pickList = <ul className="pc-rq-groups pc-pick-groups">
+    {familyGroups(session.items).map(group => <li key={group.id} className="pc-rq-group">
+      <span className="pc-rq-group-head"><strong>{group.title}</strong>{group.sku && <small>{group.sku}</small>}</span>
+      <ul className="pc-pick-lines">
+        {group.items.map(item => {
+          const found = item.pick_status === 'found'
+          const out = item.pick_status === 'not_found'
+          const label = pickLabel(item)
+          return <li key={item.id} data-row-key={item.id}
+            className={`pc-pick-line${found ? ' row-found' : out ? ' row-not-found' : ''}`}>
+            <span className="pc-pick-line-text">
+              <span className="pc-rq-line-name">{label}</span>
+              <small>申请 <b>{withUnit(item.requested_qty, item.stock_unit)}</b> · {item.stock_hidden
+                ? (item.out_of_stock ? '楼上缺货' : '楼上有货') : `快照 ${withUnit(item.warehouse_stock_snapshot, item.stock_unit)}`}</small>
+            </span>
+            {locked
+              ? <span className={`pc-rq-status${found ? ' is-ok' : out ? ' is-out' : ''}`}>
+                  <i className={`pc-dot pc-dot-${found ? 'ok' : out ? 'out' : 'warn'}`} aria-hidden="true" />
+                  {found ? `已找到 ${withUnit(item.found_qty, item.stock_unit)}` : out ? '缺货' : '待确认'}
+                </span>
+              : <span className="pc-pick-controls">
+                  <QtyStepper value={shownFoundQty(item)} min={1} max={item.requested_qty} disabled={out}
+                    label={`找到数量 ${group.title} ${label}`} unit={undefined}
+                    onChange={value => setLocalFoundQty(prev => ({ ...prev, [item.id]: value }))} />
+                  <span className="pc-pick-choice">
+                    <button type="button" className="pc-pick-btn is-found" aria-pressed={found} onClick={() => handlePickUpdate(item, 'found')}>
+                      <Icon name="check" size={16} />找到
+                    </button>
+                    <button type="button" className="pc-pick-btn is-out" aria-pressed={out} onClick={() => handlePickUpdate(item, 'not_found')}>
+                      缺货
+                    </button>
+                  </span>
+                </span>}
+          </li>
+        })}
+      </ul>
+    </li>)}
+  </ul>
+
+  if (phone) return (
+    <div className="pc-rq pc-pick">
+      {!locked && <p className="pc-pick-progress" aria-live="polite">
+        <strong>已处理 {doneCount} / {totalCount}</strong>
+        <span><i className="pc-dot pc-dot-ok" aria-hidden="true" />找到 {foundCount}</span>
+        <span><i className="pc-dot pc-dot-out" aria-hidden="true" />缺货 {notFoundCount}</span>
+        {pendingCount > 0 && <span><i className="pc-dot pc-dot-warn" aria-hidden="true" />待处理 {pendingCount}</span>}
+      </p>}
+      {dispatched && !isCompleted && (
+        <Alert type="success" showIcon message="已确认拣货 · Pick confirmed"
+          description="商品已转为运输中，请在「收货」确认到店数量。Receive what arrived on the floor."
+          action={<Button type="primary" size="small" onClick={onReceive}>去收货 Receive</Button>} />
+      )}
+      {pickList}
+      {isCompleted && <Alert type="success" showIcon
+        message={`补货完成！${session.completed_at ? `完成时间：${session.completed_at.slice(0, 16)}` : ''}`} />}
+      {!locked && <footer className="pc-rq-bar">
+        <span className="pc-rq-bar-text">
+          <strong>{allDone ? '全部处理完' : `还有 ${pendingCount} 项`}</strong>
+          <small>{allDone ? 'Confirm what was found' : '每项选 找到 或 缺货'}</small>
+        </span>
+        <Button type="primary" size="large" icon={<ShopOutlined />} disabled={!allDone} onClick={() => setPreviewOpen(true)}>确认拣货</Button>
+      </footer>}
+      {previewModal}
+    </div>
+  )
+
   return (
     <div style={{ paddingTop: 16 }}>
       {/* Instruction banner */}
@@ -296,43 +408,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
         />
       )}
 
-      {/* Confirmation Modal with preview */}
-      <Modal
-        open={previewOpen}
-        title="确认入店清单"
-        okText="确认拣货"
-        cancelText="取消"
-        confirmLoading={completing}
-        onOk={handleComplete}
-        onCancel={() => setPreviewOpen(false)}
-        width={500}
-      >
-        <p style={{ marginBottom: 12 }}>
-          {live
-            ? '以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存：'
-            : '以下商品将从仓库库存转入门店库存：'}
-        </p>
-        {previewItems.length === 0
-          ? <Text type="secondary">没有找到任何商品（全部缺货）</Text>
-          : (
-            <Table
-              size="small"
-              columns={previewCols}
-              dataSource={previewItems}
-              rowKey="id"
-              pagination={false}
-            />
-          )
-        }
-        {notFoundCount > 0 && (
-          <Alert
-            type="warning"
-            message={`另有 ${notFoundCount} 件商品缺货，不会同步库存`}
-            style={{ marginTop: 12 }}
-            showIcon
-          />
-        )}
-      </Modal>
+      {previewModal}
     </div>
   )
 }

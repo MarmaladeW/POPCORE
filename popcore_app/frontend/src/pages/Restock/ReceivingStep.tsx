@@ -2,6 +2,9 @@ import { Alert, Button, Input, InputNumber, Space, Table, Tag, Typography, messa
 import { useEffect, useState } from 'react'
 import useCheckoutMutation from '../Sales/useCheckoutMutation'
 import type { RestockSession } from './index'
+import { useIsPhone } from '../../components/pc/useIsPhone'
+import QtyStepper from './QtyStepper'
+import { partLabel } from './series'
 
 const { Text } = Typography
 
@@ -11,6 +14,7 @@ export default function ReceivingStep({ session, onRefresh, onBusy }: {
   onBusy: (busy: boolean) => void
 }) {
   const delivery = session.delivery
+  const phone = useIsPhone()
   const [reason, setReason] = useState('')
   const [quantities, setQuantities] = useState<Record<number, number>>({})
   const mutation = useCheckoutMutation(() => {
@@ -57,10 +61,26 @@ export default function ReceivingStep({ session, onRefresh, onBusy }: {
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%', paddingTop: 16 }}>
+    <Space className="pc-recv" direction="vertical" size="middle" style={{ width: '100%', paddingTop: 16 }}>
       <Alert type="info" showIcon message="Confirm what physically arrived on the sales floor." />
       {mutation.notice}
-      <Table
+      {phone ? <ul className="pc-rq-groups pc-recv-lines" aria-label="Delivery lines">
+        {activeDelivery.lines.map(line => {
+          const item = session.items.find(value => value.product_id === line.product_id)
+          const name = item?.family_title || item?.jizhanming || item?.name_cn_en || `Product ${line.product_id}`
+          const part = item && item.role && item.role !== 'item' ? partLabel(item.role, item.design_name) : ''
+          return <li key={line.line_no} className="pc-recv-line">
+            <span className="pc-pick-line-text">
+              <span className="pc-rq-line-name">{name}{part && <small> · {part}</small>}</span>
+              <small>申请 {line.requested_quantity} · 已拣 {line.dispatched_quantity} · 已收 {line.received_quantity}
+                {' · '}<b className={line.outstanding_transit ? 'pc-recv-transit' : undefined}>在途 {line.outstanding_transit}</b></small>
+            </span>
+            {line.outstanding_transit > 0 && <QtyStepper label={`Line ${line.line_no} quantity`} min={0} max={line.outstanding_transit}
+              disabled={mutation.pending} value={quantity(line)}
+              onChange={value => setQuantities(previous => ({ ...previous, [line.line_no]: value }))} />}
+          </li>
+        })}
+      </ul> : <Table
         size="small"
         rowKey="line_no"
         pagination={false}
@@ -81,7 +101,7 @@ export default function ReceivingStep({ session, onRefresh, onBusy }: {
                 onChange={value => setQuantities(previous => ({ ...previous, [line.line_no]: value ?? 0 }))} />
             : '—' },
         ]}
-      />
+      />}
       {activeDelivery.status === 'completed' ? (
         <Alert type="success" showIcon message="Restock delivery is complete." />
       ) : (
@@ -89,7 +109,7 @@ export default function ReceivingStep({ session, onRefresh, onBusy }: {
           {outstanding.length > 0 && (
             <Space direction="vertical">
               <Text>Enter what arrived or returned. Use 0 to leave an item in transit.</Text>
-              <Space wrap>
+              <Space wrap className="pc-recv-actions">
                 <Button type="primary" loading={mutation.saving} disabled={mutation.pending || !validQuantities} onClick={() => act('receive')}>Receive quantities</Button>
                 <Button loading={mutation.saving} disabled={mutation.pending || !validQuantities} onClick={() => act('return')}>Return quantities to source</Button>
               </Space>

@@ -201,6 +201,58 @@ def count_scope(con, actor, store_code):
     return _read(con, work)
 
 
+def family_anchors(con, text):
+    """One product per card matching a name, 记账名, SKU, design name, alias or an exact barcode,
+    best match first (a design or sealed set finds its blind box). 补货 finds series the same way."""
+    needle = normalize_design_name(text)
+    scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
+    owners = {row['id']: row['product_id'] for row in con.execute('SELECT id, product_id FROM product_series')}
+    set_box = {row[0]: row[1] for row in con.execute(
+        """SELECT c.source_product_id, c.target_product_id FROM product_conversions c
+           JOIN products s ON s.id=c.source_product_id WHERE s.stock_form='sealed_set'
+           ORDER BY c.version""")}
+    products = {}
+    hits = []
+    for row in con.execute(
+            f"""SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.design_name, p.series_id, p.stock_form,
+                       {product_alias_text_sql('p')} AS alias_text, ps.name AS series_name
+                FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id"""):
+        products[row['id']] = row
+        exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
+        haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
+            'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
+        if exact or needle in haystack:
+            hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, row['id']))
+
+    def card_of(product_id):
+        # As _family: a sealed set finds its blind box and a confirmed design its series' owner.
+        product = products[product_id]
+        if product['stock_form'] == 'sealed_set' and product_id in set_box and set_box[product_id] in products:
+            product_id = set_box[product_id]
+            product = products[product_id]
+        series_id = product['series_id']
+        if product['stock_form'] == 'confirmed_design' and series_id is not None:
+            owner = owners.get(series_id)
+            if owner is None:
+                return ('series', series_id), product_id
+            return ('product', owner), owner
+        return ('product', product_id), product_id
+
+    cards = {}
+    for _, product_id in sorted(hits):
+        key, anchor = card_of(product_id)
+        cards.setdefault(key, anchor)
+        if len(cards) >= SEARCH_LIMIT:
+            break
+    return list(cards.values())
+
+
+def family_members(con, product_id):
+    """(head product or None, series id or None, [(role, product, boxes per set)]) of product_id's card."""
+    head, series_id = _family(con, product_id)
+    return head, series_id, _members(con, head, series_id)
+
+
 def search_targets(con, actor, store_code, location_code, query):
     """Products to count matching a name, 记账名, SKU, design name, alias or an exact barcode,
     one result per card (a design or sealed set finds its blind box)."""
@@ -210,48 +262,8 @@ def search_targets(con, actor, store_code, location_code, query):
         scope = _scope(con, actor, store_code, location_code)
         if not text:
             return {'results': []}
-        needle = normalize_design_name(text)
-        scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
-        owners = {row['id']: row['product_id'] for row in con.execute('SELECT id, product_id FROM product_series')}
-        set_box = {row[0]: row[1] for row in con.execute(
-            """SELECT c.source_product_id, c.target_product_id FROM product_conversions c
-               JOIN products s ON s.id=c.source_product_id WHERE s.stock_form='sealed_set'
-               ORDER BY c.version""")}
-        products = {}
-        hits = []
-        for row in con.execute(
-                f"""SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.design_name, p.series_id, p.stock_form,
-                           {product_alias_text_sql('p')} AS alias_text, ps.name AS series_name
-                    FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id"""):
-            products[row['id']] = row
-            exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
-            haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
-                'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
-            if exact or needle in haystack:
-                hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, row['id']))
-
-        def card_of(product_id):
-            # As _family: a sealed set finds its blind box and a confirmed design its series' owner.
-            product = products[product_id]
-            if product['stock_form'] == 'sealed_set' and product_id in set_box and set_box[product_id] in products:
-                product_id = set_box[product_id]
-                product = products[product_id]
-            series_id = product['series_id']
-            if product['stock_form'] == 'confirmed_design' and series_id is not None:
-                owner = owners.get(series_id)
-                if owner is None:
-                    return ('series', series_id), product_id
-                return ('product', owner), owner
-            return ('product', product_id), product_id
-
-        cards = {}
-        for _, product_id in sorted(hits):
-            key, anchor = card_of(product_id)
-            cards.setdefault(key, anchor)
-            if len(cards) >= SEARCH_LIMIT:
-                break
         results = []
-        for anchor in cards.values():
+        for anchor in family_anchors(con, text):
             head, series_id = _family(con, anchor)
             members = _here(_members(con, head, series_id), scope['location'])
             if not members:

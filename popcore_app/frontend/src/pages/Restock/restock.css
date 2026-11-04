@@ -22,7 +22,8 @@
 .pc-td-name small { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
 .pc-kraft-cell { background: var(--kraft-tile) !important; color: var(--kraft-ink); }
 .pc-restock-note { margin: 8px 0 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; }
-.pc-restock-status { display: inline-flex; margin-left: 10px; font-size: 12px; font-weight: 400; }
+/* Styled here: the Home page's status style is not loaded on 补货. */
+.pc-restock-status { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; color: var(--text-secondary); font-size: 12px; font-weight: 400; line-height: 18px; white-space: nowrap; }
 .pc-restock-steps { padding: 12px 24px 4px; border-bottom: 1px solid var(--line-hair); }
 .pc-restock-tabs { padding: 0 16px; }
 .pc-step-tab b { font-weight: 500; }
@@ -45,3 +46,139 @@
 .pc-restock-fold[open] > summary { border-bottom: 1px solid var(--line-hair); }
 .pc-restock-fold .pc-restock-table.ant-table-wrapper { border: 0; }
 .pc-restock-fold .pc-restock-note { padding: 0 14px 12px; }
+
+/* 录入 by series (owner, 2026-11-03): search → the series card → whole sets, single boxes, designs.
+   Phone first; on desktop the card sits beside the sheet. */
+.pc-rq { display: grid; gap: 16px; padding-top: 16px; }
+.pc-rq-find, .pc-rq-side { display: grid; align-content: start; gap: 12px; min-width: 0; }
+.pc-rq-results, .pc-rq-groups, .pc-rq-lines, .pc-rq-group-lines, .pc-pick-lines { margin: 0; padding: 0; list-style: none; }
+.pc-rq-sub { display: flex; align-items: baseline; gap: 6px; margin: 0; font-size: 13.5px; font-weight: 600; line-height: 1.45; }
+.pc-rq-sub small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-rq-empty { margin: 0; padding: 16px; border: 1px dashed var(--line-dashed); color: var(--text-tertiary); font-size: 12px; line-height: 1.5; }
+.pc-rq-empty strong { display: block; color: var(--text-secondary); font-size: 13px; font-weight: 500; }
+
+.pc-rq-search.ant-input-affix-wrapper { min-height: 48px; padding: 0 12px; border-color: var(--line-control); border-radius: 0; }
+.pc-rq-search .ant-input { font-size: 16px; }
+.pc-rq-search .ant-input-prefix { margin-inline-end: 8px; color: var(--text-tertiary); }
+
+.pc-rq-results, .pc-rq-groups, .pc-rq-lines { border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-rq-results > li + li, .pc-rq-groups > li + li { border-top: 1px solid var(--line-hair); }
+.pc-rq-results button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 68px; padding: 10px 12px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pc-rq-results .pc-series-thumbnail, .pc-rq-results .pc-series-photo-placeholder { width: 44px; height: 44px; flex-basis: 44px; }
+.pc-rq-result-text { display: grid; flex: 1; gap: 1px; min-width: 0; }
+.pc-rq-result-text strong { font-size: 14px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.pc-rq-result-text small { color: var(--text-tertiary); font-size: 12px; line-height: 1.45; }
+.pc-rq-result-text .pc-rq-result-back { color: var(--kraft-ink); }
+.pc-rq-result-text .pc-rq-result-back.is-out { color: var(--status-out-ink); }
+.pc-rq-added { flex: none; padding: 1px 6px; border: 1px solid var(--line-soft); color: var(--text-secondary); font-size: 11.5px; line-height: 17px; white-space: nowrap; }
+.pc-rq-results .pc-icon, .pc-rq-group-head .pc-icon { flex: none; color: var(--text-tertiary); }
+.pc-rq-results button:active, button.pc-rq-group:active { background: var(--surface-subtle); }
+@media (hover: hover) {
+  .pc-rq-results button:hover, button.pc-rq-group:hover { background: var(--surface-subtle); }
+}
+
+/* The sheet: one block per series, its parts with numbers on one right edge. */
+.pc-rq-group { display: grid; gap: 6px; width: 100%; padding: 12px 14px; border: 0; background: none; color: inherit; font: inherit; text-align: left; }
+button.pc-rq-group { cursor: pointer; }
+.pc-rq-group-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pc-rq-group-head strong { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.pc-rq-group-head small { flex: none; color: var(--text-tertiary); font-size: 11.5px; }
+.pc-rq-group-lines { display: grid; gap: 2px; }
+.pc-rq-group-lines li { display: flex; justify-content: space-between; gap: 12px; color: var(--text-secondary); font-size: 12.5px; line-height: 1.6; }
+.pc-rq-group-lines span { min-width: 0; overflow-wrap: anywhere; }
+.pc-rq-group-lines b { flex: none; color: var(--text-primary); font-weight: 500; }
+
+/* The series card */
+.pc-rq-card { display: grid; gap: 12px; scroll-margin-top: 64px; }
+.pc-rq-card-head { display: grid; gap: 4px; }
+.pc-rq-back { justify-self: start; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 12px 0 0; border: 0; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; cursor: pointer; }
+.pc-rq-card-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.pc-rq-card-title .pc-series-thumbnail, .pc-rq-card-title .pc-series-photo-placeholder { width: 52px; height: 52px; flex-basis: 52px; }
+.pc-rq-card-title > span { display: grid; min-width: 0; }
+.pc-rq-card-title h3 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.3; letter-spacing: -0.17px; overflow-wrap: anywhere; }
+.pc-rq-card-title small { color: var(--text-tertiary); font-size: 12px; line-height: 1.45; }
+.pc-rq-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; padding: 10px 12px; }
+.pc-rq-line + .pc-rq-line { border-top: 1px solid var(--line-hair); }
+.pc-rq-line.is-quiet { min-height: 0; }
+.pc-rq-line-text { display: grid; gap: 3px; min-width: 0; }
+.pc-rq-line-name { font-size: 14px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.pc-rq-line-name small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-rq-line-text > small { color: var(--text-tertiary); font-size: 12px; line-height: 1.4; }
+.pc-rq-stock { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
+.pc-rq-kraft { padding: 0 6px; background: var(--kraft-tile); color: var(--kraft-ink); white-space: nowrap; }
+.pc-rq-kraft b { font-weight: 600; }
+.pc-rq-status { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); white-space: nowrap; }
+.pc-rq-status.is-warn { color: var(--status-restock-ink); }
+.pc-rq-status.is-out { color: var(--status-out-ink); }
+.pc-rq-status.is-ok { color: var(--status-ok-ink); }
+
+/* − n + : 44px targets, the number in tabular figures; 0 stays quiet until something is asked for. */
+.pc-qty { display: inline-flex; flex: none; align-items: center; }
+.pc-qty-step { display: inline-grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--line-control); background: var(--surface-default); color: var(--text-primary); cursor: pointer; transition: background-color .12s ease-out; }
+.pc-qty-step:active:not(:disabled) { background: var(--surface-soft); }
+.pc-qty-step:disabled { border-color: var(--line-soft); color: var(--text-disabled); cursor: default; }
+.pc-qty-input { position: relative; width: 50px; height: 44px; margin: 0 -1px; padding: 0; border: 1px solid var(--line-control); border-radius: 0; background: var(--surface-default); color: var(--text-tertiary); font: inherit; font-size: 18px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; caret-color: var(--surface-ink); appearance: none; }
+.pc-qty.is-set .pc-qty-input { color: var(--text-primary); }
+.pc-qty-input:focus { z-index: 1; border-color: var(--surface-ink); outline: none; }
+.pc-qty-input:disabled { background: var(--surface-subtle); color: var(--text-disabled); }
+.pc-qty.is-outside .pc-qty-input { z-index: 1; border-color: var(--status-out-ink); color: var(--status-out-ink); }
+.pc-qty-step:focus-visible { z-index: 1; outline: 2px solid var(--surface-ink); outline-offset: -2px; }
+.pc-qty-unit { width: 24px; padding-left: 6px; color: var(--text-secondary); font-size: 13px; }
+
+/* Bottom bar: what this card or sheet adds up to, and its one action; stays above the thumb. */
+.pc-rq-bar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-rq-bar-text { display: grid; min-width: 0; }
+.pc-rq-bar-text strong { font-size: 14px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.pc-rq-bar-text small { color: var(--text-tertiary); font-size: 11.5px; line-height: 1.45; }
+.pc-rq-bar .ant-btn { flex: none; min-width: 112px; min-height: 48px; border-radius: 0; font-weight: 600; }
+
+/* 拣货 and 收货 on a phone */
+.pc-pick-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0; color: var(--text-secondary); font-size: 12.5px; }
+.pc-pick-progress strong { margin-right: auto; color: var(--text-primary); font-size: 14px; font-weight: 600; }
+.pc-pick-progress span { display: inline-flex; align-items: center; gap: 5px; }
+.pc-pick-lines { display: grid; margin: 2px -14px -12px; }
+.pc-pick-line { display: grid; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line-hair); }
+.pc-pick-line.row-not-found .pc-rq-line-name { color: var(--text-secondary); }
+.pc-pick-line-text { display: grid; gap: 2px; min-width: 0; }
+.pc-pick-line-text > small { color: var(--text-tertiary); font-size: 12px; line-height: 1.45; }
+.pc-pick-line-text small b { color: var(--text-primary); font-weight: 500; }
+.pc-pick-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pc-pick-choice { display: inline-flex; }
+.pc-pick-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 68px; height: 44px; padding: 0 12px; border: 1px solid var(--line-control); background: var(--surface-default); color: var(--text-secondary); font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer; transition: background-color .12s ease-out, color .12s ease-out; }
+.pc-pick-btn + .pc-pick-btn { margin-left: -1px; }
+.pc-pick-btn[aria-pressed="true"] { position: relative; z-index: 1; color: var(--text-on-ink); }
+.pc-pick-btn.is-found[aria-pressed="true"] { border-color: var(--status-ok-ink); background: var(--status-ok-ink); }
+.pc-pick-btn.is-out[aria-pressed="true"] { border-color: var(--status-out-ink); background: var(--status-out-ink); }
+.pc-pick-btn:focus-visible { z-index: 2; outline: 2px solid var(--surface-ink); outline-offset: 1px; }
+.pc-recv-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 14px; }
+.pc-recv-transit { color: var(--status-restock-ink); font-weight: 500; }
+
+.pc-restock-time { margin-left: 10px; color: var(--text-tertiary); font-size: 13px; font-weight: 400; }
+
+@media (min-width: 768px) {
+  .pc-rq:not(.is-read) { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: start; gap: 20px; }
+}
+
+/* A restock sheet fills a phone: header with its close stays on top, the steps are the tabs. */
+@media (max-width: 767.98px) {
+  .pc-rq.is-card .pc-rq-side { display: none; }
+  .pc-rq-bar { margin: 0 -16px; padding-right: 16px; padding-left: 16px; }
+  .ant-modal.pc-restock-modal { top: 0; width: 100% !important; max-width: 100% !important; margin: 0 !important; padding-bottom: 0; }
+  .ant-modal.pc-restock-modal .ant-modal-content { min-height: 100vh; min-height: 100dvh; padding: 0 16px; border-radius: 0; box-shadow: none; }
+  .ant-modal.pc-restock-modal .ant-modal-header { position: sticky; top: 0; z-index: 3; margin: 0 -16px; padding: env(safe-area-inset-top) 4px 0 16px; border-bottom: 1px solid var(--line-hair); background: var(--surface-default); }
+  .ant-modal.pc-restock-modal .ant-modal-body { padding: 0 !important; }
+  .pc-restock-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 52px; }
+  .pc-restock-head > span { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; font-size: 15px; font-weight: 600; line-height: 1.35; }
+  .pc-restock-head .pc-restock-time, .pc-restock-head .pc-restock-status { margin-left: 0; }
+  .pc-restock-close { display: inline-grid; flex: none; place-items: center; width: 44px; height: 44px; border: 0; background: none; color: var(--text-primary); cursor: pointer; }
+  .pc-restock-close .pc-icon { transform: rotate(45deg); }
+  .pc-restock-close:disabled { color: var(--text-disabled); }
+  .pc-restock-steps { display: none; }
+  .pc-restock-tabs { padding: 0; }
+  .pc-restock-tabs > .ant-tabs-nav { margin-bottom: 0; }
+  .pc-restock-tabs .ant-tabs-nav-list { flex: 1; }
+  .pc-restock-tabs .ant-tabs-tab { flex: 1; justify-content: center; margin: 0 !important; }
+  .pc-recv-actions.ant-space { display: grid; width: 100%; }
+  .pc-recv-actions .ant-btn, .pc-recv .ant-btn { width: 100%; min-height: 48px; }
+}
+.pc-rq-kraft.is-empty { background: var(--status-out-tint); color: var(--status-out-ink); }
