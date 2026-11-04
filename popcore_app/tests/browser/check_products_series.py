@@ -125,7 +125,10 @@ async def flow(browser, width):
         await editor.get_by_label('Design price', exact=True).fill('39.99')
         await expect(save).to_be_enabled()
         await page.wait_for_timeout(400)  # the button's colour fades in
-        await page.screenshot(path=OUT / f'design-edit-{width}.png', full_page=True)
+        # Not full_page: capturing the whole page resizes the window, which in CI can cross the phone
+        # breakpoint and remount the desktop series detail, closing the open editor.
+        await editor.scroll_into_view_if_needed()
+        await page.screenshot(path=OUT / f'design-edit-{width}.png')
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         await save.click()
         await until(lambda: len([r for r in state['requests'] if r['path'] == '/api/products/53/design/edit']) == 1)
