@@ -1125,6 +1125,26 @@ def get_inventory_overview():
         con.close()
 
 
+@bp.get('/api/inventory/value')
+@login_required
+def get_inventory_value():
+    from inventory_value import inventory_value
+    con = get_db()
+    args = request.args
+    try:
+        return jsonify(inventory_value(con, request.jwt_payload, args.get('store_code'), args.get('place'), args.get('line')))
+    except InventoryHidden as exc:
+        return hidden_response(exc)
+    except PermissionError as exc:
+        return jsonify({'error': str(exc) or 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
+    except InventoryError as exc:
+        return _inventory_error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    finally:
+        con.close()
+
+
 @bp.get('/api/inventory/series/<int:series_id>/history')
 @login_required
 def get_inventory_series_history(series_id):

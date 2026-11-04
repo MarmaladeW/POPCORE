@@ -115,10 +115,11 @@ async def check(browser, width):
     await page.screenshot(path=OUT/f'overview-lower-{width}.png',animations='disabled')
     await listing.scroll_into_view_if_needed()
     await page.screenshot(path=OUT/f'list-{width}.png',animations='disabled')
-    # A search hides the overview so the matches come first.
+    # The dashboard comes first, then 商品 Products (owner, 2026-11-03): a search keeps the dashboard and brings the matches into view.
     await page.get_by_label('Search series or design',exact=True).fill('smiski')
     await page.get_by_label('Search series or design',exact=True).press('Enter')
-    await expect(overview).not_to_be_visible()
+    await expect(page.get_by_role('heading',name='商品 Products')).to_be_in_viewport()
+    await expect(overview).to_be_attached()
     # Opening a refill row goes to that product's stock.
     await page.get_by_label('Search series or design',exact=True).fill('')
     await page.get_by_label('Search series or design',exact=True).press('Enter')
