@@ -3,6 +3,7 @@ import asyncio
 from contextlib import closing
 from datetime import date, timedelta
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -18,6 +19,12 @@ from blueprints import users as users_blueprint
 import checkout_access
 
 OUT = HERE.parents[2] / '.local' / 'user-access' / 'browser'
+
+
+async def pick(page, name):
+    """Open one person from the 员工 list; their access lives in the detail beside it (or on its own page on phone)."""
+    # Rows show the display name, then the username; match the username.
+    await page.get_by_role('region', name='员工列表 People').get_by_role('button').filter(has_text=re.compile(rf'\b{name}\b')).click()
 
 
 async def check(browser, case):
@@ -65,7 +72,9 @@ async def check(browser, case):
     await expect(dt).not_to_be_checked()
     await dt.click()
     await expect(dt).to_be_checked()
+    await pick(page, 'Staff')
     await expect(staff_dt).not_to_be_checked()
+    await pick(page, 'Admin')
     await page.goto(BASE + '/today')
     await expect(page.get_by_role('region', name='Store tasks')).to_be_visible()
     await expect(page.get_by_text('No inventory store access', exact=True)).to_have_count(0)
@@ -89,6 +98,8 @@ async def check(browser, case):
     await expect(dt).not_to_be_checked()
     for width in (1440, 390):
         await page.set_viewport_size({'width': width, 'height': 980})
+        if width < 768:
+            await pick(page, 'Admin')
         await expect(dt).to_be_visible()
         assert await page.evaluate('document.body.scrollWidth') <= width + 2
         await page.screenshot(path=OUT/f'users-{width}.png', full_page=True, animations='disabled')
@@ -124,6 +135,7 @@ async def delete_confirmation(page, case, api):
     for width in (1440, 390):
         await page.set_viewport_size({'width': width, 'height': 980})
         await page.goto(BASE + '/users')
+        await pick(page, 'Staff')
         await page.locator('button:not([disabled])', has_text='删除').click()
         confirm = page.locator('.ant-popconfirm')
         await expect(confirm).to_contain_text('These shifts stay on the schedule so you can reassign them')

@@ -78,6 +78,7 @@ jobs:
       - run: python popcore_app/tests/browser/check_staff_home.py
       - run: python popcore_app/tests/browser/check_store_navigation.py
       - run: python popcore_app/tests/browser/check_user_access.py
+      - run: python popcore_app/tests/browser/check_employee_hours.py
       - run: python popcore_app/tests/browser/check_inventory_visibility.py
       - run: python popcore_app/tests/browser/check_inventory_core.py
       - run: python popcore_app/tests/browser/check_design_inventory.py

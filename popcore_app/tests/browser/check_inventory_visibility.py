@@ -106,9 +106,14 @@ async def admin_picks(browser, fixture, width, granted):
     context, page = await open_as(browser, fixture, 'admin', width)
     try:
         await page.goto(BASE + '/users')
-        staff = page.get_by_role('checkbox', name='Staff: DT inventory view', exact=True)
+        people = page.get_by_role('region', name='员工列表 People')
+        await people.get_by_role('button', name=re.compile(r'^Manager\b')).click()
         await expect(page.get_by_role('checkbox', name='Manager: DT inventory view', exact=True)).to_have_count(0)
         await expect(page.get_by_text('总是可见 Always', exact=True).first).to_be_visible()
+        if width < 768:
+            await page.go_back()
+        await people.get_by_role('button', name=re.compile(r'^Staff\b')).click()
+        staff = page.get_by_role('checkbox', name='Staff: DT inventory view', exact=True)
         await expect(staff).to_be_checked(checked=not granted)
         await staff.click()
         await expect(staff).to_be_checked(checked=granted)

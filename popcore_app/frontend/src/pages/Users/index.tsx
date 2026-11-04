@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import {
-  Table, Space, Popconfirm, ColorPicker, Form, Input, Select,
-  Switch, message, Tag, Checkbox, Alert,
+  Popconfirm, ColorPicker, Form, Input, Select, Segmented,
+  Switch, message, Checkbox, Alert, DatePicker,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
-import { Pipette, Plus, RefreshCw } from 'lucide-react'
+import dayjs from 'dayjs'
+import { ChevronLeft, ChevronRight, Pipette, Plus, RefreshCw, Search } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole } from '../../auth/useRole'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -18,6 +19,7 @@ import {
   getTrainees,
   renameEmployee,
   setEmployeeColor,
+  setEmployeeRegular,
   setEmployeeSchedulable,
   setEmployeeStores,
   type Employee,
@@ -29,9 +31,9 @@ import {
   persistEmployeeSetting,
   updateEmployeeSetting,
 } from '../Schedule/employeeScheduling'
+import { isRegularOn } from '../Schedule/monthlyDetail'
+import RegularMark from '../Schedule/RegularMark'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent } from '@/components/ui/card'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
@@ -120,22 +122,7 @@ const ROLE_OPTIONS = [
   { value: 'manager', label: '经理' },
   { value: 'admin',   label: '管理员' },
 ]
-
-// Role colors form one family (indigo → violet → sky → grey by rank) instead
-// of the old red/orange alarm palette
-const ROLE_BADGE_STYLE: Record<string, React.CSSProperties> = {
-  admin:   { background: '#EEF2FF', color: '#3730A3', borderColor: '#C7D2FE' },
-  manager: { background: '#F5F3FF', color: '#5B21B6', borderColor: '#DDD6FE' },
-  staff:   { background: '#F0F9FF', color: '#075985', borderColor: '#BAE6FD' },
-  viewer:  { background: '#F4F4F5', color: '#52525B', borderColor: '#D4D4D8' },
-}
-
-const ROLE_AVATAR: Record<string, { bg: string; fg: string }> = {
-  admin:   { bg: '#EEF2FF', fg: '#3730A3' },
-  manager: { bg: '#F5F3FF', fg: '#5B21B6' },
-  staff:   { bg: '#F0F9FF', fg: '#075985' },
-  viewer:  { bg: '#F4F4F5', fg: '#71717A' },
-}
+const roleLabel = (role: string) => ROLE_OPTIONS.find(o => o.value === role)?.label ?? role
 
 /** Full-spectrum picker with the curated calendar colors kept as shortcuts. */
 function EmployeeColorPicker({ value, onChange, disabled = false }: {
@@ -175,7 +162,6 @@ function EmployeeColorPicker({ value, onChange, disabled = false }: {
     <div className="inline-flex items-center gap-1">
       <ColorPicker
         value={value || '#6366f1'}
-        size="small"
         disabled={disabled || picking}
         disabledAlpha
         showText={(color) => normalizeEmployeeColor(color.toHexString())}
@@ -186,7 +172,7 @@ function EmployeeColorPicker({ value, onChange, disabled = false }: {
         type="button"
         variant="outline"
         size="icon"
-        className="h-7 w-7 shrink-0"
+        className="h-9 w-9 shrink-0"
         disabled={disabled || picking}
         title="从屏幕取色 / Pick color from screen"
         aria-label="从屏幕取色 / Pick color from screen"
@@ -198,65 +184,16 @@ function EmployeeColorPicker({ value, onChange, disabled = false }: {
   )
 }
 
-const ME_BADGE_STYLE: React.CSSProperties = {
-  background: '#dcfce7', color: '#166534', borderColor: '#86efac',
-}
-
-
 interface EmpStoreEntry {
   empId:  number
   name:   string
   stores: string[]
   color:  string
   isSchedulable: number
+  regularSince: string | null
 }
 
-/** Store badges (read-only). Top-level component: defining these inside
- *  UsersPage gave them a new identity every render, so React remounted the
- *  select on each state change and the dropdown closed after every pick. */
-function StoreBadges({ codes, storeColors }: {
-  codes: string[]
-  storeColors: Record<string, string>
-}) {
-  if (codes.length === 0) {
-    return <span style={{ fontSize: 11, color: '#9ca3af' }}>未分配</span>
-  }
-  return (
-    <>
-      {codes.map(code => (
-        // Same colors the schedule uses for each store, not a separate set
-        <Tag key={code} color={storeColors[code] || 'default'} style={{ fontSize: 11, marginRight: 2 }}>
-          {code}
-        </Tag>
-      ))}
-    </>
-  )
-}
-
-/** Store edit control (manager+). */
-function StoreSelect({ entry, storeOptions, onChange }: {
-  entry?: EmpStoreEntry
-  storeOptions: { value: string; label: string }[]
-  onChange: (vals: string[]) => void
-}) {
-  if (!entry) {
-    return (
-      <span style={{ fontSize: 11, color: '#9ca3af' }} title="该用户首次登录后才能分配门店">—</span>
-    )
-  }
-  return (
-    <Select
-      mode="multiple"
-      size="small"
-      style={{ minWidth: 120 }}
-      value={entry.stores}
-      onChange={onChange}
-      options={storeOptions}
-      placeholder="未分配"
-      maxTagCount={3}
-    />
-  )
-}
+interface StoreRow { code: string; name: string }
 
 /** Delete confirmation listing the shifts still assigned from today on. Deleting keeps
  *  them on the schedule, so the manager can see what to reassign before confirming. */
@@ -298,40 +235,268 @@ function DeleteUserConfirm({ user, disabled, onConfirm }: {
     <Popconfirm
       title={`删除用户 ${user.username}？`}
       description={description}
-      // Anchored to the button's right edge: the list loads after opening and grows leftwards.
-      placement="topRight"
+      // Anchored to the button's left edge: the detail's footer starts there.
+      placement="topLeft"
       disabled={disabled}
       onOpenChange={open => { if (open) loadShifts() }}
       onConfirm={onConfirm}
       okButtonProps={{ danger: true, disabled: !shifts && !error }}
     >
-      <Button
-        size="sm"
-        variant="outline"
-        className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
-        disabled={disabled}
-      >删除</Button>
+      <Button variant="outline" className="pc-users-delete" disabled={disabled}>删除</Button>
     </Popconfirm>
   )
 }
 
+/** One person in the list: what you need to find them and spot what's off. */
+function PersonRow({ user, entry, isSelf, selected, chevron, today, onSelect }: {
+  user: User
+  entry?: EmpStoreEntry
+  isSelf: boolean
+  selected: boolean
+  chevron: boolean
+  today: string
+  onSelect: () => void
+}) {
+  const name = entry?.name || user.username
+  const meta = [
+    name !== user.username ? user.username : null,
+    !entry ? '首次登录后排班' : entry.stores.length ? `排班 ${entry.stores.join(' ')}` : '未分配门店',
+    user.is_active !== 1 ? '已停用' : null,
+    user.is_active === 1 && entry?.isSchedulable === 0 ? '不排班' : null,
+    !user.last_login ? '从未登录' : null,
+  ].filter(Boolean).join(' · ')
+  return <li>
+    <button type="button" className="pc-person" aria-current={selected || undefined} onClick={onSelect}
+      data-off={user.is_active !== 1 || undefined}>
+      <span className="pc-person-dot" style={entry ? { background: entry.color } : undefined} aria-hidden="true" />
+      <span className="pc-person-main">
+        <strong>{name}{isSelf && <span className="pc-users-me">我</span>}</strong>
+        <small>{meta}</small>
+      </span>
+      {isRegularOn(entry?.regularSince, today) && <RegularMark since={entry?.regularSince} />}
+      <span className="pc-role">{roleLabel(user.role)}</span>
+      {chevron && <ChevronRight className="pc-person-chevron" aria-hidden="true" />}
+    </button>
+  </li>
+}
+
+function Group({ zh, en, children, hint }: { zh: string; en: string; children: ReactNode; hint?: ReactNode }) {
+  return <section className="pc-ud-group" aria-label={`${zh} ${en}`}>
+    <h3><span>{zh}</span> <small>{en}</small></h3>
+    {children}
+    {hint && <p className="pc-ud-hint">{hint}</p>}
+  </section>
+}
+
+function Field({ label, en, children, hint }: { label: string; en?: string; children: ReactNode; hint?: ReactNode }) {
+  return <div className="pc-ud-row">
+    <span className="pc-ud-label">{label}{en && <small>{en}</small>}</span>
+    <div className="pc-ud-control">{children}{hint && <p className="pc-ud-hint">{hint}</p>}</div>
+  </div>
+}
+
+/** Everything for one person, in four labelled groups. Each change saves on its own. */
+function UserDetail({
+  user, entry, isSelf, isMobile, showName, stores, operations, view, accessSaving, today,
+  savingColor, savingSchedulable, savingRegular,
+  onRename, onRole, onPassword, onToggleActive, onDelete,
+  onStores, onColor, onSchedulable, onRegular,
+}: {
+  user: User
+  entry?: EmpStoreEntry
+  isSelf: boolean
+  isMobile: boolean
+  /** Off on the phone page, whose top bar already carries the name. */
+  showName: boolean
+  stores: StoreRow[]
+  operations: StoreGrantState
+  view: StoreGrantState
+  accessSaving: boolean
+  today: string
+  savingColor: boolean
+  savingSchedulable: boolean
+  savingRegular: boolean
+  onRename: (name: string) => Promise<void>
+  onRole: (role: string) => Promise<void>
+  onPassword: (password: string) => Promise<boolean>
+  onToggleActive: () => void
+  onDelete: () => void
+  onStores: (codes: string[]) => void
+  onColor: (color: string) => void
+  onSchedulable: (enabled: boolean) => void
+  onRegular: (date: string | null) => void
+}) {
+  const name = entry?.name || user.username
+  const [nameDraft, setNameDraft] = useState(entry?.name ?? '')
+  const [savingName, setSavingName] = useState(false)
+  const [roleSaving, setRoleSaving] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [password, setPassword] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
+  useEffect(() => { setNameDraft(entry?.name ?? '') }, [entry?.name, user.id])
+  useEffect(() => { setPasswordOpen(false); setPassword('') }, [user.id])
+
+  const nameDirty = !!entry && nameDraft.trim() !== '' && nameDraft.trim() !== entry.name
+  async function saveName() {
+    if (!nameDirty) return
+    setSavingName(true)
+    try { await onRename(nameDraft.trim()) } finally { setSavingName(false) }
+  }
+  async function saveRole(role: string) {
+    setRoleSaving(true)
+    try { await onRole(role) } finally { setRoleSaving(false) }
+  }
+  async function savePassword() {
+    if (password.length < 8) { message.error('密码至少8位 · At least 8 characters'); return }
+    setSavingPassword(true)
+    try {
+      if (await onPassword(password)) { setPasswordOpen(false); setPassword('') }
+    } finally { setSavingPassword(false) }
+  }
+
+  const grantCell = (grants: StoreGrantState, code: string, label: string) => {
+    if (!grants.data) return <span className="pc-ud-na" title={grants.error ? 'Access unavailable' : 'Loading access…'}>{grants.error ? '—' : '…'}</span>
+    const store = grants.data.stores.find(s => s.code === code)
+    if (!store) return <span className="pc-ud-na" title="Not configured for this store">—</span>
+    return <Checkbox aria-label={`${user.username}: ${store.code} ${label}`} title={store.name}
+      disabled={accessSaving}
+      checked={grants.data.grants.some(grant => grant.auth0_sub === user.id && grant.store_id === store.id)}
+      onChange={event => void grants.change(user.id, store.id, event.target.checked)} />
+  }
+  // Managers and admins always see stock, so only other roles are picked.
+  const alwaysSeesStock = user.role === 'manager' || user.role === 'admin'
+  const regularNow = isRegularOn(entry?.regularSince, today)
+
+  return <div className="pc-ud">
+    <header className="pc-ud-head">
+      <span className="pc-person-dot pc-ud-dot" style={entry ? { background: entry.color } : undefined} aria-hidden="true" />
+      <div className="pc-ud-title">
+        {showName && <h2>{name}{isSelf && <span className="pc-users-me">我</span>}{regularNow && <RegularMark since={entry?.regularSince} />}</h2>}
+        <p>{!showName && regularNow && <RegularMark since={entry?.regularSince} />}{user.username} · {roleLabel(user.role)} · {user.is_active === 1 ? '启用' : '已停用'}</p>
+      </div>
+    </header>
+
+    <Group zh="资料" en="Profile">
+      <Field label="显示名" en="Display name" hint={entry ? '排班日历里显示的名字 · Shown on the schedule' : undefined}>
+        {entry
+          ? <div className="pc-ud-inline">
+            <Input aria-label="显示名 Display name" value={nameDraft} maxLength={120} placeholder="e.g. Jessi"
+              onChange={event => setNameDraft(event.target.value)} onPressEnter={() => void saveName()} />
+            {nameDirty && <Button onClick={() => void saveName()} disabled={savingName}>保存</Button>}
+          </div>
+          : <span className="pc-ud-muted">首次登录后可设置 · After their first sign-in</span>}
+      </Field>
+      <Field label="角色" en="Role" hint={isSelf ? '不能修改自己的角色（防止失去管理员权限）' : undefined}>
+        <Segmented block aria-label="角色 Role" size={isMobile ? 'large' : 'middle'} value={user.role}
+          disabled={isSelf || roleSaving} options={ROLE_OPTIONS} onChange={value => void saveRole(String(value))} />
+      </Field>
+      {entry && <Field label="颜色" en="Colour">
+        <EmployeeColorPicker value={entry.color || '#6366f1'} disabled={savingColor} onChange={onColor} />
+      </Field>}
+      {entry && <Field label="转正" en="Regular"
+        hint={entry.regularSince
+          ? regularNow
+            ? '从这天起，排班和月工时都标 正 · Marked 正 from this date in the schedule and monthly hours'
+            : `${entry.regularSince} 起标 正 · Marked 正 from ${entry.regularSince}`
+          : '选转正那天；之前的班次不会标 正 · Pick the day they became regular; earlier shifts stay unmarked'}>
+        <div className="pc-ud-inline">
+          <DatePicker aria-label="转正日期 Regular since" allowClear placeholder="未转正 · Not yet"
+            value={entry.regularSince ? dayjs(entry.regularSince) : null} disabled={savingRegular}
+            inputReadOnly={isMobile} getPopupContainer={trigger => trigger.parentElement!}
+            onChange={value => onRegular(value ? value.format('YYYY-MM-DD') : null)} />
+          {regularNow && <span className="pc-ud-state"><RegularMark since={entry.regularSince} />已转正</span>}
+        </div>
+      </Field>}
+    </Group>
+
+    <Group zh="门店" en="Stores" hint={<>
+      排班：可以排这家店的班。门店操作：今日、库存等门店功能（在角色范围内）。库存查看：能看这家店的库存（库存、盘点、入店、产品和补货里的数字）。勾选马上保存。<br />
+      Schedule: can be put on this store's shifts. Operations: Today, inventory and other store workflows within their role. Inventory view: sees this store's stock (库存, 盘点, 入店, stock numbers in Products and 补货). Ticks save immediately.
+    </>}>
+      {entry
+        ? <Field label="参与排班" en="Can be scheduled">
+          <span className="pc-ud-switch">
+            <Switch aria-label="参与排班 Can be scheduled" checked={entry.isSchedulable !== 0} loading={savingSchedulable}
+              onChange={onSchedulable} />
+            <span>{entry.isSchedulable !== 0 ? '是' : '否'}</span>
+          </span>
+        </Field>
+        : <p className="pc-ud-muted pc-ud-pad">排班设置在首次登录后出现 · Scheduling settings appear after their first sign-in.</p>}
+      <table className="pc-ud-stores">
+        <thead><tr>
+          <th scope="col">门店</th>
+          <th scope="col">排班<small>Schedule</small></th>
+          <th scope="col">门店操作<small>Operations</small></th>
+          <th scope="col">库存查看<small>Inventory view</small></th>
+        </tr></thead>
+        <tbody>{stores.map(store => <tr key={store.code}>
+          <th scope="row"><b>{store.code}</b><small>{store.name !== store.code ? store.name : ''}</small></th>
+          <td>{entry
+            ? <Checkbox aria-label={`${user.username}: ${store.code} scheduling`} checked={entry.stores.includes(store.code)}
+              onChange={event => onStores(event.target.checked
+                ? [...entry.stores, store.code].sort()
+                : entry.stores.filter(code => code !== store.code))} />
+            : <span className="pc-ud-na" title="该用户首次登录后才能分配门店">—</span>}</td>
+          <td>{grantCell(operations, store.code, 'operations access')}</td>
+          <td>{alwaysSeesStock ? <span className="pc-ud-na">总是可见 Always</span> : grantCell(view, store.code, 'inventory view')}</td>
+        </tr>)}</tbody>
+      </table>
+    </Group>
+
+    <Group zh="账户" en="Account">
+      <Field label="账户" en="Sign-in" hint={isSelf ? '不能停用自己的账户' : undefined}>
+        <span className="pc-ud-switch">
+          <Switch aria-label="账户启用 Account enabled" checked={user.is_active === 1} disabled={isSelf} onChange={onToggleActive} />
+          <span>{user.is_active === 1 ? '启用' : '停用'}</span>
+        </span>
+      </Field>
+      <Field label="密码" en="Password">
+        {passwordOpen
+          ? <div className="pc-ud-inline">
+            <Input.Password aria-label="新密码 New password" autoFocus value={password} placeholder="至少8位 · At least 8"
+              onChange={event => setPassword(event.target.value)} onPressEnter={() => void savePassword()} />
+            <Button onClick={() => void savePassword()} disabled={savingPassword}>保存</Button>
+            <Button variant="ghost" onClick={() => { setPasswordOpen(false); setPassword('') }}>取消</Button>
+          </div>
+          : <Button variant="outline" onClick={() => setPasswordOpen(true)}>重设密码 Reset password</Button>}
+      </Field>
+      <Field label="最后登录" en="Last sign-in">
+        <span className={user.last_login ? undefined : 'pc-ud-muted'}>{user.last_login ? user.last_login.slice(0, 16) : '从未 · Never'}</span>
+      </Field>
+      <Field label="创建" en="Created">
+        <span>{user.created_at ? user.created_at.slice(0, 16) : '—'}</span>
+      </Field>
+    </Group>
+
+    <footer className="pc-ud-foot">
+      <DeleteUserConfirm user={user} disabled={isSelf} onConfirm={onDelete} />
+      <span className="pc-ud-hint">删除后，未来的班次会留在排班表上 · Their future shifts stay on the schedule.</span>
+    </footer>
+  </div>
+}
+
 export default function UsersPage({ embedded = false }: { embedded?: boolean }) {
   const isAdmin   = useHasRole('admin')
-  const isManager = useHasRole('manager')
   const { user: me } = useAuth0()
   const isMobile  = useIsMobile()
+  const navigate  = useNavigate()
+  const [params, setParams] = useSearchParams()
   const { stores: allStores } = useAppStore()
 
   const [users, setUsers]     = useState<User[]>([])
   const [trainees, setTrainees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded]   = useState(false)
+  const [query, setQuery]     = useState('')
   const [modalOpen, setModalOpen] = useState(false)
-  const [editUser, setEditUser]   = useState<User | null>(null)
   const [form] = Form.useForm()
   const colorRequests = useRef(new Set<string>())
   const schedulableRequests = useRef(new Set<string>())
+  const regularRequests = useRef(new Set<string>())
   const [savingColors, setSavingColors] = useState<Record<string, boolean>>({})
   const [savingSchedulable, setSavingSchedulable] = useState<Record<string, boolean>>({})
+  const [savingRegular, setSavingRegular] = useState<Record<string, boolean>>({})
+  const today = dayjs().format('YYYY-MM-DD')
 
   // Map: auth0_id → { empId, stores[] }
   const [empStoreMap, setEmpStoreMap] = useState<Record<string, EmpStoreEntry>>({})
@@ -342,22 +507,6 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
   const accessError = operations.error || view.error
   function loadAccess() { void operations.load(); void view.load() }
 
-  function grantCheckboxes(grants: StoreGrantState, u: User, label: string, empty: string) {
-    const data = grants.data
-    if (!data) return <span>{grants.error ? 'Access unavailable' : 'Loading access…'}</span>
-    if (!data.stores.length) return <span>{empty}</span>
-    return <Space wrap>{data.stores.map(store => <Checkbox key={store.id}
-      aria-label={`${u.username}: ${store.code} ${label}`} title={store.name}
-      style={{ minHeight: 44, alignItems: 'center' }} disabled={accessSaving}
-      checked={data.grants.some(grant => grant.auth0_sub === u.id && grant.store_id === store.id)}
-      onChange={event => void grants.change(u.id, store.id, event.target.checked)}>{store.code}</Checkbox>)}</Space>
-  }
-  const accessCheckboxes = (u: User) => grantCheckboxes(operations, u, 'operations access', 'No operations stores configured')
-  // Managers and admins always see stock, so only other roles are picked.
-  const viewCheckboxes = (u: User) => u.role === 'manager' || u.role === 'admin'
-    ? <span className="text-xs text-muted-foreground">总是可见 Always</span>
-    : grantCheckboxes(view, u, 'inventory view', 'No stores configured')
-
   function load() {
     if (!isAdmin) return
     setLoading(true)
@@ -366,7 +515,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
       .catch((err: any) => {
         message.error(err?.response?.data?.error ?? '加载用户列表失败')
       })
-      .finally(() => setLoading(false))
+      .finally(() => { setLoading(false); setLoaded(true) })
   }
 
   function loadStores() {
@@ -378,6 +527,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
             empId: e.employee_id, name: e.name || '',
             stores: e.stores, color: e.color || '#6366f1',
             isSchedulable: e.is_schedulable ?? 1,
+            regularSince: e.regular_since ?? null,
           }
         })
         setEmpStoreMap(m)
@@ -391,56 +541,19 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin])
 
-  const editingSelf = !!editUser && me?.sub === editUser.id
-
   function openNew() {
-    setEditUser(null); form.resetFields(); setModalOpen(true)
+    form.resetFields(); setModalOpen(true)
     getTrainees().then(setTrainees).catch(() => message.error('Could not load trainees'))
   }
-  function openEdit(u: User) {
-    setEditUser(u)
-    // Reset first — otherwise a password typed for a previous user (or in the
-    // create dialog) lingers in the field and gets saved onto this user.
-    form.resetFields()
-    form.setFieldsValue({
-      username:     u.username,
-      role:         u.role,
-      display_name: empStoreMap[u.id]?.name ?? '',
-    })
-    setModalOpen(true)
-  }
 
-  async function handleOk() {
+  async function handleCreate() {
     try {
       const vals = await form.validateFields()
-      if (editUser) {
-        // Display name lives in the local employees table (shown on the
-        // schedule), not in Auth0 — save it separately.
-        const entry = empStoreMap[editUser.id]
-        const newName = (vals.display_name ?? '').trim()
-        if (entry && newName && newName !== entry.name) {
-          await renameEmployee(entry.empId, newName)
-          loadStores()
-        }
-        const patch: any = {}
-        // Changing your own role is blocked server-side (it would lock you
-        // out of this page) — only send it for other users.
-        if (me?.sub !== editUser.id) patch.role = vals.role
-        if (vals.password) patch.password = vals.password
-        if (Object.keys(patch).length === 0) {
-          setModalOpen(false)
-          message.success('更新成功')
-          return
-        }
-        await client.patch(`/users/${encodeURIComponent(editUser.id)}`, patch)
-        message.success('更新成功')
+      const resp = await client.post('/users', vals)
+      if (resp.data?.warning) {
+        message.warning(resp.data.warning, 6)
       } else {
-        const resp = await client.post('/users', vals)
-        if (resp.data?.warning) {
-          message.warning(resp.data.warning, 6)
-        } else {
-          message.success('用户已创建')
-        }
+        message.success('用户已创建')
       }
       setModalOpen(false)
       load()
@@ -448,6 +561,42 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
     } catch (err: any) {
       if (err?.errorFields) return
       message.error(err?.response?.data?.error ?? '操作失败')
+    }
+  }
+
+  async function renameUser(u: User, name: string) {
+    const entry = empStoreMap[u.id]
+    if (!entry) return
+    try {
+      // Display name lives in the local employees table (shown on the schedule), not in Auth0.
+      await renameEmployee(entry.empId, name)
+      setEmpStoreMap(prev => updateEmployeeSetting(prev, u.id, { name }))
+      message.success('显示名已保存')
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '显示名保存失败')
+    }
+  }
+
+  async function changeRole(u: User, role: string) {
+    // Changing your own role is blocked server-side (it would lock you out of this page).
+    if (me?.sub === u.id || role === u.role) return
+    try {
+      await client.patch(`/users/${encodeURIComponent(u.id)}`, { role })
+      setUsers(prev => prev.map(row => row.id === u.id ? { ...row, role } : row))
+      message.success(`角色已改为 ${roleLabel(role)}`)
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '角色更新失败')
+    }
+  }
+
+  async function changePassword(u: User, password: string) {
+    try {
+      await client.patch(`/users/${encodeURIComponent(u.id)}`, { password })
+      message.success('密码已更新')
+      return true
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '密码更新失败')
+      return false
     }
   }
 
@@ -465,6 +614,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
     try {
       await client.delete(`/users/${encodeURIComponent(u.id)}`)
       message.success('已删除')
+      if (selectedId === u.id) closeDetail()
       load()
       loadStores()
     } catch (err: any) {
@@ -475,12 +625,13 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
   async function handleStoreChange(auth0Id: string, newCodes: string[]) {
     const entry = empStoreMap[auth0Id]
     if (!entry) return
+    const previous = entry.stores
     try {
-      await setEmployeeStores(entry.empId, newCodes)
-      setEmpStoreMap(prev => ({
-        ...prev,
-        [auth0Id]: { ...prev[auth0Id], stores: newCodes },
-      }))
+      await persistEmployeeSetting({
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { stores: newCodes })),
+        persist: () => setEmployeeStores(entry.empId, newCodes),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { stores: previous })),
+      })
     } catch (err: any) {
       message.error(err?.response?.data?.error ?? '门店分配失败')
     }
@@ -535,289 +686,143 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
     }
   }
 
-  const storeOptions = allStores
+  async function handleRegularChange(auth0Id: string, regularSince: string | null) {
+    const entry = empStoreMap[auth0Id]
+    if (!entry || regularRequests.current.has(auth0Id)) return
+    const previous = entry.regularSince
+    regularRequests.current.add(auth0Id)
+    setSavingRegular(prev => ({ ...prev, [auth0Id]: true }))
+    try {
+      await persistEmployeeSetting({
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { regularSince })),
+        persist: () => setEmployeeRegular(entry.empId, regularSince),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { regularSince: previous })),
+      })
+      message.success(regularSince ? `转正日期已保存 · ${regularSince}` : '已取消转正')
+    } catch (err: any) {
+      message.error(err?.response?.data?.error ?? '转正日期保存失败')
+    } finally {
+      regularRequests.current.delete(auth0Id)
+      setSavingRegular(prev => ({ ...prev, [auth0Id]: false }))
+    }
+  }
+
+  // Store rows for the detail grid: every real store, plus any store a grant list knows about.
+  const storeRows: StoreRow[] = allStores
     .filter(s => s.code !== 'ALL')
-    .map(s => ({ value: s.code, label: s.code }))
+    .map(s => ({ code: s.code, name: s.name || s.code }))
+  for (const s of [...(operations.data?.stores ?? []), ...(view.data?.stores ?? [])]) {
+    if (!storeRows.some(row => row.code === s.code)) storeRows.push({ code: s.code, name: s.name || s.code })
+  }
 
-  const storeColorMap: Record<string, string> = {}
-  allStores.forEach(s => { if (s.code !== 'ALL') storeColorMap[s.code] = s.color || '#6366f1' })
+  // Enabled accounts first, in the server's order; stopped accounts sink to the bottom.
+  const needle = query.trim().toLowerCase()
+  const people = [...users]
+    .sort((a, b) => (a.is_active === 1 ? 0 : 1) - (b.is_active === 1 ? 0 : 1))
+    .filter(u => !needle || u.username.toLowerCase().includes(needle)
+      || (empStoreMap[u.id]?.name ?? '').toLowerCase().includes(needle))
 
-  const columns: ColumnsType<User> = [
-    {
-      title: '用户名',
-      dataIndex: 'username',
-      render: (v, r) => (
-        <Space>
-          <span style={{ fontWeight: r.is_active === 1 ? 600 : 400 }}>{v}</span>
-          {me?.sub === r.id && <Badge variant="outline" style={ME_BADGE_STYLE}>我</Badge>}
-        </Space>
-      ),
-    },
-    {
-      title: '角色',
-      dataIndex: 'role',
-      width: 100,
-      render: v => (
-        <Badge variant="outline" style={ROLE_BADGE_STYLE[v] ?? ROLE_BADGE_STYLE.viewer}>
-          {ROLE_OPTIONS.find(o => o.value === v)?.label ?? v}
-        </Badge>
-      ),
-    },
-    {
-      title: '排班门店 / Scheduling stores',
-      key: 'stores',
-      width: 180,
-      render: (_, r) => isManager
-        ? (
-          <StoreSelect
-            entry={empStoreMap[r.id]}
-            storeOptions={storeOptions}
-            onChange={(vals) => handleStoreChange(r.id, vals)}
-          />
-        )
-        : <StoreBadges codes={empStoreMap[r.id]?.stores ?? []} storeColors={storeColorMap} />,
-    },
-    {
-      title: '门店操作权限 / Store operations access',
-      key: 'operations_access',
-      width: 210,
-      render: (_, user) => accessCheckboxes(user),
-    },
-    {
-      title: '库存查看 / Inventory view',
-      key: 'inventory_view',
-      width: 230,
-      render: (_, user) => viewCheckboxes(user),
-    },
-    {
-      title: '颜色',
-      key: 'color',
-      width: 155,
-      align: 'center' as const,
-      render: (_: unknown, r: User) => {
-        const entry = empStoreMap[r.id]
-        if (!entry) return null
-        const color = entry.color || '#6366f1'
-        return isManager ? (
-          <EmployeeColorPicker
-            value={color}
-            disabled={!!savingColors[r.id]}
-            onChange={c => handleEmpColorChange(r.id, c)}
-          />
-        ) : (
-          <span style={{ width: 16, height: 16, borderRadius: '50%', background: color, display: 'inline-block', border: '1px solid #e5e7eb' }} />
-        )
-      },
-    },
-    {
-      title: '排班',
-      key: 'is_schedulable',
-      width: 90,
-      align: 'center',
-      render: (_, r) => {
-        const entry = empStoreMap[r.id]
-        if (!entry) return null
-        return (
-          <Switch
-            checked={entry.isSchedulable !== 0}
-            size="small"
-            loading={!!savingSchedulable[r.id]}
-            onChange={(enabled) => handleSchedulableChange(r.id, enabled)}
-          />
-        )
-      },
-    },
-    {
-      title: '账户状态',
-      dataIndex: 'is_active',
-      width: 90,
-      align: 'center',
-      render: (v, r) => (
-        <Switch
-          checked={v === 1}
-          size="small"
-          disabled={me?.sub === r.id}
-          onChange={() => toggleActive(r)}
-        />
-      ),
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      width: 160,
-      render: v => v ? v.slice(0, 16) : '-',
-    },
-    {
-      title: '最后登录',
-      dataIndex: 'last_login',
-      width: 160,
-      render: v => v ? v.slice(0, 16) : <span style={{ color: '#9ca3af' }}>从未</span>,
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 140,
-      render: (_, r) => (
-        <Space>
-          <Button size="sm" variant="outline" onClick={() => openEdit(r)}>编辑</Button>
-          <DeleteUserConfirm user={r} disabled={me?.sub === r.id} onConfirm={() => deleteUser(r)} />
-        </Space>
-      ),
-    },
-  ]
+  const selectedId = params.get('employee')
+  // Desktop always shows someone; the phone shows the list until a person is tapped.
+  const selected = users.find(u => u.id === selectedId) ?? (isMobile ? undefined : people[0])
+
+  function select(u: User) {
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('employee', u.id)
+      return next
+    }, { replace: !isMobile })
+  }
+  function closeDetail() {
+    // Back to the list: undo the push when there is one, so the phone's back gesture stays in step.
+    if ((window.history.state?.idx ?? 0) > 0) navigate(-1)
+    else setParams(prev => { const next = new URLSearchParams(prev); next.delete('employee'); return next }, { replace: true })
+  }
 
   if (!isAdmin) {
     return <span style={{ color: '#6b7280' }}>仅管理员可访问此页面</span>
   }
 
-  return (
-    <div>
-      {/* Standalone page: actions in the header (Figma Users); inside Settings: a row above the table. */}
-      {(() => {
-        const actions = <>
-          <Button variant="outline" aria-label="刷新" disabled={accessSaving} onClick={() => { load(); loadStores(); void loadAccess() }}>
-            <RefreshCw className="h-4 w-4 mr-1" />刷新
-          </Button>
-          <Button aria-label="新建用户" onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户 New user</Button>
-        </>
-        return embedded || isMobile
-          ? <>{!embedded && <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} />}<div className="pc-users-actions">{actions}</div></>
-          : <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} actions={actions} />
-      })()}
+  const actions = <>
+    <Button variant="outline" aria-label="刷新" disabled={accessSaving} onClick={() => { load(); loadStores(); void loadAccess() }}>
+      <RefreshCw className="h-4 w-4 mr-1" />刷新
+    </Button>
+    <Button aria-label="新建用户" onClick={openNew}><Plus className="h-4 w-4 mr-1" />新建用户 New user</Button>
+  </>
+  const showDetailOnly = isMobile && !!selected
+  const selectedName = selected ? (empStoreMap[selected.id]?.name || selected.username) : ''
 
-      <p className="pc-users-note">Store operations access enables Today, inventory and other store workflows within each user's role. Inventory view picks which staff see a store's stock (库存, 盘点, 入店, stock numbers in Products and 补货); managers and admins always do. Changes save immediately; scheduling stores are separate.</p>
+  const header = embedded ? null
+    : showDetailOnly
+      ? <PageHeader title={selectedName} sub="员工 Users" back={{ label: '员工', to: '/users' }} />
+      : isMobile
+        ? <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} />
+        : <PageHeader title="员工" sub={`Users · ${users.length} 个账户 · 只有管理员`} actions={actions} />
+
+  const list = <section className="pc-users-list" aria-label="员工列表 People">
+    <label className="pc-users-search">
+      <Search className="h-4 w-4" aria-hidden="true" />
+      <input type="search" value={query} onChange={event => setQuery(event.target.value)}
+        placeholder="搜索员工 Search" aria-label="搜索员工 Search people" />
+    </label>
+    {loading && !loaded
+      ? <ul className="pc-person-skeleton" aria-label="加载中 Loading">{[0, 1, 2, 3].map(i => <li key={i}><i /><span><b /><small /></span></li>)}</ul>
+      : !people.length
+        ? <p className="pc-users-empty">{users.length ? `没有叫 “${query.trim()}” 的员工 · No one matches` : '暂无用户 · No accounts yet. 新建用户 adds the first one.'}</p>
+        : <ul>{people.map(u => <PersonRow key={u.id} user={u} entry={empStoreMap[u.id]} isSelf={me?.sub === u.id}
+          selected={!isMobile && selected?.id === u.id} chevron={isMobile} today={today} onSelect={() => select(u)} />)}</ul>}
+  </section>
+
+  const detail = selected && <section className="pc-users-detail" aria-label={`${selectedName} 详情 Details`}>
+    {isMobile && embedded && <button type="button" className="pc-users-back" onClick={closeDetail}>
+      <ChevronLeft className="h-4 w-4" aria-hidden="true" />员工 Users
+    </button>}
+    <UserDetail
+      key={selected.id}
+      user={selected}
+      entry={empStoreMap[selected.id]}
+      isSelf={me?.sub === selected.id}
+      isMobile={isMobile}
+      showName={!isMobile || embedded}
+      stores={storeRows}
+      operations={operations}
+      view={view}
+      accessSaving={accessSaving}
+      today={today}
+      savingColor={!!savingColors[selected.id]}
+      savingSchedulable={!!savingSchedulable[selected.id]}
+      savingRegular={!!savingRegular[selected.id]}
+      onRename={name => renameUser(selected, name)}
+      onRole={role => changeRole(selected, role)}
+      onPassword={password => changePassword(selected, password)}
+      onToggleActive={() => toggleActive(selected)}
+      onDelete={() => deleteUser(selected)}
+      onStores={codes => handleStoreChange(selected.id, codes)}
+      onColor={color => handleEmpColorChange(selected.id, color)}
+      onSchedulable={enabled => handleSchedulableChange(selected.id, enabled)}
+      onRegular={date => handleRegularChange(selected.id, date)}
+    />
+  </section>
+
+  return (
+    <div className="pc-users">
+      {header}
+      {(embedded || isMobile) && !showDetailOnly && <div className="pc-users-actions">{actions}</div>}
       {accessError && <Alert type="error" showIcon message={accessError} style={{ marginBottom: 16 }}
         action={<Button variant="outline" disabled={accessSaving} onClick={() => void loadAccess()}>Retry access</Button>} />}
 
-      {isMobile ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {loading ? (
-            <span style={{ color: '#9ca3af', fontSize: 14 }}>加载中…</span>
-          ) : users.length === 0 ? (
-            <span style={{ color: '#9ca3af', fontSize: 14 }}>暂无用户</span>
-          ) : users.map(u => {
-            const av = ROLE_AVATAR[u.role] ?? ROLE_AVATAR.viewer
-            return (
-              <Card key={u.id}>
-                <CardContent style={{ padding: '12px 14px' }}>
-                  {/* Row 1: avatar initials + username + role badge */}
-                  <div className="flex items-center gap-2">
-                    <div style={{
-                      width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-                      background: av.bg, color: av.fg,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontWeight: 700, fontSize: 13,
-                    }}>
-                      {u.username.slice(0, 2).toUpperCase()}
-                    </div>
-                    <span className="font-medium text-sm flex-1 min-w-0 truncate">
-                      {u.username}
-                      {me?.sub === u.id && (
-                        <Badge variant="outline" style={ME_BADGE_STYLE} className="ml-1.5 align-middle">我</Badge>
-                      )}
-                    </span>
-                    <Badge variant="outline" style={ROLE_BADGE_STYLE[u.role] ?? ROLE_BADGE_STYLE.viewer}>
-                      {ROLE_OPTIONS.find(o => o.value === u.role)?.label ?? u.role}
-                    </Badge>
-                  </div>
-
-                  {/* Row 2: store badges */}
-                  <div className="flex items-center gap-1 mt-1 pl-11 flex-wrap">
-                    <span className="text-xs text-muted-foreground">排班门店 / Scheduling stores</span>
-                    {isManager
-                      ? (
-                        <StoreSelect
-                          entry={empStoreMap[u.id]}
-                          storeOptions={storeOptions}
-                          onChange={(vals) => handleStoreChange(u.id, vals)}
-                        />
-                      )
-                      : <StoreBadges codes={empStoreMap[u.id]?.stores ?? []} storeColors={storeColorMap} />
-                    }
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <div className="text-xs text-muted-foreground">门店操作权限 / Store operations access</div>
-                    {accessCheckboxes(u)}
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <div className="text-xs text-muted-foreground">库存查看 / Inventory view</div>
-                    {viewCheckboxes(u)}
-                  </div>
-
-                  {/* Row 3: employee-only scheduling controls (managers only) */}
-                  {isManager && empStoreMap[u.id] && (
-                    <div className="mt-2 pl-11 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">员工颜色</span>
-                        <span className="ml-auto">
-                          <EmployeeColorPicker
-                            value={empStoreMap[u.id].color || '#6366f1'}
-                            disabled={!!savingColors[u.id]}
-                            onChange={c => handleEmpColorChange(u.id, c)}
-                          />
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">参与排班</span>
-                        <Switch
-                          className="ml-auto"
-                          checked={empStoreMap[u.id].isSchedulable !== 0}
-                          size="small"
-                          loading={!!savingSchedulable[u.id]}
-                          onChange={(enabled) => handleSchedulableChange(u.id, enabled)}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Row 4: last login */}
-                  <div className="text-xs text-muted-foreground mt-1 pl-11">
-                    最后登录：{u.last_login ? u.last_login.slice(0, 16) : '从未'}
-                  </div>
-
-                  {/* Row 5: account status toggle (left) + actions (right) */}
-                  <div className="flex items-center mt-2 pl-11">
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Switch
-                        checked={u.is_active === 1}
-                        size="small"
-                        disabled={me?.sub === u.id}
-                        onChange={() => toggleActive(u)}
-                      />
-                      <span>账户{u.is_active === 1 ? '启用' : '禁用'}</span>
-                    </div>
-                    <div className="ml-auto flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => openEdit(u)}>编辑</Button>
-                      <DeleteUserConfirm user={u} disabled={me?.sub === u.id} onConfirm={() => deleteUser(u)} />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )
-          })}
-        </div>
-      ) : (
-        <Table
-          rowKey="id"
-          size="small"
-          loading={loading}
-          dataSource={users}
-          columns={columns}
-          scroll={{ x: 1680 }}
-          pagination={false}
-        />
-      )}
+      {isMobile
+        ? showDetailOnly ? detail : list
+        : <div className="pc-users-layout">{list}{detail}</div>}
 
       <Dialog open={modalOpen} onOpenChange={(o) => !o && setModalOpen(false)}>
         <DialogContent style={{ maxWidth: 400 }}>
           <DialogHeader>
-            <DialogTitle>{editUser ? '编辑用户' : '新建用户'}</DialogTitle>
+            <DialogTitle>新建用户</DialogTitle>
           </DialogHeader>
 
           <Form form={form} layout="vertical" size="small">
-            {!editUser && trainees.length > 0 && (
+            {trainees.length > 0 && (
               <Form.Item name="trainee_id" label="Promote trainee (optional)"
                 extra="Keeps their existing shifts and wage hours under the same employee record">
                 <Select allowClear placeholder="New employee (no trainee history)"
@@ -828,44 +833,33 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
             <Form.Item
               name="username"
               label="用户名"
-              rules={[{ required: !editUser, message: '请输入用户名' }]}
+              rules={[{ required: true, message: '请输入用户名' }]}
             >
-              <Input disabled={!!editUser} placeholder="登录用户名" />
+              <Input placeholder="登录用户名" />
             </Form.Item>
-            {editUser && empStoreMap[editUser.id] && (
-              <Form.Item
-                name="display_name"
-                label="显示名 / Display name"
-                extra="排班日历中显示的名字 / Name shown on the schedule"
-              >
-                <Input placeholder="e.g. Jessi" maxLength={120} />
-              </Form.Item>
-            )}
             <Form.Item
               name="role"
               label="角色"
               rules={[{ required: true, message: '请选择角色' }]}
-              extra={editingSelf ? '不能修改自己的角色（防止失去管理员权限）' : undefined}
             >
               <Select
                 options={ROLE_OPTIONS}
-                disabled={editingSelf}
                 getPopupContainer={(trigger) => trigger.parentElement!}
               />
             </Form.Item>
             <Form.Item
               name="password"
-              label={editUser ? '新密码（留空则不修改）' : '密码'}
-              rules={editUser ? [] : [{ required: true, message: '请设置密码' }, { min: 8, message: '密码至少8位' }]}
+              label="密码"
+              rules={[{ required: true, message: '请设置密码' }, { min: 8, message: '密码至少8位' }]}
               style={{ marginBottom: 0 }}
             >
-              <Input.Password placeholder={editUser ? '留空则不修改' : '至少8位'} />
+              <Input.Password placeholder="至少8位" />
             </Form.Item>
           </Form>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
-            <Button onClick={handleOk}>{editUser ? '保存' : '创建'}</Button>
+            <Button onClick={handleCreate}>创建</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
