@@ -4,6 +4,8 @@ import { availabilityIssue } from './availabilityPeriod'
 import { EMPLOYEE_PALETTE, textColorOn } from '@/lib/palette'
 import { hoursForStore, shiftKindFor, type StoreHoursMap } from './openHours'
 import { shiftKindLabel, shiftTimeRange } from './schedulePresentation'
+import { isRegularOn } from './monthlyDetail'
+import RegularMark from './RegularMark'
 
 interface Props {
   date: string
@@ -31,7 +33,11 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
   const elsewhere = (employeeId: number) => shifts.find(shift => shift.date === date && shift.employee_id === employeeId && shift.store_code !== storeCode)
   const employeeName = (id: number, label: string) => {
     const color = employeeColors[id] ?? EMPLOYEE_PALETTE[0]
-    return <strong className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{label}</strong>
+    const regularSince = employees.find(employee => employee.id === id)?.regular_since
+    return <>
+      <strong className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{label}</strong>
+      {isRegularOn(regularSince, date) && <RegularMark since={regularSince} />}
+    </>
   }
 
   return <section className="pc-schedule-detail" aria-label={`Schedule details ${date} ${storeCode}`}>

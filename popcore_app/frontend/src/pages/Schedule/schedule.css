@@ -195,3 +195,65 @@
 .pc-finish-hint { margin: -6px 0 12px; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; }
 .pc-store-calendar-body { border-color: var(--line-hair) !important; background: white; }
 .pc-schedule-page .pc-calendar-extras > summary { color: var(--text-secondary); font-size: 12.5px; }
+
+/* 每班工时 Hours by shift: one person's month, laid out to be screenshotted and sent to them. */
+.pc-slip-page { display: grid; gap: 12px; max-width: 720px; }
+.pc-slip-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pc-slip-back { display: inline-flex; align-items: center; gap: 4px; min-height: 40px; padding: 0; border: 0; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; cursor: pointer; }
+.pc-slip-back:hover { color: var(--text-primary); }
+.pc-slip-back:focus-visible, .pc-report-person:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
+.pc-slip-step { display: flex; gap: 8px; }
+.pc-slip { border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-slip-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px 18px; border-bottom: 1px solid var(--line-hair); }
+.pc-slip-who { min-width: 0; }
+.pc-slip-who h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 22px; font-weight: 600; line-height: 28px; letter-spacing: -0.44px; }
+.pc-slip-dot { width: 12px; height: 12px; flex: none; border: 1px solid rgba(31, 35, 40, 0.12); border-radius: 50%; }
+.pc-slip-who p { margin: 0; color: var(--text-secondary); font-size: 12.5px; line-height: 19px; }
+.pc-slip-who p + p { color: var(--text-tertiary); }
+.pc-slip-total { display: grid; flex: none; justify-items: end; }
+.pc-slip-total strong { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -0.52px; }
+.pc-slip-total strong small { color: var(--text-secondary); font-size: 14px; font-weight: 500; letter-spacing: 0; }
+.pc-slip-total span { margin-top: 4px; color: var(--text-tertiary); font-size: 12px; line-height: 18px; white-space: nowrap; }
+.pc-slip-tag { padding: 0 6px; border: 1px dashed #F59E0B; background: #FEF3C7; color: #92400E; font-size: 11px; font-weight: 500; line-height: 18px; letter-spacing: 0; }
+.pc-slip-regular { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 10px 24px; border-bottom: 1px solid var(--line-hair); background: #f2f7f4; color: var(--status-ok-ink); font-size: 12.5px; line-height: 18px; }
+.pc-slip-regular b { font-weight: 600; }
+.pc-slip-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 19px; }
+.pc-slip-table th, .pc-slip-table td { padding: 8px 12px; font-weight: 400; text-align: left; vertical-align: top; }
+.pc-slip-table th:first-child, .pc-slip-table td:first-child { padding-left: 24px; }
+.pc-slip-table th:last-child, .pc-slip-table td:last-child { padding-right: 24px; }
+.pc-slip-table thead th { padding-top: 10px; padding-bottom: 6px; color: var(--text-tertiary); font-size: 11.5px; line-height: 16px; }
+.pc-slip-table .pc-slip-num { text-align: right; white-space: nowrap; }
+.pc-slip-table td small { display: block; color: var(--text-tertiary); font-size: 11.5px; line-height: 16px; }
+.pc-slip-week th, .pc-slip-week td { padding-top: 10px; padding-bottom: 8px; border-top: 1px solid var(--line-hair); background: var(--surface-subtle); color: var(--text-primary); font-size: 12.5px; font-weight: 600; }
+.pc-slip-week th span { margin-left: 8px; color: var(--text-tertiary); font-weight: 400; }
+.pc-slip-none td { color: var(--text-tertiary); font-size: 12px; }
+.pc-slip-boundary td { padding-top: 4px; padding-bottom: 4px; }
+.pc-slip-boundary td > span { display: inline-flex; align-items: center; gap: 6px; color: var(--status-ok-ink); font-size: 12px; }
+/* The floating checklist would sit on top of the slip in a screenshot. */
+body:has(.pc-slip-page) .pc-coverage-float { display: none; }
+.pc-slip-table tfoot th, .pc-slip-table tfoot td { padding-top: 14px; padding-bottom: 14px; border-top: 1px solid var(--line-strong); color: var(--text-primary); font-size: 14px; font-weight: 600; }
+.pc-slip-table tfoot th span { margin-left: 8px; color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-slip-note { margin: 0; padding: 10px 24px 14px; border-top: 1px solid var(--line-hair); color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; }
+.pc-slip-loading { display: grid; gap: 12px; padding: 24px; }
+.pc-slip-loading b { width: 180px; height: 22px; background: var(--surface-soft); }
+.pc-slip-loading i { height: 14px; background: var(--surface-soft); }
+/* Monthly report: each name opens that person's hours by shift. */
+.pc-report-row { cursor: pointer; }
+.pc-report-person { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 32px; padding: 0; border: 0; background: none; color: var(--text-primary); font: inherit; font-weight: 500; text-align: left; cursor: pointer; }
+.pc-report-person-name { overflow: hidden; border-bottom: 1px solid var(--line-strong); text-overflow: ellipsis; white-space: nowrap; }
+.pc-report-person:hover .pc-report-person-name { border-color: var(--text-primary); }
+.pc-report-person-since { color: var(--status-ok-ink); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.pc-report-person-chevron { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); }
+@media (max-width: 767px) {
+  .pc-slip-step [data-slot='button'] { min-height: 44px; }
+  .pc-slip-back { min-height: 44px; }
+  .pc-slip-head { padding: 16px 14px 14px; }
+  .pc-slip-who h2 { font-size: 19px; line-height: 24px; letter-spacing: -0.19px; }
+  .pc-slip-total strong { font-size: 22px; }
+  .pc-slip-regular { padding: 10px 14px; }
+  .pc-slip-table { font-size: 12.5px; }
+  .pc-slip-table th, .pc-slip-table td { padding-inline: 6px; }
+  .pc-slip-table th:first-child, .pc-slip-table td:first-child { padding-left: 14px; }
+  .pc-slip-table th:last-child, .pc-slip-table td:last-child { padding-right: 14px; }
+  .pc-slip-note { padding: 10px 14px 14px; }
+}

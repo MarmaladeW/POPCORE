@@ -34,6 +34,10 @@ test('calendar blocks mark a recorded actual finish', () => {
     mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', actualEndTime: '21:25', position: '', isTrainee: false }),
     'Celia · 12:00–22:00 · finished 21:25',
   )
+  assert.equal(
+    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', position: '', isTrainee: false, isRegular: true }),
+    'Celia · 12:00–22:00 · 转正 Regular',
+  )
 })
 
 test('a finish up to 01:00 counts as the next day', () => {

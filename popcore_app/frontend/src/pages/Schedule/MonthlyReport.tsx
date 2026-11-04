@@ -2,10 +2,15 @@ import { useState, useEffect, useCallback } from 'react'
 import { DatePicker, Table, Typography, Tooltip, Spin, Alert, InputNumber, Button, message } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
+import { ChevronRight } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getMonthlyReport, type EmployeeMonthlyHours, type MonthlyReport as MonthlyReportData } from './scheduleApi'
 import { useAppStore } from '../../store'
 import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
+import { isRegularOn, monthDay } from './monthlyDetail'
+import RegularMark from './RegularMark'
+import EmployeeMonthReport from './EmployeeMonthReport'
 
 dayjs.extend(isoWeek)
 
@@ -33,6 +38,10 @@ export default function MonthlyReport() {
   const { selectedStore } = useAppStore()
   const isAdmin = useHasRole('admin')
   const [msgApi, msgCtx] = message.useMessage()
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  // ?hours=<employee id> opens that person's month; it is in the URL so the phone's back gesture closes it.
+  const openId = Number(params.get('hours')) || null
 
   const load = useCallback(() => {
     setLoading(true)
@@ -46,6 +55,16 @@ export default function MonthlyReport() {
 
   const data: EmployeeMonthlyHours[] = report?.employees ?? []
   const weeks = report ? weeksInRange(report.period_start, report.period_end) : []
+
+  const openEmployee = (id: number, replace = false) => setParams(prev => {
+    const next = new URLSearchParams(prev)
+    next.set('hours', String(id))
+    return next
+  }, { replace })
+  const closeEmployee = () => {
+    if ((window.history.state?.idx ?? 0) > 0) navigate(-1)
+    else setParams(prev => { const next = new URLSearchParams(prev); next.delete('hours'); return next }, { replace: true })
+  }
 
   const saveStartDay = async () => {
     if (startDayDraft == null || !report) return
@@ -68,10 +87,14 @@ export default function MonthlyReport() {
       dataIndex: 'name',
       key: 'name',
       fixed: 'left' as const,
-      width: 160,
+      width: 190,
       render: (v: string, row: EmployeeMonthlyHours) => (
-        <span>
-          {v || row.email || `ID ${row.id}`}
+        <button type="button" className="pc-report-person" aria-label={`${v || row.email || `ID ${row.id}`}: 每班工时 Hours by shift`}
+          onClick={event => { event.stopPropagation(); openEmployee(row.id) }}>
+          <span className="pc-report-person-name">{v || row.email || `ID ${row.id}`}</span>
+          {report && isRegularOn(row.regular_since, report.period_end) && <RegularMark since={row.regular_since} />}
+          {report && row.regular_since && row.regular_since > report.period_start && row.regular_since <= report.period_end
+            && <small className="pc-report-person-since">{monthDay(row.regular_since)} 起</small>}
           {!!row.is_trainee && (
             <span
               style={{
@@ -83,7 +106,8 @@ export default function MonthlyReport() {
               TRAINEE
             </span>
           )}
-        </span>
+          <ChevronRight className="pc-report-person-chevron" aria-hidden="true" />
+        </button>
       ),
     },
     ...weeks.map((wk) => ({
@@ -121,11 +145,28 @@ export default function MonthlyReport() {
     },
   ]
 
+  if (openId) {
+    const index = data.findIndex(row => row.id === openId)
+    const previous = index > 0 ? data[index - 1] : undefined
+    const following = index >= 0 && index < data.length - 1 ? data[index + 1] : undefined
+    return <EmployeeMonthReport
+      employeeId={openId}
+      year={month.year()}
+      month={month.month() + 1}
+      storeCode={selectedStore?.code ?? 'ALL'}
+      storeName={selectedStore?.name}
+      onBack={closeEmployee}
+      onPrevious={previous ? () => openEmployee(previous.id, true) : undefined}
+      onNext={following ? () => openEmployee(following.id, true) : undefined}
+    />
+  }
+
   return (
     <div>
       {msgCtx}
       <div className="flex items-center gap-3 mb-2 flex-wrap">
         <h2 className="text-sm font-semibold m-0">Monthly hours report</h2>
+        <Text type="secondary" className="text-xs">点名字看每班工时 · Tap a name for hours by shift</Text>
         <DatePicker
           picker="month"
           value={month}
@@ -172,6 +213,7 @@ export default function MonthlyReport() {
           dataSource={data}
           columns={columns}
           rowKey="id"
+          onRow={row => ({ onClick: () => openEmployee(row.id), className: 'pc-report-row' })}
           scroll={{ x: 'max-content' }}
           pagination={false}
           size="small"

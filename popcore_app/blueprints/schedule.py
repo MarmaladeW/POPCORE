@@ -545,7 +545,7 @@ def schedule_avail_all():
         con.close()
         return err
     query = '''
-        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
+        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
                COALESCE(st.code, '') AS store_code
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
@@ -634,7 +634,7 @@ def schedule_shifts_get():
     if store_code == 'ALL':
         if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -646,7 +646,7 @@ def schedule_shifts_get():
         else:
             emp = _get_or_create_employee(con, auth0_id)
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -660,7 +660,7 @@ def schedule_shifts_get():
             query += ' AND s.date <= ?'; params.append(end)
     elif ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -677,7 +677,7 @@ def schedule_shifts_get():
     else:
         emp = _get_or_create_employee(con, auth0_id)
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -709,7 +709,7 @@ def schedule_shifts_me():
         return err
     emp    = _get_or_create_employee(con, auth0_id)
     query  = '''
-        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee,
+        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
                COALESCE(st.code, '') AS store_code
         FROM shifts s
         JOIN employees e ON e.id = s.employee_id
@@ -1132,7 +1132,8 @@ def schedule_report_monthly():
         total_hours = 0.0
         weeks: dict = {}
         for s in emp_shifts:
-            h  = _shift_hours(s)
+            # Rounded per shift, so the per-employee breakdown adds up to these totals.
+            h  = round(_shift_hours(s), 2)
             total_hours += h
             d  = dt.date.fromisoformat(s['date'])
             wk = f'{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}'
@@ -1147,6 +1148,7 @@ def schedule_report_monthly():
             'name':        emp['name'],
             'email':       emp['email'],
             'is_trainee':  emp['is_trainee'] if 'is_trainee' in emp.keys() else 0,
+            'regular_since': emp['regular_since'],
             'total_hours': round(total_hours, 2),
             'weeks':       weeks,
         })
@@ -1157,6 +1159,75 @@ def schedule_report_monthly():
         'period_start': str(first_day),
         'period_end': str(last_day),
         'month_start_day': start_day,
+    })
+
+
+@bp.route('/api/schedule/reports/monthly/<int:emp_id>', methods=['GET'])
+@role_required('manager')
+def schedule_report_monthly_employee(emp_id):
+    """One employee's shifts in the monthly report's wage period and store scope,
+    each with the hours it counts, so a manager can send the breakdown to them."""
+    con = get_db()
+    start_day = _month_start_day(con)
+    def_year, def_month = _current_wage_anchor(start_day)
+    try:
+        year  = int(request.args.get('year',  def_year))
+        month = int(request.args.get('month', def_month))
+        first_day, last_day = _wage_period(year, month, start_day)
+    except ValueError:
+        con.close()
+        return jsonify({'error': 'year and month must be integers'}), 400
+
+    store_id, store_code, err = _require_store_param(con)
+    if err:
+        con.close()
+        return err
+
+    emp = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
+    if not emp:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+
+    query = '''SELECT s.*, COALESCE(st.code, '') AS store_code
+                 FROM shifts s
+                 LEFT JOIN stores st ON st.id = s.store_id
+                 WHERE s.employee_id = ? AND s.date >= ? AND s.date <= ?'''
+    params: list = [emp_id, str(first_day), str(last_day)]
+    if store_code != 'ALL':
+        query += ' AND s.store_id = ?'
+        params.append(store_id)
+    rows = con.execute(query + ' ORDER BY s.date, s.start_time', params).fetchall()
+    con.close()
+
+    shifts = []
+    for r in rows:
+        shifts.append({
+            'id':              r['id'],
+            'date':            r['date'],
+            'store_code':      r['store_code'],
+            'start_time':      r['start_time'],
+            'end_time':        r['end_time'],
+            'actual_end_time': r['actual_end_time'],
+            'position':        r['position'] or '',
+            'hours':           round(_shift_hours(r), 2),
+        })
+
+    return jsonify({
+        'month':           f'{year}-{month:02d}',
+        'period_start':    str(first_day),
+        'period_end':      str(last_day),
+        'month_start_day': start_day,
+        'store_code':      store_code,
+        'employee': {
+            'id':            emp['id'],
+            'name':          emp['name'],
+            'email':         emp['email'],
+            'color':         emp['color'],
+            'is_trainee':    emp['is_trainee'],
+            'regular_since': emp['regular_since'],
+        },
+        'total_hours': round(sum(s['hours'] for s in shifts), 2),
+        'shifts':      shifts,
     })
 
 

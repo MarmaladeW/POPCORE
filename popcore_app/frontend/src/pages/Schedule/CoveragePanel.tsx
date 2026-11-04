@@ -15,6 +15,8 @@ import {
   type Employee,
 } from './scheduleApi'
 import { manualChecklistPresentation } from './schedulePresentation'
+import { isRegularOn } from './monthlyDetail'
+import RegularMark from './RegularMark'
 
 interface Props {
   /** month:YYYY-MM | week:YYYY-MM-DD | day:YYYY-MM-DD */
@@ -239,6 +241,7 @@ export default function CoveragePanel({
                       aria-label={`${presentation.statusLabel}: ${name}`}
                     />
                     <span className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{name}</span>
+                    {isRegularOn(p.regular_since, dayjs().format('YYYY-MM-DD')) && <RegularMark since={p.regular_since} />}
                     {!!p.is_trainee && (
                       <span
                         className="shrink-0 rounded px-1 text-[8px] font-bold"

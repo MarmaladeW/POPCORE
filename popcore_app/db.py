@@ -639,6 +639,16 @@ def _migration_add_is_schedulable_to_employees(con, cur):
     )
 
 
+def _migration_add_regular_since_to_employees(con, cur):
+    """转正 date (owner, 2026-11-03): shifts on or after it are marked 正 in the
+    schedule and the monthly hours. NULL means not 转正 yet."""
+    cur.execute("PRAGMA table_info(employees)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'regular_since' not in cols:
+        cur.execute("ALTER TABLE employees ADD COLUMN regular_since TEXT")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_regular_since_to_employees')")
+
+
 def _migration_create_schedule_notes_table(con, cur):
     """Free-form manager notes attached to a schedule period (month/week/day)."""
     cur.execute('''
@@ -2085,6 +2095,7 @@ def _get_migrations():
         ('website_sync',                               _migration_website_sync),
         ('inventory_viewers',                          _migration_inventory_viewers),
         ('stock_losses',                               _migration_stock_losses),
+        ('add_regular_since_to_employees',             _migration_add_regular_since_to_employees),
     ]
 
 

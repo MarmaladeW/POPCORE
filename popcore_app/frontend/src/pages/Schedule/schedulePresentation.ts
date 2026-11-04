@@ -11,6 +11,7 @@ interface ShiftAccessibleLabelInput {
   actualEndTime?: string | null
   position: string
   isTrainee: boolean
+  isRegular?: boolean
   shiftType?: string
 }
 
@@ -31,6 +32,7 @@ export function mobileShiftAccessibleLabel({
   actualEndTime,
   position,
   isTrainee,
+  isRegular,
   shiftType,
 }: ShiftAccessibleLabelInput): string {
   return [
@@ -39,6 +41,7 @@ export function mobileShiftAccessibleLabel({
     shiftType,
     position || null,
     isTrainee ? 'Trainee' : null,
+    isRegular ? '转正 Regular' : null,
   ].filter(Boolean).join(' · ')
 }
 
