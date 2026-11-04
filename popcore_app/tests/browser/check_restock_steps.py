@@ -89,12 +89,15 @@ async def units_not_sets(page, fixture, requests):
 
 
 async def search_uses_sheet_store(page, fixture, requests):
+    # The series search reads the sheet's own store on the server, so it is asked by sheet.
     await page.goto(BASE + f'/restock?session_id={fixture.draft}')
     modal = session_dialog(page)
-    async with page.expect_request(lambda request: '/api/products/search' in request.url) as searched:
-        await modal.get_by_placeholder('搜索产品（记账名、SKU、系列…）').fill('Pick')
-    query = parse_qs(urlsplit((await searched.value).url).query)
-    assert query.get('store_code') == ['DT'], query
+    async with page.expect_request(lambda request: '/series-search' in request.url) as searched:
+        await modal.get_by_placeholder('搜索系列 / 记账名 / SKU / 款式').fill('Pick')
+    searched = urlsplit((await searched.value).url)
+    assert searched.path == f'/api/restock/session/{fixture.draft}/series-search', searched.path
+    assert parse_qs(searched.query).get('q') == ['Pick'], searched.query
+    await expect(modal.get_by_role('list', name='系列 Series').get_by_text('Pick Box', exact=True)).to_be_visible()
 
 
 async def typed_found_quantity_survives_reload(page, fixture, requests):
