@@ -7,6 +7,8 @@ import type { RestockSession } from './index'
 import RequestStep from './RequestStep'
 import PickingStep from './PickingStep'
 import ReceivingStep from './ReceivingStep'
+import Icon from '../../components/pc/Icon'
+import { useIsPhone } from '../../components/pc/useIsPhone'
 
 interface Props {
   sessionId: number | null
@@ -27,6 +29,7 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 export default function SessionModal({ sessionId, onClose }: Props) {
+  const phone = useIsPhone()
   const [session, setSession] = useState<RestockSession | null>(null)
   const [live, setLive] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -98,15 +101,23 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     },
   ]
 
-  const title = session
+  const heading = session
     ? <>
         补货单 #{session.id}
-        <span style={{ marginLeft: 10, fontSize: 13, color: '#6b7280' }}>
-          {dayjs(session.created_at).format('HH:mm')}
-        </span>
+        <span className="pc-restock-time">{dayjs(session.created_at).format('HH:mm')}</span>
         <span className="pc-hm-status pc-restock-status"><i className={`pc-dot pc-dot-${status === 'completed' ? 'ok' : 'warn'}`} aria-hidden="true" />{STATUS_LABELS[status]}</span>
       </>
     : '补货单'
+  // On a phone the sheet fills the screen; its close sits in the header that stays on top.
+  const title = phone
+    ? <div className="pc-restock-head">
+        <span>{heading}</span>
+        {/* While a receipt is in flight the sheet cannot close, as on desktop. */}
+        {!receivingBusy && <button type="button" className="pc-restock-close" aria-label="Close" onClick={onClose}>
+          <Icon name="plus" size={20} />
+        </button>}
+      </div>
+    : heading
 
   const stepIndex = status === 'pending' ? 0 : status === 'completed' ? 2 : 1
   const stepStatus = status === 'completed' ? 'finish' : 'process'
@@ -115,12 +126,13 @@ export default function SessionModal({ sessionId, onClose }: Props) {
     <Modal
       open={!!sessionId}
       onCancel={onClose}
-      closable={!receivingBusy}
+      closable={!phone && !receivingBusy}
       maskClosable={!receivingBusy}
       keyboard={!receivingBusy}
       footer={null}
       title={title}
-      width={900}
+      width={phone ? '100%' : 900}
+      className="pc-restock-modal"
       destroyOnClose
       styles={{ body: { padding: '0 0 8px' } }}
     >

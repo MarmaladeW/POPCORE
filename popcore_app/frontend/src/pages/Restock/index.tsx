@@ -46,6 +46,12 @@ export interface RestockItem {
   instore_qty: number | null
   stock_hidden?: boolean
   out_of_stock?: boolean
+  // The series card this line was asked from (整端 / 散盒 / 确认款), so the sheet groups by series.
+  family_id?: number
+  family_title?: string
+  role?: 'set' | 'box' | 'item' | 'design'
+  design_name?: string | null
+  boxes_per_set?: number | null
 }
 
 export interface RestockSession {
