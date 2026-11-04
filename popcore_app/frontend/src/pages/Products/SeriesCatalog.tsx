@@ -47,7 +47,9 @@ function SeriesScope({ storeCode, storeName, manager }: { storeCode?: string; st
       .catch(cause => { if (!controller.signal.aborted) setResult({ scope, error: failure(cause) }) })
     return () => controller.abort()
   }, [scope, storeCode, usable])
-  const current = result?.scope === scope ? result : undefined
+  // After a save the list reloads in place: the last list stays up meanwhile, so an open design editor keeps its place.
+  const current = result && (result.scope === scope || (!!result.data && result.scope.startsWith(`${storeCode}|`)))
+    ? result : undefined
   const data = current?.data
   const needle = query.trim().normalize('NFKC').toLocaleLowerCase()
   const list = useMemo(() => (data?.series || []).filter(series => !needle || series.name.normalize('NFKC').toLocaleLowerCase().includes(needle)), [data, needle])

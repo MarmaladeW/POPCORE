@@ -68,6 +68,9 @@ async def flow(browser, width):
     state = {'mode': 'data', 'api_payload': api}
     context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
+    console = []
+    page.on('console', lambda entry: console.append(f'{entry.type}: {entry.text}'))
+    page.on('framenavigated', lambda frame: console.append(f'navigated: {frame.url}') if frame == page.main_frame else None)
     try:
         await page.goto(BASE + '/products/series')
         tabs = page.get_by_role('navigation', name='Products sections')
@@ -134,6 +137,11 @@ async def flow(browser, width):
         await page.get_by_role('group', name='Edit Rabbit 兔子').get_by_role('button', name='删除 Remove').click()
         await page.get_by_role('button', name='Remove', exact=True).click()
         await until(lambda: len([r for r in state['requests'] if r['path'] == '/api/products/53/design/remove']) == 1)
+    except Exception:
+        # What the page did, for a failure seen only in CI.
+        await page.screenshot(path=OUT / f'failure-{width}.png', full_page=True)
+        (OUT / f'failure-{width}.log').write_text('\n'.join(console + [f"{r['method']} {r['path']}" for r in state['requests']]))
+        raise
     finally:
         await context.close()
 
