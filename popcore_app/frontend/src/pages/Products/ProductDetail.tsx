@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import client from '../../api/client'
 import RoleGuard from '../../components/RoleGuard'
 import { saveAlias, deleteAlias } from '../../api/matcher'
+import DesignEditor from './DesignEditor'
 import RemoveDesigns from './RemoveDesigns'
 import SubItemAdd from './SubItemAdd'
 import { useInventoryVisible } from '../../auth/useInventoryVisible'
@@ -41,7 +42,8 @@ export interface ProductDetailData {
   series_id?: number | null
   parent?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null } | null
   sub_items?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null
-    stock_form: string | null; design_name: string | null; price: number | null }[]
+    stock_form: string | null; design_name: string | null; price: number | null
+    aliases?: { id: number; alias: string }[] }[]
 }
 
 // One product's facts and aliases; the drawer (phone) and the pane beside the table (desktop) share it.
@@ -103,6 +105,7 @@ export function StockFigure({ value }: { value: StockFigureValue }) {
 // A product's sub-items (整端 sealed set, confirmed designs), or the product a sub-item belongs to.
 function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; onOpen?: (id: number) => void; onSaved: () => void }) {
   const inventory = useInventoryVisible()
+  const [editing, setEditing] = useState<number | null>(null)
   const open = (id: number, label: ReactNode) => onOpen
     ? <button type="button" className="pc-prod-link" onClick={() => onOpen(id)}>{label}</button> : label
   if (product.parent) return <>
@@ -114,10 +117,18 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
   return <>
     <h3 className="pc-prod-section">子项 <small>Sealed set &amp; confirmed designs</small></h3>
     {items.length > 0 ? <ul className="pc-sub-list">
-      {items.map(item => <li key={item.id}>
-        <span className="pc-sub-kind">{item.stock_form === 'sealed_set' ? '整端' : '确认款'}</span>
-        {open(item.id, item.stock_form === 'sealed_set' ? (item.jizhanming || item.sku) : (item.design_name || item.jizhanming || item.sku))}
-        <small>{item.sku}</small>
+      {items.map(item => <li key={item.id} className={editing === item.id ? 'pc-sub-editing' : undefined}>
+        <span className="pc-sub-row">
+          <span className="pc-sub-kind">{item.stock_form === 'sealed_set' ? '整端' : '确认款'}</span>
+          {open(item.id, item.stock_form === 'sealed_set' ? (item.jizhanming || item.sku) : (item.design_name || item.jizhanming || item.sku))}
+          {item.stock_form === 'confirmed_design' && item.price != null && <span className="pc-sub-price">${item.price.toFixed(2)}</span>}
+          <small>{item.sku}</small>
+          {item.stock_form === 'confirmed_design' && editing !== item.id && <RoleGuard minRole="manager">
+            <Button size="small" type="text" aria-label={`Edit ${item.design_name ?? item.sku}`}
+              onClick={() => setEditing(item.id)}>编辑</Button>
+          </RoleGuard>}
+        </span>
+        {editing === item.id && <DesignEditor design={item} onSaved={onSaved} onClose={() => setEditing(null)} />}
       </li>)}
     </ul> : <p className="pc-sub-empty">None yet. Add them when you count or open boxes.</p>}
     {items.length > 0 && inventory && <p className="pc-sub-stock"><Link to={product.series_id ? `/stock?series_id=${product.series_id}` : `/stock?product_id=${product.id}`}>各位置库存 Stock by location →</Link></p>}

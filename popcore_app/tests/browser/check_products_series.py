@@ -1,4 +1,5 @@
-"""Products 整端·确认款 Sets & designs with synthetic APIs: product list, stock per location, adding designs on the product."""
+"""Products 整端·确认款 Sets & designs with synthetic APIs: product list, stock per location, adding designs on the
+product, and editing one confirmed design from its row (name, price, other names, remove; owner, 2026-11-03)."""
 import asyncio
 import subprocess
 from pathlib import Path
@@ -31,15 +32,39 @@ SERIES = {'mode': 'authoritative', 'locations': LOCATIONS, 'unassigned_count': 0
 ]}
 
 
+ADDED = []
+RABBIT = {'id': 53, 'sku': 'SKU-53', 'design_name': 'Rabbit 兔子', 'jizhanming': 'Dream Rabbit 兔子', 'price': 26.99,
+          'stock_form': 'confirmed_design', 'aliases': [{'id': 7, 'alias': '梦兔'}]}
+
+
+async def until(check):
+    for _ in range(50):
+        if check():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError('the page never sent the expected request')
+
+
 def api(path, query, request):
     if path == '/api/inventory/series':
         return SERIES
     if path == '/api/products/52/designs':
         return {'product_id': 52, 'series_id': 5, 'product_ids': [60, 61]}
+    if path == '/api/products/53':
+        return {**RABBIT, 'aliases': RABBIT['aliases'] + [
+            {'id': 8 + n, 'alias': r.post_data_json['alias']} for n, r in enumerate(ADDED)]}
+    if path == '/api/products/53/design/edit':
+        return {**RABBIT, **request.post_data_json}
+    if path == '/api/products/aliases':
+        ADDED.append(request)
+        return {'ok': True}
+    if path == '/api/products/53/design/remove':
+        return {'ok': True}
     return payload(path, query, False)
 
 
 async def flow(browser, width):
+    ADDED.clear()
     state = {'mode': 'data', 'api_payload': api}
     context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
@@ -78,6 +103,37 @@ async def flow(browser, width):
         assert posts[0]['post_data'] == {'design_names': ['Bear 熊', 'Fox 狐狸']}, posts
         assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
         await page.screenshot(path=OUT / f'series-{width}.png', full_page=True)
+
+        # Edit one confirmed design from its row: other names, then rename it (even with stock) and price it.
+        await detail.get_by_role('button', name='Edit Rabbit 兔子').click()
+        editor = page.get_by_role('group', name='Edit Rabbit 兔子')
+        await expect(editor.get_by_text('梦兔', exact=True)).to_be_visible()
+        await editor.get_by_label('Add other name', exact=True).fill('兔兔')
+        await editor.get_by_role('button', name='添加 Add').click()
+        await until(lambda: [r['post_data'] for r in state['requests'] if r['path'] == '/api/products/aliases']
+                    == [{'product_id': 53, 'alias': '兔兔'}])
+        await expect(editor.get_by_text('兔兔', exact=True)).to_be_visible()
+        name = editor.get_by_label('Design name', exact=True)
+        save = editor.get_by_role('button', name='保存 Save')
+        await expect(save).to_be_disabled()
+        await name.fill('')
+        await expect(save).to_be_disabled()
+        await name.fill('Rabbit Secret 隐藏兔')
+        await editor.get_by_label('Design price', exact=True).fill('39.99')
+        await expect(save).to_be_enabled()
+        await page.wait_for_timeout(400)  # the button's colour fades in
+        await page.screenshot(path=OUT / f'design-edit-{width}.png', full_page=True)
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
+        await save.click()
+        await until(lambda: len([r for r in state['requests'] if r['path'] == '/api/products/53/design/edit']) == 1)
+        edit = next(r for r in state['requests'] if r['path'] == '/api/products/53/design/edit')
+        assert edit['post_data'] == {'design_name': 'Rabbit Secret 隐藏兔', 'price': 39.99}, edit
+        await expect(page.get_by_role('group', name='Edit Rabbit 兔子')).to_have_count(0)
+        # Remove one design (the server refuses one with stock or sales).
+        await page.get_by_role('region', name='Dream Series').get_by_role('button', name='Edit Rabbit 兔子').click()
+        await page.get_by_role('group', name='Edit Rabbit 兔子').get_by_role('button', name='删除 Remove').click()
+        await page.get_by_role('button', name='Remove', exact=True).click()
+        await until(lambda: len([r for r in state['requests'] if r['path'] == '/api/products/53/design/remove']) == 1)
     finally:
         await context.close()
 
@@ -89,6 +145,7 @@ async def flow(browser, width):
         await page.goto(BASE + '/products/series?series_id=5')
         await expect(page.get_by_role('region', name='Dream Series').get_by_text('Cat 猫', exact=True)).to_be_visible()
         await expect(page.get_by_role('button', name='+ 确认款 Add designs')).to_have_count(0)
+        await expect(page.get_by_role('button', name='Edit Rabbit 兔子')).to_have_count(0)
         await expect(page.get_by_role('button', name='新建系列 New series')).to_have_count(0)
         await expect(page.get_by_role('navigation', name='Products sections').locator('a[href="/products/clover-matching"]')).to_have_count(0)
     finally:
@@ -108,7 +165,7 @@ async def main():
                         await flow(browser, width)
                 finally:
                     await browser.close()
-            print('PASS: Products sets & designs, stock per location, adding designs on the product and staff limits at 390/1280.')
+            print('PASS: Products sets & designs, stock per location, adding and editing designs, and staff limits at 390/1280.')
         finally:
             process.terminate()
             process.wait(timeout=10)
