@@ -79,11 +79,10 @@ function OverviewBody({data}:{data:Overview}) {
         </>
         const className = figure.key==='back'?'pc-inv-back':undefined
         // Managers open what this place is worth by IP line (owner, 2026-11-03).
-        return value ? <Link key={figure.key} className={className ? `${className} pc-inv-tile` : 'pc-inv-tile'} to={`/stock/value?place=${figure.key}`}
-            aria-label={`${zh} ${en}: what it is worth by IP line`}>{body}<Icon name="right" size={14} className="pc-inv-tile-go"/></Link>
+        return value ? <Link key={figure.key} className={className ? `${className} pc-inv-tile` : 'pc-inv-tile'} to={`/stock/value?place=${figure.key}`}>{body}<Icon name="right" size={14} className="pc-inv-tile-go"/></Link>
           : <div key={figure.key} className={className}>{body}</div>
       })}
-      {value&&<Link className="pc-inv-value pc-inv-tile" to="/stock/value" aria-label="库存价值 Stock value: by IP line">
+      {value&&<Link className="pc-inv-value pc-inv-tile" to="/stock/value">
         <span>库存价值 <small>Stock value</small></span>
         <strong>{formatWholeDollars(value.value_cents)}</strong>
         <small>{value.unpriced_units ? `At retail · ${number(value.unpriced_units)} without a price` : 'At retail price'}</small>
