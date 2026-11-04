@@ -396,6 +396,7 @@ function SalesScope({date,setDate}:{date:Dayjs;setDate:(next:Dayjs|((current:Day
     </div>
   </section>
   const headerActions = <>
+    <Link className="pc-btn" to="/sales/name-picks">名称记忆 Name picks</Link>
     <Link className="pc-btn" to="/sales/matching">核对旧名称 Review past names</Link>
     <Button disabled={busy} aria-pressed={aliasMode} onClick={() => setAliasMode(value => !value)}>{aliasMode ? '收起名称对应 Hide name mappings' : '名称对应 Manage name mappings'}</Button>
     {!isAll && <Button type="primary" disabled={busy || editing} onClick={() => setImportMode(true)}><Icon name="plus" size={16} />导入日报 Import report</Button>}

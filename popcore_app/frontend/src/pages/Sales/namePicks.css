@@ -1,0 +1,79 @@
+/* 名称记忆 Name picks: a pasted report's names under its own section headings (approved redesign world). */
+.pc-picks { display: grid; gap: 16px; color: var(--text-primary); }
+.pc-picks > .pc-hist-back { margin: -8px 0 -4px; justify-self: start; }
+.pc-picks-intro { max-width: 82ch; margin: 0; color: var(--text-tertiary); font-size: 12px; line-height: 1.55; }
+.pc-picks > .pc-page-tabs { margin: 0; }
+.pc-picks-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; align-items: start; }
+.pc-picks-all { display: grid; gap: 16px; }
+.pc-picks-search { max-width: 420px; }
+.pc-picks-search .ant-input-affix-wrapper, .pc-picks-search .ant-input-search-button { min-height: 40px; }
+
+.pc-pick-days ul { max-height: calc(100vh - 280px); }
+.pc-pick-days li b { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 96px; font-variant-numeric: tabular-nums; }
+.pc-pick-day-counts span { color: var(--text-tertiary); }
+.pc-pick-days li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pc-pick-section { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 9px 16px 8px; border-top: 1px solid var(--line-hair);
+  background: var(--surface-subtle); color: var(--text-secondary); font-size: 12px; font-weight: 600; line-height: 18px; }
+.pc-pick-section span { margin-left: auto; color: var(--text-tertiary); font-weight: 400; font-variant-numeric: tabular-nums; }
+.pc-pick-day .pc-panel-head + div .pc-pick-section { border-top: 0; }
+
+/* A row: status | the name as written | the product | its action. Every status label is one width. */
+.pc-pick-row { display: grid; grid-template-columns: 72px minmax(150px, 1fr) minmax(240px, 1.5fr) 232px; gap: 8px 16px;
+  align-items: start; padding: 12px 16px; }
+.pc-pick-row + .pc-pick-row { border-top: 1px solid var(--line-hair); }
+.pc-pick-status { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 72px; height: 26px; margin-top: 7px;
+  border: 1px solid var(--line-hair); background: var(--surface-default); color: var(--text-secondary); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.pc-pick-status[data-tone='warn'] { border-color: var(--status-restock-line); color: var(--status-restock-ink); }
+.pc-pick-status[data-tone='out'] { border-color: var(--status-out-line); background: var(--status-out-tint); color: var(--status-out-ink); }
+.pc-pick-status[data-tone='ok'] { color: var(--status-ok-ink); }
+.pc-pick-status[data-tone='quiet'] { color: var(--text-tertiary); }
+.pc-dot-quiet { background: var(--line-strong); }
+.pc-pick-written { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; min-width: 0; padding-top: 8px; }
+.pc-pick-written strong { font-size: 13.5px; font-weight: 500; line-height: 20px; overflow-wrap: anywhere; }
+.pc-pick-written small, .pc-pick-hint { color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; overflow-wrap: anywhere; }
+/* minmax(0, 1fr): a long product name truncates in its select instead of widening the column. */
+.pc-pick-decision { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; }
+.pc-pick-product { display: flex; align-items: center; min-height: 40px; color: var(--text-primary); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.pc-pick-hint[data-tone='warn'] { color: var(--status-restock-ink); }
+.pc-pick-hint[data-tone='out'] { color: var(--status-out-ink); }
+.pc-pick-chooser { width: 100%; }
+.pc-pick-chooser.ant-select { height: auto; }
+.pc-pick-chooser .ant-select-selector { min-height: 40px; align-items: center; }
+.pc-pick-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.pc-pick-actions .ant-btn { min-height: 40px; padding-inline: 14px; }
+.pc-pick-row[data-quiet] .pc-pick-written strong, .pc-pick-row[data-quiet] .pc-pick-product { color: var(--text-secondary); }
+
+.pc-pick-add-body { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(120px, .7fr) minmax(240px, 1.5fr) auto; gap: 12px 16px;
+  align-items: end; padding: 14px 16px 4px; }
+.pc-pick-add-body label { display: grid; gap: 6px; min-width: 0; color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.pc-pick-add-body label small { color: var(--text-tertiary); font-weight: 400; }
+.pc-pick-add-body .ant-input { min-height: 40px; }
+.pc-pick-add-body > .ant-btn { min-height: 40px; }
+.pc-pick-add > .pc-quiet { padding-top: 8px; }
+
+@media (max-width: 1100px) {
+  .pc-picks-grid { grid-template-columns: minmax(0, 1fr); }
+  .pc-pick-days ul { max-height: 320px; }
+}
+@media (max-width: 900px) {
+  .pc-pick-row { grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1.2fr); }
+  .pc-pick-actions { grid-column: 2 / -1; }
+  .pc-pick-add-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pc-pick-add-body > label:nth-child(3), .pc-pick-add-body > .ant-btn { grid-column: 1 / -1; }
+}
+@media (max-width: 767.98px) {
+  .pc-picks { gap: 14px; }
+  .pc-pick-day .pc-panel-head { align-items: flex-start; }
+  .pc-pick-day .pc-panel-head h2 { flex-direction: column; align-items: flex-start; gap: 2px; white-space: normal; }
+  .pc-pick-day .pc-panel-head h2 small { white-space: normal; }
+  .pc-pick-day .pc-panel-count { padding-top: 2px; }
+  .pc-pick-row { grid-template-columns: 72px minmax(0, 1fr); gap: 10px 12px; padding: 14px 16px; }
+  .pc-pick-status { margin-top: 0; }
+  .pc-pick-written { padding-top: 2px; }
+  .pc-pick-decision, .pc-pick-actions { grid-column: 1 / -1; }
+  .pc-pick-actions .ant-btn { flex: 1 1 0; min-height: 44px; }
+  .pc-pick-chooser .ant-select-selector, .pc-pick-add-body .ant-input, .pc-pick-add-body > .ant-btn { min-height: 44px; }
+  .pc-pick-add-body { grid-template-columns: minmax(0, 1fr); }
+  .pc-picks-search { max-width: none; }
+}

@@ -24,7 +24,7 @@ const shownTotal = (name: string, total: number) => name === 'catalog' && total 
 const summaries: Record<string, { title: (total: string | number) => string; meta: string; action: string; to: string }> = {
   catalog: { title: total => `${total} 个产品还没确认`, meta: 'Counting a product confirms what it is', action: '去盘点 Count', to: '/count' },
   inventory: { title: total => `${total} 条缺货提醒`, meta: 'Out-of-stock notices (product and location)', action: '查看 View', to: '/stock' },
-  report_stock: { title: total => `${total} 条日报库存差异`, meta: 'Daily report sales that did not come off the floor as sold', action: '核对 Review', to: '/sales/report-stock' },
+  report_stock: { title: total => `${total} 条日报库存差异`, meta: 'Daily report sales and stock lines that did not move as written', action: '核对 Review', to: '/sales/report-stock' },
 }
 
 const strip: Array<{ key: string; zh: string; en: string; tone: 'warn' | 'out' }> = [

@@ -30,6 +30,7 @@ const statusLabels: Record<string, string> = {
   allocated: 'Stock allocated', verified: 'Verified', recorded: 'Awaiting verification',
   not_counted: 'Never counted here', not_enough_on_floor: 'Not enough on the floor',
   set_size_unknown: 'Set size not recorded', counted_same_day: 'Floor counted the same day',
+  move_short: 'Stock line not moved in full',
 }
 const statusZh: Record<string, string> = {
   open: '未完成', draft: '草稿', posted: '已记录', pending: '待处理', submitted: '待审核',
@@ -37,6 +38,7 @@ const statusZh: Record<string, string> = {
   unresolved: '待审核', out_of_stock: '缺货', variance: '差异待审核',
   allocated: '已分配库存', verified: '已核实', recorded: '待核对',
   not_counted: '还没盘点', not_enough_on_floor: '楼下不够', set_size_unknown: '不知道每端几盒', counted_same_day: '当天盘点过',
+  move_short: '库存没移完',
 }
 
 function rowTitle(row: TodayRow) {
