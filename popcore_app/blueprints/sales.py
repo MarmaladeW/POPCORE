@@ -2,6 +2,7 @@
 blueprints/sales.py — daily sales records, batch import, daily report, export.
 """
 import os
+import hashlib
 import json
 from collections import Counter
 from decimal import Decimal
@@ -13,16 +14,18 @@ from flask import Blueprint, request, jsonify, Response
 from db import get_db, esc_csv, _ensure_stock_row
 from auth import login_required, role_required
 from checkout_access import business_date
-from store_access import legacy_store_denied
+from store_access import can_write_legacy_store, legacy_store_denied
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
-from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm,
+from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm, _score_pair_jzm,
                      clean_name as _clean_jzm, report_match_key, report_identity_signature,
-                     load_report_match_choices, report_match_query)
+                     load_report_match_choices, load_report_picks, report_match_query)
 from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
 from goods_operations import _begin, _hash, _replay, _remember
-from report_stock import check_notice, open_notices, sync_report_stock
+from report_stock import (LINE_SECTIONS, ReportLineError, check_notice, live_since, open_notices,
+                          plan_report_lines, save_report_lines, sync_report_stock)
 from inventory_visibility import inventory_hidden
+from report_names import all_picks, log_names, place_of, report_days, report_names, save_pick, status as name_status
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 
 bp = Blueprint('sales', __name__)
@@ -836,7 +839,8 @@ def _revert_report_day(cur, d: str, store_code: str, store_id: int) -> tuple[int
 
 
 _REPORT_NOTE_FIELDS = ('employee_discounts', 'display_sales', 'claw_prizes',
-                       'cash_exchanges', 'claw_stock_in', 'display_stock_in', 'display_stock_out')
+                       'cash_exchanges', 'claw_stock_in', 'display_stock_in', 'display_stock_out',
+                       'store_transfers')
 
 
 def _report_money_cents(value, field):
@@ -952,8 +956,9 @@ def submit_daily_report():
             return jsonify({'error': 'Conflicting section choices', 'code': 'section_choice_conflict'}), 409
         learned_sections[key] = stored_section
 
+    dry_run = data.get('dry_run') is True
     validated_items = []
-    valid_sections = (SALES_SECTIONS - {'employee_discount', 'sell_display', 'claw'}) | {'break_display', 'stock_in', 'stock_out'}
+    valid_sections = (SALES_SECTIONS - {'employee_discount', 'sell_display', 'claw'}) | set(LINE_SECTIONS)
     for line, item in enumerate(items, 1):
         if not isinstance(item, dict):
             return jsonify({'error': 'Each item must be an object',
@@ -977,7 +982,7 @@ def submit_daily_report():
                 normalized['qty_cash'] = read_int(item.get('qty_cash', 0), 'qty_cash')
                 normalized['qty'] = read_int(item.get('qty', 0), 'qty')
                 read_int((normalized['qty_pos'] + normalized['qty_cash']) or normalized['qty'], 'qty_sold', minimum=1)
-            elif normalized['section'] in {'break_display', 'stock_out'}:
+            elif normalized['section'] not in {'stock_in', 'refill'}:
                 normalized['qty'] = read_int(item.get('qty'), 'qty', minimum=1)
             else:
                 normalized['box_size'] = read_int(
@@ -992,6 +997,10 @@ def submit_daily_report():
                     'total_units',
                     minimum=1,
                 )
+            for flag in ('to_display', 'from_display'):
+                if item.get(flag) is not None and not isinstance(item[flag], bool):
+                    raise ValueError(f'{flag} must be true or false')
+                normalized[flag] = item.get(flag) is True
         except KeyError:
             return jsonify({'error': 'product_id is required',
                             'code': 'invalid_input', 'field': 'product_id',
@@ -1010,17 +1019,18 @@ def submit_daily_report():
         con.close()
         return denied
 
-    if _is_authoritative(con, store_id) and any(
-        item['section'] in {'break_display', 'stock_in', 'stock_out'}
-        for item in validated_items
-    ):
+    live = _is_authoritative(con, store_id)
+    stock_items = [(line, item) for line, item in enumerate(validated_items, 1) if item['section'] in LINE_SECTIONS]
+    store_mode = 'live' if live else 'legacy'
+    if stock_items and ((data.get('stock_mode') or store_mode) != store_mode or not live and any(
+            item['section'] not in {'stock_in', 'stock_out', 'break_display'} for _, item in stock_items)):
         con.close()
-        # At a live store, goods coming in, going out or off display are recorded in Inventory.
-        return jsonify({
-            'error': f'{store_code} is live: remove the 入店, 出店 and 拆Display lines and record those moves '
-                     'in Inventory instead',
-            'code': 'migration_required',
-        }), 409
+        # 入店 means new goods at a live store but upstairs → floor at a legacy one: read it again for this store.
+        return jsonify({'error': f'This report was read for a store in the other stock mode; parse it again for {store_code}',
+                        'code': 'report_store_mode_changed'}), 409
+    if live and stock_items and mode != 'replace':
+        con.close()
+        return jsonify(invalid_input('A live store\'s report stock lines need replace mode')), 400
 
     cur = con.cursor()
     product_ids = {item['product_id'] for item in validated_items}
@@ -1082,7 +1092,7 @@ def submit_daily_report():
 
         required_instore = {}
         required_upstairs = {}
-        for item in validated_items:
+        for item in validated_items if not live else ():
             pid = item['product_id']
             if item['section'] in {'break_display', 'stock_out'}:
                 required_instore[pid] = read_int(
@@ -1176,6 +1186,10 @@ def submit_daily_report():
                 if cur.rowcount != 1:
                     raise ValueError('qty_sold exceeds the supported range')
                 sales_count += 1
+
+            elif live:
+                # A live store's stock lines move through report_stock below.
+                continue
 
             elif section == 'break_display':
                 qty = item['qty']
@@ -1276,30 +1290,18 @@ def submit_daily_report():
                 'code': 'reconciliation_classification_required',
             }), 409
 
-        # Report-only exact choices never widen into global aliases. Multiple owners
-        # are retained as a dispute; another submission cannot silently pick a winner.
-        reviewed_keys = {
-            report_match_key(item.get('raw_name') or '', item.get('notes') or '')
-            for item in validated_items if item['section'] in ('pos', 'cash')
-            and item.get('source_bucket') in ('review', 'failed') and (item.get('raw_name') or '').strip()
-        }
-        if reviewed_keys:
-            catalog = {row['id']: dict(row) for row in cur.execute('SELECT * FROM products')}
-            for item in validated_items:
-                key = report_match_key(item.get('raw_name') or '', item.get('notes') or '')
-                if key not in reviewed_keys or item['section'] not in ('pos', 'cash'):
-                    continue
-                owners = {item['product_id']}
-                if not key[1]:
-                    # Preserve an established exact legacy alias when reviews disagree.
-                    owners.update(row['product_id'] for row in cur.execute('SELECT alias,product_id FROM product_aliases')
-                                  if report_match_key(row['alias']) == key)
-                for pid in owners:
-                    cur.execute("""INSERT INTO report_match_choices
-                        (name_key,note_key,product_id,identity_signature) VALUES (?,?,?,?)
-                        ON CONFLICT(name_key,note_key,product_id) DO UPDATE
-                        SET identity_signature=excluded.identity_signature""",
-                        (*key, pid, report_identity_signature(catalog[pid])))
+        # 名称记忆 (owner, 2026-11-03): a name reviewed here is remembered for every section, and confirms
+        # by itself where it was reviewed (this store, this section). A different product replaces the old
+        # pick; one report picking two products for a name keeps it disputed. Report-only exact choices
+        # never widen into global aliases.
+        reviewed = {}
+        for item in validated_items:
+            if item.get('source_bucket') in ('review', 'failed') and (item.get('raw_name') or '').strip():
+                reviewed.setdefault(report_match_key(item['raw_name'], item.get('notes') or ''), []).append(item)
+        for key, rows in reviewed.items():
+            save_pick(cur, key, rows[0]['raw_name'].strip(), (rows[0].get('notes') or '').strip(),
+                      sorted({row['product_id'] for row in rows}), request.jwt_payload.get('sub'), store_id,
+                      {place_of(row) for row in rows})
 
         if mode == 'replace':
             cur.execute('DELETE FROM daily_report_metadata WHERE date=? AND store=?', (d, store_code))
@@ -1309,9 +1311,41 @@ def submit_daily_report():
                 VALUES ({','.join('?' for _ in range(4 + len(_REPORT_NOTE_FIELDS)))})""",
                 (d, store_code, cash_actual, cash_expected,
                  *(annotation_lists[key] for key in _REPORT_NOTE_FIELDS)))
-        # A live store's floor follows the day's sales (owner, 2026-10-29).
+        since = live_since(con, store_id) if live else None
+        if stock_items and cur.execute(
+                """SELECT 1 FROM inventory_documents WHERE source_type='daily_report' AND source_id LIKE ?
+                   AND source_id LIKE '%move-%' AND reason LIKE ? LIMIT 1""",
+                (f'{store_code}:{d}:%', f'日报 {d}%')).fetchone():
+            # DT's Oct 29–31 stock lines were posted on the server by hand (source <store>:<day>:move-N, reason
+            # "日报 <day> …"); the report must not move them a second time. The owner's own fixes posted the same
+            # way ("店主 …") are not report lines.
+            con.rollback()
+            con.close()
+            return jsonify({'error': f'{store_code} {d}: this day\'s stock lines were already recorded by hand; '
+                                     'remove them from the report (its sales can still be saved)',
+                            'code': 'report_moves_recorded'}), 409
+        if since is not None and d >= since and mode == 'replace':
+            # This report is now the day's stock lines too (owner, 2026-11-03); a line no longer on it is put back.
+            save_report_lines(con, store_id, d, plan_report_lines(con, store_id, stock_items))
+        # A live store's floor follows the day's sales (owner, 2026-10-29) and its stock lines.
         stock = sync_report_stock(con, request.jwt_payload, store_id, store_code, d)
+        changes = [line for line in (stock or {}).get('lines', []) if line['moving'] or line['short']]
+        digest = hashlib.sha256(json.dumps(sorted(
+            (line['line_key'], line['moving'], line['short']) for line in changes)).encode()).hexdigest()[:16]
+        if dry_run or (changes and data.get('stock_digest') != digest):
+            # The manager confirms what the stock lines move before a report saves (owner, 2026-11-03).
+            con.rollback()
+            con.close()
+            body = {'stock': stock, 'stock_digest': digest, 'needs_confirmation': bool(changes)}
+            if dry_run:
+                return jsonify({'ok': True, 'dry_run': True, **body})
+            return jsonify({'error': 'Confirm what this report moves in stock before saving it',
+                            'code': 'stock_confirmation_required', **body}), 409
         con.commit()
+    except ReportLineError as exc:
+        con.rollback()
+        con.close()
+        return jsonify({'error': str(exc), 'code': exc.code, 'line': exc.line}), exc.status
     except InventoryError as exc:
         con.rollback()
         con.close()
@@ -1501,6 +1535,164 @@ def retry_report_stock():
         con.close()
 
 
+# ── 名称记忆 Name picks (owner, 2026-11-03) ─────────────────────────────────
+_PICK_SECTIONS = {'pos', 'cash'} | set(LINE_SECTIONS)
+
+
+def _name_pick_stores(con, code=None):
+    """Stores whose pasted names this manager may answer: the ones they may save reports for."""
+    code = (code or request.args.get('store_code') or 'ALL').strip().upper()
+    return [dict(row) for row in con.execute('SELECT id, code FROM stores WHERE is_active=1 ORDER BY id')
+            if (code == 'ALL' or row['code'] == code) and can_write_legacy_store(con, request.jwt_payload, row['id'])]
+
+
+def _pick_key(data):
+    """The exact report key from a written name and note, or from the page's own name_key/note_key."""
+    if 'name_key' in data:
+        key = (data.get('name_key'), data.get('note_key', ''))
+    else:
+        key = (data.get('raw_name'), data.get('note', ''))
+    if not all(isinstance(value, str) and len(value) <= 500 for value in key):
+        raise ValueError('name and note must be text')
+    key = report_match_key(*key)
+    if not key[0]:
+        raise ValueError('name is required')
+    return key
+
+
+def _pick_replaces(cur, data, key):
+    """The products the manager saw for this name; a pick changed since is not overwritten unseen."""
+    replaces = data.get('replaces', [])
+    if not isinstance(replaces, list) or any(type(pid) is not int for pid in replaces):
+        raise ValueError('replaces must be a list of product ids')
+    current = sorted(row[0] for row in cur.execute(
+        'SELECT product_id FROM report_match_choices WHERE name_key=? AND note_key=?', key))
+    if current != sorted(set(replaces)):
+        raise InventoryConflict('This name was picked again meanwhile. Refresh to see it.', 'pick_changed')
+
+
+@bp.get('/api/sales/name-picks')
+@role_required('manager')
+def name_picks():
+    """Every remembered report name, and each store's pasted days with their names' statuses."""
+    con = get_db()
+    try:
+        return jsonify({'picks': all_picks(con), 'days': report_days(con, _name_pick_stores(con))})
+    finally:
+        con.close()
+
+
+@bp.get('/api/sales/name-picks/day')
+@role_required('manager')
+def name_picks_day():
+    """One pasted day's names, in paste order."""
+    con = get_db()
+    try:
+        day = read_date(request.args.get('date'))
+        code = (request.args.get('store_code') or '').strip().upper()
+        stores = _name_pick_stores(con, code) if code and code != 'ALL' else []
+        if not stores:
+            return jsonify({'error': 'Choose one store you can save reports for', 'code': 'inventory_forbidden'}), 403
+        return jsonify({'store_code': stores[0]['code'], 'date': day, 'names': report_names(con, stores[0], day)})
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    finally:
+        con.close()
+
+
+@bp.post('/api/sales/name-picks')
+@role_required('manager')
+def save_name_pick():
+    """Pick, confirm or change the product a report name means. A different product replaces the old
+    pick. With store_code and section (a pasted line), the pick also confirms that line's situation."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(invalid_input('body must be an object')), 400
+    con = get_db()
+    try:
+        key = _pick_key(data)
+        product_id = read_int(data.get('product_id'), 'product_id', minimum=1)
+        store_id, places = None, set()
+        if data.get('store_code') is not None:
+            stores = _name_pick_stores(con, data['store_code']) if isinstance(data['store_code'], str) else []
+            if not stores or data['store_code'].strip().upper() == 'ALL':
+                return jsonify({'error': 'Inventory access denied', 'code': 'inventory_forbidden'}), 403
+            if data.get('section') not in _PICK_SECTIONS or not isinstance(data.get('display', False), bool):
+                raise ValueError('section must be a report section and display true or false')
+            store_id, places = stores[0]['id'], {(data['section'], data.get('display', False))}
+        cur = con.cursor()
+        con.execute('BEGIN IMMEDIATE')
+        _pick_replaces(cur, data, key)
+        if cur.execute('SELECT 1 FROM products WHERE id=?', (product_id,)).fetchone() is None:
+            con.rollback()
+            return jsonify({'error': 'Product not found', 'code': 'not_found', 'field': 'product_id'}), 404
+        written = data.get('raw_name') if isinstance(data.get('raw_name'), str) else key[0]
+        note = data.get('note') if isinstance(data.get('note'), str) else key[1]
+        save_pick(cur, key, written.strip() or key[0], note.strip(), [product_id], request.jwt_payload.get('sub'),
+                  store_id, places)
+        con.commit()
+        return jsonify({'ok': True, 'name_key': key[0], 'note_key': key[1]})
+    except ValueError as exc:
+        con.rollback()
+        return jsonify(invalid_input(exc)), 400
+    except InventoryError as exc:
+        con.rollback()
+        return _inventory_error(exc)
+    finally:
+        con.close()
+
+
+@bp.delete('/api/sales/name-picks')
+@role_required('manager')
+def forget_name_pick():
+    """Forget a pick: the next paste matches the name as if it had never been answered."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(invalid_input('body must be an object')), 400
+    con = get_db()
+    try:
+        key = _pick_key(data)
+        cur = con.cursor()
+        con.execute('BEGIN IMMEDIATE')
+        _pick_replaces(cur, data, key)
+        cur.execute('DELETE FROM report_match_choices WHERE name_key=? AND note_key=?', key)
+        con.commit()
+        return jsonify({'ok': True})
+    except ValueError as exc:
+        con.rollback()
+        return jsonify(invalid_input(exc)), 400
+    except InventoryError as exc:
+        con.rollback()
+        return _inventory_error(exc)
+    finally:
+        con.close()
+
+
+@bp.post('/api/sales/name-picks/ignore')
+@role_required('manager')
+def ignore_name():
+    """Set a name aside (an outfit, a one-off order) or bring it back. Pastes still ask about it."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('ignored'), bool):
+        return jsonify(invalid_input('ignored must be true or false')), 400
+    con = get_db()
+    try:
+        key = _pick_key(data)
+        con.execute('BEGIN IMMEDIATE')
+        if data['ignored']:
+            con.execute("""INSERT INTO report_name_dismissals(name_key, note_key, dismissed_by) VALUES (?, ?, ?)
+                           ON CONFLICT(name_key, note_key) DO NOTHING""", (*key, request.jwt_payload.get('sub')))
+        else:
+            con.execute('DELETE FROM report_name_dismissals WHERE name_key=? AND note_key=?', key)
+        con.commit()
+        return jsonify({'ok': True})
+    except ValueError as exc:
+        con.rollback()
+        return jsonify(invalid_input(exc)), 400
+    finally:
+        con.close()
+
+
 @bp.route('/api/sales/recorded-dates')
 @role_required('manager')
 def recorded_dates():
@@ -1536,13 +1728,14 @@ def recorded_dates():
 # Layer 2 — section keyword map (longer/more-specific strings first, lowercase;
 # comparison is case-insensitive)
 _SECTION_MAP = [
+    ('出库入店', 'refill'),
     ('卡机汇总', 'pos'), ('随手记汇总', 'cash'), ('随手机汇总', 'cash'),
     ('随手记', 'cash'), ('卡机', 'pos'),
     ('入店display', 'display_stock_in'), ('出店display', 'display_stock_out'),
     ('入display', 'display_stock_in'), ('出display', 'display_stock_out'),
     ('入娃娃机', 'claw_stock_in'), ('娃娃机入', 'claw_stock_in'),
     ('娃娃机出', 'claw'), ('出娃娃机', 'claw'),
-    ('入店', 'stock_in'), ('出店', 'stock_out'),
+    ('入店', 'stock_in'), ('出店', 'stock_out'), ('出库', 'store_transfer'),
     ('卖display', 'sell_display'), ('卖展示', 'sell_display'),
     ('拆display', 'break_display'), ('拆展示', 'break_display'),
     ('娃娃机', 'claw'), ('员工折扣', 'employee_discount'),
@@ -1552,7 +1745,13 @@ _REPORT_ANNOTATIONS = {
     'employee_discount': 'employee_discounts', 'sell_display': 'display_sales',
     'claw': 'claw_prizes', 'claw_stock_in': 'claw_stock_in',
     'display_stock_in': 'display_stock_in', 'display_stock_out': 'display_stock_out',
+    'store_transfer': 'store_transfers',
 }
+# At a live store these sections are stock lines rather than notes (owner, 2026-11-03), under the
+# names report_stock moves them by. 出库 and 入娃娃机 stay notes: staff record them with 调拨
+# Transfer and the claw screen.
+_LIVE_LINE_SECTIONS = {'sell_display': 'display_sold', 'claw': 'claw_prize', 'display_stock_in': 'display_stock_in'}
+_DISPLAY_NOTE = re.compile(r'\s*(?:display|展示)\s*', re.I)
 
 # Fuzzy matches are suggestions only; unique exact identities can confirm.
 _SCORE_REVIEW = 50
@@ -1622,6 +1821,10 @@ def _split_report_items(content: str) -> list[str]:
     return [part for part in parts if part]
 
 
+# Stores a report header names in Chinese: Markham's reports open "2026.11.2 太古汇总" (its lists say 太古店内, 太古仓库).
+_STORE_WORDS = {'太古': 'MK'}
+
+
 def _extract_date_store(first_line: str, fallback_store: str):
     """Parse date and store code from a report header line (best-effort)."""
     dm = _DATE_RE.search(first_line)
@@ -1630,7 +1833,8 @@ def _extract_date_store(first_line: str, fallback_store: str):
     )
     suffix = r'(?:汇总|店|\s*$)' if dm else r'(?:汇总|店)'
     sm = re.search(r'(?<![A-Za-z])([A-Za-z]{2,6})' + suffix, first_line)
-    store = sm.group(1).upper() if sm else fallback_store
+    named = next((code for word, code in _STORE_WORDS.items() if word in first_line), None)
+    store = sm.group(1).upper() if sm else named or fallback_store
     return detected_date, store
 
 
@@ -1674,20 +1878,22 @@ def _parse_token(token: str, section: str) -> dict | None:
     raw_name, star, qty_str = t.partition('*')
     raw_name = raw_name.strip()
     qty, flagged, loose_qty = 0, True, 0
-    box_size = 1 if section == 'stock_in' else None
+    packed = section in ('stock_in', 'refill')
+    box_size = 1 if packed else None
     out_pack = None
     if star:
-        if section in ('stock_in', 'stock_out'):
+        if section in ('stock_in', 'refill', 'stock_out'):
             pack = re.match(r'^(.*?)(\d+)$', raw_name)
+            # "Smiski拍拍灯v2*1" is one v2 lamp, not one set of 2.
             if pack and pack.group(1).strip() and not re.search(
-                r'(?<![A-Za-z])(?:s|ver|version|series)\s*$', pack.group(1), re.I
+                r'(?<![A-Za-z])(?:s|v|ver|version|series)\s*$', pack.group(1), re.I
             ):
                 raw_name = pack.group(1).strip().rstrip(':').strip()
                 try:
                     size = read_int(pack.group(2), 'box_size', minimum=1)
                 except ValueError:
                     size = None
-                if section == 'stock_in':
+                if packed:
                     box_size = size
                 elif re.search(r'[㐀-鿿]$', pack.group(1)):
                     # "出店：最初的伙伴9*1" is one pack of 9; stock-out lines carry units only.
@@ -1696,7 +1902,7 @@ def _parse_token(token: str, section: str) -> dict | None:
                 else:
                     raw_name = t.partition('*')[0].strip()
         try:
-            quantities = re.split(r'\s*[+➕]\s*', qty_str.strip()) if section == 'stock_in' else [qty_str.strip()]
+            quantities = re.split(r'\s*[+➕]\s*', qty_str.strip()) if packed else [qty_str.strip()]
             if len(quantities) > 2:
                 raise ValueError('Invalid quantity')
             qty = read_int(quantities[0], 'qty', minimum=1)
@@ -1705,7 +1911,7 @@ def _parse_token(token: str, section: str) -> dict | None:
             if out_pack is not None:
                 qty = read_int(qty * out_pack, 'qty', minimum=1)
                 note = '；'.join(filter(None, [note, '原文: ' + token.strip()]))
-            flagged = section == 'stock_in' and box_size is None
+            flagged = packed and box_size is None
         except ValueError:
             pass
     else:
@@ -1758,7 +1964,7 @@ def parse_daily_report():
     con = get_db()
     cur = con.cursor()
     aliases = load_matching_aliases(con)
-    report_choices = load_report_match_choices(con)
+    report_picks = load_report_picks(con)
     cur.execute('SELECT alias_norm, section_type FROM section_aliases')
     section_aliases = {r['alias_norm']: r['section_type'] for r in cur.fetchall()}
     cur.execute('''
@@ -1766,6 +1972,11 @@ def parse_daily_report():
         FROM products
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
+    designs = [dict(r) for r in cur.execute('''
+        SELECT d.id, d.design_name, s.name AS series_name, h.id AS head_id, h.jizhanming AS head_jzm, h.name_cn_en AS head_name
+        FROM products d JOIN product_series s ON s.id=d.series_id LEFT JOIN products h ON h.id=s.product_id
+        WHERE d.stock_form='confirmed_design' AND COALESCE(d.design_name, '') != ''
+    ''')]
 
     # ── Engine selection: LLM front-end when configured, rules otherwise ─────
     # The LLM only reads the report (sections, names verbatim, quantities,
@@ -1787,13 +1998,18 @@ def parse_daily_report():
 
     # A report title can precede the date/store header. Prefer literal source facts.
     header_lines = [ln for ln in lines if re.fullmatch(
-        _DATE_RE.pattern + r'日?\s*(?:[A-Za-z]{2,6})?\s*(?:汇总|店)?', ln.strip())]
+        _DATE_RE.pattern + r'日?\s*(?:[A-Za-z]{2,6}|' + '|'.join(_STORE_WORDS) + r')?\s*(?:汇总|店)?', ln.strip())]
     detected_date = None
     source_stores = {_extract_date_store(ln, '')[1] for ln in header_lines} - {''}
     detected_store = next(iter(source_stores)) if len(source_stores) == 1 else ''
     if header_lines:
         detected_date, _ = _extract_date_store(header_lines[0], '')
     store_code = detected_store or store_code
+    # A live store's stock sections are stock lines; a legacy store keeps its old report stock paths.
+    resolved_store = _resolve_store(con, store_code)
+    live = bool(resolved_store) and _is_authoritative(con, resolved_store[0])
+    annotations = ({key: field for key, field in _REPORT_ANNOTATIONS.items() if key not in _LIVE_LINE_SECTIONS}
+                   if live else _REPORT_ANNOTATIONS)
 
     # Report-header/date lines ("2026.04.01 DT汇总") are metadata, not products —
     # skip them without disturbing the current section.
@@ -1858,11 +2074,16 @@ def parse_daily_report():
             metadata_errors.append('Cannot read cash actual/expected: ' + text_piece)
 
     def _parse_content(content: str, sec: str, hdr: str | None = None) -> None:
-        if sec in _REPORT_ANNOTATIONS:
+        if sec in annotations:
             if not _extract_note(content)[2]:
                 metadata_errors.append('Unclosed or unmatched note: ' + content)
-            report_notes[_REPORT_ANNOTATIONS[sec]].append(content)
+            report_notes[annotations[sec]].append(content)
             return
+        if live:
+            sec = _LIVE_LINE_SECTIONS.get(sec, sec)
+        elif sec == 'refill':
+            # 出库入店 is upstairs → floor, which a legacy store's 入店 already records.
+            sec = 'stock_in'
         discount_index = None
         for token in _split_report_items(content):
             item_text, annotation, balanced = _extract_note(token)
@@ -1880,6 +2101,10 @@ def parse_daily_report():
                 report_notes['employee_discounts'][discount_index] += ', ' + token
                 continue
             discount_index = None
+            if live and balanced and sec in ('refill', 'stock_in', 'stock_out') and re.search(
+                    r'\bdisplay\b|展示', annotation, re.I):
+                _live_display_line(token, sec)
+                continue
             if balanced and sec in ('stock_in', 'stock_out') and re.search(r'\bdisplay\b|展示', annotation, re.I):
                 mixed = re.fullmatch(
                     r'(.+?)\s*:\s*(\d+)\s*[+➕]\s*\((?:display|展示)\)\s*\*(\d+)', token, re.I
@@ -1930,6 +2155,33 @@ def parse_daily_report():
                 if hdr is not None:
                     item['unknown_header'] = hdr
                 raw_items.append(item)
+                notes = (item['note'] or '').split('；')
+                if live and sec in ('pos', 'cash') and hdr is None and any(map(_DISPLAY_NOTE.fullmatch, notes)):
+                    # "labubu喵喵毛绒*1（display）" among the sales (MK, 2026-11-02): this sale came off display,
+                    # as a 卖display line says.
+                    item['note'] = '；'.join(note for note in notes if not _DISPLAY_NOTE.fullmatch(note))
+                    raw_items.append({**item, 'section': 'display_sold', 'qty_pos': item['qty'], 'qty_cash': 0})
+
+    def _live_display_line(token: str, sec: str) -> None:
+        """A (display) line at a live store: 出库入店/入店 put it on display, 出店 takes it off display.
+        "芭比*11+1(display)" and "芭比:11+(display)*1" are 11 to the floor plus 1 to display."""
+        shown = 'from_display' if sec == 'stock_out' else 'to_display'
+        trailing = re.fullmatch(r'(.+?)\s*\*\s*(\d+)\s*[+➕]\s*(\d+)\s*\((?:display|展示)\)', token, re.I)
+        mixed = re.fullmatch(r'(.+?)\s*:\s*(\d+)\s*[+➕]\s*\((?:display|展示)\)\s*\*(\d+)', token, re.I)
+        split = trailing or mixed
+        if split and sec != 'stock_out':
+            parts = [(f'{split.group(1)}*{split.group(2)}' if trailing else f'{split.group(1)}:{split.group(2)}', False),
+                     (f'{_extract_note(split.group(1))[0]}:{split.group(3)}', True)]
+        else:
+            parts = [(token, True)]
+        for text, on_display in parts:
+            item = _parse_token(text, sec)
+            notes = [part for part in (item['note'] or '').split('；') if not _DISPLAY_NOTE.fullmatch(part)]
+            item['note'] = '；'.join(notes)
+            if split:
+                item['note'] = '；'.join(filter(None, [item['note'], '原文: ' + token]))
+            item[shown] = on_display
+            raw_items.append(item)
 
     for i, line in enumerate(lines):
         s = line.strip()
@@ -2016,47 +2268,111 @@ def parse_daily_report():
     return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                          cash_total_reported, parser_engine, multi_day,
                          aliases, all_products, cash_expected_reported, metadata_errors, report_notes,
-                         report_choices)
+                         report_picks, live, designs, resolved_store[0] if resolved_store else None)
+
+
+_GENERIC_WORDS = {'series', 'figure', 'figures', 'figurine', 'mini', 'blind', 'box', 'plush', 'vinyl', 'doll',
+                  'the', 'and', 'collection'}
+
+
+def _design_key(text: str) -> str:
+    return re.sub(r'[\W_]+', '', _norm_jzm(_clean_jzm(text or '')))
+
+
+def _dash_design(raw_name: str, designs: list) -> int | None:
+    """The owner's rule (2026-11-01): a line written "X - name" is the design `name` of series X, as in
+    "SA Easter Series 2017 - Easter Lamb" or "小野clot figure-Silk Royale". Returns that design's id when
+    the series and the design name written point to one design; a year or number written in X must be
+    in the series' name ("2015" is never the 2016 series)."""
+    head, dash, written = raw_name.rpartition('-')
+    wanted = _design_key(written)
+    if not dash or not _design_key(head) or len(wanted) < 2:
+        return None
+    numbers = re.findall(r'\d{2,}', head)
+    pool = [d for d in designs if all(
+        n in ' '.join(filter(None, (d['series_name'], d['head_jzm'], d['head_name']))) for n in numbers)]
+    named = [d for d in pool if _design_key(d['design_name']) == wanted] or [
+        d for d in pool if _score_pair_jzm(wanted, _design_key(d['design_name'])) >= 70]
+    series = _norm_jzm(_clean_jzm(head))
+    # "小野clot figure" names the Clot series by its own word even where the fuzzy score cannot see it.
+    words = set(re.findall(r'[a-z]{3,}', head.lower())) - _GENERIC_WORDS
+
+    def fits(design):
+        names = [name for name in (design['series_name'], design['head_jzm'], design['head_name']) if name]
+        score = max(_score_pair_jzm(series, _norm_jzm(_clean_jzm(name))) for name in names)
+        shared = words & set(re.findall(r'[a-z]{3,}', ' '.join(names).lower()))
+        return max(score, _SCORE_REVIEW if shared else 0)
+
+    scored = sorted(((fits(d), d['id']) for d in named), reverse=True)
+    scored = [(score, design_id) for score, design_id in scored if score >= _SCORE_REVIEW]
+    if not scored or (len(scored) > 1 and scored[0][0] == scored[1][0]):
+        return None
+    return scored[0][1]
+
+
+def _secret_design(raw_name: str, designs: list, all_products: list, aliases: dict) -> int | None:
+    """"马卡龙隐藏" is the secret design of the series 马卡龙 names exactly, when that series has only one."""
+    written = re.fullmatch(r'(.+?)\s*(?:隐藏款?|secret)', raw_name.strip(), re.I)
+    if not written:
+        return None
+    heads = [product for score, product in match_jzm(written.group(1), all_products, aliases, threshold=100)]
+    if len(heads) != 1:
+        return None
+    secrets = [d['id'] for d in designs
+               if d['head_id'] == heads[0]['id'] and re.search(r'secret|隐藏', d['design_name'], re.I)]
+    return secrets[0] if len(secrets) == 1 else None
+
+
+def _valid_day(value) -> bool:
+    try:
+        return read_date(value) == value
+    except ValueError:
+        return False
 
 
 def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                   cash_total_reported, parser_engine, multi_day,
                   aliases, all_products, cash_expected_reported=None,
-                  metadata_errors=None, report_notes=None, report_choices=None):
+                  metadata_errors=None, report_notes=None, report_picks=None, live=False, designs=None,
+                  store_id=None):
     """Layers 4+5 — shared by both engines: alias lookup + fuzzy match +
     bucketing, stock plausibility flags, and the response payload."""
     confirmed: list[dict] = []
     review:    list[dict] = []
     failed:    list[dict] = []
-    choices = report_choices or {}
-    reviewed_names = {key[0] for key in choices}
+    picks = report_picks or {}
+    reviewed_names = {key[0] for key in picks}
     products_by_id = {product['id']: product for product in all_products}
+    store_codes = {row['id']: row['code'] for row in get_db().execute('SELECT id, code FROM stores')} if picks else {}
+    names = []  # (key, row) for 名称记忆: the names this paste did not confirm by an exact catalog name
 
-    def _bucket(item: dict, hits: list) -> None:
-        """Place a resolved item into the correct bucket."""
+    def _bucket(item: dict, hits: list, confirm: bool | None = None) -> dict:
+        """Place a resolved item into the correct bucket. A remembered pick decides `confirm` itself."""
         if not hits:
             failed.append({**item, 'reason': 'no_match', 'score': 0, 'candidates': []})
-            return
+            return failed[-1]
         top_score, top_product = hits[0]
         runner_up  = hits[1][0] if len(hits) > 1 else 0
         unique_exact = top_score == 100 and runner_up < 100
         warn_blank = not (top_product.get('jizhanming') or '').strip()
-        if (unique_exact and not item.get('flagged')
-                and item.get('section') in ('pos', 'cash') and parser_engine == 'rules'):
+        if confirm is None:
+            confirm = unique_exact and item.get('section') in ('pos', 'cash')
+        if confirm and not item.get('flagged') and parser_engine == 'rules':
             confirmed.append({
                 **item,
                 'score':          top_score,
                 'product':        top_product,
                 'warn_blank_jzm': warn_blank,
             })
-        else:
-            review.append({
-                **item,
-                'score':          top_score,
-                'product':        top_product,
-                'candidates':     [{'score': s, **p} for s, p in hits],
-                'warn_blank_jzm': warn_blank,
-            })
+            return confirmed[-1]
+        review.append({
+            **item,
+            'score':          top_score,
+            'product':        top_product,
+            'candidates':     [{'score': s, **p} for s, p in hits],
+            'warn_blank_jzm': warn_blank,
+        })
+        return review[-1]
 
     for item in raw_items:
         raw_name = item.get('raw_name', '')
@@ -2074,15 +2390,43 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         qualifier = item.get('note', '')
         query = report_match_query(raw_name, qualifier)
         key = report_match_key(raw_name, qualifier)
-        chosen = choices.get(key)
-        if chosen in products_by_id:
-            hits = [(100, products_by_id[chosen])]
+        hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+        if key[0] in reviewed_names or query != raw_name:
+            # A name reviewed with another note, or a changed note, must be reviewed again.
+            hits = [(min(score, 99), product) for score, product in hits]
+        design = (_dash_design(raw_name, designs or [])
+                  or _secret_design(raw_name, designs or [], all_products, aliases))
+        if design in products_by_id and (not hits or hits[0][1]['id'] != design):
+            # Suggested first, never confirmed by itself.
+            hits = [(99, products_by_id[design])] + [hit for hit in hits if hit[1]['id'] != design]
+        pick = picks.get(key)
+        chosen = [pid for pid in (pick or {}).get('product_ids', []) if pid in products_by_id]
+        if chosen:
+            # 名称记忆 (owner, 2026-11-03): the remembered product leads. It confirms the line only where a
+            # manager confirmed it (this store, this section, display or not); anywhere else, or once the
+            # product changed, the paste asks again with it picked.
+            state = name_status(pick, store_id, place_of(item), False)
+            hits = [(100 if state in ('remembered', 'confirm') else 99, products_by_id[pid]) for pid in chosen] + [
+                (min(score, 99), product) for score, product in hits if product['id'] not in chosen]
+            item = {**item, 'pick': {'state': state, 'product_ids': chosen, 'places': [
+                {'store_code': store_codes[sid], 'section': section, 'display': display}
+                for sid, section, display in sorted(pick['situations']) if sid in store_codes]}}
+            names.append((key, _bucket(item, hits, confirm=state == 'remembered')))
         else:
-            hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
-            if key[0] in reviewed_names or query != raw_name:
-                # Stale/disputed choice or a changed note must be reviewed again.
-                hits = [(min(score, 99), product) for score, product in hits]
-        _bucket(item, hits)
+            row = _bucket(item, hits)
+            if row is not (confirmed[-1] if confirmed else None):
+                names.append((key, row))
+
+    if store_id is not None and not multi_day and _valid_day(detected_date):
+        # The day's latest paste replaces its names on the Name picks page (a preview saves nothing else).
+        con4 = get_db()
+        try:
+            con4.execute('BEGIN IMMEDIATE')
+            log_names(con4, store_id, detected_date, names, request.jwt_payload.get('sub'))
+            con4.commit()
+        except Exception:
+            con4.rollback()
+            raise
 
     # ── Stock plausibility: flag sales rows that exceed known in-store stock ──
     # Only products with an existing stock row are checked — absence of a row
@@ -2119,4 +2463,6 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         'metadata_errors': metadata_errors or [],
         'parser_engine':       parser_engine,
         'multi_day':           multi_day,
+        # Which stock rules the lines were read by; submitting them to a store in the other mode is refused.
+        'stock_mode':          'live' if live else 'legacy',
     })

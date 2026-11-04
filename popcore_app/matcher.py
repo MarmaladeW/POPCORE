@@ -279,25 +279,48 @@ def report_identity_signature(product: dict) -> str:
     return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
 
 
+def load_report_picks(con) -> dict:
+    """Remembered report names (名称记忆) by exact key: {'product_ids', 'state', 'situations', ...}.
+
+    state 'ok' is one product whose identity is unchanged since the pick; 'stale' means the product
+    changed since; 'disputed' means one paste picked two products for the name. situations are the
+    (store_id, section, display) a manager confirmed the pick in: only there does it confirm a line.
+    """
+    picks = {}
+    for row in con.execute("""SELECT p.*, c.name_key, c.note_key, c.identity_signature, c.raw_name AS pick_raw,
+                                     c.note AS pick_note, c.picked_by, c.picked_at
+                              FROM report_match_choices c JOIN products p ON p.id=c.product_id
+                              ORDER BY c.product_id"""):
+        key = (row['name_key'], row['note_key'])
+        pick = picks.setdefault(key, {'product_ids': [], 'state': 'ok', 'situations': set(), 'legacy': False,
+                                      'raw_name': row['pick_raw'] or key[0], 'note': row['pick_note'] or key[1],
+                                      'picked_by': row['picked_by'], 'picked_at': row['picked_at']})
+        pick['product_ids'].append(row['id'])
+        pick['legacy'] = pick['legacy'] or row['picked_at'] is None
+        if len(pick['product_ids']) > 1:
+            pick['state'] = 'disputed'
+        elif row['identity_signature'] != report_identity_signature(dict(row)):
+            pick['state'] = 'stale'
+    for row in con.execute('SELECT name_key, note_key, product_id, store_id, section, display FROM report_match_situations'):
+        pick = picks.get((row['name_key'], row['note_key']))
+        if pick and pick['product_ids'] == [row['product_id']]:
+            pick['situations'].add((row['store_id'], row['section'], bool(row['display'])))
+    # Old corrections lack notes. They can veto an exact bare choice made before name picks, never
+    # approve one or transfer a lossy normalized conflict to a different variant. A pick made since
+    # (it has a time) is the manager's answer and a later change replaces it (owner, 2026-11-03).
+    for row in con.execute('SELECT DISTINCT raw_name,norm_name,product_id FROM match_corrections'):
+        pick = picks.get(report_match_key(row['raw_name']))
+        if (pick and pick['legacy'] and pick['state'] == 'ok'
+                and row['norm_name'] == normalize(clean_name(row['raw_name']))
+                and pick['product_ids'] != [row['product_id']]):
+            pick['state'] = 'disputed'
+    return picks
+
+
 def load_report_match_choices(con) -> dict:
     """A stale or disputed exact choice remains review-only, including exact hits."""
-    choices = {}
-    for row in con.execute("""SELECT p.*, c.name_key, c.note_key, c.identity_signature
-                            FROM report_match_choices c JOIN products p ON p.id=c.product_id"""):
-        product = dict(row)
-        key = (row['name_key'], row['note_key'])
-        if key in choices or row['identity_signature'] != report_identity_signature(product):
-            choices[key] = None
-        else:
-            choices[key] = row['id']
-    # Old corrections lack notes. They can veto an exact bare choice, never
-    # approve one or transfer a lossy normalized conflict to a different variant.
-    for row in con.execute('SELECT DISTINCT raw_name,norm_name,product_id FROM match_corrections'):
-        key = report_match_key(row['raw_name'])
-        if (key in choices and row['norm_name'] == normalize(clean_name(row['raw_name']))
-                and choices[key] != row['product_id']):
-            choices[key] = None
-    return choices
+    return {key: pick['product_ids'][0] if pick['state'] == 'ok' else None
+            for key, pick in load_report_picks(con).items()}
 
 
 def load_matching_aliases(con) -> dict:

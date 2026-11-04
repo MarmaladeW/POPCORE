@@ -44,6 +44,19 @@ export interface BackendBaseItem {
   note?: string
   warn_stock?: { instore: number } | null
   unknown_header: string | null
+  // A live store's (display) stock line: 出库入店/入店 to display, 出店 from display.
+  to_display?: boolean
+  from_display?: boolean
+  // 名称记忆: what a manager picked for this name before (owner, 2026-11-03).
+  pick?: ReportPickInfo
+}
+
+// 'remembered' confirmed the line (same store and section); 'confirm' asks once here; 'stale' the product
+// changed since the pick; 'disputed' one report picked two products.
+export interface ReportPickInfo {
+  state: 'remembered' | 'confirm' | 'stale' | 'disputed'
+  product_ids: number[]
+  places: { store_code: string; section: string; display: boolean }[]
 }
 
 export interface BackendConfirmedItem extends BackendBaseItem {
@@ -73,6 +86,7 @@ export interface ReportAnnotations {
   claw_stock_in?: string[]
   display_stock_in?: string[]
   display_stock_out?: string[]
+  store_transfers?: string[]
 }
 
 export interface ParseReportResponse extends ReportAnnotations {
@@ -87,6 +101,8 @@ export interface ParseReportResponse extends ReportAnnotations {
   metadata_errors?: string[]
   parser_engine?: 'llm' | 'rules'
   multi_day?: boolean
+  // live: the store's stock sections are stock lines that move stock (owner, 2026-11-03)
+  stock_mode?: 'live' | 'legacy'
 }
 
 export interface ReportMetadata extends ReportAnnotations {

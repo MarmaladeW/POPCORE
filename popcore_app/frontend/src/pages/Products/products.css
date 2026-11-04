@@ -121,8 +121,25 @@
 /* Sub-items: a product's 整端 sealed set and confirmed designs. */
 .pc-prod-subcount { display: inline-block; padding: 0 4px; border: 1px solid var(--line-hair); color: var(--text-secondary); font-size: 10.5px; font-weight: 400; line-height: 16px; white-space: nowrap; }
 .pc-sub-list { margin: 0; padding: 0; list-style: none; }
-.pc-sub-list li { display: flex; align-items: baseline; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--line-hair); font-size: 12.5px; }
+.pc-sub-list li { padding: 6px 16px; border-bottom: 1px solid var(--line-hair); font-size: 12.5px; }
+.pc-sub-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.pc-sub-row > button.pc-prod-link, .pc-sub-row > span:not(.pc-sub-kind):not(.pc-sub-price) { min-width: 0; overflow-wrap: anywhere; }
 .pc-sub-list li small, .pc-sub-parent small { margin-left: auto; color: var(--text-tertiary); font-size: 11px; }
+.pc-sub-price { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.pc-sub-row .ant-btn { flex: 0 0 auto; height: 22px; padding: 0 6px; }
+/* One confirmed design open for editing in the 子项 list (owner, 2026-11-03). */
+.pc-sub-editing { background: var(--surface-subtle); }
+.pc-design-edit { display: grid; gap: 8px; padding: 8px 0 0; }
+.pc-design-edit label { display: grid; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+.pc-design-edit .ant-input-number { width: 100%; max-width: 180px; }
+.pc-design-aliases { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.pc-design-alias-add { display: flex; gap: 6px; flex: 1 1 220px; min-width: 0; }
+.pc-design-edit .pc-sub-add { padding: 0 0 4px; }
+.pc-ser-edit.ant-btn { height: 22px; margin-left: 6px; padding: 0 6px; }
+.pc-ser-editing td { background: var(--surface-subtle); }
+/* The design table scrolls sideways on a phone: the editor stays in view at the left of it. */
+.pc-ser-editing .pc-design-edit { position: sticky; left: 12px; width: min(520px, calc(100vw - 56px)); }
+.pc-design-alias-add .ant-input { min-width: 0; }
 .pc-sub-kind { flex: 0 0 auto; padding: 0 4px; border: 1px solid var(--line-hair); color: var(--text-secondary); font-size: 10.5px; line-height: 16px; }
 .pc-sub-empty, .pc-sub-stock, .pc-sub-parent { margin: 0; padding: 8px 16px; color: var(--text-secondary); font-size: 12.5px; }
 .pc-sub-parent { display: flex; gap: 8px; border-bottom: 1px solid var(--line-hair); color: var(--text-primary); }
