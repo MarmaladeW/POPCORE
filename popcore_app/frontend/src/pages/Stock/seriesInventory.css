@@ -210,6 +210,28 @@
 .pc-inv-figures strong { font-size: 26px; line-height: 30px; letter-spacing: -.52px; }
 .pc-inv-figures .pc-inv-back { background: var(--kraft-tile); }
 .pc-inv-figures .pc-inv-value strong { white-space: nowrap; overflow-wrap: normal; }
+/* For managers each tile opens what that place is worth by IP line. */
+.pc-inv-figures > a { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 18px 18px 16px; color: inherit; text-decoration: none; }
+.pc-inv-figures > * + * { border-left: 1px solid var(--line-hair); }
+.pc-inv-tile { position: relative; transition: background-color .15s ease-out; }
+.pc-inv-tile:hover { background: var(--surface-subtle); color: inherit; }
+.pc-inv-tile.pc-inv-back:hover { background: color-mix(in srgb, var(--kraft-tile) 90%, var(--kraft-ink)); }
+.pc-inv-tile:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-inv-tile-go { position: absolute; top: 20px; right: 16px; color: var(--text-tertiary); }
+.pc-inv-back .pc-inv-tile-go { color: var(--kraft-ink); }
+/* 库存 reads as a dashboard, then 商品 Products to search (owner, 2026-11-03). */
+.pc-inv-section-title, .pc-inv-products-head h2 { display: flex; align-items: baseline; gap: 6px; margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 600; line-height: 22px; }
+.pc-inv-section-title small, .pc-inv-products-head h2 small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-inv-products { display: grid; gap: 16px; margin-top: 8px; padding-top: 24px; border-top: 1px solid var(--line-soft); scroll-margin-top: 16px; }
+.pc-inv-products-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.pc-inv-products-head > span { color: var(--text-secondary); font-size: 13px; }
+.pc-inv-products .pc-series-search, .pc-inv-products .pc-series-filterbar { margin: 0; }
+@media (prefers-reduced-motion: reduce) { .pc-inv-tile { transition: none; } }
+/* Each place's worth under its units (managers): a hairline above keeps it apart from the unit split. */
+.pc-inv-figures .pc-inv-worth { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line-hair); color: var(--text-secondary); }
+.pc-inv-figures .pc-inv-worth b { color: var(--text-primary); font-weight: 600; }
+.pc-inv-figures .pc-inv-back .pc-inv-worth { border-top-color: color-mix(in srgb, var(--kraft-ink) 18%, transparent); }
+.pc-inv-figures .pc-inv-back .pc-inv-worth, .pc-inv-figures .pc-inv-back .pc-inv-worth b { color: var(--kraft-ink); }
 /* Between phone and wide desktop the strip is too narrow for a money cell: it takes a row of its own. */
 @media (min-width: 768px) and (max-width: 1199px) {
   .pc-inv-figures { grid-template-columns: repeat(var(--places, 4), minmax(0, 1fr)); }
@@ -243,8 +265,10 @@ a.pc-inv-row:focus-visible, .pc-inv-more:focus-visible { outline: 2px solid var(
 @media (max-width: 767px) {
   .pc-inv-overview { gap: 12px; margin-bottom: 24px; }
   .pc-inv-figures { grid-template-columns: 1fr 1fr; }
-  .pc-inv-figures > div:nth-child(odd) { border-left: 0; }
-  .pc-inv-figures > div:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
+  .pc-inv-figures > *:nth-child(odd) { border-left: 0; }
+  .pc-inv-figures > *:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
+  .pc-inv-tile-go { top: 14px; right: 12px; }
+  .pc-inv-figures > a { padding: 12px; }
   .pc-inv-figures strong { font-size: 22px; line-height: 28px; }
   /* The value cell takes a row of its own when it would sit alone. */
   .pc-inv-figures > .pc-inv-value:nth-child(odd) { grid-column: 1 / -1; }

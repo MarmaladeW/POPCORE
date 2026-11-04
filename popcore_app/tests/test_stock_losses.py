@@ -144,9 +144,13 @@ class StockLossTests(IsolatedApiCase):
         manager = self.client.get('/api/inventory/overview?store_code=DT', headers=self.headers('manager')).get_json()
         # 7 Labubu at 39.99 are for sale (the broken one is on the damaged pile); the 4 squishies have no price.
         self.assertEqual(manager['value'], {'value_cents': 27993, 'unpriced_units': 4, 'unpriced_products': 1})
+        # Each place's worth adds up to the total: 4 Labubu on the floor (+4 unpriced squishies), 3 upstairs.
+        self.assertEqual({figure['key']: (figure['value_cents'], figure['unpriced_units']) for figure in manager['figures']},
+                         {'floor': (15996, 4), 'back': (11997, 0), 'display': (0, 0), 'claw': (0, 0)})
         self.assertEqual([(row['kind'], row['saleable']) for row in manager['recent_changes']], [('loss', -1)])
         staff = self.client.get('/api/inventory/overview?store_code=DT', headers=self.headers('staff')).get_json()
         self.assertIsNone(staff['value'])
+        self.assertEqual({figure['value_cents'] for figure in staff['figures']}, {None})
 
     def test_a_store_code_that_is_not_text_is_refused(self):
         response = self.post('/api/losses', {'store_code': 1, 'product_id': self.ids['Squishy'], 'location_id': self.loc['floor'],

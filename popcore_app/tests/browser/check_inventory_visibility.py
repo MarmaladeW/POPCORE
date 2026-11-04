@@ -93,9 +93,10 @@ async def unpicked(browser, fixture, width, session):
 
         await page.goto(BASE + f'/restock?session_id={session}')
         modal = page.get_by_role('dialog').filter(has_text='补货单 #')
-        await modal.get_by_placeholder('搜索产品（记账名、SKU、系列…）').fill('Product')
-        await expect(modal.get_by_role('row').filter(has_text='Test Product').get_by_text('有货 In stock', exact=True)).to_be_visible()
-        await expect(modal.get_by_role('row').filter(has_text='Empty Product').get_by_text('缺货 Out of stock', exact=True)).to_be_visible()
+        await modal.get_by_placeholder('搜索系列 / 记账名 / SKU / 款式').fill('Product')
+        series = modal.get_by_role('list', name='系列 Series').get_by_role('listitem')
+        await expect(series.filter(has_text='Test Product').get_by_text('楼上有货', exact=True)).to_be_visible()
+        await expect(series.filter(has_text='Empty Product').get_by_text('楼上缺货', exact=True)).to_be_visible()
         await fits(page, f'unpicked-restock-{width}.png')
     finally:
         await context.close()

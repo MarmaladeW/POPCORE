@@ -5,6 +5,7 @@ import subprocess
 from playwright.async_api import async_playwright, expect
 from check_foundation import FRONTEND, HERE, ROOT, context_with_api
 from fixtures import payload as base_payload
+from urllib.parse import parse_qs
 
 PORT = 5198
 BASE = f'http://127.0.0.1:{PORT}'
@@ -39,12 +40,31 @@ def payload(path, query, request):
         return {'loss': {**RECORD, 'undone': True}}
     if path == '/api/inventory/overview':
         return {'live': True, 'stores': ['DT'], 'today': '2026-11-03', 'in_stock_products': 1273, 'report_days': 3, 'last_report': '2026-10-31',
-                'figures': [{'key': 'floor', 'codes': ['floor'], 'units': 7495, 'products': 512, 'by_unit': {'box': 6640, 'piece': 855}},
-                            {'key': 'back', 'codes': ['upstairs'], 'units': 4178, 'products': 655, 'by_unit': {'set': 1783, 'piece': 2386, 'box': 9}}],
+                'figures': [{'key': 'floor', 'codes': ['floor'], 'units': 7495, 'products': 512, 'by_unit': {'box': 6640, 'piece': 855},
+                             'value_cents': 24092560, 'unpriced_units': 21},
+                            {'key': 'back', 'codes': ['upstairs'], 'units': 4178, 'products': 655, 'by_unit': {'set': 1783, 'piece': 2386, 'box': 9},
+                             'value_cents': 64753386, 'unpriced_units': 147}],
                 'refill': [], 'refill_count': 0, 'running_low': [], 'sold_out': [], 'best_sellers': [],
                 'recent_changes': [{'business_date': '2026-11-03', 'kind': 'loss', 'store_code': 'DT', 'added': 2, 'removed': 5, 'saleable': -5, 'documents': 2}],
                 'not_set_up': 0,
                 'value': {'value_cents': 88845946, 'unpriced_units': 168, 'unpriced_products': 88}}
+    if path == '/api/inventory/value':
+        line = parse_qs(query).get('line', [None])[0]
+        lines = [{'name': 'Labubu', 'units': 1548, 'value_cents': 16028800, 'unpriced_units': 43, 'guessed_units': 205, 'products': 178, 'by_unit': {'box': 762}, 'share': 0.18},
+                 {'name': '未分类', 'units': 1568, 'value_cents': 3406700, 'unpriced_units': 0, 'guessed_units': 0, 'products': 52, 'by_unit': {'piece': 1568}, 'share': 0.038}]
+        total = {'units': 12428, 'value_cents': 88845946, 'unpriced_units': 168, 'guessed_units': 900}
+        category = None if line is None else {
+            'name': line, 'units': 1548, 'value_cents': 16028800, 'unpriced_units': 0, 'guessed_units': 26, 'products': 178, 'by_unit': {'box': 762},
+            'by_place': [{'key': 'floor', 'units': 600, 'value_cents': 5155900, 'unpriced_units': 0, 'guessed_units': 0},
+                         {'key': 'back', 'units': 948, 'value_cents': 10872900, 'unpriced_units': 0, 'guessed_units': 26}],
+            'groups': [{'name': '高能', 'link': {'series_id': 88}, 'units': 154, 'value_cents': 2493100, 'unpriced_units': 0, 'guessed_units': 0,
+                        'by_unit': {'set': 104, 'box': 26}, 'share': 0.16,
+                        'members': [{'product_id': 9, 'name': '高能 整端', 'sku': 'PM0476-SET', 'stock_form': 'sealed_set', 'unit': 'set', 'units': 104,
+                                     'value_cents': 2308176, 'unpriced_units': 0, 'guessed_units': 0, 'price_cents': 22194, 'guessed': False}]}]}
+        return {'live': True, 'stores': ['DT'], 'place': parse_qs(query).get('place', ['all'])[0],
+                'places': [{'key': 'floor', 'codes': ['floor'], 'by_unit': {}, 'units': 7501, 'value_cents': 24092560, 'unpriced_units': 21, 'guessed_units': 0},
+                           {'key': 'back', 'codes': ['upstairs'], 'by_unit': {}, 'units': 4178, 'value_cents': 64753386, 'unpriced_units': 147, 'guessed_units': 0}],
+                'total': total, 'shown': total, 'categories': lines, 'category': category}
     if path == '/api/inventory/series':
         return {'mode': 'authoritative', 'locations': [], 'unassigned_count': 0, 'series': [], 'products': []}
     if path == '/api/inventory/locations':
@@ -69,7 +89,22 @@ async def check(browser, width):
     overview = page.get_by_role('region', name='库存概况 Inventory overview', exact=True)
     await expect(overview.get_by_text('$888,459', exact=True)).to_be_visible()
     await expect(overview.get_by_text('At retail · 168 without a price', exact=True)).to_be_visible()
+    # Each place's worth sits under its units.
+    await expect(overview.get_by_text('价值 $240,926', exact=True)).to_be_visible()
+    await expect(overview.get_by_text('价值 $647,534', exact=True)).to_be_visible()
     await expect(overview.get_by_text('−5', exact=True)).to_be_visible()
+    # Managers open a place's worth by IP line, then one line's parts.
+    await overview.get_by_role('link', name=re.compile('^楼面 Floor')).click()
+    await expect(page).to_have_url(re.compile(r'/stock/value\?place=floor$'))
+    await expect(page.get_by_role('link', name=re.compile(r'^1 Labubu'))).to_contain_text('$160,288')
+    await expect(page.get_by_text('205 placed by name', exact=False)).to_be_visible()
+    await page.get_by_role('link', name=re.compile(r'^1 Labubu')).click()
+    await expect(page).to_have_url(re.compile(r'/stock/value\?place=floor&line=Labubu$'))
+    await page.locator('details.pc-value-group summary').first.click()
+    await expect(page.get_by_text('104 端', exact=True)).to_be_visible()
+    await page.get_by_role('navigation', name='Labubu by place').get_by_role('link', name=re.compile('^楼上')).click()
+    await expect(page).to_have_url(re.compile(r'place=back&line=Labubu$'))
+    await page.goto(BASE + '/stock')
     await page.get_by_role('link', name=re.compile('损耗')).first.click()
     await expect(page).to_have_url(re.compile(r'/stock/loss$'))
 
@@ -122,6 +157,8 @@ async def check(browser, width):
     await expect(page.get_by_role('link', name=re.compile('损耗'))).to_have_count(0)
     await page.goto(BASE + '/stock/loss')
     await expect(page.get_by_role('button', name=re.compile('记录损耗'))).to_have_count(0)
+    await page.goto(BASE + '/stock/value')
+    await expect(page.get_by_text('按 IP 系列')).to_have_count(0)
     await context.close()
 
 

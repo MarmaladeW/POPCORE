@@ -17,8 +17,13 @@ from inventory_commands import (
 )
 from goods_operations import act_on_delivery, create_delivery, delivery_detail
 from inventory_visibility import can_see_inventory, hide_balances, hide_quantities
+from stock_counting import _image, family_anchors, family_members
 
 bp = Blueprint('restock', __name__)
+
+# One request per product on a sheet; the picker counts at most this many of one product.
+MAX_REQUEST = 999
+ROLE_ORDER = {'set': 0, 'box': 1, 'item': 1, 'design': 2}
 
 
 def _restock_access_denied(con, store_id, minimum_role):
@@ -53,11 +58,214 @@ def _restock_session_items(cur, sid, store_id):
         ORDER BY ri.id
     ''', (store_id, sid))
     items = [dict(r) for r in cur.fetchall()]
+    # Each line names its series card (整端 / 散盒 / 确认款), so the sheet groups them as they were asked for.
+    families = {}
+    for item in items:
+        family = families.get(item['product_id'])
+        if family is None:
+            family = _family_of(cur.connection, item['product_id'])
+            for product_id in family['roles']:
+                families[product_id] = family
+        item.update(family_id=family['id'], family_title=family['title'],
+                    role=family['roles'].get(item['product_id'], 'item'),
+                    design_name=family['design_names'].get(item['product_id']),
+                    boxes_per_set=family['boxes_per_set'].get(item['product_id']))
     if not can_see_inventory(cur.connection, request.jwt_payload, (store_id,)):
         # Without 库存查看, 补货 says only whether upstairs is out of stock (owner, 2026-11-01).
         items = [hide_quantities({**item, 'instore_qty': None, 'warehouse_stock_snapshot': None},
                                  'upstairs_qty') for item in items]
     return items
+
+
+def _family_of(con, product_id):
+    """The series card a product is restocked from, as on 盘点: a blind box with its sealed sets
+    and confirmed designs, a series of designs alone, or a single product."""
+    head, series_id, members = family_members(con, product_id)
+    if head is not None:
+        title = head['label']
+    else:
+        title = con.execute('SELECT name FROM product_series WHERE id=?', (series_id,)).fetchone()['name']
+    return {
+        'id': head['id'] if head is not None else members[0][1]['id'],
+        'title': title, 'head': head, 'members': members,
+        'roles': {product['id']: role for role, product, _ in members},
+        'design_names': {product['id']: product['design_name'] for role, product, _ in members
+                         if role == 'design'},
+        'boxes_per_set': {product['id']: boxes for _, product, boxes in members if boxes},
+    }
+
+
+def _family_stock(con, store_id, product_ids):
+    marks = ','.join('?' * len(product_ids))
+    return {row['product_id']: row for row in con.execute(
+        f"""SELECT product_id, COALESCE(upstairs_qty, 0) AS upstairs_qty,
+                   COALESCE(instore_qty, 0) AS instore_qty
+            FROM stock WHERE store_id=? AND product_id IN ({marks})""", (store_id, *product_ids))}
+
+
+def _editable_session(con, sid):
+    """(session, None) for a sheet the caller may change, else (None, error response)."""
+    session = con.execute('SELECT id, status, store_id FROM restock_sessions WHERE id=?', (sid,)).fetchone()
+    if session is None:
+        return None, (jsonify({'error': 'Session not found'}), 404)
+    denied = _restock_access_denied(con, session['store_id'], 'staff')
+    if denied is not None:
+        return None, denied
+    if session['status'] != 'pending':
+        return None, (jsonify({'error': '只能在 pending 状态下修改清单'}), 403)
+    return session, None
+
+
+@bp.get('/api/restock/session/<int:sid>/series-search')
+@role_required('staff')
+def search_restock_series(sid):
+    """Search finds the series, not its parts: one result per 整端 / 散盒 / 确认款 card."""
+    text = (request.args.get('q') or '').strip()
+    con = get_db()
+    try:
+        session, denied = _editable_session(con, sid)
+        if denied is not None:
+            return denied
+        if not text:
+            return jsonify({'results': []})
+        visible = can_see_inventory(con, request.jwt_payload, (session['store_id'],))
+        on_sheet = {row[0] for row in con.execute(
+            'SELECT product_id FROM restock_items WHERE session_id=?', (sid,))}
+        results = []
+        for anchor in family_anchors(con, text):
+            family = _family_of(con, anchor)
+            stock = _family_stock(con, session['store_id'], list(family['roles']))
+            back = {}
+            for _, product, _ in family['members']:
+                unit = product['stock_unit'] or 'piece'
+                row = stock.get(product['id'])
+                back[unit] = back.get(unit, 0) + (row['upstairs_qty'] if row else 0)
+            head = family['head']
+            result = {
+                'product_id': family['id'], 'title': family['title'],
+                'sku': head['sku'] if head is not None else None,
+                'ip_series': head['ip_series'] if head is not None else None,
+                'kind': family['members'][0][0] if head is not None else 'series',
+                'sets': sum(1 for role, *_ in family['members'] if role == 'set'),
+                'designs': sum(1 for role, *_ in family['members'] if role == 'design'),
+                'image': _image(con, head['id']) if head is not None else None,
+                'on_sheet': sum(1 for product_id in family['roles'] if product_id in on_sheet),
+                'back': back,
+            }
+            if not visible:
+                result['back'] = None
+                result['out_of_stock'] = sum(back.values()) <= 0
+                result['stock_hidden'] = True
+            results.append(result)
+        return jsonify({'results': results})
+    finally:
+        con.close()
+
+
+@bp.get('/api/restock/session/<int:sid>/series')
+@role_required('staff')
+def restock_series_card(sid):
+    """One series to ask for: how many 整端 whole sets, 散盒 single boxes and each 确认款 design."""
+    con = get_db()
+    try:
+        product_id = read_int(request.args.get('product_id'), 'product_id', minimum=1)
+        session, denied = _editable_session(con, sid)
+        if denied is not None:
+            return denied
+        family = _family_of(con, product_id)
+        ids = list(family['roles'])
+        stock = _family_stock(con, session['store_id'], ids)
+        marks = ','.join('?' * len(ids))
+        requested = {row[0]: row[1] for row in con.execute(
+            f'SELECT product_id, requested_qty FROM restock_items WHERE session_id=? AND product_id IN ({marks})',
+            (sid, *ids))}
+        visible = can_see_inventory(con, request.jwt_payload, (session['store_id'],))
+        items = []
+        # Whole sets first, then single boxes, then the designs in their own order (sorted is stable).
+        for role, product, boxes in sorted(family['members'], key=lambda member: ROLE_ORDER[member[0]]):
+            row = stock.get(product['id'])
+            item = {
+                'product_id': product['id'], 'role': role, 'sku': product['sku'], 'name': product['label'],
+                'design_name': product['design_name'], 'stock_unit': product['stock_unit'],
+                'boxes_per_set': boxes, 'requested_qty': requested.get(product['id'], 0),
+                'upstairs_qty': row['upstairs_qty'] if row else 0,
+                'instore_qty': row['instore_qty'] if row else 0,
+            }
+            if not visible:
+                hide_quantities(item, 'upstairs_qty')
+                item['instore_qty'] = None
+            items.append(item)
+        head = family['head']
+        roles = family['roles'].values()
+        return jsonify({
+            'product_id': family['id'], 'title': family['title'],
+            'sku': head['sku'] if head is not None else None,
+            'ip_series': head['ip_series'] if head is not None else None,
+            'image': _image(con, head['id']) if head is not None else None,
+            # A blind box with no sealed set has no whole sets recorded upstairs (盘点 adds the set).
+            'no_whole_set': 'box' in roles and 'set' not in roles,
+            'items': items,
+        })
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    except InventoryError as exc:
+        return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+    finally:
+        con.close()
+
+
+@bp.put('/api/restock/session/<int:sid>/series')
+@role_required('staff')
+def save_restock_series(sid):
+    """Set what one series asks for in one save: each part's quantity, 0 takes it off the sheet."""
+    data = request.get_json(silent=True)
+    data = data if isinstance(data, dict) else {}
+    try:
+        product_id = read_int(data.get('product_id'), 'product_id', minimum=1)
+        entries = data.get('entries')
+        if not isinstance(entries, list) or not entries:
+            raise ValueError('entries must list at least one product')
+        wanted = {}
+        for entry in entries:
+            entry = entry if isinstance(entry, dict) else {}
+            member = read_int(entry.get('product_id'), 'product_id', minimum=1)
+            quantity = read_int(entry.get('requested_qty'), 'requested_qty')
+            if quantity > MAX_REQUEST:
+                raise ValueError(f'requested_qty must be at most {MAX_REQUEST}')
+            if member in wanted:
+                raise ValueError('product_id is listed twice')
+            wanted[member] = quantity
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+
+    con = get_db()
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        session, denied = _editable_session(con, sid)
+        if denied is not None:
+            return denied
+        try:
+            family = _family_of(con, product_id)
+        except InventoryError as exc:
+            return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+        if set(wanted) - set(family['roles']):
+            return jsonify({'error': 'A product is not part of this series', 'code': 'not_in_series'}), 400
+        for member, quantity in wanted.items():
+            if quantity:
+                con.execute('''
+                    INSERT INTO restock_items (session_id, product_id, requested_qty)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(session_id, product_id) DO UPDATE SET
+                        requested_qty = excluded.requested_qty
+                ''', (sid, member, quantity))
+            else:
+                con.execute('DELETE FROM restock_items WHERE session_id=? AND product_id=?', (sid, member))
+        con.commit()
+        return jsonify({'ok': True})
+    finally:
+        if con.in_transaction:
+            con.rollback()
+        con.close()
 
 
 @bp.route('/api/restock/sessions/today')

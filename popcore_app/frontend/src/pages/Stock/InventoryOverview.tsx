@@ -3,6 +3,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { getInventoryOverview, type InventoryOverview as Overview, type OverviewChange, type OverviewFigure, type OverviewItem } from '../../api/inventoryOverview'
 import { Panel } from '../../components/pc/Panel'
+import Icon from '../../components/pc/Icon'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useInventoryVisible } from '../../auth/useInventoryVisible'
 import { formatWholeDollars } from '../../lib/money'
@@ -65,21 +66,28 @@ function OverviewBody({data}:{data:Overview}) {
   const noSales = !data.report_days
   const salesEmpty = noSales ? 'No 日报 in the last 7 days. Selling lists fill in once one is pasted in 销售 Sales.' : undefined
   return <section className="pc-inv-overview" aria-label="库存概况 Inventory overview">
+    <h2 className="pc-inv-section-title">概况 <small>Dashboard</small></h2>
     <div className="pc-figures pc-inv-figures" style={{'--figures':figures.length+(value?1:0),'--places':figures.length} as CSSProperties}>
       {figures.map(figure=>{
         const [zh,en] = figure.key==='back' ? backName(figure) : PLACES[figure.key] ?? [figure.codes.join(' · '),'']
         const split = Object.keys(MEASURE).map(unit=>[unit,figure.by_unit[unit as keyof typeof figure.by_unit] ?? 0] as const).filter(([,amount])=>amount)
-        return <div key={figure.key} className={figure.key==='back'?'pc-inv-back':undefined}>
+        const body = <>
           <span>{zh} <small>{en}</small></span>
           <strong>{number(figure.units)}</strong>
           <small>{split.length ? split.map(([unit,amount])=>measure(amount,unit)).join(' · ') : 'Empty'}</small>
-        </div>
+          {figure.value_cents!=null&&figure.units>0&&<small className="pc-inv-worth">价值 <b>{formatWholeDollars(figure.value_cents)}</b></small>}
+        </>
+        const className = figure.key==='back'?'pc-inv-back':undefined
+        // Managers open what this place is worth by IP line (owner, 2026-11-03).
+        return value ? <Link key={figure.key} className={className ? `${className} pc-inv-tile` : 'pc-inv-tile'} to={`/stock/value?place=${figure.key}`}>{body}<Icon name="right" size={14} className="pc-inv-tile-go"/></Link>
+          : <div key={figure.key} className={className}>{body}</div>
       })}
-      {value&&<div className="pc-inv-value">
+      {value&&<Link className="pc-inv-value pc-inv-tile" to="/stock/value">
         <span>库存价值 <small>Stock value</small></span>
         <strong>{formatWholeDollars(value.value_cents)}</strong>
         <small>{value.unpriced_units ? `At retail · ${number(value.unpriced_units)} without a price` : 'At retail price'}</small>
-      </div>}
+        <Icon name="right" size={14} className="pc-inv-tile-go"/>
+      </Link>}
     </div>
     <p className="pc-inv-meta">{number(data.in_stock_products ?? 0)} products in stock · {data.last_report ? <>sales from 日报 through {shortDate(data.last_report)}</> : 'no 日报 pasted yet'}</p>
     <div className="pc-inv-panels">
