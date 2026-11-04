@@ -66,6 +66,7 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
                 color TEXT NOT NULL DEFAULT '#6366f1',
                 is_trainee INTEGER NOT NULL DEFAULT 0,
                 is_schedulable INTEGER NOT NULL DEFAULT 1,
+                regular_since TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE TABLE stores (

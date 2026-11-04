@@ -1,6 +1,7 @@
 """
 blueprints/users.py — user management (Auth0 Management API) + hidden image serving.
 """
+import datetime as _dt
 import os
 import re
 import urllib.parse
@@ -292,13 +293,13 @@ def get_employee_stores():
     rows = con.execute('''
         SELECT e.id AS employee_id, e.auth0_id, e.name,
                COALESCE(e.color, '#6366f1') AS color,
-               e.is_schedulable,
+               e.is_schedulable, e.regular_since,
                GROUP_CONCAT(s.code) AS store_codes
         FROM employees e
         LEFT JOIN employee_stores es ON es.employee_id = e.id
         LEFT JOIN stores s ON s.id = es.store_id AND s.is_active = 1
         WHERE e.is_active = 1
-        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable
+        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable, e.regular_since
         ORDER BY e.name
     ''').fetchall()
     con.close()
@@ -311,6 +312,7 @@ def get_employee_stores():
             'name':        r['name'],
             'color':       r['color'],
             'is_schedulable': r['is_schedulable'],
+            'regular_since': r['regular_since'],
             'stores':      codes,
         })
     return jsonify(result)
@@ -367,6 +369,36 @@ def patch_employee_schedulable(employee_id):
     updated = con.execute(
         'SELECT * FROM employees WHERE id = ?', (employee_id,)
     ).fetchone()
+    con.close()
+    return jsonify(dict(updated))
+
+
+@bp.route('/api/employees/<int:employee_id>/regular', methods=['PATCH'])
+@role_required('manager')
+def patch_employee_regular(employee_id):
+    """Set or clear the 转正 date. Shifts from that date on are marked 正."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'regular_since' not in data:
+        return jsonify({'error': 'regular_since is required (a YYYY-MM-DD date, or null to clear)'}), 400
+    value = data['regular_since']
+    if value is not None:
+        try:
+            if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value):
+                raise ValueError
+            _dt.date.fromisoformat(value)
+        except ValueError:
+            return jsonify({'error': 'regular_since must be a YYYY-MM-DD date, or null to clear'}), 400
+
+    con = get_db()
+    row = con.execute(
+        'SELECT id FROM employees WHERE id = ? AND is_active = 1', (employee_id,)
+    ).fetchone()
+    if not row:
+        con.close()
+        return jsonify({'error': 'Employee not found'}), 404
+    con.execute('UPDATE employees SET regular_since = ? WHERE id = ?', (value, employee_id))
+    con.commit()
+    updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
     con.close()
     return jsonify(dict(updated))
 

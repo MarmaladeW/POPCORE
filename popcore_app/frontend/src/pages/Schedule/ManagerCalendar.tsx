@@ -28,6 +28,8 @@ import {
   type EmployeeHours,
   type Shift,
 } from './scheduleApi'
+import { isRegularOn } from './monthlyDetail'
+import RegularMark from './RegularMark'
 import {
   DEFAULT_STAFF_REQUIREMENTS,
   DEFAULT_STORE_HOURS,
@@ -108,6 +110,7 @@ export default function ManagerCalendar() {
   const [employees,     setEmployees]     = useState<Employee[]>([])
   const [empStores,     setEmpStores]     = useState<Record<number, string[]>>({})
   const [filterEmpId,   setFilterEmpId]   = useState<number | null>(null)
+  const today = dayjs().format('YYYY-MM-DD')
   const [eventsByStore, setEventsByStore] = useState<Record<string, EventInput[]>>({})
   const [showAvailability, setShowAvailability] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -245,8 +248,9 @@ export default function ManagerCalendar() {
           ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
         const kind      = shiftKindFor(s.date, hoursForStore(code, storeHours), s.start_time, s.end_time)
         const isTrainee = !!s.is_trainee
+        const isRegular = isRegularOn(s.regular_since, s.date)
         // Every shift keeps the employee's solid color. Time, AM/PM, position,
-        // and trainee markers carry the details without weakening that color.
+        // trainee and 正 markers carry the details without weakening that color.
         const shiftColors = shiftColorPresentation(empColor, kind)
         byStore[code].push({
           id:              `shift-${s.id}`,
@@ -260,7 +264,7 @@ export default function ManagerCalendar() {
           classNames:      ['pc-ev', `pc-ev-${kind}`, ...(isTrainee ? ['pc-ev-trainee'] : [])],
           extendedProps:   {
             type: 'shift', shift_id: s.id, employee_id: s.employee_id,
-            kind, is_trainee: isTrainee, position: s.position || '',
+            kind, is_trainee: isTrainee, is_regular: isRegular, position: s.position || '',
             emp_name: s.employee_name ?? 'Employee', emp_color: empColor,
             start_time: s.start_time, end_time: s.end_time,
             actual_end_time: s.actual_end_time ?? null,
@@ -431,7 +435,7 @@ export default function ManagerCalendar() {
   // one bold name plus a compact, readable time chip (and position if set).
   const renderEvent = (arg: EventContentArg) => {
     const p = arg.event.extendedProps as {
-      type?: string; kind?: ShiftKind; is_trainee?: boolean; position?: string
+      type?: string; kind?: ShiftKind; is_trainee?: boolean; is_regular?: boolean; position?: string
       emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
       actual_end_time?: string | null
       span?: { left: number; width: number }
@@ -448,6 +452,7 @@ export default function ManagerCalendar() {
       kind === 'full' ? 'Full day' : kind === 'custom' ? 'Custom slot' : `Half day (${halfTag})`,
       p.position && `Position: ${p.position}`,
       p.is_trainee && 'TRAINEE',
+      p.is_regular && '转正 Regular',
     ].filter(Boolean).join(' · ')
 
     if (arg.view.type === 'dayGridMonth' || arg.view.type === 'dayGridFortnight') {
@@ -461,6 +466,7 @@ export default function ManagerCalendar() {
           actualEndTime: p.type === 'shift' ? p.actual_end_time : null,
           position: p.position ?? '',
           isTrainee: !!p.is_trainee,
+          isRegular: !!p.is_regular,
           shiftType: p.type === 'shift' ? shiftKindLabel(kind) : 'Available',
         })
         return (
@@ -470,7 +476,7 @@ export default function ManagerCalendar() {
             title={accessibleLabel}
             style={{ '--emp': employeeColor } as CSSProperties}
           >
-            <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}{finished && ' ✓'}</span>
+            <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}{p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}{finished && ' ✓'}</span>
             <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
           </div>
         )
@@ -482,6 +488,7 @@ export default function ManagerCalendar() {
           style={{ marginLeft: `${span.left * 100}%`, width: `${span.width * 100}%`, '--emp': p.emp_color } as CSSProperties}>
           <div className="pc-shift-heading">
             {p.is_trainee && <span className="pc-shift-t">T</span>}
+            {p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}
             <span className="pc-shift-name">{p.emp_name}</span>
             {finished && <span className="pc-shift-finished">{finished}</span>}
           </div>
@@ -500,6 +507,7 @@ export default function ManagerCalendar() {
           {p.start_time}–{p.end_time}
           {halfTag && <span className="pc-shift-half">{halfTag}</span>}
           {p.is_trainee && <span className="pc-shift-t">T</span>}
+          {p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}
         </div>
         <div className="pc-shift-name">{p.emp_name}</div>
         {finished && <div><span className="pc-shift-finished">{finished}</span></div>}
@@ -568,7 +576,7 @@ export default function ManagerCalendar() {
               <SelectItem value="__all__">All employees</SelectItem>
               {schedulableEmployees.map((e) => (
                 <SelectItem key={e.id} value={String(e.id)}>
-                  {(e.name || e.email || e.auth0_id) + (e.is_trainee ? ' (Trainee)' : '')}
+                  {(e.name || e.email || e.auth0_id) + (e.is_trainee ? ' (Trainee)' : '') + (isRegularOn(e.regular_since, today) ? ' · 正' : '')}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -691,6 +699,7 @@ export default function ManagerCalendar() {
                   }}
                 >
                   {name.trim().slice(0, 2).toUpperCase()}
+                  {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} className="absolute -top-1 -right-1" />}
                   <span className="absolute -bottom-0.5 -right-1 flex gap-0.5">
                     {(empStores[e.id] ?? []).map(code => (
                       <span
@@ -739,6 +748,7 @@ export default function ManagerCalendar() {
                   style={{ background: empColor }}
                 />
                 {e.name || e.email || `Employee ${e.id}`}
+                {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} />}
                 {!!e.is_trainee && (
                   <span
                     style={{
@@ -829,6 +839,10 @@ export default function ManagerCalendar() {
             style={{ background: '#6366f1', outline: '1.5px dashed #F59E0B', outlineOffset: '-1.5px' }}
           />
           Trainee (keeps employee color)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="pc-regular-mark" aria-hidden="true">正</span>
+          转正 Regular (from their 转正 date)
         </span>
       </div>
 

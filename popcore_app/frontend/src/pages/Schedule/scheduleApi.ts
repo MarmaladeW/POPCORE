@@ -1,4 +1,5 @@
 import client from '../../api/client'
+import type { DetailShift } from './monthlyDetail'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -10,6 +11,8 @@ export interface Employee {
   is_active: number
   is_schedulable: number
   is_trainee?: number
+  /** 转正 date (YYYY-MM-DD); shifts from it on are marked 正. */
+  regular_since?: string | null
   created_at: string
 }
 
@@ -67,6 +70,7 @@ export interface Shift {
   employee_name?: string
   auth0_id?: string
   is_trainee?: number
+  regular_since?: string | null
   store_code?: string
 }
 
@@ -93,8 +97,28 @@ export interface EmployeeMonthlyHours {
   name: string
   email: string
   is_trainee?: number
+  regular_since?: string | null
   total_hours: number
   weeks: Record<string, WeekBreakdown>
+}
+
+/** One employee's shifts in a monthly report's period and store scope. */
+export interface EmployeeMonthDetail {
+  month: string
+  period_start: string
+  period_end: string
+  month_start_day: number
+  store_code: string
+  employee: {
+    id: number
+    name: string
+    email: string
+    color: string
+    is_trainee: number
+    regular_since: string | null
+  }
+  total_hours: number
+  shifts: DetailShift[]
 }
 
 export interface MonthlyReport {
@@ -154,6 +178,7 @@ export interface EmployeeStoreAssignment {
   name:        string
   color:       string
   is_schedulable: number
+  regular_since: string | null
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
 
@@ -225,6 +250,9 @@ export const setEmployeeSchedulable = (employeeId: number, enabled: boolean) =>
     is_schedulable: enabled,
   }).then((r) => r.data)
 
+export const setEmployeeRegular = (employeeId: number, regularSince: string | null) =>
+  client.patch<Employee>(`/employees/${employeeId}/regular`, { regular_since: regularSince }).then((r) => r.data)
+
 // ── Availability ──────────────────────────────────────────────────────────────
 
 export const getAllAvailability = (start?: string, end?: string, storeCode?: string) => {
@@ -277,6 +305,11 @@ export const checkConflicts = (params: {
 export const getMonthlyReport = (year: number, month: number, storeCode?: string) =>
   client
     .get<MonthlyReport>('/schedule/reports/monthly', { params: { year, month, store_code: storeCode } })
+    .then((r) => r.data)
+
+export const getEmployeeMonthDetail = (employeeId: number, year: number, month: number, storeCode?: string) =>
+  client
+    .get<EmployeeMonthDetail>(`/schedule/reports/monthly/${employeeId}`, { params: { year, month, store_code: storeCode } })
     .then((r) => r.data)
 
 export const getEmployeeHours = (employeeId: number, year?: number, month?: number) =>

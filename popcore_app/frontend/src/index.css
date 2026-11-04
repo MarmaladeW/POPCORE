@@ -264,6 +264,36 @@
   background: #F59E0B;
   color: #fff;
 }
+/* 正 (转正): a solid green square with the glyph, the same everywhere a person appears.
+   On a shift block a thin white edge keeps it apart from any employee colour. */
+.pc-regular-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: var(--status-ok-ink);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: -2px;
+}
+.pc-shift .pc-regular-mark,
+.pc-mobile-shift .pc-regular-mark {
+  outline: 1px solid rgba(255, 255, 255, 0.9);
+}
+.pc-shift .pc-regular-mark {
+  width: 14px;
+  height: 14px;
+  font-size: 9.5px;
+}
+.pc-mobile-shift .pc-regular-mark {
+  width: 12px;
+  height: 12px;
+  font-size: 9px;
+}
 /* Recorded actual finish: readable on any employee color */
 .pc-shift-finished {
   background: rgba(255, 255, 255, 0.92);

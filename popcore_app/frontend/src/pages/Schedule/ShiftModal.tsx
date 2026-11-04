@@ -17,6 +17,7 @@ import {
 import { scheduleApiErrorMessage } from './employeeScheduling'
 import { availabilityIssue } from './availabilityPeriod'
 import { finishesNextDay } from './schedulePresentation'
+import { isRegularOn } from './monthlyDetail'
 import FinishInput from './FinishInput'
 import { INVALID_FINISH } from './finishTime'
 import { torontoDate } from '../Dashboard/todayPresentation'
@@ -440,7 +441,7 @@ export default function ShiftModal({
                           label: 'Staff',
                           options: sortedStaff.map((e) => {
                             const avail    = availByEmpId[e.id]
-                            const baseName = e.name || e.email || e.auth0_id
+                            const baseName = (e.name || e.email || e.auth0_id) + (date && isRegularOn(e.regular_since, date) ? ' · 正' : '')
                             return {
                               value: e.id,
                               label: avail
