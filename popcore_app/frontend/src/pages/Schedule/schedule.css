@@ -133,7 +133,6 @@
    hours, so FullCalendar's full-width event box stays invisible behind it. */
 .pc-calendar-date-grid .pc-store-calendar-body:not(.pc-mobile-month) .fc-daygrid-event { border-width: 0 !important; background: transparent !important; outline: 0; }
 .pc-shift-bar { box-sizing: border-box; border-radius: 4px; overflow: hidden; }
-.pc-shift-bar-trainee { outline: 1.5px dashed #F59E0B; outline-offset: -1.5px; }
 /* A month-view half bar is one short line: its side and AM/PM tag give the hours, so the name gets the room. */
 .pc-calendar-month .pc-shift-bar-half .pc-shift-time { display: none; }
 .pc-calendar-date-grid .pc-shift:not(.pc-shift-grid) { flex-wrap: wrap; }
@@ -214,9 +213,9 @@
 .pc-slip-total strong { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -0.52px; }
 .pc-slip-total strong small { color: var(--text-secondary); font-size: 14px; font-weight: 500; letter-spacing: 0; }
 .pc-slip-total span { margin-top: 4px; color: var(--text-tertiary); font-size: 12px; line-height: 18px; white-space: nowrap; }
-.pc-slip-tag { padding: 0 6px; border: 1px dashed #F59E0B; background: #FEF3C7; color: #92400E; font-size: 11px; font-weight: 500; line-height: 18px; letter-spacing: 0; }
 .pc-slip-regular { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 10px 24px; border-bottom: 1px solid var(--line-hair); background: #f2f7f4; color: var(--status-ok-ink); font-size: 12.5px; line-height: 18px; }
 .pc-slip-regular b { font-weight: 600; }
+.pc-slip-training { background: #fbf6ea; color: var(--status-restock-ink); }
 .pc-slip-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 19px; }
 .pc-slip-table th, .pc-slip-table td { padding: 8px 12px; font-weight: 400; text-align: left; vertical-align: top; }
 .pc-slip-table th:first-child, .pc-slip-table td:first-child { padding-left: 24px; }

@@ -8,6 +8,7 @@ import {
   countedRange, formatHours, isRegularOn, monthDay, regularSplit, shortDay, weeksOfPeriod,
 } from './monthlyDetail'
 import RegularMark from './RegularMark'
+import TrainingMark from './TrainingMark'
 
 /** One employee's month, shift by shift and week by week, laid out to be screenshotted and sent
  *  to them. Same wage period and store scope as the monthly report row it was opened from. */
@@ -78,7 +79,7 @@ export default function EmployeeMonthReport({ employeeId, year, month, storeCode
             <span className="pc-slip-dot" style={{ background: employee.color }} aria-hidden="true" />
             {name}
             {regularByEnd && <RegularMark since={employee.regular_since} />}
-            {!!employee.is_trainee && <span className="pc-slip-tag">实习生 Trainee</span>}
+            {!!employee.is_training && <TrainingMark />}
           </h2>
           <p>{anchor.format('YYYY年M月')}工时 · {anchor.format('MMMM YYYY')} hours</p>
           <p>{monthDay(detail.period_start)} – {monthDay(detail.period_end)} · {allStores ? '全部门店 All stores' : `${detail.store_code}${storeName && storeName !== detail.store_code ? ` ${storeName}` : ''}`}</p>
@@ -88,6 +89,9 @@ export default function EmployeeMonthReport({ employeeId, year, month, storeCode
           <span>{shifts.length} 个班 · {shifts.length} shift{shifts.length === 1 ? '' : 's'}</span>
         </div>
       </header>
+      {!!employee.is_training && <p className="pc-slip-regular pc-slip-training">
+        <TrainingMark />培训中 · In training
+      </p>}
       {employee.regular_since && regularByEnd && <p className="pc-slip-regular">
         <RegularMark since={employee.regular_since} />
         {split

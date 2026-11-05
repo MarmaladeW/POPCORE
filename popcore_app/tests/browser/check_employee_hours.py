@@ -1,5 +1,5 @@
-"""转正 marks, the per-employee monthly hours page and the 员工 list + detail, against the real
-Flask app and a disposable database (owner, 2026-11-03). The browser clock is fixed on
+"""正 and 训 marks, the per-employee monthly hours page and the 员工 list + detail, against the real
+Flask app and a disposable database (owner, 2026-11-03/04). The browser clock is fixed on
 2026-10-28, inside the October wage period (Oct 4 – Nov 3)."""
 import asyncio
 from contextlib import closing
@@ -35,11 +35,12 @@ def seed(case):
         dt = case.store_id
         mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
         con.executescript(f"""
-            INSERT INTO employees(id,auth0_id,name,color,regular_since) VALUES
-              (201,'auth0|jessi','Jessi','#5B7FA6','2026-10-15'),
-              (202,'auth0|amy','Amy','#A0698A',NULL),
-              (203,'auth0|admin','Admin','#7A6FB0',NULL);
-            INSERT INTO employees(id,auth0_id,name,color,is_trainee) VALUES (204,'trainee|lin','Lin','#C0874F',1);
+            INSERT INTO employees(id,auth0_id,name,color,regular_since,is_training) VALUES
+              (201,'auth0|jessi','Jessi','#5B7FA6','2026-10-15',0),
+              (202,'auth0|amy','Amy','#A0698A',NULL,1),
+              (203,'auth0|admin','Admin','#7A6FB0',NULL,0);
+            -- Belle left: her account is off, her shift stays on the schedule.
+            INSERT INTO employees(id,auth0_id,name,color,is_active) VALUES (205,'auth0|belle','Belle','#5F9A7E',0);
             INSERT INTO employee_stores(employee_id,store_id) VALUES (201,{dt}),(201,{mk}),(202,{dt});
         """)
         for employee, day, start, end, actual, store, position in (
@@ -53,6 +54,7 @@ def seed(case):
             (201, '2026-11-02', '12:00', '20:00', None, dt, ''),
             (202, '2026-10-06', '12:00', '20:00', None, dt, ''),
             (202, '2026-10-28', '12:00', '17:00', None, dt, ''),
+            (205, '2026-10-14', '12:00', '16:00', None, dt, ''),
         ):
             con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,actual_end_time,assigned_by,store_id,position)
                            VALUES (?,?,?,?,?,'fixture',?,?)""", (employee, day, start, end, actual, store, position))
@@ -103,7 +105,11 @@ async def monthly_hours(browser, case, width):
         # Jessi is 转正 from Oct 15, inside this period; Amy is not.
         await expect(jessi.locator('.pc-regular-mark')).to_have_count(1)
         await expect(jessi).to_contain_text('10/15 起')
-        await expect(page.get_by_role('button', name='Amy: 每班工时 Hours by shift', exact=True).locator('.pc-regular-mark')).to_have_count(0)
+        amy_name = page.get_by_role('button', name='Amy: 每班工时 Hours by shift', exact=True)
+        await expect(amy_name.locator('.pc-regular-mark')).to_have_count(0)
+        await expect(amy_name.locator('.pc-training-mark')).to_have_count(1)
+        # Only people with hours this month: Admin and the manager worked none.
+        await expect(page.locator('.pc-report-person-name')).to_have_text(['Amy', 'Belle', 'Jessi'])
         jessi_row = page.locator('.ant-table-row').filter(has=jessi)
         await expect(jessi_row).to_contain_text('62.83h')
         await fits(page, f'report-{width}.png')
@@ -139,17 +145,19 @@ async def monthly_hours(browser, case, width):
         await slip.screenshot(path=OUT / f'slip-{width}.png', animations='disabled')
         await fits(page, f'slip-page-{width}.png')
 
-        # Step through people in the report's order (Admin, Amy, Jessi, Lin) without going back.
-        await page.get_by_role('button', name='下一位 Next person').click()
-        lin = page.get_by_role('article', name='Lin 2026-10 hours')
-        await expect(lin).to_contain_text('实习生 Trainee')
-        await expect(lin.locator('.pc-slip-none')).to_have_count(6)
+        # Step through people in the report's order (Amy, Belle, Jessi) without going back.
         await expect(page.get_by_role('button', name='下一位 Next person')).to_be_disabled()
         await page.get_by_role('button', name='上一位 Previous person').click()
+        belle = page.get_by_role('article', name='Belle 2026-10 hours')
+        await expect(belle.locator('.pc-slip-total')).to_contain_text('4 h')
+        await expect(belle.locator('.pc-slip-none')).to_have_count(5)
         await page.get_by_role('button', name='上一位 Previous person').click()
         amy = page.get_by_role('article', name='Amy 2026-10 hours')
         await expect(amy.locator('.pc-slip-total')).to_contain_text('13 h')
         await expect(amy.locator('.pc-regular-mark')).to_have_count(0)
+        await expect(amy.locator('.pc-slip-training')).to_contain_text('培训中 · In training')
+        await expect(page.get_by_role('button', name='上一位 Previous person')).to_be_disabled()
+        await amy.screenshot(path=OUT / f'slip-training-{width}.png', animations='disabled')
         await page.get_by_role('button', name='月工时 Monthly report').click()
         await expect(jessi).to_be_visible()
         if phone:  # the phone's back gesture also leaves the slip
@@ -189,8 +197,18 @@ async def calendar_marks(browser, case):
         await expect(after).to_have_attribute('aria-label', re.compile('转正 Regular'))
         amy = calendar.locator('td[data-date="2026-10-28"] .pc-shift-bar').filter(has_text='Amy')
         await expect(amy.locator('.pc-regular-mark')).to_have_count(0)
+        await expect(amy.locator('.pc-training-mark')).to_have_count(1)
+        await expect(amy).to_have_attribute('aria-label', re.compile('培训中 Training'))
         await expect(page.get_by_text('转正 Regular (from their 转正 date)')).to_be_attached()
+        await expect(page.locator('span.flex', has=page.locator('.pc-training-mark')).filter(has_text='培训中 In training')).to_be_attached()
+        await expect(page.get_by_role('tab', name='实习生 Trainees')).to_have_count(0)
         await page.screenshot(path=OUT / 'calendar-1440.png', full_page=True, animations='disabled')
+        # A shift of someone whose account is off still names them in the dialog, never their number.
+        await calendar.locator('td[data-date="2026-10-14"] .pc-shift-bar').filter(has_text='Belle').click()
+        dialog = page.get_by_role('dialog')
+        employee = dialog.locator('.ant-form-item').filter(has_text='员工 Employee').locator('.ant-select-selection-item')
+        await expect(employee).to_have_text('Belle · 已停用 Removed')
+        await dialog.screenshot(path=OUT / 'removed-employee-dialog.png', animations='disabled')
     finally:
         await context.close()
 
@@ -206,6 +224,7 @@ async def users_page(browser, case, width):
         await expect(jessi.locator('.pc-regular-mark')).to_have_count(1)
         await expect(jessi).to_contain_text('排班 DT MK')
         await expect(amy.locator('.pc-regular-mark')).to_have_count(0)
+        await expect(amy.locator('.pc-training-mark')).to_have_count(1)
         await expect(amy).to_contain_text('从未登录')
         if phone:
             await expect(page.get_by_role('checkbox')).to_have_count(0)  # the list alone
@@ -216,12 +235,21 @@ async def users_page(browser, case, width):
         await expect(detail.get_by_role('checkbox', name='jessi: DT scheduling', exact=True)).to_be_checked()
         await expect(detail.get_by_role('checkbox', name='jessi: MK scheduling', exact=True)).to_be_checked()
         await expect(detail.get_by_label('转正日期 Regular since')).to_have_value('2026-10-15')
+        await expect(detail.get_by_role('radio', name='转正')).to_be_checked()
         await expect(detail.locator('.pc-ud-state')).to_contain_text('已转正')
         await fits(page, f'users-jessi-{width}.png')
         if phone:
             await page.go_back()
         await amy.click()
         detail = page.get_by_role('region', name='Amy 详情 Details')
+        await expect(detail.get_by_role('radio', name='培训中')).to_be_checked()
+        await expect(detail.get_by_label('转正日期 Regular since')).to_have_count(0)
+        await fits(page, f'users-amy-training-{width}.png')
+        # 转正 replaces training; it starts today and the date can be moved.
+        await detail.locator('.ant-segmented').filter(has_text='培训中').get_by_text('转正', exact=True).click()
+        await expect(page.get_by_text('转正日期已保存 · 2026-10-28', exact=True)).to_be_visible()
+        with closing(case.connect()) as con:
+            assert tuple(con.execute('SELECT is_training, regular_since FROM employees WHERE id=202').fetchone()) == (0, '2026-10-28')
         picker = detail.get_by_label('转正日期 Regular since')
         await picker.click()
         if phone:  # read-only on phone (no keyboard): pick from the calendar
@@ -232,8 +260,8 @@ async def users_page(browser, case, width):
         await expect(page.get_by_text('转正日期已保存 · 2026-10-20', exact=True)).to_be_visible()
         await expect(detail.locator('.pc-ud-state')).to_contain_text('已转正')
         with closing(case.connect()) as con:
-            assert con.execute('SELECT regular_since FROM employees WHERE id=202').fetchone()[0] == '2026-10-20'
-            con.execute('UPDATE employees SET regular_since=NULL WHERE id=202'); con.commit()
+            assert tuple(con.execute('SELECT is_training, regular_since FROM employees WHERE id=202').fetchone()) == (0, '2026-10-20')
+            con.execute('UPDATE employees SET regular_since=NULL, is_training=1 WHERE id=202'); con.commit()
         # Scheduling stores tick in the same grid as access.
         mk = detail.get_by_role('checkbox', name='amy: MK scheduling', exact=True)
         await mk.check()
@@ -289,5 +317,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: 正 marks follow the 转正 date in the calendar and monthly report; each name opens hours by shift '
-          'and week that add up to the report; 员工 is a list plus detail at 1440 and 390.')
+    print('PASS: 正 follows the 转正 date and 训 the 培训中 status in the calendar and monthly report; the report '
+          'lists only people with hours; each name opens hours by shift and week that add up to it; a removed '
+          "person's shift names them; 员工 is a list plus detail with one status, at 1440 and 390.")

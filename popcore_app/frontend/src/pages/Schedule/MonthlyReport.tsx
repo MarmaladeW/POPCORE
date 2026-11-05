@@ -10,6 +10,7 @@ import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
 import { isRegularOn, monthDay } from './monthlyDetail'
 import RegularMark from './RegularMark'
+import TrainingMark from './TrainingMark'
 import EmployeeMonthReport from './EmployeeMonthReport'
 
 dayjs.extend(isoWeek)
@@ -95,17 +96,7 @@ export default function MonthlyReport() {
           {report && isRegularOn(row.regular_since, report.period_end) && <RegularMark since={row.regular_since} />}
           {report && row.regular_since && row.regular_since > report.period_start && row.regular_since <= report.period_end
             && <small className="pc-report-person-since">{monthDay(row.regular_since)} 起</small>}
-          {!!row.is_trainee && (
-            <span
-              style={{
-                marginLeft: 6, fontSize: 9, fontWeight: 700, borderRadius: 3,
-                padding: '0 4px', background: '#FEF3C7', color: '#92400E',
-                border: '1px dashed #F59E0B', verticalAlign: 'middle',
-              }}
-            >
-              TRAINEE
-            </span>
-          )}
+          {!!row.is_training && <TrainingMark />}
           <ChevronRight className="pc-report-person-chevron" aria-hidden="true" />
         </button>
       ),

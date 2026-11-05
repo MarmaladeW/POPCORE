@@ -293,13 +293,13 @@ def get_employee_stores():
     rows = con.execute('''
         SELECT e.id AS employee_id, e.auth0_id, e.name,
                COALESCE(e.color, '#6366f1') AS color,
-               e.is_schedulable, e.regular_since,
+               e.is_schedulable, e.regular_since, e.is_training,
                GROUP_CONCAT(s.code) AS store_codes
         FROM employees e
         LEFT JOIN employee_stores es ON es.employee_id = e.id
         LEFT JOIN stores s ON s.id = es.store_id AND s.is_active = 1
         WHERE e.is_active = 1
-        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable, e.regular_since
+        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable, e.regular_since, e.is_training
         ORDER BY e.name
     ''').fetchall()
     con.close()
@@ -313,6 +313,7 @@ def get_employee_stores():
             'color':       r['color'],
             'is_schedulable': r['is_schedulable'],
             'regular_since': r['regular_since'],
+            'is_training': r['is_training'],
             'stores':      codes,
         })
     return jsonify(result)
@@ -373,21 +374,24 @@ def patch_employee_schedulable(employee_id):
     return jsonify(dict(updated))
 
 
-@bp.route('/api/employees/<int:employee_id>/regular', methods=['PATCH'])
+@bp.route('/api/employees/<int:employee_id>/status', methods=['PATCH'])
 @role_required('manager')
-def patch_employee_regular(employee_id):
-    """Set or clear the 转正 date. Shifts from that date on are marked 正."""
+def patch_employee_status(employee_id):
+    """One status per person: none, 培训中 training (shifts show 训), or 转正 regular
+    from a date (shifts on or after it show 正). Setting one clears the other."""
     data = request.get_json(silent=True)
-    if not isinstance(data, dict) or 'regular_since' not in data:
-        return jsonify({'error': 'regular_since is required (a YYYY-MM-DD date, or null to clear)'}), 400
-    value = data['regular_since']
-    if value is not None:
+    status = data.get('status') if isinstance(data, dict) else None
+    if status not in ('none', 'training', 'regular'):
+        return jsonify({'error': 'status must be none, training or regular'}), 400
+    regular_since = None
+    if status == 'regular':
+        regular_since = data.get('regular_since')
         try:
-            if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value):
+            if not isinstance(regular_since, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', regular_since):
                 raise ValueError
-            _dt.date.fromisoformat(value)
+            _dt.date.fromisoformat(regular_since)
         except ValueError:
-            return jsonify({'error': 'regular_since must be a YYYY-MM-DD date, or null to clear'}), 400
+            return jsonify({'error': 'regular_since must be a YYYY-MM-DD date for 转正'}), 400
 
     con = get_db()
     row = con.execute(
@@ -396,7 +400,8 @@ def patch_employee_regular(employee_id):
     if not row:
         con.close()
         return jsonify({'error': 'Employee not found'}), 404
-    con.execute('UPDATE employees SET regular_since = ? WHERE id = ?', (value, employee_id))
+    con.execute('UPDATE employees SET is_training = ?, regular_since = ? WHERE id = ?',
+                (1 if status == 'training' else 0, regular_since, employee_id))
     con.commit()
     updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
     con.close()

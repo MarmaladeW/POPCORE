@@ -30,6 +30,7 @@ import {
 } from './scheduleApi'
 import { isRegularOn } from './monthlyDetail'
 import RegularMark from './RegularMark'
+import TrainingMark from './TrainingMark'
 import {
   DEFAULT_STAFF_REQUIREMENTS,
   DEFAULT_STORE_HOURS,
@@ -247,10 +248,10 @@ export default function ManagerCalendar() {
         const empColor = empColors[s.employee_id]
           ?? FALLBACK_COLORS[empIdToIdx[s.employee_id] ?? 0]
         const kind      = shiftKindFor(s.date, hoursForStore(code, storeHours), s.start_time, s.end_time)
-        const isTrainee = !!s.is_trainee
+        const isTraining = !!s.is_training
         const isRegular = isRegularOn(s.regular_since, s.date)
         // Every shift keeps the employee's solid color. Time, AM/PM, position,
-        // trainee and 正 markers carry the details without weakening that color.
+        // 训 and 正 markers carry the details without weakening that color.
         const shiftColors = shiftColorPresentation(empColor, kind)
         byStore[code].push({
           id:              `shift-${s.id}`,
@@ -261,10 +262,10 @@ export default function ManagerCalendar() {
           borderColor:     shiftColors.borderColor,
           textColor:       textColorOn(empColor),
           display:         shiftColors.display,
-          classNames:      ['pc-ev', `pc-ev-${kind}`, ...(isTrainee ? ['pc-ev-trainee'] : [])],
+          classNames:      ['pc-ev', `pc-ev-${kind}`],
           extendedProps:   {
             type: 'shift', shift_id: s.id, employee_id: s.employee_id,
-            kind, is_trainee: isTrainee, is_regular: isRegular, position: s.position || '',
+            kind, is_training: isTraining, is_regular: isRegular, position: s.position || '',
             emp_name: s.employee_name ?? 'Employee', emp_color: empColor,
             start_time: s.start_time, end_time: s.end_time,
             actual_end_time: s.actual_end_time ?? null,
@@ -435,7 +436,7 @@ export default function ManagerCalendar() {
   // one bold name plus a compact, readable time chip (and position if set).
   const renderEvent = (arg: EventContentArg) => {
     const p = arg.event.extendedProps as {
-      type?: string; kind?: ShiftKind; is_trainee?: boolean; is_regular?: boolean; position?: string
+      type?: string; kind?: ShiftKind; is_training?: boolean; is_regular?: boolean; position?: string
       emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
       actual_end_time?: string | null
       span?: { left: number; width: number }
@@ -451,7 +452,7 @@ export default function ManagerCalendar() {
       shiftTimeRange(p.start_time ?? '', p.end_time ?? '', p.actual_end_time),
       kind === 'full' ? 'Full day' : kind === 'custom' ? 'Custom slot' : `Half day (${halfTag})`,
       p.position && `Position: ${p.position}`,
-      p.is_trainee && 'TRAINEE',
+      p.is_training && '培训中 Training',
       p.is_regular && '转正 Regular',
     ].filter(Boolean).join(' · ')
 
@@ -465,7 +466,7 @@ export default function ManagerCalendar() {
           endTime: p.end_time ?? '',
           actualEndTime: p.type === 'shift' ? p.actual_end_time : null,
           position: p.position ?? '',
-          isTrainee: !!p.is_trainee,
+          isTraining: !!p.is_training,
           isRegular: !!p.is_regular,
           shiftType: p.type === 'shift' ? shiftKindLabel(kind) : 'Available',
         })
@@ -476,7 +477,7 @@ export default function ManagerCalendar() {
             title={accessibleLabel}
             style={{ '--emp': employeeColor } as CSSProperties}
           >
-            <span>{compactEmployeeLabel(employeeName)} {p.is_trainee && <span className="pc-mobile-shift-t">T</span>}{p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}{finished && ' ✓'}</span>
+            <span>{compactEmployeeLabel(employeeName)} {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}{p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}{finished && ' ✓'}</span>
             <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
           </div>
         )
@@ -484,10 +485,10 @@ export default function ManagerCalendar() {
       // The bar itself is drawn here so its length and position follow the hours.
       const span = p.span ?? { left: 0, width: 1 }
       return (
-        <div className={cn('pc-shift pc-shift-bar', p.is_trainee && 'pc-shift-bar-trainee', !!halfTag && 'pc-shift-bar-half')} title={tip} aria-label={tip}
+        <div className={cn('pc-shift pc-shift-bar', !!halfTag && 'pc-shift-bar-half')} title={tip} aria-label={tip}
           style={{ marginLeft: `${span.left * 100}%`, width: `${span.width * 100}%`, '--emp': p.emp_color } as CSSProperties}>
           <div className="pc-shift-heading">
-            {p.is_trainee && <span className="pc-shift-t">T</span>}
+            {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}
             {p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}
             <span className="pc-shift-name">{p.emp_name}</span>
             {finished && <span className="pc-shift-finished">{finished}</span>}
@@ -506,7 +507,7 @@ export default function ManagerCalendar() {
         <div className="pc-shift-time">
           {p.start_time}–{p.end_time}
           {halfTag && <span className="pc-shift-half">{halfTag}</span>}
-          {p.is_trainee && <span className="pc-shift-t">T</span>}
+          {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}
           {p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}
         </div>
         <div className="pc-shift-name">{p.emp_name}</div>
@@ -576,7 +577,7 @@ export default function ManagerCalendar() {
               <SelectItem value="__all__">All employees</SelectItem>
               {schedulableEmployees.map((e) => (
                 <SelectItem key={e.id} value={String(e.id)}>
-                  {(e.name || e.email || e.auth0_id) + (e.is_trainee ? ' (Trainee)' : '') + (isRegularOn(e.regular_since, today) ? ' · 正' : '')}
+                  {(e.name || e.email || e.auth0_id) + (e.is_training ? ' · 训' : '') + (isRegularOn(e.regular_since, today) ? ' · 正' : '')}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -695,11 +696,11 @@ export default function ManagerCalendar() {
                   style={{
                     background: empColor,
                     color: textColorOn(empColor),
-                    ...(e.is_trainee ? { outline: '2px dashed #F59E0B', outlineOffset: 1 } : {}),
                   }}
                 >
                   {name.trim().slice(0, 2).toUpperCase()}
                   {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} className="absolute -top-1 -right-1" />}
+                  {!!e.is_training && <TrainingMark className="absolute -top-1 -right-1" />}
                   <span className="absolute -bottom-0.5 -right-1 flex gap-0.5">
                     {(empStores[e.id] ?? []).map(code => (
                       <span
@@ -749,14 +750,7 @@ export default function ManagerCalendar() {
                 />
                 {e.name || e.email || `Employee ${e.id}`}
                 {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} />}
-                {!!e.is_trainee && (
-                  <span
-                    style={{
-                      background: '#FEF3C7', color: '#92400E', border: '1px dashed #F59E0B',
-                      fontSize: 9, borderRadius: 3, padding: '0px 4px', lineHeight: 1.5, fontWeight: 700,
-                    }}
-                  >T</span>
-                )}
+                {!!e.is_training && <TrainingMark />}
                 {(empStores[e.id] ?? []).map(code => (
                   <span
                     key={code}
@@ -834,11 +828,8 @@ export default function ManagerCalendar() {
           Half day (PM)
         </span>
         <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block w-6 h-3 rounded-sm"
-            style={{ background: '#6366f1', outline: '1.5px dashed #F59E0B', outlineOffset: '-1.5px' }}
-          />
-          Trainee (keeps employee color)
+          <span className="pc-training-mark" aria-hidden="true">训</span>
+          培训中 In training
         </span>
         <span className="flex items-center gap-1.5">
           <span className="pc-regular-mark" aria-hidden="true">正</span>

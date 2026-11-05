@@ -31,11 +31,11 @@ test('calendar blocks mark a recorded actual finish', () => {
   assert.equal(actualFinishChip('12:00', '21:25'), '✓ 21:25')
   assert.equal(actualFinishChip('12:00', '00:45'), '✓ 00:45 +1')
   assert.equal(
-    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', actualEndTime: '21:25', position: '', isTrainee: false }),
+    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', actualEndTime: '21:25', position: '' }),
     'Celia · 12:00–22:00 · finished 21:25',
   )
   assert.equal(
-    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', position: '', isTrainee: false, isRegular: true }),
+    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', position: '', isRegular: true }),
     'Celia · 12:00–22:00 · 转正 Regular',
   )
 })
@@ -62,20 +62,19 @@ test('mobile shift labels retain the complete assignment for assistive technolog
       startTime: '12:00',
       endTime: '22:00',
       position: 'Cashier',
-      isTrainee: false,
     }),
     'Celia · 12:00–22:00 · Cashier',
   )
 
   assert.equal(
     mobileShiftAccessibleLabel({
-      employeeName: 'Trainee 1',
+      employeeName: 'Lin',
       startTime: '12:00',
       endTime: '17:00',
       position: '',
-      isTrainee: true,
+      isTraining: true,
     }),
-    'Trainee 1 · 12:00–17:00 · Trainee',
+    'Lin · 12:00–17:00 · 培训中 Training',
   )
 })
 

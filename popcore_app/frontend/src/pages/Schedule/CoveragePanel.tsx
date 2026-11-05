@@ -17,6 +17,7 @@ import {
 import { manualChecklistPresentation } from './schedulePresentation'
 import { isRegularOn } from './monthlyDetail'
 import RegularMark from './RegularMark'
+import TrainingMark from './TrainingMark'
 
 interface Props {
   /** month:YYYY-MM | week:YYYY-MM-DD | day:YYYY-MM-DD */
@@ -242,14 +243,7 @@ export default function CoveragePanel({
                     />
                     <span className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{name}</span>
                     {isRegularOn(p.regular_since, dayjs().format('YYYY-MM-DD')) && <RegularMark since={p.regular_since} />}
-                    {!!p.is_trainee && (
-                      <span
-                        className="shrink-0 rounded px-1 text-[8px] font-bold"
-                        style={{ background: '#FEF3C7', color: '#92400E', border: '1px dashed #F59E0B' }}
-                      >
-                        T
-                      </span>
-                    )}
+                    {!!p.is_training && <TrainingMark />}
                   </label>
                 </li>
               )

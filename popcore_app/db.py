@@ -649,6 +649,16 @@ def _migration_add_regular_since_to_employees(con, cur):
     cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_regular_since_to_employees')")
 
 
+def _migration_add_is_training_to_employees(con, cur):
+    """培训中 status (owner, 2026-11-04): while it is on, the person's shifts show 训.
+    An employee is in training, 转正 (regular_since) or neither; the status endpoint keeps it so."""
+    cur.execute("PRAGMA table_info(employees)")
+    cols = {r['name'] for r in cur.fetchall()}
+    if 'is_training' not in cols:
+        cur.execute("ALTER TABLE employees ADD COLUMN is_training INTEGER NOT NULL DEFAULT 0")
+    cur.execute("INSERT OR IGNORE INTO _migrations (name) VALUES ('add_is_training_to_employees')")
+
+
 def _migration_create_schedule_notes_table(con, cur):
     """Free-form manager notes attached to a schedule period (month/week/day)."""
     cur.execute('''
@@ -2098,6 +2108,7 @@ def _get_migrations():
         ('report_stock_moves',                         _migration_report_stock_moves),
         ('report_name_picks',                          _migration_report_name_picks),
         ('add_regular_since_to_employees',             _migration_add_regular_since_to_employees),
+        ('add_is_training_to_employees',               _migration_add_is_training_to_employees),
     ]
 
 
