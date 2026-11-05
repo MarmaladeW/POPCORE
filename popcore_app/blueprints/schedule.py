@@ -545,7 +545,7 @@ def schedule_avail_all():
         con.close()
         return err
     query = '''
-        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
+        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
                COALESCE(st.code, '') AS store_code
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
@@ -634,7 +634,7 @@ def schedule_shifts_get():
     if store_code == 'ALL':
         if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -646,7 +646,7 @@ def schedule_shifts_get():
         else:
             emp = _get_or_create_employee(con, auth0_id)
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -660,7 +660,7 @@ def schedule_shifts_get():
             query += ' AND s.date <= ?'; params.append(end)
     elif ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -677,7 +677,7 @@ def schedule_shifts_get():
     else:
         emp = _get_or_create_employee(con, auth0_id)
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -709,7 +709,7 @@ def schedule_shifts_me():
         return err
     emp    = _get_or_create_employee(con, auth0_id)
     query  = '''
-        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since,
+        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
                COALESCE(st.code, '') AS store_code
         FROM shifts s
         JOIN employees e ON e.id = s.employee_id
@@ -1100,9 +1100,10 @@ def schedule_report_monthly():
         shift_filter += ' AND store_id = ?'
         filter_params.append(store_id)
 
-    # Removed employees and trainees keep the hours they worked in this period.
-    emps = con.execute(f'''SELECT * FROM employees WHERE is_active = 1
-        OR id IN (SELECT employee_id FROM shifts WHERE {shift_filter})
+    # Only people who worked in this period and scope (owner, 2026-11-04); removed employees
+    # keep the hours they worked.
+    emps = con.execute(f'''SELECT * FROM employees
+        WHERE id IN (SELECT employee_id FROM shifts WHERE {shift_filter})
         ORDER BY name''', filter_params).fetchall()
     emp_ids = [e['id'] for e in emps]
 
@@ -1143,12 +1144,15 @@ def schedule_report_monthly():
             weeks[wk]['days'][s['date']] = round(
                 weeks[wk]['days'].get(s['date'], 0.0) + h, 2
             )
+        if total_hours <= 0:
+            continue
         result.append({
             'id':          emp['id'],
             'name':        emp['name'],
             'email':       emp['email'],
             'is_trainee':  emp['is_trainee'] if 'is_trainee' in emp.keys() else 0,
             'regular_since': emp['regular_since'],
+            'is_training': emp['is_training'],
             'total_hours': round(total_hours, 2),
             'weeks':       weeks,
         })
@@ -1225,6 +1229,7 @@ def schedule_report_monthly_employee(emp_id):
             'color':         emp['color'],
             'is_trainee':    emp['is_trainee'],
             'regular_since': emp['regular_since'],
+            'is_training':   emp['is_training'],
         },
         'total_hours': round(sum(s['hours'] for s in shifts), 2),
         'shifts':      shifts,

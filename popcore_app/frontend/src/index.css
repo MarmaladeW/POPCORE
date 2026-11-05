@@ -176,24 +176,12 @@
     letter-spacing: 0.015em;
     white-space: nowrap;
   }
-  .pc-mobile-shift-t {
-    display: inline-flex;
-    width: 10px;
-    height: 10px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 3px;
-    background: #F59E0B;
-    color: #ffffff;
-    font-size: 7px;
-    line-height: 1;
-  }
 }
 
 /* ── Schedule shift events (custom eventContent in the manager calendar) ──
-   Month view: one row — [T][AM/PM] name ······ 12–22.
+   Month view: one row — [正/训][AM/PM] name ······ 12–22.
    Week/day view: stacked time / name / position.
-   Every shift keeps the employee's solid color. Half-day and trainee badges
+   Every shift keeps the employee's solid color. Half-day, 正 and 训 badges
    communicate status without replacing that identity color. */
 .fc-event.pc-ev {
   font-size: 11px;
@@ -206,10 +194,6 @@
   border-top-width: 0;
   border-right-width: 0;
   border-bottom-width: 0;
-}
-.fc-event.pc-ev-trainee {
-  outline: 1.5px dashed #F59E0B;
-  outline-offset: -1.5px;
 }
 .pc-shift {
   display: flex;
@@ -248,7 +232,6 @@
   opacity: 0.85;
 }
 .pc-shift-half,
-.pc-shift-t,
 .pc-shift-finished {
   flex-shrink: 0;
   font-size: 8.5px;
@@ -260,13 +243,10 @@
 .pc-shift-half {
   background: rgba(0, 0, 0, 0.12);
 }
-.pc-shift-t {
-  background: #F59E0B;
-  color: #fff;
-}
-/* 正 (转正): a solid green square with the glyph, the same everywhere a person appears.
+/* 正 (转正) and 训 (培训中): a solid square with the glyph, the same everywhere a person appears.
    On a shift block a thin white edge keeps it apart from any employee colour. */
-.pc-regular-mark {
+.pc-regular-mark,
+.pc-training-mark {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -280,16 +260,19 @@
   line-height: 1;
   vertical-align: -2px;
 }
-.pc-shift .pc-regular-mark,
-.pc-mobile-shift .pc-regular-mark {
+.pc-training-mark {
+  background: var(--status-restock-ink);
+}
+.pc-shift :is(.pc-regular-mark, .pc-training-mark),
+.pc-mobile-shift :is(.pc-regular-mark, .pc-training-mark) {
   outline: 1px solid rgba(255, 255, 255, 0.9);
 }
-.pc-shift .pc-regular-mark {
+.pc-shift :is(.pc-regular-mark, .pc-training-mark) {
   width: 14px;
   height: 14px;
   font-size: 9.5px;
 }
-.pc-mobile-shift .pc-regular-mark {
+.pc-mobile-shift :is(.pc-regular-mark, .pc-training-mark) {
   width: 12px;
   height: 12px;
   font-size: 9px;

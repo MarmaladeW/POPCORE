@@ -1,4 +1,4 @@
-"""转正 dates and the per-employee monthly hours breakdown."""
+"""转正 and 培训中 statuses, and the per-employee monthly hours breakdown."""
 from contextlib import closing
 
 from support import IsolatedApiCase
@@ -31,9 +31,21 @@ class EmployeeRegularTests(IsolatedApiCase):
                        VALUES (?,?,?,?,?,'manager',?)""", (employee, date, start, end, actual, store))
             con.commit()
 
-    def set_regular(self, value, role='manager', employee=None):
-        return self.client.patch(f'/api/employees/{employee or self.employee}/regular',
-                                 json={'regular_since': value}, headers=self.headers(role))
+    def set_status(self, status, regular_since=None, role='manager', employee=None):
+        body = {'status': status}
+        if regular_since is not None:
+            body['regular_since'] = regular_since
+        return self.client.patch(f'/api/employees/{employee or self.employee}/status',
+                                 json=body, headers=self.headers(role))
+
+    def set_regular(self, value, **kwargs):
+        return self.set_status('regular', value, **kwargs) if value else self.set_status('none', **kwargs)
+
+    def status_of(self, employee=None):
+        with closing(self.connect()) as con:
+            row = con.execute('SELECT is_training, regular_since FROM employees WHERE id=?',
+                              (employee or self.employee,)).fetchone()
+        return row['is_training'], row['regular_since']
 
     def detail(self, store='ALL'):
         response = self.client.get(
@@ -49,30 +61,64 @@ class EmployeeRegularTests(IsolatedApiCase):
         stores = self.client.get('/api/employees/stores', headers=self.headers('manager')).get_json()
         self.assertEqual({row['name']: row['regular_since'] for row in stores}, {'Jessi': '2026-09-15', 'Amy': None})
         self.assertEqual(self.set_regular(None).get_json()['regular_since'], None)
-        with closing(self.connect()) as con:
-            self.assertIsNone(con.execute('SELECT regular_since FROM employees WHERE id=?', (self.employee,)).fetchone()[0])
+        self.assertEqual(self.status_of(), (0, None))
+
+    def test_training_is_a_status_that_replaces_regular_and_back(self):
+        self.set_regular('2026-09-15')
+        training = self.set_status('training')
+        self.assertEqual(training.status_code, 200, training.get_json())
+        self.assertEqual(self.status_of(), (1, None))
+        stores = self.client.get('/api/employees/stores', headers=self.headers('manager')).get_json()
+        self.assertEqual({row['name']: row['is_training'] for row in stores}, {'Jessi': 1, 'Amy': 0})
+        self.set_regular('2026-09-20')
+        self.assertEqual(self.status_of(), (0, '2026-09-20'))
+        self.set_status('training')
+        self.set_status('none')
+        self.assertEqual(self.status_of(), (0, None))
 
     def test_regular_date_is_validated_and_manager_only(self):
-        for bad in ('2026-9-15', '2026-02-30', 20260915, '', 'soon'):
-            self.assertEqual(self.set_regular(bad).status_code, 400, bad)
-        missing = self.client.patch(f'/api/employees/{self.employee}/regular', json={}, headers=self.headers('manager'))
-        self.assertEqual(missing.status_code, 400)
+        for bad in ('2026-9-15', '2026-02-30', 20260915, 'soon'):
+            self.assertEqual(self.set_status('regular', bad).status_code, 400, bad)
+        self.assertEqual(self.set_status('regular').status_code, 400)  # 转正 needs its date
+        for body in ({}, {'status': 'trainee'}, {'status': True}, []):
+            response = self.client.patch(f'/api/employees/{self.employee}/status', json=body, headers=self.headers('manager'))
+            self.assertEqual(response.status_code, 400, body)
         self.assertEqual(self.set_regular('2026-09-15', role='staff').status_code, 403)
+        self.assertEqual(self.set_status('training', role='staff').status_code, 403)
         self.assertEqual(self.set_regular('2026-09-15', employee=9999).status_code, 404)
-        with closing(self.connect()) as con:
-            self.assertIsNone(con.execute('SELECT regular_since FROM employees WHERE id=?', (self.employee,)).fetchone()[0])
+        self.assertEqual(self.status_of(), (0, None))
 
     def test_shifts_and_report_rows_carry_the_regular_date(self):
         self.set_regular('2026-09-15')
+        self.set_status('training', employee=self.other)
         shifts = self.client.get('/api/schedule/shifts?start=2026-09-01&end=2026-09-30&store_code=ALL',
                                  headers=self.headers('manager')).get_json()
-        self.assertEqual({row['employee_name']: row['regular_since'] for row in shifts},
-                         {'Jessi': '2026-09-15', 'Amy': None})
+        self.assertEqual({row['employee_name']: (row['regular_since'], row['is_training']) for row in shifts},
+                         {'Jessi': ('2026-09-15', 0), 'Amy': (None, 1)})
         report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL',
                                  headers=self.headers('manager')).get_json()
         rows = {row['name']: row for row in report['employees']}
-        self.assertEqual(rows['Jessi']['regular_since'], '2026-09-15')
-        self.assertIsNone(rows['Amy']['regular_since'])
+        self.assertEqual((rows['Jessi']['regular_since'], rows['Jessi']['is_training']), ('2026-09-15', 0))
+        self.assertEqual((rows['Amy']['regular_since'], rows['Amy']['is_training']), (None, 1))
+        detail = self.detail()
+        self.assertEqual(detail['employee']['is_training'], 0)
+
+    def test_report_leaves_out_people_with_no_hours(self):
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO employees(auth0_id,name) VALUES ('auth0|idle','Idle')")
+            con.execute("INSERT INTO employees(auth0_id,name,is_active) VALUES ('auth0|gone','Gone',0)")
+            con.commit()
+        report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL',
+                                 headers=self.headers('manager')).get_json()
+        self.assertEqual([row['name'] for row in report['employees']], ['Amy', 'Jessi'])
+        # In one store's scope, only who worked there: Amy has no MK shifts.
+        mk = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=MK',
+                             headers=self.headers('manager')).get_json()
+        self.assertEqual([(row['name'], row['total_hours']) for row in mk['employees']], [('Jessi', 4.0)])
+        # A month nobody worked: an empty report.
+        empty = self.client.get('/api/schedule/reports/monthly?year=2026&month=6&store_code=ALL',
+                                headers=self.headers('manager')).get_json()
+        self.assertEqual(empty['employees'], [])
 
     def test_detail_lists_each_shift_with_the_hours_it_counts(self):
         self.set_regular('2026-09-15')

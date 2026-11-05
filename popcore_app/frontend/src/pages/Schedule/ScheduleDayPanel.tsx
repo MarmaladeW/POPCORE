@@ -6,6 +6,7 @@ import { hoursForStore, shiftKindFor, type StoreHoursMap } from './openHours'
 import { shiftKindLabel, shiftTimeRange } from './schedulePresentation'
 import { isRegularOn } from './monthlyDetail'
 import RegularMark from './RegularMark'
+import TrainingMark from './TrainingMark'
 
 interface Props {
   date: string
@@ -33,15 +34,16 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
   const elsewhere = (employeeId: number) => shifts.find(shift => shift.date === date && shift.employee_id === employeeId && shift.store_code !== storeCode)
   const employeeName = (id: number, label: string) => {
     const color = employeeColors[id] ?? EMPLOYEE_PALETTE[0]
-    const regularSince = employees.find(employee => employee.id === id)?.regular_since
+    const person = employees.find(employee => employee.id === id)
     return <>
       <strong className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{label}</strong>
-      {isRegularOn(regularSince, date) && <RegularMark since={regularSince} />}
+      {isRegularOn(person?.regular_since, date) && <RegularMark since={person?.regular_since} />}
+      {!!person?.is_training && <TrainingMark />}
     </>
   }
 
   return <section className="pc-schedule-detail" aria-label={`Schedule details ${date} ${storeCode}`}>
-    <div className="pc-page-actions"><h4>{date} · {storeCode}</h4><Button variant="outline" onClick={() => onAssign()}>Assign employee / trainee</Button></div>
+    <div className="pc-page-actions"><h4>{date} · {storeCode}</h4><Button variant="outline" onClick={() => onAssign()}>Assign employee</Button></div>
     <div className="pc-schedule-people">
       <section><strong>Assigned · {assigned.length}</strong>
         {assigned.length === 0 && <p className="text-muted-foreground">No shifts assigned.</p>}
@@ -75,7 +77,7 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
         {others.map(employee => {
           const day = response(employee)
           return <div className="pc-schedule-person" key={employee.id}><div>{employeeName(employee.id, name(employee))}
-            <small>{employee.is_trainee ? 'Trainee · manual assignment' : !day?.submitted_at ? 'Not submitted' : 'Unavailable'}</small>
+            <small>{!day?.submitted_at ? 'Not submitted' : 'Unavailable'}</small>
             {day?.notes && <small>{day.notes}</small>}
           </div><Button variant="outline" disabled={!!elsewhere(employee.id)} onClick={() => onAssign(employee.id)}>Assign</Button></div>
         })}

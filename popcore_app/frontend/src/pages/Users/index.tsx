@@ -16,13 +16,12 @@ import client from '../../api/client'
 import { useAppStore } from '../../store'
 import {
   getEmployeeStores,
-  getTrainees,
   renameEmployee,
   setEmployeeColor,
-  setEmployeeRegular,
+  setEmployeeStatus,
   setEmployeeSchedulable,
   setEmployeeStores,
-  type Employee,
+  type EmployeeStatus,
 } from '../Schedule/scheduleApi'
 import {
   isEyeDropperCancellation,
@@ -33,6 +32,7 @@ import {
 } from '../Schedule/employeeScheduling'
 import { isRegularOn } from '../Schedule/monthlyDetail'
 import RegularMark from '../Schedule/RegularMark'
+import TrainingMark from '../Schedule/TrainingMark'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -191,6 +191,7 @@ interface EmpStoreEntry {
   color:  string
   isSchedulable: number
   regularSince: string | null
+  isTraining: boolean
 }
 
 interface StoreRow { code: string; name: string }
@@ -274,6 +275,7 @@ function PersonRow({ user, entry, isSelf, selected, chevron, today, onSelect }: 
         <small>{meta}</small>
       </span>
       {isRegularOn(entry?.regularSince, today) && <RegularMark since={entry?.regularSince} />}
+      {entry?.isTraining && <TrainingMark />}
       <span className="pc-role">{roleLabel(user.role)}</span>
       {chevron && <ChevronRight className="pc-person-chevron" aria-hidden="true" />}
     </button>
@@ -298,9 +300,9 @@ function Field({ label, en, children, hint }: { label: string; en?: string; chil
 /** Everything for one person, in four labelled groups. Each change saves on its own. */
 function UserDetail({
   user, entry, isSelf, isMobile, showName, stores, operations, view, accessSaving, today,
-  savingColor, savingSchedulable, savingRegular,
+  savingColor, savingSchedulable, savingStatus,
   onRename, onRole, onPassword, onToggleActive, onDelete,
-  onStores, onColor, onSchedulable, onRegular,
+  onStores, onColor, onSchedulable, onStatus,
 }: {
   user: User
   entry?: EmpStoreEntry
@@ -315,7 +317,7 @@ function UserDetail({
   today: string
   savingColor: boolean
   savingSchedulable: boolean
-  savingRegular: boolean
+  savingStatus: boolean
   onRename: (name: string) => Promise<void>
   onRole: (role: string) => Promise<void>
   onPassword: (password: string) => Promise<boolean>
@@ -324,7 +326,7 @@ function UserDetail({
   onStores: (codes: string[]) => void
   onColor: (color: string) => void
   onSchedulable: (enabled: boolean) => void
-  onRegular: (date: string | null) => void
+  onStatus: (status: EmployeeStatus, regularSince?: string) => void
 }) {
   const name = entry?.name || user.username
   const [nameDraft, setNameDraft] = useState(entry?.name ?? '')
@@ -366,13 +368,15 @@ function UserDetail({
   // Managers and admins always see stock, so only other roles are picked.
   const alwaysSeesStock = user.role === 'manager' || user.role === 'admin'
   const regularNow = isRegularOn(entry?.regularSince, today)
+  const status: EmployeeStatus = entry?.isTraining ? 'training' : entry?.regularSince ? 'regular' : 'none'
+  const marks = <>{regularNow && <RegularMark since={entry?.regularSince} />}{entry?.isTraining && <TrainingMark />}</>
 
   return <div className="pc-ud">
     <header className="pc-ud-head">
       <span className="pc-person-dot pc-ud-dot" style={entry ? { background: entry.color } : undefined} aria-hidden="true" />
       <div className="pc-ud-title">
-        {showName && <h2>{name}{isSelf && <span className="pc-users-me">我</span>}{regularNow && <RegularMark since={entry?.regularSince} />}</h2>}
-        <p>{!showName && regularNow && <RegularMark since={entry?.regularSince} />}{user.username} · {roleLabel(user.role)} · {user.is_active === 1 ? '启用' : '已停用'}</p>
+        {showName && <h2>{name}{isSelf && <span className="pc-users-me">我</span>}{marks}</h2>}
+        <p>{!showName && marks}{user.username} · {roleLabel(user.role)} · {user.is_active === 1 ? '启用' : '已停用'}</p>
       </div>
     </header>
 
@@ -393,19 +397,24 @@ function UserDetail({
       {entry && <Field label="颜色" en="Colour">
         <EmployeeColorPicker value={entry.color || '#6366f1'} disabled={savingColor} onChange={onColor} />
       </Field>}
-      {entry && <Field label="转正" en="Regular"
-        hint={entry.regularSince
-          ? regularNow
-            ? '从这天起，排班和月工时都标 正 · Marked 正 from this date in the schedule and monthly hours'
-            : `${entry.regularSince} 起标 正 · Marked 正 from ${entry.regularSince}`
-          : '选转正那天；之前的班次不会标 正 · Pick the day they became regular; earlier shifts stay unmarked'}>
-        <div className="pc-ud-inline">
-          <DatePicker aria-label="转正日期 Regular since" allowClear placeholder="未转正 · Not yet"
-            value={entry.regularSince ? dayjs(entry.regularSince) : null} disabled={savingRegular}
+      {entry && <Field label="状态" en="Status"
+        hint={status === 'training'
+          ? '排班和月工时都标 训 · Marked 训 in the schedule and monthly hours'
+          : status === 'regular'
+            ? regularNow
+              ? '从这天起，排班和月工时都标 正 · Marked 正 from this date in the schedule and monthly hours'
+              : `${entry.regularSince} 起标 正 · Marked 正 from ${entry.regularSince}`
+            : '培训中标 训；转正从选的那天起标 正 · Training shows 训; 转正 shows 正 from the day you pick'}>
+        <Segmented block aria-label="状态 Status" size={isMobile ? 'large' : 'middle'} value={status} disabled={savingStatus}
+          options={[{ value: 'none', label: '无' }, { value: 'training', label: '培训中' }, { value: 'regular', label: '转正' }]}
+          onChange={value => onStatus(value as EmployeeStatus, value === 'regular' ? today : undefined)} />
+        {status === 'regular' && <div className="pc-ud-inline pc-ud-gap">
+          <DatePicker aria-label="转正日期 Regular since" allowClear={false}
+            value={dayjs(entry.regularSince)} disabled={savingStatus}
             inputReadOnly={isMobile} getPopupContainer={trigger => trigger.parentElement!}
-            onChange={value => onRegular(value ? value.format('YYYY-MM-DD') : null)} />
+            onChange={value => value && onStatus('regular', value.format('YYYY-MM-DD'))} />
           {regularNow && <span className="pc-ud-state"><RegularMark since={entry.regularSince} />已转正</span>}
-        </div>
+        </div>}
       </Field>}
     </Group>
 
@@ -484,7 +493,6 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
   const { stores: allStores } = useAppStore()
 
   const [users, setUsers]     = useState<User[]>([])
-  const [trainees, setTrainees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(false)
   const [loaded, setLoaded]   = useState(false)
   const [query, setQuery]     = useState('')
@@ -492,10 +500,10 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
   const [form] = Form.useForm()
   const colorRequests = useRef(new Set<string>())
   const schedulableRequests = useRef(new Set<string>())
-  const regularRequests = useRef(new Set<string>())
+  const statusRequests = useRef(new Set<string>())
   const [savingColors, setSavingColors] = useState<Record<string, boolean>>({})
   const [savingSchedulable, setSavingSchedulable] = useState<Record<string, boolean>>({})
-  const [savingRegular, setSavingRegular] = useState<Record<string, boolean>>({})
+  const [savingStatus, setSavingStatus] = useState<Record<string, boolean>>({})
   const today = dayjs().format('YYYY-MM-DD')
 
   // Map: auth0_id → { empId, stores[] }
@@ -528,6 +536,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
             stores: e.stores, color: e.color || '#6366f1',
             isSchedulable: e.is_schedulable ?? 1,
             regularSince: e.regular_since ?? null,
+            isTraining: !!e.is_training,
           }
         })
         setEmpStoreMap(m)
@@ -543,7 +552,6 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
 
   function openNew() {
     form.resetFields(); setModalOpen(true)
-    getTrainees().then(setTrainees).catch(() => message.error('Could not load trainees'))
   }
 
   async function handleCreate() {
@@ -686,24 +694,26 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
     }
   }
 
-  async function handleRegularChange(auth0Id: string, regularSince: string | null) {
+  async function handleStatusChange(auth0Id: string, status: EmployeeStatus, regularSince?: string) {
     const entry = empStoreMap[auth0Id]
-    if (!entry || regularRequests.current.has(auth0Id)) return
-    const previous = entry.regularSince
-    regularRequests.current.add(auth0Id)
-    setSavingRegular(prev => ({ ...prev, [auth0Id]: true }))
+    if (!entry || statusRequests.current.has(auth0Id)) return
+    const previous = { isTraining: entry.isTraining, regularSince: entry.regularSince }
+    statusRequests.current.add(auth0Id)
+    setSavingStatus(prev => ({ ...prev, [auth0Id]: true }))
     try {
       await persistEmployeeSetting({
-        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { regularSince })),
-        persist: () => setEmployeeRegular(entry.empId, regularSince),
-        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, { regularSince: previous })),
+        optimistic: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, {
+          isTraining: status === 'training', regularSince: status === 'regular' ? regularSince ?? null : null,
+        })),
+        persist: () => setEmployeeStatus(entry.empId, status, regularSince),
+        rollback: () => setEmpStoreMap(prev => updateEmployeeSetting(prev, auth0Id, previous)),
       })
-      message.success(regularSince ? `转正日期已保存 · ${regularSince}` : '已取消转正')
+      message.success(status === 'regular' ? `转正日期已保存 · ${regularSince}` : status === 'training' ? '已设为培训中' : '状态已清除')
     } catch (err: any) {
-      message.error(err?.response?.data?.error ?? '转正日期保存失败')
+      message.error(err?.response?.data?.error ?? '状态保存失败')
     } finally {
-      regularRequests.current.delete(auth0Id)
-      setSavingRegular(prev => ({ ...prev, [auth0Id]: false }))
+      statusRequests.current.delete(auth0Id)
+      setSavingStatus(prev => ({ ...prev, [auth0Id]: false }))
     }
   }
 
@@ -791,7 +801,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
       today={today}
       savingColor={!!savingColors[selected.id]}
       savingSchedulable={!!savingSchedulable[selected.id]}
-      savingRegular={!!savingRegular[selected.id]}
+      savingStatus={!!savingStatus[selected.id]}
       onRename={name => renameUser(selected, name)}
       onRole={role => changeRole(selected, role)}
       onPassword={password => changePassword(selected, password)}
@@ -800,7 +810,7 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
       onStores={codes => handleStoreChange(selected.id, codes)}
       onColor={color => handleEmpColorChange(selected.id, color)}
       onSchedulable={enabled => handleSchedulableChange(selected.id, enabled)}
-      onRegular={date => handleRegularChange(selected.id, date)}
+      onStatus={(status, date) => handleStatusChange(selected.id, status, date)}
     />
   </section>
 
@@ -822,14 +832,6 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
           </DialogHeader>
 
           <Form form={form} layout="vertical" size="small">
-            {trainees.length > 0 && (
-              <Form.Item name="trainee_id" label="Promote trainee (optional)"
-                extra="Keeps their existing shifts and wage hours under the same employee record">
-                <Select allowClear placeholder="New employee (no trainee history)"
-                  getPopupContainer={(trigger) => trigger.parentElement!}
-                  options={trainees.map(t => ({ value: t.id, label: t.name || `Trainee ${t.id}` }))} />
-              </Form.Item>
-            )}
             <Form.Item
               name="username"
               label="用户名"

@@ -10,7 +10,7 @@ interface ShiftAccessibleLabelInput {
   endTime: string
   actualEndTime?: string | null
   position: string
-  isTrainee: boolean
+  isTraining?: boolean
   isRegular?: boolean
   shiftType?: string
 }
@@ -31,7 +31,7 @@ export function mobileShiftAccessibleLabel({
   endTime,
   actualEndTime,
   position,
-  isTrainee,
+  isTraining,
   isRegular,
   shiftType,
 }: ShiftAccessibleLabelInput): string {
@@ -40,7 +40,7 @@ export function mobileShiftAccessibleLabel({
     shiftTimeRange(startTime, endTime, actualEndTime),
     shiftType,
     position || null,
-    isTrainee ? 'Trainee' : null,
+    isTraining ? '培训中 Training' : null,
     isRegular ? '转正 Regular' : null,
   ].filter(Boolean).join(' · ')
 }

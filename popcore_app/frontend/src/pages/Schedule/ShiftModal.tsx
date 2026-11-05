@@ -140,8 +140,11 @@ export default function ShiftModal({
   const availByEmpId: Record<number, Availability> = {}
   for (const a of schedulableAvailForDate) availByEmpId[a.employee_id] = a
 
-  const staff    = employees.filter((e) => !e.is_trainee)
-  const trainees = employees.filter((e) => !!e.is_trainee)
+  // Someone switched off or removed after the shift was made is no longer listed: keep their name
+  // from the shift itself, so the field never falls back to showing their number.
+  const staff = existing && !employees.some((e) => e.id === existing.employee_id)
+    ? [...employees, { id: existing.employee_id, name: `${existing.employee_name || `Employee ${existing.employee_id}`} · 已停用 Removed` } as Employee]
+    : employees
   const sortedStaff = [
     ...staff.filter((e) => availByEmpId[e.id]),
     ...staff.filter((e) => !availByEmpId[e.id]),
@@ -441,7 +444,7 @@ export default function ShiftModal({
                           label: 'Staff',
                           options: sortedStaff.map((e) => {
                             const avail    = availByEmpId[e.id]
-                            const baseName = (e.name || e.email || e.auth0_id) + (date && isRegularOn(e.regular_since, date) ? ' · 正' : '')
+                            const baseName = (e.name || e.email || e.auth0_id) + (e.is_training ? ' · 训' : '') + (date && isRegularOn(e.regular_since, date) ? ' · 正' : '')
                             return {
                               value: e.id,
                               label: avail
@@ -450,13 +453,6 @@ export default function ShiftModal({
                             }
                           }),
                         },
-                        ...(trainees.length > 0 ? [{
-                          label: 'Trainees',
-                          options: trainees.map((e) => ({
-                            value: e.id,
-                            label: `${e.name || `Trainee ${e.id}`} (Trainee)`,
-                          })),
-                        }] : []),
                       ]}
                     />
                   </Form.Item>

@@ -13,6 +13,8 @@ export interface Employee {
   is_trainee?: number
   /** 转正 date (YYYY-MM-DD); shifts from it on are marked 正. */
   regular_since?: string | null
+  /** 培训中: their shifts are marked 训 while it is on. */
+  is_training?: number
   created_at: string
 }
 
@@ -71,6 +73,7 @@ export interface Shift {
   auth0_id?: string
   is_trainee?: number
   regular_since?: string | null
+  is_training?: number
   store_code?: string
 }
 
@@ -98,6 +101,7 @@ export interface EmployeeMonthlyHours {
   email: string
   is_trainee?: number
   regular_since?: string | null
+  is_training?: number
   total_hours: number
   weeks: Record<string, WeekBreakdown>
 }
@@ -116,6 +120,7 @@ export interface EmployeeMonthDetail {
     color: string
     is_trainee: number
     regular_since: string | null
+    is_training: number
   }
   total_hours: number
   shifts: DetailShift[]
@@ -179,6 +184,7 @@ export interface EmployeeStoreAssignment {
   color:       string
   is_schedulable: number
   regular_since: string | null
+  is_training: number
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
 
@@ -203,17 +209,6 @@ export const getEmployees = () =>
 
 export const renameEmployee = (employeeId: number, name: string) =>
   client.patch<Employee>(`/schedule/employees/${employeeId}`, { name }).then((r) => r.data)
-
-// ── Trainees ──────────────────────────────────────────────────────────────────
-
-export const getTrainees = () =>
-  client.get<Employee[]>('/schedule/trainees').then((r) => r.data)
-
-export const createTrainee = (name: string) =>
-  client.post<Employee>('/schedule/trainees', { name }).then((r) => r.data)
-
-export const deleteTrainee = (traineeId: number) =>
-  client.delete(`/schedule/trainees/${traineeId}`).then((r) => r.data)
 
 // ── Period notes + coverage checklist ─────────────────────────────────────────
 
@@ -250,8 +245,13 @@ export const setEmployeeSchedulable = (employeeId: number, enabled: boolean) =>
     is_schedulable: enabled,
   }).then((r) => r.data)
 
-export const setEmployeeRegular = (employeeId: number, regularSince: string | null) =>
-  client.patch<Employee>(`/employees/${employeeId}/regular`, { regular_since: regularSince }).then((r) => r.data)
+export type EmployeeStatus = 'none' | 'training' | 'regular'
+
+/** One status per person: none, 培训中, or 转正 from a date. */
+export const setEmployeeStatus = (employeeId: number, status: EmployeeStatus, regularSince?: string) =>
+  client.patch<Employee>(`/employees/${employeeId}/status`, {
+    status, ...(status === 'regular' ? { regular_since: regularSince } : {}),
+  }).then((r) => r.data)
 
 // ── Availability ──────────────────────────────────────────────────────────────
 

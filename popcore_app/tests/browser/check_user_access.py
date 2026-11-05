@@ -29,7 +29,6 @@ async def pick(page, name):
 
 async def check(browser, case):
     state = {'fail_read': False, 'fail_write': False}
-    case.client.post('/api/schedule/trainees', headers=case.headers('manager'), json={'name': 'Jessi'})
     context, page = await context_with_api(browser, {'mode': 'data'}, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     async def users(route):
@@ -50,7 +49,6 @@ async def check(browser, case):
         else:
             await route.fulfill(status=response.status_code, json=response.get_json())
     await page.route(BASE + '/api/users', users)
-    await page.route(BASE + '/api/schedule/trainees', api)
     await page.route(BASE + '/api/inventory/access', api)
     await page.route(BASE + '/api/inventory/viewers', api)
     await page.route(BASE + '/api/today*', api)
@@ -60,12 +58,9 @@ async def check(browser, case):
     await expect(page.get_by_text('Today store access denied', exact=True)).to_have_count(0)
     await page.goto(BASE + '/users')
     await page.get_by_role('button', name='新建用户', exact=True).click()
-    promote = page.get_by_role('combobox', name='Promote trainee (optional)')
-    await expect(promote).to_be_visible()
-    await promote.click()
-    await expect(page.get_by_text('Jessi', exact=True).last).to_be_visible()
-    await page.get_by_text('Jessi', exact=True).last.click()
-    await expect(page.get_by_role('dialog').locator('.ant-select-selection-item').filter(has_text='Jessi')).to_be_visible()
+    # 实习生 is gone (owner, 2026-11-04): a new account is just username, role and password.
+    await expect(page.get_by_role('dialog').get_by_text('Promote trainee (optional)')).to_have_count(0)
+    await expect(page.get_by_role('dialog').get_by_label('用户名')).to_be_visible()
     await page.get_by_role('button', name='取消', exact=True).click()
     dt = page.get_by_role('checkbox', name='Admin: DT operations access', exact=True)
     staff_dt = page.get_by_role('checkbox', name='Staff: DT operations access', exact=True)
