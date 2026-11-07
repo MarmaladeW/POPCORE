@@ -99,10 +99,21 @@ export interface ParseReportResponse extends ReportAnnotations {
   cash_total_reported?: number | null
   cash_expected_reported?: number | null
   metadata_errors?: string[]
+  // What may be written so that stock moves wrongly, by line in the paste (owner, 2026-11-06). Never blocks.
+  format_checks?: FormatCheck[]
   parser_engine?: 'llm' | 'rules'
   multi_day?: boolean
   // live: the store's stock sections are stock lines that move stock (owner, 2026-11-03)
   stock_mode?: 'live' | 'legacy'
+}
+
+/** fix: most likely a mistake; check: may be meant. `lines` are line numbers in the paste, `text` those lines as written. */
+export interface FormatCheck {
+  level: 'fix' | 'check'
+  lines: number[]
+  text: string[]
+  section: string | null
+  problem: string
 }
 
 export interface ReportMetadata extends ReportAnnotations {
@@ -232,8 +243,10 @@ export async function parseReportBackend(
   text: string,
   storeCode: string,
   engine: 'rules' | 'llm' = 'rules',
+  date?: string,
 ): Promise<ParseReportResponse> {
-  const r = await client.post('/sales/parse_report', { text, store_code: storeCode, engine })
+  // The day opened, so the report's own date line is checked against it.
+  const r = await client.post('/sales/parse_report', { text, store_code: storeCode, engine, date })
   return r.data as ParseReportResponse
 }
 

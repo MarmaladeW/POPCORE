@@ -29,6 +29,12 @@ export function stockLineEffect(row: { section: string; to_display?: boolean; fr
   }
 }
 
+/** Where a format check points: "第 82、86 行 · 出库入店", or the whole report when it names no line. */
+export function formatCheckWhere(check: { lines: number[]; section: string | null }): string {
+  const where = check.lines.length ? `第 ${check.lines.join('、')} 行 Line ${check.lines.join(', ')}` : '整份日报 Whole report'
+  return check.section ? `${where} · ${check.section}` : where
+}
+
 export function hasReportNotes(notes: ReportAnnotations): boolean {
   return REPORT_NOTE_SECTIONS.some(({ key }) => !!notes[key]?.length)
 }
