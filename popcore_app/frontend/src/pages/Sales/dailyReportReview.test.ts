@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  cashDifference, hasReportNotes, isReportRowReady, matchFeedback, REPORT_NOTE_SECTIONS, reportPayloadQuantities,
+  cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, REPORT_NOTE_SECTIONS, reportPayloadQuantities,
   STOCK_LINE_SECTIONS, stockLineEffect,
 } from './dailyReportReview.ts'
 
@@ -70,4 +70,10 @@ test('a live store reviews its stock lines and sends what each one moves', () =>
   assert.deepEqual(reportPayloadQuantities({ section: 'pos', qty: 4 }), { qty_pos: 4 })
   // 出库 to the other store is kept as a note that points to 调拨 Transfer.
   assert.ok(REPORT_NOTE_SECTIONS.some(({ key, description }) => key === 'store_transfers' && description.includes('调拨')))
+})
+
+test('a format check names the lines of the paste it points at, and its section', () => {
+  assert.equal(formatCheckWhere({ lines: [82, 86], section: '出库入店' }), '第 82、86 行 Line 82, 86 · 出库入店')
+  assert.equal(formatCheckWhere({ lines: [1], section: null }), '第 1 行 Line 1')
+  assert.equal(formatCheckWhere({ lines: [], section: null }), '整份日报 Whole report')
 })

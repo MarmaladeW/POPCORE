@@ -16,10 +16,10 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import {
   parseReportBackend,
   type BackendProduct, type BackendCandidate, type ReportAnnotations,
-  type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem,
+  type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem, type FormatCheck,
 } from '../../api/matcher'
 import {
-  cashDifference, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
+  cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
   reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, validReportQuantity,
 } from './dailyReportReview'
 import { placeText } from './namePicksView'
@@ -200,6 +200,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [cashExpected, setCashExpected] = useState<number | null>(null)
   const [reportNotes, setReportNotes] = useState<ReportAnnotations>({})
   const [metadataErrors, setMetadataErrors] = useState<string[]>([])
+  const [formatChecks,  setFormatChecks]  = useState<FormatCheck[]>([])
   const [multiDay,      setMultiDay]      = useState(false)
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
   const [stockResult,   setStockResult]   = useState<ReportStockResult | null>(null)
@@ -215,7 +216,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     setParsing(true)
     try {
       const res = await parseReportBackend(
-        rawText, defaultStore, 'rules'
+        rawText, defaultStore, 'rules', date
       )
 
       setParsedDate(res.detected_date ?? date)
@@ -261,6 +262,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       setCashExpected(res.cash_expected_reported ?? null)
       setReportNotes(Object.fromEntries(REPORT_NOTE_SECTIONS.map(({ key }) => [key, res[key] ?? []])))
       setMetadataErrors(res.metadata_errors ?? [])
+      setFormatChecks(res.format_checks ?? [])
       setMultiDay(res.multi_day ?? false)
 
       setUnknowns(
@@ -853,6 +855,31 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         <Alert type="error" showIcon style={{ marginBottom: 8 }}
           message="报告原文存在错误或冲突，已禁止提交。请返回修改原文后重新解析。"
           description={<div style={{ whiteSpace: 'pre-wrap' }}>{metadataErrors.join('\n')}</div>} />
+      )}
+
+      {/* Format checks (owner, 2026-11-06): what may move stock wrongly, by line in the paste. */}
+      {formatChecks.length > 0 && (
+        <Alert type={formatChecks.some(c => c.level === 'fix') ? 'warning' : 'info'} showIcon
+          style={{ marginBottom: 8, borderRadius: 8 }}
+          message={`原文检查 Format check：${formatChecks.filter(c => c.level === 'fix').length} 处要改 to fix，`
+            + `${formatChecks.filter(c => c.level === 'check').length} 处请确认 to check`}
+          description={<>
+            <div>按行号对照原文。要改的多半写错了，会让库存移错；请确认的可能是故意的。Line numbers count from the top of the paste.</div>
+            <ul aria-label="Format checks" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+              {formatChecks.map((check, index) => (
+                <li key={`${check.lines.join('-')}-${index}`} style={{ marginBottom: 6 }}>
+                  <Tag color={check.level === 'fix' ? 'orange' : 'default'} style={{ marginRight: 6 }}>
+                    {check.level === 'fix' ? '要改 Fix' : '确认 Check'}
+                  </Tag>
+                  <strong>{formatCheckWhere(check)}</strong>
+                  {check.text.filter(Boolean).map((text, i) => (
+                    <code key={i} style={{ display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{text}</code>
+                  ))}
+                  <div style={{ overflowWrap: 'anywhere' }}>{check.problem}</div>
+                </li>
+              ))}
+            </ul>
+          </>} />
       )}
 
       {/* Multi-day paste warning */}

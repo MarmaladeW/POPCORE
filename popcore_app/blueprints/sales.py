@@ -22,6 +22,7 @@ from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm, _
                      load_report_match_choices, load_report_picks, report_match_query)
 from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
 from goods_operations import _begin, _hash, _replay, _remember
+import report_checks
 from report_stock import (LINE_SECTIONS, ReportLineError, check_notice, live_since, open_notices,
                           plan_report_lines, save_report_lines, sync_report_stock)
 from inventory_visibility import inventory_hidden
@@ -1793,9 +1794,14 @@ def _detect_section_type(line: str, section_aliases: dict) -> tuple[str, str] | 
     for alias_norm, stype in section_aliases.items():
         if alias_norm and alias_norm.rstrip(':：') == line_norm:
             return ('skip' if stype == 'ignore' else stype), ''
-    if s.endswith((':', '：')):
+    if s.endswith((':', '：')) or re.fullmatch(_BARE_HEADINGS, s):
         return 'unknown', ''
     return None
+
+
+# Headings staff write with no colon that POPCORE has no section for (MK, 2026-11-05: "入库" alone). Read as
+# an item, its lines would join the section above it, so "入库" under 入店 put upstairs goods on the floor.
+_BARE_HEADINGS = r'(?:入库|入仓库?)(?:汇总)?'
 
 
 def _split_report_items(content: str) -> list[str]:
@@ -1880,7 +1886,7 @@ def _parse_token(token: str, section: str) -> dict | None:
     qty, flagged, loose_qty = 0, True, 0
     packed = section in ('stock_in', 'refill')
     box_size = 1 if packed else None
-    out_pack = None
+    out_pack = name_number = None
     if star:
         if section in ('stock_in', 'refill', 'stock_out'):
             pack = re.match(r'^(.*?)(\d+)$', raw_name)
@@ -1901,6 +1907,8 @@ def _parse_token(token: str, section: str) -> dict | None:
                     out_pack = size if size is not None else 0
                 else:
                     raw_name = t.partition('*')[0].strip()
+                    # Kept for the format check: it may have been a pack size after all.
+                    name_number = size if size and size > 1 else None
         try:
             quantities = re.split(r'\s*[+➕]\s*', qty_str.strip()) if packed else [qty_str.strip()]
             if len(quantities) > 2:
@@ -1934,6 +1942,7 @@ def _parse_token(token: str, section: str) -> dict | None:
         'box_size': box_size, 'loose_qty': loose_qty, 'section': section,
         'flagged': flagged, 'note': note, 'unknown_header': None,
         'inferred_split_name': None,
+        **({'name_number': name_number} if name_number else {}),
     }
 
 
@@ -1953,6 +1962,9 @@ def parse_daily_report():
         return jsonify({'error': 'text is required', 'code': 'invalid_input'}), 400
     raw_text   = data.get('text', '')
     store_code = (data.get('store_code') or 'DT').strip().upper()
+    # The day and store the manager opened, which the report's own header is checked against.
+    page_date = data.get('date') if isinstance(data.get('date'), str) and _valid_day(data.get('date')) else None
+    page_store = (data.get('store_code') or '').strip().upper() if isinstance(data.get('store_code'), str) else ''
 
     if not raw_text.strip():
         return jsonify({'error': 'text is required'}), 400
@@ -1994,7 +2006,14 @@ def parse_daily_report():
         except Exception:
             llm_result = None
 
-    lines = [ln for ln in text.split('\n') if not re.fullmatch(r'[\s“”\"`]+', ln)]
+    # Each line keeps its number in the paste, so a check can say where it is (owner, 2026-11-06).
+    numbered = [(number, ln) for number, ln in enumerate(text.split('\n'), 1) if not re.fullmatch(r'[\s“”\"`]+', ln)]
+    lines = [ln for _, ln in numbered]
+    line_numbers = [number for number, _ in numbered]
+    # A check quotes the line as written; the normalized line stands in if the paste splits differently.
+    written = raw_text.splitlines()
+    line_text = {number: (written[number - 1] if len(written) == len(text.split('\n')) else ln).strip()
+                 for number, ln in numbered}
 
     # A report title can precede the date/store header. Prefer literal source facts.
     header_lines = [ln for ln in lines if re.fullmatch(
@@ -2034,7 +2053,9 @@ def parse_daily_report():
             continue
         det = _detect_section_type(s, section_aliases)
         if det is not None:
-            boundaries.append((i, det[0], s, det[1]))
+            # A bare "入库" is answered as the heading "入库:", the form a section choice is saved under.
+            heading = s + ':' if det[0] == 'unknown' and not s.endswith((':', '：')) else s
+            boundaries.append((i, det[0], heading, det[1]))
 
     boundary_info = {bi: (bsec, bhdr, binline) for bi, bsec, bhdr, binline in boundaries}
 
@@ -2183,11 +2204,7 @@ def parse_daily_report():
             item[shown] = on_display
             raw_items.append(item)
 
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if not s or i in skipped_lines:
-            continue
-
+    def _read_line(i: int, s: str) -> None:
         if i in boundary_info:
             bsec, bhdr, binline = boundary_info[i]
             if bsec == 'unknown' and bhdr not in unknown_sections:
@@ -2200,22 +2217,45 @@ def parse_daily_report():
                     _parse_content(binline, 'pos', hdr=bhdr)
                 elif bsec != 'skip':
                     _parse_content(binline, bsec)
-            continue
+            return
 
         sec, hdr = section_at(i)
 
         if sec == 'skip':
-            continue
+            return
         if sec == 'cash_total':
             _capture_cash_total(s)
-            continue
+            return
         if sec == 'unknown':
             # Parse tentatively; mark as unknown_header so frontend can reclassify
             _parse_content(s, 'pos', hdr=hdr)
-            continue
+            return
 
         # Normal section: split on comma, parse each token individually
         _parse_content(s, sec)
+
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s or i in skipped_lines:
+            continue
+        items_before, errors_before = len(raw_items), len(metadata_errors)
+        _read_line(i, s)
+        # Everything this line produced names its line in the paste.
+        for item in raw_items[items_before:]:
+            item['line'] = line_numbers[i]
+        metadata_errors[errors_before:] = [f'第{line_numbers[i]}行 Line {line_numbers[i]}: {error}'
+                                           for error in metadata_errors[errors_before:]]
+
+    # Format checks (owner, 2026-11-06): anything written so that it may move stock wrongly, by its line.
+    header_at = next((line_numbers[i] for i, ln in enumerate(lines) if ln in header_lines), None)
+    first_line = next(((number, ln.strip()) for number, ln in numbered if ln.strip()), None)
+    format_checks = report_checks.header_checks(header_at, detected_date, detected_store, page_date, page_store,
+                                                first_line=first_line)
+    format_checks += report_checks.text_checks(
+        [(line_numbers[bi], bsec, bhdr) for bi, bsec, bhdr, _ in boundaries],
+        [item for item in raw_items if not item.get('unknown_header')],
+        [item for item in raw_items if item.get('unknown_header')],
+        handled={line for check in format_checks for line in check['lines']})
 
     if llm_result:
         parser_engine       = 'llm'
@@ -2268,7 +2308,8 @@ def parse_daily_report():
     return _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                          cash_total_reported, parser_engine, multi_day,
                          aliases, all_products, cash_expected_reported, metadata_errors, report_notes,
-                         report_picks, live, designs, resolved_store[0] if resolved_store else None)
+                         report_picks, live, designs, resolved_store[0] if resolved_store else None,
+                         format_checks=format_checks, line_text=line_text)
 
 
 _GENERIC_WORDS = {'series', 'figure', 'figures', 'figurine', 'mini', 'blind', 'box', 'plush', 'vinyl', 'doll',
@@ -2334,7 +2375,7 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                   cash_total_reported, parser_engine, multi_day,
                   aliases, all_products, cash_expected_reported=None,
                   metadata_errors=None, report_notes=None, report_picks=None, live=False, designs=None,
-                  store_id=None):
+                  store_id=None, format_checks=None, line_text=None):
     """Layers 4+5 — shared by both engines: alias lookup + fuzzy match +
     bucketing, stock plausibility flags, and the response payload."""
     confirmed: list[dict] = []
@@ -2450,6 +2491,15 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                 if pid_c in instore and (it.get('qty') or 0) > instore[pid_c]:
                     it['warn_stock'] = {'instore': instore[pid_c]}
 
+    # A live store's stock lines, by the products this paste matched.
+    known = report_checks.product_checks(get_db(), confirmed + review, failed) if live else []
+    # Where a product check points at the same lines as a text check, it says it better.
+    same = {tuple(check['lines']) for check in known}
+    checks = [check for check in format_checks or [] if tuple(check['lines']) not in same] + known
+    for check in checks:
+        check['text'] = [(line_text or {}).get(number, '') for number in check['lines']]
+    checks.sort(key=lambda check: (check['lines'] or [0])[0])
+
     return jsonify({
         'detected_date':       detected_date,
         'store':               store_code,
@@ -2461,6 +2511,8 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         'cash_expected_reported': cash_expected_reported,
         **(report_notes or {key: [] for key in _REPORT_NOTE_FIELDS}),
         'metadata_errors': metadata_errors or [],
+        # What may be written wrong, by line: 'fix' most likely is, 'check' may be meant. Never blocks the save.
+        'format_checks':       checks,
         'parser_engine':       parser_engine,
         'multi_day':           multi_day,
         # Which stock rules the lines were read by; submitting them to a store in the other mode is refused.

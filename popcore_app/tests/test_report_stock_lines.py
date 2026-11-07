@@ -509,3 +509,27 @@ class ReportStockLineTests(IsolatedApiCase):
                          {'raw_name': 'Sp不想毛绒', 'box_size': 12, 'qty': 1})
         line = _parse_token('萌粒 快乐开涮:20*2➕19', 'stock_in')
         self.assertEqual((line['raw_name'], line['box_size'], line['qty'], line['loose_qty']), ('萌粒 快乐开涮', 20, 2, 19))
+
+    def test_format_checks_name_set_sizes_and_display_sales_by_their_line(self):
+        # Owner, 2026-11-06: flag what may move stock wrongly, and say where.
+        self.build_catalogue(('2026-10-31',))
+        text = report_text('2026-10-31')
+        line = next(number for number, written in enumerate(text.split('\n'), 1) if 'SA dream 12*2' in written)
+
+        def at(parsed, lines):
+            return [check for check in parsed['format_checks'] if check['lines'] == lines]
+
+        wrong_size = at(self.parse(text.replace('SA dream 12*2', 'SA dream 6*2')), [line])
+        self.assertEqual([(check['level'], check['section']) for check in wrong_size], [('fix', '出库入店')])
+        self.assertIn('POPCORE 记', wrong_size[0]['problem'])
+        self.assertEqual(wrong_size[0]['text'], ['SA dream 6*2'])
+        no_size = at(self.parse(text.replace('SA dream 12*2', 'SA dream*2')), [line])
+        self.assertEqual([check['level'] for check in no_size], ['check'])
+        self.assertIn('2 个散盒', no_size[0]['problem'])
+        self.assertEqual(at(self.parse(text), [line]), [])
+
+        parsed = self.parse('2026.10.31 DT\n卡机汇总：\nSA dream*1\n卖display：\nSA dream*2\nzzz没有这个*1')
+        more = at(parsed, [3, 5])
+        self.assertEqual([check['level'] for check in more], ['check'])
+        self.assertIn('Display sold 2, sales list 1', more[0]['problem'])
+        self.assertIn('没有同名的销售', at(parsed, [6])[0]['problem'])
