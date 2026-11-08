@@ -110,7 +110,7 @@ export default function WebsitePage() {
         <ListRow label="日报" title={status.report.length ? status.report.map(reportText).join(' · ') : 'No live store yet'}
           meta={`${status.report.length ? `Sales in up to ${status.report.map(row => `${row.reported_through ?? '—'}${status.report.length > 1 ? ` (${row.store})` : ''}`).join(', ')}. ` : ''}${preview?.shop_hold.items ?`${preview.shop_hold.units} units of ${preview.shop_hold.items} items held back for the shop. ` : preview ? 'Nothing held back for the shop. ' : ''}Until a shop day’s report is in, each item holds back what the shop sold on its best day of the last 30 reports; a shop day starts at ${status.shop_opens}.`} />
         <ListRow label="产品" title={status.refreshed_at ? `Read ${when(status.refreshed_at)}` : 'Not read yet'}
-          meta={preview ? `${preview.items} linked to POPCORE · ${preview.unknown_id} POPCORE ID not in POPCORE (shown sold out) · ${preview.other_sku + preview.no_sku} left as they are` : undefined} />
+          meta={preview ? `${preview.items} linked to POPCORE · ${preview.unknown_id} POPCORE ID not in POPCORE (shown sold out)${preview.shared_id ? ` · ${preview.shared_id} share a POPCORE ID (shown sold out)` : ''} · ${preview.no_id} without a POPCORE ID, left as they are` : undefined} />
         <ListRow label="同步" title={status.enabled ? `On since ${when(status.switched_at)}` : 'Off: nothing is written to the website'}
           meta={`Last run ${when(status.last_run)} · Last write ${when(status.last_push_at)}${status.last_push_count ? ` (${status.last_push_count})` : ''}${status.push_errors ? ` · ${status.push_errors} refused by the website` : ''}`} />
       </>}
@@ -123,24 +123,25 @@ export default function WebsitePage() {
         {' '}{preview.sold_out} sell out, {preview.low_stock} have 1–2 left, and {preview.pickup_changes} products change their pickup stores.
         Back-in-stock writes email their followers; low stock emails the website’s low-stock recipient unless it is off.
       </p>}
-      {changes.map(row => <ListRow key={row.wc_id} label={row.sku} title={row.name}
+      {changes.map(row => <ListRow key={row.wc_id} label={row.popcore_id} title={row.name}
         meta={`网站 Website ${stockText(row)} → POPCORE ${row.quantity}`} />)}
       {preview.changes.length > 20 && <Button type="link" onClick={() => setShowAll(value => !value)}>
         {showAll ? 'Show fewer' : `Show all ${preview.changes.length}`}</Button>}
       {preview.unknown_ids.length > 0 && <details className="pc-website-unknown">
-        <summary>{preview.unknown_ids.length} website items carry a POPCORE ID that POPCORE does not have, so they show sold out. Fix the SKU on the website, or add the item in POPCORE.</summary>
-        {preview.unknown_ids.map(row => <ListRow key={row.wc_id} label={row.sku} title={row.name} />)}
+        <summary>{preview.unknown_ids.length} website items carry a POPCORE ID that POPCORE does not have{preview.shared_id ? ', or one that another item also carries' : ''}, so they show sold out. Fix the POPCORE ID on the website, or add the item in POPCORE.</summary>
+        {preview.unknown_ids.map(row => <ListRow key={row.wc_id} label={row.popcore_id} title={row.name}
+          meta={row.shared ? '编号重复 · Another website item carries this POPCORE ID too' : '不在 POPCORE · Not in POPCORE'} />)}
       </details>}
-      {preview.other_skus.length + preview.no_sku > 0 && <details className="pc-website-unknown">
-        <summary>{preview.other_skus.length + preview.no_sku} website items have no POPCORE ID as their SKU; POPCORE leaves them as they are</summary>
-        {preview.other_skus.map(row => <ListRow key={row.wc_id} label={row.sku} title={row.name} />)}
+      {preview.no_ids.length > 0 && <details className="pc-website-unknown">
+        <summary>{preview.no_id} website items have no POPCORE ID; POPCORE leaves them as they are</summary>
+        {preview.no_ids.map(row => <ListRow key={row.wc_id} title={row.name} meta={row.sku ? `SKU ${row.sku}` : undefined} />)}
       </details>}
     </Panel>}
 
     <Panel zh="待处理网站订单" en="Web orders to review" count={waiting.length} label="Web orders to review" tone={waiting.length ? 'warn' : 'ok'}>
       {waiting.length === 0 ? <p className="pc-quiet">没有 · Every paid web order came out of stock.</p>
         : waiting.map(order => <ListRow key={order.wc_order_id} label={`#${order.number}`}
-          title={order.lines.map(line => `${line.sku || line.name} × ${line.quantity}`).join(', ')}
+          title={order.lines.map(line => `${line.popcore_id || line.name} × ${line.quantity}`).join(', ')}
           meta={[order.state === 'cancel_failed' ? `取消未退回 · Cancelled on the website, not yet back in stock (${order.problem})`
             : problemText[order.problem || ''] || order.problem, when(order.paid_at), money(order.total_cents)].filter(Boolean).join(' · ')}
           trailing={<span className="pc-row-actions">
@@ -156,7 +157,7 @@ export default function WebsitePage() {
     <Panel zh="网站订单" en="Web orders" count={status.orders.recorded} label="Web orders" tone="ok">
       {recent.length === 0 ? <p className="pc-quiet">No web orders yet.</p>
         : recent.map(order => <ListRow key={order.wc_order_id} label={`#${order.number}`}
-          title={order.lines.map(line => `${line.sku || line.name} × ${line.quantity}`).join(', ')}
+          title={order.lines.map(line => `${line.popcore_id || line.name} × ${line.quantity}`).join(', ')}
           meta={[{ recorded: `出库 ${order.store_code}`, cancelled: '已取消 Cancelled', dismissed: `已处理 Settled: ${order.dismiss_reason}`, new: '新 New' }[order.state as string],
             order.refunded ? '已退款 Refunded on the website' : null, order.fulfilment, when(order.paid_at), money(order.total_cents)].filter(Boolean).join(' · ')} />)}
     </Panel>

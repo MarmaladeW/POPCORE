@@ -1,6 +1,6 @@
 """网站 Website sync in a real browser against the real Flask app, a disposable database and a fake
-WooCommerce (owner, 2026-11-01): an admin reads the website's products, sees what turning on would
-change, turns it on; a web order POPCORE cannot fill waits for review and a manager settles it;
+WooCommerce (owner, 2026-11-01): an admin reads the website's products (linked by their POPCORE ID
+field, never by SKU), sees what turning on would change, turns it on; a web order POPCORE cannot fill waits for review and a manager settles it;
 managers cannot turn the sync on and staff cannot open the page."""
 import asyncio
 import re
@@ -59,13 +59,15 @@ async def run(browser, width):
         await expect(page.get_by_text('Reading the website’s products', exact=False)).to_be_visible()
         fixture.run_sync()
         await page.reload()
-        await expect(sync.get_by_text('5 linked to POPCORE · 1 POPCORE ID not in POPCORE (shown sold out) · 2 left as they are')).to_be_visible()
+        await expect(sync.get_by_text('5 linked to POPCORE · 1 POPCORE ID not in POPCORE (shown sold out) · 3 without a POPCORE ID, left as they are')).to_be_visible()
         # No report since the opening count, and no sales history to hold back yet.
         await expect(sync.get_by_text('Sales in up to 2026-10-31.', exact=False)).to_be_visible()
         await expect(sync.get_by_text('Nothing held back for the shop.', exact=False)).to_be_visible()
         changes = page.get_by_role('region', name='Changes')
         await expect(changes.get_by_text('2 sell out', exact=False)).to_be_visible()
         await expect(changes.get_by_text('网站 Website 有货 in stock → POPCORE 14')).to_be_visible()
+        await changes.get_by_text('3 website items have no POPCORE ID', exact=False).click()
+        await expect(changes.get_by_text('SKU 6941848289407')).to_be_visible()  # a barcode, shown to find the item
         await fits(page, f'preview-{width}.png')
         assert fixture.woo.writes == []
 
@@ -79,8 +81,8 @@ async def run(browser, width):
             website_sync.set_state(con, 'orders_after', _ago(60))
         fixture.run_sync()
         assert fixture.woo.item(11)['stock_quantity'] == 14
-        fixture.woo.order(601, [('PM0100-SET', 3)])
-        fixture.woo.order(602, [('PM0200', 1)], modified=_ago(0))
+        fixture.woo.order(601, [(12, 3)])  # the Whole Set option
+        fixture.woo.order(602, [(20, 1)], modified=_ago(0))
         fixture.run_sync()
         await page.reload()
         review = page.get_by_role('region', name='Web orders to review')

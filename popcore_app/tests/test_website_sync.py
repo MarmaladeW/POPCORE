@@ -1,5 +1,6 @@
 """popcore.ca takes its stock from POPCORE (owner, 2026-10-25 and 2026-11-01): website items are
-linked by SKU, the live stores' shelves set the website number, paid web orders take their items
+linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07), the live stores'
+shelves set the website number, paid web orders take their items
 out of the filling store's back stock first and stay out of its closing, a cancel puts them back,
 and nothing is written to the website before an admin turns the sync on."""
 import io
@@ -40,41 +41,64 @@ class Response:
         return self._data
 
 
+def _meta(popcore_id):
+    """REST meta_data as WooCommerce returns it: the POPCORE ID is its own field, written by popcore-catalog."""
+    return [{'id': 1, 'key': '_popcore_id', 'value': popcore_id}] if popcore_id else []
+
+
 class FakeWoo:
-    """Just enough of the WooCommerce REST API: products, variations, batch updates and orders."""
+    """Just enough of the WooCommerce REST API: products, variations, batch updates and orders. As on
+    popcore.ca, an item's POPCORE ID is in meta_data and its SKU is a barcode or empty."""
 
     def __init__(self):
         self.products = {}
         self.variations = {}  # parent id -> {id: variation}
         self.orders = {}
         self.writes = []
+        self.every_write = []  # never cleared
         self.refuse = False
 
-    def product(self, wc_id, sku, *, kind='simple', in_stock=True, pickup=None, name=None):
-        self.products[wc_id] = {'id': wc_id, 'type': kind, 'sku': sku, 'name': name or sku or f'Item {wc_id}',
-                                'status': 'publish', 'manage_stock': False, 'stock_quantity': None,
-                                'stock_status': 'instock' if in_stock else 'outofstock',
-                                'meta_data': [] if pickup is None else [{'key': '_popcore_pickup_stores', 'value': pickup}]}
+    def product(self, wc_id, popcore_id='', *, sku='', kind='simple', in_stock=True, pickup=None, name=None,
+                status='publish'):
+        meta = _meta(popcore_id) + ([] if pickup is None else [{'key': '_popcore_pickup_stores', 'value': pickup}])
+        self.products[wc_id] = {'id': wc_id, 'type': kind, 'sku': sku, 'name': name or popcore_id or f'Item {wc_id}',
+                                'status': status, 'manage_stock': False, 'stock_quantity': None,
+                                'stock_status': 'instock' if in_stock else 'outofstock', 'meta_data': meta}
         if kind == 'variable':
             self.variations[wc_id] = {}
 
-    def variation(self, parent, wc_id, sku, option):
-        self.variations[parent][wc_id] = {'id': wc_id, 'sku': sku, 'status': 'publish', 'manage_stock': False,
-                                          'stock_quantity': None, 'stock_status': 'instock',
+    def variation(self, parent, wc_id, popcore_id, option, *, sku='', status='publish'):
+        self.variations[parent][wc_id] = {'id': wc_id, 'sku': sku, 'status': status, 'manage_stock': False,
+                                          'stock_quantity': None, 'stock_status': 'instock', 'meta_data': _meta(popcore_id),
                                           'attributes': [{'name': 'Size', 'option': option}]}
 
+    def set_id(self, wc_id, popcore_id):
+        """The website edits an item's POPCORE ID ('' removes it)."""
+        item = self.item(wc_id)
+        item['meta_data'] = [meta for meta in item['meta_data'] if meta['key'] != '_popcore_id'] + _meta(popcore_id)
+
+    def parent_of(self, wc_id):
+        return next((parent for parent, variations in self.variations.items() if wc_id in variations), None)
+
     def order(self, order_id, lines, *, status='processing', paid=None, modified=None, pickup=None):
+        """lines: (website item id, quantity). A line names its product and variation, and carries the
+        item's SKU (a barcode), as WooCommerce's line_items do."""
         paid = paid or _ago(1)
         meta = [{'key': '_pcc_fulfillment_type', 'value': 'pickup' if pickup else 'delivery'}]
         if pickup:
             meta.append({'key': '_popcore_pickup_store_id', 'value': pickup})
+        line_items = []
+        for wc_id, quantity in lines:
+            parent, item = self.parent_of(wc_id), self.item(wc_id) or {}
+            line_items.append({'sku': item.get('sku', ''), 'name': item.get('name') or f'Item {wc_id}',
+                               'quantity': quantity, 'total': '20.00', 'product_id': parent or wc_id,
+                               'variation_id': wc_id if parent else 0, 'meta_data': []})
         self.orders[order_id] = {
             'id': order_id, 'number': str(order_id), 'status': status, 'date_paid_gmt': paid,
             'date_modified_gmt': modified or paid, 'total': '45.20', 'total_tax': '5.20',
             'payment_method': 'stripe', 'payment_method_title': 'Credit Card (Stripe)', 'transaction_id': 'pi_123',
             'billing': {'email': 'someone@example.com', 'first_name': 'Private'}, 'meta_data': meta,
-            'line_items': [{'sku': sku, 'name': sku, 'quantity': quantity, 'total': '20.00', 'product_id': 1,
-                            'variation_id': 0} for sku, quantity in lines]}
+            'line_items': line_items}
 
     def item(self, wc_id):
         if wc_id in self.products:
@@ -90,6 +114,13 @@ class FakeWoo:
         path = urlsplit(url).path.removeprefix('/wp-json/wc/v3')
         params = params or {}
         if method == 'GET':
+            parts = path.strip('/').split('/')
+            if len(parts) in (2, 4) and parts[0] == 'products':  # one product, or one variation
+                item = (self.products.get(int(parts[1])) if len(parts) == 2
+                        else self.variations.get(int(parts[1]), {}).get(int(parts[3])))
+                if item is None:
+                    return Response(404, {'code': 'woocommerce_rest_product_invalid_id', 'message': 'Invalid ID.'})
+                return Response(200, dict(item))
             if path == '/products':
                 rows = list(self.products.values())
             elif path.startswith('/products/') and path.endswith('/variations'):
@@ -108,6 +139,7 @@ class FakeWoo:
             results = []
             for update in json['update']:
                 self.writes.append((path, dict(update)))
+                self.every_write.append((path, dict(update)))
                 item = self.item(update['id'])
                 if item is None:
                     results.append({'id': 0, 'error': {'message': 'Invalid ID.'}})
@@ -152,15 +184,17 @@ class WebsiteSyncTests(IsolatedApiCase):
                           '--business-date', LIVE_DATE, '--actor-sub', 'auth0|admin',
                           '--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db')])
         self.woo = FakeWoo()
-        self.woo.product(10, '', kind='variable', name='Echo')
-        self.woo.variation(10, 11, 'PM0100', 'Single Box')
+        self.woo.product(10, kind='variable', name='Echo')  # a variable parent holds no ID
+        self.woo.variation(10, 11, 'PM0100', 'Single Box', sku='6941848263001')
         self.woo.variation(10, 12, 'PM0100-SET', 'Whole Set')
-        self.woo.product(20, 'PM0200', pickup=['mk'])
+        self.woo.product(20, 'PM0200', sku='6941848263018', pickup=['mk'])
         self.woo.product(30, 'PM0100-03', in_stock=False)
-        self.woo.product(40, '6941848289407')  # a barcode, not a POPCORE ID: left alone
-        self.woo.product(50, '')               # no SKU: left alone
+        self.woo.product(40, sku='6941848289407', name='Gift card')  # a barcode and no POPCORE ID: left alone
+        self.woo.product(50, name='Tote bag')                       # nothing at all: left alone
         self.woo.product(60, 'DR0001')         # only MK has it, and MK is not live
         self.woo.product(70, 'PM0100-07')      # a POPCORE ID POPCORE does not have: none in stock
+        # A SKU shaped like a POPCORE ID is never read as one: no POPCORE ID, left alone.
+        self.woo.product(80, sku='PM0200', name='Bear 吊卡 old listing')
         env = patch.dict('os.environ', ENV)
         env.start()
         self.addCleanup(env.stop)
@@ -212,16 +246,17 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.run_sync()
         self.assertEqual(self.woo.writes, [])
         preview = self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
-        self.assertEqual((preview['items'], preview['unknown_id'], preview['other_sku'], preview['no_sku']), (5, 1, 1, 1))
-        self.assertEqual([row['sku'] for row in preview['unknown_ids']], ['PM0100-07'])
-        self.assertEqual([row['sku'] for row in preview['other_skus']], ['6941848289407'])
-        wanted = {change['sku']: change['quantity'] for change in preview['changes']}
+        self.assertEqual((preview['items'], preview['unknown_id'], preview['shared_id'], preview['no_id']), (5, 1, 0, 3))
+        self.assertEqual([(row['popcore_id'], row['shared']) for row in preview['unknown_ids']], [('PM0100-07', False)])
+        self.assertEqual([(row['wc_id'], row['sku']) for row in preview['no_ids']],
+                         [(80, 'PM0200'), (40, '6941848289407'), (50, '')])
+        wanted = {change['popcore_id']: change['quantity'] for change in preview['changes']}
         # Floor and upstairs, never display; MK is not live, so its products show none.
         self.assertEqual(wanted, {'PM0100': 14, 'PM0100-SET': 2, 'PM0200': 4, 'PM0100-03': 0, 'DR0001': 0,
                                   'PM0100-07': 0})
         self.assertEqual(preview['back_in_stock'], 0)
         self.assertEqual(preview['sold_out'], 2)  # DR0001 and PM0100-07 are in stock on the website today
-        self.assertEqual({row['sku']: row['wanted'] for row in preview['pickup']},
+        self.assertEqual({row['popcore_id']: row['wanted'] for row in preview['pickup']},
                          {'': ['dt'], 'PM0200': ['dt']})
         self.assertEqual(self.client.post('/api/website/switch', json={'on': True},
                                           headers=self.headers('manager')).status_code, 403)
@@ -242,6 +277,11 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.assertEqual(self.woo.item(70)['stock_quantity'], 0)
         self.assertFalse(self.woo.item(40)['manage_stock'])
         self.assertFalse(self.woo.item(50)['manage_stock'])
+        self.assertFalse(self.woo.item(80)['manage_stock'])
+        # Only items with a POPCORE ID are written, and never their SKU (it holds barcodes).
+        self.assertEqual({update['id'] for _, update in self.woo.every_write}, {10, 11, 12, 20, 30, 60, 70})
+        self.assertFalse(any('sku' in update for _, update in self.woo.every_write))
+        self.assertEqual(self.woo.item(11)['sku'], '6941848263001')
         self.assertEqual(website_sync._pickup(self.woo.item(20)['meta_data']), ['dt'])
         self.assertEqual(website_sync._pickup(self.woo.item(10)['meta_data']), ['dt'])
         # A sale in the shop changes one number, and only that one is written.
@@ -257,11 +297,13 @@ class WebsiteSyncTests(IsolatedApiCase):
 
     def test_a_paid_order_takes_back_stock_first_and_stays_out_of_closing(self):
         self.turn_on()
-        self.woo.order(500, [('PM0100', 6), ('PM0200', 2)])
+        self.woo.order(500, [(11, 6), (20, 2)])
         self.woo.products[20]['stock_quantity'] = 2  # the website lowered its own number at payment
         self.run_sync()
         order = self.order_row(500)
         self.assertEqual((order['state'], order['store_id'], order['problem']), ('recorded', self.dt, None))
+        self.assertEqual([(line['popcore_id'], line['product_id']) for line in json.loads(order['lines'])],
+                         [('PM0100', self.box), ('PM0200', self.item)])
         self.assertNotIn('someone@example.com', json.dumps(order))
         # Upstairs first (4 boxes), the floor for the rest.
         self.assertEqual((self.balance(self.box, 'upstairs'), self.balance(self.box, 'floor')), (0, 8))
@@ -290,8 +332,8 @@ class WebsiteSyncTests(IsolatedApiCase):
 
     def test_an_order_popcore_cannot_fill_waits_and_holds_its_units(self):
         self.turn_on()
-        self.woo.order(501, [('PM0100-SET', 3)])   # only 2 sets
-        self.woo.order(502, [('NOT-A-SKU', 1), ('PM0200', 1)], modified=_ago(0))
+        self.woo.order(501, [(12, 3)])   # only 2 sets
+        self.woo.order(502, [(50, 1), (20, 1)], modified=_ago(0))  # the tote bag has no POPCORE ID
         self.run_sync()
         self.assertEqual((self.order_row(501)['state'], self.order_row(501)['problem']), ('needs_review', 'not_enough_stock'))
         self.assertEqual((self.order_row(502)['state'], self.order_row(502)['problem']), ('needs_review', 'unknown_item'))
@@ -308,26 +350,93 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.assertEqual(response.get_json()['state'], 'dismissed')
         self.run_sync()
         self.assertEqual(self.woo.item(12)['stock_quantity'], 2)
-        # The unknown item gets a POPCORE product; Try again records the order.
+        # The website gives the item a POPCORE ID: Try again reads it from that item, without waiting
+        # for the next catalogue read, and links the line (any case).
         with closing(self.connect()) as con:
-            con.execute("UPDATE products SET sku='NOT-A-SKU' WHERE id=?", (self.mk_only,))
+            tote = self._product(con, 'DR0002', 'Tote bag', 'ordinary', 'piece')
             con.commit()
+        self.woo.set_id(50, 'dr0002')
         self.assertEqual(self.client.post('/api/website/orders/502/retry', headers=self.headers('manager')).get_json(),
-                         {'state': 'needs_review'})  # MK's product: DT has none
-        self.assertEqual(self.order_row(502)['problem'], 'not_enough_stock')
+                         {'state': 'needs_review'})  # DT has none of it
+        order = self.order_row(502)
+        self.assertEqual(order['problem'], 'not_enough_stock')
+        self.assertEqual([(line['popcore_id'], line['product_id']) for line in json.loads(order['lines'])],
+                         [('dr0002', tote), ('PM0200', self.item)])
 
     def test_mk_pickup_is_filled_from_dt_until_mk_goes_live(self):
         self.turn_on()
-        self.woo.order(503, [('PM0200', 1)], pickup='mk')
+        self.woo.order(503, [(20, 1)], pickup='mk')
         self.run_sync()
         self.assertEqual((self.order_row(503)['state'], self.order_row(503)['store_id']), ('recorded', self.dt))
 
     def test_orders_paid_before_the_switch_are_ignored(self):
         self.turn_on()
-        self.woo.order(504, [('PM0200', 1)], paid=_ago(120), modified=_ago(1))
+        self.woo.order(504, [(20, 1)], paid=_ago(120), modified=_ago(1))
         self.run_sync()
         self.assertIsNone(self.order_row(504))
         self.assertEqual(self.balance(self.item, 'floor'), 3)
+
+    def test_an_order_for_an_item_added_since_the_last_read_reads_its_id(self):
+        self.turn_on()
+        # A new listing takes over PM0200 on the website after POPCORE last read the catalogue.
+        self.woo.set_id(20, '')
+        self.woo.product(90, 'PM0200', sku='6941848263025', name='Bear 吊卡')
+        self.woo.order(505, [(90, 1)])
+        self.woo.order(506, [(999, 1)], modified=_ago(0))  # deleted from the website since
+        self.run_sync()
+        order = self.order_row(505)
+        self.assertEqual((order['state'], json.loads(order['lines'])[0]['popcore_id']), ('recorded', 'PM0200'))
+        self.assertEqual((self.balance(self.item, 'upstairs'), self.balance(self.item, 'floor')), (0, 3))
+        self.assertEqual((self.order_row(506)['state'], self.order_row(506)['problem']), ('needs_review', 'unknown_item'))
+        self.assertIsNone(self.state('last_error'))
+
+    def test_ids_link_in_any_case_and_an_id_on_two_items_links_neither(self):
+        self.woo.set_id(20, ' pm0200 ')             # trimmed, and matched in any case
+        self.woo.set_id(10, 'PM0100')               # a variable parent's stray ID is never read
+        self.woo.product(95, 'pm0100-03', name='Echo Rain again')  # the same ID as item 30
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        preview = self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+        self.assertEqual((preview['items'], preview['unknown_id'], preview['shared_id']), (4, 1, 2))
+        self.assertEqual([(row['wc_id'], row['shared']) for row in preview['unknown_ids']],
+                         [(30, True), (95, True), (70, False)])
+        wanted = {change['wc_id']: change['quantity'] for change in preview['changes']}
+        self.assertEqual((wanted[11], wanted[20], wanted[30], wanted[95]), (14, 4, 0, 0))
+        with closing(self.connect()) as con:
+            rows = {row[0]: (row[1], row[2]) for row in con.execute(
+                'SELECT wc_id, popcore_id, product_id FROM website_items WHERE wc_id IN (10, 20, 30, 95)')}
+        self.assertEqual(rows, {10: ('', None), 20: ('pm0200', self.item), 30: ('PM0100-03', None),
+                                95: ('pm0100-03', None)})
+
+    def test_drafts_and_disabled_options_with_an_id_are_kept_in_step_too(self):
+        """WooCommerce's REST API lists drafts and disabled (private) options with status=any. Their
+        numbers are written like any item's, so they are right the moment the website publishes them."""
+        self.woo.products[20].update(status='draft')
+        self.woo.products[20]['meta_data'].append({'key': '_popcore_source', 'value': 'clover-2026-11'})
+        self.woo.variations[10][12].update(status='private')
+        self.turn_on()
+        self.assertEqual((self.woo.item(20)['stock_quantity'], self.woo.item(12)['stock_quantity']), (4, 2))
+        self.assertEqual((self.woo.item(20)['status'], self.woo.item(12)['status']), ('draft', 'private'))
+
+    def test_links_made_by_sku_are_dropped_on_upgrade(self):
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        with closing(self.connect()) as con:  # the table as the SKU link left it
+            con.execute('ALTER TABLE website_items DROP COLUMN popcore_id')
+            con.execute("DELETE FROM _migrations WHERE name='website_items_popcore_id'")
+            con.commit()
+        db.migrate_db()
+        db.migrate_db()  # safe to re-run
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM website_items').fetchone()[0], 0)
+            self.assertIn('popcore_id', {row[1] for row in con.execute('PRAGMA table_info(website_items)')})
+        # The products must be read again before the preview or turning on.
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).status_code, 409)
+        self.assertEqual(self.client.post('/api/website/switch', json={'on': True},
+                                          headers=self.headers('admin')).status_code, 409)
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()['items'], 5)
 
     def test_keep_back_and_opened_sets_lower_the_website_number(self):
         with closing(self.connect()) as con:
@@ -361,9 +470,9 @@ class WebsiteSyncTests(IsolatedApiCase):
                     patch.dict('os.environ', {'WEBSITE_SHOP_OPENS': opens} if opens else {}):
                 preview = self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
                 status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
-            numbers = {change['sku']: change['quantity'] for change in preview['changes']
-                       if change['sku'] in ('PM0100', 'PM0100-SET', 'PM0200')}
-            pickup = {row['sku']: row['wanted'] for row in preview['pickup']}.get('PM0200')
+            numbers = {change['popcore_id']: change['quantity'] for change in preview['changes']
+                       if change['popcore_id'] in ('PM0100', 'PM0100-SET', 'PM0200')}
+            pickup = {row['popcore_id']: row['wanted'] for row in preview['pickup']}.get('PM0200')
             return numbers, pickup, preview['shop_hold'], status['report']
 
         # The opening count holds everything before go-live; the shop has not opened yet.
