@@ -2109,6 +2109,7 @@ def _get_migrations():
         ('report_name_picks',                          _migration_report_name_picks),
         ('add_regular_since_to_employees',             _migration_add_regular_since_to_employees),
         ('add_is_training_to_employees',               _migration_add_is_training_to_employees),
+        ('website_items_popcore_id',                   _migration_website_items_popcore_id),
     ]
 
 
@@ -2155,7 +2156,8 @@ def _migration_report_stock_issues(con, cur):
 
 def _migration_website_sync(con, cur):
     # popcore.ca takes its stock from POPCORE (owner, 2026-10-25 and 2026-11-01); see website_sync.py.
-    # website_items: the website's products and variations as last read or written, linked by SKU.
+    # website_items: the website's products and variations as last read or written (linked by POPCORE ID
+    # since website_items_popcore_id).
     cur.execute("""CREATE TABLE IF NOT EXISTS website_items (
         wc_id          INTEGER PRIMARY KEY,
         parent_id      INTEGER,
@@ -2205,6 +2207,18 @@ def _migration_website_sync(con, cur):
         value TEXT
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_sync')")
+
+
+def _migration_website_items_popcore_id(con, cur):
+    # The website keeps each item's POPCORE ID in its own field, _popcore_id, and its SKU holds barcodes
+    # (owner, 2026-11-05 and 2026-11-07), so website items link by that field, never by SKU. The table
+    # is only the last catalogue read: the links made by SKU are dropped, and the next read fills it.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_items)')}
+    if 'popcore_id' not in columns:
+        cur.execute("ALTER TABLE website_items ADD COLUMN popcore_id TEXT NOT NULL DEFAULT ''")
+    cur.execute('DELETE FROM website_items')
+    cur.execute("DELETE FROM website_state WHERE key='refreshed_at'")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_items_popcore_id')")
 
 
 def _migration_inventory_viewers(con, cur):

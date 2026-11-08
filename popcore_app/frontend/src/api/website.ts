@@ -1,7 +1,8 @@
 import client from './client'
 
 // popcore.ca takes its stock from POPCORE; paid web orders take their items out of stock
-// (owner, 2026-11-01). See docs/website-sync.md.
+// (owner, 2026-11-01). Website items link by their POPCORE ID field, never by SKU (owner, 2026-11-07).
+// See docs/website-sync.md.
 export interface WebsiteStatus {
   configured: boolean; settings_problem: string | null; url: string | null; keep_back: number | null
   delivery_store: string | null; shop_opens: string | null
@@ -14,28 +15,31 @@ export interface WebsiteStatus {
   orders: { recorded: number; needs_review: number; cancelled: number; dismissed: number }
 }
 export interface WebsiteChange {
-  wc_id: number; parent_id: number | null; sku: string; name: string; product_id: number | null
+  wc_id: number; parent_id: number | null; popcore_id: string; name: string; product_id: number | null
   manage_stock: number; stock_quantity: number | null; stock_status: string | null; quantity: number
 }
 export interface WebsitePreview {
-  items: number; unknown_id: number; other_sku: number; no_sku: number; stock_changes: number; back_in_stock: number
+  // items: linked; unknown_id: a POPCORE ID POPCORE does not have; shared_id: an ID on more than one
+  // website item; no_id: no POPCORE ID, left as they are.
+  items: number; unknown_id: number; shared_id: number; no_id: number; stock_changes: number; back_in_stock: number
   sold_out: number; low_stock: number; pickup_changes: number; changes: WebsiteChange[]
   shop_hold: { items: number; units: number }
-  pickup: Array<{ wc_id: number; name: string; sku: string; pickup: string[]; wanted: string[] }>
-  unknown_ids: Array<{ wc_id: number; parent_id: number | null; sku: string; name: string }>
-  other_skus: Array<{ wc_id: number; parent_id: number | null; sku: string; name: string }>
+  pickup: Array<{ wc_id: number; name: string; popcore_id: string; pickup: string[]; wanted: string[] }>
+  unknown_ids: Array<{ wc_id: number; parent_id: number | null; popcore_id: string; name: string; shared: boolean }>
+  // The website's SKU here is a barcode (or empty), shown only to find the item.
+  no_ids: Array<{ wc_id: number; parent_id: number | null; sku: string; name: string }>
 }
 export type WebsiteOrderState = 'new' | 'recorded' | 'needs_review' | 'cancelled' | 'cancel_failed' | 'dismissed'
 export interface WebsiteOrder {
   wc_order_id: number; number: string; wc_status: string; paid_at: string | null; total_cents: number | null
   payment: string | null; fulfilment: string | null; pickup_store: string | null; store_code: string | null
   state: WebsiteOrderState; problem: string | null; refunded: number; dismiss_reason: string | null
-  lines: Array<{ sku: string; name: string; quantity: number; product_id: number | null }>
+  lines: Array<{ popcore_id?: string; name: string; quantity: number; product_id: number | null }>
 }
 
 export const problemText: Record<string, string> = {
   not_enough_stock: '库存不够 · The store does not have enough. Count or receive it, then try again.',
-  unknown_item: '网站产品未连接 · An item has no POPCORE ID as its SKU on the website.',
+  unknown_item: '网站产品未连接 · An item has no POPCORE ID on the website, or one POPCORE does not have.',
   no_live_store: '没有上线的门店 · No live store can fill it.',
   no_items: '没有产品 · The order has no items.',
   no_store_access: '没有门店权限 · The website has no stock access at this store (Users → Store operations access).',

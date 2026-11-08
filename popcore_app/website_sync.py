@@ -1,11 +1,12 @@
 """POPCORE owns the website's stock (owner, 2026-10-25 and 2026-11-01).
 
 popcore.ca (WooCommerce) takes its stock from POPCORE. Every website product and variation is
-linked by SKU to the POPCORE product with the same SKU: the Single Box variation or a simple
-product carries the POPCORE ID, the Whole Set variation `<ID>-SET` (the sealed set) and a design
-`<ID>-NN` (the confirmed design). An item whose SKU is shaped like a POPCORE ID that POPCORE does
-not have shows sold out, since POPCORE holds none of it (a Whole Set nobody counted as sets).
-Other SKUs (barcodes) and items without one are left alone.
+linked by its POPCORE ID, the website's own field `_popcore_id` (owner, 2026-11-05 and 2026-11-07),
+to the POPCORE product with that ID: the Single Box variation or a simple product carries the
+product's ID, the Whole Set variation `<ID>-SET` (the sealed set) and a design `<ID>-NN` (the
+confirmed design). A variable parent never holds one. The website's SKU holds barcodes: POPCORE
+never reads it as the ID and never writes it. An item whose POPCORE ID POPCORE does not have, or
+whose ID is on more than one item, shows sold out. Items without a POPCORE ID are left alone.
 
 - Stock: the website number is the saleable stock of the live stores' shelves (floor, upstairs,
   warehouse; never display pieces or the claw machine), less boxes kept in opened sets, less what
@@ -29,8 +30,8 @@ last set it. A full reread of the website's catalogue every day catches edits ma
 """
 import json
 import os
-import re
 import sqlite3
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -39,7 +40,6 @@ import requests
 
 import db
 from auth import ROLE_CLAIM
-from blueprints.products import BRAND_CODES
 from goods_operations import _balance
 from inventory_commands import InventoryError, _post_inventory_in_transaction, live_store_ids
 from report_stock import _stock_product, live_since
@@ -56,9 +56,9 @@ SHELF_LOCATIONS = ('floor', 'upstairs', 'warehouse')
 # Web orders are picked from back stock first, so the floor stays as the shop's daily report expects.
 PICK_ORDER = ('upstairs', 'warehouse', 'floor')
 PICKUP_META = '_popcore_pickup_stores'
+ID_META = '_popcore_id'
 # A paid order is one with date_paid; these statuses never take stock.
 NOT_TAKEN = ('pending', 'failed', 'checkout-draft', 'trash')
-POPCORE_ID = re.compile(f"(?:{'|'.join(BRAND_CODES)})[0-9]{{4}}(?:-SET|-[0-9]{{2}})?")
 REFRESH_EVERY = timedelta(hours=20)
 BATCH = 100
 # Report days the shop's best day is taken from.
@@ -169,7 +169,7 @@ def enabled(con):
     return state(con, 'enabled') == '1'
 
 
-# ── The website's catalogue, linked by SKU ──────────────────────────────────
+# ── The website's catalogue, linked by POPCORE ID ───────────────────────────
 
 def _pickup(meta_data):
     for meta in meta_data or ():
@@ -181,21 +181,42 @@ def _pickup(meta_data):
     return []
 
 
-def _product_for_sku(con, sku):
-    if not sku:
+def _popcore_id(meta_data):
+    """The item's POPCORE ID from its REST meta_data, trimmed as the website trims it, or ''."""
+    for meta in meta_data or ():
+        if meta.get('key') == ID_META:
+            value = meta.get('value')
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                return str(value).replace('\ufeff', '').replace('\xa0', ' ').strip()
+            return ''
+    return ''
+
+
+def _product_for_id(con, popcore_id):
+    """The POPCORE product with this POPCORE ID (POPCORE keeps its IDs in products.sku), any case."""
+    if not popcore_id:
         return None
-    row = con.execute('SELECT id FROM products WHERE sku=?', (sku,)).fetchone() or con.execute(
-        'SELECT id FROM products WHERE UPPER(sku)=UPPER(?)', (sku,)).fetchone()
+    row = con.execute('SELECT id FROM products WHERE sku=?', (popcore_id,)).fetchone() or con.execute(
+        'SELECT id FROM products WHERE UPPER(sku)=UPPER(?)', (popcore_id,)).fetchone()
     return row[0] if row else None
 
 
+def _known_id(con, wc_id):
+    """The POPCORE ID the last catalogue read found on a website item, or ''."""
+    row = con.execute("SELECT popcore_id FROM website_items WHERE wc_id=? AND kind != 'variable'",
+                      (wc_id,)).fetchone() if wc_id else None
+    return row[0] if row else ''
+
+
 def refresh_items(con, cfg):
-    """Reread every website product and variation and link each to POPCORE by SKU."""
+    """Reread every website product and variation and link each to POPCORE by its POPCORE ID."""
     products = _all(cfg, '/products', {'status': 'any'})
     items = []
     for product in products:
         kind = product.get('type') if product.get('type') in ('simple', 'variable') else 'other'
         items.append({'wc_id': product['id'], 'parent_id': None, 'kind': kind, 'sku': (product.get('sku') or '').strip(),
+                      # A variable parent never holds an ID; its options do.
+                      'popcore_id': _popcore_id(product.get('meta_data')) if kind != 'variable' else '',
                       'name': product.get('name') or '', 'status': product.get('status') or '',
                       'manage_stock': 1 if product.get('manage_stock') is True else 0,
                       'stock_quantity': product.get('stock_quantity'), 'stock_status': product.get('stock_status'),
@@ -206,20 +227,25 @@ def refresh_items(con, cfg):
             label = ' / '.join(str(attribute.get('option') or '') for attribute in variation.get('attributes') or ())
             items.append({'wc_id': variation['id'], 'parent_id': product['id'], 'kind': 'variation',
                           'sku': (variation.get('sku') or '').strip(),
+                          'popcore_id': _popcore_id(variation.get('meta_data')),
                           'name': f"{product.get('name') or ''} — {label}".strip(' —'),
                           'status': variation.get('status') or '',
                           'manage_stock': 1 if variation.get('manage_stock') is True else 0,
                           'stock_quantity': variation.get('stock_quantity'),
                           'stock_status': variation.get('stock_status'), 'pickup': None})
+    # One ID is on at most one item (owner, 2026-11-05). An ID on two items links neither, since
+    # both would show the same stock: they show sold out until the website is fixed.
+    holders = Counter(item['popcore_id'].upper() for item in items if item['popcore_id'])
     con.execute('BEGIN IMMEDIATE')
     try:
         con.execute('DELETE FROM website_items')
         for item in items:
-            con.execute("""INSERT INTO website_items(wc_id, parent_id, kind, sku, name, status, manage_stock,
+            linked = item['popcore_id'] and holders[item['popcore_id'].upper()] == 1
+            con.execute("""INSERT INTO website_items(wc_id, parent_id, kind, sku, popcore_id, name, status, manage_stock,
                                stock_quantity, stock_status, pickup, product_id)
-                           VALUES (:wc_id, :parent_id, :kind, :sku, :name, :status, :manage_stock,
+                           VALUES (:wc_id, :parent_id, :kind, :sku, :popcore_id, :name, :status, :manage_stock,
                                :stock_quantity, :stock_status, :pickup, :product_id)""",
-                        {**item, 'product_id': _product_for_sku(con, item['sku']) if item['kind'] != 'variable' else None})
+                        {**item, 'product_id': _product_for_id(con, item['popcore_id']) if linked else None})
         set_state(con, 'refreshed_at', _iso(_now()))
         set_state(con, 'refresh_requested', None)
         con.commit()
@@ -318,9 +344,9 @@ def plan(con, cfg):
     """Every linked item's website number and every product's pickup stores, with what changes."""
     stock, held, hold = _shelf_stock(con), _held(con), _shop_hold(con, cfg)
     codes = {row[0]: row[1].lower() for row in con.execute('SELECT id, code FROM stores')}
+    # Every item with a POPCORE ID: one POPCORE does not have (or that is on two items) shows sold out.
     items = [dict(row) for row in con.execute(
-        "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') ORDER BY wc_id")
-        if row['product_id'] is not None or POPCORE_ID.fullmatch(row['sku'].upper())]
+        "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') AND popcore_id != '' ORDER BY wc_id")]
     pickup_by_parent = {}
     for item in items:
         by_store = stock.get(item['product_id'], {}) if item['product_id'] else {}
@@ -333,11 +359,12 @@ def plan(con, cfg):
         if item['quantity'] > 0:
             stores.update(codes[store_id] for store_id, units in shown.items() if units > cfg['keep_back'])
     parents = []
-    for row in con.execute("SELECT wc_id, parent_id, kind, name, sku, pickup FROM website_items WHERE kind IN ('simple', 'variable')"):
+    for row in con.execute("""SELECT wc_id, parent_id, kind, name, popcore_id, pickup FROM website_items
+                              WHERE kind IN ('simple', 'variable')"""):
         if row['wc_id'] not in pickup_by_parent:
             continue
         current, wanted = json.loads(row['pickup'] or '[]'), sorted(pickup_by_parent[row['wc_id']])
-        parents.append({'wc_id': row['wc_id'], 'kind': row['kind'], 'name': row['name'], 'sku': row['sku'],
+        parents.append({'wc_id': row['wc_id'], 'kind': row['kind'], 'name': row['name'], 'popcore_id': row['popcore_id'],
                         'pickup': current, 'wanted': wanted, 'pickup_change': current != wanted})
     return items, parents
 
@@ -350,14 +377,17 @@ def _available(item):
 def preview(con, cfg):
     items, parents = plan(con, cfg)
     changes = [item for item in items if item['stock_change']]
-    unknown_ids = [item for item in items if item['product_id'] is None]
-    other = [dict(row) for row in con.execute(
+    holders = Counter(row[0].upper() for row in con.execute(
+        "SELECT popcore_id FROM website_items WHERE kind != 'variable' AND popcore_id != ''"))
+    unknown_ids = [{**item, 'shared': holders[item['popcore_id'].upper()] > 1} for item in items
+                   if item['product_id'] is None]
+    no_ids = [dict(row) for row in con.execute(
         """SELECT wc_id, parent_id, sku, name FROM website_items
-           WHERE kind IN ('simple', 'variation') AND product_id IS NULL ORDER BY sku""")
-        if not POPCORE_ID.fullmatch(row['sku'].upper())]
+           WHERE kind IN ('simple', 'variation') AND popcore_id = '' ORDER BY name""")]
     return {
-        'items': len(items) - len(unknown_ids), 'unknown_id': len(unknown_ids),
-        'no_sku': sum(1 for row in other if not row['sku']), 'other_sku': sum(1 for row in other if row['sku']),
+        'items': len(items) - len(unknown_ids),
+        'unknown_id': sum(1 for item in unknown_ids if not item['shared']),
+        'shared_id': sum(1 for item in unknown_ids if item['shared']), 'no_id': len(no_ids),
         'stock_changes': len(changes),
         # A stock write from 0 to more emails the item's restock and Dex followers; under 3 emails
         # the website's low-stock recipient, unless those emails are off (docs/website-sync.md).
@@ -367,12 +397,12 @@ def preview(con, cfg):
         'pickup_changes': sum(1 for parent in parents if parent['pickup_change']),
         'shop_hold': {'items': sum(1 for item in items if item['shop_hold']),
                       'units': sum(item['shop_hold'] for item in items)},
-        'changes': [{key: item[key] for key in ('wc_id', 'parent_id', 'sku', 'name', 'product_id', 'manage_stock',
+        'changes': [{key: item[key] for key in ('wc_id', 'parent_id', 'popcore_id', 'name', 'product_id', 'manage_stock',
                                                 'stock_quantity', 'stock_status', 'quantity')} for item in changes[:500]],
         'pickup': [parent for parent in parents if parent['pickup_change']][:500],
-        'unknown_ids': [{key: item[key] for key in ('wc_id', 'parent_id', 'sku', 'name')}
-                        for item in sorted(unknown_ids, key=lambda item: item['sku'])][:500],
-        'other_skus': [row for row in other if row['sku']][:500],
+        'unknown_ids': [{key: item[key] for key in ('wc_id', 'parent_id', 'popcore_id', 'name', 'shared')}
+                        for item in sorted(unknown_ids, key=lambda item: item['popcore_id'].upper())][:500],
+        'no_ids': no_ids[:500],
     }
 
 
@@ -440,28 +470,23 @@ def _gmt(value):
     return datetime.fromisoformat(value).replace(tzinfo=timezone.utc) if value else None
 
 
-def _line_product(con, sku, wc_id):
-    """The POPCORE product of an order line: by its SKU, else by the website item's current link."""
-    product_id = _product_for_sku(con, sku)
-    if product_id is None and wc_id:
-        row = con.execute('SELECT product_id FROM website_items WHERE wc_id=? AND product_id IS NOT NULL',
-                          (wc_id,)).fetchone()
-        product_id = row[0] if row else None
-    return product_id
+def _line_item(line):
+    """The website item an order line sold: its variation, else its product."""
+    return line.get('wc_variation_id') or line.get('wc_product_id')
 
 
 def _order_facts(con, order):
-    """What POPCORE keeps of an order: no names, emails, phones or addresses."""
+    """What POPCORE keeps of an order: no names, emails, phones or addresses. A line is linked by its
+    item's POPCORE ID as the last catalogue read found it (its SKU is a barcode, never read)."""
     lines = []
     for line in order.get('line_items') or ():
         quantity = int(line.get('quantity') or 0)
         if quantity <= 0:
             continue
-        sku = (line.get('sku') or '').strip()
-        lines.append({'sku': sku, 'name': str(line.get('name') or '')[:200], 'quantity': quantity,
-                      'total_cents': _cents(line.get('total')),
-                      'product_id': _line_product(con, sku, line.get('variation_id') or line.get('product_id')),
-                      'wc_product_id': line.get('product_id'), 'wc_variation_id': line.get('variation_id') or None})
+        item = {'wc_product_id': line.get('product_id') or None, 'wc_variation_id': line.get('variation_id') or None}
+        popcore_id = _known_id(con, _line_item(item))
+        lines.append({'popcore_id': popcore_id, 'name': str(line.get('name') or '')[:200], 'quantity': quantity,
+                      'total_cents': _cents(line.get('total')), 'product_id': _product_for_id(con, popcore_id), **item})
     pickup = str(_meta(order, '_popcore_pickup_store_id') or '').strip().upper() or None
     fulfilment = str(_meta(order, '_pcc_fulfillment_type') or ('pickup' if pickup else 'delivery'))[:40]
     return {'wc_order_id': order['id'], 'number': str(order.get('number') or order['id'])[:40],
@@ -470,7 +495,27 @@ def _order_facts(con, order):
             'tax_cents': _cents(order.get('total_tax')),
             'payment': str(order.get('payment_method_title') or order.get('payment_method') or '')[:80],
             'transaction_id': str(order.get('transaction_id') or '')[:120] or None,
-            'fulfilment': fulfilment, 'pickup_store': pickup, 'lines': json.dumps(lines)}
+            'fulfilment': fulfilment, 'pickup_store': pickup, 'lines': lines}
+
+
+def _read_ids(con, cfg, lines):
+    """Lines whose item had no POPCORE ID at the last catalogue read (added on the website since, or
+    given its ID since) read it from that one item on the website. Never inside a transaction."""
+    for line in lines:
+        if line.get('popcore_id') or not line.get('wc_product_id'):
+            continue
+        path = f"/products/{line['wc_product_id']}"
+        if line.get('wc_variation_id'):
+            path += f"/variations/{line['wc_variation_id']}"
+        try:
+            item, _ = call(cfg, 'GET', path)
+        except WebsiteError as exc:
+            if exc.status == 404:
+                continue  # gone from the website: the line stays unlinked
+            raise
+        line['popcore_id'] = _popcore_id((item or {}).get('meta_data')) if isinstance(item, dict) else ''
+        line['product_id'] = _product_for_id(con, line['popcore_id'])
+    return lines
 
 
 def _filling_store(con, cfg, order_row):
@@ -535,10 +580,11 @@ def record(con, cfg, wc_order_id):
             con.rollback()
             return row['state'] if row else None
         lines = json.loads(row['lines'] or '[]')
-        # A link fixed since (a SKU set on the website, a sealed set added in POPCORE) counts on a retry.
+        # A link fixed since (a POPCORE ID set on the website, a sealed set added in POPCORE) counts on a retry.
         for line in lines:
             if line['product_id'] is None:
-                line['product_id'] = _line_product(con, line['sku'], line.get('wc_variation_id') or line.get('wc_product_id'))
+                line['popcore_id'] = line.get('popcore_id') or _known_id(con, _line_item(line))
+                line['product_id'] = _product_for_id(con, line['popcore_id'])
         con.execute('UPDATE website_orders SET lines=? WHERE wc_order_id=?', (json.dumps(lines), wc_order_id))
         problem = None
         store_id = _filling_store(con, cfg, row)
@@ -629,20 +675,24 @@ def apply_order(con, cfg, order):
             return None
         if since and facts['paid_at'] < since:
             return None  # paid before the sync was turned on: the opening count already holds it
+        _read_ids(con, cfg, facts['lines'])
         con.execute("""INSERT INTO website_orders(wc_order_id, number, wc_status, paid_at, modified_at, total_cents,
                            tax_cents, payment, transaction_id, fulfilment, pickup_store, lines, state)
                        VALUES (:wc_order_id, :number, :wc_status, :paid_at, :modified_at, :total_cents, :tax_cents,
-                           :payment, :transaction_id, :fulfilment, :pickup_store, :lines, 'new')""", facts)
+                           :payment, :transaction_id, :fulfilment, :pickup_store, :lines, 'new')""",
+                    {**facts, 'lines': json.dumps(facts['lines'])})
         con.commit()
         return record(con, cfg, facts['wc_order_id'])
+    if row['state'] == 'needs_review':
+        _read_ids(con, cfg, facts['lines'])  # before the writes below
     con.execute("""UPDATE website_orders SET wc_status=?, modified_at=?, total_cents=?, tax_cents=?,
                        refunded=CASE WHEN ?='refunded' THEN 1 ELSE refunded END, updated_at=datetime('now')
                    WHERE wc_order_id=?""",
                 (status, facts['modified_at'], facts['total_cents'], facts['tax_cents'], status, facts['wc_order_id']))
     if row['state'] == 'needs_review':
-        # Lines are reread so a fixed link or SKU on the website lets the next try fill it.
+        # Lines are reread so a fixed link or POPCORE ID on the website lets the next try fill it.
         con.execute('UPDATE website_orders SET lines=?, pickup_store=? WHERE wc_order_id=?',
-                    (facts['lines'], facts['pickup_store'], facts['wc_order_id']))
+                    (json.dumps(facts['lines']), facts['pickup_store'], facts['wc_order_id']))
     con.commit()
     if status == 'cancelled':
         if row['state'] in ('recorded', 'cancel_failed'):
@@ -784,6 +834,17 @@ def retry_order(con, cfg, wc_order_id):
     if state_of(con, wc_order_id) == 'cancel_failed':
         _reverse(con, wc_order_id)
         return state_of(con, wc_order_id)
+    row = con.execute('SELECT lines FROM website_orders WHERE wc_order_id=?', (wc_order_id,)).fetchone()
+    lines = json.loads(row[0] or '[]') if row else []
+    if any(not line.get('popcore_id') for line in lines):
+        # A POPCORE ID set on the website just now counts, without waiting for the next catalogue read.
+        try:
+            _read_ids(con, cfg, lines)
+        except WebsiteError:
+            pass  # the website cannot be read: the order keeps waiting
+        con.execute('UPDATE website_orders SET lines=? WHERE wc_order_id=? AND state=?',
+                    (json.dumps(lines), wc_order_id, 'needs_review'))
+        con.commit()
     return record(con, cfg, wc_order_id)
 
 
