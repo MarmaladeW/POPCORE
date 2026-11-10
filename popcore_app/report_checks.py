@@ -58,17 +58,19 @@ def text_checks(boundaries, items, unknown_items, handled=()):
                         '这段选 Skip。入库 is not moved by the report: record it upstairs, then Skip.')
         out.append(_check('fix', [line, *under], problem))
     seen = defaultdict(list)
-    for line, section, _ in headings:
+    for line, section, text in headings:
         if section not in ('unknown', 'cash_total'):
-            seen[section].append(line)
-    for section, lines in seen.items():
+            # By the heading as written: "出库入display" and "入display" are two parts staff meant apart.
+            seen[(section, re.sub(r'[\s:：]|汇总', '', text.casefold()))].append(line)
+    for (section, _), lines in seen.items():
         if len(lines) > 1 and section in STOCK_LINES:
             out.append(_check('check', lines, f'这个标题出现 {len(lines)} 次：每段都会移库存，确认没有重复写。'
                                               f'Heading written {len(lines)} times: every part moves stock.', section))
     twice = defaultdict(list)
     for item in items:
         if item['section'] in STOCK_LINES and item['qty']:
-            twice[(item['section'], _key(item['raw_name']), item.get('box_size'), item['qty'],
+            # The note is part of the line: "shelter*1（Circus）" and "shelter*1（Mantel Clock）" are two designs.
+            twice[(item['section'], _key(item['raw_name']), _key(item.get('note')), item.get('box_size'), item['qty'],
                    item.get('loose_qty'), bool(item.get('to_display')), bool(item.get('from_display')))].append(item)
     for (section, *_), same in twice.items():
         lines = [item['line'] for item in same]
@@ -102,6 +104,27 @@ def text_checks(boundaries, items, unknown_items, handled=()):
             out.append(_check('check', [line], f'「{name}*{item["qty"]}」：{number} 读成名字的一部分，出店 {item["qty"]} 个。'
                                                f'如果是 {item["qty"]} 端每端 {number} 个，写成 *{number * item["qty"]}。'
                                                f'{number} is read as part of the name.', section))
+        if section in SALES and item.get('qty_assumed'):
+            # "小王子-Rose- 出库入店" (DT, 2026-11-07): a place mark but no *N.
+            out.append(_check('check', [line], f'「{name}」没写数量（*N）：按 1 个读。No quantity written: read as 1.', section))
+        if section in SALES and item.get('moved_mark'):
+            mark, at, place = item['moved_mark']
+            where = '从 display 卖的（卖display）' if place == 'display' else '从楼上拿下来的（出库入店）'
+            out.append(_check('check', [line, at], f'「{mark}」读成前面「{name}」的地方：{where}，不是另一个产品。'
+                                                   'Read as where the item before it came from.', section))
+    return out
+
+
+def repeated_display_checks(blocks, items):
+    """A 卖display section left out because every line in it repeats a sale already marked (display) (MK Nov 6,
+    DT and MK Nov 8): saying it explicitly, by its lines, so it is never a silent change."""
+    out = []
+    for block in blocks:
+        lines = [item['line'] for item in items if item.get('display_block') == block]
+        out.append(_check('check', [block, *lines], f'这段 卖display 的 {len(lines)} 行，销售里都已标（display）：已不算，'
+                                                    '陈列只减一次。如果确实是另外从 display 卖的，先在销售里补上那笔销售。'
+                                                    'Every line repeats a (display) sale: left out, so display is '
+                                                    'taken once.', 'display_sold'))
     return out
 
 
@@ -172,22 +195,29 @@ def product_checks(con, rows, unmatched=()):
             out.append(_check('fix', [row['line']], f'写的是每端 {size} 个，POPCORE 记「{name}」每端 {per} 个：'
                                                     f'确认时会被拒绝。The report says {size} per set, POPCORE {per}.',
                               row['section']))
-        elif size == 1 and row['section'] == 'refill' and not row.get('loose_qty'):
+        elif size == 1 and row['section'] == 'refill' and not row.get('loose_qty') and not row.get('sale_mark'):
             out.append(_check('check', [row['line']], f'没写每端几个：按 {sets} 个散盒从楼上拿下来，楼上的整端不拆。'
                                                        f'如果是 {sets} 端，写成「{row["raw_name"]} {per}*{sets}」。'
                                                        f'Read as {sets} loose boxes, not sets of {per}.', row['section']))
+    # A design sold from display may be written as its series box among the sales, or the other way round
+    # ("海贼王船 - Polar Tang" on 卖display, "海贼王船*1（Polar Tang）" sold, DT 2026-11-08): the stock relief
+    # counts them together by series, and so does this check.
+    def series(product_id):
+        product = products[product_id]
+        return ('series', product['series_id']) if product['series_id'] is not None else ('product', product_id)
+
     shown, sold = defaultdict(list), defaultdict(list)
     for row in rows:
         if row['section'] == 'display_sold':
-            shown[row['product']['id']].append(row)
+            shown[series(row['product']['id'])].append(row)
         elif row['section'] in SALES:
-            sold[row['product']['id']].append(row)
-    for product_id, lines in shown.items():
-        display, sales = sum(row['qty'] for row in lines), sum(row['qty'] for row in sold.get(product_id, []))
+            sold[series(row['product']['id'])].append(row)
+    for group, lines in shown.items():
+        display, sales = sum(row['qty'] for row in lines), sum(row['qty'] for row in sold.get(group, []))
         if display > sales:
-            name = _name(products[product_id])
-            out.append(_check('check', [row['line'] for row in lines + sold.get(product_id, [])],
-                              f'卖display 写了 {display} 个「{name}」，销售里只有 {sales} 个：陈列少 {display}，'
-                              f'销售只记 {sales}。按现在的匹配。Display sold {display}, sales list {sales}.',
+            name = _name(products[lines[0]['product']['id']])
+            out.append(_check('check', [row['line'] for row in lines + sold.get(group, [])],
+                              f'卖display 写了 {display} 个「{name}」，销售里只有 {sales} 个（同系列一起算）：陈列少 '
+                              f'{display}，销售只记 {sales}。按现在的匹配。Display sold {display}, sales list {sales}.',
                               'display_sold'))
     return out
