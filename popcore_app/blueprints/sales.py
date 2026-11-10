@@ -2496,6 +2496,21 @@ def _dash_design(raw_name: str, designs: list) -> int | None:
     return scored[0][1]
 
 
+# How a line was paid ("cash30+35.5card", "card", "微信") or an amount alone: never a design's name.
+_TENDER_NOTE = re.compile(r'(?<![a-z])(?:cash|card|emt|debit|credit|visa|mastercard|amex)(?![a-z])'
+                          r'|现金|刷卡|微信|支付宝|卡机|随手记|^[\d\s.,+＋$¥]*$', re.I)
+
+
+def _note_design(raw_name: str, note: str, designs: list) -> int | None:
+    """"海贼王船*1（Polar Tang）" names the design in a note, as "海贼王船 - Polar Tang" does (2026-11-09).
+    A cue note (隐藏, figure, a size) keeps matching as it did, and a tender note never names a design."""
+    note = (note or '').strip()
+    if not note or report_match_query(raw_name, note) != raw_name or _TENDER_NOTE.search(note):
+        return None
+    # A dash in the note ("Spider-Man") is part of the design's name, not the "X - name" split.
+    return _dash_design(f"{raw_name} - {note.replace('-', ' ')}", designs)
+
+
 def _secret_design(raw_name: str, designs: list, all_products: list, aliases: dict) -> int | None:
     """"马卡龙隐藏" is the secret design of the series 马卡龙 names exactly, when that series has only one."""
     written = re.fullmatch(r'(.+?)\s*(?:隐藏款?|secret)', raw_name.strip(), re.I)
@@ -2581,7 +2596,8 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
             # A name reviewed with another note, or a changed note, must be reviewed again.
             hits = [(min(score, 99), product) for score, product in hits]
         design = (_dash_design(raw_name, designs or [])
-                  or _secret_design(raw_name, designs or [], all_products, aliases))
+                  or _secret_design(raw_name, designs or [], all_products, aliases)
+                  or _note_design(raw_name, qualifier, designs or []))
         if design in products_by_id and (not hits or hits[0][1]['id'] != design):
             # Suggested first, never confirmed by itself.
             hits = [(99, products_by_id[design])] + [hit for hit in hits if hit[1]['id'] != design]
