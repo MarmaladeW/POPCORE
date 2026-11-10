@@ -39,28 +39,57 @@ def sealed_set_item(box, boxes):
     }
 
 
-def plan_sealed_sets(con):
-    """Every verified blind box with a boxes-per-set count and no sealed set yet, and why others wait."""
-    items, waiting, errors = [], [], []
+def plan_sealed_sets(con, only=None):
+    """Every verified blind box with a boxes-per-set count and no sealed set yet, and why others wait.
+
+    With `only` (blind box SKUs, any case), just those: each named SKU that gets no sealed set is listed
+    with why (`waiting`, by code), and one that already has its set is listed in `done`, so a second run
+    creates nothing. A named product is never retyped here: a product that is not a blind box, or not
+    verified as one, or has no boxes per set, waits for Products."""
+    items, waiting, errors, done = [], [], [], []
+    wanted = None if only is None else sorted({sku.strip().upper() for sku in only if sku and sku.strip()})
+    where = ('UPPER(p.sku) IN (%s)' % ','.join('?' * len(wanted)) if wanted
+             else '0' if wanted is not None else 'CAST(COALESCE(p.boxes_per_dan, 0) AS INTEGER) > 0')
     rows = con.execute(
-        """SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.price, p.ip_series, p.product_type, p.brand,
+        f"""SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.price, p.ip_series, p.product_type, p.brand,
                   p.boxes_per_dan, p.series_id, ps.name AS series_name, p.stock_form, p.stock_unit,
                   p.identity_status,
                   EXISTS (SELECT 1 FROM product_conversions c WHERE c.target_product_id=p.id) AS linked
            FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id
-           WHERE CAST(COALESCE(p.boxes_per_dan, 0) AS INTEGER) > 0
-           ORDER BY p.sku, p.id""").fetchall()
+           WHERE {where}
+           ORDER BY p.sku, p.id""", wanted or ()).fetchall()
     taken = {row['sku'] for row in con.execute('SELECT sku FROM products WHERE sku IS NOT NULL')}
     series_by_name = {row['name']: row['id'] for row in con.execute('SELECT id, name FROM product_series')}
     planned_names = set()
+    for sku in sorted(set(wanted or ()) - {(row['sku'] or '').upper() for row in rows}):
+        waiting.append({'product_id': None, 'sku': sku, 'name': '', 'code': 'not_found',
+                        'message': 'no product has this SKU'})
     for row in rows:
         if row['linked']:
+            if wanted is not None:
+                done.append({'product_id': row['id'], 'sku': row['sku'], 'name': _display_name(row),
+                             'message': 'already has its sealed set'})
+            continue
+        if wanted is not None and row['stock_form'] not in (None, 'random_box'):
+            waiting.append({'product_id': row['id'], 'sku': row['sku'], 'name': _display_name(row),
+                            'code': 'not_blind_box', 'stock_form': row['stock_form'],
+                            'message': f"it is {row['stock_form']}, not a blind box; change it in Products if it is one"})
             continue
         if (row['stock_form'], row['stock_unit'], row['identity_status']) != ('random_box', 'box', 'verified'):
             waiting.append({'product_id': row['id'], 'sku': row['sku'], 'name': _display_name(row),
+                            'code': 'unverified', 'product_type': row['product_type'],
+                            'boxes_per_set': row['boxes_per_dan'],
                             'message': 'verify it as a blind box (random_box, box) first'})
             continue
-        item = sealed_set_item(row, int(row['boxes_per_dan']))
+        try:
+            per_set = int(row['boxes_per_dan'] or 0)
+        except (TypeError, ValueError):
+            per_set = 0
+        if per_set < 1:
+            waiting.append({'product_id': row['id'], 'sku': row['sku'], 'name': _display_name(row),
+                            'code': 'no_set_size', 'message': 'no boxes per set recorded; set it in Products first'})
+            continue
+        item = sealed_set_item(row, per_set)
         set_sku = item['set_sku']
         if not set_sku or set_sku in taken:
             errors.append({'product_id': row['id'], 'sku': row['sku'], 'code': 'sku_taken',
@@ -80,8 +109,10 @@ def plan_sealed_sets(con):
             'series_name': series_name,
             'new_series': not row['series_id'] and series_name not in series_by_name,
         })
-    return {'items': items, 'waiting': waiting, 'errors': errors,
-            'ready_to_apply': bool(items) and not errors}
+    report = {'items': items, 'waiting': waiting, 'errors': errors, 'ready_to_apply': bool(items) and not errors}
+    if wanted is not None:
+        report.update(named=len(wanted), done=done)
+    return report
 
 
 def create_sealed_set(con, item):
@@ -106,8 +137,9 @@ def create_sealed_set(con, item):
     return {**item, 'set_product_id': set_id, 'series_id': series_id}
 
 
-def apply_sealed_sets(db_path, *, backup_path):
-    """Create every planned sealed set and its conversion in one transaction after a checked backup."""
+def apply_sealed_sets(db_path, *, backup_path, only=None):
+    """Create every planned sealed set (of the named blind boxes, with `only`) and its conversion in one
+    transaction after a checked backup."""
     if backup_path is None:
         raise SealedSetError('apply needs a new backup path', 'backup_required')
     with closing(sqlite3.connect(db_path, isolation_level=None)) as con:
@@ -115,7 +147,7 @@ def apply_sealed_sets(db_path, *, backup_path):
         con.execute('PRAGMA foreign_keys=ON')
         con.execute('BEGIN IMMEDIATE')
         try:
-            report = plan_sealed_sets(con)
+            report = plan_sealed_sets(con, only)
             if not report['ready_to_apply']:
                 con.execute('ROLLBACK')
                 return {**report, 'applied': False}

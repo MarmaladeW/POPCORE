@@ -66,6 +66,8 @@ async def run(browser, width):
         changes = page.get_by_role('region', name='Changes')
         await expect(changes.get_by_text('2 sell out', exact=False)).to_be_visible()
         await expect(changes.get_by_text('网站 Website 有货 in stock → POPCORE 14')).to_be_visible()
+        # A Whole Set says where its number comes from (owner, 2026-11-10).
+        await expect(changes.get_by_text('网站 Website 有货 in stock → POPCORE 2 · 整端 2 sealed, none sure from floor boxes (12 per set)')).to_be_visible()
         await changes.get_by_text('3 website items have no POPCORE ID', exact=False).click()
         await expect(changes.get_by_text('SKU 6941848289407')).to_be_visible()  # a barcode, shown to find the item
         await fits(page, f'preview-{width}.png')
