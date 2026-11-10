@@ -1,15 +1,17 @@
-# Website stock sync (popcore.ca)
+# Website stock and price sync (popcore.ca)
 
-Status (2026-11-07): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
+Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
 
-POPCORE owns stock (owner, 2026-10-25). popcore.ca (WooCommerce) takes its stock numbers from POPCORE, and paid web orders take their items out of POPCORE stock. Everything runs on the POPCORE side through WooCommerce's REST API; there is no website plugin. Code: `popcore_app/website_sync.py`, routes in `blueprints/website.py`, page 网站 Website (`/website`).
+POPCORE owns stock (owner, 2026-10-25) and, since 2026-11-10, the regular prices of linked boxes, Whole Sets and items. popcore.ca (WooCommerce) takes its stock numbers and those prices from POPCORE, and paid web orders take their items out of POPCORE stock. Everything runs on the POPCORE side through WooCommerce's REST API; there is no website plugin. Code: `popcore_app/website_sync.py`, routes in `blueprints/website.py`, page 网站 Website (`/website`).
 
 Owner decisions, 2026-11-01:
 
 - **Live stores only.** The website sells what the live stores hold: DT now. MK joins by itself on its count day. Until then MK is never offered for pickup, and every web order is filled from DT.
-- **Stock only.** Prices and sale prices stay managed on the website. The website's POPCORE → Sales screen keeps working.
+- ~~**Stock only.** Prices and sale prices stay managed on the website.~~ Replaced on 2026-11-10, below.
 - **Web orders are separate Website orders.** They take stock out but stay out of the store's sales, closing and cash/card count.
 - **Keeping pieces back for the shop follows the daily report** (owner, 2026-11-02). Until a shop day's report is in, each item holds back what the shop sold of it on its best day. See [The shop's sales since its last report](#the-shops-sales-since-its-last-report).
+
+Owner decision, 2026-11-10: the website's prices should "keep up with our clover price". Asked whether that should happen by itself, the owner said: "Yes, automatically, but it should be POPCORE automatically sending price to the website too". So POPCORE writes the **regular price** of linked boxes, Whole Sets and items. Sale prices and the prices of confirmed designs stay managed on the website: the owner sets design prices separately. The website's POPCORE → Sales screen keeps working. See [Prices](#prices).
 
 ## How items are linked
 
@@ -72,7 +74,88 @@ Once a day's report is pasted after closing, nothing is held back until the shop
 
 On the 2026-11-01 data (395 in-stock linked items), one day not reported holds back 7 items completely. On their best recent day, none of the 395 would sell out in the shop while the website still showed it. A flat `WEBSITE_KEEP_BACK=1` hides 39 items and still leaves 4 at risk. The last piece of a slow seller can still sell twice. In that case the night's report shows a floor shortfall (日报差异) for it, and the web order needs a refund or a swap.
 
-POPCORE writes an item only when its number or pickup list differs from what POPCORE last saw or wrote there. An edit made by hand on the website is corrected at the next full catalogue read: every day, and whenever an admin presses **Read website products**.
+POPCORE writes an item only when its number, price or pickup list differs from what POPCORE last saw or wrote there. An edit made by hand on the website is corrected at the next full catalogue read: every day, and whenever an admin presses **Read website products**.
+
+## Prices
+
+POPCORE writes each linked item's regular price in the same push as its stock (owner, 2026-11-10):
+
+| Website item | Regular price POPCORE writes |
+|---|---|
+| Simple product, or the Single Box option (`PM0123`) | the product's `price`: its Clover price |
+| Whole Set option (`PM0123-SET`) | boxes per set × the single box's price. Clover never stores a set price, so the sealed set record's own `price` is never read (owner, 2026-11-10) |
+| A design (`PM0123-05`), or any product the website marks Vault (`_popcore_is_vault`, or `_popcore_kind` = `confirmed_design`) | **none**: the owner prices designs on the website |
+
+The 2026-11-09 check found POPCORE's prices to be Clover's. All 394 records with a Clover item name matched the 8 Oct Clover export to the cent, and every sealed set cost `boxes_per_dan` × its box (241 sets). Designs are different. POPCORE copies the box price into every design (1,487 of 1,820), while the website's Vault designs carry collector prices.
+
+Boxes per set is the sealed set record's `boxes_per_dan`, else its box's. It is never taken from the set's opening conversion (`product_conversions.output_per_input`), which can disagree. DR0051 is 6 per set (owner, 2026-11-10): both records say 6, but its opening conversion said 12 on 2026-11-10, and that conversion is the wrong one.
+
+POPCORE leaves the website's price alone for:
+
+- an item with no POPCORE ID, an ID POPCORE does not have, or an ID on two items;
+- an item whose POPCORE record is not a verified Clover item (an old record), or has no price;
+- the **sale price**, always. POPCORE never writes `sale_price`.
+
+The Website page's **价格 Prices** panel lists the changes that go by themselves and counts the items left alone. Its **Prices POPCORE wrote lately** lists the last 30 writes. Every write is kept in `website_price_writes` with the website's price before, the time, and who gave the OK, so a change can be explained or undone.
+
+### Changes that wait for a manager's OK
+
+A price change goes with the next write unless one of these holds:
+
+- the website has **no price** for the item yet (or $0). A first price makes buyable an item the website could not sell;
+- it is more than **30%** up or down;
+- the box or item has **no Clover item name** in POPCORE, so its price was never checked against Clover. A Whole Set goes by its box's name;
+- the website's Whole Set does not cost POPCORE's boxes per set times its Single Box, within 2%. The Single Box price can be the one the website shows, or the one POPCORE last replaced: if the website took the box but refused its set in the same batch, the set goes a pass later. For example, Marvel Deadpool is 9 boxes on the website and 12 in POPCORE;
+- the item has a **sale price** that would stop or start discounting:
+  - a sale at or above the new price would end. For example, #21007 had a $66.99 sale and Clover's $54.99. WooCommerce 10.9.4 deletes a sale price that is not below the regular price whenever either is saved (`WC_Product_Data_Store_CPT::handle_updated_props`), so the OK ends the sale;
+  - a sale that does not discount today would start again. Then the Dex emails the product's followers that it is on sale. WooCommerce deletes such a sale on any price save, so only a sale saved some other way can be in this state.
+
+Such a change waits under **价格待确认 Prices waiting for an OK**, with its reasons. The other options of the same website product wait with it, so a box and its Whole Set never part ways.
+
+A manager presses **确认 OK** for the product. The OK covers exactly the change shown: each option's website price and sale price, and POPCORE's new price. If any of them changes before the write, the change waits again. An OK that was used once never covers a later change.
+
+Fixing the cause also releases a change. A manager can:
+- correct the price or the boxes per set in POPCORE, which counts at the next pass;
+- clear the sale on the website (POPCORE → Sales → Clear), which counts at the next catalogue read.
+
+On the 2026-11-10 data, the first write would change 147 prices. This used the owner's 10 Nov product export and POPCORE's 10 Nov backup, as a dry run of this code:
+- 121 at once;
+- 4 Daily Shop ones after the reset (Sonny Angel Snack and Hippers, box and set);
+- 22 waiting for an OK:
+  - the 17 "look first" rows of the 2026-11-09 comparison;
+  - #21007's sale;
+  - the first prices of two old drafts (PM0321, PM0334);
+  - PM0278, box and set, whose website set ($260.91, 9 × $28.99) no longer matches its Single Box ($37.99).
+
+### Read again just before the write
+
+The catalogue is read once a day, so its prices, sale prices and Daily Shop marks can be a day old. Just before it writes any price, POPCORE reads those items and their products from the website again, by ID: one request for the products and one for each variable product's options. The checks above then run on what the website shows at that moment:
+- a sale added since the daily read holds the change;
+- a Daily Shop mark added since makes it wait for the reset;
+- a website price that already equals POPCORE's means nothing is written.
+
+If one of those items is gone, or carries another POPCORE ID than at the last read, no price is written. POPCORE rereads the whole catalogue first (the next pass), then judges again. Stock writes go on as before.
+
+### Daily Shop products
+
+popcore.ca's Daily Shop prices a customer's deal from the product's price at the moment it is read. So a price change during the day changes the price of a deal already in a customer's bag. popcore.ca's runbook (`docs/runbook/shop.md`, the Daily Shop invariants) asks for pooled products to be repriced right after the reset.
+
+A product with `_popcore_daily_pool` = yes, and each of its options, is repriced only in the hour after the daily reset. The reset is `WEBSITE_DAILY_RESET`, 20:00 Toronto time by default, the Daily Shop's default `reset_time`. On 2026-11-10 popcore.ca's time zone was `America/Toronto`, so its 20:00 is POPCORE's 20:00.
+- Until that hour, the change shows under Prices with "after the 20:00 reset".
+- If the website cannot be reached in that hour, the change waits for the next day.
+- If the Daily Shop's reset time is changed on the website, set `WEBSITE_DAILY_RESET` to match.
+
+The pool mark is read again just before each price write (above), so a product added to the pool during the day waits too.
+
+### What a price write does on the website
+
+A price write saves the product through WooCommerce, so the website's own observers run:
+
+- **Restock emails.** Followers waiting for the product are emailed when it is available. This is expected (owner, 2026-11-10).
+- **Dex sale notice.** The Dex announces a sale when a save finds one it has not seen yet (`_popcore_on_sale_seen`). A sale that would start again waits for an OK. A sale that runs before and after the write is announced only if the Dex never saw it; on the 2026-11-10 data, no price that goes at once has a sale.
+- **No other notices.** No Dex arrival is sent, since designs are never priced.
+
+**Change a box's or an item's price in POPCORE (Clover), not on the website.** An edit made on the website is put back at the next full catalogue read.
 
 ## Web orders
 
@@ -119,14 +202,15 @@ This order matters: the first write reaches real customers and staff email.
 4. **POPCORE IDs on the website** (website session). Each product and option POPCORE should keep in step carries its ID in `_popcore_id`, written by the `popcore-catalog` plugin. There is no SKU import: SKUs stay barcodes, and POPCORE never changes them.
 5. **Server settings** (POPCORE admin, on the droplet). In `/root/POPCORE/popcore_app/.env`:
    - set `WEBSITE_URL=https://popcore.ca`, `WEBSITE_KEY` and `WEBSITE_SECRET`;
-   - optionally set `WEBSITE_SHOP_OPENS` (12:00), `WEBSITE_KEEP_BACK` (0) and `WEBSITE_DELIVERY_STORE` (DT);
+   - optionally set `WEBSITE_SHOP_OPENS` (12:00), `WEBSITE_DAILY_RESET` (20:00), `WEBSITE_KEEP_BACK` (0) and `WEBSITE_DELIVERY_STORE` (DT);
    - restart POPCORE.
    The background job starts only when the key is set. Never print the key lines.
 6. **POPCORE → 网站 Website** (admin).
    - Press **Read website products**. It takes a minute or two.
    - Read **What turning on changes**: the items that sell out, come back or are low, the pickup changes, the POPCORE IDs not in POPCORE, any ID on two items, and the items without an ID.
+   - Read **价格 Prices**, the prices the first write changes, and **价格待确认 Prices waiting for an OK**. A manager can OK held prices before or after turning on.
    - Press **Turn on**. The first write follows within 30 seconds.
-   - **Turn off** stops every write and order reading. The website keeps its last numbers.
+   - **Turn off** stops every write and order reading. The website keeps its last numbers and prices.
 
 ## Limits
 
@@ -136,9 +220,17 @@ This order matters: the first write reaches real customers and staff email.
 - **Other ways to pay.** The PayPal gateway, WooCommerce POS and the website's own Special Orders "Arrived" button change stock outside POPCORE's checkout. Keep them off while the sync is on (probe questions 5 and 6).
 - **Vault products** follow their POPCORE IDs like any item. Vault items without an ID keep their placeholder quantities.
 - **Upgrading from the SKU link** (migration `website_items_popcore_id`) adds the `popcore_id` column. It also empties the saved catalogue read, because the links it held were made by SKU. Press **Read website products** before the preview or turning on.
+- **Upgrading to prices** (migration `website_prices`) adds the price, Daily Shop and Vault columns, the OK table `website_price_oks` and the log `website_price_writes`. It also empties the saved catalogue read, because that read holds no prices: without them POPCORE could neither tell a change nor judge it. Press **Read website products** before the preview or turning on. When the sync is on, the next pass rereads the catalogue before it writes anything.
+- **A Whole Set POPCORE has no sealed set for** shows sold out (above) and keeps the website's price.
+- **A batch the website takes only in part** can leave a box at its new price and its Whole Set at the old one. The rest is written in the next pass, or waits for an OK: a new OK is needed, because an OK covers only the change it was given for.
 - **Partial refunds** never move stock.
 
 ## Local checks
 
 - `tests/test_website_sync.py`: linking by `_popcore_id` (any case, never by SKU, a parent's stray ID ignored, an ID on two items linking neither), drafts and disabled options, the upgrade from the SKU link, an order line whose item was added since the last read or deleted, the website number, keep-back, the hold until the daily report is in, opened sets, turning on, writes only on change, back stock first, closing exclusion, cancel, orders that wait and hold their units, MK pickup while MK is not live, orders from before the switch, and a refused key. It uses a fake WooCommerce and blocks every real request.
-- `tests/browser/check_website_sync.py`: the page at 390 and 1440 px, against the real Flask app and the same fake. It covers reading products, the preview, turning on, an order that waits and is settled, managers unable to turn the sync on, and staff unable to open the page.
+  - Prices: boxes and items get POPCORE's price, and Whole Sets boxes per set × the box, never the set record's own price. Designs, Vault products, old records and records without a price keep theirs. The sale price is never written. Only changes are written, and a website edit is put back at the next read. The log.
+  - Changes held for being big, a first price, unchecked against Clover, or a set unlike its box, with the other option. A set the website refused goes once its box has.
+  - The manager's OK, for exactly the change shown and used only once. Sales that would end or start.
+  - The read just before a write: a new sale, a new Daily Shop mark, and swapped POPCORE IDs.
+  - The Daily Shop hour, `WEBSITE_DAILY_RESET`, and the upgrade.
+- `tests/browser/check_website_sync.py`: the page at 390 and 1440 px, against the real Flask app and the same fake. It covers reading products, the preview, turning on, an order that waits and is settled, a price that goes and one a manager OKs, managers unable to turn the sync on, and staff unable to open the page.

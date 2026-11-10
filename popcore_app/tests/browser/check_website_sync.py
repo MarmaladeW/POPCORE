@@ -1,6 +1,7 @@
 """网站 Website sync in a real browser against the real Flask app, a disposable database and a fake
 WooCommerce (owner, 2026-11-01): an admin reads the website's products (linked by their POPCORE ID
 field, never by SKU), sees what turning on would change, turns it on; a web order POPCORE cannot fill waits for review and a manager settles it;
+a price goes to POPCORE's and one without a Clover item name waits until a manager OKs it (owner, 2026-11-10);
 managers cannot turn the sync on and staff cannot open the page."""
 import asyncio
 import re
@@ -25,6 +26,12 @@ async def run(browser, width):
     from test_website_sync import WebsiteSyncTests, _ago
     fixture = WebsiteSyncTests()
     fixture.setUp()
+    # Prices: Echo's Single Box goes to its Clover price, its Whole Set to 12 × that; Bear 吊卡 has no Clover item name, so it waits for an OK.
+    fixture.popcore_price(fixture.box, 20.99, 'Echo Clover', boxes=12)
+    fixture.popcore_price(fixture.item, 15.00)
+    fixture.woo.set_price(11, '19.99')
+    fixture.woo.set_price(12, '239.88')  # 12 boxes: the Whole Set follows its box
+    fixture.woo.set_price(20, '14.00')
     contexts = []
 
     async def open_as(role):
@@ -68,11 +75,15 @@ async def run(browser, width):
         await expect(changes.get_by_text('网站 Website 有货 in stock → POPCORE 14')).to_be_visible()
         await changes.get_by_text('3 website items have no POPCORE ID', exact=False).click()
         await expect(changes.get_by_text('SKU 6941848289407')).to_be_visible()  # a barcode, shown to find the item
+        prices = page.get_by_role('region', name='Prices', exact=True)
+        await expect(prices.get_by_text('网站 Website $19.99 → POPCORE $20.99')).to_be_visible()
+        held = page.get_by_role('region', name='Prices waiting for an OK')
+        await expect(held.get_by_text('$14.00 → $15.00: no Clover item name', exact=False)).to_be_visible()
         await fits(page, f'preview-{width}.png')
         assert fixture.woo.writes == []
 
         await sync.get_by_role('button', name='开启 Turn on').click()
-        await expect(page.get_by_text('POPCORE will write 6 stock numbers and 2 pickup lists', exact=False)).to_be_visible()
+        await expect(page.get_by_text('POPCORE will write 6 stock numbers, 2 prices and 2 pickup lists', exact=False)).to_be_visible()
         await page.get_by_role('button', name='Turn on', exact=True).click()
         await expect(sync.get_by_text('开 On')).to_be_visible()
         with fixture.connect() as con:  # web orders from the last hour count
@@ -81,6 +92,7 @@ async def run(browser, width):
             website_sync.set_state(con, 'orders_after', _ago(60))
         fixture.run_sync()
         assert fixture.woo.item(11)['stock_quantity'] == 14
+        assert [fixture.woo.item(wc_id)['regular_price'] for wc_id in (11, 12, 20)] == ['20.99', '251.88', '14.00']
         fixture.woo.order(601, [(12, 3)])  # the Whole Set option
         fixture.woo.order(602, [(20, 1)], modified=_ago(0))
         fixture.run_sync()
@@ -105,6 +117,20 @@ async def run(browser, width):
         await dialog.get_by_role('button', name='Settle').click()
         await expect(review.get_by_text('Every paid web order came out of stock.', exact=False)).to_be_visible()
         assert fixture.order_row(601)['state'] == 'dismissed'
+        # The manager OKs the price that waits; it goes with the next write.
+        held = page.get_by_role('region', name='Prices waiting for an OK')
+        await held.get_by_role('button', name='确认 OK').click()
+        await expect(page.get_by_text('$15.00', exact=True)).to_be_visible()
+        await page.get_by_role('button', name='Send', exact=True).click()
+        await expect(page.get_by_text('the new prices go with the next write', exact=False)).to_be_visible()
+        fixture.run_sync()
+        assert fixture.woo.item(20)['regular_price'] == '15.00'
+        await page.reload()
+        await expect(page.get_by_role('region', name='Prices waiting for an OK')).to_have_count(0)
+        prices = page.get_by_role('region', name='Prices', exact=True)
+        await prices.get_by_text('Prices POPCORE wrote lately').click()
+        await expect(prices.get_by_text('$14.00 → $15.00', exact=False)).to_be_visible()
+        await fits(page, f'prices-{width}.png')
 
         page = await open_as('staff')
         await page.goto(BASE + '/website')
@@ -146,5 +172,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: website sync preview, turning on, a web order waiting and settled, managers and staff '
-          'kept to their part, at 390 and 1440 px')
+    print('PASS: website sync preview, turning on, a web order waiting and settled, a price sent and one OK\'d '
+          'by a manager, managers and staff kept to their part, at 390 and 1440 px')

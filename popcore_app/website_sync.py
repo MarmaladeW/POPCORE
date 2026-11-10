@@ -1,4 +1,5 @@
-"""POPCORE owns the website's stock (owner, 2026-10-25 and 2026-11-01).
+"""POPCORE owns the website's stock (owner, 2026-10-25 and 2026-11-01) and the regular prices of its
+boxes and items (owner, 2026-11-10).
 
 popcore.ca (WooCommerce) takes its stock from POPCORE. Every website product and variation is
 linked by its POPCORE ID, the website's own field `_popcore_id` (owner, 2026-11-05 and 2026-11-07),
@@ -22,7 +23,20 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   WEBSITE_DELIVERY_STORE for delivery), back stock first and the floor last, as a separate
   Website order outside the store's sales and closing (owner, 2026-11-01). A cancelled order puts
   them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
-- Prices stay on the website (owner, 2026-11-01).
+- Prices (owner, 2026-11-10: "it should be POPCORE automatically sending price to the website too";
+  until then prices stayed on the website, owner 2026-11-01). A linked Single Box or simple product
+  gets its POPCORE product's price, which is its Clover price; a Whole Set gets boxes per set × that
+  box's price, since Clover stores no set price (owner, 2026-11-10). POPCORE writes the regular price
+  only, never the sale price. It never prices a confirmed design or a website Vault product: the
+  owner prices designs on the website.
+  An item whose POPCORE record is not a verified Clover item, or has no price, keeps its price.
+- A price change waits for a manager's OK on the Website page when it is a first price, when it is
+  over 30%, when the box or item has no Clover item name, when the website's Whole Set does not cost
+  POPCORE's boxes per set times its Single Box, or when the item's sale price would end or start
+  discounting. The other options of the same product wait with it, and an OK covers only the change
+  it was given for. A Daily Shop product (`_popcore_daily_pool`) is repriced only in the hour after the
+  daily reset (WEBSITE_DAILY_RESET, 20:00), so a deal in a customer's bag keeps its price that day.
+  Just before a price is written, its items are read again, so these checks see the website as it is.
 
 Nothing is written to the website until an admin turns the sync on. The background job runs every
 30 seconds: it reads new and changed orders first, then pushes only what changed since POPCORE
@@ -57,6 +71,15 @@ SHELF_LOCATIONS = ('floor', 'upstairs', 'warehouse')
 PICK_ORDER = ('upstairs', 'warehouse', 'floor')
 PICKUP_META = '_popcore_pickup_stores'
 ID_META = '_popcore_id'
+DAILY_META = '_popcore_daily_pool'
+# Marks of a website Vault product (popcore.ca's vault.md): its price is the owner's, never POPCORE's.
+VAULT_META, KIND_META = '_popcore_is_vault', '_popcore_kind'
+# POPCORE prices these; a confirmed design never (its POPCORE price only repeats the box's).
+PRICED_FORMS = ('random_box', 'ordinary', 'sealed_set')
+# A price change of more than this percentage waits for a manager's OK.
+PRICE_LOOK_PCT = 30
+# A Daily Shop product is repriced only this long after the daily reset.
+DAILY_WINDOW = timedelta(hours=1)
 # A paid order is one with date_paid; these statuses never take stock.
 NOT_TAKEN = ('pending', 'failed', 'checkout-draft', 'trash')
 REFRESH_EVERY = timedelta(hours=20)
@@ -93,12 +116,17 @@ def config():
     if not keep_back.isdigit():
         raise ValueError('WEBSITE_KEEP_BACK must be a whole number')
     delivery = os.environ.get('WEBSITE_DELIVERY_STORE', 'DT').strip().upper() or 'DT'
-    try:  # DT opens at noon (popcore.ca's store hours)
-        opens = datetime.strptime(os.environ.get('WEBSITE_SHOP_OPENS', '12:00').strip() or '12:00', '%H:%M').time()
-    except ValueError:
-        raise ValueError('WEBSITE_SHOP_OPENS must be a time such as 12:00') from None
     return {'url': url, 'key': key, 'secret': secret, 'keep_back': int(keep_back), 'delivery_store': delivery,
-            'opens': opens}
+            # DT opens at noon (popcore.ca's store hours); the Daily Shop resets at 20:00 Toronto time.
+            'opens': _clock('WEBSITE_SHOP_OPENS', '12:00'), 'daily_reset': _clock('WEBSITE_DAILY_RESET', '20:00')}
+
+
+def _clock(name, default):
+    """A Toronto time of day from the environment."""
+    try:
+        return datetime.strptime(os.environ.get(name, default).strip() or default, '%H:%M').time()
+    except ValueError:
+        raise ValueError(f'{name} must be a time such as {default}') from None
 
 
 def call(cfg, method, path, *, params=None, body=None, timeout=(5, 60)):
@@ -192,6 +220,19 @@ def _popcore_id(meta_data):
     return ''
 
 
+def _flag(item, key):
+    """A yes/1 product field from REST meta_data, as 1 or 0."""
+    return 1 if str(_meta(item, key) or '').strip().lower() in ('1', 'yes', 'true') else 0
+
+
+def _price(value):
+    """A WooCommerce price string in cents, or None when it has none."""
+    if value in (None, '') or isinstance(value, bool):
+        return None
+    cents = _cents(value)
+    return cents if cents is not None and cents >= 0 else None
+
+
 def _product_for_id(con, popcore_id):
     """The POPCORE product with this POPCORE ID (POPCORE keeps its IDs in products.sku), any case."""
     if not popcore_id:
@@ -214,13 +255,17 @@ def refresh_items(con, cfg):
     items = []
     for product in products:
         kind = product.get('type') if product.get('type') in ('simple', 'variable') else 'other'
+        # The Daily Shop pool and the Vault are marked on the product; its options follow it.
+        pool, vault = _flag(product, DAILY_META), _vault(product)
         items.append({'wc_id': product['id'], 'parent_id': None, 'kind': kind, 'sku': (product.get('sku') or '').strip(),
                       # A variable parent never holds an ID; its options do.
                       'popcore_id': _popcore_id(product.get('meta_data')) if kind != 'variable' else '',
                       'name': product.get('name') or '', 'status': product.get('status') or '',
                       'manage_stock': 1 if product.get('manage_stock') is True else 0,
                       'stock_quantity': product.get('stock_quantity'), 'stock_status': product.get('stock_status'),
-                      'pickup': json.dumps(_pickup(product.get('meta_data')))})
+                      'pickup': json.dumps(_pickup(product.get('meta_data'))),
+                      'regular_cents': _price(product.get('regular_price')), 'sale_cents': _price(product.get('sale_price')),
+                      'daily_pool': pool, 'vault': vault})
         if kind != 'variable':
             continue
         for variation in _all(cfg, f"/products/{product['id']}/variations", {}):
@@ -232,7 +277,9 @@ def refresh_items(con, cfg):
                           'status': variation.get('status') or '',
                           'manage_stock': 1 if variation.get('manage_stock') is True else 0,
                           'stock_quantity': variation.get('stock_quantity'),
-                          'stock_status': variation.get('stock_status'), 'pickup': None})
+                          'stock_status': variation.get('stock_status'), 'pickup': None,
+                          'regular_cents': _price(variation.get('regular_price')),
+                          'sale_cents': _price(variation.get('sale_price')), 'daily_pool': pool, 'vault': vault})
     # One ID is on at most one item (owner, 2026-11-05). An ID on two items links neither, since
     # both would show the same stock: they show sold out until the website is fixed.
     holders = Counter(item['popcore_id'].upper() for item in items if item['popcore_id'])
@@ -242,9 +289,11 @@ def refresh_items(con, cfg):
         for item in items:
             linked = item['popcore_id'] and holders[item['popcore_id'].upper()] == 1
             con.execute("""INSERT INTO website_items(wc_id, parent_id, kind, sku, popcore_id, name, status, manage_stock,
-                               stock_quantity, stock_status, pickup, product_id)
+                               stock_quantity, stock_status, pickup, product_id, regular_cents, sale_cents,
+                               daily_pool, vault)
                            VALUES (:wc_id, :parent_id, :kind, :sku, :popcore_id, :name, :status, :manage_stock,
-                               :stock_quantity, :stock_status, :pickup, :product_id)""",
+                               :stock_quantity, :stock_status, :pickup, :product_id, :regular_cents, :sale_cents,
+                               :daily_pool, :vault)""",
                         {**item, 'product_id': _product_for_id(con, item['popcore_id']) if linked else None})
         set_state(con, 'refreshed_at', _iso(_now()))
         set_state(con, 'refresh_requested', None)
@@ -366,7 +415,161 @@ def plan(con, cfg):
         current, wanted = json.loads(row['pickup'] or '[]'), sorted(pickup_by_parent[row['wc_id']])
         parents.append({'wc_id': row['wc_id'], 'kind': row['kind'], 'name': row['name'], 'popcore_id': row['popcore_id'],
                         'pickup': current, 'wanted': wanted, 'pickup_change': current != wanted})
+    _plan_prices(con, cfg, items)
     return items, parents
+
+
+# ── Prices (owner, 2026-11-10) ──────────────────────────────────────────────
+
+def _wanted_price(item, product, products, set_box):
+    """(cents, None) for the regular price POPCORE gives a linked item, or (None, why it keeps its own)."""
+    if item['vault'] or product['stock_form'] == 'confirmed_design':
+        return None, 'design'
+    if product['identity_status'] != 'verified' or product['stock_form'] not in PRICED_FORMS:
+        return None, 'not_clover'
+    if product['stock_form'] == 'sealed_set':
+        # Clover never stores a Whole Set's price: it is always the boxes per set times the single box's
+        # price (owner, 2026-11-10). The set record's own price is never read.
+        box = products.get(set_box.get(product['id']))
+        boxes = product['boxes_per_dan'] or (box and box['boxes_per_dan'])
+        if not (box and box['identity_status'] == 'verified' and boxes):
+            return None, 'no_price'
+        cents = _cents(box['price'])
+        return (boxes * cents, None) if cents and cents > 0 else (None, 'no_price')
+    cents = _cents(product['price'])
+    return (cents, None) if cents and cents > 0 else (None, 'no_price')
+
+
+def _price_reasons(item, product, products, set_box, options, before):
+    """Why a price change waits for a manager's OK, [] when it can go. before: {website item id: its price
+    before POPCORE's last write}."""
+    old, new, sale = item['regular_cents'], item['price'], item['sale_cents']
+    reasons = []
+    if not old:
+        # A first price makes an item the website could not sell before buyable.
+        reasons.append({'code': 'first_price'})
+    elif abs(new - old) * 100 > PRICE_LOOK_PCT * old:
+        reasons.append({'code': 'big_change', 'percent': round(100 * (new - old) / old)})
+    # A Whole Set's price is its box's times the boxes per set: the box's Clover item name vouches for both.
+    box = products.get(set_box.get(product['id'])) if product['stock_form'] == 'sealed_set' else product
+    if not (box and (box['clover_item_name'] or '').strip()):
+        reasons.append({'code': 'no_clover_name'})
+    if product['stock_form'] == 'sealed_set' and box and old:
+        single = next((other for other in options if other['product_id'] == box['id']), None)
+        boxes = product['boxes_per_dan'] or box['boxes_per_dan']
+        # The website's set must cost POPCORE's boxes per set at its Single Box's price: the price now, or the
+        # one POPCORE replaced, since the box may have been written in an earlier pass than its set.
+        singles = [cents for cents in (single and single['regular_cents'], single and before.get(single['wc_id'])) if cents]
+        if singles and boxes and not any(abs(old / cents - boxes) < 0.02 for cents in singles):
+            counts = [round(old / cents) for cents in singles if abs(old / cents - round(old / cents)) < 0.02]
+            reasons.append({'code': 'set_size', 'popcore': boxes, 'website': counts[0] if counts else None,
+                            'single_cents': singles[0]})
+    # Unless the sale discounts before and after, the change ends it (WooCommerce deletes a sale price
+    # at or above the new price) or starts it again (and the Dex emails the product's followers).
+    if sale is not None and not (old is not None and sale < old and sale < new):
+        reasons.append({'code': 'sale_stops' if sale >= new else 'sale_starts', 'sale_cents': sale})
+    return reasons
+
+
+def _daily_window(cfg):
+    """Whether this is the hour after the Daily Shop's reset, when a pooled product may be repriced."""
+    local = _now().astimezone(TORONTO)
+    reset = datetime.combine(local.date(), cfg['daily_reset'], TORONTO)
+    if local < reset:
+        reset -= timedelta(days=1)
+    return local - reset < DAILY_WINDOW
+
+
+def _plan_prices(con, cfg, items):
+    """Give each linked item its price and, for a change, what happens to it: 'send', 'held' for a
+    manager's OK, or 'daily' (a Daily Shop product waiting for the hour after the reset)."""
+    products = {row['id']: row for row in con.execute(
+        'SELECT id, stock_form, identity_status, price, clover_item_name, boxes_per_dan FROM products')}
+    set_box = {row[0]: row[1] for row in con.execute(
+        """SELECT source_product_id, target_product_id FROM product_conversions c
+           WHERE version=(SELECT MAX(version) FROM product_conversions WHERE source_product_id=c.source_product_id)""")}
+    oks = {row[0]: (row[1], row[2]) for row in con.execute('SELECT wc_id, prices, approved_by FROM website_price_oks')}
+    before = {row[0]: row[1] for row in con.execute(
+        """SELECT wc_id, old_cents FROM website_price_writes w
+           WHERE id=(SELECT MAX(id) FROM website_price_writes WHERE wc_id=w.wc_id)""")}
+    by_product = {}
+    for item in items:
+        by_product.setdefault(item['parent_id'] or item['wc_id'], []).append(item)
+    window = _daily_window(cfg)
+    for wc_id, options in by_product.items():
+        for item in options:
+            product = products.get(item['product_id']) if item['product_id'] else None
+            item['price'], item['price_left'] = (_wanted_price(item, product, products, set_box) if product
+                                                 else (None, None))
+            item['price_change'] = item['price'] is not None and item['price'] != item['regular_cents']
+            item['price_reasons'] = (_price_reasons(item, product, products, set_box, options, before)
+                                     if item['price_change'] else [])
+            item['price_state'] = item['price_ok_by'] = None
+        changes = [item for item in options if item['price_change']]
+        # The options of one product wait together, so a box and its Whole Set never part ways.
+        held = any(item['price_reasons'] for item in changes)
+        ok = oks.get(wc_id)
+        approved = ok[1] if held and ok and ok[0] == _ok_key(changes) else None
+        for item in changes:
+            if held and not item['price_reasons']:
+                item['price_reasons'] = [{'code': 'other_option'}]
+            item['price_ok_by'] = approved
+            item['price_state'] = ('held' if held and not approved
+                                   else 'daily' if item['daily_pool'] and not window else 'send')
+
+
+def _ok_key(changes):
+    """What a manager's OK covers: each item's website price and sale price, and POPCORE's new price.
+    Any of them changing asks again."""
+    return json.dumps(sorted([item['wc_id'], item['regular_cents'], item['sale_cents'], item['price']]
+                             for item in changes))
+
+
+def _money(cents):
+    return f'{cents // 100}.{cents % 100:02d}'
+
+
+def approve_prices(con, cfg, wc_id, key, actor_sub):
+    """A manager's OK for one website product's held price changes, exactly as the page showed them."""
+    items, _ = plan(con, cfg)
+    held = [item for item in items
+            if (item['parent_id'] or item['wc_id']) == wc_id and item['price_change'] and item['price_reasons']]
+    if not held:
+        raise WebsiteError('No price of this product waits for an OK.', 'not_waiting')
+    if _ok_key(held) != key:
+        raise WebsiteError('This product’s prices changed since the page was loaded. Look again.', 'prices_changed')
+    con.execute("""INSERT INTO website_price_oks(wc_id, prices, approved_by) VALUES (?, ?, ?)
+                   ON CONFLICT(wc_id) DO UPDATE SET prices=excluded.prices, approved_by=excluded.approved_by,
+                       approved_at=datetime('now')""", (wc_id, key, actor_sub))
+
+
+def _vault(product):
+    return 1 if _flag(product, VAULT_META) or _meta(product, KIND_META) == 'confirmed_design' else 0
+
+
+def _reread_prices(con, cfg, items):
+    """Read the items about to be repriced, and their products, from the website just before the write,
+    so the checks judge the price, sale price and Daily Shop mark as they are now rather than as the
+    last catalogue read found them. False when an item is gone or carries another POPCORE ID since."""
+    products = sorted({item['parent_id'] or item['wc_id'] for item in items})
+    fresh = {}
+    for start in range(0, len(products), BATCH):
+        for product in _all(cfg, '/products', {'include': ','.join(map(str, products[start:start + BATCH])),
+                                               'status': 'any'}):
+            fresh[product['id']] = product
+    for parent in sorted({item['parent_id'] for item in items if item['parent_id']}):
+        ids = sorted(item['wc_id'] for item in items if item['parent_id'] == parent)
+        for variation in _all(cfg, f'/products/{parent}/variations', {'include': ','.join(map(str, ids))}):
+            fresh[variation['id']] = variation
+    for item in items:
+        row, product = fresh.get(item['wc_id']), fresh.get(item['parent_id'] or item['wc_id'])
+        if row is None or product is None or _popcore_id(row.get('meta_data')).upper() != item['popcore_id'].upper():
+            return False
+        con.execute('UPDATE website_items SET regular_cents=?, sale_cents=?, daily_pool=?, vault=? WHERE wc_id=?',
+                    (_price(row.get('regular_price')), _price(row.get('sale_price')), _flag(product, DAILY_META),
+                     _vault(product), item['wc_id']))
+    con.commit()
+    return True
 
 
 def _available(item):
@@ -384,7 +587,30 @@ def preview(con, cfg):
     no_ids = [dict(row) for row in con.execute(
         """SELECT wc_id, parent_id, sku, name FROM website_items
            WHERE kind IN ('simple', 'variation') AND popcore_id = '' ORDER BY name""")]
+    prices = [item for item in items if item['price_change']]
+    names = {row[0]: row[1] for row in con.execute("SELECT wc_id, name FROM website_items WHERE kind != 'variation'")}
+    held = {}
+    for item in prices:
+        if item['price_reasons'] and not item['price_ok_by']:
+            wc_id = item['parent_id'] or item['wc_id']
+            group = held.setdefault(wc_id, {'wc_id': wc_id, 'name': names.get(wc_id, item['name']), 'options': [],
+                                            'changes': []})
+            group['changes'].append(item)
+            group['options'].append({key: item[key] for key in ('wc_id', 'popcore_id', 'name', 'regular_cents',
+                                                                 'sale_cents', 'price', 'price_reasons')})
+    for group in held.values():
+        group['ok_key'] = _ok_key(group.pop('changes'))
+    price_keys = ('wc_id', 'parent_id', 'popcore_id', 'name', 'regular_cents', 'sale_cents', 'price', 'price_state')
     return {
+        # Price changes: sent with the next write, held for a manager's OK, or waiting for the Daily Shop's reset.
+        'price_changes': len(prices),
+        'price_send': sum(1 for item in prices if item['price_state'] == 'send'),
+        'price_held': sum(1 for item in prices if item['price_state'] == 'held'),
+        'price_daily': sum(1 for item in prices if item['price_state'] == 'daily'),
+        'price_left': {why: sum(1 for item in items if item['price_left'] == why)
+                       for why in ('design', 'not_clover', 'no_price')},
+        'prices': [{key: item[key] for key in price_keys} for item in prices[:500]],
+        'held_prices': sorted(held.values(), key=lambda group: group['name'].lower())[:200],
         'items': len(items) - len(unknown_ids),
         'unknown_id': sum(1 for item in unknown_ids if not item['shared']),
         'shared_id': sum(1 for item in unknown_ids if item['shared']), 'no_id': len(no_ids),
@@ -407,33 +633,60 @@ def preview(con, cfg):
 
 
 def push(con, cfg):
-    """Write the numbers and pickup stores that changed. Returns how many writes the website took."""
+    """Write the numbers, prices and pickup stores that changed. Returns how many writes the website took."""
     items, parents = plan(con, cfg)
-    updates = {}  # endpoint -> [{id, ...}]
+    pricing = [item for item in items if item['price_state'] == 'send']
+    if pricing:
+        if _reread_prices(con, cfg, pricing):
+            reread = {item['wc_id'] for item in pricing}
+            items, parents = plan(con, cfg)
+            for item in items:
+                if item['price_state'] == 'send' and item['wc_id'] not in reread:
+                    item['price_state'] = None  # it waits for the next pass and its own read
+        else:
+            # The website changed under POPCORE: no price goes until the whole catalogue is read again.
+            set_state(con, 'refresh_requested', '1')
+            con.commit()
+            for item in pricing:
+                item['price_state'] = None
+    updates = {}  # endpoint -> {id: {id, ...}}
     for item in items:
+        path = f"/products/{item['parent_id']}/variations/batch" if item['parent_id'] else '/products/batch'
         if item['stock_change']:
-            path = f"/products/{item['parent_id']}/variations/batch" if item['parent_id'] else '/products/batch'
-            updates.setdefault(path, {})[item['wc_id']] = {'id': item['wc_id'], 'manage_stock': True,
-                                                           'stock_quantity': item['quantity']}
+            updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']}).update(
+                manage_stock=True, stock_quantity=item['quantity'])
+        if item['price_state'] == 'send':
+            # The regular price only: a sale price stays the website's.
+            updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']})['regular_price'] = \
+                _money(item['price'])
     for parent in parents:
         if parent['pickup_change']:
             entry = updates.setdefault('/products/batch', {}).setdefault(parent['wc_id'], {'id': parent['wc_id']})
             entry['meta_data'] = [{'key': PICKUP_META, 'value': parent['wanted']}]
+    by_id = {item['wc_id']: item for item in items}
     wanted = {item['wc_id']: item['quantity'] for item in items}
     pickups = {parent['wc_id']: parent['wanted'] for parent in parents}
     written = 0
-    for path, by_id in updates.items():
-        rows = list(by_id.values())
+    for path, sending in updates.items():
+        rows = list(sending.values())
         for start in range(0, len(rows), BATCH):
             data, _ = call(cfg, 'POST', path, body={'update': rows[start:start + BATCH]})
             for result in (data or {}).get('update') or ():
                 wc_id = result.get('id')
                 error = result.get('error')
-                if error or wc_id not in by_id:
+                if error or wc_id not in sending:
                     con.execute('UPDATE website_items SET error=? WHERE wc_id=?',
                                 (str((error or {}).get('message') or 'Not updated')[:300], wc_id))
                     continue
-                sent = by_id[wc_id]
+                sent = sending[wc_id]
+                if 'regular_price' in sent:
+                    item = by_id[wc_id]
+                    con.execute("UPDATE website_items SET regular_cents=?, error=NULL, pushed_at=datetime('now') WHERE wc_id=?",
+                                (item['price'], wc_id))
+                    con.execute("""INSERT INTO website_price_writes(wc_id, popcore_id, product_id, name, old_cents, new_cents,
+                                       approved_by) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                (wc_id, item['popcore_id'], item['product_id'], item['name'], item['regular_cents'],
+                                 item['price'], item['price_ok_by']))
                 if 'stock_quantity' in sent:
                     con.execute("""UPDATE website_items SET manage_stock=1, stock_quantity=?, stock_status=?,
                                        error=NULL, pushed_at=datetime('now') WHERE wc_id=?""",
@@ -802,6 +1055,7 @@ def status(con):
         'url': cfg['url'] if cfg else None, 'keep_back': cfg['keep_back'] if cfg else None,
         'delivery_store': cfg['delivery_store'] if cfg else None,
         'shop_opens': cfg['opens'].strftime('%H:%M') if cfg else None,
+        'daily_reset': cfg['daily_reset'].strftime('%H:%M') if cfg else None,
         'report': [_report_state(con, cfg, store_id, codes[store_id])
                    for store_id in sorted(live, key=codes.get)] if cfg else [],
         'enabled': enabled(con), 'since': state(con, 'since'), 'switched_at': state(con, 'switched_at'),
@@ -811,6 +1065,9 @@ def status(con):
         'last_error': json.loads(error) if error else None,
         'live_stores': sorted(codes[store_id] for store_id in live),
         'push_errors': con.execute('SELECT COUNT(*) FROM website_items WHERE error IS NOT NULL').fetchone()[0],
+        'price_writes': [dict(row) for row in con.execute(
+            """SELECT wc_id, popcore_id, name, old_cents, new_cents, approved_by, written_at FROM website_price_writes
+               ORDER BY id DESC LIMIT 30""")],
         'orders': {'recorded': counts.get('recorded', 0),
                    'needs_review': counts.get('needs_review', 0) + counts.get('cancel_failed', 0),
                    'cancelled': counts.get('cancelled', 0), 'dismissed': counts.get('dismissed', 0)},

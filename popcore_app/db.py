@@ -2110,6 +2110,7 @@ def _get_migrations():
         ('add_regular_since_to_employees',             _migration_add_regular_since_to_employees),
         ('add_is_training_to_employees',               _migration_add_is_training_to_employees),
         ('website_items_popcore_id',                   _migration_website_items_popcore_id),
+        ('website_prices',                             _migration_website_prices),
     ]
 
 
@@ -2219,6 +2220,43 @@ def _migration_website_items_popcore_id(con, cur):
     cur.execute('DELETE FROM website_items')
     cur.execute("DELETE FROM website_state WHERE key='refreshed_at'")
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_items_popcore_id')")
+
+
+def _migration_website_prices(con, cur):
+    # POPCORE writes the website's regular prices too (owner, 2026-11-10); see website_sync.py.
+    # website_items keeps each item's regular and sale price as last read or written, and whether its
+    # product is in the Daily Shop pool or is a Vault product.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_items)')}
+    for name, kind in (('regular_cents', 'INTEGER'), ('sale_cents', 'INTEGER'),
+                       ('daily_pool', 'INTEGER NOT NULL DEFAULT 0 CHECK (daily_pool IN (0, 1))'),
+                       ('vault', 'INTEGER NOT NULL DEFAULT 0 CHECK (vault IN (0, 1))')):
+        if name not in columns:
+            cur.execute(f'ALTER TABLE website_items ADD COLUMN {name} {kind}')
+    # A manager's OK for a held price change: one per website product (a simple product or a variable
+    # parent), for exactly the changes it names (website_sync._ok_key: each item's website price and sale
+    # price, and POPCORE's new price).
+    cur.execute("""CREATE TABLE IF NOT EXISTS website_price_oks (
+        wc_id       INTEGER PRIMARY KEY,
+        prices      TEXT    NOT NULL,
+        approved_by TEXT    NOT NULL,
+        approved_at TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    # Every regular price POPCORE wrote, with the website's price before, so a change can be explained or undone.
+    cur.execute("""CREATE TABLE IF NOT EXISTS website_price_writes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        wc_id       INTEGER NOT NULL,
+        popcore_id  TEXT    NOT NULL,
+        product_id  INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        name        TEXT    NOT NULL DEFAULT '',
+        old_cents   INTEGER,
+        new_cents   INTEGER NOT NULL,
+        approved_by TEXT,
+        written_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    # The saved catalogue read holds no prices: the products are read again before anything is written.
+    cur.execute('DELETE FROM website_items')
+    cur.execute("DELETE FROM website_state WHERE key='refreshed_at'")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_prices')")
 
 
 def _migration_inventory_viewers(con, cur):
