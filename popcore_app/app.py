@@ -153,9 +153,9 @@ if not os.environ.get('DISABLE_SCHEDULER') or os.environ.get('CLOVER_BACKGROUND_
         _clover_scheduler.start()
         atexit.register(lambda: _clover_scheduler.shutdown(wait=False))
 
-# ─── Website stock sync (popcore.ca) ─────────────────────────────────────────
-# Reads web orders and pushes stock every 30 seconds once WEBSITE_* is set; it writes to the
-# website only after an admin turns the sync on (docs/website-sync.md).
+# ─── Website stock and price sync (popcore.ca) ───────────────────────────────
+# Reads web orders and pushes stock and prices every 30 seconds once WEBSITE_* is set; it writes to
+# the website only after an admin turns the sync on (docs/website-sync.md).
 if not os.environ.get('DISABLE_SCHEDULER'):
     import atexit
     from apscheduler.schedulers.background import BackgroundScheduler
