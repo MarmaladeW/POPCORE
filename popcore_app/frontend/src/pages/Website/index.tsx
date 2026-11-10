@@ -3,8 +3,8 @@ import { Alert, Button, Input, Modal, Popconfirm, Skeleton, message } from 'antd
 
 import {
   dismissWebsiteOrder, getWebsiteOrders, getWebsitePreview, getWebsiteStatus, okWebsitePrices, problemText, refreshWebsite,
-  retryWebsiteOrder, switchWebsite, type PriceReason, type WebsiteHeldPrice, type WebsiteOrder, type WebsitePreview,
-  type WebsiteStatus,
+  retryWebsiteOrder, switchWebsite, type PriceReason, type WebsiteChange, type WebsiteHeldPrice, type WebsiteOrder,
+  type WebsitePreview, type WebsiteStatus,
 } from '../../api/website'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
@@ -44,6 +44,10 @@ function reasonText(reason: PriceReason) {
 const optionName = (name: string, group: WebsiteHeldPrice) => name.startsWith(`${group.name} — `) ? `${name.slice(group.name.length + 3)} ` : ''
 const stockText = (row: { manage_stock: number; stock_quantity: number | null; stock_status: string | null }) =>
   row.manage_stock ? String(row.stock_quantity ?? 0) : row.stock_status === 'instock' ? '有货 in stock' : '缺货 sold out'
+// Where a Whole Set number comes from: sealed sets, and the whole sets the floor's single boxes are sure to have.
+// The floor figure is a minimum, never a count of the floor's sets (owner, 2026-11-10).
+const setText = (row: WebsiteChange) => row.sealed_sets === null ? ''
+  : ` · 整端 ${row.sealed_sets} sealed${row.floor_sets ? ` + at least ${row.floor_sets} from floor boxes` : ', none sure from floor boxes'}${row.set_size ? ` (${row.set_size} per set)` : ' (boxes per set unknown)'}`
 
 // 网站 Website: popcore.ca takes its stock from POPCORE, and paid web orders take their items out of
 // stock as Website orders, apart from the stores' closing (owner, 2026-11-01). POPCORE also sends the
@@ -147,8 +151,12 @@ export default function WebsitePage() {
         {' '}{preview.sold_out} sell out, {preview.low_stock} have 1–2 left, and {preview.pickup_changes} products change their pickup stores.
         Back-in-stock writes email their followers; low stock emails the website’s low-stock recipient unless it is off.
       </p>}
+      {preview.floor_sets.items + preview.floor_sets.unknown_size > 0 && <p className="pc-quiet">
+        {preview.floor_sets.items ? `${preview.floor_sets.items} Whole Sets count ${preview.floor_sets.sets} sets the floor boxes are sure to have: with N boxes per set, a store's floor has at least one whole set from 2N + 1 boxes and at least two from 3N + 1. There may be more; only the sure ones count. ` : ''}
+        {preview.floor_sets.unknown_size ? `${preview.floor_sets.unknown_size} Whole Sets have no boxes per set, so they count sealed sets only.` : ''}
+      </p>}
       {changes.map(row => <ListRow key={row.wc_id} label={row.popcore_id} title={row.name}
-        meta={`网站 Website ${stockText(row)} → POPCORE ${row.quantity}`} />)}
+        meta={`网站 Website ${stockText(row)} → POPCORE ${row.quantity}${setText(row)}`} />)}
       {preview.changes.length > 20 && <Button type="link" onClick={() => setShowAll(value => !value)}>
         {showAll ? 'Show fewer' : `Show all ${preview.changes.length}`}</Button>}
       {preview.unknown_ids.length > 0 && <details className="pc-website-unknown">

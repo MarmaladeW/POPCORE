@@ -27,6 +27,7 @@ from inventory_commands import post_inventory  # noqa: E402
 from scripts.inventory_opening import main as _opening_cli  # noqa: E402
 
 LIVE_DATE = '2026-11-01'
+ADMIN = {'sub': 'auth0|admin', 'https://popcore/role': 'admin'}
 def _ago(minutes):
     """A website time (GMT) some minutes ago: the sync rereads only the last few minutes."""
     return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime('%Y-%m-%dT%H:%M:%S')
@@ -234,6 +235,40 @@ class WebsiteSyncTests(IsolatedApiCase):
 
     def run_sync(self):
         website_sync.background_sync()
+
+    def post(self, kind, product, location_id, quantity, unit):
+        """Receive stock onto a live shelf, or consume it from one."""
+        side = 'to' if kind == 'receipt' else 'from'
+        with closing(self.connect()) as con:
+            row = con.execute("""SELECT version FROM inventory_balances WHERE product_id=? AND location_id=?
+                                 AND disposition='saleable'""", (product, location_id)).fetchone()
+            post_inventory(con, {'kind': kind, 'business_date': LIVE_DATE, 'lines': [{
+                'product_id': product, 'unit': unit, 'quantity': quantity, f'{side}_location_id': location_id,
+                f'{side}_disposition': 'saleable', 'expected_versions': {side: row[0] if row else 0}}]},
+                actor=ADMIN, request_key=f'test:{kind}:{product}:{location_id}:{quantity}')
+
+    def open_mk(self, floor_boxes):
+        """MK goes live with `floor_boxes` Echo boxes on its floor and nothing else."""
+        with closing(self.connect()) as con:
+            mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            locations = {row[0]: row[1] for row in con.execute(
+                'SELECT code, id FROM inventory_locations WHERE store_id=?', (mk,))}
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|admin', ?)", (mk,))
+            con.execute("""INSERT INTO opening_counts(location_id, product_id, stock_form, quantity, counted_by)
+                           VALUES (?, ?, 'random_box', ?, 'auth0|admin')""", (locations['floor'], self.box, floor_boxes))
+            con.commit()
+        empty = [arg for code in sorted(locations) if code != 'floor' for arg in ('--empty-location', f'MK-{code}')]
+        with redirect_stdout(io.StringIO()):
+            _opening_cli(['intake', '--db', db.DB_PATH, '--from-app', '--store', 'MK', *empty,
+                          '--business-date', LIVE_DATE, '--actor-sub', 'auth0|admin',
+                          '--apply', '--backup', str(Path(self.tempdir.name) / 'before-mk.db')])
+        return mk, locations
+
+    def preview(self):
+        return self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+
+    def change(self, preview, wc_id):
+        return next(change for change in preview['changes'] if change['wc_id'] == wc_id)
 
     def balance(self, product, code):
         with closing(self.connect()) as con:
@@ -485,6 +520,93 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.run_sync()
         self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()['items'], 5)
+
+    def test_floor_sets_follow_the_owners_rule(self):
+        """Owner, 2026-11-10: with 12 boxes per set, 25 floor boxes mean at least one whole set and 37 at
+        least two. The rule gives that minimum, not how many sets there are."""
+        cases = {(0, 12): 0, (24, 12): 0, (25, 12): 1, (36, 12): 1, (37, 12): 2, (49, 12): 3,
+                 (13, 6): 1, (12, 6): 0, (100, None): 0, (100, 0): 0, (-3, 12): 0}
+        self.assertEqual({case: website_sync.floor_sets(*case) for case in cases}, cases)
+
+    def test_a_whole_set_counts_its_sealed_sets_and_the_sets_its_floor_boxes_are_sure_to_have(self):
+        self.post('receipt', self.box, self.locations['floor'], 15, 'box')  # 25 boxes on DT's floor
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        preview = self.preview()
+        whole = self.change(preview, 12)
+        self.assertEqual((whole['quantity'], whole['sealed_sets'], whole['floor_sets'], whole['set_size']), (3, 2, 1, 12))
+        # The Single Box still counts every loose box; other items carry no set facts.
+        single = self.change(preview, 11)
+        self.assertEqual((single['quantity'], single['sealed_sets'], single['floor_sets']), (29, None, None))
+        self.assertEqual(preview['floor_sets'], {'items': 1, 'sets': 1, 'unknown_size': 0})
+        # Boxes kept in an opened set are not loose: 25 - 1 = 24 floor boxes are not sure to have a whole set.
+        with closing(self.connect()) as con:
+            document = con.execute("SELECT id FROM inventory_documents WHERE kind='opening'").fetchone()[0]
+            con.execute("""INSERT INTO inventory_open_sets(opening_document_id, random_product_id, location_id, purpose,
+                               remaining_qty) VALUES (?, ?, ?, 'customer_tray', 1)""",
+                        (document, self.box, self.locations['floor']))
+            con.commit()
+        self.assertEqual(self.change(self.preview(), 12)['floor_sets'], 0)
+
+    def test_floor_sets_are_counted_store_by_store_after_the_shop_hold(self):
+        self.post('receipt', self.box, self.locations['floor'], 15, 'box')  # DT floor: 25 boxes
+        mk, _ = self.open_mk(25)
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        # At least one set at each store: 2, not the at least 3 that 50 boxes in one place would be sure of.
+        whole = self.change(self.preview(), 12)
+        self.assertEqual((whole['sealed_sets'], whole['floor_sets'], whole['quantity']), (2, 2, 4))
+        # DT's best report day sold 2 boxes and today is not reported: DT's 23 floor boxes are not sure of a set.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO daily_sales(product_id, date, store, qty_pos, qty_sold) VALUES (?, '2026-05-20', 'DT', 2, 2)",
+                        (self.box,))
+            con.commit()
+        moment = datetime(2026, 11, 1, 13, 0, tzinfo=website_sync.TORONTO).astimezone(timezone.utc)
+        with patch.object(website_sync, '_now', return_value=moment):
+            whole = self.change(self.preview(), 12)
+        self.assertEqual((whole['sealed_sets'], whole['floor_sets'], whole['quantity']), (2, 1, 3))
+
+    def test_a_whole_set_with_an_unknown_set_size_counts_no_floor_sets(self):
+        with closing(self.connect()) as con:
+            box = self._product(con, 'PM0400', 'Moon', 'random_box', 'box')
+            self._product(con, 'PM0400-SET', 'Moon 整端', 'sealed_set', 'set')  # no conversion recorded
+            con.commit()
+        self.woo.product(15, kind='variable', name='Moon')
+        self.woo.variation(15, 16, 'PM0400-SET', 'Whole Set')
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        preview = self.preview()
+        whole = self.change(preview, 16)
+        self.assertEqual((whole['quantity'], whole['sealed_sets'], whole['floor_sets'], whole['set_size']), (0, 0, 0, None))
+        self.assertEqual(preview['floor_sets']['unknown_size'], 1)
+        # Without a conversion, the box's own boxes per set is the set size.
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET boxes_per_dan=6 WHERE id=?', (box,))
+            con.commit()
+        self.assertEqual(self.change(self.preview(), 16)['set_size'], 6)
+
+    def test_when_the_only_sets_are_floor_sets_an_order_waits_for_a_manager(self):
+        """Owner, 2026-11-10: a web Whole Set order the store cannot fill from a sealed set asks a manager."""
+        # A listing with only the Whole Set option, so its pickup stores come from sets alone.
+        self.woo.variations[10].pop(12)
+        self.woo.product(15, kind='variable', name='Echo whole set')
+        self.woo.variation(15, 12, 'PM0100-SET', 'Whole Set')
+        self.post('consume', self.set, self.locations['upstairs'], 2, 'set')
+        self.turn_on()
+        self.assertEqual((self.woo.item(12)['stock_quantity'], website_sync._pickup(self.woo.item(15)['meta_data'])),
+                         (0, []))
+        self.post('receipt', self.box, self.locations['floor'], 15, 'box')  # 25 floor boxes: at least one set
+        self.run_sync()
+        self.assertEqual((self.woo.item(12)['stock_quantity'], website_sync._pickup(self.woo.item(15)['meta_data'])),
+                         (1, ['dt']))
+        self.woo.order(507, [(12, 1)])
+        self.run_sync()
+        order = self.order_row(507)
+        self.assertEqual((order['state'], order['problem']), ('needs_review', 'not_enough_stock'))
+        # Nothing is taken, and the waiting order holds its set off the website.
+        self.assertEqual((self.balance(self.box, 'floor'), self.balance(self.set, 'upstairs')), (25, 0))
+        self.assertEqual(self.woo.item(12)['stock_quantity'], 0)
+        self.assertEqual(self.woo.item(11)['stock_quantity'], 29)
 
     def test_keep_back_and_opened_sets_lower_the_website_number(self):
         with closing(self.connect()) as con:

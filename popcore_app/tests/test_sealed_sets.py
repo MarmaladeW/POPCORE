@@ -100,6 +100,43 @@ class SealedSetTests(IsolatedApiCase):
         with self.assertRaises(SealedSetError):
             apply_sealed_sets(db.DB_PATH, backup_path=None)
 
+    def test_named_blind_boxes_get_their_sets_and_the_rest_say_why(self):
+        """The website's Whole Set options name the blind boxes that need a sealed set (2026-11-10): only those
+        are created, a named product is never retyped, and running it again creates nothing."""
+        with closing(self.connect()) as con:
+            self._product(con, 'BOX-4', '别的盲盒', 'Other Box', '盲盒', 6, 10, 'random_box', 'box', 'verified')
+            self._product(con, 'ORD-1', '挂件', 'Pendant', '周边', None, 30, 'ordinary', 'piece', 'verified')
+            con.commit()
+        names = self.folder / 'boxes.txt'
+        names.write_text('# Whole Set options\nbox-1   # Crybaby Vacation\nBOX-2\n\nBOX-3\nORD-1 # not a blind box\n'
+                         'NOPE-9\n', encoding='utf-8')
+        before = self.snapshot(('products', 'product_conversions'))
+        report = sealed_cli(['--db', db.DB_PATH, '--boxes-file', str(names)])
+        self.assertEqual(self.snapshot(('products', 'product_conversions')), before)
+        self.assertEqual((report['named'], [item['set_sku'] for item in report['items']], report['done']),
+                         (5, ['BOX-1-SET'], []))
+        self.assertEqual({row['sku']: row['code'] for row in report['waiting']},
+                         {'BOX-2': 'unverified', 'BOX-3': 'no_set_size', 'ORD-1': 'not_blind_box', 'NOPE-9': 'not_found'})
+        applied = sealed_cli(['--db', db.DB_PATH, '--boxes-file', str(names), '--box', 'BOX-3',
+                              '--apply', '--backup', str(self.folder / 'named.db')])
+        self.assertEqual((applied['applied'], [item['set_sku'] for item in applied['items']]), (True, ['BOX-1-SET']))
+        with closing(self.connect()) as con:
+            self.assertIsNone(con.execute("SELECT id FROM products WHERE sku='BOX-4-SET'").fetchone())  # not named
+            self.assertEqual(con.execute("SELECT stock_form FROM products WHERE sku='ORD-1'").fetchone()[0], 'ordinary')
+            self.assertEqual(tuple(con.execute('SELECT stock_form, identity_status FROM products WHERE id=?',
+                                               (self.waiting,)).fetchone()), (None, 'unverified'))
+        # A second run finds the set made and creates nothing.
+        again = sealed_cli(['--db', db.DB_PATH, '--box', 'BOX-1'])
+        self.assertEqual((again['items'], [row['sku'] for row in again['done']], again['ready_to_apply']),
+                         ([], ['BOX-1'], False))
+        rerun = sealed_cli(['--db', db.DB_PATH, '--box', 'BOX-1', '--apply', '--backup', str(self.folder / 'again.db')])
+        self.assertFalse(rerun['applied'])
+        self.assertFalse((self.folder / 'again.db').exists())
+        empty = self.folder / 'empty.txt'
+        empty.write_text('# nothing\n', encoding='utf-8')
+        with self.assertRaises(SystemExit):
+            sealed_cli(['--db', db.DB_PATH, '--boxes-file', str(empty)])
+
     def test_cli_defaults_to_a_read_only_dry_run(self):
         before = self.snapshot(('products', 'product_series', 'product_conversions'))
         report = sealed_cli(['--db', db.DB_PATH])

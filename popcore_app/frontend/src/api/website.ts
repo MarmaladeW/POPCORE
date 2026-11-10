@@ -21,6 +21,9 @@ export interface WebsiteStatus {
 export interface WebsiteChange {
   wc_id: number; parent_id: number | null; popcore_id: string; name: string; product_id: number | null
   manage_stock: number; stock_quantity: number | null; stock_status: string | null; quantity: number
+  // A Whole Set only (null otherwise): its sealed sets, the whole sets its floor boxes are sure to have (at least)
+  // (owner, 2026-11-10), and its boxes per set (null when unknown: the floor then adds none).
+  sealed_sets: number | null; floor_sets: number | null; set_size: number | null
 }
 export interface WebsitePreview {
   // items: linked; unknown_id: a POPCORE ID POPCORE does not have; shared_id: an ID on more than one
@@ -28,6 +31,7 @@ export interface WebsitePreview {
   items: number; unknown_id: number; shared_id: number; no_id: number; stock_changes: number; back_in_stock: number
   sold_out: number; low_stock: number; pickup_changes: number; changes: WebsiteChange[]
   shop_hold: { items: number; units: number }
+  floor_sets: { items: number; sets: number; unknown_size: number }
   pickup: Array<{ wc_id: number; name: string; popcore_id: string; pickup: string[]; wanted: string[] }>
   unknown_ids: Array<{ wc_id: number; parent_id: number | null; popcore_id: string; name: string; shared: boolean }>
   // The website's SKU here is a barcode (or empty), shown only to find the item.

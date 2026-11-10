@@ -1,6 +1,6 @@
 # Website stock and price sync (popcore.ca)
 
-Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
+Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10); Whole Sets also count the whole sets floor boxes are sure to have since branch `claude/website-whole-sets` (2026-11-10). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
 
 POPCORE owns stock (owner, 2026-10-25) and, since 2026-11-10, the regular prices of linked boxes, Whole Sets and items. popcore.ca (WooCommerce) takes its stock numbers and those prices from POPCORE, and paid web orders take their items out of POPCORE stock. Everything runs on the POPCORE side through WooCommerce's REST API; there is no website plugin. Code: `popcore_app/website_sync.py`, routes in `blueprints/website.py`, page 网站 Website (`/website`).
 
@@ -20,7 +20,7 @@ Each website product and variation carries its POPCORE ID in its own field, `_po
 | Website item | POPCORE ID | POPCORE product |
 |---|---|---|
 | Simple product, or the Single Box option | `PM0123` | the product (a blind box counts loose boxes) |
-| Whole Set option | `PM0123-SET` | its sealed set (整端), in sets |
+| Whole Set option | `PM0123-SET` | its sealed set (整端), in sets, plus the whole sets its floor boxes are sure to have ([Whole Sets](#whole-sets)) |
 | A design (Vault) | `PM0123-05` | the confirmed design, in pieces |
 | A colour or size twin | its own ID | that product |
 
@@ -30,7 +30,7 @@ Each website product and variation carries its POPCORE ID in its own field, `_po
 
 There are four cases where an item does not link:
 
-- **A POPCORE ID that POPCORE does not have.** The item shows **sold out**, because POPCORE holds none of it. Most of these are Whole Sets nobody counted as sets: the floor keeps blind boxes as boxes, and a sealed set exists only once whole sets are counted upstairs. Once POPCORE has the product, the next catalogue read links it. The Website page lists these items.
+- **A POPCORE ID that POPCORE does not have.** The item shows **sold out**, because POPCORE holds none of it. Most of these are Whole Sets whose blind box has no `<box>-SET` sealed-set product yet: see [Sealed-set products for Whole Set options](#sealed-set-products-for-whole-set-options). Once POPCORE has the product, the next catalogue read links it. The Website page lists these items.
 - **The same POPCORE ID on two or more website items.** One ID is on at most one item (owner, 2026-11-05). If two items carry the same ID, both would show the same stock and could sell it twice, so POPCORE links neither. Both show **sold out** and are listed as "Another website item carries this POPCORE ID too" until the website is fixed.
 - **No POPCORE ID.** The item is left as the website has it. The Website page lists these items with their SKU (a barcode), to help find them.
 - **A variable parent,** as above.
@@ -60,7 +60,37 @@ For each linked item, the website number is built like this:
 
 The sync sets `manage_stock` on every linked item and writes this number. An item with a POPCORE ID POPCORE does not have, or with an ID another item also carries, gets 0.
 
-A product's pickup stores (`_popcore_pickup_stores`, on the parent) become the live stores that still have it after steps 3 and 5. It is empty when no store does, which leaves delivery only.
+A product's pickup stores (`_popcore_pickup_stores`, on the parent) become the live stores that still have it after steps 3 and 5. For a Whole Set, a store's sets of either kind count. It is empty when no store does, which leaves delivery only.
+
+### Whole Sets
+
+A Whole Set option (`<box>-SET`) counts two kinds of set (owner, 2026-11-10):
+
+- **Sealed sets (整端)** at the live stores' floor, upstairs and warehouse, as above. A sealed set upstairs is certainly a whole set.
+- **The whole sets the floor's single boxes are sure to have.** The floor keeps blind boxes only as single boxes, so a whole set is assumed there only from more than twice a set's worth of boxes. With N boxes per set and b loose boxes on a store's floor, the floor has **at least ceil(b / N) − 2** whole sets, never below 0. With 12 per set: 24 boxes, none for sure; 25 or 36, at least 1; 37, at least 2.
+  - This is a minimum, not how many sets the floor has (owner, 2026-11-10: "25 doesnt mean 1 set, it means at least one set"). There may be more; only the sure ones count online.
+  - b is the store's **floor** boxes of the blind box, after boxes kept in opened sets and after that store's hold for the shop's unreported sales. Loose boxes upstairs or in the warehouse are not part of this rule.
+  - Each store is counted on its own: 25 boxes at DT and 25 at MK count at least 2 sets, not the at least 3 that 50 boxes in one place would be sure of.
+  - N is the set's recorded size (its conversion, 1 set = N boxes). A sealed set with no conversion takes its blind box's boxes per set. With N unknown, the floor adds no sets.
+- The website number is sealed sets + the floor's sure sets, summed over the live stores, less the held web-order units and `WEBSITE_KEEP_BACK`.
+
+The same floor boxes still count for the Single Box, so a Whole Set and single boxes can both sell from them before the next 30-second write.
+
+A web Whole Set order is filled from **sealed sets only**. When the store has none, the order waits for a manager (`not_enough_stock`) and holds its set off the website, as any order that cannot be filled (owner, 2026-11-10: "Ask a manager"). Nothing is taken from the floor boxes. The manager decides as for any waiting order: **Try again** once sealed sets are counted or received, or **Settled** with a reason.
+
+The Website page shows, for each Whole Set, its sealed sets and the at-least number from floor boxes that make its number (`整端 2 sealed + at least 1 from floor boxes (12 per set)`), and its boxes per set. **What turning on changes** says how many Whole Sets count sure sets from floor boxes and how many have no boxes per set.
+
+### Sealed-set products for Whole Set options
+
+A Whole Set option links only to a `<box>-SET` sealed-set product. On 2026-11-10, 57 website Whole Set options belonged to blind boxes with no such product, so they showed sold out. `scripts/create_sealed_sets.py --boxes-file scripts/data/website-whole-sets-2026-11-10.txt` creates them (see `docs/inventory-core.md`, Sealed sets):
+
+- The dry run (the default) opens the database read-only and lists the sets it would create.
+  - It also lists each named ID that gets no set, and why: not a product (`not_found`); not a blind box, such as an `ordinary` item (`not_blind_box`); not verified as a blind box yet (`unverified`); no boxes per set recorded (`no_set_size`).
+  - The script never retypes a product. Set those in Products: **子项 → 整端** verifies an untyped product as a blind box and adds its sealed set in one step.
+- `--apply --backup <new path>` creates every listed set in one transaction, after a checked backup.
+- Running it again creates nothing: a box that has its set is listed under `done`.
+
+A new sealed set starts with no stock. Until whole sets are counted upstairs or received, its Whole Set shows only the sets the floor boxes are sure to have. Once the sets exist, the website session puts the `<box>-SET` IDs on the website options.
 
 ### The shop's sales since its last report
 
@@ -216,7 +246,8 @@ This order matters: the first write reaches real customers and staff email.
 
 - **In-store sales at DT reach POPCORE only when the day's report is pasted,** until Clover is connected. The hold above covers each item's best day, not every day. Paste each day's report after closing: a report pasted during the day stops the hold for the rest of that day. Reading Clover alone would not close the gap, because 47% of DT's units are sold off the card machine (随手记: cash, transfer, WeChat, Alipay). POPCORE's Clover checkout, where every sale is rung through POPCORE, removes it.
 - **Between the order read and the stock write** of one 30-second pass, a newly paid order can be overwritten by a number POPCORE just changed for the same item. WooCommerce's own 32-minute checkout hold still protects the moment of payment.
-- **Only stock counted as sets sells as a Whole Set.** A Single Box counts loose boxes only, never boxes inside sealed sets.
+- **A Single Box counts loose boxes only,** never boxes inside sealed sets. A Whole Set counts sealed sets and the whole sets the floor boxes are sure to have ([Whole Sets](#whole-sets)).
+- **Sealed sets opened since the last report.** The daily report's 出库入店 lines open sealed sets upstairs (or in MK's warehouse) onto the floor as boxes. Until that day's report is pasted, POPCORE still counts those sealed sets, and the Whole Set still shows them. No hold covers this yet. Between 2026-11-01 and 2026-11-08, DT's reports opened 8 to 19 sealed sets a day, at most 3 of one set; MK's opened 4 to 23. The daily report records no Whole Set sold as a set (a set sold counts as its boxes, off the floor).
 - **Other ways to pay.** The PayPal gateway, WooCommerce POS and the website's own Special Orders "Arrived" button change stock outside POPCORE's checkout. Keep them off while the sync is on (probe questions 5 and 6).
 - **Vault products** follow their POPCORE IDs like any item. Vault items without an ID keep their placeholder quantities.
 - **Upgrading from the SKU link** (migration `website_items_popcore_id`) adds the `popcore_id` column. It also empties the saved catalogue read, because the links it held were made by SKU. Press **Read website products** before the preview or turning on.
@@ -227,10 +258,10 @@ This order matters: the first write reaches real customers and staff email.
 
 ## Local checks
 
-- `tests/test_website_sync.py`: linking by `_popcore_id` (any case, never by SKU, a parent's stray ID ignored, an ID on two items linking neither), drafts and disabled options, the upgrade from the SKU link, an order line whose item was added since the last read or deleted, the website number, keep-back, the hold until the daily report is in, opened sets, turning on, writes only on change, back stock first, closing exclusion, cancel, orders that wait and hold their units, MK pickup while MK is not live, orders from before the switch, and a refused key. It uses a fake WooCommerce and blocks every real request.
+- `tests/test_website_sync.py`: the floor-set rule (24, 25, 36, 37 boxes at 12 per set), Whole Sets counting sealed sets and the floor's sure sets store by store after opened sets and the shop hold, an unknown set size, a Whole-Set-only listing's pickup stores, a Whole Set order with only floor sets waiting for a manager and holding its set, linking by `_popcore_id` (any case, never by SKU, a parent's stray ID ignored, an ID on two items linking neither), drafts and disabled options, the upgrade from the SKU link, an order line whose item was added since the last read or deleted, the website number, keep-back, the hold until the daily report is in, opened sets, turning on, writes only on change, back stock first, closing exclusion, cancel, orders that wait and hold their units, MK pickup while MK is not live, orders from before the switch, and a refused key. It uses a fake WooCommerce and blocks every real request.
   - Prices: boxes and items get POPCORE's price, and Whole Sets boxes per set × the box, never the set record's own price. Designs, Vault products, old records and records without a price keep theirs. The sale price is never written. Only changes are written, and a website edit is put back at the next read. The log.
   - Changes held for being big, a first price, unchecked against Clover, or a set unlike its box, with the other option. A set the website refused goes once its box has.
   - The manager's OK, for exactly the change shown and used only once. Sales that would end or start.
   - The read just before a write: a new sale, a new Daily Shop mark, and swapped POPCORE IDs.
   - The Daily Shop hour, `WEBSITE_DAILY_RESET`, and the upgrade.
-- `tests/browser/check_website_sync.py`: the page at 390 and 1440 px, against the real Flask app and the same fake. It covers reading products, the preview, turning on, an order that waits and is settled, a price that goes and one a manager OKs, managers unable to turn the sync on, and staff unable to open the page.
+- `tests/browser/check_website_sync.py`: the page at 390 and 1440 px, against the real Flask app and the same fake. It covers reading products, the preview (including where a Whole Set number comes from), turning on, an order that waits and is settled, a price that goes and one a manager OKs, managers unable to turn the sync on, and staff unable to open the page.

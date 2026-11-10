@@ -14,6 +14,13 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   the shop may have sold since its last daily report (below), less the units of paid web orders
   POPCORE could not record yet, less WEBSITE_KEEP_BACK (0 by default). A store that is not live
   yet adds nothing, and is not offered for pickup.
+- Whole Sets (owner, 2026-11-10): a Whole Set counts the store's sealed sets (整端) and, since the
+  floor keeps blind boxes only as single boxes, the whole sets its floor boxes are sure to have: with
+  N boxes per set, b floor boxes (after boxes kept in opened sets and the shop hold) hold at least
+  ceil(b / N) - 2 whole sets, never below 0 (N = 12: 25 boxes mean at least 1, 37 at least 2). That
+  minimum is what counts, never an estimate of the floor's sets. Store by store; with N unknown the
+  floor adds none. A web Whole Set order is still filled from sealed sets only: with
+  none, it waits for a manager.
 - The shop's sales reach POPCORE only with the pasted daily report until Clover is connected. Until
   a shop day's report is in, each product holds back, at that store, what the store sold of it on
   its best day of the last 30 reports, once for every shop day not reported; a shop day starts at
@@ -43,6 +50,7 @@ Nothing is written to the website until an admin turns the sync on. The backgrou
 last set it. A full reread of the website's catalogue every day catches edits made there.
 """
 import json
+import math
 import os
 import sqlite3
 from collections import Counter
@@ -307,17 +315,18 @@ def refresh_items(con, cfg):
 # ── What the website should show ────────────────────────────────────────────
 
 def _shelf_stock(con):
-    """{product_id: {store_id: units a web order may take}} over the live stores' shelves."""
+    """({product_id: {store_id: units a web order may take}} over the live stores' shelves,
+    {blind box product_id: {store_id: its loose boxes on the floor}})."""
     live = live_store_ids(con)
     if not live:
-        return {}
+        return {}, {}
     marks = ','.join('?' * len(live))
     kept = {(row[0], row[1]): row[2] for row in con.execute(
         """SELECT random_product_id, location_id, SUM(remaining_qty) FROM inventory_open_sets
            WHERE remaining_qty>0 GROUP BY random_product_id, location_id""")}
-    stock = {}
+    stock, floor = {}, {}
     for row in con.execute(
-            f"""SELECT b.product_id, b.location_id, l.store_id, b.quantity, p.stock_form
+            f"""SELECT b.product_id, b.location_id, l.store_id, l.code, b.quantity, p.stock_form
                 FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
                 JOIN products p ON p.id=b.product_id
                 WHERE b.disposition='saleable' AND b.quantity>0 AND l.is_active=1
@@ -328,7 +337,40 @@ def _shelf_stock(con):
         if units > 0:
             by_store = stock.setdefault(row['product_id'], {})
             by_store[row['store_id']] = by_store.get(row['store_id'], 0) + units
-    return stock
+            if row['code'] == 'floor' and row['stock_form'] == 'random_box':
+                on_floor = floor.setdefault(row['product_id'], {})
+                on_floor[row['store_id']] = on_floor.get(row['store_id'], 0) + units
+    return stock, floor
+
+
+def floor_sets(boxes, per_set):
+    """The whole sets a floor of single boxes is sure to have, at least (owner, 2026-11-10): a minimum,
+    not how many there are. ceil(boxes / per_set) - 2, never below 0, and none while the set size is
+    unknown. With 12 per set: 24 boxes, none for sure; 25, at least 1; 37, at least 2."""
+    if not per_set or per_set < 1 or boxes <= 0:
+        return 0
+    return max(0, math.ceil(boxes / per_set) - 2)
+
+
+def _set_rule(con, product_id):
+    """(blind box product id, boxes per set or None) for a sealed set, else None. The set size comes
+    from the set's conversion, else from its box (`<box>-SET`) and the box's boxes per set."""
+    product = con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone() if product_id else None
+    if product is None or product['stock_form'] != 'sealed_set':
+        return None
+    box, size = _stock_product(con, product)
+    if size is not None:
+        return box['id'], size
+    sku = product['sku'] or ''
+    box = con.execute("SELECT id, boxes_per_dan FROM products WHERE UPPER(sku)=UPPER(?) AND stock_form='random_box'",
+                      (sku[:-4],)).fetchone() if sku.upper().endswith('-SET') else None
+    if box is None:
+        return None
+    try:
+        per_set = int(box['boxes_per_dan'] or 0)
+    except (TypeError, ValueError):
+        per_set = 0
+    return box['id'], per_set if per_set >= 1 else None
 
 
 def _held(con):
@@ -391,7 +433,7 @@ def _shop_hold(con, cfg):
 
 def plan(con, cfg):
     """Every linked item's website number and every product's pickup stores, with what changes."""
-    stock, held, hold = _shelf_stock(con), _held(con), _shop_hold(con, cfg)
+    (stock, floor), held, hold = _shelf_stock(con), _held(con), _shop_hold(con, cfg)
     codes = {row[0]: row[1].lower() for row in con.execute('SELECT id, code FROM stores')}
     # Every item with a POPCORE ID: one POPCORE does not have (or that is on two items) shows sold out.
     items = [dict(row) for row in con.execute(
@@ -402,6 +444,16 @@ def plan(con, cfg):
         shown = {store_id: max(0, units - hold.get(store_id, {}).get(item['product_id'], 0))
                  for store_id, units in by_store.items()}
         item['shop_hold'] = sum(by_store.values()) - sum(shown.values())
+        item['sealed_sets'] = item['floor_sets'] = item['set_size'] = None
+        rule = _set_rule(con, item['product_id'])
+        if rule is not None:
+            # A Whole Set: its sealed sets, plus the whole sets each store's floor boxes are sure to have.
+            box_id, size = rule
+            from_floor = {store_id: floor_sets(boxes - hold.get(store_id, {}).get(box_id, 0), size)
+                          for store_id, boxes in floor.get(box_id, {}).items()}
+            item.update(sealed_sets=sum(shown.values()), floor_sets=sum(from_floor.values()), set_size=size)
+            for store_id, sets in from_floor.items():
+                shown[store_id] = shown.get(store_id, 0) + sets
         item['quantity'] = max(0, sum(shown.values()) - held.get(item['product_id'], 0) - cfg['keep_back'])
         item['stock_change'] = not item['manage_stock'] or item['stock_quantity'] != item['quantity']
         stores = pickup_by_parent.setdefault(item['parent_id'] or item['wc_id'], set())
@@ -623,8 +675,13 @@ def preview(con, cfg):
         'pickup_changes': sum(1 for parent in parents if parent['pickup_change']),
         'shop_hold': {'items': sum(1 for item in items if item['shop_hold']),
                       'units': sum(item['shop_hold'] for item in items)},
+        # Whole Sets that count the sets floor boxes are sure to have, and Whole Sets whose set size is unknown.
+        'floor_sets': {'items': sum(1 for item in items if item['floor_sets']),
+                       'sets': sum(item['floor_sets'] or 0 for item in items),
+                       'unknown_size': sum(1 for item in items if item['sealed_sets'] is not None and not item['set_size'])},
         'changes': [{key: item[key] for key in ('wc_id', 'parent_id', 'popcore_id', 'name', 'product_id', 'manage_stock',
-                                                'stock_quantity', 'stock_status', 'quantity')} for item in changes[:500]],
+                                                'stock_quantity', 'stock_status', 'quantity', 'sealed_sets', 'floor_sets',
+                                                'set_size')} for item in changes[:500]],
         'pickup': [parent for parent in parents if parent['pickup_change']][:500],
         'unknown_ids': [{key: item[key] for key in ('wc_id', 'parent_id', 'popcore_id', 'name', 'shared')}
                         for item in sorted(unknown_ids, key=lambda item: item['popcore_id'].upper())][:500],

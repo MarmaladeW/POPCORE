@@ -2,6 +2,8 @@
 
 Dry run is the default: the database is opened read-only and the report lists each sealed set that
 would be created, the blind boxes still waiting for identity review, and any blocking problem.
+``--box PM0008`` (repeatable) or ``--boxes-file <file>`` (one SKU per line, ``#`` comments) limits it
+to those blind boxes and says why each one gets no set; a rerun creates nothing new.
 ``--apply`` needs a new ``--backup`` path; see docs/inventory-core.md (Sealed sets).
 """
 from __future__ import annotations
@@ -28,19 +30,27 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true', help='create the sealed sets')
     parser.add_argument('--backup', type=Path, help='new SQLite backup path (required with --apply)')
     parser.add_argument('--report', type=Path, help='also write the JSON report here')
+    parser.add_argument('--box', action='append', default=[], metavar='SKU', help='only this blind box (repeatable)')
+    parser.add_argument('--boxes-file', type=Path, help='only the blind boxes listed here, one SKU per line')
     args = parser.parse_args(argv)
     database = args.db.resolve()
     if not database.is_file():
         raise SystemExit(f'database does not exist: {database}')
+    only = list(args.box)
+    if args.boxes_file:
+        only += [line.split('#', 1)[0].strip() for line in args.boxes_file.read_text(encoding='utf-8').splitlines()]
+    only = [sku for sku in only if sku] if (args.box or args.boxes_file) else None
+    if only == []:
+        raise SystemExit('no blind box SKUs given')
     try:
         if args.apply:
             if args.backup is None or args.backup.exists():
                 raise SystemExit('--apply needs a --backup path that does not exist yet')
-            report = apply_sealed_sets(str(database), backup_path=str(args.backup))
+            report = apply_sealed_sets(str(database), backup_path=str(args.backup), only=only)
         else:
             with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
                 con.row_factory = sqlite3.Row
-                report = {**plan_sealed_sets(con), 'dry_run': True}
+                report = {**plan_sealed_sets(con, only), 'dry_run': True}
     except SealedSetError as exc:
         raise SystemExit(f'{exc.code}: {exc}') from exc
     text = json.dumps(report, ensure_ascii=False, indent=2)
