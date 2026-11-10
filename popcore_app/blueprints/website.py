@@ -1,7 +1,8 @@
-"""Website stock sync routes (popcore.ca); see website_sync.py and docs/website-sync.md.
+"""Website stock and price sync routes (popcore.ca); see website_sync.py and docs/website-sync.md.
 
-Managers see the sync, what the next push would change and the web orders, and settle orders
-POPCORE could not fill. Only admins reread the catalogue or turn the sync on and off.
+Managers see the sync, what the next push would change and the web orders, settle orders POPCORE
+could not fill, and OK the price changes that wait for them. Only admins reread the catalogue or
+turn the sync on and off.
 """
 from flask import Blueprint, jsonify, request
 
@@ -80,6 +81,31 @@ def website_switch():
         con.rollback()
         return jsonify(error=str(exc), code=exc.code), 409
     return jsonify(sync.status(con))
+
+
+@bp.post('/api/website/prices/<int:wc_id>/ok')
+@role_required('manager')
+def website_price_ok(wc_id):
+    """A manager's OK for one website product's held price changes, as {"key": the ok_key the preview gave}."""
+    data = request.get_json(silent=True) or {}
+    key = data.get('key')
+    if not isinstance(key, str) or not key:
+        return jsonify(error='key must be the ok_key of the prices shown', code='invalid_input'), 400
+    cfg, error = _config()
+    if error:
+        return error
+    if cfg is None:
+        return _not_configured()
+    con = get_db()
+    if sync.state(con, 'refreshed_at') is None:
+        return jsonify(error='The website’s products have not been read yet.', code='not_refreshed'), 409
+    try:
+        sync.approve_prices(con, cfg, wc_id, key, request.jwt_payload['sub'])
+        con.commit()
+    except sync.WebsiteError as exc:
+        con.rollback()
+        return jsonify(error=str(exc), code=exc.code), 409
+    return jsonify(ok=True)
 
 
 @bp.get('/api/website/orders')

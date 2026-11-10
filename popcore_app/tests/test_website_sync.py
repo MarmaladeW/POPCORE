@@ -2,7 +2,9 @@
 linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07), the live stores'
 shelves set the website number, paid web orders take their items
 out of the filling store's back stock first and stay out of its closing, a cancel puts them back,
-and nothing is written to the website before an admin turns the sync on."""
+and nothing is written to the website before an admin turns the sync on. Since 2026-11-10 POPCORE
+also writes the regular prices of linked boxes, Whole Sets and items, never designs' or sale prices;
+big or doubtful changes wait for a manager's OK, and Daily Shop products wait for the reset."""
 import io
 import json
 import sys
@@ -55,22 +57,33 @@ class FakeWoo:
         self.variations = {}  # parent id -> {id: variation}
         self.orders = {}
         self.writes = []
+        self.reads = []  # (path, params) of every GET, never cleared
         self.every_write = []  # never cleared
         self.refuse = False
 
     def product(self, wc_id, popcore_id='', *, sku='', kind='simple', in_stock=True, pickup=None, name=None,
-                status='publish'):
-        meta = _meta(popcore_id) + ([] if pickup is None else [{'key': '_popcore_pickup_stores', 'value': pickup}])
+                status='publish', price='', sale='', meta=()):
+        """meta: more (key, value) fields, such as the Daily Shop pool or the Vault mark. A variable
+        parent's prices are always empty, as WooCommerce reports them."""
+        meta = (_meta(popcore_id) + ([] if pickup is None else [{'key': '_popcore_pickup_stores', 'value': pickup}])
+                + [{'key': key, 'value': value} for key, value in meta])
         self.products[wc_id] = {'id': wc_id, 'type': kind, 'sku': sku, 'name': name or popcore_id or f'Item {wc_id}',
                                 'status': status, 'manage_stock': False, 'stock_quantity': None,
-                                'stock_status': 'instock' if in_stock else 'outofstock', 'meta_data': meta}
+                                'stock_status': 'instock' if in_stock else 'outofstock', 'meta_data': meta,
+                                'regular_price': price, 'sale_price': sale}
         if kind == 'variable':
             self.variations[wc_id] = {}
 
-    def variation(self, parent, wc_id, popcore_id, option, *, sku='', status='publish'):
+    def variation(self, parent, wc_id, popcore_id, option, *, sku='', status='publish', price='', sale=''):
         self.variations[parent][wc_id] = {'id': wc_id, 'sku': sku, 'status': status, 'manage_stock': False,
                                           'stock_quantity': None, 'stock_status': 'instock', 'meta_data': _meta(popcore_id),
-                                          'attributes': [{'name': 'Size', 'option': option}]}
+                                          'attributes': [{'name': 'Size', 'option': option}],
+                                          'regular_price': price, 'sale_price': sale}
+
+    def set_price(self, wc_id, price=None, sale=None):
+        """The website edits an item's regular or sale price by hand ('' clears it)."""
+        item = self.item(wc_id)
+        item.update({key: value for key, value in (('regular_price', price), ('sale_price', sale)) if value is not None})
 
     def set_id(self, wc_id, popcore_id):
         """The website edits an item's POPCORE ID ('' removes it)."""
@@ -114,6 +127,7 @@ class FakeWoo:
         path = urlsplit(url).path.removeprefix('/wp-json/wc/v3')
         params = params or {}
         if method == 'GET':
+            self.reads.append((path, dict(params)))
             parts = path.strip('/').split('/')
             if len(parts) in (2, 4) and parts[0] == 'products':  # one product, or one variation
                 item = (self.products.get(int(parts[1])) if len(parts) == 2
@@ -131,6 +145,9 @@ class FakeWoo:
                               key=lambda order: order['date_modified_gmt'])
             else:
                 return Response(404, {'message': 'No route'})
+            if params.get('include'):
+                wanted = {int(wc_id) for wc_id in str(params['include']).split(',')}
+                rows = [row for row in rows if row['id'] in wanted]
             size, page = params.get('per_page', 10), params.get('page', 1)
             pages = max(1, -(-len(rows) // size))
             return Response(200, [dict(row) for row in rows[(page - 1) * size:page * size]],
@@ -150,6 +167,9 @@ class FakeWoo:
                 if 'meta_data' in update:
                     item['meta_data'] = [meta for meta in item.get('meta_data', ())
                                          if meta['key'] != '_popcore_pickup_stores'] + update['meta_data']
+                for key in ('regular_price', 'sale_price'):
+                    if key in update:
+                        item[key] = update[key]
                 results.append(dict(item))
             return Response(200, {'update': results})
         return Response(404, {'message': 'No route'})
@@ -237,6 +257,30 @@ class WebsiteSyncTests(IsolatedApiCase):
             con.commit()
         self.run_sync()
         self.woo.writes.clear()
+
+    def popcore_price(self, product, price, clover_name=None, boxes=None):
+        """POPCORE's price for a product; a Clover item name says Clover sells it at that price."""
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET price=?, clover_item_name=?, boxes_per_dan=COALESCE(?, boxes_per_dan) WHERE id=?',
+                        (price, clover_name, boxes, product))
+            con.commit()
+
+    def prices_written(self, every=False):
+        return {update['id']: update['regular_price'] for _, update in (self.woo.every_write if every else self.woo.writes)
+                if 'regular_price' in update}
+
+    def preview(self):
+        return self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+
+    def ok_prices(self, wc_id, key=None, role='manager'):
+        """A manager's OK, with the key the page was given for that product unless another is named."""
+        if key is None:
+            key = next(group['ok_key'] for group in self.preview()['held_prices'] if group['wc_id'] == wc_id)
+        return self.client.post(f'/api/website/prices/{wc_id}/ok', json={'key': key}, headers=self.headers(role))
+
+    def held_reasons(self):
+        return {option['wc_id']: option['price_reasons'] for group in self.preview()['held_prices']
+                for option in group['options']}
 
     def test_nothing_is_written_before_an_admin_turns_it_on(self):
         self.assertEqual(self.client.post('/api/website/refresh', headers=self.headers('manager')).status_code, 403)
@@ -513,3 +557,261 @@ class WebsiteSyncTests(IsolatedApiCase):
         status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
         self.assertIsNone(status['last_error'])
         self.assertIsNotNone(status['refreshed_at'])
+
+    # ── Prices (owner, 2026-11-10) ──────────────────────────────────────────
+
+    def test_prices_follow_popcore_for_boxes_sets_and_items_never_designs(self):
+        """POPCORE sends a linked box's or item's Clover price, and the sealed set's own price to the Whole
+        Set. It never prices a design or a Vault product, never touches a sale price, and leaves an item
+        alone when its POPCORE record is an old (unverified) one or has no price."""
+        self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
+        self.popcore_price(self.set, 251.88, boxes=12)
+        self.popcore_price(self.design, 20.99)  # POPCORE repeats the box price in a design
+        self.popcore_price(self.item, 15.00, 'Bear Clover')
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO products(sku, name_cn_en, price, identity_status) VALUES ('PM0300', 'Old record', 9.99, 'unverified')")
+            blue = self._product(con, 'PM0400', 'Bear 吊卡 blue', 'ordinary', 'piece')
+            con.commit()
+        self.woo.set_price(11, '19.99')
+        self.woo.set_price(12, '239.88')
+        self.woo.set_price(20, '14.00')
+        self.woo.set_price(30, '95.00')  # a design's own price
+        self.woo.set_price(60, '9.99')   # DR0001 has no POPCORE price
+        self.woo.product(85, 'PM0300', price='12.99')
+        self.woo.product(36, 'PM0400', price='199.99', meta=[('_popcore_is_vault', '1')])  # marked Vault on the website
+        self.popcore_price(blue, 30.00, 'Bear blue Clover')
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        preview = self.preview()
+        self.assertEqual({row['popcore_id']: (row['regular_cents'], row['price'], row['price_state'])
+                          for row in preview['prices']},
+                         {'PM0100': (1999, 2099, 'send'), 'PM0100-SET': (23988, 25188, 'send'),
+                          'PM0200': (1400, 1500, 'send')})
+        self.assertEqual((preview['price_changes'], preview['price_send'], preview['price_held'], preview['price_daily']),
+                         (3, 3, 0, 0))
+        self.assertEqual(preview['price_left'], {'design': 2, 'not_clover': 1, 'no_price': 1})
+        self.assertEqual(self.woo.every_write, [])
+
+        self.turn_on()
+        self.assertEqual(self.prices_written(every=True), {11: '20.99', 12: '251.88', 20: '15.00'})
+        self.assertFalse(any('sale_price' in update for _, update in self.woo.every_write))
+        self.assertEqual([self.woo.item(wc_id)['regular_price'] for wc_id in (30, 36, 60, 85)],
+                         ['95.00', '199.99', '9.99', '12.99'])
+        with closing(self.connect()) as con:  # every write is kept with the price before
+            log = [tuple(row) for row in con.execute(
+                'SELECT wc_id, popcore_id, old_cents, new_cents, approved_by FROM website_price_writes ORDER BY wc_id')]
+        self.assertEqual(log, [(11, 'PM0100', 1999, 2099, None), (12, 'PM0100-SET', 23988, 25188, None),
+                               (20, 'PM0200', 1400, 1500, None)])
+        # Only what changed since POPCORE last set it: a new Clover price writes that one price.
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])
+        self.popcore_price(self.item, 15.50, 'Bear Clover')
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'regular_price': '15.50'})])
+        # A price edited on the website is put back at the next full read of the catalogue.
+        self.woo.writes.clear()
+        self.woo.set_price(20, '13.00')
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'regular_price': '15.50'})])
+        status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
+        self.assertEqual([(row['wc_id'], row['old_cents'], row['new_cents']) for row in status['price_writes'][:2]],
+                         [(20, 1300, 1550), (20, 1500, 1550)])
+
+    def test_big_unchecked_or_mismatched_changes_wait_for_a_managers_ok(self):
+        """A change over 30%, a box or item with no Clover item name, or a Whole Set the website prices as a
+        different number of boxes (Marvel Deadpool: 9 on the website, 12 in POPCORE) waits for a manager's
+        OK, and the other options of the same product wait with it."""
+        self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
+        self.popcore_price(self.set, 251.88, boxes=12)
+        self.popcore_price(self.item, 15.00)  # no Clover item name: never checked against Clover
+        self.woo.set_price(11, '19.99')
+        self.woo.set_price(12, '179.91')  # 9 boxes of 19.99
+        self.woo.set_price(20, '14.00')
+        self.turn_on()
+        self.assertEqual(self.prices_written(every=True), {})
+        self.assertEqual(self.woo.item(11)['stock_quantity'], 14)  # stock is written as before
+        preview = self.preview()
+        self.assertEqual((preview['price_send'], preview['price_held']), (0, 3))
+        groups = {group['wc_id']: group for group in preview['held_prices']}
+        self.assertEqual({wc_id: (group['name'], [(option['wc_id'], option['price']) for option in group['options']])
+                          for wc_id, group in groups.items()},
+                         {10: ('Echo', [(11, 2099), (12, 25188)]), 20: ('PM0200', [(20, 1500)])})
+        self.assertEqual(self.held_reasons(),
+                         {11: [{'code': 'other_option'}],
+                          12: [{'code': 'big_change', 'percent': 40},
+                               {'code': 'set_size', 'popcore': 12, 'website': 9, 'single_cents': 1999}],
+                          20: [{'code': 'no_clover_name'}]})
+
+        self.assertEqual(self.ok_prices(10, role='staff').status_code, 403)
+        self.assertEqual(self.ok_prices(10, key=2099).status_code, 400)
+        self.assertEqual(self.ok_prices(10, key=groups[20]['ok_key']).get_json()['code'], 'prices_changed')
+        self.assertEqual(self.ok_prices(30, key=groups[10]['ok_key']).get_json()['code'], 'not_waiting')
+        self.assertEqual(self.ok_prices(10).get_json(), {'ok': True})
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {11: '20.99', 12: '251.88'})
+        with closing(self.connect()) as con:
+            self.assertEqual({tuple(row) for row in con.execute('SELECT wc_id, approved_by FROM website_price_writes')},
+                             {(11, 'auth0|manager'), (12, 'auth0|manager')})
+        # An OK is for exactly the change shown: POPCORE changing the price again asks again.
+        self.assertEqual(self.ok_prices(20).status_code, 200)
+        self.popcore_price(self.item, 16.00)
+        self.woo.writes.clear()
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {})
+        self.assertEqual([[option['price'] for option in group['options']] for group in self.preview()['held_prices']],
+                         [[1600]])
+        # So does a new website price: an OK given and used once never approves a later change.
+        self.ok_prices(20)
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {20: '16.00'})
+        self.woo.writes.clear()
+        self.woo.set_price(20, '10.00', '14.50')  # edited by hand on the website
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {})
+        self.assertEqual(self.held_reasons(), {20: [{'code': 'big_change', 'percent': 60}, {'code': 'no_clover_name'},
+                                                    {'code': 'sale_starts', 'sale_cents': 1450}]})
+
+    def test_a_first_price_and_a_set_unlike_its_box_wait_for_a_managers_ok(self):
+        """A website item with no price (or $0) cannot be bought today, so a first price waits for an OK.
+        A Whole Set waits when its website price is not POPCORE's boxes per set times its Single Box, at
+        the box's price now or the one POPCORE replaced: the box may change in an earlier pass."""
+        self.popcore_price(self.mk_only, 12.99, 'Smiski Clover')
+        self.woo.set_price(60, '')
+        self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
+        self.woo.set_price(11, '19.99')
+        self.woo.set_price(12, '219.89')  # 11 boxes of 19.99 on the website; POPCORE counts 12
+        self.turn_on()
+        # The box goes alone: POPCORE has no price for the set yet.
+        self.assertEqual(self.prices_written(every=True), {11: '20.99'})
+        self.assertEqual(self.held_reasons(), {60: [{'code': 'first_price'}]})
+        self.popcore_price(self.set, 251.88, boxes=12)
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {})
+        self.assertEqual(self.held_reasons()[12],
+                         [{'code': 'set_size', 'popcore': 12, 'website': 11, 'single_cents': 2099}])
+        # A set the website prices as 12 of the old box price goes, after its box went the pass before.
+        self.woo.set_price(12, '239.88')
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {12: '251.88'})
+
+    def test_prices_are_checked_against_the_website_just_before_they_are_written(self):
+        """The catalogue is read once a day. Just before a price goes, POPCORE reads those items again: a
+        sale or a Daily Shop mark added on the website since then counts, and an item that has lost or
+        changed its POPCORE ID gets no price until the whole catalogue is read again."""
+        self.popcore_price(self.item, 15.00, 'Bear Clover')
+        self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
+        self.woo.set_price(20, '14.00')
+        self.woo.set_price(11, '19.99')
+        self.woo.set_price(12, '239.88')
+        self.turn_on()
+        self.assertEqual(self.prices_written(every=True), {20: '15.00', 11: '20.99'})
+        self.assertIn(('/products', {'include': '10,20', 'status': 'any', 'per_page': 100, 'page': 1}), self.woo.reads)
+        # After that read, the website puts Bear 吊卡 on sale and Echo in the Daily Shop.
+        self.woo.set_price(20, sale='15.50')
+        self.woo.products[10]['meta_data'].append({'key': '_popcore_daily_pool', 'value': 'yes'})
+        self.popcore_price(self.item, 15.25, 'Bear Clover')
+        self.popcore_price(self.box, 21.99, 'Echo Clover')
+        moment = datetime.fromisoformat('2026-11-10T15:00').replace(tzinfo=website_sync.TORONTO).astimezone(timezone.utc)
+        with patch.object(website_sync, '_now', return_value=moment):
+            self.run_sync()
+            self.assertEqual(self.prices_written(), {})
+            self.assertEqual(self.held_reasons(), {20: [{'code': 'sale_stops', 'sale_cents': 1550}]})
+            self.assertEqual(self.preview()['price_daily'], 1)
+        # At 20:10 Echo's box may go, but the website has since given its options each other's POPCORE IDs:
+        # nothing is priced until the catalogue is read again, and then the options are linked anew.
+        self.woo.set_id(11, 'PM0100-SET')
+        self.woo.set_id(12, 'PM0100')
+        with patch.object(website_sync, '_now', return_value=moment + timedelta(hours=5, minutes=10)):
+            self.run_sync()
+            self.assertEqual(self.prices_written(), {})
+            self.assertEqual(self.state('refresh_requested'), '1')
+            self.run_sync()
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT popcore_id FROM website_items WHERE wc_id=11').fetchone()[0], 'PM0100-SET')
+        self.assertIsNone(self.state('refresh_requested'))
+
+    def test_a_sale_that_would_stop_or_start_waits_for_a_managers_ok(self):
+        """POPCORE never writes a sale price. A regular price at or below the sale price leaves a sale that
+        no longer discounts (popcore.ca #21007: sale $66.99, Clover $54.99), and one above a sale that does
+        not discount today starts it again, which emails the product's Dex followers."""
+        self.popcore_price(self.item, 54.99, 'Bear Clover')
+        self.popcore_price(self.box, 22.99, 'Echo Clover')
+        self.popcore_price(self.mk_only, 12.99, 'Smiski Clover')
+        self.woo.set_price(20, '69.99', '66.99')  # the sale would stop
+        self.woo.set_price(11, '20.99', '21.99')  # a sale above today's price would start again
+        self.woo.set_price(60, '11.99', '9.99')   # a sale before and after: the change goes
+        self.turn_on()
+        self.assertEqual(self.prices_written(every=True), {60: '12.99'})
+        self.assertEqual(self.woo.item(60)['sale_price'], '9.99')
+        self.assertEqual({option['wc_id']: option['price_reasons'] for group in self.preview()['held_prices']
+                          for option in group['options']},
+                         {20: [{'code': 'sale_stops', 'sale_cents': 6699}],
+                          11: [{'code': 'sale_starts', 'sale_cents': 2199}]})
+        # The sale is cleared on the website: after the next read the change goes without an OK.
+        self.woo.set_price(20, sale='')
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {20: '54.99'})
+
+    def test_daily_shop_products_are_repriced_only_in_the_hour_after_the_reset(self):
+        """popcore.ca's Daily Shop prices a deal from the product's price when it is read, so a reprice
+        during the day changes prices in customers' bags: pooled products wait for the reset (20:00)."""
+        self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
+        self.popcore_price(self.item, 15.00, 'Bear Clover')
+        self.woo.products[10]['meta_data'].append({'key': '_popcore_daily_pool', 'value': 'yes'})  # its options follow
+        self.woo.set_price(11, '19.99')
+        self.woo.set_price(20, '14.00')  # not in the pool: goes at once
+
+        def at(local):
+            return datetime.fromisoformat(local).replace(tzinfo=website_sync.TORONTO).astimezone(timezone.utc)
+        moment = [at('2026-11-10T15:00')]
+        with patch.object(website_sync, '_now', side_effect=lambda: moment[0]):
+            self.turn_on()
+            self.assertEqual(self.prices_written(every=True), {20: '15.00'})
+            self.assertEqual((self.preview()['price_daily'], self.preview()['price_send']), (1, 0))
+            moment[0] = at('2026-11-10T19:59')
+            self.run_sync()
+            self.assertEqual(self.prices_written(), {})
+            moment[0] = at('2026-11-10T20:00')
+            self.run_sync()
+            self.assertEqual(self.prices_written(), {11: '20.99'})
+        cfg = website_sync.config()
+        for local, inside in (('2026-11-10T20:59', True), ('2026-11-10T21:00', False), ('2026-11-11T08:00', False)):
+            with patch.object(website_sync, '_now', return_value=at(local)):
+                self.assertEqual(website_sync._daily_window(cfg), inside, local)
+        with patch.dict('os.environ', {'WEBSITE_DAILY_RESET': '23:30'}):
+            cfg = website_sync.config()
+        with patch.object(website_sync, '_now', return_value=at('2026-11-11T00:10')):
+            self.assertTrue(website_sync._daily_window(cfg))
+        with patch.dict('os.environ', {'WEBSITE_DAILY_RESET': '8pm'}):
+            with self.assertRaises(ValueError):
+                website_sync.config()
+
+    def test_the_price_upgrade_reads_the_products_again(self):
+        """The catalogue read saved before the upgrade holds no prices, so nothing is written, and no
+        change is judged, until the products are read again."""
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        with closing(self.connect()) as con:  # the tables as they were before prices
+            for column in ('regular_cents', 'sale_cents', 'daily_pool', 'vault'):
+                con.execute(f'ALTER TABLE website_items DROP COLUMN {column}')
+            con.execute('DROP TABLE website_price_oks')
+            con.execute('DROP TABLE website_price_writes')
+            con.execute("DELETE FROM _migrations WHERE name='website_prices'")
+            con.commit()
+        db.migrate_db()
+        db.migrate_db()  # safe to re-run
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM website_items').fetchone()[0], 0)
+            self.assertTrue({'regular_cents', 'sale_cents', 'daily_pool', 'vault'}
+                            <= {row[1] for row in con.execute('PRAGMA table_info(website_items)')})
+        self.assertIsNone(self.state('refreshed_at'))
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).status_code, 409)
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.preview()['items'], 5)

@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Input, Modal, Popconfirm, Skeleton, message } from 'antd'
 
 import {
-  dismissWebsiteOrder, getWebsiteOrders, getWebsitePreview, getWebsiteStatus, problemText, refreshWebsite,
-  retryWebsiteOrder, switchWebsite, type WebsiteOrder, type WebsitePreview, type WebsiteStatus,
+  dismissWebsiteOrder, getWebsiteOrders, getWebsitePreview, getWebsiteStatus, okWebsitePrices, problemText, refreshWebsite,
+  retryWebsiteOrder, switchWebsite, type PriceReason, type WebsiteHeldPrice, type WebsiteOrder, type WebsitePreview,
+  type WebsiteStatus,
 } from '../../api/website'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
@@ -23,11 +24,30 @@ const reportText = (row: WebsiteStatus['report'][number]) =>
   `${row.store}: ${row.days_behind ? `${row.days_behind} day${row.days_behind > 1 ? 's' : ''} not reported yet` : 'report up to date'}`
 
 const money = (cents: number | null) => cents === null ? '' : `$${(cents / 100).toFixed(2)}`
+
+// Why a price change waits for a manager's OK (owner, 2026-11-10).
+function reasonText(reason: PriceReason) {
+  switch (reason.code) {
+    case 'first_price': return 'the website has no price for it yet, so customers could start buying it'
+    case 'big_change': return `${reason.percent > 0 ? '+' : ''}${reason.percent}%, a big change`
+    case 'no_clover_name': return 'no Clover item name in POPCORE, so this price was never checked against Clover'
+    case 'set_size': return reason.website
+      ? `the website’s Whole Set is ${reason.website} boxes, POPCORE counts ${reason.popcore}`
+      : `the website’s Whole Set price is not ${reason.popcore} × the box’s ${money(reason.single_cents)}`
+    case 'sale_stops': return `its sale price ${money(reason.sale_cents)} is not below it, so the website would end the sale`
+    case 'sale_starts': return `its sale price ${money(reason.sale_cents)} would start discounting again, and its followers would be emailed that it is on sale`
+    case 'other_option': return 'goes with the other option'
+  }
+}
+
+// "Echo — Whole Set" in the Echo group reads "Whole Set"; a simple product needs no option name.
+const optionName = (name: string, group: WebsiteHeldPrice) => name.startsWith(`${group.name} — `) ? `${name.slice(group.name.length + 3)} ` : ''
 const stockText = (row: { manage_stock: number; stock_quantity: number | null; stock_status: string | null }) =>
   row.manage_stock ? String(row.stock_quantity ?? 0) : row.stock_status === 'instock' ? '有货 in stock' : '缺货 sold out'
 
 // 网站 Website: popcore.ca takes its stock from POPCORE, and paid web orders take their items out of
-// stock as Website orders, apart from the stores' closing (owner, 2026-11-01).
+// stock as Website orders, apart from the stores' closing (owner, 2026-11-01). POPCORE also sends the
+// regular prices of linked boxes, Whole Sets and items; doubtful changes wait for a manager (owner, 2026-11-10).
 export default function WebsitePage() {
   const admin = useHasRole('admin')
   const [status, setStatus] = useState<WebsiteStatus>()
@@ -37,6 +57,7 @@ export default function WebsitePage() {
   const [busy, setBusy] = useState('')
   const [attempt, setAttempt] = useState(0)
   const [showAll, setShowAll] = useState(false)
+  const [showAllPrices, setShowAllPrices] = useState(false)
   const [settling, setSettling] = useState<WebsiteOrder>()
   const [reason, setReason] = useState('')
 
@@ -79,6 +100,9 @@ export default function WebsitePage() {
   const waiting = orders.filter(order => order.state === 'needs_review' || order.state === 'cancel_failed')
   const recent = orders.filter(order => !waiting.includes(order)).slice(0, 30)
   const changes = preview ? (showAll ? preview.changes : preview.changes.slice(0, 20)) : []
+  // Held changes have their own panel; these are the ones that go by themselves.
+  const going = preview ? preview.prices.filter(row => row.price_state !== 'held') : []
+  const prices = showAllPrices ? going : going.slice(0, 20)
 
   return <div className="pc-website">
     <PageHeader title="网站" sub="Website · popcore.ca" />
@@ -90,12 +114,12 @@ export default function WebsitePage() {
           onClick={() => run('refresh', async () => { await refreshWebsite(); return 'Reading the website’s products. This takes a minute or two.' })}>
           读取网站产品 Read website products</Button>
         {status.enabled
-          ? <Popconfirm title="Turn the website sync off?" description="The website keeps its last numbers and stops taking web orders out of POPCORE stock."
+          ? <Popconfirm title="Turn the website sync off?" description="The website keeps its last numbers and prices, and stops taking web orders out of POPCORE stock."
             okText="Turn off" onConfirm={() => run('switch', async () => { await switchWebsite(false); return 'Website sync is off' })}>
             <Button size="small" danger loading={busy === 'switch'} disabled={!!busy}>关闭 Turn off</Button>
           </Popconfirm>
           : <Popconfirm title="Turn the website sync on?"
-            description={preview ? `POPCORE will write ${preview.stock_changes} stock numbers and ${preview.pickup_changes} pickup lists to popcore.ca within a minute, then keep them in step. Turn off the website’s low-stock emails first.` : 'Read the website’s products first.'}
+            description={preview ? `POPCORE will write ${preview.stock_changes} stock numbers${preview.price_send ? `, ${preview.price_send} price${preview.price_send === 1 ? '' : 's'}` : ''} and ${preview.pickup_changes} pickup lists to popcore.ca within a minute, then keep them in step. Turn off the website’s low-stock emails first.` : 'Read the website’s products first.'}
             okText="Turn on" okButtonProps={{ disabled: !preview }}
             onConfirm={() => run('switch', async () => { await switchWebsite(true); return 'Website sync is on' })}>
             <Button size="small" type="primary" loading={busy === 'switch'} disabled={!!busy || !preview}>开启 Turn on</Button>
@@ -135,6 +159,44 @@ export default function WebsitePage() {
       {preview.no_ids.length > 0 && <details className="pc-website-unknown">
         <summary>{preview.no_id} website items have no POPCORE ID; POPCORE leaves them as they are</summary>
         {preview.no_ids.map(row => <ListRow key={row.wc_id} title={row.name} meta={row.sku ? `SKU ${row.sku}` : undefined} />)}
+      </details>}
+    </Panel>}
+
+    {preview && preview.held_prices.length > 0 && <Panel zh="价格待确认" en="Prices waiting for an OK"
+      label="Prices waiting for an OK" count={preview.held_prices.length} tone="warn">
+      <p className="pc-quiet">
+        POPCORE does not send these prices until a manager presses OK. If POPCORE’s price or set size is wrong, fix it in POPCORE
+        instead; once the cause is fixed, the change goes or disappears by itself.
+      </p>
+      {preview.held_prices.map(group => <ListRow key={group.wc_id} label={group.options.map(row => row.popcore_id).join(' / ')}
+        title={group.name}
+        meta={group.options.map(row => `${optionName(row.name, group)}${money(row.regular_cents) || 'no price'} → ${money(row.price)}: ${row.price_reasons.map(reasonText).join('; ')}`).join(' · ')}
+        trailing={<Popconfirm title="Send these prices to popcore.ca?"
+          description={group.options.map(row => `${optionName(row.name, group)}${money(row.price)}`).join(', ')} okText="Send"
+          onConfirm={() => run(`ok:${group.wc_id}`, async () => {
+            await okWebsitePrices(group.wc_id, group.ok_key)
+            return status.enabled ? `${group.name}: the new prices go with the next write` : `${group.name}: the new prices go once the sync is on`
+          })}>
+          <Button size="small" loading={busy === `ok:${group.wc_id}`} disabled={!!busy}>确认 OK</Button>
+        </Popconfirm>} />)}
+    </Panel>}
+
+    {preview && <Panel zh="价格" en="Prices" label="Prices" count={going.length} tone="ok">
+      <p className="pc-quiet">
+        Each linked box and item gets its Clover price, and each Whole Set its sealed set’s price. Regular prices only: sale
+        prices stay. Left as the website has them: {preview.price_left.design} designs and Vault products,
+        {' '}{preview.price_left.not_clover} on old POPCORE records, {preview.price_left.no_price} without a POPCORE price.
+        {preview.price_daily ? ` ${preview.price_daily} Daily Shop price${preview.price_daily === 1 ? ' waits' : 's wait'} for the hour after the ${status.daily_reset} reset.` : ''}
+      </p>
+      {going.length === 0 && <p className="pc-quiet">没有 · Every linked price matches POPCORE’s{preview.price_held ? ', apart from those waiting for an OK' : ''}.</p>}
+      {prices.map(row => <ListRow key={row.wc_id} label={row.popcore_id} title={row.name}
+        meta={`网站 Website ${money(row.regular_cents) || 'no price'} → POPCORE ${money(row.price)}${row.price_state === 'daily' ? ` · 每日 Daily Shop: after the ${status.daily_reset} reset` : ''}${row.sale_cents !== null ? ` · sale ${money(row.sale_cents)} stays` : ''}`} />)}
+      {going.length > 20 && <Button type="link" onClick={() => setShowAllPrices(value => !value)}>
+        {showAllPrices ? 'Show fewer' : `Show all ${going.length}`}</Button>}
+      {status.price_writes.length > 0 && <details className="pc-website-unknown">
+        <summary>Prices POPCORE wrote lately</summary>
+        {status.price_writes.map(row => <ListRow key={`${row.wc_id}-${row.written_at}`} label={row.popcore_id} title={row.name}
+          meta={`${money(row.old_cents) || 'no price'} → ${money(row.new_cents)} · ${when(row.written_at)}${row.approved_by ? ' · OK’d by a manager' : ''}`} />)}
       </details>}
     </Panel>}
 
