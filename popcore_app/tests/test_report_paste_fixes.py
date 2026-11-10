@@ -1,7 +1,8 @@
 """What the Nov 6–8 daily reports needed by hand before they could be pasted (2026-11-09), now read as staff
 write it: a sale's place written after it (`-display`, `（diaplay）`, `出库-入店`, `- 出库入店`), the
-`出库入display` heading, two items glued together, 卖display of a design whose sale names the series, and a
-卖display section that only repeats the sales' (display) marks.
+`出库入display` heading, two items glued together, 卖display of a design whose sale names the series, a
+卖display section that only repeats the sales' (display) marks, and a design written as a note
+(`海贼王船*1（Polar Tang）`), which staff mean as the dash form `海贼王船 - Polar Tang`.
 
 The raw Nov 7–8 texts are in fixtures/daily_reports, as staff sent them."""
 from contextlib import closing
@@ -216,3 +217,61 @@ class ReportPasteFixTests(IsolatedApiCase):
             kept = self.parse(report_text('DT-2026-11-08'), date='2026-11-08')
         self.assertFalse([check for check in kept['format_checks'] if 129 in check['lines']
                           and check['section'] == '卖display' and '销售里只有' in check['problem']])
+
+    # ── 6. a design written as a note ─────────────────────────────────────────
+
+    def test_a_design_written_as_a_note_is_suggested_as_the_dash_form_is(self):
+        self.add_series('海贼王船', ['Polar Tang', 'Thousand Sunny'])
+        self.add_series('小野哈利波特figure', ['Lord Voldemort', 'Draco Malfoy'])
+        self.add_series('小野雾中人', ['The Soul Corroder', 'The Backlit Messenger'])
+        self.add_series('SP Image', ['The Imagination', 'The Dreamer'])
+        self.add_series('漫威英雄', ['Spider-Man', 'Iron Man'])
+        parsed = self.parse('2026.11.8 DT\n随手记汇总：\n海贼王船*1（Polar Tang）\n小野哈利波特figure*1（Lord Voldemort）\n'
+                            '卡机汇总：\n小野雾中人*1（The Soul Corroder）\n漫威英雄*1（Spider-Man）\n'
+                            '入display：\nsp image*1（the imagination）', date='2026-11-08')
+        self.assertEqual(parsed['confirmed'], [])
+        self.assertEqual([(row['line'], row['product']['sku'], row['score']) for row in parsed['review']],
+                         [(3, 'S1-01', 99), (4, 'S2-01', 99), (6, 'S3-01', 99), (7, 'S5-01', 99), (9, 'S4-01', 99)])
+        # The series box is still offered after it.
+        self.assertIn('S1', [candidate['sku'] for candidate in parsed['review'][0]['candidates']])
+        # The same design as the dash form gets.
+        dash = self.parse('2026.11.8 DT\n随手记汇总：\n海贼王船 - Polar Tang*1', date='2026-11-08')
+        self.assertEqual([row['product']['sku'] for row in dash['review']], ['S1-01'])
+
+    def test_a_note_that_names_no_design_leaves_the_series_box(self):
+        self.add_series('海贼王船', ['Polar Tang'])
+        parsed = self.parse('2026.11.8 DT\n随手记汇总：\n海贼王船*1（Going Merry）', date='2026-11-08')
+        self.assertEqual([row['product']['sku'] for row in parsed['confirmed']], ['S1'])
+
+    def test_cue_and_tender_notes_never_name_a_design(self):
+        # Designs named like the notes, so a note read as a design name would find one.
+        self.add_series('海贼王船', ['Polar Tang', '隐藏', 'Secret', 'Figure', '15cm', 'Card', 'Cash', '微信'])
+        for note in ('隐藏', 'secret', 'figure', '15cm'):
+            with self.subTest(note=note):
+                text = f'2026.11.8 DT\n随手记汇总：\n海贼王船*1（{note}）'
+                with patch.object(sales, '_note_design', return_value=None):
+                    before = self.parse(text, date='2026-11-08')
+                self.assertEqual(self.parse(text, date='2026-11-08'), before)
+        # How it was paid: still the series box, and still confirmed.
+        for note in ('cash30+35.5card', 'cash30+card9', 'card', 'Cash', '30+35.5', '微信'):
+            with self.subTest(note=note):
+                parsed = self.parse(f'2026.11.8 DT\n随手记汇总：\n海贼王船*1（{note}）', date='2026-11-08')
+                self.assertEqual([(row['product']['sku'], row['note']) for row in parsed['confirmed']], [('S1', note)])
+
+    def test_the_raw_nov_7_and_8_note_designs_are_suggested(self):
+        self.add_series('海贼王船', ['Polar Tang'])
+        self.add_series('小野哈利波特figure', ['Draco Malfoy', 'Lord Voldemort'])
+        self.add_series('小野雾中人', ['The Soul Corroder'])
+        self.add_series('SP Image', ['The Imagination'])
+        self.add_series('Shelter', ['Mantel Clock', 'Circus', 'Sunny Doll'])
+        expected = {'DT-2026-11-07': {171: {'S4-01'}},
+                    'DT-2026-11-08': {114: {'S1-01'}},
+                    'MK-2026-11-07': {50: {'S2-01', 'S2-02'}, 120: {'S2-02'}, 121: {'S2-01'}},
+                    # "Sonny Doll" is Shelter's Sunny Doll, written with a typo.
+                    'MK-2026-11-08': {7: {'S5-01'}, 8: {'S5-02'}, 9: {'S5-03'}, 63: {'S3-01'}, 110: {'S3-01'}}}
+        for name, lines in expected.items():
+            with self.subTest(report=name):
+                parsed = self.parse(report_text(name), store=name[:2], date=name[3:])
+                self.assertFalse([row for row in parsed['confirmed'] if row['line'] in lines])
+                self.assertEqual({line: {row['product']['sku'] for row in parsed['review'] if row['line'] == line}
+                                  for line in lines}, lines)
