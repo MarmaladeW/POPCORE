@@ -26,10 +26,11 @@ async def run(browser, width):
     from test_website_sync import WebsiteSyncTests, _ago
     fixture = WebsiteSyncTests()
     fixture.setUp()
-    # Prices: Echo's Single Box goes to its Clover price; Bear 吊卡 has no Clover item name, so it waits for an OK.
+    # Prices: Echo's Single Box goes to its Clover price, its Whole Set to 12 × that; Bear 吊卡 has no Clover item name, so it waits for an OK.
     fixture.popcore_price(fixture.box, 20.99, 'Echo Clover', boxes=12)
     fixture.popcore_price(fixture.item, 15.00)
     fixture.woo.set_price(11, '19.99')
+    fixture.woo.set_price(12, '239.88')  # 12 boxes: the Whole Set follows its box
     fixture.woo.set_price(20, '14.00')
     contexts = []
 
@@ -82,7 +83,7 @@ async def run(browser, width):
         assert fixture.woo.writes == []
 
         await sync.get_by_role('button', name='开启 Turn on').click()
-        await expect(page.get_by_text('POPCORE will write 6 stock numbers, 1 price and 2 pickup lists', exact=False)).to_be_visible()
+        await expect(page.get_by_text('POPCORE will write 6 stock numbers, 2 prices and 2 pickup lists', exact=False)).to_be_visible()
         await page.get_by_role('button', name='Turn on', exact=True).click()
         await expect(sync.get_by_text('开 On')).to_be_visible()
         with fixture.connect() as con:  # web orders from the last hour count
@@ -91,7 +92,7 @@ async def run(browser, width):
             website_sync.set_state(con, 'orders_after', _ago(60))
         fixture.run_sync()
         assert fixture.woo.item(11)['stock_quantity'] == 14
-        assert (fixture.woo.item(11)['regular_price'], fixture.woo.item(20)['regular_price']) == ('20.99', '14.00')
+        assert [fixture.woo.item(wc_id)['regular_price'] for wc_id in (11, 12, 20)] == ['20.99', '251.88', '14.00']
         fixture.woo.order(601, [(12, 3)])  # the Whole Set option
         fixture.woo.order(602, [(20, 1)], modified=_ago(0))
         fixture.run_sync()

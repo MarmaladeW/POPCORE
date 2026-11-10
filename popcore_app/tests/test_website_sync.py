@@ -60,6 +60,7 @@ class FakeWoo:
         self.reads = []  # (path, params) of every GET, never cleared
         self.every_write = []  # never cleared
         self.refuse = False
+        self.refuse_ids = set()  # items a batch write reports an error for
 
     def product(self, wc_id, popcore_id='', *, sku='', kind='simple', in_stock=True, pickup=None, name=None,
                 status='publish', price='', sale='', meta=()):
@@ -160,6 +161,9 @@ class FakeWoo:
                 item = self.item(update['id'])
                 if item is None:
                     results.append({'id': 0, 'error': {'message': 'Invalid ID.'}})
+                    continue
+                if update['id'] in self.refuse_ids:
+                    results.append({'id': update['id'], 'error': {'message': 'Not saved.'}})
                     continue
                 if 'stock_quantity' in update:
                     item.update(manage_stock=True, stock_quantity=update['stock_quantity'],
@@ -561,11 +565,12 @@ class WebsiteSyncTests(IsolatedApiCase):
     # ── Prices (owner, 2026-11-10) ──────────────────────────────────────────
 
     def test_prices_follow_popcore_for_boxes_sets_and_items_never_designs(self):
-        """POPCORE sends a linked box's or item's Clover price, and the sealed set's own price to the Whole
-        Set. It never prices a design or a Vault product, never touches a sale price, and leaves an item
-        alone when its POPCORE record is an old (unverified) one or has no price."""
+        """POPCORE sends a linked box's or item's Clover price, and to the Whole Set the boxes per set times
+        that price: Clover stores no set price (owner, 2026-11-10). It never prices a design or a Vault
+        product, never touches a sale price, and leaves an item alone when its POPCORE record is an old
+        (unverified) one or has no price."""
         self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
-        self.popcore_price(self.set, 251.88, boxes=12)
+        self.popcore_price(self.set, 999.99, boxes=12)  # the set record's own price is never read
         self.popcore_price(self.design, 20.99)  # POPCORE repeats the box price in a design
         self.popcore_price(self.item, 15.00, 'Bear Clover')
         with closing(self.connect()) as con:
@@ -677,25 +682,37 @@ class WebsiteSyncTests(IsolatedApiCase):
 
     def test_a_first_price_and_a_set_unlike_its_box_wait_for_a_managers_ok(self):
         """A website item with no price (or $0) cannot be bought today, so a first price waits for an OK.
-        A Whole Set waits when its website price is not POPCORE's boxes per set times its Single Box, at
-        the box's price now or the one POPCORE replaced: the box may change in an earlier pass."""
+        A Whole Set waits, with its box, when its website price is not POPCORE's boxes per set times its
+        Single Box (DR0051: 6 per set; a box of 11 on the website against POPCORE's 12 here)."""
         self.popcore_price(self.mk_only, 12.99, 'Smiski Clover')
         self.woo.set_price(60, '')
-        self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
+        self.popcore_price(self.box, 20.99, 'Echo Clover')
+        self.popcore_price(self.set, None, boxes=12)
         self.woo.set_price(11, '19.99')
-        self.woo.set_price(12, '219.89')  # 11 boxes of 19.99 on the website; POPCORE counts 12
+        self.woo.set_price(12, '219.89')  # 11 boxes of 19.99 on the website
         self.turn_on()
-        # The box goes alone: POPCORE has no price for the set yet.
-        self.assertEqual(self.prices_written(every=True), {11: '20.99'})
-        self.assertEqual(self.held_reasons(), {60: [{'code': 'first_price'}]})
-        self.popcore_price(self.set, 251.88, boxes=12)
-        self.run_sync()
-        self.assertEqual(self.prices_written(), {})
-        self.assertEqual(self.held_reasons()[12],
-                         [{'code': 'set_size', 'popcore': 12, 'website': 11, 'single_cents': 2099}])
-        # A set the website prices as 12 of the old box price goes, after its box went the pass before.
+        self.assertEqual(self.prices_written(every=True), {})
+        self.assertEqual(self.held_reasons(),
+                         {60: [{'code': 'first_price'}], 11: [{'code': 'other_option'}],
+                          12: [{'code': 'set_size', 'popcore': 12, 'website': 11, 'single_cents': 1999}]})
+        # The website's set fixed to 12 boxes: box and set go together.
         self.woo.set_price(12, '239.88')
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.prices_written(), {11: '20.99', 12: '251.88'})
+
+    def test_a_set_refused_by_the_website_goes_once_its_box_has(self):
+        """A batch the website takes only in part can write a box and not its set. The set's website price
+        is then checked against the box's price POPCORE replaced, so it goes in a later pass."""
+        self.popcore_price(self.box, 20.99, 'Echo Clover')
+        self.popcore_price(self.set, None, boxes=12)
+        self.woo.set_price(11, '19.99')
+        self.woo.set_price(12, '239.88')
+        self.woo.refuse_ids = {12}
+        self.turn_on()
+        self.assertEqual(self.woo.item(11)['regular_price'], '20.99')
+        self.assertEqual(self.woo.item(12)['regular_price'], '239.88')
+        self.woo.refuse_ids = set()
         self.run_sync()
         self.assertEqual(self.prices_written(), {12: '251.88'})
 
@@ -709,7 +726,7 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.woo.set_price(11, '19.99')
         self.woo.set_price(12, '239.88')
         self.turn_on()
-        self.assertEqual(self.prices_written(every=True), {20: '15.00', 11: '20.99'})
+        self.assertEqual(self.prices_written(every=True), {20: '15.00', 11: '20.99', 12: '251.88'})
         self.assertIn(('/products', {'include': '10,20', 'status': 'any', 'per_page': 100, 'page': 1}), self.woo.reads)
         # After that read, the website puts Bear 吊卡 on sale and Echo in the Daily Shop.
         self.woo.set_price(20, sale='15.50')
@@ -721,7 +738,7 @@ class WebsiteSyncTests(IsolatedApiCase):
             self.run_sync()
             self.assertEqual(self.prices_written(), {})
             self.assertEqual(self.held_reasons(), {20: [{'code': 'sale_stops', 'sale_cents': 1550}]})
-            self.assertEqual(self.preview()['price_daily'], 1)
+            self.assertEqual(self.preview()['price_daily'], 2)
         # At 20:10 Echo's box may go, but the website has since given its options each other's POPCORE IDs:
         # nothing is priced until the catalogue is read again, and then the options are linked anew.
         self.woo.set_id(11, 'PM0100-SET')
@@ -765,6 +782,7 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.popcore_price(self.item, 15.00, 'Bear Clover')
         self.woo.products[10]['meta_data'].append({'key': '_popcore_daily_pool', 'value': 'yes'})  # its options follow
         self.woo.set_price(11, '19.99')
+        self.woo.set_price(12, '239.88')
         self.woo.set_price(20, '14.00')  # not in the pool: goes at once
 
         def at(local):
@@ -773,13 +791,13 @@ class WebsiteSyncTests(IsolatedApiCase):
         with patch.object(website_sync, '_now', side_effect=lambda: moment[0]):
             self.turn_on()
             self.assertEqual(self.prices_written(every=True), {20: '15.00'})
-            self.assertEqual((self.preview()['price_daily'], self.preview()['price_send']), (1, 0))
+            self.assertEqual((self.preview()['price_daily'], self.preview()['price_send']), (2, 0))
             moment[0] = at('2026-11-10T19:59')
             self.run_sync()
             self.assertEqual(self.prices_written(), {})
             moment[0] = at('2026-11-10T20:00')
             self.run_sync()
-            self.assertEqual(self.prices_written(), {11: '20.99'})
+            self.assertEqual(self.prices_written(), {11: '20.99', 12: '251.88'})
         cfg = website_sync.config()
         for local, inside in (('2026-11-10T20:59', True), ('2026-11-10T21:00', False), ('2026-11-11T08:00', False)):
             with patch.object(website_sync, '_now', return_value=at(local)):

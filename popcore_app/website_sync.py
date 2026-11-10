@@ -25,9 +25,10 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
 - Prices (owner, 2026-11-10: "it should be POPCORE automatically sending price to the website too";
   until then prices stayed on the website, owner 2026-11-01). A linked Single Box or simple product
-  gets its POPCORE product's price, which is its Clover price; a Whole Set gets its sealed set's own
-  price (boxes per set × the box). POPCORE writes the regular price only, never the sale price. It
-  never prices a confirmed design or a website Vault product: the owner prices designs on the website.
+  gets its POPCORE product's price, which is its Clover price; a Whole Set gets boxes per set × that
+  box's price, since Clover stores no set price (owner, 2026-11-10). POPCORE writes the regular price
+  only, never the sale price. It never prices a confirmed design or a website Vault product: the
+  owner prices designs on the website.
   An item whose POPCORE record is not a verified Clover item, or has no price, keeps its price.
 - A price change waits for a manager's OK on the Website page when it is a first price, when it is
   over 30%, when the box or item has no Clover item name, when the website's Whole Set does not cost
@@ -420,12 +421,21 @@ def plan(con, cfg):
 
 # ── Prices (owner, 2026-11-10) ──────────────────────────────────────────────
 
-def _wanted_price(item, product):
+def _wanted_price(item, product, products, set_box):
     """(cents, None) for the regular price POPCORE gives a linked item, or (None, why it keeps its own)."""
     if item['vault'] or product['stock_form'] == 'confirmed_design':
         return None, 'design'
     if product['identity_status'] != 'verified' or product['stock_form'] not in PRICED_FORMS:
         return None, 'not_clover'
+    if product['stock_form'] == 'sealed_set':
+        # Clover never stores a Whole Set's price: it is always the boxes per set times the single box's
+        # price (owner, 2026-11-10). The set record's own price is never read.
+        box = products.get(set_box.get(product['id']))
+        boxes = product['boxes_per_dan'] or (box and box['boxes_per_dan'])
+        if not (box and box['identity_status'] == 'verified' and boxes):
+            return None, 'no_price'
+        cents = _cents(box['price'])
+        return (boxes * cents, None) if cents and cents > 0 else (None, 'no_price')
     cents = _cents(product['price'])
     return (cents, None) if cents and cents > 0 else (None, 'no_price')
 
@@ -489,7 +499,8 @@ def _plan_prices(con, cfg, items):
     for wc_id, options in by_product.items():
         for item in options:
             product = products.get(item['product_id']) if item['product_id'] else None
-            item['price'], item['price_left'] = _wanted_price(item, product) if product else (None, None)
+            item['price'], item['price_left'] = (_wanted_price(item, product, products, set_box) if product
+                                                 else (None, None))
             item['price_change'] = item['price'] is not None and item['price'] != item['regular_cents']
             item['price_reasons'] = (_price_reasons(item, product, products, set_box, options, before)
                                      if item['price_change'] else [])

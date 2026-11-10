@@ -83,10 +83,12 @@ POPCORE writes each linked item's regular price in the same push as its stock (o
 | Website item | Regular price POPCORE writes |
 |---|---|
 | Simple product, or the Single Box option (`PM0123`) | the product's `price`: its Clover price |
-| Whole Set option (`PM0123-SET`) | the sealed set's own `price`: boxes per set × the single box |
+| Whole Set option (`PM0123-SET`) | boxes per set × the single box's price. Clover never stores a set price, so the sealed set record's own `price` is never read (owner, 2026-11-10) |
 | A design (`PM0123-05`), or any product the website marks Vault (`_popcore_is_vault`, or `_popcore_kind` = `confirmed_design`) | **none**: the owner prices designs on the website |
 
 The 2026-11-09 check found POPCORE's prices to be Clover's. All 394 records with a Clover item name matched the 8 Oct Clover export to the cent, and every sealed set cost `boxes_per_dan` × its box (241 sets). Designs are different. POPCORE copies the box price into every design (1,487 of 1,820), while the website's Vault designs carry collector prices.
+
+Boxes per set is the sealed set record's `boxes_per_dan`, else its box's. It is never taken from the set's opening conversion (`product_conversions.output_per_input`), which can disagree. DR0051 is 6 per set (owner, 2026-11-10): both records say 6, but its opening conversion said 12 on 2026-11-10, and that conversion is the wrong one.
 
 POPCORE leaves the website's price alone for:
 
@@ -103,7 +105,7 @@ A price change goes with the next write unless one of these holds:
 - the website has **no price** for the item yet (or $0). A first price makes buyable an item the website could not sell;
 - it is more than **30%** up or down;
 - the box or item has **no Clover item name** in POPCORE, so its price was never checked against Clover. A Whole Set goes by its box's name;
-- the website's Whole Set does not cost POPCORE's boxes per set times its Single Box, within 2%. The Single Box price can be the one the website shows, or the one POPCORE last replaced, because POPCORE edits a box and its set separately and the box may go a pass earlier. For example, Marvel Deadpool is 9 boxes on the website and 12 in POPCORE;
+- the website's Whole Set does not cost POPCORE's boxes per set times its Single Box, within 2%. The Single Box price can be the one the website shows, or the one POPCORE last replaced: if the website took the box but refused its set in the same batch, the set goes a pass later. For example, Marvel Deadpool is 9 boxes on the website and 12 in POPCORE;
 - the item has a **sale price** that would stop or start discounting:
   - a sale at or above the new price would end. For example, #21007 had a $66.99 sale and Clover's $54.99. WooCommerce 10.9.4 deletes a sale price that is not below the regular price whenever either is saved (`WC_Product_Data_Store_CPT::handle_updated_props`), so the OK ends the sale;
   - a sale that does not discount today would start again. Then the Dex emails the product's followers that it is on sale. WooCommerce deletes such a sale on any price save, so only a sale saved some other way can be in this state.
@@ -226,8 +228,8 @@ This order matters: the first write reaches real customers and staff email.
 ## Local checks
 
 - `tests/test_website_sync.py`: linking by `_popcore_id` (any case, never by SKU, a parent's stray ID ignored, an ID on two items linking neither), drafts and disabled options, the upgrade from the SKU link, an order line whose item was added since the last read or deleted, the website number, keep-back, the hold until the daily report is in, opened sets, turning on, writes only on change, back stock first, closing exclusion, cancel, orders that wait and hold their units, MK pickup while MK is not live, orders from before the switch, and a refused key. It uses a fake WooCommerce and blocks every real request.
-  - Prices: boxes, Whole Sets and items get POPCORE's price, while designs, Vault products, old records and records without a price keep theirs. The sale price is never written. Only changes are written, and a website edit is put back at the next read. The log.
-  - Changes held for being big, a first price, unchecked against Clover, or a set unlike its box (a box written a pass before its set included), with the other option.
+  - Prices: boxes and items get POPCORE's price, and Whole Sets boxes per set × the box, never the set record's own price. Designs, Vault products, old records and records without a price keep theirs. The sale price is never written. Only changes are written, and a website edit is put back at the next read. The log.
+  - Changes held for being big, a first price, unchecked against Clover, or a set unlike its box, with the other option. A set the website refused goes once its box has.
   - The manager's OK, for exactly the change shown and used only once. Sales that would end or start.
   - The read just before a write: a new sale, a new Daily Shop mark, and swapped POPCORE IDs.
   - The Daily Shop hour, `WEBSITE_DAILY_RESET`, and the upgrade.
