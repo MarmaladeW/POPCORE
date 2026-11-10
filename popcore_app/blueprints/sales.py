@@ -4,7 +4,7 @@ blueprints/sales.py — daily sales records, batch import, daily report, export.
 import os
 import hashlib
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from decimal import Decimal
 import re
 import unicodedata
@@ -1730,6 +1730,8 @@ def recorded_dates():
 # comparison is case-insensitive)
 _SECTION_MAP = [
     ('出库入店', 'refill'),
+    # DT, 2026-11-07: "出库入display" is upstairs → display, as 入display is.
+    ('出库入display', 'display_stock_in'), ('出库入展示', 'display_stock_in'),
     ('卡机汇总', 'pos'), ('随手记汇总', 'cash'), ('随手机汇总', 'cash'),
     ('随手记', 'cash'), ('卡机', 'pos'),
     ('入店display', 'display_stock_in'), ('出店display', 'display_stock_out'),
@@ -1752,7 +1754,69 @@ _REPORT_ANNOTATIONS = {
 # names report_stock moves them by. 出库 and 入娃娃机 stay notes: staff record them with 调拨
 # Transfer and the claw screen.
 _LIVE_LINE_SECTIONS = {'sell_display': 'display_sold', 'claw': 'claw_prize', 'display_stock_in': 'display_stock_in'}
-_DISPLAY_NOTE = re.compile(r'\s*(?:display|展示)\s*', re.I)
+# "（diaplay）" is how staff mistype it (DT, 2026-11-07).
+_DISPLAY_WORD = r'(?:display|diaplay|dispaly|展示)'
+_DISPLAY_NOTE = re.compile(rf'\s*{_DISPLAY_WORD}\s*', re.I)
+# A sale's place written after it (DT, 2026-11-07): "X*1-display", "X*1出库-入店", "X*1 -出库入店",
+# "小王子-Rose- 出库入店", or "-display" alone on the next line. The mark says where the piece sold from.
+_PLACE_WORDS = (('display', _DISPLAY_WORD), ('refill', r'出库\s*-?\s*入店'))
+
+
+def _strip_place_mark(token: str) -> tuple[str, str | None, bool]:
+    """(token without one trailing place mark, the place, whether the token had no quantity written).
+    Right after a quantity the mark may follow with or without a dash; after a name it needs one."""
+    for place, word in _PLACE_WORDS:
+        after_qty = re.fullmatch(rf'(.*\*\s*\d+(?:\s*\([^()]*\))*)\s*-?\s*{word}\s*', token, re.I)
+        if after_qty:
+            return after_qty.group(1).strip(), place, False
+        after_name = re.fullmatch(rf'([^*]*\S)\s*-\s*{word}\s*', token, re.I)
+        if after_name:
+            return after_name.group(1).strip(), place, True
+        alone = re.fullmatch(rf'-?\s*{word}\s*|\(\s*{word}\s*\)', token.strip(), re.I)
+        if alone:
+            return '', place, False
+    return token, None, False
+
+
+def _leading_place_mark(token: str) -> tuple[str | None, str]:
+    """"-出库入店小王子-The King*1" after a comma: the mark that belongs to the item before it, and the rest."""
+    for place, word in _PLACE_WORDS:
+        lead = re.fullmatch(rf'-\s*{word}\s*(\S.*)', token.strip(), re.I)
+        if lead:
+            return place, lead.group(1)
+    return None, token
+
+
+def _item_key(item: dict) -> str:
+    """One item as written, name and notes together: "海贼王船 - Polar Tang" and "海贼王船（Polar Tang）" are one."""
+    notes = [note for note in (item.get('note') or '').split('；') if not _DISPLAY_NOTE.fullmatch(note)]
+    return re.sub(r'[\W_]+', '', (item.get('raw_name', '') + ''.join(notes)).casefold())
+
+
+def _repeated_display_blocks(items: list[dict]) -> list[int]:
+    """卖display sections that only repeat sales already marked (display) among the sales (MK Nov 6, DT and
+    MK Nov 8): each of their lines has a (display) sale of the same item, and keeping the section would take
+    more of that item off display than the day sold of it. Every 卖display sale is also a sale, so such a
+    section would take display twice. Returns their heading lines."""
+    sales, inline, blocks = Counter(), Counter(), defaultdict(list)
+    for item in items:
+        if item.get('unknown_header'):
+            continue
+        if item['section'] in ('pos', 'cash'):
+            sales[_item_key(item)] += item['qty']
+        elif item['section'] == 'display_sold' and item.get('inline_display'):
+            inline[_item_key(item)] += item['qty']
+        elif item['section'] == 'display_sold' and item.get('display_block'):
+            blocks[item['display_block']].append(item)
+    repeated = []
+    for block, rows in blocks.items():
+        wanted = Counter()
+        for row in rows:
+            wanted[_item_key(row)] += row['qty']
+        if all(row['qty'] and not row.get('flagged') for row in rows) and all(
+                inline[key] >= qty and inline[key] + qty > sales[key] for key, qty in wanted.items()):
+            repeated.append(block)
+    return repeated
 
 # Fuzzy matches are suggestions only; unique exact identities can confirm.
 _SCORE_REVIEW = 50
@@ -1823,8 +1887,27 @@ def _split_report_items(content: str) -> list[str]:
         if separator:
             parts.append(content[start:index].strip())
             start = index + 1
+        elif index > start and content[index - 1] in '0123456789)' and _glued_item_starts(content, start, index):
+            parts.append(content[start:index].strip())
+            start = index
     parts.append(content[start:].strip())
     return [part for part in parts if part]
+
+
+# Characters that may follow a written quantity without starting another item: notes, sums, marks, units.
+_AFTER_QUANTITY = set('(*+➕),，;；-/.:：~～个盒件端只套包')
+
+
+def _glued_item_starts(content: str, start: int, index: int) -> bool:
+    """"哭娃星光毛绒*1豹猫搪胶*1" (DT, 2026-11-07): a second item written straight after a quantity, with
+    a quantity of its own before the next separator. Only a Chinese name starts one: "*2oops X*1" still
+    stops the save, since the letters may be a typo of the quantity rather than another item."""
+    char = content[index]
+    if not re.match(r'[㐀-鿿]', char) or char in _AFTER_QUANTITY:
+        return False
+    head, _, balanced = _extract_note(content[start:index])
+    return (balanced and bool(re.search(r'\*\d+$', head))
+            and bool(re.match(r'[^,，;；*]*\*\s*\d', content[index:])))
 
 
 # Stores a report header names in Chinese: Markham's reports open "2026.11.2 太古汇总" (its lists say 太古店内, 太古仓库).
@@ -2094,19 +2177,61 @@ def parse_daily_report():
         except ValueError:
             metadata_errors.append('Cannot read cash actual/expected: ' + text_piece)
 
+    # The sales read on this line and the line before it, for a place mark written after them; the 卖display
+    # heading a line is under, so a section that only repeats the sales' (display) marks can be found.
+    marks = {'line': [], 'previous': [], 'number': None, 'block': None}
+
+    def _twin(item: dict, **changes) -> dict:
+        return {**{key: value for key, value in item.items() if key not in ('moved_mark', 'qty_assumed')}, **changes}
+
+    def _place_sale(item: dict, place: str) -> None:
+        """The sale `item` came from `place`: display (as a "(display)" note says) or down from upstairs."""
+        if place == 'refill':
+            raw_items.append(_twin(item, section='refill' if live else 'stock_in', box_size=1, loose_qty=0,
+                                   qty_pos=item['qty'], qty_cash=0, sale_mark=True))
+        elif live:
+            raw_items.append(_twin(item, section='display_sold', qty_pos=item['qty'], qty_cash=0, inline_display=True))
+        else:
+            item['note'] = '；'.join(filter(None, [item['note'], 'display']))
+
     def _parse_content(content: str, sec: str, hdr: str | None = None) -> None:
         if sec in annotations:
             if not _extract_note(content)[2]:
                 metadata_errors.append('Unclosed or unmatched note: ' + content)
             report_notes[annotations[sec]].append(content)
             return
+        display_block = marks['block'] if live and sec == 'sell_display' else None
         if live:
             sec = _LIVE_LINE_SECTIONS.get(sec, sec)
         elif sec == 'refill':
             # 出库入店 is upstairs → floor, which a legacy store's 入店 already records.
             sec = 'stock_in'
+        sales_line = sec in ('pos', 'cash') and hdr is None
         discount_index = None
-        for token in _split_report_items(content):
+        for index, token in enumerate(_split_report_items(content)):
+            place, assumed = None, False
+            if sales_line:
+                written = token
+                lead, rest = _leading_place_mark(token)
+                if lead and marks['line']:
+                    # "X*1,-出库入店Y*1": the mark after the comma is X's.
+                    _place_sale(marks['line'][-1], lead)
+                    marks['line'][-1]['moved_mark'] = [written.partition(rest)[0].strip(), marks['number'], lead]
+                    token = rest
+                token, place, assumed = _strip_place_mark(token)
+                if not token:
+                    # "-display" alone on the next line, or after a space: it is the place of the sale before it.
+                    earlier = marks['line'] or (marks['previous'] if index == 0 else [])
+                    if earlier:
+                        _place_sale(earlier[-1], place)
+                        if not marks['line']:
+                            earlier[-1]['moved_mark'] = [written.strip(), marks['number'], place]
+                        continue
+                    token, place = written, None
+                if assumed:
+                    token += '*1'
+                if place == 'display':
+                    token += '(display)'
             item_text, annotation, balanced = _extract_note(token)
             if not balanced:
                 metadata_errors.append('Unclosed or unmatched note: ' + token)
@@ -2175,13 +2300,23 @@ def parse_daily_report():
             if item:
                 if hdr is not None:
                     item['unknown_header'] = hdr
+                if display_block:
+                    item['display_block'] = display_block
                 raw_items.append(item)
                 notes = (item['note'] or '').split('；')
-                if live and sec in ('pos', 'cash') and hdr is None and any(map(_DISPLAY_NOTE.fullmatch, notes)):
+                if live and sales_line and any(map(_DISPLAY_NOTE.fullmatch, notes)):
                     # "labubu喵喵毛绒*1（display）" among the sales (MK, 2026-11-02): this sale came off display,
                     # as a 卖display line says.
                     item['note'] = '；'.join(note for note in notes if not _DISPLAY_NOTE.fullmatch(note))
-                    raw_items.append({**item, 'section': 'display_sold', 'qty_pos': item['qty'], 'qty_cash': 0})
+                    raw_items.append(_twin(item, section='display_sold', qty_pos=item['qty'], qty_cash=0,
+                                           inline_display=True))
+                if sales_line:
+                    if place == 'refill':
+                        _place_sale(item, place)
+                    if assumed:
+                        # "小王子-Rose- 出库入店": one piece, named by its place mark; the format check says so.
+                        item['qty_assumed'] = True
+                    marks['line'].append(item)
 
     def _live_display_line(token: str, sec: str) -> None:
         """A (display) line at a live store: 出库入店/入店 put it on display, 出店 takes it off display.
@@ -2239,12 +2374,21 @@ def parse_daily_report():
         if not s or i in skipped_lines:
             continue
         items_before, errors_before = len(raw_items), len(metadata_errors)
+        marks['previous'], marks['line'], marks['number'] = marks['line'], [], line_numbers[i]
+        if i in boundary_info:
+            marks['block'] = line_numbers[i]
         _read_line(i, s)
-        # Everything this line produced names its line in the paste.
+        # Everything this line produced names its line in the paste (a place mark's sale keeps its own).
         for item in raw_items[items_before:]:
-            item['line'] = line_numbers[i]
+            item.setdefault('line', line_numbers[i])
         metadata_errors[errors_before:] = [f'第{line_numbers[i]}行 Line {line_numbers[i]}: {error}'
                                            for error in metadata_errors[errors_before:]]
+
+    # A 卖display section that repeats the sales' (display) marks would take display twice: it is left out,
+    # and the format check says which lines.
+    repeated = _repeated_display_blocks(raw_items) if live else []
+    left_out = [item for item in raw_items if item.get('display_block') in repeated]
+    raw_items = [item for item in raw_items if item.get('display_block') not in repeated]
 
     # Format checks (owner, 2026-11-06): anything written so that it may move stock wrongly, by its line.
     header_at = next((line_numbers[i] for i, ln in enumerate(lines) if ln in header_lines), None)
@@ -2256,6 +2400,7 @@ def parse_daily_report():
         [item for item in raw_items if not item.get('unknown_header')],
         [item for item in raw_items if item.get('unknown_header')],
         handled={line for check in format_checks for line in check['lines']})
+    format_checks += report_checks.repeated_display_checks(repeated, left_out)
 
     if llm_result:
         parser_engine       = 'llm'
