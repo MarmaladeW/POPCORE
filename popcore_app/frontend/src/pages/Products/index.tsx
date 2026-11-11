@@ -28,6 +28,7 @@ import { ProductDetailPane, StockFigure } from './ProductDetail'
 import { useInventoryVisible } from '../../auth/useInventoryVisible'
 import { stockFigureValue, type StockFigureValue } from '../../lib/inventoryView'
 import { ProductsTabs } from './ProductsNav'
+import { RetiredBadge, deleteOrRetire, unretire } from './retire'
 import './products.css'
 
 const { Title, Text }  = Typography
@@ -50,6 +51,7 @@ interface Product {
   identity_status?: 'unverified' | 'verified'
   sub_item_count?: number
   created_at?: string | null
+  retired_at?: string | null  // 停用 Retired: listed only when the catalog asks for retired products
 }
 
 interface StockRow {
@@ -173,6 +175,8 @@ function SubCount({ product }: { product: { sub_item_count?: number } }) {
 }
 
 type ProductOrder = 'id' | 'newest' | 'oldest'
+// 停用 Retired products are left out unless asked for; "only" lists them with their designs and sets.
+type RetiredView = 'active' | 'include' | 'only'
 
 // The server keeps UTC ("YYYY-MM-DD HH:MM:SS"); show the device's local time. Products added
 // before times were recorded have none.
@@ -200,6 +204,7 @@ export default function ProductsPage() {
   const [searchQ,      setSearchQ]      = useState('')
   const [searchSeries, setSearchSeries] = useState('')
   const [searchType,   setSearchType]   = useState('')
+  const [retiredView,  setRetiredView]  = useState<RetiredView>('active')
   const [selected,  setSelected]  = useState<number[]>([])
   // Products are numbered in the order they were added, so the newest have the highest ids, and the
   // catalog lists the newest first (owner, 2026-10-31). A search keeps its best matches first.
@@ -235,7 +240,7 @@ export default function ProductsPage() {
   const load = useCallback(() => {
     const sc = selectedStore?.code
     const requestId = ++requestRef.current
-    const scope = `${sc ?? ''}:${searchQ}:${searchSeries}:${searchType}`
+    const scope = `${sc ?? ''}:${searchQ}:${searchSeries}:${searchType}:${retiredView}`
     if (scopeRef.current !== scope) {
       scopeRef.current = scope
       setProducts([])
@@ -244,7 +249,9 @@ export default function ProductsPage() {
     }
     setLoading(true)
     setLoadError(null)
-    const params: Record<string, string> = { top_level: '1' }  // sub-items show in their product's detail
+    // Sub-items show in their product's detail; a retired design or set is listed itself among the retired.
+    const params: Record<string, string> = retiredView === 'only' ? { retired: 'only' }
+      : retiredView === 'include' ? { top_level: '1', retired: 'include' } : { top_level: '1' }
     if (searchQ)      params.q = searchQ
     if (searchSeries) params.series = searchSeries
     if (searchType)   params.product_type = searchType
@@ -270,7 +277,7 @@ export default function ProductsPage() {
     }).catch(() => {
       if (requestId === requestRef.current) setStockError(true)
     })
-  }, [searchQ, searchSeries, searchType, selectedStore?.code])
+  }, [searchQ, searchSeries, searchType, retiredView, selectedStore?.code])
 
   useEffect(() => { load() }, [load])
 
@@ -342,14 +349,7 @@ export default function ProductsPage() {
 
   async function handleBulkDelete() {
     if (!selected.length) return
-    try {
-      await client.post('/products/bulk_delete', selected)
-      message.success(`Deleted ${selected.length} products`)
-      setSelected([])
-      load()
-    } catch {
-      message.error('Delete failed')
-    }
+    await deleteOrRetire(selected, () => { setSelected([]); load() })
   }
 
   async function handleExport() {
@@ -382,7 +382,7 @@ export default function ProductsPage() {
       width: 230,
       ellipsis: true,
       sorter: (a, b) => (a.jizhanming ?? '').localeCompare(b.jizhanming ?? ''),
-      render: (v, r) => <span className="pc-prod-name"><strong>{v || '—'}<Secrets product={r} /><SubCount product={r} /></strong><small>{r.sku}</small></span>,
+      render: (v, r) => <span className="pc-prod-name"><strong>{v || '—'}<Secrets product={r} /><SubCount product={r} /></strong><small>{r.sku}<RetiredBadge retiredAt={r.retired_at} /></small></span>,
     },
     {
       title: '产品名',
@@ -439,20 +439,14 @@ export default function ProductsPage() {
             <Button type="text" size="small" aria-label={`Edit ${label(r)}`} icon={<EditOutlined />} onClick={e => { e.stopPropagation(); openEdit(r) }} />
           </RoleGuard>
           <RoleGuard minRole="manager">
-            <Popconfirm
-              title="Delete this product?"
-              onConfirm={async () => {
-                try {
-                  await client.post('/products/bulk_delete', [r.id])
-                  message.success('Deleted')
-                  load()
-                } catch {
-                  message.error('Failed')
-                }
-              }}
-            >
-              <Button type="text" size="small" aria-label={`Delete ${label(r)}`} icon={<DeleteOutlined />} danger onClick={e => e.stopPropagation()} />
-            </Popconfirm>
+            {r.retired_at
+              ? <Button type="text" size="small" aria-label={`Un-retire ${label(r)}`} onClick={e => { e.stopPropagation(); unretire(r.id, load) }}>恢复</Button>
+              : <Popconfirm
+                  title="删除这个产品？ Delete this product?"
+                  onConfirm={() => deleteOrRetire([r.id], load)}
+                >
+                  <Button type="text" size="small" aria-label={`Delete ${label(r)}`} icon={<DeleteOutlined />} danger onClick={e => e.stopPropagation()} />
+                </Popconfirm>}
           </RoleGuard>
         </span>
       ),
@@ -532,6 +526,14 @@ export default function ProductsPage() {
             <SelectItem value="oldest">最早添加 Oldest added</SelectItem>
           </SelectContent>
         </UiSelect>
+        <UiSelect value={retiredView} onValueChange={value => { setSelected([]); setRetiredView(value as RetiredView) }}>
+          <SelectTrigger aria-label="Retired products" style={{ width: isMobile ? '100%' : 196 }}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="active">在用 In use</SelectItem>
+            <SelectItem value="include">含已停用 Show retired</SelectItem>
+            <SelectItem value="only">只看已停用 Retired only</SelectItem>
+          </SelectContent>
+        </UiSelect>
         {!isMobile && <span className="pc-prod-hint">库存 = 本店合计 · 点一行看详情</span>}
       </div>
 
@@ -558,7 +560,7 @@ export default function ProductsPage() {
                   <li key={p.id}>
                     <button type="button" className="pc-prod-open" onClick={() => setDetailId(p.id)}>
                       <span className="pc-prod-name">
-                        <strong>{p.jizhanming || p.name_cn_en || 'Unnamed product'}<Secrets product={p} /><SubCount product={p} /></strong>
+                        <strong>{p.jizhanming || p.name_cn_en || 'Unnamed product'}<Secrets product={p} /><SubCount product={p} /><RetiredBadge retiredAt={p.retired_at} /></strong>
                         {p.name_cn_en && p.jizhanming && <small>{p.name_cn_en}</small>}
                         <small><span>{p.sku}</span>{p.created_at && <span> · 添加 {addedAt(p.created_at)}</span>}</small>
                       </span>
@@ -602,6 +604,7 @@ export default function ProductsPage() {
           onOpen={setDetailId}
           onEdit={(p) => openEdit(p as unknown as Product)}
           onImages={(p) => setImagesProduct(p as unknown as Product)}
+          onChanged={load}
         />}
       </div>
 
@@ -641,6 +644,7 @@ export default function ProductsPage() {
         onOpen={setDetailId}
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
         onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
+        onChanged={load}
       />
 
       {/* Sheet Sync Modal */}

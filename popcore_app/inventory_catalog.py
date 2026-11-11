@@ -85,16 +85,20 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
         """SELECT c.source_product_id, c.target_product_id FROM product_conversions c
            JOIN products s ON s.id=c.source_product_id WHERE s.stock_form='sealed_set'""")}
     owner_series = {item['product_id']: item for item in roster.values() if item['product_id']}
+    holding = {held_id for (held_id, _, _), balance in balances.items() if balance['quantity']}
     plain = {}
     loose_sets = []
     for row in con.execute(
         f'''SELECT id,sku,COALESCE(NULLIF(jizhanming,''),NULLIF(name_cn_en,''),sku) AS name,
                   jizhanming,name_cn_en,{product_alias_text_sql('products')} AS alias_text,
-                  series_id,stock_form,stock_unit,design_name,identity_status,created_at,
+                  series_id,stock_form,stock_unit,design_name,identity_status,created_at,retired_at,
                   (SELECT filename FROM hidden_images i WHERE i.product_id=products.id
                    ORDER BY CASE WHEN i.image_type='general' THEN 0 ELSE 1 END,i.id LIMIT 1) AS image_filename
            FROM products ORDER BY id'''):
         product = dict(row)
+        # A 停用 retired product is left out, unless it was asked for or still holds stock here.
+        if product['retired_at'] and product_id != product['id'] and product['id'] not in holding:
+            continue
         is_loose_set = product['id'] in set_box and product['series_id'] is None
         if product['series_id'] is not None and product['series_id'] not in roster:
             continue
@@ -132,12 +136,15 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
     needle = normalize_design_name(query)
     text = lambda products: [str(p.get(field) or '') for p in products
                              for field in ('name', 'sku', 'design_name', 'jizhanming', 'name_cn_en', 'alias_text')]
+    retired = {row[0] for row in con.execute('SELECT id FROM products WHERE retired_at IS NOT NULL')}
     series = [item for item in roster.values()
-              if not needle or needle in normalize_design_name(' '.join([item['name'], *text(item['products'])]))]
+              if (series_id is not None or item['product_id'] not in retired or item['products'])
+              and (not needle or needle in normalize_design_name(' '.join([item['name'], *text(item['products'])])))]
     products = sorted((p for p in standalone if not needle or needle in normalize_design_name(' '.join(text([p, *p['variations']])))),
                       key=lambda p: (p['name'] or '').lower())
     return {'mode': mode, 'locations': locations, 'series': series, 'products': products,
-            'unassigned_count': con.execute('SELECT COUNT(*) FROM products WHERE series_id IS NULL').fetchone()[0]}
+            'unassigned_count': con.execute(
+                'SELECT COUNT(*) FROM products WHERE series_id IS NULL AND retired_at IS NULL').fetchone()[0]}
 
 
 def series_history(con, actor, store_code, series_id, *, product_id=None,

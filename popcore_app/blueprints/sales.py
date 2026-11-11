@@ -165,6 +165,8 @@ def history_matches():
         if target_id is not None and target_id not in catalog:
             raise ValueError('target_product_id does not exist')
         aliases, choices = load_matching_aliases(con), load_report_match_choices(con)
+        # Each row keeps its own product, retired or not; only products in use are suggested.
+        in_use = [candidate for candidate in catalog.values() if not candidate.get('retired_at')]
         store_ids = {store['code']: store['id'] for store in stores}
         items = []
         for row in rows:
@@ -172,7 +174,7 @@ def history_matches():
             raw, note = row['raw_name'] or '', row['notes'] or ''
             key = report_match_key(raw, note)
             choice = choices.get(key)
-            hits = [(100, catalog[choice])] if choice in catalog else match_jzm(report_match_query(raw, note), list(catalog.values()), aliases, threshold=60, limit=5) if raw.strip() else []
+            hits = [(100, catalog[choice])] if choice in catalog else match_jzm(report_match_query(raw, note), in_use, aliases, threshold=60, limit=5) if raw.strip() else []
             if choice not in catalog and (key in choices or report_match_query(raw, note) != raw):
                 hits = [(min(score, 99), candidate) for score, candidate in hits]
             if not hits:
@@ -1624,9 +1626,14 @@ def save_name_pick():
         cur = con.cursor()
         con.execute('BEGIN IMMEDIATE')
         _pick_replaces(cur, data, key)
-        if cur.execute('SELECT 1 FROM products WHERE id=?', (product_id,)).fetchone() is None:
+        picked = cur.execute('SELECT retired_at FROM products WHERE id=?', (product_id,)).fetchone()
+        if picked is None:
             con.rollback()
             return jsonify({'error': 'Product not found', 'code': 'not_found', 'field': 'product_id'}), 404
+        if picked['retired_at']:
+            con.rollback()
+            return jsonify({'error': '这个产品已停用 This product is retired. Un-retire it in Products to pick it.',
+                            'code': 'product_retired', 'field': 'product_id'}), 409
         written = data.get('raw_name') if isinstance(data.get('raw_name'), str) else key[0]
         note = data.get('note') if isinstance(data.get('note'), str) else key[1]
         save_pick(cur, key, written.strip() or key[0], note.strip(), [product_id], request.jwt_payload.get('sub'),
@@ -2062,15 +2069,16 @@ def parse_daily_report():
     report_picks = load_report_picks(con)
     cur.execute('SELECT alias_norm, section_type FROM section_aliases')
     section_aliases = {r['alias_norm']: r['section_type'] for r in cur.fetchall()}
+    # 停用 Retired products are never candidates, nor a name pick that points at one; saved days keep them.
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
-        FROM products
+        FROM products WHERE retired_at IS NULL
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
     designs = [dict(r) for r in cur.execute('''
         SELECT d.id, d.design_name, s.name AS series_name, h.id AS head_id, h.jizhanming AS head_jzm, h.name_cn_en AS head_name
         FROM products d JOIN product_series s ON s.id=d.series_id LEFT JOIN products h ON h.id=s.product_id
-        WHERE d.stock_form='confirmed_design' AND COALESCE(d.design_name, '') != ''
+        WHERE d.stock_form='confirmed_design' AND COALESCE(d.design_name, '') != '' AND d.retired_at IS NULL
     ''')]
 
     # ── Engine selection: LLM front-end when configured, rules otherwise ─────

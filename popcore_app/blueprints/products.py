@@ -21,7 +21,7 @@ from catalog_identity import (
     product_search_text_sql, resolve_barcode, update_product_identity,
 )
 from goods_operations import _remember, _replay
-from inventory_commands import InventoryConflict, require_inventory_access
+from inventory_commands import InventoryConflict, live_store_ids, require_inventory_access
 from inventory_visibility import can_see_inventory, hide_quantities
 from inventory_opening import (
     OpeningCountError, count_sheet_csv, count_sheet_rows, find_location,
@@ -101,7 +101,7 @@ def get_by_jizhanming():
     aliases = load_matching_aliases(con)
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
-        FROM products
+        FROM products WHERE retired_at IS NULL
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
@@ -127,7 +127,7 @@ def batch_match_products():
     aliases = load_matching_aliases(con)
     cur.execute('''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
-        FROM products
+        FROM products WHERE retired_at IS NULL
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
     con.close()
@@ -179,6 +179,12 @@ def search_products():
     filter_params  = []
     if request.args.get('top_level') == '1':  # the catalog lists sub-items under their product
         filter_clauses.append("parent_product_id IS NULL")
+    # 停用 Retired products are left out of every search unless the catalog asks for them.
+    retired = request.args.get('retired', '')
+    if retired == 'only':
+        filter_clauses.append("retired_at IS NOT NULL")
+    elif retired != 'include':
+        filter_clauses.append("retired_at IS NULL")
     if series:
         filter_clauses.append("ip_series = ?")
         filter_params.append(series)
@@ -195,7 +201,7 @@ def search_products():
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                    stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-                   parent_product_id, sub_item_count, created_at
+                   parent_product_id, sub_item_count, created_at, retired_at
             FROM {search_source}
             {where}
             ORDER BY sku DESC
@@ -227,7 +233,7 @@ def search_products():
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-               parent_product_id, sub_item_count, created_at
+               parent_product_id, sub_item_count, created_at, retired_at
         FROM {search_source}
         WHERE {and_conditions} {filter_sql}
         LIMIT 200
@@ -240,7 +246,7 @@ def search_products():
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-               parent_product_id, sub_item_count, created_at
+               parent_product_id, sub_item_count, created_at, retired_at
         FROM {search_source}
         WHERE ({or_conditions}) {filter_sql}
         LIMIT 200
@@ -255,7 +261,7 @@ def search_products():
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                    stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-                   parent_product_id, sub_item_count, created_at
+                   parent_product_id, sub_item_count, created_at, retired_at
             FROM {search_source}
             WHERE {char_conditions} {filter_sql}
             LIMIT 200
@@ -271,7 +277,7 @@ def search_products():
             SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                    brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
                    stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
-                   parent_product_id, sub_item_count, created_at
+                   parent_product_id, sub_item_count, created_at, retired_at
             FROM {search_source}
             WHERE ({bi_cond}) {filter_sql}
             LIMIT 200
@@ -358,7 +364,7 @@ def get_product(pid):
     if box:
         parent = dict(box)
     sub_items = [dict(r) for r in cur.execute(
-        '''SELECT id, sku, jizhanming, name_cn_en, stock_form, stock_unit, design_name, price FROM products
+        '''SELECT id, sku, jizhanming, name_cn_en, stock_form, stock_unit, design_name, price, retired_at FROM products
            WHERE (series_id=? AND ? AND id<>?)
               OR id IN (SELECT c.source_product_id FROM product_conversions c JOIN products s ON s.id=c.source_product_id
                         WHERE c.target_product_id=? AND s.stock_form='sealed_set')
@@ -368,9 +374,12 @@ def get_product(pid):
     for item in sub_items:
         item['aliases'] = [dict(r) for r in cur.execute(
             'SELECT id, alias FROM product_aliases WHERE product_id=? ORDER BY id', (item['id'],))]
+    retirer = cur.execute('SELECT name FROM employees WHERE auth0_id=?', (row['retired_by'],)).fetchone() \
+        if row['retired_by'] else None
     con.close()
     return jsonify({**dict(row), 'aliases': aliases, 'barcodes': barcodes,
-                    'conversions': conversions, 'parent': parent, 'sub_items': sub_items})
+                    'conversions': conversions, 'parent': parent, 'sub_items': sub_items,
+                    'retired_by_name': retirer['name'] if retirer else None})
 
 
 # ─── Aliases ──────────────────────────────────────────────────────────────────
@@ -1813,6 +1822,121 @@ def bulk_delete_products():
     return jsonify({'ok': True, 'deleted': deleted})
 
 
+# ─── 停用 Retire ──────────────────────────────────────────────────────────────
+# A product kept for its history (delete refuses it) but no longer sold: it leaves the catalog's default
+# list, the product searches and 日报 matching, while its sales, reports and movements stay as they are
+# (owner, 2026-11-11). A sealed set or confirmed design is retired on its own balances.
+
+def _retire_label(row):
+    return row['jizhanming'] or row['name_cn_en'] or row['sku'] or f"#{row['id']}"
+
+
+def _retire_stock(con, pid):
+    """Where the product still holds stock: every ledger balance that is not 0, and the old stock
+    figures of a store not yet on the ledger."""
+    held = [dict(row) for row in con.execute(
+        '''SELECT s.code AS store, l.code AS location, b.disposition, b.quantity
+           FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
+           JOIN stores s ON s.id=l.store_id
+           WHERE b.product_id=? AND b.quantity<>0 ORDER BY s.code, l.code, b.disposition''', (pid,))]
+    live = live_store_ids(con)
+    for row in con.execute('''SELECT st.store_id, s.code, st.upstairs_qty, st.instore_qty, st.claw_qty
+                              FROM stock st JOIN stores s ON s.id=st.store_id WHERE st.product_id=?''', (pid,)):
+        if row['store_id'] in live:
+            continue  # a live store's old figures only mirror its ledger
+        for location, quantity in (('upstairs', row['upstairs_qty']), ('floor', row['instore_qty']),
+                                   ('claw', row['claw_qty'])):
+            if quantity:
+                held.append({'store': row['code'], 'location': location, 'disposition': 'saleable',
+                             'quantity': quantity})
+    return held
+
+
+def _retire_conflict(message, code, **details):
+    return jsonify({'error': message, 'code': code, **details}), 409
+
+
+@bp.post('/api/products/<int:pid>/retire')
+@role_required('manager')
+def retire_product(pid):
+    con = get_db()
+    try:
+        con.execute('BEGIN IMMEDIATE')  # nothing can move its stock between the check and the mark
+        row = con.execute('SELECT * FROM products WHERE id=?', (pid,)).fetchone()
+        if row is None:
+            con.rollback()
+            return jsonify({'error': 'Product not found', 'code': 'not_found'}), 404
+        if row['retired_at']:
+            con.rollback()
+            return jsonify({'ok': True, 'id': pid, 'retired_at': row['retired_at'], 'retired_by': row['retired_by']})
+        label = _retire_label(row)
+        held = _retire_stock(con, pid)
+        if held:
+            places = ', '.join(f"{h['store']} {h['location']} {h['quantity']}"
+                               + ('' if h['disposition'] == 'saleable' else f" ({h['disposition']})") for h in held)
+            con.rollback()
+            return _retire_conflict(
+                f'{label} 还有库存，不能停用 still has stock: {places}. Bring it to 0 first '
+                '(count it, move it or record a loss), then retire it.', 'product_has_stock', stock=held)
+        # A blind box's sealed set and the designs of the series it owns are retired first, so nothing
+        # in use is left under a retired product.
+        in_use = [r['sku'] or f"#{r['id']}" for r in con.execute(
+            '''SELECT id, sku FROM products WHERE retired_at IS NULL AND id<>? AND (
+                   series_id=(SELECT id FROM product_series WHERE product_id=?)
+                   OR id IN (SELECT c.source_product_id FROM product_conversions c
+                             JOIN products s ON s.id=c.source_product_id
+                             WHERE c.target_product_id=? AND s.stock_form='sealed_set'))
+               ORDER BY sku, id''', (pid, pid, pid))]
+        if in_use:
+            con.rollback()
+            return _retire_conflict(
+                f"{label} 的整端或确认款还在用 still has a sealed set or confirmed designs in use: {', '.join(in_use)}. "
+                'Retire them first.', 'sub_items_in_use', sub_items=in_use)
+        con.execute("UPDATE products SET retired_at=datetime('now'), retired_by=? WHERE id=?",
+                    (request.jwt_payload.get('sub'), pid))
+        row = con.execute('SELECT retired_at, retired_by FROM products WHERE id=?', (pid,)).fetchone()
+        con.commit()
+        return jsonify({'ok': True, 'id': pid, 'retired_at': row['retired_at'], 'retired_by': row['retired_by']})
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+@bp.post('/api/products/<int:pid>/unretire')
+@role_required('manager')
+def unretire_product(pid):
+    con = get_db()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        row = con.execute('SELECT * FROM products WHERE id=?', (pid,)).fetchone()
+        if row is None:
+            con.rollback()
+            return jsonify({'error': 'Product not found', 'code': 'not_found'}), 404
+        # A sealed set or design comes back only under a product in use (its blind box, its series' owner).
+        parent = con.execute(
+            '''SELECT p.id, p.sku, p.jizhanming, p.name_cn_en FROM products p
+               WHERE p.retired_at IS NOT NULL AND p.id<>? AND (
+                   p.id=(SELECT product_id FROM product_series WHERE id=?)
+                   OR (? = 'sealed_set' AND p.id IN (SELECT target_product_id FROM product_conversions
+                                                     WHERE source_product_id=?)))
+               LIMIT 1''', (pid, row['series_id'], row['stock_form'], pid)).fetchone()
+        if row['retired_at'] and parent is not None:
+            con.rollback()
+            return _retire_conflict(
+                f"{_retire_label(row)} 属于已停用的 belongs to {_retire_label(parent)} ({parent['sku']}), "
+                'which is retired. Un-retire that first.', 'parent_retired', parent_id=parent['id'])
+        con.execute('UPDATE products SET retired_at=NULL, retired_by=NULL WHERE id=?', (pid,))
+        con.commit()
+        return jsonify({'ok': True, 'id': pid, 'retired_at': None, 'retired_by': None})
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 @bp.post('/api/product-series/setup')
 @role_required('manager')
 def setup_product_series():
@@ -1834,6 +1958,9 @@ def _add_sub_items(operation, pid):
     from inventory_commands import InventoryError
     con = get_db()
     try:
+        if (con.execute('SELECT retired_at FROM products WHERE id=?', (pid,)).fetchone() or [None])[0]:
+            return _retire_conflict('这个产品已停用 This product is retired. Un-retire it before adding designs '
+                                    'or a sealed set.', 'product_retired')
         return jsonify(operation(con, pid, request.get_json(silent=True), actor=request.jwt_payload,
                                  request_key=request.headers.get('Idempotency-Key'))), 201
     except InventoryError as exc:

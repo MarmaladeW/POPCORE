@@ -120,6 +120,12 @@
 .pc-ser-detail .pc-panel-head h2 { flex-wrap: wrap; white-space: normal; }
 /* Sub-items: a product's 整端 sealed set and confirmed designs. */
 .pc-prod-subcount { display: inline-block; padding: 0 4px; border: 1px solid var(--line-hair); color: var(--text-secondary); font-size: 10.5px; font-weight: 400; line-height: 16px; white-space: nowrap; }
+/* 停用 Retired: kept for its history, out of everyday lists. */
+.pc-prod-name small .pc-prod-retired { margin-left: 6px; }
+.pc-prod-retired { display: inline-block; flex: 0 0 auto; padding: 0 4px; border: 1px dashed var(--line-hair); background: var(--surface-soft); color: var(--text-tertiary); font-size: 10.5px; font-weight: 400; line-height: 16px; white-space: nowrap; }
+.pc-prod-retired-note { margin: 12px 16px 0; }
+.pc-prod-retired-action { margin-top: 8px; }
+.pc-prod-retire-errors { margin: 8px 0 0; padding-left: 18px; }
 .pc-sub-list { margin: 0; padding: 0; list-style: none; }
 .pc-sub-list li { padding: 6px 16px; border-bottom: 1px solid var(--line-hair); font-size: 12.5px; }
 .pc-sub-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }

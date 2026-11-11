@@ -364,7 +364,7 @@ def get_all_stock():
 
     cur = con.cursor()
 
-    filters = []
+    filters = ['p.retired_at IS NULL']  # 停用 retired products are not listed
     params = []
     if series:
         filters.append("p.ip_series = ?")

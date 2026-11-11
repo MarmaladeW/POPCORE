@@ -9,6 +9,7 @@ import RemoveDesigns from './RemoveDesigns'
 import SubItemAdd from './SubItemAdd'
 import { useInventoryVisible } from '../../auth/useInventoryVisible'
 import type { StockFigureValue } from '../../lib/inventoryView'
+import { RetiredBadge, retiredOn, unretire } from './retire'
 
 export interface ProductDetailData {
   id: number
@@ -37,12 +38,14 @@ export interface ProductDetailData {
   stock_unit?: string | null
   design_name?: string | null
   identity_status?: 'unverified' | 'verified'
+  retired_at?: string | null  // 停用 Retired, with the manager who did it
+  retired_by_name?: string | null
   barcodes?: { id: number; code: string; code_kind: string; input_unit: string; quantity_per_scan: number }[]
   conversions?: { id: number; target_sku: string; output_per_input: number; version: number }[]
   series_id?: number | null
   parent?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null } | null
   sub_items?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null
-    stock_form: string | null; design_name: string | null; price: number | null
+    stock_form: string | null; design_name: string | null; price: number | null; retired_at?: string | null
     aliases?: { id: number; alias: string }[] }[]
 }
 
@@ -123,6 +126,7 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
           {open(item.id, item.stock_form === 'sealed_set' ? (item.jizhanming || item.sku) : (item.design_name || item.jizhanming || item.sku))}
           {item.stock_form === 'confirmed_design' && item.price != null && <span className="pc-sub-price">${item.price.toFixed(2)}</span>}
           <small>{item.sku}</small>
+          <RetiredBadge retiredAt={item.retired_at} />
           {item.stock_form === 'confirmed_design' && editing !== item.id && <RoleGuard minRole="manager">
             <Button size="small" type="text" aria-label={`Edit ${item.design_name ?? item.sku}`}
               onClick={() => setEditing(item.id)}>编辑</Button>
@@ -132,18 +136,27 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
       </li>)}
     </ul> : <p className="pc-sub-empty">None yet. Add them when you count or open boxes.</p>}
     {items.length > 0 && inventory && <p className="pc-sub-stock"><Link to={product.series_id ? `/stock?series_id=${product.series_id}` : `/stock?product_id=${product.id}`}>各位置库存 Stock by location →</Link></p>}
-    <RoleGuard minRole="manager"><SubItemAdd productId={product.id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} />
-      <RemoveDesigns productId={product.id} designCount={items.filter(item => item.stock_form === 'confirmed_design').length} onDone={onSaved} /></RoleGuard>
+    {!product.retired_at && <RoleGuard minRole="manager"><SubItemAdd productId={product.id} canAddSealedSet={canAddSealedSet} onSaved={onSaved} />
+      <RemoveDesigns productId={product.id} designCount={items.filter(item => item.stock_form === 'confirmed_design').length} onDone={onSaved} /></RoleGuard>}
   </>
 }
 
-export function ProductDetailBody({ detail, stockTotal, onOpen }: {
+export function ProductDetailBody({ detail, stockTotal, onOpen, onChanged }: {
   detail: ReturnType<typeof useProductDetail>; stockTotal: StockFigureValue; onOpen?: (id: number) => void
+  onChanged?: () => void
 }) {
   const { product, loading, error, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload } = detail
   const hasSecrets = product && product.hidden_count && product.hidden_count !== '0'
   return <Spin spinning={loading}>
     {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={reload}>Retry</Button>} />}
+    {product?.retired_at && <Alert className="pc-prod-retired-note" type="warning" showIcon
+      message={`已停用 Retired ${retiredOn(product.retired_at)}${product.retired_by_name ? ` · ${product.retired_by_name}` : ''}`}
+      description={<>
+        不在目录、搜索和日报匹配里，记录都保留。 Not in the catalog, searches or 日报 matching; its history stays.
+        <RoleGuard minRole="manager"><div className="pc-prod-retired-action">
+          <Button size="small" onClick={() => unretire(product.id, () => { reload(); onChanged?.() })}>恢复 Un-retire</Button>
+        </div></RoleGuard>
+      </>} />}
     {product && <div className="pc-prod-detail-body">
       <div className="pc-prod-facts">
         <div><span>价格 Price (CA$)</span><strong>{product.price != null ? `$${product.price.toFixed(2)}` : '—'}</strong></div>
@@ -195,9 +208,10 @@ export function ProductDetailBody({ detail, stockTotal, onOpen }: {
 }
 
 // Desktop: the detail beside the catalog table (Figma Products · Catalog).
-export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages, onOpen }: {
+export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages, onOpen, onChanged }: {
   productId: number; stockTotal: StockFigureValue; onClose: () => void
   onEdit: (p: ProductDetailData) => void; onImages: (p: ProductDetailData) => void; onOpen?: (id: number) => void
+  onChanged?: () => void
 }) {
   const detail = useProductDetail(productId)
   const product = detail.product
@@ -208,6 +222,6 @@ export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onIm
       {product && <RoleGuard minRole="manager"><Button type="primary" onClick={() => onEdit(product)}>编辑 Edit</Button></RoleGuard>}
       <Button type="text" aria-label="Close product detail" onClick={onClose}>×</Button>
     </header>
-    <ProductDetailBody detail={detail} stockTotal={stockTotal} onOpen={onOpen} />
+    <ProductDetailBody detail={detail} stockTotal={stockTotal} onOpen={onOpen} onChanged={onChanged} />
   </aside>
 }
