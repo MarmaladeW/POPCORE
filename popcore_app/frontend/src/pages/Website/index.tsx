@@ -191,14 +191,15 @@ export default function WebsitePage() {
 
     {preview && <Panel zh="价格" en="Prices" label="Prices" count={going.length} tone="ok">
       <p className="pc-quiet">
-        Each linked box and item gets its Clover price, and each Whole Set its sealed set’s price. Regular prices only: sale
-        prices stay. Left as the website has them: {preview.price_left.design} designs and Vault products,
+        Each linked box and item gets its Clover price, each Whole Set its sealed set’s price, and each design the price a
+        manager set for it in Products → 确认款价格 Design prices (never the box price it was added with). Regular prices only:
+        sale prices stay. Left as the website has them: {preview.price_left.design} designs without a set price and Vault products,
         {' '}{preview.price_left.not_clover} on old POPCORE records, {preview.price_left.no_price} without a POPCORE price.
         {preview.price_daily ? ` ${preview.price_daily} Daily Shop price${preview.price_daily === 1 ? ' waits' : 's wait'} for the hour after the ${status.daily_reset} reset.` : ''}
       </p>
       {going.length === 0 && <p className="pc-quiet">没有 · Every linked price matches POPCORE’s{preview.price_held ? ', apart from those waiting for an OK' : ''}.</p>}
       {prices.map(row => <ListRow key={row.wc_id} label={row.popcore_id} title={row.name}
-        meta={`网站 Website ${money(row.regular_cents) || 'no price'} → POPCORE ${money(row.price)}${row.price_state === 'daily' ? ` · 每日 Daily Shop: after the ${status.daily_reset} reset` : ''}${row.sale_cents !== null ? ` · sale ${money(row.sale_cents)} stays` : ''}`} />)}
+        meta={`网站 Website ${money(row.regular_cents) || 'no price'} → POPCORE ${money(row.price)}${row.price_note === 'first_design_price' ? ' · 首次定价 the design’s first price of its own' : ''}${row.price_state === 'daily' ? ` · 每日 Daily Shop: after the ${status.daily_reset} reset` : ''}${row.sale_cents !== null ? ` · sale ${money(row.sale_cents)} stays` : ''}`} />)}
       {going.length > 20 && <Button type="link" onClick={() => setShowAllPrices(value => !value)}>
         {showAllPrices ? 'Show fewer' : `Show all ${going.length}`}</Button>}
       {status.price_writes.length > 0 && <details className="pc-website-unknown">

@@ -34,15 +34,20 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   until then prices stayed on the website, owner 2026-11-01). A linked Single Box or simple product
   gets its POPCORE product's price, which is its Clover price; a Whole Set gets boxes per set × that
   box's price, since Clover stores no set price (owner, 2026-11-10). POPCORE writes the regular price
-  only, never the sale price. It never prices a confirmed design or a website Vault product: the
-  owner prices designs on the website.
-  An item whose POPCORE record is not a verified Clover item, or has no price, keeps its price.
+  only, never the sale price. A confirmed design gets only a price a manager set for it in POPCORE
+  (owner, 2026-11-12: design prices are set in bulk in POPCORE; design_prices.py), never the box price it
+  was created with; a design with no such price, and a website Vault product that is not a POPCORE design,
+  keep the website's price. An item whose POPCORE record is not a verified Clover item, or has no price,
+  keeps its price.
 - A price change waits for a manager's OK on the Website page when it is a first price, when it is
   over 30%, when the box or item has no Clover item name, when the website's Whole Set does not cost
   POPCORE's boxes per set times its Single Box, or when the item's sale price would end or start
-  discounting. The other options of the same product wait with it, and an OK covers only the change
-  it was given for. A Daily Shop product (`_popcore_daily_pool`) is repriced only in the hour after the
-  daily reset (WEBSITE_DAILY_RESET, 20:00), so a deal in a customer's bag keeps its price that day.
+  discounting. A design's change waits only when it is over 30% from its own website price (the one
+  customers see, or the one POPCORE wrote) or moves a sale: a design with no price of its own there, such
+  as a draft at its box's price, gets its first price without an OK (owner, 2026-11-12). The other
+  options of the same product wait with it, and an OK covers only the change it was given for. A Daily
+  Shop product (`_popcore_daily_pool`) is repriced only in the hour after the daily reset
+  (WEBSITE_DAILY_RESET, 20:00), so a deal in a customer's bag keeps its price that day.
   Just before a price is written, its items are read again, so these checks see the website as it is.
 
 Nothing is written to the website until an admin turns the sync on. The background job runs every
@@ -61,6 +66,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 import db
+import design_prices
 from auth import ROLE_CLAIM
 from goods_operations import _balance
 from inventory_commands import InventoryError, _post_inventory_in_transaction, live_store_ids
@@ -82,7 +88,8 @@ ID_META = '_popcore_id'
 DAILY_META = '_popcore_daily_pool'
 # Marks of a website Vault product (popcore.ca's vault.md): its price is the owner's, never POPCORE's.
 VAULT_META, KIND_META = '_popcore_is_vault', '_popcore_kind'
-# POPCORE prices these; a confirmed design never (its POPCORE price only repeats the box's).
+# POPCORE prices these from their Clover price. A confirmed design is priced only from a price a manager
+# set for it (design_prices.py): the price it was created with only repeats its box's.
 PRICED_FORMS = ('random_box', 'ordinary', 'sealed_set')
 # A price change of more than this percentage waits for a manager's OK.
 PRICE_LOOK_PCT = 30
@@ -473,10 +480,20 @@ def plan(con, cfg):
 
 # ── Prices (owner, 2026-11-10) ──────────────────────────────────────────────
 
-def _wanted_price(item, product, products, set_box):
-    """(cents, None) for the regular price POPCORE gives a linked item, or (None, why it keeps its own)."""
-    if item['vault'] or product['stock_form'] == 'confirmed_design':
-        return None, 'design'
+def _wanted_price(item, product, products, set_box, set_prices):
+    """(cents, None) for the regular price POPCORE gives a linked item, or (None, why it keeps its own).
+    set_prices: {design product id: the price a manager set for it, while POPCORE's price still holds it}."""
+    if product['stock_form'] == 'confirmed_design':
+        # Never the box price a design was created with: only a price a manager set for the design itself
+        # (owner, 2026-11-12). Without one, the website keeps its price.
+        cents = set_prices.get(product['id'])
+        if cents is None:
+            return None, 'design'
+        if product['identity_status'] != 'verified' or cents != _stored_cents(product['price']):
+            return None, 'not_clover' if product['identity_status'] != 'verified' else 'design'
+        return cents, None
+    if item['vault']:
+        return None, 'design'  # a website Vault product that is not a POPCORE design
     if product['identity_status'] != 'verified' or product['stock_form'] not in PRICED_FORMS:
         return None, 'not_clover'
     if product['stock_form'] == 'sealed_set':
@@ -496,6 +513,8 @@ def _price_reasons(item, product, products, set_box, options, before):
     """Why a price change waits for a manager's OK, [] when it can go. before: {website item id: its price
     before POPCORE's last write}."""
     old, new, sale = item['regular_cents'], item['price'], item['sale_cents']
+    if product['stock_form'] == 'confirmed_design':
+        return _design_reasons(item)
     reasons = []
     if not old:
         # A first price makes an item the website could not sell before buyable.
@@ -516,11 +535,58 @@ def _price_reasons(item, product, products, set_box, options, before):
             counts = [round(old / cents) for cents in singles if abs(old / cents - round(old / cents)) < 0.02]
             reasons.append({'code': 'set_size', 'popcore': boxes, 'website': counts[0] if counts else None,
                             'single_cents': singles[0]})
-    # Unless the sale discounts before and after, the change ends it (WooCommerce deletes a sale price
-    # at or above the new price) or starts it again (and the Dex emails the product's followers).
+    return reasons + _sale_reasons(old, new, sale)
+
+
+def _sale_reasons(old, new, sale):
+    """Unless the sale discounts before and after, the change ends it (WooCommerce deletes a sale price
+    at or above the new price) or starts it again (and the Dex emails the product's followers)."""
     if sale is not None and not (old is not None and sale < old and sale < new):
-        reasons.append({'code': 'sale_stops' if sale >= new else 'sale_starts', 'sale_cents': sale})
-    return reasons
+        return [{'code': 'sale_stops' if sale >= new else 'sale_starts', 'sale_cents': sale}]
+    return []
+
+
+def _design_reasons(item):
+    """Why a design's new price waits for a manager's OK (owner, 2026-11-12: "Manager OK on big jumps"). A jump
+    is measured from the design's own website price (design_base). A design that has none, such as a draft
+    at its box's price or with no price, gets its first price: not a jump, so it goes."""
+    base, new = item['design_base'], item['price']
+    reasons = []
+    if base and abs(new - base) * 100 > PRICE_LOOK_PCT * base:
+        reasons.append({'code': 'big_change', 'percent': round(100 * (new - base) / base)})
+    return reasons + _sale_reasons(item['regular_cents'], new, item['sale_cents'])
+
+
+def _stored_cents(price):
+    return design_prices.cents(price)
+
+
+def _published(item, statuses):
+    """Whether customers can see the item: published, and so is its parent product."""
+    return item['status'] == 'publish' and (not item['parent_id'] or statuses.get(item['parent_id']) == 'publish')
+
+
+def _design_context(con):
+    """What a design's own website price is judged by: every website item's status, and the price POPCORE
+    last wrote to each item."""
+    statuses = {row[0]: row[1] for row in con.execute('SELECT wc_id, status FROM website_items')}
+    written = {row[0]: row[1] for row in con.execute(
+        """SELECT wc_id, new_cents FROM website_price_writes w
+           WHERE id=(SELECT MAX(id) FROM website_price_writes WHERE wc_id=w.wc_id)""")}
+    return statuses, written
+
+
+def _design_base(item, context):
+    """The design's own price on the website, or None when it has none there yet (owner, 2026-11-12).
+    - A price customers can see (the item is published) is the design's own, whatever it came from.
+    - So is a price POPCORE wrote there.
+    - A draft's other price is not: on 2026-11-10, 1,473 of the website's 1,521 design drafts carried their box's
+      price (often an old one) and 47 none, so a manager's first price for a draft is no jump."""
+    statuses, written = context
+    old = item['regular_cents']
+    if old and (_published(item, statuses) or written.get(item['wc_id']) == old):
+        return old
+    return None
 
 
 def _daily_window(cfg):
@@ -537,6 +603,9 @@ def _plan_prices(con, cfg, items):
     manager's OK, or 'daily' (a Daily Shop product waiting for the hour after the reset)."""
     products = {row['id']: row for row in con.execute(
         'SELECT id, stock_form, identity_status, price, clover_item_name, boxes_per_dan FROM products')}
+    # Design prices a manager set (owner, 2026-11-12); a design without one is never priced.
+    set_prices = {product_id: mark['cents'] for product_id, mark in design_prices.confirmed(con).items()}
+    context = _design_context(con)
     set_box = {row[0]: row[1] for row in con.execute(
         """SELECT source_product_id, target_product_id FROM product_conversions c
            WHERE version=(SELECT MAX(version) FROM product_conversions WHERE source_product_id=c.source_product_id)""")}
@@ -551,11 +620,15 @@ def _plan_prices(con, cfg, items):
     for wc_id, options in by_product.items():
         for item in options:
             product = products.get(item['product_id']) if item['product_id'] else None
-            item['price'], item['price_left'] = (_wanted_price(item, product, products, set_box) if product
+            design = product is not None and product['stock_form'] == 'confirmed_design'
+            item['design_base'] = _design_base(item, context) if design else None
+            item['price'], item['price_left'] = (_wanted_price(item, product, products, set_box, set_prices) if product
                                                  else (None, None))
             item['price_change'] = item['price'] is not None and item['price'] != item['regular_cents']
             item['price_reasons'] = (_price_reasons(item, product, products, set_box, options, before)
                                      if item['price_change'] else [])
+            # A design's first price of its own: the website had only its box's price, or none.
+            item['price_note'] = 'first_design_price' if design and item['price_change'] and item['design_base'] is None else None
             item['price_state'] = item['price_ok_by'] = None
         changes = [item for item in options if item['price_change']]
         # The options of one product wait together, so a box and its Whole Set never part ways.
@@ -617,9 +690,12 @@ def _reread_prices(con, cfg, items):
         row, product = fresh.get(item['wc_id']), fresh.get(item['parent_id'] or item['wc_id'])
         if row is None or product is None or _popcore_id(row.get('meta_data')).upper() != item['popcore_id'].upper():
             return False
-        con.execute('UPDATE website_items SET regular_cents=?, sale_cents=?, daily_pool=?, vault=? WHERE wc_id=?',
+        # The status too: a design published since the daily read is judged as published.
+        con.execute('UPDATE website_items SET regular_cents=?, sale_cents=?, daily_pool=?, vault=?, status=? WHERE wc_id=?',
                     (_price(row.get('regular_price')), _price(row.get('sale_price')), _flag(product, DAILY_META),
-                     _vault(product), item['wc_id']))
+                     _vault(product), row.get('status') or '', item['wc_id']))
+        if item['parent_id']:
+            con.execute('UPDATE website_items SET status=? WHERE wc_id=?', (product.get('status') or '', item['parent_id']))
     con.commit()
     return True
 
@@ -649,10 +725,11 @@ def preview(con, cfg):
                                             'changes': []})
             group['changes'].append(item)
             group['options'].append({key: item[key] for key in ('wc_id', 'popcore_id', 'name', 'regular_cents',
-                                                                 'sale_cents', 'price', 'price_reasons')})
+                                                                 'sale_cents', 'price', 'price_reasons', 'price_note')})
     for group in held.values():
         group['ok_key'] = _ok_key(group.pop('changes'))
-    price_keys = ('wc_id', 'parent_id', 'popcore_id', 'name', 'regular_cents', 'sale_cents', 'price', 'price_state')
+    price_keys = ('wc_id', 'parent_id', 'popcore_id', 'name', 'regular_cents', 'sale_cents', 'price', 'price_state',
+                  'price_note')
     return {
         # Price changes: sent with the next write, held for a manager's OK, or waiting for the Daily Shop's reset.
         'price_changes': len(prices),
@@ -687,6 +764,73 @@ def preview(con, cfg):
                         for item in sorted(unknown_ids, key=lambda item: item['popcore_id'].upper())][:500],
         'no_ids': no_ids[:500],
     }
+
+
+def price_link(con):
+    """Whether design prices set in POPCORE can reach the website yet: a key on the server, the catalogue read,
+    and the sync turned on."""
+    try:
+        configured = config() is not None
+    except ValueError:
+        configured = False
+    return {'configured': configured, 'enabled': enabled(con), 'refreshed_at': state(con, 'refreshed_at')}
+
+
+def design_items(con):
+    """{design product id: its linked website items}, each with the design's own website price (base_cents:
+    None when it has none there: a draft whose price POPCORE never wrote, or no price)."""
+    context, found = _design_context(con), {}
+    for row in con.execute("""SELECT w.* FROM website_items w JOIN products p ON p.id=w.product_id
+                              WHERE p.stock_form='confirmed_design' AND w.kind IN ('simple', 'variation')
+                              ORDER BY w.wc_id"""):
+        item = dict(row)
+        found.setdefault(item['product_id'], []).append({
+            'wc_id': item['wc_id'], 'name': item['name'], 'status': item['status'],
+            'published': _published(item, context[0]), 'regular_cents': item['regular_cents'],
+            'sale_cents': item['sale_cents'], 'base_cents': _design_base(item, context)})
+    return found
+
+
+def _price_cfg():
+    """The settings price judging needs, also while no website key is set."""
+    try:
+        cfg = config()
+    except ValueError:
+        cfg = None
+    if cfg is None:
+        try:
+            cfg = {'daily_reset': _clock('WEBSITE_DAILY_RESET', '20:00')}
+        except ValueError:
+            cfg = {'daily_reset': datetime.strptime('20:00', '%H:%M').time()}
+    return cfg
+
+
+def design_price_effects(con, product_ids):
+    """{design product id: what the website sync does with its price as POPCORE holds it now}, judged by the
+    same rules as a write (_plan_prices). Run inside the caller's transaction, it judges a change before it is
+    saved. state: 'send' (goes with the next write), 'held' (waits for a manager's OK), 'daily' (after the
+    Daily Shop's reset), 'same' (the website already has it), 'left' (POPCORE does not price it)."""
+    ids = set(product_ids)
+    if not ids:
+        return {}
+    rows = [dict(row) for row in con.execute(
+        "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') AND popcore_id != '' ORDER BY wc_id")]
+    # The other options of the same website product wait with it, so they are judged together.
+    groups = {row['parent_id'] or row['wc_id'] for row in rows if row['product_id'] in ids}
+    items = [row for row in rows if (row['parent_id'] or row['wc_id']) in groups]
+    _plan_prices(con, _price_cfg(), items)
+    statuses = {row[0]: row[1] for row in con.execute('SELECT wc_id, status FROM website_items')}
+    found = {}
+    for item in items:
+        if item['product_id'] not in ids:
+            continue
+        state_now = item['price_state'] or ('same' if item['price'] is not None else 'left')
+        found.setdefault(item['product_id'], []).append({
+            'wc_id': item['wc_id'], 'name': item['name'], 'status': item['status'],
+            'published': _published(item, statuses), 'regular_cents': item['regular_cents'],
+            'sale_cents': item['sale_cents'], 'price': item['price'], 'state': state_now,
+            'first': item['design_base'] is None, 'reasons': item['price_reasons']})
+    return found
 
 
 def push(con, cfg):

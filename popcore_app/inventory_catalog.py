@@ -7,6 +7,7 @@ import re
 import sqlite3
 import uuid
 
+import design_prices
 from catalog_identity import (
     FORMS_TO_UNITS, CatalogConflict, normalize_design_name, product_alias_text_sql, update_product_identity,
 )
@@ -388,11 +389,11 @@ def add_sealed_set(con, product_id, data, *, actor, request_key):
 
 
 def _product_references(con, product_id):
-    """Rows in other tables that point at a product (its own aliases and counts saved before go-live
-    don't count: they go with it)."""
+    """Rows in other tables that point at a product (its own aliases, counts saved before go-live and the
+    prices set for a design don't count: they go with it)."""
     count = 0
     for (table,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
-        if table in ('product_aliases', 'opening_counts'):
+        if table in ('product_aliases', 'opening_counts', 'design_prices'):
             continue
         for fk in con.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
             if fk['table'] == 'products':
@@ -403,7 +404,9 @@ def _product_references(con, product_id):
 def edit_design(con, design_id, data, *, actor):
     """A manager renames a confirmed design or changes its price (owner, 2026-11-03), also once it has stock or sales:
     a design's name is what it is called, so its stock, sales and history stay on the same product. Its 记账名 and full
-    name are rebuilt from its series' product as when it was added; a name another design of the series has is refused."""
+    name are rebuilt from its series' product as when it was added; a name another design of the series has is refused.
+    A price set here is the design's own, like one set on the Design prices screen, so it may go to the website
+    (design_prices.py, owner 2026-11-12)."""
     design_id = read_int(design_id, 'design_id', minimum=1)
     if not isinstance(data, dict) or not data or set(data) - {'design_name', 'price'}:
         raise InventoryValidationError('Supply design_name and/or price')
@@ -423,6 +426,9 @@ def edit_design(con, design_id, data, *, actor):
         updates = {}
         if 'price' in data:
             updates['price'] = price
+            if design_prices.cents(price):
+                design_prices.record(con, design_id, design_prices.cents(price), design_prices.cents(design['price']),
+                                     'design_editor', actor['sub'])
         if 'design_name' in data and name.strip() != design['design_name']:
             name = name.strip()
             for other in con.execute("""SELECT design_name FROM products WHERE series_id=? AND id<>?
