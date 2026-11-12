@@ -4,6 +4,8 @@ jumps"). A design is created with its box's price; that copy is never sent. A de
 price on the website, or none, gets its first price without an OK, and the summary says so."""
 import unittest
 from contextlib import closing
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from test_website_sync import WebsiteSyncTests, website_sync
 
@@ -176,6 +178,49 @@ class DesignPriceTests(WebsiteSyncTests):
         self.assertEqual(self.design_writes(every=False), {})
         self.assertEqual({option['wc_id']: option['price_reasons'] for group in self.preview()['held_prices']
                           for option in group['options']}, {31: [{'code': 'big_change', 'percent': 186}]})
+
+    def test_each_design_price_write_marks_the_design_as_priced_by_popcore(self):
+        """The website reads `_popcore_design_price_at` to show "Set by POPCORE" and lock the price field (website
+        session, 2026-11-12). Every design price POPCORE writes sets it, in the same write, to the time of that write
+        (UTC, ISO 8601), on a simple product or an option. Box prices carry none, and a pickup change in the same
+        write keeps both fields."""
+        twin = self.client.post(f'/api/products/{self.box}/designs', json={'design_names': ['Twin']},
+                                headers={**self.headers('manager'), 'Idempotency-Key': 'twin'})
+        self.assertEqual(twin.status_code, 201, twin.get_json())
+        self.woo.set_id(70, 'PM0100-99')  # the fixture's unknown ID would be on two items now
+        self.woo.product(95, kind='variable', name='Echo pair')  # a design sold as an option
+        self.woo.variation(95, 96, 'PM0100-07', 'Twin')
+        self.turn_on()
+        # The secret's pickup changes in the same pass as its price: MK on the website, and no store has it.
+        self.woo.products[33]['meta_data'].append({'key': '_popcore_pickup_stores', 'value': ['mk']})
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.popcore_price(self.box, 21.99, 'Echo Clover')  # and a box price
+        self.assertEqual(self.prices({'PM0100-04': 6000, 'PM0100-06': 11999, 'PM0100-07': 4000}).status_code, 200)
+        self.woo.writes.clear()
+        with patch.object(website_sync, '_now', return_value=datetime(2026, 11, 12, 20, 15, 30, tzinfo=timezone.utc)):
+            self.run_sync()
+        marker = {'key': '_popcore_design_price_at', 'value': '2026-11-12T20:15:30+00:00'}
+        writes = {update['id']: (path, update) for path, update in self.woo.writes}
+        self.assertEqual(writes[31], ('/products/batch', {'id': 31, 'regular_price': '60.00', 'meta_data': [marker]}))
+        self.assertEqual(writes[96], ('/products/95/variations/batch', {'id': 96, 'regular_price': '40.00', 'meta_data': [marker]}))
+        self.assertEqual(writes[33], ('/products/batch', {'id': 33, 'regular_price': '119.99', 'meta_data': [
+            marker, {'key': '_popcore_pickup_stores', 'value': []}]}))
+        self.assertEqual((writes[11][1], writes[12][1]), ({'id': 11, 'regular_price': '21.99'}, {'id': 12, 'regular_price': '263.88'}))
+        self.assertEqual([meta['value'] for meta in self.woo.item(33)['meta_data'] if meta['key'] in (
+            '_popcore_design_price_at', '_popcore_pickup_stores')], ['2026-11-12T20:15:30+00:00', []])
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT pickup FROM website_items WHERE wc_id=33').fetchone()[0], '[]')
+        # Written once; a later price writes the new time over it.
+        self.woo.writes.clear()
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])
+        self.prices({'PM0100-04': 6500})
+        with patch.object(website_sync, '_now', return_value=datetime(2026, 11, 13, 1, 2, 3, tzinfo=timezone.utc)):
+            self.run_sync()
+        self.assertEqual(self.woo.writes, [('/products/batch', {'id': 31, 'regular_price': '65.00', 'meta_data': [
+            {'key': '_popcore_design_price_at', 'value': '2026-11-13T01:02:03+00:00'}]})])
+        self.assertEqual([meta['value'] for meta in self.woo.item(31)['meta_data'] if meta['key'] == '_popcore_design_price_at'],
+                         ['2026-11-13T01:02:03+00:00'])
 
     def test_the_screen_lists_designs_by_box_with_their_prices_and_website_prices(self):
         self.assertEqual(self.designs('staff').status_code, 403)

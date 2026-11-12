@@ -170,9 +170,10 @@ class FakeWoo:
                 if 'stock_quantity' in update:
                     item.update(manage_stock=True, stock_quantity=update['stock_quantity'],
                                 stock_status='instock' if update['stock_quantity'] > 0 else 'outofstock')
-                if 'meta_data' in update:
+                if 'meta_data' in update:  # as WooCommerce's update_meta_data: a key written replaces that key
+                    keys = {meta['key'] for meta in update['meta_data']}
                     item['meta_data'] = [meta for meta in item.get('meta_data', ())
-                                         if meta['key'] != '_popcore_pickup_stores'] + update['meta_data']
+                                         if meta['key'] not in keys] + update['meta_data']
                 for key in ('regular_price', 'sale_price'):
                     if key in update:
                         item[key] = update[key]

@@ -86,6 +86,9 @@ PICK_ORDER = ('upstairs', 'warehouse', 'floor')
 PICKUP_META = '_popcore_pickup_stores'
 ID_META = '_popcore_id'
 DAILY_META = '_popcore_daily_pool'
+# Written with every design price POPCORE sends (UTC, ISO 8601), so the website can tell the designs POPCORE prices,
+# show "Set by POPCORE" and lock their price field (website session, 2026-11-12). Box prices carry none.
+DESIGN_PRICE_META = '_popcore_design_price_at'
 # Marks of a website Vault product (popcore.ca's vault.md): its price is the owner's, never POPCORE's.
 VAULT_META, KIND_META = '_popcore_is_vault', '_popcore_kind'
 # POPCORE prices these from their Clover price. A confirmed design is priced only from a price a manager
@@ -621,6 +624,7 @@ def _plan_prices(con, cfg, items):
         for item in options:
             product = products.get(item['product_id']) if item['product_id'] else None
             design = product is not None and product['stock_form'] == 'confirmed_design'
+            item['design'] = design
             item['design_base'] = _design_base(item, context) if design else None
             item['price'], item['price_left'] = (_wanted_price(item, product, products, set_box, set_prices) if product
                                                  else (None, None))
@@ -858,12 +862,15 @@ def push(con, cfg):
                 manage_stock=True, stock_quantity=item['quantity'])
         if item['price_state'] == 'send':
             # The regular price only: a sale price stays the website's.
-            updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']})['regular_price'] = \
-                _money(item['price'])
+            entry = updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']})
+            entry['regular_price'] = _money(item['price'])
+            if item['design']:
+                # A design's price is marked as POPCORE's in the same write.
+                entry.setdefault('meta_data', []).append({'key': DESIGN_PRICE_META, 'value': _now().isoformat()})
     for parent in parents:
         if parent['pickup_change']:
             entry = updates.setdefault('/products/batch', {}).setdefault(parent['wc_id'], {'id': parent['wc_id']})
-            entry['meta_data'] = [{'key': PICKUP_META, 'value': parent['wanted']}]
+            entry.setdefault('meta_data', []).append({'key': PICKUP_META, 'value': parent['wanted']})
     by_id = {item['wc_id']: item for item in items}
     wanted = {item['wc_id']: item['quantity'] for item in items}
     pickups = {parent['wc_id']: parent['wanted'] for parent in parents}
@@ -892,7 +899,7 @@ def push(con, cfg):
                     con.execute("""UPDATE website_items SET manage_stock=1, stock_quantity=?, stock_status=?,
                                        error=NULL, pushed_at=datetime('now') WHERE wc_id=?""",
                                 (wanted[wc_id], 'instock' if wanted[wc_id] > 0 else 'outofstock', wc_id))
-                if 'meta_data' in sent:
+                if any(meta['key'] == PICKUP_META for meta in sent.get('meta_data', ())):
                     con.execute("UPDATE website_items SET pickup=?, error=NULL, pushed_at=datetime('now') WHERE wc_id=?",
                                 (json.dumps(pickups[wc_id]), wc_id))
                 written += 1
