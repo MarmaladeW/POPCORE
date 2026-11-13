@@ -45,7 +45,7 @@ EXTRAS = {
     'character': ('description', 'aliases'),
     'series': ('release_date', 'flavour_text', 'description', 'aliases', 'tags', 'designer'),
     'product': ('format', 'release_label', 'description', 'retail_price', 'retail_price_box', 'retail_currency',
-                'variants_normal', 'variants_secret', 'secret_odds'),
+                'variants_normal', 'variants_secret', 'secret_odds', 'parent_category'),
     'design': ('weight', 'weight_range', 'shake_level', 'shake_note', 'flavour_text', 'market_prices'),
 }
 PARTNER_KINDS = ('series', 'product')
@@ -144,6 +144,42 @@ def search(con, text, kinds=None):
 
 def _like(text):
     return '%' + text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+
+
+UNLINKED_FORMS = ('random_box', 'ordinary', 'confirmed_design')  # and unsorted (no form yet); never a sealed set
+MAX_PAGE = 100
+
+
+def unlinked(con, text='', page=1, per_page=50):
+    """POPCORE items no live book entry links: boxes, ordinary items, unsorted items and confirmed designs. A
+    design comes with its box and the book product that box is linked to, if any."""
+    per_page = max(1, min(int(per_page), MAX_PAGE))
+    page = max(1, int(page))
+    where = f"""(p.stock_form IS NULL OR p.stock_form IN ({','.join('?' * len(UNLINKED_FORMS))}))
+                AND NOT EXISTS (SELECT 1 FROM dex_entries d WHERE d.product_id=p.id AND d.deleted_at IS NULL)"""
+    params = list(UNLINKED_FORMS)
+    text = (text or '').strip()
+    if text:
+        where += " AND (p.sku LIKE ? ESCAPE '\\' OR p.name_cn_en LIKE ? ESCAPE '\\' OR p.jizhanming LIKE ? ESCAPE '\\')"
+        params += [_like(text)] * 3
+    total = con.execute(f'SELECT COUNT(*) FROM products p WHERE {where}', params).fetchone()[0]
+    rows = con.execute(
+        f"""SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.design_name, p.stock_form, p.ip_series,
+                   box.id AS box_id, box.sku AS box_sku, COALESCE(NULLIF(box.name_cn_en, ''), box.jizhanming) AS box_name,
+                   be.id AS box_entry_id, be.name AS box_entry_name
+            FROM products p
+            LEFT JOIN product_series ps ON p.stock_form='confirmed_design' AND ps.id=p.series_id
+            LEFT JOIN products box ON box.id=ps.product_id
+            LEFT JOIN dex_entries be ON be.product_id=box.id AND be.deleted_at IS NULL AND be.kind='product'
+            WHERE {where} ORDER BY p.sku COLLATE NOCASE, p.id LIMIT ? OFFSET ?""",
+        params + [per_page, (page - 1) * per_page]).fetchall()
+    items = []
+    for row in rows:
+        item = {key: row[key] for key in ('id', 'sku', 'name_cn_en', 'jizhanming', 'design_name', 'stock_form', 'ip_series')}
+        item['box'] = None if row['box_id'] is None else {'id': row['box_id'], 'sku': row['box_sku'], 'name': row['box_name']}
+        item['box_entry'] = None if row['box_entry_id'] is None else {'id': row['box_entry_id'], 'name': row['box_entry_name']}
+        items.append(item)
+    return {'items': items, 'total': total, 'page': page, 'per_page': per_page}
 
 
 def detail(con, entry_id):

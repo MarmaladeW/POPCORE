@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Skeleton } from 'antd'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
-import { topEntries, type DexDetail, type DexEntry } from '../../api/dex'
+import { topEntries, unlinkedItems, type DexDetail, type DexEntry } from '../../api/dex'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
@@ -20,6 +20,7 @@ export default function DexHome() {
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
   const [editing, setEditing] = useState<DexEditing | null>(null)
+  const [unlinked, setUnlinked] = useState<number>()
 
   useEffect(() => {
     let live = true
@@ -27,6 +28,7 @@ export default function DexHome() {
       if (!live) return
       setCompanies(nextCompanies); setPartners(nextPartners); setError('')
     }).catch(cause => { if (live) setError(errorText(cause, 'Unable to load the book.')) })
+    unlinkedItems('', 1, 1).then(page => { if (live) setUnlinked(page.total) }).catch(() => {})
     return () => { live = false }
   }, [attempt])
 
@@ -41,6 +43,11 @@ export default function DexHome() {
   return <div className="pc-dex">
     {header}
     {!empty && <DexSearch />}
+    <Link className="pc-panel pc-dex-unlinked" to="/dex/unlinked" aria-label="Not in the book yet">
+      <span><strong>不在图鉴里 Not in the book yet</strong>
+        <small>POPCORE items no book entry is linked to{manager ? '; put them in the book from here' : ''}</small></span>
+      <span className="pc-panel-count"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{unlinked ?? '…'}</span>
+    </Link>
     {empty && <section className="pc-dex-empty" aria-label="Empty book">
       <h2>图鉴还是空的 <small>The book is empty</small></h2>
       <p>先加一个公司，比如 POP MART，再在它下面加 IP、系列、产品和款。迪士尼这样的外部名字放在联名里。</p>

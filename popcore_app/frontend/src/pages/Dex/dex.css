@@ -37,3 +37,13 @@
   .pc-dex-card { flex-direction: column; }
   .pc-dex-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
+.pc-dex-pages { display: flex; justify-content: center; padding: 12px; }
+.pc-dex-row .ant-btn { flex: none; }
+@media (max-width: 600px) {
+  .pc-dex-item { flex-wrap: wrap; }
+  .pc-dex-item .pc-row-main { flex: 1 1 100%; }
+  .pc-dex-item .pc-row-main strong { white-space: normal; overflow-wrap: anywhere; }
+}
+.pc-dex-unlinked { display: flex; align-items: center; gap: 12px; padding: 14px 16px; color: inherit; text-decoration: none; }
+.pc-dex-unlinked > span:first-child { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.pc-dex-unlinked small { color: var(--text-secondary); font-size: 12.5px; }

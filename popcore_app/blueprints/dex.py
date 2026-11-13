@@ -56,6 +56,17 @@ def dex_removal(entry_id):
     return _run(work)
 
 
+@bp.get('/api/dex/unlinked')
+@login_required
+def dex_unlinked():
+    """POPCORE items not in the book yet (no live book entry links them); never sealed sets."""
+    def work(con):
+        page = _number('page') if request.args.get('page') else 1
+        per_page = _number('per_page') if request.args.get('per_page') else 50
+        return dex_book.unlinked(con, request.args.get('q', ''), page, per_page)
+    return _run(work)
+
+
 @bp.post('/api/dex/entries')
 @role_required('manager')
 def dex_create():
