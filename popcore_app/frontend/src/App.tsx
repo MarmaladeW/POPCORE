@@ -28,6 +28,7 @@ const StoreSummary=lazyPage(()=>import('./pages/Home/StoreSummary'))
 const ProductsPage=lazyPage(()=>import('./pages/Products'))
 const CloverMatchingPage=lazyPage(()=>import('./pages/Products/CloverMatching'))
 const SeriesCatalogPage=lazyPage(()=>import('./pages/Products/SeriesCatalog'))
+const DesignPricesPage=lazyPage(()=>import('./pages/Products/DesignPrices'))
 const StockPage=lazyPage(()=>import('./pages/Stock'))
 const SeriesInventory=lazyPage(()=>import('./pages/Stock/SeriesInventory'))
 const GoodsPage=lazyPage(()=>import('./pages/Stock/Goods'))
@@ -177,6 +178,7 @@ function AppInner() {
           <Route path="/products"       element={<ProductsPage />} />
           <Route path="/products/series" element={<SeriesCatalogPage />} />
           <Route path="/products/clover-matching" element={<RoleRoute minRole="manager" element={<CloverMatchingPage />} />} />
+          <Route path="/products/design-prices" element={<RoleRoute minRole="manager" element={<DesignPricesPage />} />} />
           <Route path="/stock"          element={<InventoryRoute element={<SeriesInventory />} />} />
           <Route path="/stock/products" element={<InventoryRoute element={<StockPage />} />} />
           <Route path="/goods/receiving" element={<InventoryRoute element={<GoodsPage initialTab="receiving" />} />} />

@@ -3,8 +3,9 @@ linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07)
 shelves set the website number, paid web orders take their items
 out of the filling store's back stock first and stay out of its closing, a cancel puts them back,
 and nothing is written to the website before an admin turns the sync on. Since 2026-11-10 POPCORE
-also writes the regular prices of linked boxes, Whole Sets and items, never designs' or sale prices;
-big or doubtful changes wait for a manager's OK, and Daily Shop products wait for the reset."""
+also writes the regular prices of linked boxes, Whole Sets and items, never sale prices; big or doubtful
+changes wait for a manager's OK, and Daily Shop products wait for the reset. A design gets only a price a
+manager set for it (owner, 2026-11-12), never the box price it was created with: test_design_prices.py."""
 import io
 import json
 import sys
@@ -169,9 +170,10 @@ class FakeWoo:
                 if 'stock_quantity' in update:
                     item.update(manage_stock=True, stock_quantity=update['stock_quantity'],
                                 stock_status='instock' if update['stock_quantity'] > 0 else 'outofstock')
-                if 'meta_data' in update:
+                if 'meta_data' in update:  # as WooCommerce's update_meta_data: a key written replaces that key
+                    keys = {meta['key'] for meta in update['meta_data']}
                     item['meta_data'] = [meta for meta in item.get('meta_data', ())
-                                         if meta['key'] != '_popcore_pickup_stores'] + update['meta_data']
+                                         if meta['key'] not in keys] + update['meta_data']
                 for key in ('regular_price', 'sale_price'):
                     if key in update:
                         item[key] = update[key]
@@ -705,8 +707,8 @@ class WebsiteSyncTests(IsolatedApiCase):
 
     def test_prices_follow_popcore_for_boxes_sets_and_items_never_designs(self):
         """POPCORE sends a linked box's or item's Clover price, and to the Whole Set the boxes per set times
-        that price: Clover stores no set price (owner, 2026-11-10). It never prices a design or a Vault
-        product, never touches a sale price, and leaves an item alone when its POPCORE record is an old
+        that price: Clover stores no set price (owner, 2026-11-10). It never sends a design the box price the
+        design was created with, nor prices a Vault product that is not a POPCORE design, never touches a sale price, and leaves an item alone when its POPCORE record is an old
         (unverified) one or has no price."""
         self.popcore_price(self.box, 20.99, 'Echo Clover', boxes=12)
         self.popcore_price(self.set, 999.99, boxes=12)  # the set record's own price is never read

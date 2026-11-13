@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from support import IsolatedApiCase
 from matcher import load_report_picks, report_identity_signature, report_match_key
 from stock_counting import family_anchors, family_members
+import design_prices
 
 
 def days_ago(days):
@@ -152,6 +153,8 @@ class ProductRetireTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             _, _, members = family_members(con, self.ids['Blind'])
         self.assertEqual([role for role, *_ in members], ['box'])  # the 盘点 / 补货 card leaves them out
+        with closing(self.connect()) as con:  # and the 确认款价格 Design prices list
+            self.assertNotIn(self.ids['Red'], [design['id'] for design in design_prices.listing(con)['designs']])
         # The catalog's detail still lists them, marked.
         detail = self.client.get(f"/api/products/{self.ids['Blind']}", headers=self.headers('staff')).get_json()
         self.assertEqual(sorted(bool(item['retired_at']) for item in detail['sub_items']), [True, True])

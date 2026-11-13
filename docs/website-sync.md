@@ -1,8 +1,8 @@
 # Website stock and price sync (popcore.ca)
 
-Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10); Whole Sets also count the whole sets floor boxes are sure to have since branch `claude/website-whole-sets` (2026-11-10). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
+Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10); Whole Sets also count the whole sets floor boxes are sure to have since branch `claude/website-whole-sets` (2026-11-10); confirmed designs get the prices a manager sets on 确认款价格 Design prices since branch `claude/design-prices-244851` (2026-11-12). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
 
-POPCORE owns stock (owner, 2026-10-25) and, since 2026-11-10, the regular prices of linked boxes, Whole Sets and items. popcore.ca (WooCommerce) takes its stock numbers and those prices from POPCORE, and paid web orders take their items out of POPCORE stock. Everything runs on the POPCORE side through WooCommerce's REST API; there is no website plugin. Code: `popcore_app/website_sync.py`, routes in `blueprints/website.py`, page 网站 Website (`/website`).
+POPCORE owns stock (owner, 2026-10-25) and, since 2026-11-10, the regular prices of linked boxes, Whole Sets and items; since 2026-11-12 also the prices a manager sets for confirmed designs. popcore.ca (WooCommerce) takes its stock numbers and those prices from POPCORE, and paid web orders take their items out of POPCORE stock. Everything runs on the POPCORE side through WooCommerce's REST API; there is no website plugin. Code: `popcore_app/website_sync.py`, routes in `blueprints/website.py`, page 网站 Website (`/website`).
 
 Owner decisions, 2026-11-01:
 
@@ -11,7 +11,9 @@ Owner decisions, 2026-11-01:
 - **Web orders are separate Website orders.** They take stock out but stay out of the store's sales, closing and cash/card count.
 - **Keeping pieces back for the shop follows the daily report** (owner, 2026-11-02). Until a shop day's report is in, each item holds back what the shop sold of it on its best day. See [The shop's sales since its last report](#the-shops-sales-since-its-last-report).
 
-Owner decision, 2026-11-10: the website's prices should "keep up with our clover price". Asked whether that should happen by itself, the owner said: "Yes, automatically, but it should be POPCORE automatically sending price to the website too". So POPCORE writes the **regular price** of linked boxes, Whole Sets and items. Sale prices and the prices of confirmed designs stay managed on the website: the owner sets design prices separately. The website's POPCORE → Sales screen keeps working. See [Prices](#prices).
+Owner decision, 2026-11-10: the website's prices should "keep up with our clover price". Asked whether that should happen by itself, the owner said: "Yes, automatically, but it should be POPCORE automatically sending price to the website too". So POPCORE writes the **regular price** of linked boxes, Whole Sets and items. Sale prices stay managed on the website, and the website's POPCORE → Sales screen keeps working. ~~The prices of confirmed designs stay managed on the website: the owner sets design prices separately.~~ Replaced on 2026-11-12, below. See [Prices](#prices).
+
+Owner decisions, 2026-11-12: designs are priced "based on the market price of the day". Asked where those daily prices should be set, the owner answered: "we have a place that is easy to set them in bulk, either POPCORE or something on the website, actually thinking about it POPCORE might be better". Asked whether they go straight to the website, the owner chose "Manager OK on big jumps": a change over 30% waits for a manager's OK, the way box prices do. So POPCORE now writes a confirmed design's regular price too, but **only a price a manager set for that design**: never the box price a design is created with. See [Design prices](#design-prices-owner-2026-11-12).
 
 ## How items are linked
 
@@ -46,7 +48,7 @@ Trashed products are not read, so the POPCORE ID on a trashed item is ignored.
 
 ### WooCommerce's meta_data
 
-WooCommerce 10.9.1 returns custom meta in `meta_data` for products (`WC_REST_Products_V2_Controller::api_get_meta_data`) and for variations (`WC_REST_Product_Variations_Controller`). It includes keys that start with an underscore. It leaves out only its own internal keys (`_sku`, `_stock`, `_price`, …), keys starting with `wp_`, and, for variations, `attribute_*` (`WC_Data_Store_WP::exclude_internal_meta_keys`). `_popcore_id` and `_popcore_pickup_stores` come back as written. The website must not add a `woocommerce_data_store_wp_post_read_meta` filter or an `exclude_meta` default that drops them.
+WooCommerce 10.9.1 returns custom meta in `meta_data` for products (`WC_REST_Products_V2_Controller::api_get_meta_data`) and for variations (`WC_REST_Product_Variations_Controller`). It includes keys that start with an underscore. It leaves out only its own internal keys (`_sku`, `_stock`, `_price`, …), keys starting with `wp_`, and, for variations, `attribute_*` (`WC_Data_Store_WP::exclude_internal_meta_keys`). `_popcore_id` and `_popcore_pickup_stores` come back as written. POPCORE writes its own fields the same way, in `meta_data` of the batch update: `_popcore_pickup_stores`, and `_popcore_design_price_at` with a design's price ([Design prices](#design-prices-owner-2026-11-12)). The website must not add a `woocommerce_data_store_wp_post_read_meta` filter or an `exclude_meta` default that drops them.
 
 ## The website's number
 
@@ -115,9 +117,10 @@ POPCORE writes each linked item's regular price in the same push as its stock (o
 |---|---|
 | Simple product, or the Single Box option (`PM0123`) | the product's `price`: its Clover price |
 | Whole Set option (`PM0123-SET`) | boxes per set × the single box's price. Clover never stores a set price, so the sealed set record's own `price` is never read (owner, 2026-11-10) |
-| A design (`PM0123-05`), or any product the website marks Vault (`_popcore_is_vault`, or `_popcore_kind` = `confirmed_design`) | **none**: the owner prices designs on the website |
+| A design (`PM0123-05`) | the price a manager set for it in POPCORE ([Design prices](#design-prices-owner-2026-11-12)); **none** while it has no such price |
+| A website Vault product (`_popcore_is_vault`, or `_popcore_kind` = `confirmed_design`) whose POPCORE ID is not a POPCORE confirmed design | **none** |
 
-The 2026-11-09 check found POPCORE's prices to be Clover's. All 394 records with a Clover item name matched the 8 Oct Clover export to the cent, and every sealed set cost `boxes_per_dan` × its box (241 sets). Designs are different. POPCORE copies the box price into every design (1,487 of 1,820), while the website's Vault designs carry collector prices.
+The 2026-11-09 check found POPCORE's prices to be Clover's. All 394 records with a Clover item name matched the 8 Oct Clover export to the cent, and every sealed set cost `boxes_per_dan` × its box (241 sets). Designs are different. POPCORE copies the box price into every design (1,487 of 1,820), while the website's Vault designs carry collector prices. That copy is why a design's price goes only once a manager has set it.
 
 Boxes per set is the sealed set record's `boxes_per_dan`, else its box's. It is never taken from the set's opening conversion (`product_conversions.output_per_input`), which can disagree. DR0051 is 6 per set (owner, 2026-11-10): both records say 6, but its opening conversion said 12 on 2026-11-10, and that conversion is the wrong one.
 
@@ -178,15 +181,55 @@ A product with `_popcore_daily_pool` = yes, and each of its options, is repriced
 
 The pool mark is read again just before each price write (above), so a product added to the pool during the day waits too.
 
+### Design prices (owner, 2026-11-12)
+
+A confirmed design is created with its box's price (`inventory_catalog.add_designs`); that copy is not a price of the design's own. On the 11 Nov backup, 1,646 of POPCORE's 1,828 designs carried exactly their box's price, 107 had none and 66 another price. On the owner's 10 Nov website export, 1,473 of the 1,521 design drafts carried their box's price and 47 none; of the 87 live designs, 73 matched POPCORE's design price, 12 did not (#PM0027-08 The Sea Otter (Secret): $109.99 on the website, POPCORE's copy $30.99) and 2 were at their box's price.
+
+**Where design prices are set.** Products → **确认款价格 Design prices** (`/products/design-prices`, managers). It lists every design under its box, with its IP, POPCORE's price, and the website's price and whether that listing is live or a draft. A manager can:
+- type a price, or paste a column copied from a spreadsheet: one price per line fills the designs shown from that row down (a blank line leaves one as it is); lines that carry a POPCORE ID (`PM0123-05`) go to that design instead;
+- select designs (one by one, a whole box, or a box's regular or secret designs) and set them to one price, or raise or lower them by a percentage or an amount;
+- show only one IP, regular or secret designs (a design whose name says 隐藏, secret, hidden or chase), designs with no price set yet, designs changed today, designs live on the website, or the ones edited and not saved; and search by box, design or ID.
+
+Nothing is saved until **检查并保存 Review & save**. The summary shows, before anything changes, each new price and what the website will do with it, judged by the website sync's own rules: which go with the next write, which are first prices, which wait for a manager's OK and why, and which designs are not on the website. **保存 Save** then sets them all in one go. A save is refused as a whole if any of those designs' prices changed since the page was loaded.
+
+A saved price is POPCORE's price for the design (`products.price`): what the shop charges for it and what stock value counts. Each one is also kept in `design_prices`, with the price before, who set it and when. A price a manager types in the design's own editor (子项 list, 编辑) counts the same way; a rename alone sets no price.
+
+**Only a set price goes to the website.** A design's price goes out only when its latest `design_prices` row still equals its POPCORE price. Never sent:
+- the price a design was created with (its box's);
+- a design price written any other way: a script or import, such as the 2026-11-12 one that copied new box prices into the Kiss Kiss and Hanami designs;
+- a set price later overwritten some other way. The screen marks such a design **他处改过 Changed elsewhere: not sent**, and the website keeps the last price POPCORE sent, until a manager sets a price again.
+
+So turning the price link on, or deploying this, sends no design price at all. The 85 live designs keep their collector prices until a manager sets prices for them on this screen.
+
+**The website can tell which designs POPCORE prices** (website session, 2026-11-12). Every design price POPCORE writes also sets the product field `_popcore_design_price_at` on that product or option, in the same write: the time of the write in UTC, ISO 8601 (`2026-11-12T20:15:30+00:00`). A later price writes the new time over it. Box, Whole Set and item prices, stock and pickup writes carry none. It goes in `meta_data` of the batch update, like `_popcore_pickup_stores`, so a pickup change in the same write keeps both. The website reads it to show "Set by POPCORE" and lock the price field on exactly those designs. POPCORE never reads it back and never removes it. A design that has the field keeps it if a manager later stops pricing it in POPCORE (its price then changed some other way), so the website should treat it as "POPCORE has priced this design", not "POPCORE will write its next price".
+
+**What a jump is measured from.** A design's change is held for a manager's OK, under **价格待确认 Prices waiting for an OK** on the Website page, when it moves more than **30%** from **the design's own website price**:
+- a live (published) design's website price, which is what customers see, whatever it came from;
+- or the price POPCORE last wrote to that listing, also on a draft.
+
+A design with no price of its own there gets its **first price** without an OK. That is a draft whose price POPCORE never wrote, which nearly always carries its box's price, and a listing with no price at all. A first price is not a jump: a jump from a copied $26.99 to a collector's $90 means nothing, and customers cannot see a draft. The summary and the Website page say **首次定价 first price** for each one.
+
+The other checks still hold for designs: a sale price that would end or start again waits for an OK, a Daily Shop product waits for the reset, and the price is read again just before the write. The Clover item-name check does not apply, since designs have no Clover item. A design published since the daily catalogue read is judged as published, because the read just before the write also takes each item's status.
+
+Considered and not chosen: measuring every design from its website price as boxes are. That would hold nearly every first price (a box's $26.99 against a market price of $90 is +233%), so the OK would stop meaning "a big jump".
+
+**The website's side** (read 2026-11-12 in `popcore_plugins`, `develop` 2a425c68; nothing there was changed). popcore.ca takes a design's `regular_price` from the REST batch as it stands: designs are simple products, and no plugin or theme code locks, overrides or recalculates a Vault product's price. The storefront shows `get_price()`. What the website side still needs:
+- **Dex 2.14.4 on the site before design prices go** (file 09, packaged 2026-11-05, not uploaded). Production's Dex 2.14.3 re-announces a live design's arrival on every save, at most once an hour, and each price write is a save. Stock writes already do this, so the step is on the turn-on list anyway.
+- **The product screen rebuild** (website branch `claude/product-screen-ready-to-sell-4c74f1`, not merged). Its `pcat_popcore_controls()` gives designs no price lock, so the product editor would stay open and POPCORE would overwrite hand edits. Designs that POPCORE prices need the `'lock'` treatment there too.
+- **Its docs**, which still say POPCORE never writes design prices: `docs/runbook/decisions.md` (*Website prices follow POPCORE…*), `docs/runbook/vault.md` (*Publish a confirmed-design draft*, step 2, and the gotcha *A Clover confirmed-design draft's price is a placeholder*), `docs/runbook/tools.md` (the publish checklist), `docs/integration/popcore-sync-probe.md` question 9.
+
+A design price write is a product save, so the website's own observers run as for any price write (below). A live, in-stock design not yet linked to its Dex figure is linked on save (`PCAT_Publish::on_save`), which announces its arrival and emails the figure's followers. Drafts are never linked.
+
 ### What a price write does on the website
 
 A price write saves the product through WooCommerce, so the website's own observers run:
 
 - **Restock emails.** Followers waiting for the product are emailed when it is available. This is expected (owner, 2026-11-10).
 - **Dex sale notice.** The Dex announces a sale when a save finds one it has not seen yet (`_popcore_on_sale_seen`). A sale that would start again waits for an OK. A sale that runs before and after the write is announced only if the Dex never saw it; on the 2026-11-10 data, no price that goes at once has a sale.
-- **No other notices.** No Dex arrival is sent, since designs are never priced.
+- **The design marker.** A design's price write also sets `_popcore_design_price_at` ([Design prices](#design-prices-owner-2026-11-12)).
+- **Dex arrival.** A price write to a live design is a save. On Dex 2.14.3 that re-announces the design's arrival (at most once an hour), as a stock write does; Dex 2.14.4 announces only a real change to live. See [Design prices](#design-prices-owner-2026-11-12).
 
-**Change a box's or an item's price in POPCORE (Clover), not on the website.** An edit made on the website is put back at the next full catalogue read.
+**Change a box's or an item's price in POPCORE (Clover), and a design's on 确认款价格 Design prices, not on the website.** An edit made on the website is put back at the next full catalogue read. A design no manager has priced in POPCORE keeps the website's price.
 
 ## Web orders
 
@@ -240,6 +283,7 @@ This order matters: the first write reaches real customers and staff email.
    - Press **Read website products**. It takes a minute or two.
    - Read **What turning on changes**: the items that sell out, come back or are low, the pickup changes, the POPCORE IDs not in POPCORE, any ID on two items, and the items without an ID.
    - Read **价格 Prices**, the prices the first write changes, and **价格待确认 Prices waiting for an OK**. A manager can OK held prices before or after turning on.
+   - Design prices go only after a manager sets them on Products → 确认款价格 Design prices; Dex 2.14.4 must be on the site first.
    - Press **Turn on**. The first write follows within 30 seconds.
    - **Turn off** stops every write and order reading. The website keeps its last numbers and prices.
 
@@ -256,6 +300,8 @@ This order matters: the first write reaches real customers and staff email.
 - **A Whole Set POPCORE has no sealed set for** shows sold out (above) and keeps the website's price.
 - **A batch the website takes only in part** can leave a box at its new price and its Whole Set at the old one. The rest is written in the next pass, or waits for an OK: a new OK is needed, because an OK covers only the change it was given for.
 - **Partial refunds** never move stock.
+- **Upgrading to design prices** (migration `design_prices`) adds the table `design_prices`, empty, so no design price goes until a manager sets one. The catalogue read stays as it is.
+- **A design set aside before 2026-11-12.** A price typed in the design's editor before this release is not recorded as set, so it does not go until a manager sets it again.
 
 ## Local checks
 
@@ -265,4 +311,6 @@ This order matters: the first write reaches real customers and staff email.
   - The manager's OK, for exactly the change shown and used only once. Sales that would end or start.
   - The read just before a write: a new sale, a new Daily Shop mark, and swapped POPCORE IDs.
   - The Daily Shop hour, `WEBSITE_DAILY_RESET`, and the upgrade.
+- `tests/test_design_prices.py`: a design's box price is never sent, at turn-on, after a new box price copied into designs, or over a price a manager set; a price set on the screen or in the design's editor goes, and a rename sets none; first prices (a draft at its box's price, or none, or a hand-set draft price) go without an OK; a live design's +36% waits and goes after an OK, and +4% goes; a draft is measured from the price POPCORE wrote, and a design published since the read is judged as published; every design price write sets `_popcore_design_price_at` (a simple product, an option, beside a pickup change in the same write), and box prices carry none; the summary before saving matches what the sync does; the list, grouped by box, with secrets, website prices and "changed today"; a save refused as a whole when a price moved, input refusals, idempotent saves; removing a design with a set price; the upgrade.
+- `tests/browser/check_design_prices.py`: the 确认款价格 screen at 390 and 1440 px, against the real Flask app and the same fake: typing, a pasted column, one price for a box's regular designs then +10%, the secret apart, the review, the save, the writes, and the held jump on 网站 Website. Staff cannot open it. `frontend/src/pages/Products/designPriceMath.test.ts` covers reading prices and pasted columns.
 - `tests/browser/check_website_sync.py`: the page at 390 and 1440 px, against the real Flask app and the same fake. It covers reading products, the preview (including where a Whole Set number comes from), turning on, an order that waits and is settled, a price that goes and one a manager OKs, managers unable to turn the sync on, and staff unable to open the page.

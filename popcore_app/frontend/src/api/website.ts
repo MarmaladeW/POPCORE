@@ -38,7 +38,8 @@ export interface WebsitePreview {
   no_ids: Array<{ wc_id: number; parent_id: number | null; sku: string; name: string }>
   // Price changes: sent with the next write, held for a manager's OK, or Daily Shop ones waiting for the reset.
   price_changes: number; price_send: number; price_held: number; price_daily: number
-  // Linked items that keep the website's price: designs and Vault products, old POPCORE records, no POPCORE price.
+  // Linked items that keep the website's price: designs without a price a manager set, Vault products that are not
+  // POPCORE designs, old POPCORE records, no POPCORE price.
   price_left: { design: number; not_clover: number; no_price: number }
   prices: WebsitePriceChange[]
   held_prices: WebsiteHeldPrice[]
@@ -46,6 +47,8 @@ export interface WebsitePreview {
 export interface WebsitePriceChange {
   wc_id: number; parent_id: number | null; popcore_id: string; name: string; regular_cents: number | null
   sale_cents: number | null; price: number; price_state: 'send' | 'held' | 'daily'
+  // A design's first price of its own: the website had only its box's price, a draft's price, or none (owner, 2026-11-12).
+  price_note: 'first_design_price' | null
 }
 export type PriceReason =
   | { code: 'first_price' }
