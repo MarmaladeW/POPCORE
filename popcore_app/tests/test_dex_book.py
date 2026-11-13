@@ -54,7 +54,7 @@ class DexBookTests(IsolatedApiCase):
     def test_migration_runs_twice_and_only_adds_the_table(self):
         with closing(self.connect()) as con:
             before = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
-            con.execute("DELETE FROM _migrations WHERE name='dex_entries'")
+            con.execute("DELETE FROM _migrations WHERE name IN ('dex_entries', 'dex_entries_website_item')")
             con.commit()
         db.migrate_db()
         db.migrate_db()
@@ -62,14 +62,16 @@ class DexBookTests(IsolatedApiCase):
             after = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
             self.assertEqual(before, after)
             self.assertIn('dex_entries', after)
-            self.assertTrue({'idx_dex_entries_parent', 'idx_dex_entries_product', 'idx_dex_entries_website'} <= after)
+            self.assertTrue({'idx_dex_entries_parent', 'idx_dex_entries_product', 'idx_dex_entries_website_item'} <= after)
             self.assertEqual(con.execute("SELECT COUNT(*) FROM _migrations WHERE name='dex_entries'").fetchone()[0], 1)
+            self.assertNotIn('idx_dex_entries_website', after)  # replaced by the one with website_item
 
     def test_allowed_parents(self):
         company = self.add('company', 'POP MART')
         partner = self.add('partner', 'Disney')
         ip = self.add('ip', 'Labubu', company)
         self.add('character', 'Zimomo', ip)
+        self.add('character', 'Snow White', partner)  # contract 1.2: a partner's own characters
         series_under_ip = self.add('series', 'The Monsters', ip)
         series_under_company = self.add('series', 'Mega Space', company)
         self.add('product', 'Echo box', series_under_ip)

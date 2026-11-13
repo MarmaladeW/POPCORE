@@ -10,6 +10,7 @@ from support import IsolatedApiCase
 from matcher import load_report_picks, report_identity_signature, report_match_key
 from stock_counting import family_anchors, family_members
 import design_prices
+import dex_book
 
 
 def days_ago(days):
@@ -179,6 +180,7 @@ class ProductRetireTests(IsolatedApiCase):
     def test_retired_products_leave_count_search_and_report_matching(self):
         with closing(self.connect()) as con:
             self.assertIn(self.ids['Mars'], family_anchors(con, 'Mars'))
+            self.assertIn(self.ids['Mars'], [item['id'] for item in dex_book.unlinked(con, 'Mars')['items']])
             # A manager's name pick of Mars, as the paste review saves it.
             product = dict(con.execute('SELECT * FROM products WHERE id=?', (self.ids['Mars'],)).fetchone())
             key = report_match_key('火星')
@@ -194,6 +196,7 @@ class ProductRetireTests(IsolatedApiCase):
         self.assertEqual(self.retire('Mars').status_code, 200)
         with closing(self.connect()) as con:
             self.assertEqual(family_anchors(con, 'Mars'), [])
+            self.assertEqual(dex_book.unlinked(con, 'Mars')['items'], [])  # 图鉴: not asked to be added to the book
             self.assertNotIn(key, load_report_picks(con))
         self.assertNotIn(self.ids['Mars'], self.parsed_ids('Mars星球*1'))
         self.assertNotIn(self.ids['Mars'], self.parsed_ids('火星*1'))
