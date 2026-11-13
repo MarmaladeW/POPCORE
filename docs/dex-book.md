@@ -146,7 +146,7 @@ hand, a suggested IP, the suggested book entry and how close it is; a design who
 linked item whose name is closest, among the IP the item's group or name points to first, comparing names with the
 IPs' own names, filler words ("series", "figure", "blind box"…) and POPCORE IDs removed (rapidfuzz token sort
 ratio). For a confirmed design: the closest unlinked design under the book product its box is linked to. Below 60
-out of 100 there is no suggestion.
+out of 100 there is no suggestion. Close words are not enough: the numbers in the two names must agree (a year, 400% against 1000%, Series 2 against 3), a real word must be left to compare once the IP's name and filler words are gone, and an item that points at an IP is only ever matched inside that IP.
 
 ## Not in the book yet
 

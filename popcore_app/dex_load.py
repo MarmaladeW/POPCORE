@@ -749,6 +749,17 @@ def _clean(text, drop):
                     and not re.fullmatch(r'[a-z0-9]{2}\d{4}', word))
 
 
+def _numbers(text):
+    """The numbers in a name (a year, 400 against 1000, Series 2 against 3): two names are only alike when
+    these agree, however close the words are."""
+    return set(re.findall(r'\d+', text or ''))
+
+
+def _has_word(text):
+    """A real word is left to compare (not only "2" once the IP's name and the filler words are gone)."""
+    return re.search(r'[^\W\d_]{3,}', text or '') is not None
+
+
 def candidates(nodes):
     """Book products and designs no item is linked to, ready for suggest(). nodes: key -> {id, kind, name, parent,
     product_id} for the live book (the database's rows, or a load plan's)."""
@@ -791,16 +802,23 @@ def suggest(item, found):
     if item.get('stock_form') == 'confirmed_design':
         box = item.get('family_owner') or (item.get('box') or {}).get('id')
         name = norm(item.get('design_name') or '')
-        scored = [(fuzz.ratio(name, norm(c['name'])), c) for c in found['designs'].get(box, [])] if name else []
+        scored = [(fuzz.ratio(name, norm(c['name'])), c) for c in found['designs'].get(box, [])
+                  if _numbers(c['name']) == _numbers(name)] if name else []
     else:
         hint = suggest_ip(item, found['ip_names']).casefold()
         label = item.get('name_cn_en') or item.get('jizhanming') or ''
         if not hint:
             spaced = ' ' + ' '.join(_words(label)) + ' '
             hint = next((ip for ip in found['ip_names'] if f' {" ".join(_words(ip))} ' in spaced), '')
-        pool = [c for c in found['products'] if hint and c['ip'] == hint] or found['products']
+        # A known IP narrows the search to that IP's products, and stays narrow when it has none: the whole
+        # book is searched only when the item points at no IP at all.
+        pool = [c for c in found['products'] if c['ip'] == hint] if hint else found['products']
         text = _clean(label, found['ip_words'])
-        scored = [(max(fuzz.token_sort_ratio(text, t) for t in c['texts']), c) for c in pool if c['texts']] if text else []
+        scored = []
+        for c in pool if _has_word(text) else []:
+            close = [fuzz.token_sort_ratio(text, t) for t in c['texts'] if _has_word(t) and _numbers(t) == _numbers(text)]
+            if close:
+                scored.append((max(close), c))
     if not scored:
         return None
     score, best = max(scored, key=lambda pair: pair[0])

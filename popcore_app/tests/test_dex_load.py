@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import sqlite3
+import unittest
 from contextlib import closing, redirect_stdout
 from pathlib import Path
 
@@ -414,3 +415,34 @@ class DexLoadTests(IsolatedApiCase):
                            VALUES ('product', 'Gone', ?, 9, datetime('now'))""", (self.items['PM0200'],))
             con.commit()
         self.assertIn('PM0200', [item['sku'] for item in self.get('/api/dex/unlinked')['items']])
+
+
+class SuggestionNumbersTest(unittest.TestCase):
+    """Close words are not enough: a year, a size or a series number must agree (400% is not 1000%)."""
+
+    def nodes(self):
+        rows = [
+            (1, 'company', 'POP MART', None), (2, 'ip', 'MOLLY', 1), (3, 'series', 'Space Molly', 2),
+            (4, 'product', 'Mega Space Molly 1000%', 3), (5, 'product', 'Mega Space Molly 400% Series 2', 3),
+        ]
+        return {i: {'id': i, 'kind': kind, 'name': name, 'parent': parent, 'product_id': None}
+                for i, kind, name, parent in rows}
+
+    def test_numbers_must_agree(self):
+        found = dex_load.candidates(self.nodes())
+        item = {'stock_form': 'random_box', 'ip_series': 'Molly', 'name_cn_en': 'Mega Space Molly 400%', 'jizhanming': ''}
+        self.assertIsNone(dex_load.suggest(item, found))  # 1000% and "400% Series 2" both differ in their numbers
+        item['name_cn_en'] = 'Mega Space Molly 1000%'
+        self.assertEqual(dex_load.suggest(item, found)['id'], 4)
+
+    def test_a_number_alone_or_another_ip_is_no_match(self):
+        nodes = self.nodes()
+        nodes[6] = {'id': 6, 'kind': 'ip', 'name': 'Animal Bakery', 'parent': 1, 'product_id': None}
+        nodes[7] = {'id': 7, 'kind': 'product', 'name': 'Series 2', 'parent': 3, 'product_id': None}
+        found = dex_load.candidates(nodes)
+        # Its IP (Animal Bakery) has no products: nothing from another IP is offered, however alike "Series 2" looks.
+        item = {'stock_form': 'random_box', 'ip_series': '', 'name_cn_en': 'Animal Bakery Mini Figure Series 2', 'jizhanming': ''}
+        self.assertIsNone(dex_load.suggest(item, found))
+        # No IP at all, and only a number left once the filler words are gone: no match either.
+        item = {'stock_form': 'ordinary', 'ip_series': '', 'name_cn_en': 'Series 2', 'jizhanming': ''}
+        self.assertIsNone(dex_load.suggest(item, found))
