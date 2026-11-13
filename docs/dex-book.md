@@ -38,6 +38,12 @@ code still runs on a migrated database.
   products and designs, and it must be a live character. `blind_box` only on products. `rarity` only on designs.
 - `product_id`: a book product links a box or an ordinary item, never a confirmed design or a sealed set. A book
   design links only a confirmed design. One POPCORE item links to at most one live entry (409).
+- A book link never holds the item back. Removing a design or deleting a product works as if the book did not
+  link it (`product_id` is `ON DELETE SET NULL`, and `inventory_catalog._product_references` skips `dex_entries`).
+  The entry stays in the book, unlinked. That unlink is made by the database and does not raise `version`, so
+  step 3 must send `popcore_id` from the live link, never from what was last sent.
+- A Clover merge (`scripts/merge_clover_products.py`, and Products → Clover matching) moves a book link to the kept
+  item. When both items are linked, the merge is refused as a collision and rolled back whole; unlink one first.
 - `extras` takes only the contract's keys for the kind (400 otherwise). A change merges: keys sent replace, keys
   not sent stay, `null` clears. `market_prices` is stored as given; the screen does not edit it.
 - Every accepted change raises `version` by one and sets `updated_at` and `updated_by`. A change that changes

@@ -66,8 +66,10 @@ async def run(browser, width):
         await fits(page, f'empty-{width}.png')
 
         await add(page, '添加公司 Add a company', 'POP MART')
-        await add(page, '添加 Add IP', 'Labubu')
-        await add(page, '添加 Add series', 'The Monsters')
+        await add(page, '添加 Add IP', 'THE MONSTERS')
+        await add(page, '添加 Add character', 'Labubu')
+        await page.get_by_role('navigation', name='Breadcrumb').get_by_role('link', name='THE MONSTERS').click()
+        await add(page, '添加 Add series', 'Have a Seat')
         # The product links its POPCORE box through the product search.
         await page.get_by_role('button', name='添加 Add product').click()
         drawer = page.get_by_role('dialog')
@@ -122,11 +124,11 @@ async def run(browser, width):
         await fits(page, f'product-{width}.png')
 
         # The linked product cannot be deleted; its series says so.
-        await page.get_by_role('navigation', name='Breadcrumb').get_by_role('link', name='The Monsters').click()
+        await page.get_by_role('navigation', name='Breadcrumb').get_by_role('link', name='Have a Seat').click()
         await page.get_by_role('button', name='删除 Delete').click()
         await expect(page.get_by_role('dialog').get_by_text('linked to a POPCORE item', exact=False)).to_be_visible()
         await page.get_by_role('dialog').get_by_role('button', name='OK').click()
-        assert 'The Monsters' in entries()
+        assert 'Have a Seat' in entries()
 
         await page.goto(BASE + '/dex')
         await expect(page.get_by_role('region', name='Companies').get_by_role('link', name='POP MART')).to_be_visible()

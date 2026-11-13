@@ -2284,6 +2284,7 @@ def _migration_dex_entries(con, cur):
     # 2026-11-12: "The Dex itself lives on POPCORE"; the collector pages stay on popcore.ca, filled from here).
     # One new table and its indexes, nothing else: products and everything the till reads are unchanged, so
     # older code runs on a migrated database. Which kind may sit under which is checked in dex_book.py.
+    # A book link never holds a POPCORE item back: removing or deleting the item leaves the entry, unlinked.
     # id is the contract's permanent ref; website_id is the row's number on popcore.ca once known.
     cur.execute("""CREATE TABLE IF NOT EXISTS dex_entries (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2295,7 +2296,7 @@ def _migration_dex_entries(con, cur):
         sort_order   INTEGER NOT NULL DEFAULT 0,
         blind_box    INTEGER CHECK (blind_box IN (0, 1)),
         rarity       TEXT    CHECK (rarity IN ('normal', 'popular', 'secret', 'super_secret', 'special')),
-        product_id   INTEGER REFERENCES products(id),
+        product_id   INTEGER REFERENCES products(id) ON DELETE SET NULL,
         picture_id   INTEGER,
         picture_url  TEXT,
         thumb_url    TEXT,

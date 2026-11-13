@@ -156,6 +156,24 @@ class DexBookTests(IsolatedApiCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 con.execute('UPDATE dex_entries SET product_id=? WHERE id=?', (items['PM0100-01'], moon))
 
+    def test_a_book_link_never_blocks_removing_or_deleting_the_item(self):
+        company, ip, series, product, (sun, moon) = self.book()
+        other = self.add('product', 'Pin', series)
+        self.assertEqual(self.patch(sun, product_id=self.items['PM0100-01']).status_code, 200)
+        self.assertEqual(self.patch(other, product_id=self.items['PM0200']).status_code, 200)
+        # The design is removed as if the book did not link it; the book design stays, unlinked.
+        response = self.client.post(f"/api/products/{self.items['PM0100-01']}/design/remove", headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        # So is an ordinary item deleted from the catalogue.
+        response = self.client.post('/api/products/bulk_delete', json=[self.items['PM0200']], headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        for entry_id in (sun, other):
+            row = self.row(entry_id)
+            self.assertIsNone(row['product_id'])
+            self.assertIsNone(row['deleted_at'])
+            self.assertEqual(row['version'], 2)  # the unlink by the database keeps the version
+        self.assertIsNone(self.get(f'/api/dex/entries/{sun}')['product'])
+
     def test_extras_take_only_the_contract_keys_for_the_kind(self):
         company, ip, series, product, (sun, moon) = self.book()
         prices = [{'price': 120, 'recorded_at': '2026-11-01', 'source': 'collector'}]
