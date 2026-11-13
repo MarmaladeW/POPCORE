@@ -91,6 +91,7 @@ jobs:
       - run: python popcore_app/tests/browser/check_report_stock.py
       - run: python popcore_app/tests/browser/check_website_sync.py
       - run: python popcore_app/tests/browser/check_design_prices.py
+      - run: python popcore_app/tests/browser/check_dex_book.py
       - run: python popcore_app/tests/browser/check_series_stock_actions.py
       - run: python popcore_app/tests/browser/check_series_history.py
       - run: python popcore_app/tests/browser/check_stock_losses.py

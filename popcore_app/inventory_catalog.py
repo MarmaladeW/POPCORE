@@ -397,10 +397,11 @@ def add_sealed_set(con, product_id, data, *, actor, request_key):
 
 def _product_references(con, product_id):
     """Rows in other tables that point at a product (its own aliases, counts saved before go-live and the
-    prices set for a design don't count: they go with it)."""
+    prices set for a design don't count: they go with it; nor does a 图鉴 Dex link: the entry stays in the book,
+    unlinked, by ON DELETE SET NULL)."""
     count = 0
     for (table,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
-        if table in ('product_aliases', 'opening_counts', 'design_prices'):
+        if table in ('product_aliases', 'opening_counts', 'design_prices', 'dex_entries'):
             continue
         for fk in con.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
             if fk['table'] == 'products':

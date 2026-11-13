@@ -23,6 +23,8 @@ const item = {
   website: { key: '/website', zh: '网站', en: 'Website', icon: 'web', note: '经理' },
   schedule: { key: '/schedule', zh: '排班', en: 'Schedule', icon: 'cal' },
   products: { key: '/products', zh: '产品', en: 'Products', icon: 'grid', note: '系列与款式' },
+  // The book of companies, IPs, series, products and designs (owner, 2026-11-12); any signed-in role reads it.
+  dex: { key: '/dex', zh: '图鉴', en: 'Dex', icon: 'gift', note: '公司、IP、系列' },
   users: { key: '/users', zh: '员工', en: 'Users', icon: 'user', note: '管理员' },
   settings: { key: '/settings', zh: '设置', en: 'Settings', icon: 'gear', note: '管理员' },
 } satisfies Record<string, NavItem>
@@ -34,7 +36,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
   if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock)
   else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock)
   else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock)
-  const planning: NavItem[] = [item.schedule, item.products, ...(access.admin ? [item.users, item.settings] : [])]
+  const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
     ...(access.manager ? [{ label: '查看', items: [item.sales, item.reports, item.website] }] : []),
@@ -46,6 +48,7 @@ export function moreItems(access: NavAccess): NavItem[] {
   return [
     ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock] : []),
     item.products,
+    item.dex,
     ...(access.manager ? [item.sales, item.reports, item.website] : []),
     ...(access.admin ? [item.users, item.settings] : []),
   ]

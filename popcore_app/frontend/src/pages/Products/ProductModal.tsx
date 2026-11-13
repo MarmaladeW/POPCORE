@@ -68,7 +68,8 @@ interface Props {
   open: boolean
   product: Product | null
   onClose: () => void
-  onSaved: () => void
+  // A new product comes back with its id and POPCORE ID (the 图鉴 Dex links it to a book product).
+  onSaved: (created?: { id: number; sku: string }) => void
 }
 
 const YN_OPTIONS = [
@@ -131,6 +132,7 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
     try {
       const values = await form.validateFields()
       setSaving(true)
+      let newItem: { id: number; sku: string } | undefined
       // Derive product_type from the blind-box toggle
       const payload = { ...values }
       delete payload._is_blind_box
@@ -148,8 +150,9 @@ export default function ProductModal({ open, product, onClose, onSaved }: Props)
         const created = await client.post('/products', payload, { headers: { 'Idempotency-Key': createKey.current } })
         createKey.current = ''
         message.success(`Product created · ${created.data.sku}`)
+        newItem = { id: created.data.id, sku: created.data.sku }
       }
-      onSaved()
+      onSaved(newItem)
     } catch (err: any) {
       if (err?.errorFields) return
       message.error(err?.response?.data?.error
