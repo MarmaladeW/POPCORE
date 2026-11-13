@@ -37,8 +37,9 @@ export const EXTRA_FIELDS: Record<DexKind, ExtraField[]> = {
   product: [f('format', '形式 Format'), f('release_label', '发售 Release label'), f('description', '介绍 Description', 'long'),
     f('retail_price', '零售价 Retail price', 'number'), f('retail_price_box', '整端零售价 Retail price, box', 'number'),
     f('retail_currency', '币种 Currency'), f('variants_normal', '普通款数 Normal designs', 'number'),
-    f('variants_secret', '隐藏款数 Secret designs', 'number'), f('secret_odds', '隐藏概率 Secret odds')],
-  design: [f('weight', '重量 Weight (g)', 'number'), f('weight_range', '重量范围 Weight range'),
+    f('variants_secret', '隐藏款数 Secret designs', 'number'), f('secret_odds', '隐藏概率 Secret odds'),
+    f('parent_category', '分组 Group on the IP page')],
+  design: [f('weight', '重量 Weight (g)'), f('weight_range', '重量范围 Weight range'),
     f('shake_level', '摇盒 Shake level'), f('shake_note', '摇盒说明 Shake note', 'long'), f('flavour_text', '文案 Flavour text', 'long')],
 }
 

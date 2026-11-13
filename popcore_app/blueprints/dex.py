@@ -3,6 +3,7 @@ reads it; managers and admins write it. The rules are in dex_book.py and docs/de
 from flask import Blueprint, jsonify, request
 
 import dex_book
+import dex_load
 from auth import login_required, role_required
 from db import get_db
 
@@ -53,6 +54,20 @@ def dex_removal(entry_id):
     def work(con):
         plan = dex_book.removal(con, entry_id)
         return {key: plan[key] for key in ('counts', 'linked', 'used_by')}
+    return _run(work)
+
+
+@bp.get('/api/dex/unlinked')
+@login_required
+def dex_unlinked():
+    """POPCORE items not in the book yet (no live book entry links them); never sealed sets. Each carries
+    `suggestion` ({id, path, score}) or null: never linked automatically."""
+    def work(con):
+        page = _number('page') if request.args.get('page') else 1
+        per_page = _number('per_page') if request.args.get('per_page') else 50
+        found = dex_book.unlinked(con, request.args.get('q', ''), page, per_page)
+        dex_load.suggestions_from_db(con, found['items'])  # the closest book entry by name, for a person to link
+        return found
     return _run(work)
 
 

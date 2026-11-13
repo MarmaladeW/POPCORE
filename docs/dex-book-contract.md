@@ -1,6 +1,6 @@
 # The book contract: POPCORE and popcore.ca
 
-Version 1, draft, 12 Nov 2026. Written by the POPCORE session for the website session to build against.
+Version 1.2, draft, 13 Nov 2026. Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
 Nothing here is built on either side. Route names are proposals; the shapes and rules are the contract.
 Questions for the website session are in section 10. Answers change this file, not side notes.
 
@@ -21,7 +21,7 @@ One shape for every level.
 | `company` | none | the fixed `manufacturer` codes on series |
 | `partner` | none | ordinary IP rows / `series.collab_ip_id` (unused) |
 | `ip` | `company` | `wp_popcore_ips` |
-| `character` | `ip` | `wp_popcore_characters` |
+| `character` | `ip` or `partner` | `wp_popcore_characters` |
 | `series` | `ip` or `company` | `wp_popcore_series` |
 | `product` | `series`, `ip` or `company` | `wp_popcore_product_lines`; with no series, an item figure |
 | `design` | `product` | `wp_popcore_figures` with a series |
@@ -38,6 +38,7 @@ One shape for every level.
   "sort_order": 30,
   "picture_id": 9912,
   "blind_box": null,
+  "item": false,
   "rarity": null,
   "popcore_id": null,
   "extras": {},
@@ -51,7 +52,7 @@ One shape for every level.
 - `parent_ref`, `partner_ref`, `character_ref`: other entries' `ref`. `partner_ref` on series and products. `character_ref` on series, products and designs.
 - `name`: the Dex name (the official English name).
 - `picture_id`: a website media id (section 6), or null.
-- `blind_box`: products only. `rarity`: designs only, the website's own words (`normal`, `popular`, `secret`, `super_secret`, `special`).
+- `blind_box`: products only. `item`: products only; true when the website holds it as an item figure with no series, false when it is a product line. Line numbers and item numbers overlap on the website, so a product is found by `website_id` together with `item`. `rarity`: designs only, the website's own words (`normal`, `popular`, `secret`, `super_secret`, `special`).
 - `popcore_id`: the POPCORE ID when the shop stocks it (`DR0133` on a product, `DR0133-03` on a design), else null. It is information for the website; the listing itself is made through section 7.
 - `version`: rises by one on every change in POPCORE.
 
@@ -83,19 +84,29 @@ An object of named values. A key that is absent is left alone on the website. A 
 | `ip` | `description`, `aliases`, `is_original` |
 | `character` | `description`, `aliases` |
 | `series` | `release_date`, `flavour_text`, `description`, `aliases`, `tags`, `designer` |
-| `product` | `format`, `release_label`, `description`, `retail_price`, `retail_price_box`, `retail_currency`, `variants_normal`, `variants_secret`, `secret_odds` |
+| `product` | `format`, `release_label`, `description`, `retail_price`, `retail_price_box`, `retail_currency`, `variants_normal`, `variants_secret`, `secret_odds`, `parent_category` |
 | `design` | `weight`, `weight_range`, `shake_level`, `shake_note`, `flavour_text`, `market_prices` (list of `{price, recorded_at, source}`) |
 
 POPCORE's value is the official one. What collectors add themselves stays on the website.
 
 ## 5. Reading the book: `GET /wp-json/popcore/v1/book`
 
-Returns every entry in the shape of section 2, paged (`page`, `per_page` up to 500), with these added per entry:
-`slug`, `picture_url`, `thumb_url`, `parent_website_id`, and `listing_ids`: the POPCORE IDs of listings tied to the row (through `_popcore_dex_figure_id`, `_popcore_figure_candidate`, `figures.wc_product_id` for a design; through `_popcore_dex_slug` for a series).
+Returns every Dex row as an entry in the shape of section 2, paged (`page`, `per_page` up to 500).
+
+**Until switch-over it is the website's own view, unchanged**: kinds `ip`, `character`, `series`, `product` (a product line, or an item figure with no series) and `design`. There are no `company` or `partner` entries yet; POPCORE's load makes those from the owner's checked IP list. Every row is reported, including IPs the owner dropped (POPCORE needs their numbers to send the deletes).
+
+Added per entry, beside the section 2 fields:
+- `slug`, `picture_url`, `thumb_url`, `parent_website_id` and `parent_kind` (a series' IP, a product's series or IP, a design's product line, a character's IP). Series and IP numbers overlap, so the kind is needed.
+- `character_website_id`, or `character_name` when the row holds only a name.
+- On a series: `manufacturer` (today's code, such as `pop_mart`, or empty) and `collab_website_id` (the IP row named as collaboration, or null).
+- On a product: `parent_category` (the Sonny Angel accordion name, or null).
+- `extras`: the section 4 keys with today's values.
+- `listing_ids`: the POPCORE IDs of listings tied to the row (through `_popcore_dex_figure_id`, `_popcore_figure_candidate`, `figures.wc_product_id` for a design or an item; through `_popcore_dex_slug` for a series).
+- `ref` and `version` once the row has them, else null.
 
 POPCORE uses it for the one-time load, for re-loads up to switch-over day, and to check the copy afterwards.
 
-**Needed before the website's release:** the same thing as one file (`book-export.json`), made from a fresh copy of the live database. The first load is built and reviewed from that file.
+**Needed before the website's release:** the same thing as one file (`book-export.json`: `{"made_at": "...", "entries": [...]}`), made from a fresh copy of the live database. The first load is built and reviewed from that file. Until it arrives POPCORE rehearses on a stand-in made from the September review copy.
 
 ## 6. Pictures: `POST /wp-json/popcore/v1/pictures`
 
@@ -164,7 +175,7 @@ Rules for the website:
 ## 10. Switch-over day
 
 1. The website's release with these routes is live, doing nothing yet.
-2. POPCORE re-runs the load from `GET /book`. The owner checks the list of what changed and what will be deleted (the 17 dropped IPs and everything under them).
+2. POPCORE re-runs the load from `GET /book`. The owner checks the list of what changed and what will be deleted. (The 17 dropped IPs, MIX and PANSHENLUOLI were already removed from the live Dex by hand on 12 and 13 Nov, so little should be left: mainly the "not an IP" rows such as the POP MART catch-all and POPCAR, whose series move straight under the company.)
 3. The website takes a backup and locks POPCORE's fields in wp-admin.
 4. The owner turns on POPCORE's Dex switch. The first full send is `quiet`. It stores every `ref`, applies the differences and the deletes.
 5. The catch-up for stocked items with no listing runs from a preview list the owner approves. Sonny Angel Makeup Angel (DR0133, DR0133-SET, DR0133-01 to -05) is the test.
@@ -181,3 +192,4 @@ Rules for the website:
 8. **Types**: the table from POPCORE's type words (盲盒, 吊卡, 大娃, 大娃 400%, 大娃 1000%, 周边, 配件) to the website's types and sizes.
 9. **Picture safety**: the owner says the pictures are hard to get. Are the originals in the website's backups, and where is a second copy kept?
 10. Anything in this contract that the website cannot do, or would do differently.
+11. **A series straight under a company** (POP MART's own sets, POPCAR, the POP MART catch-all): today every series page is addressed through an IP (`/dex/{ip}/{series}/`). How will the website show and address a series whose parent is a company, and should the "not an IP" rows be deleted at switch-over or kept as pages?

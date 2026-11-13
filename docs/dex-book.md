@@ -4,14 +4,16 @@ The owner decided on 2026-11-12 that "The Dex itself lives on POPCORE". The coll
 are filled from POPCORE. The book lists companies and partners, then IPs, characters, series, products and
 designs. A book product or design can point at the POPCORE item the shop stocks.
 
-Step 1 (this page) adds the book and its screens, empty. Nothing is sent to the website yet, and the `products`
+Step 1 added the book and its screens, empty; step 2 adds the one-time load and the "not in the book yet" list. Nothing is sent to the website yet, and the `products`
 table and everything the till reads are unchanged. The contract with popcore.ca is in
 [dex-book-contract.md](dex-book-contract.md).
 
 ## The table: `dex_entries`
 
 Migration `dex_entries` in `popcore_app/db.py` adds this one table and its indexes, and nothing else, so older
-code still runs on a migrated database.
+code still runs on a migrated database. Migration `dex_entries_website_item` (step 2, contract 1.2) adds
+`website_item` and replaces the unique index on `(kind, website_id)` by one on `(kind, website_item, website_id)`:
+on the website a product line and an item figure can carry the same number. Older code never sets it and gets 0.
 
 | Column | Meaning |
 |---|---|
@@ -24,14 +26,15 @@ code still runs on a migrated database.
 | `product_id` | The POPCORE item (`products.id`); one live entry per item |
 | `picture_id`, `picture_url`, `thumb_url` | The website's media, shown by address (no upload yet) |
 | `extras` | JSON, the refined copy (contract section 4) |
-| `website_id` | The row's number on popcore.ca; unique per kind |
+| `website_id` | The row's number on popcore.ca; unique per kind and `website_item` |
+| `website_item` | 1 when the website holds the product as an item figure (no series), else 0 |
 | `version`, `sent_version`, `send_error` | `version` rises on every change; the others are used from step 3 |
 | `deleted_at` | Set on a deleted row the website still has, until the website confirms the delete |
 | `created_at`, `updated_at`, `updated_by` | When, and who (Auth0 subject) |
 
 ## Rules (`popcore_app/dex_book.py`)
 
-- Allowed parents: ip under a company; character under an IP; series under an IP or a company; product under a
+- Allowed parents: ip under a company; character under an IP or a partner (contract 1.2); series under an IP or a company; product under a
   series, an IP or a company; design under a product. Companies and partners have no parent.
 - A name is required. Two live entries of one kind under one parent cannot share a name, in any case (409).
 - `partner_id` only on series and products, and it must be a live partner. `character_id` only on series,
@@ -76,11 +79,93 @@ picture, details, children by kind). Managers add, edit (drawer), move up and do
 that says what goes. A book product can open the Add Product form (新建商品 New POPCORE item) with its name, and
 the new item is linked when the drawer is saved.
 
+## The load (step 2): `popcore_app/dex_load.py`, `scripts/load_dex_book.py`
+
+A one-time load of the website's book into `dex_entries`, re-runnable until switch-over day. It writes only
+`dex_entries`. Inputs: the website's `book-export.json` (contract section 5, the website's own view: IPs,
+characters, series, products, designs, no companies or partners) and the owner's checked IP list
+(`ip-list-checked.csv`, 12-13 Nov 2026).
+
+```sh
+POPCORE_DB_PATH=/path/popcore.db python scripts/load_dex_book.py --export book-export.json \
+    --ip-list ip-list-checked.csv --out review-dir                  # dry run: reads only, writes the review sheet
+POPCORE_DB_PATH=/path/popcore.db python scripts/load_dex_book.py ... --apply --backup /path/before-dex-load.db
+```
+
+`--apply` refuses without `--backup`, or when that file already exists. It takes an online backup there first, then
+applies the plan in one transaction (any refusal writes nothing), then prints the summary. The database needs its
+migrations (start the app once).
+
+What the plan does:
+
+1. **The IP list decides.** A row is dropped only when the owner's decision starts with "delete" (this includes
+   "deleted 13 Nov"). A decision starting "collaboration", or a blank or "keep" decision on a row whose kind is
+   "collaboration partner", makes a partner. A decision starting "not an IP", or a blank decision on a "not an IP"
+   row, makes a "not an IP" row. Anything else keeps the row as an own IP. "rename to X" or "renamed X" renames.
+   List and website IPs match case-insensitively on the name before " = " in the list's IP column; rows on either
+   side that do not match are listed.
+2. **Companies** come from the checked companies of own IPs and "not an IP" rows (pseudo companies such as
+   "(no toy maker: …)" are not companies). A company whose only IPs are dropped is stored as a deleted row, only to
+   hold them. **Partners**: one per partner row, named by the checked English name; when the website has that IP
+   row, the partner keeps its number (`website_id`) and picture. Two rows renamed to one name are one partner.
+3. **IPs** go under their checked company (else the company most of their series name). An own IP the list keeps
+   that the website has no row for (Nommi, Peach Riot, Baby Three…) is made under its checked company with no
+   website number, shown as "New to the Dex". Dropped IPs and
+   everything under them are stored with `deleted_at` (never read), so step 3 can tell the website. A "not an IP"
+   row is stored as deleted; its series go straight under the company their maker names.
+4. **Series under a partner row** go under their home IP when it is plain (the series' character belongs to an own
+   IP, or an own IP's name is a whole word of the series name), with the partner named; otherwise under the
+   company their maker names, with the partner named, and flagged. A blank maker is flagged when the company had to
+   come from it.
+5. **Characters** go under their IP, or under the partner their IP row became, keeping their website number. A
+   character whose IP is "not an IP" or none is not loaded and is flagged. The editor offers the characters of the
+   entry's IP and of its partner.
+6. **Products and designs** keep the website's number, name, order, pictures, rarity (`regular` read as `normal`),
+   blind box flag and the `extras` values. The export's `item` (true for an item figure) and `parent_kind` say
+   where a product sits, since series, IP, line and item numbers overlap; an item is found by `website_id` with
+   `website_item=1`. Two entries of one kind under one
+   parent with the same name (doubles on the website): the one with more under it loads; the other and what is
+   under it are flagged, not loaded.
+7. **Pairing**: a design by its own `listing_ids` (a confirmed design `XX0000-NN`); a product by its own listing,
+   then by the box its designs' IDs share, then through its series' listings (straight when the series has one
+   product and one box; by name when it has several); then designs by name inside their paired box (the POPCORE
+   design's `design_name`). Close names that are not equal are flagged, not paired. A link already made (by the
+   load or a person) is kept, and an item linked elsewhere is never taken.
+8. **Re-runs**: rows are found by kind + `website_id` (companies and partners also by name). A row the load wrote
+   last (`updated_by='load'`) is updated when the export differs (version + 1); a row a person changed is left
+   alone and counted. A hand-made entry of the same kind, parent and name is adopted: it gets the website number
+   and pictures, fills what is blank, keeps what the person typed, and stays the person's row (later runs leave
+   it alone). A second run with the same inputs changes nothing.
+
+The review sheet (`dex-load-review-<time>.xlsx`) has tabs Summary, Loaded, Paired, Your pick (a blank column for
+the owner), Not in the book (POPCORE items with no book entry, boxes and items first, with 记账名, group, stock on
+hand, a suggested IP, the suggested book entry and how close it is; a design whose box is not in the book says
+"Follows its box"), Deleted on the website, and Names not matched.
+
+**Suggestions** (`dex_load.suggest`) never link anything themselves. For a box or an item: the book product with no
+linked item whose name is closest, among the IP the item's group or name points to first, comparing names with the
+IPs' own names, filler words ("series", "figure", "blind box"…) and POPCORE IDs removed (rapidfuzz token sort
+ratio). For a confirmed design: the closest unlinked design under the book product its box is linked to. Below 60
+out of 100 there is no suggestion. Close words are not enough: the numbers in the two names must agree (a year, 400% against 1000%, Series 2 against 3), a real word must be left to compare once the IP's name and filler words are gone, and an item that points at an IP is only ever matched inside that IP.
+
+## Not in the book yet
+
+`GET /api/dex/unlinked?q=&page=&per_page=` (any signed-in role; at most 100 a page): POPCORE items no live book entry
+links, with `total`. Boxes, ordinary items, unsorted items and confirmed designs; never sealed sets. A design comes
+with its box and the book product that box is linked to (`box_entry`). Every item carries `suggestion`
+(`{id, path, score}`, or null).
+
+Screen `/dex/unlinked`, reached from the Dex home with its count. Managers use 放入图鉴 Put in the book: a box or an
+item becomes a book product under a series, IP or company picked by search, named by the item's name, blind box
+when it is a random box, linked. A confirmed design becomes a book design under the book product its box is linked
+to, named by its `design_name`; when the box is not in the book the dialog says "Put its box in first". An item
+with a suggestion also shows it, with 连接 Link, which links the item to that entry (`PATCH /api/dex/entries/<id>`).
+All of these use the step 1 routes, so every rule above holds.
+
 ## Later steps
 
-2. The one-time load from the website's book export, re-runnable, with a review sheet. It keeps the website's
-   numbers and pictures.
 3. POPCORE's half of the contract, behind its own switch: send changes and deletes, pictures.
 4. Listings by themselves and the catch-up.
 
-Tests: `popcore_app/tests/test_dex_book.py`, `popcore_app/tests/browser/check_dex_book.py`.
+Tests: `popcore_app/tests/test_dex_book.py`, `popcore_app/tests/test_dex_load.py`,
+`popcore_app/tests/browser/check_dex_book.py`, `popcore_app/tests/browser/check_dex_unlinked.py`.

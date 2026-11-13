@@ -46,3 +46,16 @@ export const deleteEntry = (id: number) =>
   client.delete<{ removed: number; kept_for_website: number }>(`/dex/entries/${id}`).then(r => r.data)
 export const reorderEntries = (parent_id: number | null, ids: number[]) =>
   client.post<DexEntry[]>('/dex/reorder', { parent_id, ids }).then(r => r.data)
+
+// POPCORE items not in the book yet (no live book entry links them); never sealed sets.
+export interface DexUnlinkedItem {
+  id: number; sku: string; name_cn_en: string | null; jizhanming: string | null; design_name: string | null
+  stock_form: 'random_box' | 'ordinary' | 'confirmed_design' | null; ip_series: string | null
+  box: { id: number; sku: string; name: string | null } | null
+  box_entry: { id: number; name: string } | null
+  // The closest book entry by name (score 0-100), for a manager to link; never linked by itself.
+  suggestion: { id: number; path: string; score: number } | null
+}
+export interface DexUnlinkedPage { items: DexUnlinkedItem[]; total: number; page: number; per_page: number }
+export const unlinkedItems = (q = '', page = 1, per_page = 50) =>
+  client.get<DexUnlinkedPage>('/dex/unlinked', { params: { q, page, per_page } }).then(r => r.data)
