@@ -80,6 +80,7 @@ from blueprints.counting  import bp as counting_bp
 from blueprints.website   import bp as website_bp
 from blueprints.design_prices import bp as design_prices_bp
 from blueprints.losses    import bp as losses_bp
+from blueprints.dex       import bp as dex_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 app.register_blueprint(users_bp)
@@ -107,6 +108,7 @@ app.register_blueprint(clover_matches_bp)
 app.register_blueprint(website_bp)
 app.register_blueprint(design_prices_bp)
 app.register_blueprint(losses_bp)
+app.register_blueprint(dex_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.

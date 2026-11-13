@@ -1,0 +1,39 @@
+/* 图鉴 Dex: panels stack with the page gap; rows, crumbs and the entry card wrap on a phone. */
+.pc-dex { display: grid; gap: 16px; min-width: 0; }
+.pc-dex-search { width: 100%; max-width: 480px; }
+.pc-dex-hit { display: grid; min-width: 0; }
+.pc-dex-hit strong, .pc-dex-hit small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-dex-hit small { color: var(--text-secondary); font-size: 11.5px; }
+.pc-dex-crumbs { display: flex; flex-wrap: wrap; gap: 4px 6px; color: var(--text-secondary); font-size: 12.5px; }
+.pc-dex-crumbs > span { display: inline-flex; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.pc-dex-crumbs a { color: var(--text-secondary); }
+.pc-dex-crumbs strong { color: var(--text-primary); font-weight: 600; }
+.pc-dex-thumb { display: inline-grid; flex: none; place-items: center; overflow: hidden; border: 1px solid var(--line-hair); background: var(--surface-subtle); color: var(--text-tertiary); font-weight: 600; }
+.pc-dex-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.pc-dex-row { min-height: 60px; }
+.pc-dex-row .pc-row-main { color: inherit; text-decoration: none; }
+.pc-dex-row .pc-row-main strong { overflow-wrap: anywhere; }
+.pc-dex-move { display: inline-flex; flex: none; gap: 4px; }
+.pc-dex-card { display: flex; gap: 16px; padding: 16px; }
+.pc-dex-card-main { display: grid; flex: 1; gap: 10px; align-content: start; min-width: 0; }
+.pc-dex-card h2 { margin: 0; font-size: 18px; line-height: 24px; overflow-wrap: anywhere; }
+.pc-dex-card h2 small { color: var(--text-secondary); font-size: 12px; font-weight: 400; }
+.pc-dex-card dl { display: grid; gap: 6px; margin: 0; }
+.pc-dex-card dl > div { display: grid; grid-template-columns: minmax(96px, 160px) minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.pc-dex-card dt { color: var(--text-secondary); }
+.pc-dex-card dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
+.pc-dex-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-dex-note { margin: 0; color: var(--text-tertiary); font-size: 12.5px; }
+.pc-dex-empty { display: grid; gap: 8px; justify-items: start; padding: 24px 20px; border: 1px dashed var(--line-hair); background: var(--surface-default); }
+.pc-dex-empty h2 { margin: 0; font-size: 18px; }
+.pc-dex-empty h2 small { color: var(--text-secondary); font-size: 13px; font-weight: 400; }
+.pc-dex-empty p { max-width: 560px; margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 20px; }
+.pc-dex-link { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-dex-link .ant-select { flex: 1 1 220px; min-width: 0; }
+.pc-dex-extras { min-width: 0; margin: 8px 0 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line-hair); }
+.pc-dex-extras legend { margin-bottom: 8px; padding: 0; color: var(--text-secondary); font-size: 12.5px; }
+@media (max-width: 600px) {
+  .pc-dex .pc-panel-head { flex-wrap: wrap; }
+  .pc-dex-card { flex-direction: column; }
+  .pc-dex-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}

@@ -44,6 +44,8 @@ const DayDetailPage=lazyPage(()=>import('./pages/Sales/DayDetail'))
 const ReportStockPage=lazyPage(()=>import('./pages/Sales/ReportStock'))
 const NamePicksPage=lazyPage(()=>import('./pages/Sales/NamePicks'))
 const WebsitePage=lazyPage(()=>import('./pages/Website'))
+const DexHome=lazyPage(()=>import('./pages/Dex'))
+const DexEntryPage=lazyPage(()=>import('./pages/Dex/DexEntry'))
 const SaleEntryPage=lazyPage(()=>import('./pages/Sales/Entry'))
 const SaleDocumentPage=lazyPage(()=>import('./pages/Sales/SaleDocument'))
 const PaymentEvidencePage=lazyPage(()=>import('./pages/Sales/PaymentEvidence'))
@@ -198,6 +200,8 @@ function AppInner() {
           <Route path="/sales/report-stock" element={<RoleRoute minRole="manager" element={<ReportStockPage />} />} />
           <Route path="/sales/name-picks" element={<RoleRoute minRole="manager" element={<NamePicksPage />} />} />
           <Route path="/website" element={<RoleRoute minRole="manager" element={<WebsitePage />} />} />
+          <Route path="/dex" element={<RoleRoute minRole="viewer" element={<DexHome />} />} />
+          <Route path="/dex/:id" element={<RoleRoute minRole="viewer" element={<DexEntryPage />} />} />
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
           <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />
           <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
