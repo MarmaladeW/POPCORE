@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Form, Input, Modal, Pagination, Select, Skeleton, message } from 'antd'
 import { Link } from 'react-router-dom'
 
-import { createEntry, searchEntries, unlinkedItems, type DexUnlinkedItem, type DexUnlinkedPage } from '../../api/dex'
+import { createEntry, searchEntries, unlinkedItems, updateEntry, type DexUnlinkedItem, type DexUnlinkedPage } from '../../api/dex'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
@@ -45,6 +45,20 @@ export default function DexUnlinked() {
     <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setAttempt(n => n + 1)}>Retry</Button>} />
   </div>
 
+  const [linking, setLinking] = useState(0)
+  async function link(item: DexUnlinkedItem) {
+    if (!item.suggestion) return
+    setLinking(item.id)
+    try {
+      await updateEntry(item.suggestion.id, { product_id: item.id })
+      placed(item)
+    } catch (cause) {
+      message.error(errorText(cause))
+    } finally {
+      setLinking(0)
+    }
+  }
+
   function placed(item: DexUnlinkedItem) {
     setPlacing(null)
     setAttempt(n => n + 1)
@@ -67,8 +81,13 @@ export default function DexUnlinked() {
               item.ip_series ? `系列 ${item.ip_series}` : '',
               item.stock_form === 'confirmed_design' ? (item.box_entry ? `盒子在图鉴 Box in the book: ${item.box_entry.name}` : 'Its box is not in the book') : '',
             ].filter(Boolean).join(' · ')}</small>
+            {item.suggestion && <small className="pc-dex-suggest">建议 Suggested: {item.suggestion.path} · {item.suggestion.score}/100</small>}
           </span>
-          {manager && <Button size="small" aria-label={`Put ${item.sku} in the book`} onClick={() => setPlacing(item)}>放入图鉴 Put in the book</Button>}
+          {manager && <span className="pc-dex-actions">
+            {item.suggestion && <Button size="small" type="primary" loading={linking === item.id}
+              aria-label={`Link ${item.sku} to ${item.suggestion.path}`} onClick={() => link(item)}>连接 Link</Button>}
+            <Button size="small" aria-label={`Put ${item.sku} in the book`} onClick={() => setPlacing(item)}>放入图鉴 Put in the book</Button>
+          </span>}
         </div>)}
       {data && data.total > PER_PAGE && <div className="pc-dex-pages">
         <Pagination size="small" current={page} pageSize={PER_PAGE} total={data.total} showSizeChanger={false}

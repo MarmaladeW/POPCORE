@@ -36,7 +36,10 @@ def entry(kind, website_id, name, parent=None, **more):
     row = {'ref': None, 'website_id': website_id, 'kind': kind, 'parent_ref': None, 'partner_ref': None,
            'character_ref': None, 'name': name, 'sort_order': 0, 'picture_id': None, 'blind_box': None, 'rarity': None,
            'popcore_id': None, 'extras': {}, 'version': None, 'deleted': False, 'slug': name.lower().replace(' ', '-'),
-           'picture_url': None, 'thumb_url': None, 'parent_website_id': parent, 'listing_ids': []}
+           'picture_url': None, 'thumb_url': None, 'parent_website_id': parent, 'listing_ids': [],
+           'parent_kind': {'character': 'ip', 'series': 'ip', 'product': 'series', 'design': 'product'}.get(kind)}
+    if kind == 'product':
+        row['item'] = False
     row.update(more)
     return row
 
@@ -71,6 +74,9 @@ def export():
         entry('product', 204, 'Vinyl Figure Blind Box', 104, blind_box=True),
         entry('product', 205, 'Vinyl Figure Blind Box', 105, blind_box=True),
         entry('product', 208, 'Vinyl Figure Blind Box', 108, blind_box=True),
+        # An item figure (no series) with the same website number as a product line (contract 1.2).
+        entry('product', 201, 'Labubu Keychain', 1, item=True, parent_kind='ip', blind_box=False,
+              character_website_id=11, listing_ids=['PM0600']),
         entry('design', 301, 'Sun', 201, rarity='regular', listing_ids=['PM0100-01'], picture_id=31,
               picture_url='https://popcore.ca/u/sun.webp', extras={'weight': '92-95', 'shake_note': None}),
         entry('design', 302, 'Moon', 201, rarity='secret'),
@@ -101,11 +107,14 @@ class DexLoadTests(IsolatedApiCase):
                     ('PM0100', 'random_box', None, family), ('PM0100-01', 'confirmed_design', 'Sun', family),
                     ('PM0100-02', 'confirmed_design', 'Moon', family), ('PM0100-03', 'confirmed_design', 'Stars', family),
                     ('PM0100-SET', 'sealed_set', None, family), ('PM0200', 'ordinary', None, None),
-                    ('PM0300', None, None, None), ('PM0400', 'confirmed_design', 'Lone', None)):
+                    ('PM0300', None, None, None), ('PM0400', 'confirmed_design', 'Lone', None),
+                    ('PM0600', 'ordinary', None, None)):
                 con.execute("""INSERT INTO products(sku, name_cn_en, jizhanming, stock_form, design_name, series_id, ip_series)
                                VALUES (?, ?, ?, ?, ?, ?, 'Labubu')""",
                             (sku, f'Have a Seat {sku}', f'坐坐 {sku}', form, design, series))
             con.execute("UPDATE product_series SET product_id=(SELECT id FROM products WHERE sku='PM0100')")
+            con.execute("""INSERT INTO products(sku, name_cn_en, jizhanming, stock_form, ip_series)
+                           VALUES ('PM0500', 'THE MONSTERS Fun Park Vinyl Figure', '乐园', 'random_box', 'Labubu')""")
             self.items = {row[0]: row[1] for row in con.execute('SELECT sku, id FROM products')}
             con.commit()
 
@@ -124,7 +133,8 @@ class DexLoadTests(IsolatedApiCase):
 
     def rows(self):
         with closing(self.connect()) as con:
-            return {(row['kind'], row['website_id'] if row['website_id'] is not None else row['name']): dict(row)
+            return {('item' if row['website_item'] else row['kind'],
+                     row['website_id'] if row['website_id'] is not None else row['name']): dict(row)
                     for row in con.execute('SELECT * FROM dex_entries')}
 
     def one(self, kind, website_id):
@@ -184,11 +194,44 @@ class DexLoadTests(IsolatedApiCase):
         flagged = {flag['name']: flag for flag in plan.flags}
         self.assertIn('no clear home IP', flagged['Sanrio Dream House']['why'])
         self.assertNotIn('Fun Park', flagged)
-        self.assertIn('not loaded', flagged['Disney Princess']['why'].lower())  # a partner's character
+        princess = self.one('character', 13)  # a partner's character sits under the partner and keeps its number
+        self.assertEqual((self.name_of(princess['parent_id']), princess['deleted_at']), ('Disney', None))
+        self.assertNotIn('Disney Princess', flagged)
         self.assertEqual(self.one('series', 106)['parent_id'], self.one('ip', 7)['id'])  # blank maker, own IP
         self.assertIn('Not in the IP list', flagged['Mystery']['why'])
         unmatched = {row['name'] for row in plan.unmatched}
         self.assertEqual(unmatched, {'Nommi', 'Disney', 'Mystery'})
+
+    def test_a_product_line_and_an_item_with_the_same_number_both_load(self):
+        self.load()
+        line, item = self.one('product', 201), self.one('item', 201)
+        self.assertNotEqual(line['id'], item['id'])
+        self.assertEqual((line['website_item'], item['website_item']), (0, 1))
+        self.assertEqual((self.name_of(line['parent_id']), self.name_of(item['parent_id'])), ('Have a Seat', 'THE MONSTERS'))
+        self.assertEqual(self.name_of(item['character_id']), 'Labubu')
+        self.assertEqual(item['product_id'], self.items['PM0600'])
+        # Step 1's code never sets website_item and still writes on the migrated table.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO dex_entries(kind, name, website_id) VALUES ('design', 'Old code', 999)")
+            con.commit()
+            self.assertEqual(con.execute("SELECT website_item FROM dex_entries WHERE name='Old code'").fetchone()[0], 0)
+            with self.assertRaises(sqlite3.IntegrityError):
+                con.execute("INSERT INTO dex_entries(kind, name, website_id, website_item) VALUES ('product', 'Twin', 201, 1)")
+
+    def test_kept_own_ips_the_website_lacks_are_made_new_to_the_dex(self):
+        plan = self.load()
+        nommi = self.rows()[('ip', 'Nommi')]
+        self.assertEqual((self.name_of(nommi['parent_id']), nommi['website_id'], nommi['updated_by']), ('TOP TOY', None, 'load'))
+        self.assertEqual(dex_load.summary(plan)['new_to_dex'], 1)
+        with closing(self.connect()) as con:
+            loaded = next(rows for title, _, rows in dex_load.sheet_tabs(con, plan, dex_load.read_ip_list(self.ip_list_path))
+                          if title == 'Loaded')
+        self.assertIn('New to the Dex', next(row for row in loaded if row[2] == 'Nommi')[4])
+        # No company is left empty, and a second run neither adds it again nor adopts it.
+        again = self.plan()
+        self.assertEqual(again.rows[('ip', 'new:nommi')]['action'], 'same')
+        self.load()
+        self.assertEqual(sum(1 for row in self.rows().values() if row['name'] == 'Nommi'), 1)
 
     def test_pairing_by_id_then_by_name(self):
         plan = self.load()
@@ -202,11 +245,25 @@ class DexLoadTests(IsolatedApiCase):
         self.assertEqual(json.loads(sun['extras']), {'weight': '92-95'})
         how = {pair['sku']: pair['how'] for pair in plan.paired}
         self.assertEqual(how, {'PM0100-01': 'By ID (website listing)', 'PM0100': "By ID (its designs' listings)",
-                               'PM0100-02': 'By name in its box'})
+                               'PM0100-02': 'By name in its box', 'PM0600': 'By ID (website listing)'})
         star_flag = next(flag for flag in plan.flags if flag['name'] == 'Star')
         self.assertEqual(star_flag['choices'], 'PM0100-03')
         not_paired = {item['sku'] for item in plan.not_paired}
-        self.assertEqual(not_paired, {'PM0100-03', 'PM0200', 'PM0300', 'PM0400', 'TEST-1'})
+        self.assertEqual(not_paired, {'PM0100-03', 'PM0200', 'PM0300', 'PM0400', 'PM0500', 'TEST-1'})
+        # Close names are only suggested, never linked: Fun Park's box, and "Stars" for the design "Star".
+        self.assertIsNone(self.one('product', 204)['product_id'])
+        suggested = {sku: plan.suggestions[self.items[sku]] for sku in ('PM0500', 'PM0100-03', 'PM0200', 'PM0400')}
+        self.assertEqual((suggested['PM0500']['path'], suggested['PM0500']['score']),
+                         ('POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box', 100))
+        self.assertEqual(suggested['PM0100-03']['path'], 'POP MART › THE MONSTERS › Have a Seat › Vinyl Figure Blind Box › Star')
+        self.assertGreaterEqual(suggested['PM0100-03']['score'], 85)
+        self.assertIsNone(suggested['PM0200'])
+        self.assertIsNone(suggested['PM0400'])
+        with closing(self.connect()) as con:
+            rows = next(rows for title, _, rows in dex_load.sheet_tabs(con, plan, dex_load.read_ip_list(self.ip_list_path))
+                        if title == 'Not in the book')
+        self.assertEqual([row[0] for row in rows], ['PM0200', 'PM0300', 'PM0500', 'TEST-1', 'PM0100-03', 'PM0400'])
+        self.assertEqual(rows[2][8:], ('POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box', 100))
 
     def test_a_second_run_changes_nothing(self):
         self.load()
@@ -322,11 +379,20 @@ class DexLoadTests(IsolatedApiCase):
     def test_unlinked_lists_items_with_no_live_book_entry_and_never_sealed_sets(self):
         page = self.get('/api/dex/unlinked', role='viewer')
         skus = [item['sku'] for item in page['items']]
-        self.assertEqual(skus, ['PM0100', 'PM0100-01', 'PM0100-02', 'PM0100-03', 'PM0200', 'PM0300', 'PM0400', 'TEST-1'])
-        self.assertEqual(page['total'], 8)
+        self.assertEqual(skus, ['PM0100', 'PM0100-01', 'PM0100-02', 'PM0100-03', 'PM0200', 'PM0300', 'PM0400', 'PM0500',
+                                'PM0600', 'TEST-1'])
+        self.assertEqual(page['total'], 10)
+        self.assertEqual({item['suggestion'] for item in page['items']}, {None})  # an empty book suggests nothing
         self.load()
         page = self.get('/api/dex/unlinked')
-        self.assertEqual([item['sku'] for item in page['items']], ['PM0100-03', 'PM0200', 'PM0300', 'PM0400', 'TEST-1'])
+        self.assertEqual([item['sku'] for item in page['items']],
+                         ['PM0100-03', 'PM0200', 'PM0300', 'PM0400', 'PM0500', 'TEST-1'])
+        by_sku = {item['sku']: item for item in page['items']}
+        self.assertEqual(by_sku['PM0500']['suggestion'],
+                         {'id': self.one('product', 204)['id'],
+                          'path': 'POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box', 'score': 100})
+        self.assertEqual(by_sku['PM0100-03']['suggestion']['id'], self.one('design', 303)['id'])
+        self.assertIsNone(by_sku['PM0400']['suggestion'])
         design = page['items'][0]
         self.assertEqual(design['box']['sku'], 'PM0100')
         self.assertEqual(design['box_entry'], {'id': self.one('product', 201)['id'], 'name': 'Vinyl Figure Blind Box'})

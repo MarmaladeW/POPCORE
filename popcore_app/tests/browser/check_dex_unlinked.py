@@ -59,13 +59,21 @@ async def run(browser, width):
         page = await open_as('manager')
         await page.goto(BASE + '/dex')
         card = page.get_by_role('link', name='Not in the book yet')
-        await expect(card).to_contain_text('5')
+        await expect(card).to_contain_text('6')
         await fits(page, f'home-{width}.png')
         await card.click()
         listing = page.get_by_role('region', name='Items not in the book')
         await expect(listing.get_by_text('PM0200 · Have a Seat PM0200')).to_be_visible()
         await expect(listing.get_by_text('PM0100-SET')).to_have_count(0)  # never a sealed set
         await fits(page, f'list-{width}.png')
+
+        # A close name is suggested; 连接 Link links the item to that book entry (never done by itself).
+        await expect(listing.get_by_text('Suggested: POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box · 100/100')).to_be_visible()
+        assert linked('PM0500') is None
+        await listing.get_by_role('button', name='Link PM0500 to POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box').click()
+        await expect(listing.get_by_text('THE MONSTERS Fun Park Vinyl Figure', exact=False)).to_have_count(0)
+        assert linked('PM0500') == {'kind': 'product', 'name': 'Vinyl Figure Blind Box', 'blind_box': 1,
+                                    'parent': 'Fun Park'}, linked('PM0500')
 
         # An ordinary item goes under a series, found by search.
         await listing.get_by_role('button', name='Put PM0200 in the book').click()
@@ -147,5 +155,5 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: Dex not-in-the-book list: count on the Dex home, an item put under a series, a design under its '
-          "box's book product, a design with no box in the book refused plainly, search; staff see no write controls; "
+          "box's book product, a design with no box in the book refused plainly, a suggested entry linked, search; staff see no write controls; "
           'at 390 and 1440 px')

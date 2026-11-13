@@ -2113,6 +2113,7 @@ def _get_migrations():
         ('website_prices',                             _migration_website_prices),
         ('design_prices',                              _migration_design_prices),
         ('dex_entries',                                _migration_dex_entries),
+        ('dex_entries_website_item',                   _migration_dex_entries_website_item),
     ]
 
 
@@ -2316,6 +2317,20 @@ def _migration_dex_entries(con, cur):
     cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_dex_entries_website ON dex_entries(kind, website_id)
                    WHERE website_id IS NOT NULL""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('dex_entries')")
+
+
+def _migration_dex_entries_website_item(con, cur):
+    # 图鉴 Dex load (contract 1.2, 2026-11-13): on popcore.ca a product line and an item figure can carry the same
+    # number, so a book product is found by website_id together with website_item (1 = an item figure, 0 = a
+    # product line or any other kind). Additive: older code never sets it and gets 0, and the old unique index on
+    # (kind, website_id) is replaced by one that includes website_item.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(dex_entries)')}
+    if 'website_item' not in columns:
+        cur.execute('ALTER TABLE dex_entries ADD COLUMN website_item INTEGER NOT NULL DEFAULT 0 CHECK (website_item IN (0, 1))')
+    cur.execute('DROP INDEX IF EXISTS idx_dex_entries_website')
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_dex_entries_website_item
+                   ON dex_entries(kind, website_item, website_id) WHERE website_id IS NOT NULL""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('dex_entries_website_item')")
 
 
 def _migration_inventory_viewers(con, cur):

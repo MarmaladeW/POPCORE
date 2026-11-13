@@ -32,7 +32,7 @@ KINDS = ('company', 'partner', 'ip', 'character', 'series', 'product', 'design')
 PARENTS = {
     'company': (), 'partner': (),
     'ip': ('company',),
-    'character': ('ip',),
+    'character': ('ip', 'partner'),  # contract 1.2: a partner's own characters (Disney's princesses…)
     'series': ('ip', 'company'),
     'product': ('series', 'ip', 'company'),
     'design': ('product',),
@@ -164,7 +164,7 @@ def unlinked(con, text='', page=1, per_page=50):
         params += [_like(text)] * 3
     total = con.execute(f'SELECT COUNT(*) FROM products p WHERE {where}', params).fetchone()[0]
     rows = con.execute(
-        f"""SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.design_name, p.stock_form, p.ip_series,
+        f"""SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.design_name, p.stock_form, p.ip_series, p.brand,
                    box.id AS box_id, box.sku AS box_sku, COALESCE(NULLIF(box.name_cn_en, ''), box.jizhanming) AS box_name,
                    be.id AS box_entry_id, be.name AS box_entry_name
             FROM products p
@@ -175,7 +175,8 @@ def unlinked(con, text='', page=1, per_page=50):
         params + [per_page, (page - 1) * per_page]).fetchall()
     items = []
     for row in rows:
-        item = {key: row[key] for key in ('id', 'sku', 'name_cn_en', 'jizhanming', 'design_name', 'stock_form', 'ip_series')}
+        item = {key: row[key] for key in ('id', 'sku', 'name_cn_en', 'jizhanming', 'design_name', 'stock_form', 'ip_series',
+                                          'brand')}
         item['box'] = None if row['box_id'] is None else {'id': row['box_id'], 'sku': row['box_sku'], 'name': row['box_name']}
         item['box_entry'] = None if row['box_entry_id'] is None else {'id': row['box_entry_id'], 'name': row['box_entry_name']}
         items.append(item)

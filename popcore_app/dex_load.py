@@ -153,7 +153,9 @@ def plan(con, export, ip_list):
     for row in ip_list:
         if row['name'].casefold() not in export_ip_by_name:
             p.unmatched.append({'side': 'IP list', 'name': row['cell'], 'detail':
-                                f'{row["company"]} · {row["what"] or "-"} · decision: {row["decision"] or "(blank: keep)"}'})
+                                f'{row["company"]} · {row["what"] or "-"} · decision: {row["decision"] or "(blank: keep)"}'
+                                + (' · made as a new IP (New to the Dex)' if row['role'] == 'ip' and company(row['company'])
+                                   else '')})
     for entry in by_kind['ip']:
         if (entry.get('name') or '').strip().casefold() not in list_by_name:
             p.unmatched.append({'side': 'Website', 'name': entry.get('name'), 'detail': f'website IP number {entry.get("website_id")}'})
@@ -223,21 +225,38 @@ def plan(con, export, ip_list):
             p.dropped.append({'key': key, 'name': entry.get('name'), 'why': 'The owner marked it delete' if role == 'drop'
                               else 'Not an IP: its series move to the company', 'decision': row['decision'] if row else ''})
 
-    own_ips = {wid: fate[1] for wid, fate in ip_fate.items() if fate[0] == 'ip'}
+    # Own IPs the owner's list keeps that the website has no row for: the list is the owner's word that they
+    # exist, so they are made, with no website number ("New to the Dex").
+    for row in ip_list:
+        if row['role'] != 'ip' or row['name'].casefold() in export_ip_by_name or not company(row['company']):
+            continue
+        name = _rename(row['decision']) or row['proper']
+        key = ('ip', 'new:' + name.casefold())
+        if key not in p.rows:
+            _add(p, key, kind='ip', name=name, parent=company(row['company']))
+            p.rows[key]['new_to_dex'] = True
+
+    own_ip_keys = [fate[1] for fate in ip_fate.values() if fate[0] == 'ip'] + \
+        [key for key, row in p.rows.items() if row.get('new_to_dex')]
     own_ip_names = {' '.join(re.sub(r'[^\w]+', ' ', p.rows[key]['name'].casefold()).split()): key
-                    for key in own_ips.values()}
+                    for key in own_ip_keys}
+
+    def ip_of(entry):
+        """The fate of the IP row an entry names as its parent (parent_kind 'ip', contract 1.2)."""
+        if entry.get('parent_kind') not in (None, 'ip'):
+            return None
+        return ip_fate.get(entry.get('parent_website_id'))
 
     # Characters -----------------------------------------------------------------------------------------
-    for entry in by_kind['character']:
-        fate = ip_fate.get(entry.get('parent_website_id'))
-        if fate and fate[0] in ('ip', 'drop'):
+    for entry in by_kind['character']:  # under its IP, or under the partner its IP row became (contract 1.2)
+        fate = ip_of(entry)
+        if fate and fate[0] in ('ip', 'drop', 'partner'):
             _add(p, ('character', entry.get('website_id')), kind='character', name=entry.get('name'), parent=fate[1],
                  deleted=fate[0] == 'drop', entry=entry)
         else:
-            why = ('its IP is a partner' if fate and fate[0] == 'partner' else
-                   'its IP is "not an IP"' if fate and fate[0] == 'not_ip' else 'it has no IP')
-            p.flag('Character', None, entry.get('name'), f'Not loaded: {why}, and a character sits under an IP. '
-                   'Pick its IP, or leave it out.', website_id=entry.get('website_id'))
+            why = 'its IP is "not an IP"' if fate and fate[0] == 'not_ip' else 'it has no IP'
+            p.flag('Character', None, entry.get('name'), f'Not loaded: {why}, and a character sits under an IP or a '
+                   'partner. Pick where it goes, or leave it out.', website_id=entry.get('website_id'))
     characters = {key[1] for key in p.rows if key[0] == 'character'}
     character_ip = {key[1]: p.rows[key]['parent'] for key in p.rows if key[0] == 'character'}
 
@@ -248,7 +267,7 @@ def plan(con, export, ip_list):
     # Series ---------------------------------------------------------------------------------------------
     for entry in by_kind['series']:
         wid = entry.get('website_id')
-        fate = ip_fate.get(entry.get('parent_website_id'))
+        fate = ip_of(entry)
         key, partner, deleted, parent = ('series', wid), None, False, None
         list_row = fate[2] if fate else None
         collab = ip_fate.get(entry.get('collab_website_id'))
@@ -287,29 +306,29 @@ def plan(con, export, ip_list):
         if fate[0] in ('partner', 'not_ip'):
             p.rows[key]['from_ip'] = from_ip
 
-    # Products: product lines (under a series) and items (under an IP) ----------------------------------
-    seen_products = {}
-    design_parents = {entry.get('parent_website_id') for entry in by_kind['design']}
-    series_numbers = {entry.get('website_id') for entry in by_kind['series']}
-    ip_numbers = {entry.get('website_id') for entry in by_kind['ip']}
+    # Products: product lines (under a series) and items (under an IP). Contract 1.2: `item` says which, and line
+    # and item numbers overlap, so an item's key is ('item', number).
     for entry in by_kind['product']:
         wid = entry.get('website_id')
-        key = ('product', wid)
-        if key in seen_products:
-            p.flag('Product', None, entry.get('name'), 'Not loaded: another website product has the same number '
-                   f'({wid}); a product line and an item share it. The website needs to tell them apart.', website_id=wid)
+        item = entry.get('item')
+        if item is None:
+            item = {'series': False, 'ip': True}.get(entry.get('parent_kind'))
+        if item is None:
+            p.flag('Product', None, entry.get('name'), 'Not loaded: the export does not say whether it is an item or a '
+                   'product line.', website_id=wid)
             continue
-        seen_products[key] = entry
-        parent_wid = entry.get('parent_website_id')
-        series_key = ('series', parent_wid)
-        is_line = _is_line(entry, design_parents, series_numbers, ip_numbers)
-        if is_line:
-            if series_key not in p.rows:
+        key = ('item', wid) if item else ('product', wid)
+        if key in p.rows:
+            p.flag('Product', None, entry.get('name'), f'Not loaded: the export has website number {wid} twice.',
+                   website_id=wid)
+            continue
+        if not item:
+            parent = ('series', entry.get('parent_website_id'))
+            if parent not in p.rows:
                 p.flag('Product', None, entry.get('name'), 'Not loaded: its series is not loaded.', website_id=wid)
                 continue
-            parent = series_key
         else:
-            fate = ip_fate.get(parent_wid)
+            fate = ip_of(entry)
             if not fate or fate[0] in ('unknown', 'partner'):
                 p.flag('Product', None, entry.get('name'), 'Not loaded: an item with no IP it can sit under.', website_id=wid)
                 continue
@@ -323,12 +342,12 @@ def plan(con, export, ip_list):
         _add(p, key, kind='product', name=entry.get('name'), parent=parent, entry=entry, extras=extras,
              deleted=p.rows[parent]['deleted'], character=char_key(entry),
              blind_box=None if entry.get('blind_box') is None else bool(entry.get('blind_box')))
-        p.rows[key]['line'] = is_line
+        p.rows[key]['website_item'] = int(bool(item))
 
     for entry in by_kind['design']:
         wid = entry.get('website_id')
-        parent = ('product', entry.get('parent_website_id'))
-        if parent not in p.rows or not p.rows[parent].get('line'):
+        parent = ('product', entry.get('parent_website_id'))  # a design's parent is always a product line
+        if parent not in p.rows:
             p.flag('Design', None, entry.get('name'), 'Not loaded: its product is not loaded.', website_id=wid)
             continue
         rarity = entry.get('rarity')
@@ -346,6 +365,7 @@ def plan(con, export, ip_list):
     _doubles(p)
     _against_database(con, p)
     _pair(con, p)
+    _plan_suggestions(p)
     for flag in p.flags:
         key = flag.pop('key')
         full = flag.pop('full')
@@ -364,7 +384,7 @@ def _add(p, key, kind, name, parent, deleted=False, entry=None, extras=None, par
         'thumb_url': entry.get('thumb_url') or None,
         'extras': _clean_extras(kind, extras if extras is not None else entry.get('extras')),
         'listing_ids': [str(i).strip().upper() for i in entry.get('listing_ids') or [] if str(i).strip()],
-        'product_id': None, 'paired': None, 'action': None, 'id': None, 'existing': None,
+        'product_id': None, 'paired': None, 'action': None, 'id': None, 'existing': None, 'website_item': 0,
     }
 
 
@@ -392,18 +412,6 @@ def _home_ip(entry, own_ip_names, character_ip, characters):
     name = ' ' + ' '.join(re.sub(r'[^\w]+', ' ', unicodedata.normalize('NFKC', entry.get('name') or '').casefold()).split()) + ' '
     found = [key for folded, key in own_ip_names.items() if folded and f' {folded} ' in name]
     return found[0] if len(found) == 1 else None
-
-
-def _is_line(entry, design_parents, series_numbers, ip_numbers):
-    """A product under a series is a product line; one under an IP is an item. The export gives only
-    parent_website_id, and series and IP numbers overlap, so: a product designs sit under is a line; otherwise the
-    parent number that exists decides; when both exist, a blind box is a line."""
-    wid, parent = entry.get('website_id'), entry.get('parent_website_id')
-    if wid in design_parents:
-        return True
-    if (parent in series_numbers) != (parent in ip_numbers):
-        return parent in series_numbers
-    return entry.get('blind_box') is not False
 
 
 def _under_deleted(p, key):
@@ -472,7 +480,8 @@ def _against_database(con, p):
     """For each planned row: add, update (a row the load wrote), same, person (a person changed it: left alone),
     adopt (a hand-made entry with the same kind, parent and name)."""
     existing = [dict(row) for row in con.execute('SELECT * FROM dex_entries')]
-    by_website = {(row['kind'], row['website_id']): row for row in existing if row['website_id'] is not None}
+    by_website = {(row['kind'], row['website_item'], row['website_id']): row for row in existing
+                  if row['website_id'] is not None}
     top = {(row['kind'], row['name'].casefold()): row for row in existing
            if row['kind'] in ('company', 'partner') and row['parent_id'] is None}
     loose = defaultdict(list)  # hand-made: no website number, live
@@ -487,13 +496,14 @@ def _against_database(con, p):
             parent_id = ids.get(row['parent']) if row['parent'] else None
             found = None
             if row['website_id'] is not None:
-                found = by_website.get((kind, row['website_id']))
+                found = by_website.get((kind, row['website_item'], row['website_id']))
             if found is None and kind in ('company', 'partner'):
                 found = top.get((kind, row['name'].casefold()))
             adopt = False
             if found is None and (row['parent'] is None or parent_id is not None):
                 for candidate in loose.get((kind, parent_id, row['name'].casefold()), []):
-                    found, adopt = candidate, True
+                    # the load's own row with no website number (an IP new to the Dex) is not adopted again
+                    found, adopt = candidate, candidate['updated_by'] != LOAD
                     loose[(kind, parent_id, row['name'].casefold())].remove(candidate)
                     break
             if found is None:
@@ -699,6 +709,7 @@ def _pair(con, p):
                    scored[0][1]['sku'], row['website_id'])
     # Not paired: POPCORE items with no live book link after the load.
     linked = set(used) | set(taken)
+    p.linked_items = linked
     p.not_paired = [item for item in items if item['stock_form'] in LINKABLE and item['id'] not in linked]
     for row in p.rows.values():  # a pairing on a row the load leaves alone is not made
         if row['paired'] and row['action'] in ('person', 'same') and row['existing'] and \
@@ -717,6 +728,103 @@ def suggest_ip(item, ip_names):
     if folded in GROUP_WORDS:
         return GROUP_WORDS[folded]
     return ip_names.get(folded, '')
+
+
+# Suggestions for items that stay unpaired ---------------------------------------------------------------
+# Never applied by the load: a suggestion is shown to a person, who links it or not.
+
+FILLER = {'series', 'figure', 'figures', 'blind', 'box', 'boxes', 'vinyl', 'the', 'x', 'pop', 'mart', 'popmart', 'mini',
+          'set', 'edition', 'toy', 'toys', 'collection', 'random', 'single', 'whole', 'a', 'of', 'and', 'in'}
+SUGGEST_FLOOR = 60  # below this, no suggestion
+
+
+def _words(text):
+    text = unicodedata.normalize('NFKC', text or '').casefold().replace('×', ' x ')
+    return re.sub(r'[^\w]+', ' ', text).split()
+
+
+def _clean(text, drop):
+    """A name without filler words, the IPs' own names and POPCORE IDs, for comparing."""
+    return ' '.join(word for word in _words(text) if word not in FILLER and word not in drop
+                    and not re.fullmatch(r'[a-z0-9]{2}\d{4}', word))
+
+
+def candidates(nodes):
+    """Book products and designs no item is linked to, ready for suggest(). nodes: key -> {id, kind, name, parent,
+    product_id} for the live book (the database's rows, or a load plan's)."""
+    ip_words = set()
+    for node in nodes.values():
+        if node['kind'] == 'ip':
+            ip_words.update(_words(node['name']))
+
+    def chain(key):
+        out, seen, parent = [], set(), nodes[key]['parent']
+        while parent in nodes and parent not in seen:
+            seen.add(parent)
+            out.insert(0, nodes[parent])
+            parent = nodes[parent]['parent']
+        return out
+
+    products, designs = [], defaultdict(list)
+    for key, node in nodes.items():
+        if node['product_id'] or node['kind'] not in ('product', 'design'):
+            continue
+        above = chain(key)
+        path = ' › '.join([step['name'] for step in above] + [node['name']])
+        if node['kind'] == 'design':
+            parent = nodes.get(node['parent'])
+            if parent and parent['product_id']:
+                designs[parent['product_id']].append({'id': node['id'], 'path': path, 'name': node['name']})
+            continue
+        ip = next((step['name'].casefold() for step in reversed(above) if step['kind'] == 'ip'), '')
+        series = above[-1]['name'] if above and above[-1]['kind'] == 'series' else ''
+        products.append({'id': node['id'], 'path': path, 'ip': ip,
+                         'texts': {_clean(series + ' ' + node['name'], ip_words), _clean(node['name'], ip_words)} - {''}})
+    ip_names = {node['name'].casefold(): node['name'] for node in nodes.values() if node['kind'] == 'ip'}
+    return {'products': products, 'designs': designs, 'ip_words': ip_words, 'ip_names': ip_names}
+
+
+def suggest(item, found):
+    """The best book entry for an unlinked POPCORE item by name, with a closeness score (0-100), or None.
+    A box or item: among book products with no linked item, the IP its group or name points to first. A confirmed
+    design: among the unlinked designs under the book product its box is linked to."""
+    if item.get('stock_form') == 'confirmed_design':
+        box = item.get('family_owner') or (item.get('box') or {}).get('id')
+        name = norm(item.get('design_name') or '')
+        scored = [(fuzz.ratio(name, norm(c['name'])), c) for c in found['designs'].get(box, [])] if name else []
+    else:
+        hint = suggest_ip(item, found['ip_names']).casefold()
+        label = item.get('name_cn_en') or item.get('jizhanming') or ''
+        if not hint:
+            spaced = ' ' + ' '.join(_words(label)) + ' '
+            hint = next((ip for ip in found['ip_names'] if f' {" ".join(_words(ip))} ' in spaced), '')
+        pool = [c for c in found['products'] if hint and c['ip'] == hint] or found['products']
+        text = _clean(label, found['ip_words'])
+        scored = [(max(fuzz.token_sort_ratio(text, t) for t in c['texts']), c) for c in pool if c['texts']] if text else []
+    if not scored:
+        return None
+    score, best = max(scored, key=lambda pair: pair[0])
+    if score < SUGGEST_FLOOR:
+        return None
+    return {'id': best['id'], 'path': best['path'], 'score': int(round(score))}
+
+
+def suggestions_from_db(con, items):
+    """Add `suggestion` to each unlinked item, against the live book."""
+    nodes = {row['id']: {'id': row['id'], 'kind': row['kind'], 'name': row['name'], 'parent': row['parent_id'],
+                         'product_id': row['product_id']}
+             for row in con.execute('SELECT id, kind, name, parent_id, product_id FROM dex_entries WHERE deleted_at IS NULL')}
+    found = candidates(nodes)
+    for item in items:
+        item['suggestion'] = suggest(item, found)
+    return items
+
+
+def _plan_suggestions(p):
+    nodes = {key: {'id': row['id'], 'kind': row['kind'], 'name': row['name'], 'parent': row['parent'],
+                   'product_id': row['product_id']} for key, row in p.rows.items() if not row['deleted']}
+    found = candidates(nodes)
+    p.suggestions = {item['id']: suggest(item, found) for item in p.not_paired}
 
 
 # Apply ---------------------------------------------------------------------------------------------------
@@ -767,22 +875,24 @@ def apply(con, p):
                 if action == 'add':
                     cur = con.execute(
                         """INSERT INTO dex_entries(kind, parent_id, partner_id, character_id, name, sort_order, blind_box,
-                               rarity, product_id, picture_id, picture_url, thumb_url, extras, website_id, updated_by)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               rarity, product_id, picture_id, picture_url, thumb_url, extras, website_id, website_item,
+                               updated_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (kind, check['parent_id'], check['partner_id'], check['character_id'], check['name'],
                          values['sort_order'], check['blind_box'], check['rarity'], check['product_id'],
-                         values['picture_id'], values['picture_url'], values['thumb_url'], extras, row['website_id'], LOAD))
+                         values['picture_id'], values['picture_url'], values['thumb_url'], extras, row['website_id'],
+                         row['website_item'], LOAD))
                     row['id'] = ids[row['key']] = cur.lastrowid
                 else:
                     con.execute(
                         """UPDATE dex_entries SET kind=kind, parent_id=?, partner_id=?, character_id=?, name=?, sort_order=?,
                                blind_box=?, rarity=?, product_id=?, picture_id=COALESCE(?, picture_id),
                                picture_url=COALESCE(?, picture_url), thumb_url=COALESCE(?, thumb_url), extras=?,
-                               website_id=?, version=version+1, updated_at=datetime('now'), updated_by=? WHERE id=?""",
+                               website_id=?, website_item=?, version=version+1, updated_at=datetime('now'), updated_by=? WHERE id=?""",
                         (check['parent_id'], check['partner_id'], check['character_id'], check['name'],
                          values['sort_order'] if action == 'update' else row['existing']['sort_order'],
                          check['blind_box'], check['rarity'], check['product_id'], values['picture_id'],
-                         values['picture_url'], values['thumb_url'], extras, row['website_id'],
+                         values['picture_url'], values['thumb_url'], extras, row['website_id'], row['website_item'],
                          row['existing']['updated_by'] if action == 'adopt' else LOAD, row['id']))
                 counts[action] += 1
         # Deleted rows, children first: kept with deleted_at so step 3 can tell the website.
@@ -824,8 +934,13 @@ def summary(p):
     return {'entries_by_kind': {kind: live.get(kind, 0) for kind in ORDER},
             'stored_as_deleted_by_kind': {kind: deleted.get(kind, 0) for kind in ORDER if deleted.get(kind)},
             'actions': {ACTION_WORDS.get(k, k): v for k, v in actions.items()},
+            'new_to_dex': sum(1 for row in p.rows.values() if row.get('new_to_dex')),
             'paired': dict(how), 'paired_total': len(p.paired), 'unsure': len(p.flags),
-            'not_paired': len(p.not_paired), 'unmatched_names': len(p.unmatched),
+            'not_paired': len(p.not_paired),
+            'not_paired_by_kind': dict(Counter(item['stock_form'] or 'unsorted' for item in p.not_paired)),
+            'boxes_and_items_suggested_85_plus': sum(
+                1 for item in p.not_paired if item['stock_form'] != 'confirmed_design'
+                and (p.suggestions.get(item['id']) or {}).get('score', 0) >= 85), 'unmatched_names': len(p.unmatched),
             'left_alone_people': actions.get('person', 0), 'no_longer_in_export': len(p.gone)}
 
 
@@ -845,11 +960,15 @@ def sheet_tabs(con, p, ip_list):
 
     rows = [('Book entries loaded', '')]
     rows += [(f'  {kind_words[kind]}', count) for kind, count in s['entries_by_kind'].items()]
+    rows += [('  of which IPs new to the Dex (from the IP list)', s['new_to_dex'])]
     rows += [('Kept as deleted, for the website to delete', sum(s['stored_as_deleted_by_kind'].values()))]
     rows += [(f'  {kind_words[kind]}', count) for kind, count in s['stored_as_deleted_by_kind'].items()]
     rows += [('What the load does', '')] + [(f'  {word}', count) for word, count in s['actions'].items()]
     rows += [('POPCORE items paired', s['paired_total'])] + [(f'  {word}', count) for word, count in s['paired'].items()]
-    rows += [('Your pick needed', s['unsure']), ('POPCORE items not in the book', s['not_paired']),
+    rows += [('Your pick needed', s['unsure']), ('POPCORE items not in the book', s['not_paired'])]
+    rows += [(f'  {form_words.get(None if form == "unsorted" else form, form)}', count)
+             for form, count in s['not_paired_by_kind'].items()]
+    rows += [('  Boxes and items with a suggestion 85 or closer', s['boxes_and_items_suggested_85_plus']),
              ('Names in only one of the IP list and the website', s['unmatched_names']),
              ('Entries the load made before that are no longer on the website (left as they are)', s['no_longer_in_export'])]
     rows += [('Note', note) for note in p.notes]
@@ -860,7 +979,9 @@ def sheet_tabs(con, p, ip_list):
     tabs.append(('Loaded', ('Kind', 'Where it sits', 'Name', 'Website number', 'What the load does', 'Picture',
                             'POPCORE item'),
                  [(kind_words[row['kind']], path_of(p, row['key']), row['name'], row['website_id'] or '',
-                   'Kept as deleted (the website will delete it)' if row['deleted'] else ACTION_WORDS.get(row['action'], ''),
+                   'Kept as deleted (the website will delete it)' if row['deleted'] else
+                   'New to the Dex (from the IP list; the website has no row yet)'
+                   if row.get('new_to_dex') and row['action'] == 'add' else ACTION_WORDS.get(row['action'], ''),
                    'yes' if row['picture_url'] else '', _sku(con, row['product_id'])) for row in loaded]))
     tabs.append(('Paired', ('Item ID', 'Item name', 'Book entry', 'How it was paired'),
                  [(pair['sku'], pair['item'], f'{path_of(p, pair["key"])} › {p.rows[pair["key"]]["name"]}', pair['how'])
@@ -869,11 +990,22 @@ def sheet_tabs(con, p, ip_list):
                                'Your pick'),
                  [(flag['what'], flag['path'] or '', flag['name'], flag['website_id'] or '', flag['why'], flag['choices'], '')
                   for flag in p.flags]))
+    skus = {item['id']: item['sku'] for item in p.not_paired}
+    owners = {row[0]: row[1] for row in con.execute('SELECT id, sku FROM products')}
+
+    def advice(item):
+        box = item.get('family_owner')
+        if item['stock_form'] == 'confirmed_design' and box and box not in p.linked_items:
+            return f'Follows its box ({owners.get(box, skus.get(box, "?"))})', ''
+        found = p.suggestions.get(item['id'])
+        return (found['path'], found['score']) if found else ('', '')
+
+    ordered = sorted(p.not_paired, key=lambda item: (item['stock_form'] == 'confirmed_design', item['sku'] or ''))
     tabs.append(('Not in the book', ('Item ID', '记账名', 'Name', 'Kind', 'POPCORE group', 'Brand', 'In stock',
-                                     'Suggested IP'),
+                                     'Suggested IP', 'Suggested book entry', 'How close (of 100)'),
                  [(item['sku'], item['jizhanming'] or '', item['name_cn_en'] or '', form_words.get(item['stock_form'], ''),
-                   item['ip_series'] or '', item['brand'] or '', stock.get(item['id'], 0), suggest_ip(item, ip_names))
-                  for item in sorted(p.not_paired, key=lambda item: item['sku'] or '')]))
+                   item['ip_series'] or '', item['brand'] or '', stock.get(item['id'], 0), suggest_ip(item, ip_names),
+                   *advice(item)) for item in ordered]))
     gone_rows = []
     for drop in p.dropped:
         under = Counter(p.rows[k]['kind'] for k in _subtree_keys(p, drop['key']) if k != drop['key'] and k in p.rows)

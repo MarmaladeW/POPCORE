@@ -77,13 +77,22 @@ export default function DexEditor({ editing, onClose, onSaved }: {
     if (PARTNER_KINDS.includes(kind)) {
       topEntries('partner').then(rows => { if (live) setPartners(rows.map(row => ({ value: row.id, label: row.name }))) }).catch(() => {})
     }
-    if (CHARACTER_KINDS.includes(kind) && ip) {
-      childEntries(ip.id).then(rows => {
-        if (live) setCharacters(rows.filter(row => row.kind === 'character').map(row => ({ value: row.id, label: row.name })))
-      }).catch(() => {})
-    } else setCharacters([])
     return () => { live = false }
   }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Characters offered: the IP's, and the chosen partner's (contract 1.2: a character may sit under a partner).
+  // A design has no partner of its own; it takes its product's.
+  const watchedPartner: number | undefined = Form.useWatch('partner_id', form)
+  const partnerId = kind && PARTNER_KINDS.includes(kind) ? watchedPartner : context?.partner?.id
+  useEffect(() => {
+    if (!editing || !kind || !CHARACTER_KINDS.includes(kind)) { setCharacters([]); return }
+    let live = true
+    const owners = [ip?.id, partnerId].filter((id): id is number => typeof id === 'number')
+    Promise.all(owners.map(id => childEntries(id))).then(groups => {
+      if (live) setCharacters(groups.flat().filter(row => row.kind === 'character').map(row => ({ value: row.id, label: row.name })))
+    }).catch(() => {})
+    return () => { live = false }
+  }, [editing, partnerId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function findParents(text: string) {
     if (!entry || !text.trim()) return
@@ -160,7 +169,7 @@ export default function DexEditor({ editing, onClose, onSaved }: {
       </Form.Item>}
       {CHARACTER_KINDS.includes(kind) && <Form.Item name="character_id" label="角色 Character"
         extra={ip ? `From ${ip.name}` : 'Characters come from the IP above; this entry has none.'}>
-        <Select allowClear showSearch optionFilterProp="label" options={characters} disabled={!ip} placeholder="—" />
+        <Select allowClear showSearch optionFilterProp="label" options={characters} disabled={!ip && !partnerId} placeholder="—" />
       </Form.Item>}
       {kind === 'product' && <Form.Item name="blind_box" label="盲盒 Blind box" valuePropName="checked"><Switch /></Form.Item>}
       {kind === 'design' && <Form.Item name="rarity" label="稀有度 Rarity"><Select allowClear options={RARITIES} placeholder="—" /></Form.Item>}

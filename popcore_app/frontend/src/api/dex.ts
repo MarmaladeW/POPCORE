@@ -53,6 +53,8 @@ export interface DexUnlinkedItem {
   stock_form: 'random_box' | 'ordinary' | 'confirmed_design' | null; ip_series: string | null
   box: { id: number; sku: string; name: string | null } | null
   box_entry: { id: number; name: string } | null
+  // The closest book entry by name (score 0-100), for a manager to link; never linked by itself.
+  suggestion: { id: number; path: string; score: number } | null
 }
 export interface DexUnlinkedPage { items: DexUnlinkedItem[]; total: number; page: number; per_page: number }
 export const unlinkedItems = (q = '', page = 1, per_page = 50) =>
