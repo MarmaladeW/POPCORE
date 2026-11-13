@@ -13,8 +13,8 @@ const unpicked: NavAccess = { ...roles.staff, inventory: false }
 
 // Every page each role could open from the menus before the redesign.
 const before: Record<string, string[]> = {
-  viewer: ['/', '/schedule', '/products'],
-  staff: ['/', '/checkout', '/incoming', '/claw', '/summary', '/stock', '/restock', '/special-orders', '/today', '/trades', '/schedule', '/products'],
+  viewer: ['/', '/schedule', '/products', '/dex'],
+  staff: ['/', '/checkout', '/incoming', '/claw', '/summary', '/stock', '/restock', '/special-orders', '/today', '/trades', '/schedule', '/products', '/dex'],
 }
 before.manager = [...before.staff, '/sales', '/reports', '/website']
 before.admin = [...before.manager, '/users', '/settings']
@@ -52,10 +52,10 @@ test('menus never offer a page above the role', () => {
   assert.ok(!moreItems(roles.manager).some(entry => entry.key === '/settings'))
 })
 
-test('更多 lists 库存, 补货, 产品, 销售, 报表, 网站, 员工, 设置 in order, by role', () => {
-  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['库存', '补货', '产品', '销售', '报表', '网站', '员工', '设置'])
+test('更多 lists 库存, 补货, 产品, 图鉴, 销售, 报表, 网站, 员工, 设置 in order, by role', () => {
+  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['库存', '补货', '产品', '图鉴', '销售', '报表', '网站', '员工', '设置'])
   assert.equal(moreItems(roles.admin).find(entry => entry.zh === '销售')?.key, '/summary')
-  assert.deepEqual(moreItems(roles.viewer).map(entry => entry.key), ['/products'])
+  assert.deepEqual(moreItems(roles.viewer).map(entry => entry.key), ['/products', '/dex'])
 })
 
 test('rails follow the Figma groups', () => {
@@ -104,12 +104,13 @@ test('nested pages light up their section', () => {
   assert.equal(activeSection('/sales/documents/4', true), '/summary')
   assert.equal(activeSection('/sales/documents/4', false), '/checkout')
   assert.equal(activeSection('/products/clover-matching', true), '/products')
+  assert.equal(activeSection('/dex/12', false), '/dex')
   assert.equal(activeSection('/closing', true), '/summary')
 })
 
 test('without 库存查看, 库存 becomes 晚盘 and 入店 leaves the menus', () => {
   assert.deepEqual(railGroups(unpicked)[0].items.map(entry => entry.zh), ['首页', '买单', '汇总', '晚盘', '补货'])
-  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/stock/count', '/restock', '/products'])
+  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/stock/count', '/restock', '/products', '/dex'])
   assert.deepEqual(homeShortcuts(unpicked).map(entry => entry.key), ['/checkout', '/stock/count', '/restock', '/summary'])
   const everywhere = [...rail(unpicked), ...phone(unpicked)]
   for (const key of ['/stock', '/incoming', '/claw']) assert.ok(!everywhere.includes(key), key)

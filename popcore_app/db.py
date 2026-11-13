@@ -2112,6 +2112,7 @@ def _get_migrations():
         ('website_items_popcore_id',                   _migration_website_items_popcore_id),
         ('website_prices',                             _migration_website_prices),
         ('design_prices',                              _migration_design_prices),
+        ('dex_entries',                                _migration_dex_entries),
     ]
 
 
@@ -2276,6 +2277,45 @@ def _migration_design_prices(con, cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_design_prices_product ON design_prices(product_id, id)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('design_prices')")
+
+
+def _migration_dex_entries(con, cur):
+    # 图鉴 Dex: the book of companies, partners, IPs, characters, series, products and designs (owner,
+    # 2026-11-12: "The Dex itself lives on POPCORE"; the collector pages stay on popcore.ca, filled from here).
+    # One new table and its indexes, nothing else: products and everything the till reads are unchanged, so
+    # older code runs on a migrated database. Which kind may sit under which is checked in dex_book.py.
+    # A book link never holds a POPCORE item back: removing or deleting the item leaves the entry, unlinked.
+    # id is the contract's permanent ref; website_id is the row's number on popcore.ca once known.
+    cur.execute("""CREATE TABLE IF NOT EXISTS dex_entries (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT    NOT NULL CHECK (kind IN ('company', 'partner', 'ip', 'character', 'series', 'product', 'design')),
+        parent_id    INTEGER REFERENCES dex_entries(id) ON DELETE SET NULL,
+        partner_id   INTEGER REFERENCES dex_entries(id) ON DELETE SET NULL,
+        character_id INTEGER REFERENCES dex_entries(id) ON DELETE SET NULL,
+        name         TEXT    NOT NULL,
+        sort_order   INTEGER NOT NULL DEFAULT 0,
+        blind_box    INTEGER CHECK (blind_box IN (0, 1)),
+        rarity       TEXT    CHECK (rarity IN ('normal', 'popular', 'secret', 'super_secret', 'special')),
+        product_id   INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        picture_id   INTEGER,
+        picture_url  TEXT,
+        thumb_url    TEXT,
+        extras       TEXT    NOT NULL DEFAULT '{}',
+        website_id   INTEGER,
+        version      INTEGER NOT NULL DEFAULT 1,
+        sent_version INTEGER NOT NULL DEFAULT 0,
+        send_error   TEXT,
+        deleted_at   TEXT,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_by   TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_dex_entries_parent ON dex_entries(parent_id, sort_order)')
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_dex_entries_product ON dex_entries(product_id)
+                   WHERE product_id IS NOT NULL AND deleted_at IS NULL""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_dex_entries_website ON dex_entries(kind, website_id)
+                   WHERE website_id IS NOT NULL""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('dex_entries')")
 
 
 def _migration_inventory_viewers(con, cur):
