@@ -1,0 +1,97 @@
+/* 确认款价格 Design prices: designs grouped by box, a price column to type or paste into, a save bar. */
+.pc-dp { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding-bottom: 72px; }
+.pc-dp-lead { margin: 0 0 16px; color: var(--text-tertiary); font-size: 12.5px; line-height: 18px; }
+.pc-dp-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 240px) auto; gap: 8px; margin-bottom: 10px; }
+.pc-dp-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.pc-dp-chips .pc-chip { gap: 4px; cursor: pointer; }
+.pc-dp-chips .pc-chip span { color: var(--text-tertiary); font-weight: 400; }
+.pc-dp-chips .pc-chip[aria-pressed='true'] { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.pc-dp-chips .pc-chip[aria-pressed='true'] span { color: var(--text-on-ink-secondary); }
+
+/* The selected designs: set one price, or raise/lower them. Sticks under the header while scrolling. */
+.pc-dp-bulk { position: sticky; top: 0; z-index: 3; gap: 8px 10px; }
+.pc-dp-bulk > span { flex: 1 1 140px; }
+.pc-dp-bulk label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.pc-dp-bulk .ant-input { width: 92px; min-height: 30px; font-size: 13px; }
+.pc-dp-bulk .ant-segmented { padding: 2px; background: rgb(255 255 255 / 14%); }
+.pc-dp-bulk .ant-segmented .ant-segmented-item { color: var(--text-on-ink); }
+.pc-dp-bulk .ant-segmented .ant-segmented-item-selected { background: var(--surface-default); color: var(--text-primary); }
+
+.pc-dp-list { min-width: 0; }
+.pc-dp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pc-dp-table th, .pc-dp-table td { padding: 8px 12px; border-top: 1px solid var(--line-hair); text-align: left; vertical-align: middle; }
+.pc-dp-table thead th { border-top: 0; color: var(--text-tertiary); font-size: 11.5px; font-weight: 400; white-space: nowrap; }
+.pc-dp-table strong { display: block; font-weight: 500; }
+.pc-dp-table small { display: block; color: var(--text-tertiary); font-size: 11px; line-height: 15px; }
+.pc-dp-pick { width: 36px; padding-right: 0 !important; }
+.pc-dp-num { text-align: right !important; white-space: nowrap; }
+.pc-dp-design strong { display: flex; align-items: center; gap: 6px; }
+.pc-dp-web > span + span { margin-top: 4px; }
+.pc-dp-web > span { display: block; }
+.pc-dp-input { width: 132px; }
+.pc-dp-input .ant-input { min-height: 34px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pc-dp-hint { width: 200px; }
+.pc-dp-hint small { font-size: 11.5px; color: var(--text-secondary); }
+.pc-dp-table .pc-dp-warn, .pc-dp-warn { color: var(--status-restock-ink); }
+.pc-dp-table .pc-dp-out, .pc-dp-out { color: var(--status-out-ink); }
+.pc-dp-box th { padding-top: 14px; background: var(--surface-soft); font-weight: 400; }
+.pc-dp-box th[scope='rowgroup'] { display: table-cell; }
+.pc-dp-box-name { display: inline-grid; margin-right: 12px; vertical-align: middle; }
+.pc-dp-box-name strong { font-size: 13px; font-weight: 600; }
+.pc-dp-box-picks { display: inline-flex; flex-wrap: wrap; gap: 2px; vertical-align: middle; }
+.pc-dp-box-picks .ant-btn { color: var(--text-secondary); font-size: 12px; }
+tr.pc-dp-edited { background: var(--surface-soft); }
+
+/* Save bar: always in reach at the bottom of the page. */
+.pc-dp-save { position: sticky; bottom: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 16px; padding: 10px 16px; border: 1px solid var(--line-hair); background: var(--surface-default);
+  box-shadow: 0 -6px 16px rgb(0 0 0 / 6%); }
+.pc-dp-save > span { display: grid; flex: 1 1 220px; min-width: 0; }
+.pc-dp-save strong { font-size: 13px; font-weight: 600; }
+.pc-dp-save small { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-dp-save .ant-btn { min-height: 40px; }
+
+/* The summary before saving. */
+.pc-dp-summary { display: grid; gap: 12px; }
+.pc-dp-summary .pc-figures { margin-bottom: 0; }
+.pc-dp-summary h3 { margin: 4px 0 6px; font-size: 13px; font-weight: 600; }
+.pc-dp-summary h3 small { margin-left: 6px; color: var(--text-tertiary); font-size: 11.5px; font-weight: 400; }
+.pc-dp-summary ul { max-height: 220px; margin: 0; padding: 0; overflow-y: auto; list-style: none; border: 1px solid var(--line-hair); }
+.pc-dp-summary li { display: grid; padding: 7px 12px; font-size: 12.5px; }
+.pc-dp-summary li + li { border-top: 1px solid var(--line-hair); }
+.pc-dp-summary li strong { font-weight: 500; }
+.pc-dp-summary li small { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-dp-summary .pc-quiet { padding: 0; }
+
+@media (max-width: 767.98px) {
+  .pc-dp-tools { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pc-dp-tools > :first-child { grid-column: 1 / -1; }
+  .pc-dp-tools .ant-segmented { grid-column: 1 / -1; }
+  .pc-dp-tools .ant-segmented-group { display: flex; }
+  .pc-dp-tools .ant-segmented-item { flex: 1; text-align: center; }
+  .pc-dp > .pc-figures small { display: none; }
+  .pc-dp-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .pc-dp-summary .pc-figures-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pc-dp-summary .pc-figures > div:nth-child(3) { border-left: 0; }
+  .pc-dp-summary .pc-figures > div:nth-child(n + 3) { border-top: 1px solid var(--line-hair); }
+  /* Each design is a small card: name and prices over the input. */
+  .pc-dp-table thead { display: none; }
+  .pc-dp-table tbody tr { display: grid; grid-template-columns: 32px minmax(0, 1fr) minmax(0, 1fr); align-items: start; padding: 8px 12px 10px;
+    border-top: 1px solid var(--line-hair); column-gap: 8px; row-gap: 6px; }
+  .pc-dp-table tbody tr.pc-dp-box { grid-template-columns: 32px minmax(0, 1fr); background: var(--surface-soft); }
+  .pc-dp-table th, .pc-dp-table td { padding: 0; border-top: 0; }
+  .pc-dp-table td.pc-dp-design { grid-column: 2 / -1; }
+  .pc-dp-table td.pc-dp-popcore { grid-column: 2; text-align: left !important; }
+  .pc-dp-table td.pc-dp-web { grid-column: 3; text-align: left !important; }
+  .pc-dp-table td.pc-dp-input { grid-column: 2; width: auto; }
+  .pc-dp-table td.pc-dp-hint { grid-column: 3; width: auto; align-self: center; }
+  .pc-dp-input .ant-input { min-height: 40px; font-size: 16px; }
+  .pc-dp-box-picks { display: flex; margin-top: 4px; }
+  .pc-dp-bulk { position: static; }
+  .pc-dp-bulk > span { flex-basis: 100%; }
+  /* Above the phone's bottom bar, buttons beside the count. */
+  .pc-dp-save { bottom: calc(61px + env(safe-area-inset-bottom)); flex-wrap: nowrap; margin: 16px -14px 0; padding: 10px 14px; border-inline: 0; }
+  .pc-dp-save > span { flex: 1 1 auto; }
+  .pc-dp-save small { display: none; }
+  .pc-dp-save .ant-btn { padding-inline: 10px; font-size: 12.5px; }
+}

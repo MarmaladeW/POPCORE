@@ -2111,6 +2111,7 @@ def _get_migrations():
         ('add_is_training_to_employees',               _migration_add_is_training_to_employees),
         ('website_items_popcore_id',                   _migration_website_items_popcore_id),
         ('website_prices',                             _migration_website_prices),
+        ('design_prices',                              _migration_design_prices),
     ]
 
 
@@ -2257,6 +2258,24 @@ def _migration_website_prices(con, cur):
     cur.execute('DELETE FROM website_items')
     cur.execute("DELETE FROM website_state WHERE key='refreshed_at'")
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_prices')")
+
+
+def _migration_design_prices(con, cur):
+    # A manager sets confirmed designs' prices in bulk (owner, 2026-11-12: "POPCORE might be better"), and
+    # only those go to the website: the price a design is created with only repeats its box's. Each row is
+    # a price a manager set for the design itself, on the 确认款价格 Design prices screen or in the design's
+    # editor; a design's latest row counts while products.price still holds it (design_prices.py).
+    cur.execute("""CREATE TABLE IF NOT EXISTS design_prices (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id     INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        cents          INTEGER NOT NULL CHECK (cents > 0),
+        previous_cents INTEGER,
+        source         TEXT    NOT NULL CHECK (source IN ('design_prices', 'design_editor')),
+        set_by         TEXT    NOT NULL,
+        set_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_design_prices_product ON design_prices(product_id, id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('design_prices')")
 
 
 def _migration_inventory_viewers(con, cur):
