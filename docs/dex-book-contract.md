@@ -1,6 +1,6 @@
 # The book contract: POPCORE and popcore.ca
 
-Version 1.2, draft, 13 Nov 2026. Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
+Version 1.3, draft, 13 Nov 2026 (1.3: a product or design in a series that spans several IPs names its own IP, `ip_ref`). Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
 Nothing here is built on either side. Route names are proposals; the shapes and rules are the contract.
 Questions for the website session are in section 10. Answers change this file, not side notes.
 
@@ -34,6 +34,7 @@ One shape for every level.
   "parent_ref": 88,
   "partner_ref": null,
   "character_ref": null,
+  "ip_ref": null,
   "name": "Makeup Angel Series",
   "sort_order": 30,
   "picture_id": 9912,
@@ -49,7 +50,8 @@ One shape for every level.
 
 - `ref`: POPCORE's permanent number for the entry. Never reused, never changes.
 - `website_id`: the row's number on the website when POPCORE knows it (every loaded entry does), else null.
-- `parent_ref`, `partner_ref`, `character_ref`: other entries' `ref`. `partner_ref` on series and products. `character_ref` on series, products and designs.
+- `parent_ref`, `partner_ref`, `character_ref`, `ip_ref`: other entries' `ref`. `partner_ref` on series and products. `character_ref` on series, products and designs.
+- `ip_ref`: products and designs only, and only when no IP sits above the entry (its series is straight under a company, such as POP MART's anniversary sets, where each design is a different IP). It names the IP that design or product belongs to. Null everywhere else: the IP is then the one above. The website keeps it in `figures.ip_id`, so the design also shows on that IP's page.
 - `name`: the Dex name (the official English name).
 - `picture_id`: a website media id (section 6), or null.
 - `blind_box`: products only. `item`: products only; true when the website holds it as an item figure with no series, false when it is a product line. Line numbers and item numbers overlap on the website, so a product is found by `website_id` together with `item`. `rarity`: designs only, the website's own words (`normal`, `popular`, `secret`, `super_secret`, `special`).
@@ -67,7 +69,7 @@ Rules for the website:
 1. **Find the row** by `ref`. If none carries it, by `website_id` (then store the `ref` on it). If none, create it. Never two rows for one `ref`.
 2. **Apply only if** `version` is higher than the one stored for that row. An older or repeated send answers `ok` and changes nothing.
 3. **Parents come first** in a batch. An unknown parent answers `refused`, code `parent_unknown`.
-4. **POPCORE's fields** are overwritten on every accepted send: name, parent, partner, character, order, picture, `blind_box`, `rarity`, and the `extras` keys sent.
+4. **POPCORE's fields** are overwritten on every accepted send: name, parent, partner, character, `ip_ref`, order, picture, `blind_box`, `rarity`, and the `extras` keys sent.
 5. **The website's fields** are never touched by a send: the slug and page address (made once; a rename does not change it), image normaliser settings, category and sub-type, `wc_product_id` and every link to a listing, collectors' marks, follows, votes, wishlists and suggested edits.
 6. **`quiet: true`** means no follower notices (`series_added` and the like) for anything in the batch. POPCORE sets it for the first full send and for re-loads.
 7. **Deletes** arrive as `"deleted": true`, children before parents. The website removes the row and what hangs on it (marks, follows, wishlist rows, weight votes and comments, events, price points, media rows), and unlinks listings without deleting them. A row a published listing still points at answers `refused`, code `has_live_listing`. What a removed page address does is the website's choice (a redirect to the parent is suggested).
@@ -98,6 +100,7 @@ Returns every Dex row as an entry in the shape of section 2, paged (`page`, `per
 Added per entry, beside the section 2 fields:
 - `slug`, `picture_url`, `thumb_url`, `parent_website_id` and `parent_kind` (a series' IP, a product's series or IP, a design's product line, a character's IP). Series and IP numbers overlap, so the kind is needed.
 - `character_website_id`, or `character_name` when the row holds only a name.
+- On a design or an item: `ip_website_id`, the row's own IP (`figures.ip_id`).
 - On a series: `manufacturer` (today's code, such as `pop_mart`, or empty) and `collab_website_id` (the IP row named as collaboration, or null).
 - On a product: `parent_category` (the Sonny Angel accordion name, or null).
 - `extras`: the section 4 keys with today's values.

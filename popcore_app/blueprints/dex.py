@@ -34,6 +34,10 @@ def dex_list():
     def work(con):
         if 'parent' in request.args:
             return dex_book.children(con, _number('parent'))
+        if 'named_ip' in request.args:  # contract 1.3: products and designs elsewhere that name this IP
+            return dex_book.named(con, _number('named_ip'))
+        if request.args.get('kind') == 'ip':  # every live IP, for the IP picker
+            return dex_book.ips(con)
         if 'q' in request.args:
             kinds = [kind for kind in request.args.get('kinds', '').split(',') if kind]
             return dex_book.search(con, request.args.get('q'), kinds)

@@ -9,12 +9,15 @@ Rules (docs/dex-book.md):
 - A name is required; two live entries of one kind under one parent cannot share a name (any case).
 - partner_id on series and products, a live partner; character_id on series, products and designs, a live
   character; blind_box on products; rarity on designs (the website's words).
+- ip_id (contract 1.3, owner 2026-11-13): on a product or design with no IP above it (a series with several IPs
+  stays straight under its company), the live IP it belongs to, so it also shows on that IP's page. Refused when
+  an IP sits above: its IP is the one above. Moving a parent does not re-check what sits under it.
 - product_id: a book product links an ordinary POPCORE item or a blind box (not a confirmed design or a
   sealed set); a book design links a confirmed design. One POPCORE item, one live entry.
 - extras: the refined copy, only the keys the contract names for the kind (docs/dex-book-contract.md §4).
 - Every accepted change raises version by one.
 - Delete takes the entry and everything under it. It is refused while any of them is linked to a POPCORE
-  item, or a live entry names one as its partner or character. Rows the website has (website_id) are kept
+  item, or a live entry names one as its partner, character or IP. Rows the website has (website_id) are kept
   with deleted_at, so a later step can tell the website; the others go. Deleted rows are never read.
 """
 import json
@@ -50,22 +53,26 @@ EXTRAS = {
 }
 PARTNER_KINDS = ('series', 'product')
 CHARACTER_KINDS = ('series', 'product', 'design')
+IP_KINDS = ('product', 'design')
 MAX_NAME = 200
 MAX_EXTRAS = 20000
 SEARCH_LIMIT = 50
-EDITABLE = ('name', 'parent_id', 'partner_id', 'character_id', 'blind_box', 'rarity', 'product_id', 'extras')
+EDITABLE = ('name', 'parent_id', 'partner_id', 'character_id', 'ip_id', 'blind_box', 'rarity', 'product_id', 'extras')
 
 _COLUMNS = """e.id, e.kind, e.parent_id, e.partner_id, e.character_id, e.name, e.sort_order, e.blind_box, e.rarity,
     e.product_id, e.picture_id, e.picture_url, e.thumb_url, e.extras, e.website_id, e.version, e.created_at,
-    e.updated_at, e.updated_by,
+    e.updated_at, e.updated_by, e.ip_id, ni.name AS named_ip_name,
     (SELECT COUNT(*) FROM dex_entries c WHERE c.parent_id=e.id AND c.deleted_at IS NULL) AS child_count,
     p.sku AS product_sku, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS product_name"""
-_FROM = 'FROM dex_entries e LEFT JOIN products p ON p.id=e.product_id WHERE e.deleted_at IS NULL'
+_FROM = """FROM dex_entries e LEFT JOIN products p ON p.id=e.product_id
+    LEFT JOIN dex_entries ni ON ni.id=e.ip_id AND ni.deleted_at IS NULL WHERE e.deleted_at IS NULL"""
 
 
 def _shape(row):
     entry = dict(row)
     entry['blind_box'] = None if entry['blind_box'] is None else bool(entry['blind_box'])
+    name = entry.pop('named_ip_name')
+    entry['named_ip'] = None if entry['ip_id'] is None or name is None else {'id': entry['ip_id'], 'name': name}
     try:
         entry['extras'] = json.loads(entry['extras'] or '{}')
     except ValueError:
@@ -99,6 +106,21 @@ def _path(con, entry):
     return path
 
 
+def _ip_above(con, parent_id):
+    """The first IP met walking up from parent_id (itself included), or None."""
+    seen = set()
+    while parent_id is not None and parent_id not in seen:
+        seen.add(parent_id)
+        row = con.execute('SELECT id, kind, name, parent_id FROM dex_entries WHERE id=? AND deleted_at IS NULL',
+                          (parent_id,)).fetchone()
+        if row is None:
+            return None
+        if row['kind'] == 'ip':
+            return {'id': row['id'], 'kind': 'ip', 'name': row['name']}
+        parent_id = row['parent_id']
+    return None
+
+
 def _brief(con, entry_id):
     if entry_id is None:
         return None
@@ -120,6 +142,29 @@ def top(con, kind):
     return [_shape(row) for row in con.execute(
         f'SELECT {_COLUMNS} {_FROM} AND e.kind=? AND e.parent_id IS NULL ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id',
         (kind,))]
+
+
+def ips(con):
+    """Every live IP, with its path (its company), for the IP picker."""
+    found = []
+    for row in con.execute(f'SELECT {_COLUMNS} {_FROM} AND e.kind=? ORDER BY e.name COLLATE NOCASE, e.id', ('ip',)):
+        entry = _shape(row)
+        entry['path'] = _path(con, entry)
+        found.append(entry)
+    return found
+
+
+def named(con, ip_id):
+    """The live products and designs elsewhere in the book that name this IP, each with its path."""
+    if _need(con, ip_id)['kind'] != 'ip':
+        raise DexError('Only an IP is named by other entries.', 'invalid_input')
+    found = []
+    for row in con.execute(f"""SELECT {_COLUMNS} {_FROM} AND e.ip_id=?
+                               ORDER BY e.kind='design', e.name COLLATE NOCASE, e.id""", (ip_id,)):
+        entry = _shape(row)
+        entry['path'] = _path(con, entry)
+        found.append(entry)
+    return found
 
 
 def search(con, text, kinds=None):
@@ -195,6 +240,8 @@ def detail(con, entry_id):
     # The IP the entry sits under (or is): its characters are the ones the editor offers.
     entry['ip'] = ({'id': entry['id'], 'kind': 'ip', 'name': entry['name']} if entry['kind'] == 'ip'
                    else next((step for step in reversed(entry['path']) if step['kind'] == 'ip'), None))
+    # Contract 1.3: the products and designs elsewhere (under a company) that name this IP.
+    entry['named_by'] = named(con, entry['id']) if entry['kind'] == 'ip' else []
     return entry
 
 
@@ -247,6 +294,18 @@ def _check(con, row, entry_id=None):
         found = _brief(con, value)
         if found is None or found['kind'] != target:
             raise DexError(f'That {target} does not exist.', f'{target}_not_found')
+
+    # Contract 1.3: a product or design with no IP above names its own IP. row.get: the load's rows carry no ip_id.
+    ip_id = _id_or_none(row.get('ip_id'), 'ip_id')
+    if ip_id is not None:
+        if kind not in IP_KINDS:
+            raise DexError(f'Only {" and ".join(IP_KINDS)} entries name an IP.', 'field_not_allowed')
+        above = _ip_above(con, parent_id)
+        if above is not None:
+            raise DexError(f'Its IP is the one above ({above["name"]}); leave IP empty.', 'ip_above')
+        found = _brief(con, ip_id)
+        if found is None or found['kind'] != 'ip':
+            raise DexError('That IP does not exist.', 'ip_not_found')
 
     if row['blind_box'] is not None:
         if kind != 'product':
@@ -336,10 +395,10 @@ def create(con, data, actor):
     def work():
         _check(con, row)
         cur = con.execute(
-            """INSERT INTO dex_entries(kind, parent_id, partner_id, character_id, name, sort_order, blind_box, rarity,
-                                       product_id, extras, updated_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (kind, row['parent_id'], row['partner_id'], row['character_id'], row['name'],
+            """INSERT INTO dex_entries(kind, parent_id, partner_id, character_id, ip_id, name, sort_order, blind_box,
+                                       rarity, product_id, extras, updated_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (kind, row['parent_id'], row['partner_id'], row['character_id'], row['ip_id'], row['name'],
              _next_order(con, row['parent_id'], kind), row['blind_box'], row['rarity'], row['product_id'],
              json.dumps(row['extras'], ensure_ascii=False), _actor(actor)))
         return cur.lastrowid
@@ -368,10 +427,10 @@ def update(con, entry_id, data, actor):
             return  # nothing changed: no new version
         moved = row['parent_id'] != entry['parent_id']
         con.execute(
-            """UPDATE dex_entries SET name=?, parent_id=?, partner_id=?, character_id=?, blind_box=?, rarity=?,
+            """UPDATE dex_entries SET name=?, parent_id=?, partner_id=?, character_id=?, ip_id=?, blind_box=?, rarity=?,
                       product_id=?, extras=?, sort_order=?, version=version+1, updated_at=datetime('now'), updated_by=?
                WHERE id=?""",
-            (row['name'], row['parent_id'], row['partner_id'], row['character_id'],
+            (row['name'], row['parent_id'], row['partner_id'], row['character_id'], row['ip_id'],
              None if row['blind_box'] is None else int(row['blind_box']), row['rarity'], row['product_id'],
              json.dumps(row['extras'], ensure_ascii=False),
              _next_order(con, row['parent_id'], entry['kind']) if moved else entry['sort_order'],
@@ -431,7 +490,8 @@ def removal(con, entry_id):
             WHERE e.id IN ({marks}) ORDER BY e.id""", ids)]
     used = [dict(row) for row in con.execute(
         f"""SELECT id, kind, name FROM dex_entries WHERE deleted_at IS NULL AND id NOT IN ({marks})
-            AND (partner_id IN ({marks}) OR character_id IN ({marks})) ORDER BY id LIMIT 20""", ids * 3)]
+            AND (partner_id IN ({marks}) OR character_id IN ({marks}) OR ip_id IN ({marks})) ORDER BY id LIMIT 20""",
+        ids * 4)]
     return {'ids': ids, 'counts': counts, 'linked': linked, 'used_by': used}
 
 
@@ -443,7 +503,7 @@ def delete(con, entry_id, actor):
             raise DexError(f'“{first["name"]}” is linked to {first["sku"]}. Unlink it first.', 'dex_linked', 409)
         if plan['used_by']:
             first = plan['used_by'][0]
-            raise DexError(f'“{first["name"]}” names it as its partner or character. Change that first.', 'dex_in_use', 409)
+            raise DexError(f'“{first["name"]}” names it as its partner, character or IP. Change that first.', 'dex_in_use', 409)
         kept = removed = 0
         for one in plan['ids']:  # children first
             website_id = con.execute('SELECT website_id FROM dex_entries WHERE id=?', (one,)).fetchone()[0]
