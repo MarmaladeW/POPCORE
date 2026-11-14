@@ -4,7 +4,8 @@ The owner decided on 2026-11-12 that "The Dex itself lives on POPCORE". The coll
 are filled from POPCORE. The book lists companies and partners, then IPs, characters, series, products and
 designs. A book product or design can point at the POPCORE item the shop stocks.
 
-Step 1 added the book and its screens, empty; step 2 adds the one-time load and the "not in the book yet" list. Nothing is sent to the website yet, and the `products`
+Step 1 added the book and its screens, empty; step 2 adds the one-time load and the "not in the book yet" list; step 3
+sends the book to the website, behind its own switch that stays off until an admin turns it on (below). The `products`
 table and everything the till reads are unchanged. The contract with popcore.ca is in
 [dex-book-contract.md](dex-book-contract.md).
 
@@ -33,7 +34,8 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
 | `website_id` | The row's number on popcore.ca; unique per kind and `website_item` |
 | `load_key` | On an IP the load made from the owner's IP list (no website number): the list row it came from |
 | `website_item` | 1 when the website holds the product as an item figure (no series), else 0 |
-| `version`, `sent_version`, `send_error` | `version` rises on every change; the others are used from step 3 |
+| `version`, `sent_version`, `send_error` | `version` rises on every change; `sent_version` is the last version the website accepted; `send_error` the website's refusal (step 3) |
+| `sync_price_id`, `sync_popcore_id` | Step 3: the newest `design_prices` row and the POPCORE ID that the current `version` carries |
 | `deleted_at` | Set on a deleted row the website still has, until the website confirms the delete |
 | `created_at`, `updated_at`, `updated_by` | When, and who (Auth0 subject) |
 
@@ -65,11 +67,13 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
 - `extras` takes only the contract's keys for the kind (400 otherwise). A change merges: keys sent replace, keys
   not sent stay, `null` clears. `market_prices` is stored as given; the screen does not edit it.
 - Every accepted change raises `version` by one and sets `updated_at` and `updated_by`. A change that changes
-  nothing keeps the version.
+  nothing keeps the version. Renaming or moving an entry also raises the version of every live entry under it (their
+  full names changed), so step 3 sends them again.
 - Moving (a new `parent_id`) follows the parent rule and the name rule. A moved entry goes last among its new siblings.
 - Delete removes the entry and everything under it. It is refused (409) when any of them links a POPCORE item, or
   when a live entry outside them names one as partner, character or IP (`dex_in_use`). Rows without a `website_id` are deleted;
-  rows with one are kept with `deleted_at` so a later step can tell the website. No read ever returns a deleted row.
+  rows the website has (a `website_id`, or sent before) are kept with `deleted_at` until the website confirms the delete
+  (step 3). No read ever returns a deleted row.
 
 ## Full names and the IP tag (owner, 2026-11-14)
 
@@ -298,10 +302,94 @@ to, named by its `design_name`; when the box is not in the book the dialog says 
 with a suggestion also shows it, with 连接 Link, which links the item to that entry (`PATCH /api/dex/entries/<id>`).
 All of these use the step 1 routes, so every rule above holds.
 
+## Step 3: sending the book to popcore.ca (`popcore_app/dex_sync.py`)
+
+The owner asked for it on 2026-11-14 ("yes build the POPCORE -> popcore.ca sync"). It is POPCORE's half of the
+contract ([dex-book-contract.md](dex-book-contract.md), sections 2, 3, 4, 6 and 8). The website's half did not exist
+when this was built, so it is tested against a pretend website (`tests/test_dex_sync.py`), and it does nothing until an
+admin turns on its own switch. It never touches stock, prices, orders or the stock sync (`website_sync.py` is not
+changed; the Dex sync only reads its `config()` for the website's address and key, and makes its own calls to
+`{WEBSITE_URL}/wp-json/popcore/v1/…` with the same key).
+
+**State.** Migration `dex_sync` adds the table `dex_sync_state(key, value)` (switch, who and when, last run, last
+sent, last error, the last website check, `first_send_done`) and the two nullable columns `sync_price_id` and
+`sync_popcore_id` on `dex_entries`, filled with today's values so turning on does not raise every linked entry's
+version. Older code never reads them.
+
+**What needs sending.** An entry whose `version` is above its `sent_version`; every entry starts at 0, so the first
+run sends the whole book. Two changes do not raise a version by themselves, so each pass notices them first and raises
+it: a new price recorded for a design's item (`design_prices`, read with SELECT only), and a new POPCORE ID on a
+linked item.
+
+**Order.** Parents before children (company, partner, IP, character, series, product, design). An entry goes only once
+everything it points at (parent, partner, character, named IP) was accepted by the website, or goes earlier in the same
+batch. Deletes go last, and only once every live entry was accepted: a refused entry holds them, because the website's
+delete takes what still hangs under a row, so what the book moved out from under a deleted row must be on the website
+first (the sync screen says the deletes are waiting). They go lowest level first, and a row another row still points at
+waits, so a delete under it that the website refused (a published listing) is never taken with its parent. A deleted
+row the website has (a `website_id`, or sent before) is sent with `deleted: true` and the row is removed once the
+website answers `ok`; a deleted row the website never had is removed without sending.
+
+A pass with nothing new only reads: it takes no write lock on the database the till writes to.
+
+**Batches.** Up to 50 entries a call, one call at a time, as many calls as fit in about 20 seconds per pass.
+`quiet: true` until the first full send has finished (a pass that finds nothing left to send), then `false`.
+
+**What is sent** (contract section 2): `ref` (the entry's id), `website_id`, `kind`, `parent_ref`, `partner_ref`,
+`character_ref`, `ip_ref` (products and designs), `name`, `sort_order`, `picture_id`, `blind_box` (products), `item`,
+`rarity` (designs), `popcore_id` (the live link's POPCORE ID, products and designs), `extras`, `version`, `deleted`,
+and `full_name` for products and designs. `item` is the stored `website_item` once the website has the row; for a
+product new to the website it is true when it does not sit under a series (an item figure). `extras` holds only the
+contract's keys for the kind. `market_prices` is never sent (contract 1.5 replaced it).
+
+**Price history** (owner, 2026-11-14: "the price history chart on popcore.ca should show the price change recorded in
+POPCORE"; contract 1.5). A design linked to a POPCORE item carries `extras.price_history`: every price recorded for that
+item in `design_prices`, oldest first, each `{"price": 25.99, "recorded_at": "2026-11-14T07:28:00Z"}` (the row's
+`set_at`, UTC). A design with no recorded price, or with no linked item, sends an empty list, so the website's chart
+shows only POPCORE's prices (contract section 4). A product sends no `price_history` yet (the key is absent, which
+leaves the website's own points alone; single items have no recorded prices yet). A new price makes the entry wait again; the status and the preview count it as waiting.
+
+**Answers** (sections 3 and 8). Only HTTP 200 with a `results` list is read. `ok` stores the `website_id` (and
+`website_item` when the row was new) and the version sent, and clears the error; an entry changed while it was being
+sent stays waiting and goes again. `refused` or `error` stores the website's `code` and `message` with the version it was
+for; that entry is not sent again until it changes or a manager presses Retry, and what points at it waits ("behind a
+refused entry"). A child refused as `parent_unknown` only because its parent was refused in the same batch is not
+marked; it waits behind the parent. A call that fails (unreachable, timeout, any other status, key refused, an answer
+that cannot be read) marks nothing; the reason is kept as the last error and the next pass tries again.
+
+**Scheduler.** A second job in `app.py`, `dex_sync`, its own scheduler beside the stock sync's, every 30 seconds,
+`max_instances=1`. With the website settings missing, or the switch off, it returns at once: no call and no write. Any
+failure is logged and kept as the last error; it never reaches the stock sync.
+
+**Routes** (`blueprints/dex.py`):
+
+| Route | Who | What |
+|---|---|---|
+| `GET /api/dex/sync` | manager | On or off, last run, last sent, last error, the last website check, counts (`waiting` with `deletes`, `sent`, `refused`, `behind`), `deletes_held`, and the refused entries with the website's reason |
+| `GET /api/dex/sync/preview` | manager | What the next full send does: `create`, `update`, `delete`, `removed_quietly`, and the deletes by name with their place in the book |
+| `GET /api/dex/sync/entries/<id>` | signed in | One entry's state: `sent`, `waiting`, `refused` (with `code`, `message`) or `behind` |
+| `POST /api/dex/sync/switch` | admin | `{on, confirm_deletes}`. On first asks the website's book route for one entry; a 404 or a refused key answers 409 `website_half_missing` in plain words and the switch stays off. With deletes in the preview, `confirm_deletes` must be their count, typed by the admin (400 `confirm_deletes`) |
+| `POST /api/dex/sync/retry` | manager | `{id}` or `{all: true}`: refused entries go again with the next pass |
+| `POST /api/dex/entries/<id>/picture` | manager | Multipart `file`, one picture (JPEG, PNG, WebP, AVIF or GIF, 10 MB and 40 megapixels at most, the product-picture limits): passed to the website's `POST /pictures` with `ref`; the returned `picture_id`, `url` and `thumb_url` are stored on the entry and its version raised, so it is sent again with its picture. 409 `website_half_missing` while the website's half is not there |
+
+**Screens.** 图鉴同步 Dex sync (`/dex/sync`, managers; a card on the Dex home): on or off; counts 待发送 Waiting,
+已发送 Sent, 被拒 Refused, 等上级 Behind a refused entry; the last run and last error in plain words; the refused entries
+with the website's reason, 重试 Retry and 全部重试 Retry all; until the first full send, what it will create, update and
+delete, with the deletes listed by name and place. Admins turn it on in a dialog that types the count of deletes; while
+the website's half is missing the page says so plainly. On an entry's page: its state with popcore.ca, and for managers
+上传图片 Upload picture.
+
+**Reading the website's book.** `scripts/fetch_dex_book.py --out book-export.json` pages through
+`GET /wp-json/popcore/v1/book` (500 a page, with the stock sync's key from the environment) and writes the
+`book-export.json` shape `scripts/load_dex_book.py` reads. It only reads; `--out` must not exist yet.
+
+**Not in this step.** Listings (contract section 7, step 4); a product's own `price_history` (contract 1.6: POPCORE
+keeps no item prices yet); re-loads after switch-over.
+
 ## Later steps
 
-3. POPCORE's half of the contract, behind its own switch: send changes and deletes, pictures.
 4. Listings by themselves and the catch-up.
 
 Tests: `popcore_app/tests/test_dex_book.py`, `popcore_app/tests/test_dex_load.py`, `popcore_app/tests/test_dex_decisions.py`,
-`popcore_app/tests/browser/check_dex_book.py`, `popcore_app/tests/browser/check_dex_unlinked.py`.
+`popcore_app/tests/test_dex_sync.py`, `popcore_app/tests/browser/check_dex_book.py`, `popcore_app/tests/browser/check_dex_unlinked.py`,
+`popcore_app/tests/browser/check_dex_sync.py`.

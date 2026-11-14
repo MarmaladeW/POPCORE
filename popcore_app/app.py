@@ -183,6 +183,26 @@ if not os.environ.get('DISABLE_SCHEDULER'):
         _website_scheduler.start()
         atexit.register(lambda: _website_scheduler.shutdown(wait=False))
 
+# ─── 图鉴 Dex sync to popcore.ca (step 3) ─────────────────────────────────────
+# Its own job and scheduler beside the stock sync's, every 30 seconds, never two at once. It returns at once
+# while its own switch is off or the website settings are missing, and a failure in it is logged and kept as
+# its last error; it never reaches the stock sync (docs/dex-book.md).
+if not os.environ.get('DISABLE_SCHEDULER'):
+    import atexit
+    from apscheduler.schedulers.background import BackgroundScheduler
+    import dex_sync
+
+    def _dex_sync_job():
+        try:
+            dex_sync.background_sync()
+        except Exception:
+            app.logger.exception('Dex sync failed')
+
+    _dex_scheduler = BackgroundScheduler(daemon=True)
+    _dex_scheduler.add_job(_dex_sync_job, 'interval', seconds=30, id='dex_sync', max_instances=1, coalesce=True)
+    _dex_scheduler.start()
+    atexit.register(lambda: _dex_scheduler.shutdown(wait=False))
+
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
 @app.errorhandler(404)
 def not_found(e):

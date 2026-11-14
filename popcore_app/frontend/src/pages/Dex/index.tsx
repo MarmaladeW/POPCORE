@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Skeleton } from 'antd'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { topEntries, unlinkedItems, type DexDetail, type DexEntry } from '../../api/dex'
+import { dexSyncStatus, topEntries, unlinkedItems, type DexDetail, type DexEntry, type DexSyncStatus } from '../../api/dex'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
@@ -21,6 +21,7 @@ export default function DexHome() {
   const [attempt, setAttempt] = useState(0)
   const [editing, setEditing] = useState<DexEditing | null>(null)
   const [unlinked, setUnlinked] = useState<number>()
+  const [sync, setSync] = useState<DexSyncStatus>()
 
   useEffect(() => {
     let live = true
@@ -29,8 +30,9 @@ export default function DexHome() {
       setCompanies(nextCompanies); setPartners(nextPartners); setError('')
     }).catch(cause => { if (live) setError(errorText(cause, 'Unable to load the book.')) })
     unlinkedItems('', 1, 1).then(page => { if (live) setUnlinked(page.total) }).catch(() => {})
+    if (manager) dexSyncStatus().then(next => { if (live) setSync(next) }).catch(() => {})
     return () => { live = false }
-  }, [attempt])
+  }, [attempt, manager])
 
   const header = <PageHeader title="图鉴" sub="Dex · the book" />
   if (error) return <div className="pc-dex">{header}
@@ -48,6 +50,11 @@ export default function DexHome() {
         <small>POPCORE items no book entry is linked to{manager ? '; put them in the book from here' : ''}</small></span>
       <span className="pc-panel-count"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{unlinked ?? '…'}</span>
     </Link>
+    {manager && <Link className="pc-panel pc-dex-unlinked" to="/dex/sync" aria-label="Dex sync">
+      <span><strong>图鉴同步 Dex sync</strong>
+        <small>{sync ? `${sync.enabled ? 'On' : 'Off'} · ${sync.counts.waiting} waiting · ${sync.counts.refused} refused by popcore.ca` : 'Sending the book to popcore.ca'}</small></span>
+      <span className="pc-panel-count"><i className={`pc-dot pc-dot-${sync?.enabled ? 'ok' : 'warn'}`} aria-hidden="true" />{sync ? (sync.enabled ? '开 On' : '关 Off') : '…'}</span>
+    </Link>}
     {empty && <section className="pc-dex-empty" aria-label="Empty book">
       <h2>图鉴还是空的 <small>The book is empty</small></h2>
       <p>先加一个公司，比如 POP MART，再在它下面加 IP、系列、产品和款。迪士尼这样的外部名字放在联名里。</p>
