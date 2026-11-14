@@ -356,11 +356,13 @@ def unlinked_names(con, items):
 
 
 def price_history(con, entry_id):
-    """The prices managers set for a book design's POPCORE item, newest first, with who set them, and the
-    item's price now. Read only: it only SELECTs from design_prices (design_prices.py writes it)."""
+    """A book design's or product's POPCORE item's prices, newest first, and the item's price now. A confirmed
+    design's are the prices managers set for it, with who set them (design_prices, written by design_prices.py);
+    any other item's are its price changes the database recorded (product_price_history, owner 2026-11-14:
+    "Yes, every item"), with no one named. Read only: it only SELECTs."""
     entry = _need(con, entry_id)
-    if entry['kind'] != 'design':
-        raise DexError('Only a design has a price trend.', 'invalid_input')
+    if entry['kind'] not in ('design', 'product'):
+        raise DexError('Only a design or a product has a price trend.', 'invalid_input')
     market = entry['extras'].get('market_prices')
     website = [{'price': point.get('price'), 'recorded_at': point.get('recorded_at'), 'source': point.get('source')}
                for point in (market if isinstance(market, list) else [])
@@ -368,15 +370,20 @@ def price_history(con, entry_id):
                and not isinstance(point.get('price'), bool)]
     if entry['product_id'] is None:
         return {'linked': False, 'current_cents': None, 'points': [], 'website': website}
-    price = con.execute('SELECT price FROM products WHERE id=?', (entry['product_id'],)).fetchone()
+    price = con.execute('SELECT price, stock_form FROM products WHERE id=?', (entry['product_id'],)).fetchone()
     try:
         current = round(float(price['price']) * 100) if price and price['price'] not in (None, '') else None
     except (TypeError, ValueError):
         current = None
-    points = [dict(row) for row in con.execute(
-        """SELECT d.cents, d.previous_cents, d.source, d.set_at, d.set_by, em.name AS set_by_name
-           FROM design_prices d LEFT JOIN employees em ON em.auth0_id=d.set_by
-           WHERE d.product_id=? ORDER BY d.id DESC""", (entry['product_id'],))]
+    if price and price['stock_form'] == 'confirmed_design':
+        query = """SELECT d.cents, d.previous_cents, d.source, d.set_at, d.set_by, em.name AS set_by_name
+                   FROM design_prices d LEFT JOIN employees em ON em.auth0_id=d.set_by
+                   WHERE d.product_id=? ORDER BY d.id DESC"""
+    else:  # A change to no price, or to a price of zero, is not a point on the trend.
+        query = """SELECT new_cents AS cents, old_cents AS previous_cents, source, changed_at AS set_at,
+                          NULL AS set_by, NULL AS set_by_name
+                   FROM product_price_history WHERE product_id=? AND new_cents > 0 ORDER BY id DESC"""
+    points = [dict(row) for row in con.execute(query, (entry['product_id'],))]
     return {'linked': True, 'current_cents': current if current and current > 0 else None, 'points': points,
             'website': website}
 

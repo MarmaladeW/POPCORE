@@ -657,10 +657,40 @@ class DexBookTests(IsolatedApiCase):
             self.assertEqual(len(trend['website']), 1)
         with closing(self.connect()) as con:
             self.assertEqual(con.execute('SELECT COUNT(*), MAX(id) FROM design_prices').fetchone()[:], before)
-        self.assertEqual(self.code(self.client.get(f"/api/dex/entries/{book['figures']}/prices", headers=self.headers())),
+        self.assertEqual(self.code(self.client.get(f"/api/dex/entries/{book['echo']}/prices", headers=self.headers())),
                          (400, 'invalid_input'))
         self.assertEqual(self.client.get('/api/dex/entries/99999/prices', headers=self.headers()).status_code, 404)
         self.assertEqual(self.client.get(f"/api/dex/entries/{book['sun']}/prices").status_code, 401)
+
+    def test_price_history_of_a_linked_item_reads_its_recorded_price_changes(self):
+        # Owner, 2026-11-14: "Yes, every item": a book product linked to a POPCORE item shows that item's changes.
+        book = self.named_book()
+        item = self.items['PM0200']
+        unlinked = self.get(f"/api/dex/entries/{book['pianist']}/prices")
+        self.assertEqual((unlinked['linked'], unlinked['points']), (False, []))
+        self.assertEqual(self.patch(book['pianist'], product_id=item).status_code, 200)
+        self.assertEqual(self.get(f"/api/dex/entries/{book['pianist']}/prices")['points'], [])  # no price yet
+        with closing(self.connect()) as con:
+            for price in (25, 28, None, 32):  # a change to no price is not a point
+                con.execute('UPDATE products SET price=? WHERE id=?', (price, item))
+            con.commit()
+            before = con.execute('SELECT COUNT(*), MAX(id) FROM product_price_history').fetchone()[:]
+        for role in ('viewer', 'staff', 'manager'):
+            trend = self.get(f"/api/dex/entries/{book['pianist']}/prices", role)
+            self.assertEqual((trend['linked'], trend['current_cents'], trend['website']), (True, 3200, []))
+            self.assertEqual([(p['cents'], p['previous_cents'], p['source'], p['set_by'], p['set_by_name'])
+                              for p in trend['points']],
+                             [(3200, None, 'update', None, None), (2800, 2500, 'update', None, None),
+                              (2500, None, 'update', None, None)])
+            self.assertTrue(all(p['set_at'] for p in trend['points']))
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*), MAX(id) FROM product_price_history').fetchone()[:], before)
+        # A book design linked to a confirmed design still reads design_prices only.
+        self.assertEqual(self.patch(book['sun'], product_id=self.items['PM0100-01']).status_code, 200)
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET price=40 WHERE id=?', (self.items['PM0100-01'],))
+            con.commit()
+        self.assertEqual(self.get(f"/api/dex/entries/{book['sun']}/prices")['points'], [])
 
 
 if __name__ == '__main__':

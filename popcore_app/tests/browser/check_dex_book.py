@@ -181,6 +181,27 @@ async def run(browser, width):
                                          re.compile(r'Nov 2, 2026.*\$36\.00.*网站 Website.*collector')])
         await fits(page, f'price-trend-{width}.png')
 
+        # A single item's price trend (owner, 2026-11-14: "Yes, every item"): the changes POPCORE recorded for it.
+        book = entries()
+        figure = fixture.add('product', 'The Pianist Figure', book['THE MONSTERS']['id'])
+        assert fixture.patch(figure, product_id=fixture.items['PM0200']).status_code == 200
+        await page.goto(BASE + f'/dex/{figure}')
+        trend = page.get_by_role('region', name='Price trend')
+        await expect(trend.get_by_text('No price has been recorded for this item yet.')).to_be_visible()
+        with closing(fixture.connect()) as con:
+            for price, at in ((19.99, '2026-10-20 16:00:00'), (24.99, '2026-11-05 16:00:00'), (22, '2026-11-13 16:00:00')):
+                con.execute('UPDATE products SET price=? WHERE id=?', (price, fixture.items['PM0200']))
+                con.execute('UPDATE product_price_history SET changed_at=? WHERE id=(SELECT MAX(id) FROM product_price_history)',
+                            (at,))  # the trigger stamps now; spread the three over a month for the picture
+            con.commit()
+        await page.goto(BASE + f'/dex/{figure}')
+        await expect(trend.get_by_role('img', name=re.compile('3 prices set, from \\$19.99 to \\$22.00'))).to_be_visible()
+        await expect(trend.locator('.pc-dex-price-now')).to_have_text('现价 Price now $22.00')
+        await expect(trend.locator('.pc-dex-price-list li')).to_have_text([re.compile(r'Nov 13, 2026.*\$22\.00'),
+                                                                           re.compile(r'Nov 5, 2026.*\$24\.99'),
+                                                                           re.compile(r'Oct 20, 2026.*\$19\.99')])
+        await fits(page, f'item-price-trend-{width}.png')
+
         # A series with several IPs stays under the company; each design names its IP from its row (no drawer).
         book = entries()
         company, monsters = book['POP MART']['id'], book['THE MONSTERS']['id']
@@ -285,4 +306,5 @@ if __name__ == '__main__':
     print('PASS: Dex book from empty: company, IP, series, product linked to its POPCORE box, designs added, '
           'renamed, reordered and deleted; a linked product kept; designs in a mixed series name their IPs from the rows '
           'and show on each IP\'s page; full names and the IP tag on a product page and in search; a design\'s price trend '
-          'with three set prices and a website price; staff see no write controls and see the trend; at 390 and 1440 px')
+          'with three set prices and a website price; a single item\'s price trend from its three recorded changes; '
+          'staff see no write controls and see the trend; at 390 and 1440 px')
