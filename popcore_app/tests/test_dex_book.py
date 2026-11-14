@@ -139,6 +139,20 @@ class DexBookTests(IsolatedApiCase):
         self.assertEqual((found['partner']['name'], found['character']['name'], found['ip']['name']),
                          ('Disney', 'Zimomo', 'Labubu'))
 
+    def test_a_design_under_a_product_that_is_not_a_blind_box_may_link_a_single_item(self):
+        # Owner, 2026-11-14 (DR0089): Sonny Angel's Cuddly Bear in pink is sold on its own.
+        company = self.add('company', 'Dreams')
+        ip = self.add('ip', 'Sonny Angel', company)
+        series = self.add('series', 'Plush Collection', ip)
+        cuddly = self.add('product', 'Cuddly Bear', series, blind_box=False)
+        boxed = self.add('product', 'Mini Figure', series, blind_box=True)
+        pink, blue = self.add('design', 'Pink Bear', cuddly), self.add('design', 'Blue', boxed)
+        self.assertEqual(self.patch(pink, product_id=self.items['PM0200']).status_code, 200)  # a single item
+        for entry, sku in ((blue, 'PM0200'), (pink, 'PM0100-SET'), (pink, 'PM0100')):  # a blind box keeps the rule
+            self.patch(pink, product_id=None)
+            response = self.patch(entry, product_id=self.items[sku])
+            self.assertEqual((response.status_code, response.get_json()['code']), (400, 'product_form'), (entry, sku))
+
     def test_linking_popcore_items(self):
         company, ip, series, product, (sun, moon) = self.book()
         items = self.items
