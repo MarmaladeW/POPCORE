@@ -115,6 +115,8 @@ export default function DexSyncPage() {
         <div><strong>{counts.refused}</strong><span>被拒 Refused</span></div>
         <div><strong>{counts.behind}</strong><span>等上级 Behind a refused entry</span></div>
       </div>
+      {status.deletes_held && <p className="pc-quiet">删除先等着 · Deletes wait until the website has taken every other entry, so nothing the
+        book moved is deleted with its old place. Settle the refused entries first.</p>}
     </Panel>
 
     {status.refused.length > 0 && <Panel zh="网站拒收" en="Refused by the website" label="Refused by the website" count={counts.refused} tone="warn"

@@ -96,6 +96,7 @@ export interface DexSyncStatus {
   // The last time an admin's turn-on asked the website's book route.
   website_check: ({ ok: true; at: string } | ({ ok: false } & DexSyncProblem)) | null
   counts: { waiting: number; sent: number; refused: number; behind: number; deletes: number }
+  deletes_held: boolean
   refused: DexSyncRefused[]
 }
 export interface DexSyncPreview {

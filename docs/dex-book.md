@@ -323,9 +323,14 @@ linked item.
 
 **Order.** Parents before children (company, partner, IP, character, series, product, design). An entry goes only once
 everything it points at (parent, partner, character, named IP) was accepted by the website, or goes earlier in the same
-batch. Deletes go last, children first: a deleted row the website has (a `website_id`, or sent before) is sent with
-`deleted: true` and the row is removed once the website answers `ok`; a deleted row the website never had is removed
-without sending.
+batch. Deletes go last, and only once every live entry was accepted: a refused entry holds them, because the website's
+delete takes what still hangs under a row, so what the book moved out from under a deleted row must be on the website
+first (the sync screen says the deletes are waiting). They go lowest level first, and a row another row still points at
+waits, so a delete under it that the website refused (a published listing) is never taken with its parent. A deleted
+row the website has (a `website_id`, or sent before) is sent with `deleted: true` and the row is removed once the
+website answers `ok`; a deleted row the website never had is removed without sending.
+
+A pass with nothing new only reads: it takes no write lock on the database the till writes to.
 
 **Batches.** Up to 50 entries a call, one call at a time, as many calls as fit in about 20 seconds per pass.
 `quiet: true` until the first full send has finished (a pass that finds nothing left to send), then `false`.
@@ -340,9 +345,9 @@ contract's keys for the kind. `market_prices` is never sent (contract 1.5 replac
 **Price history** (owner, 2026-11-14: "the price history chart on popcore.ca should show the price change recorded in
 POPCORE"; contract 1.5). A design linked to a POPCORE item carries `extras.price_history`: every price recorded for that
 item in `design_prices`, oldest first, each `{"price": 25.99, "recorded_at": "2026-11-14T07:28:00Z"}` (the row's
-`set_at`, UTC). A linked design with no recorded price sends an empty list. A design with no linked item, and every
-product, sends no `price_history` (the key is absent, which leaves the website's own points alone; single items have no
-recorded prices yet). A new price makes the entry wait again; the status and the preview count it as waiting.
+`set_at`, UTC). A design with no recorded price, or with no linked item, sends an empty list, so the website's chart
+shows only POPCORE's prices (contract section 4). A product sends no `price_history` yet (the key is absent, which
+leaves the website's own points alone; single items have no recorded prices yet). A new price makes the entry wait again; the status and the preview count it as waiting.
 
 **Answers** (sections 3 and 8). Only HTTP 200 with a `results` list is read. `ok` stores the `website_id` (and
 `website_item` when the row was new) and the version sent, and clears the error; an entry changed while it was being
@@ -360,7 +365,7 @@ failure is logged and kept as the last error; it never reaches the stock sync.
 
 | Route | Who | What |
 |---|---|---|
-| `GET /api/dex/sync` | manager | On or off, last run, last sent, last error, the last website check, counts (`waiting` with `deletes`, `sent`, `refused`, `behind`) and the refused entries with the website's reason |
+| `GET /api/dex/sync` | manager | On or off, last run, last sent, last error, the last website check, counts (`waiting` with `deletes`, `sent`, `refused`, `behind`), `deletes_held`, and the refused entries with the website's reason |
 | `GET /api/dex/sync/preview` | manager | What the next full send does: `create`, `update`, `delete`, `removed_quietly`, and the deletes by name with their place in the book |
 | `GET /api/dex/sync/entries/<id>` | signed in | One entry's state: `sent`, `waiting`, `refused` (with `code`, `message`) or `behind` |
 | `POST /api/dex/sync/switch` | admin | `{on, confirm_deletes}`. On first asks the website's book route for one entry; a 404 or a refused key answers 409 `website_half_missing` in plain words and the switch stays off. With deletes in the preview, `confirm_deletes` must be their count, typed by the admin (400 `confirm_deletes`) |

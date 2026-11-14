@@ -386,6 +386,64 @@ class DexSyncTests(IsolatedApiCase):
             self.assertIsNone(self.site.by_ref(entry_id))
         self.assertIsNotNone(self.site.by_ref(other))
 
+    def test_deletes_wait_until_every_live_entry_was_accepted(self):
+        """What the book moved out from under a deleted row must be on the website before the delete goes."""
+        company, ip, series, product, designs = self.book(designs=1, link=False)
+        self.on()
+        self.run_pass()
+        kept = self.add('series', 'Crying Again Series', ip)
+        self.change(product, parent_id=kept)  # the line moves out, then its old series is deleted
+        self.remove(series)
+        self.site.refuse[product] = 'not_now'
+        self.run_pass()
+        self.assertIsNotNone(self.site.by_ref(series))  # not deleted: the line has not arrived at its new place
+        self.assertIsNotNone(self.row(series))
+        status = self.status()
+        self.assertTrue(status['deletes_held'])
+        self.assertEqual((status['counts']['refused'], status['counts']['deletes']), (1, 1))
+        self.site.calls.clear()
+        self.run_pass()
+        self.assertEqual(self.sent(), [])  # held, not retried every pass
+        del self.site.refuse[product]
+        self.client.post('/api/dex/sync/retry', json={'all': True}, headers=self.headers('manager'))
+        self.run_pass()
+        self.assertIsNone(self.site.by_ref(series))
+        self.assertIsNone(self.row(series))
+        self.assertEqual(self.site.by_ref(product)['entry']['parent_ref'], kept)
+        self.assertFalse(self.status()['deletes_held'])
+
+    def test_a_parent_is_not_deleted_while_a_delete_under_it_is_refused(self):
+        company, ip, series, product, designs = self.book(designs=1, link=False)
+        self.on()
+        self.run_pass()
+        self.site.live_listing.add(self.row(designs[0])['website_id'])
+        self.remove(series)
+        self.run_pass()
+        for entry_id in (designs[0], product, series):  # the design's delete was refused; nothing above it was sent
+            self.assertIsNotNone(self.site.by_ref(entry_id))
+            self.assertIsNotNone(self.row(entry_id))
+        self.assertEqual([entry['ref'] for entry in self.sent() if entry['deleted']], [designs[0]])
+        self.site.live_listing.clear()
+        self.client.post('/api/dex/sync/retry', json={'all': True}, headers=self.headers('manager'))
+        self.run_pass()
+        for entry_id in (designs[0], product, series):
+            self.assertIsNone(self.site.by_ref(entry_id))
+            self.assertIsNone(self.row(entry_id))
+
+    def test_a_pass_with_nothing_new_takes_no_write_lock(self):
+        """The till writes to the same database: a pass that has nothing to do only reads."""
+        self.book()
+        self.on()
+        self.run_pass()
+        with closing(self.connect()) as till, closing(self.connect()) as con:
+            con.execute('PRAGMA busy_timeout=0')
+            till.execute('BEGIN IMMEDIATE')  # the till is in the middle of a sale
+            try:
+                self.assertEqual(dex_sync.notice(con), 0)
+                self.assertFalse(con.in_transaction)
+            finally:
+                till.rollback()
+
     def test_a_refused_delete_is_kept_and_listed(self):
         company, ip, series, product, designs = self.book(designs=0, link=False)
         self.on()
@@ -439,7 +497,7 @@ class DexSyncTests(IsolatedApiCase):
         self.assertEqual(shapes[designs[0]]['extras']['price_history'], [
             {'price': 25.99, 'recorded_at': '2026-11-01T10:00:00Z'}, {'price': 27.99, 'recorded_at': '2026-11-07T10:00:00Z'},
             {'price': 29.99, 'recorded_at': '2026-11-13T10:00:00Z'}])
-        self.assertNotIn('price_history', shapes[designs[1]]['extras'])  # no linked item
+        self.assertEqual(shapes[designs[1]]['extras']['price_history'], [])  # never priced: the chart shows nothing
         self.assertNotIn('price_history', shapes[product]['extras'])
         version = self.row(designs[0])['version']
         self.price('PM0100-01', 3199, '2026-11-14 10:00:00')

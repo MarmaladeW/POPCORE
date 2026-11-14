@@ -1,5 +1,5 @@
 """图鉴 Dex sync, step 3: POPCORE sends the book to popcore.ca (owner, 2026-11-14: "yes build the POPCORE -> popcore.ca
-sync"), behind its own switch, off until an admin turns it on. The contract is docs/dex-book-contract.md (1.5).
+sync"), behind its own switch, off until an admin turns it on. The contract is docs/dex-book-contract.md (1.7).
 
 - What needs sending: an entry whose version is above its sent_version. Every entry starts at 0, so the first run
   sends the whole book. A new price recorded for a design's item (design_prices) or a new POPCORE ID on a linked item
@@ -7,8 +7,10 @@ sync"), behind its own switch, off until an admin turns it on. The contract is d
   history chart on popcore.ca should show the price change recorded in POPCORE").
 - Order: parents before children (company, partner, ip, character, series, product, design), and an entry goes only
   once everything it points at (parent, partner, character, named IP) was accepted, or goes earlier in the same
-  batch. Deletes go last, children first: a deleted row the website has is sent as deleted and removed once the
-  website confirms; one the website never had is removed without sending.
+  batch. Deletes go last, and only once every live entry was accepted (a refused entry holds them: what the book
+  moved out from under a deleted row must be on the website first). They go lowest level first, a parent only after
+  the deletes under it were confirmed. A deleted row the website has is sent as deleted and removed once the website
+  confirms; one the website never had is removed without sending.
 - Batches of up to 50, one call at a time, as many as fit in about 20 seconds per pass. quiet until the first full
   send has finished.
 - Answers: ok stores the website_id and the version sent and clears the error. refused or error stores the website's
@@ -201,6 +203,9 @@ def status(con):
         'last_error': json.loads(error) if error else None,
         'website_check': json.loads(state(con, 'website_check')) if state(con, 'website_check') else None,
         'counts': _counts(rows), 'refused': _refused_list(con, rows),
+        # Deletes that wait because a live entry was refused (not merely because the rest has not gone yet).
+        'deletes_held': (any(row['state'] == 'delete' for row in rows.values()) and any(
+            row['deleted_at'] is None and row['state'] in ('refused', 'behind') for row in rows.values())),
     }
 
 
@@ -249,8 +254,8 @@ def entry(con, entry_id, memo=None):
         stored = {}
     # 1.5: price_history replaces market_prices; POPCORE keeps market_prices for its own screen and never sends it.
     extras = {key: stored[key] for key in dex_book.EXTRAS[kind] if key in stored and key != 'market_prices'}
-    if kind == 'design' and row['product_id'] is not None:
-        extras['price_history'] = _price_history(con, row['product_id'])
+    if kind == 'design':  # always whole; empty when the shop has never priced it, so the chart shows only POPCORE's
+        extras['price_history'] = _price_history(con, row['product_id']) if row['product_id'] is not None else []
     if row['website_id'] is not None:
         item = bool(row['website_item'])
     else:  # new to the website: a product with no series is an item figure there (contract section 2)
@@ -277,19 +282,20 @@ def entry(con, entry_id, memo=None):
 def notice(con):
     """A new recorded price for a design's item, or a new POPCORE ID on a linked item: raise the version, so the entry
     is sent again (neither raises it by itself)."""
-    changed = 0
+    found = [row for row in con.execute(_ROWS + ' WHERE e.deleted_at IS NULL').fetchall()
+             if row['price_id'] != row['sync_price_id'] or row['popcore_id'] != row['sync_popcore_id']]
+    if not found:
+        return 0  # nothing new: only a read, so a pass never holds the till's database for writing without need
     _begin(con)
     try:
-        for row in con.execute(_ROWS + ' WHERE e.deleted_at IS NULL').fetchall():
-            if row['price_id'] != row['sync_price_id'] or row['popcore_id'] != row['sync_popcore_id']:
-                con.execute('UPDATE dex_entries SET version=version+1, sync_price_id=?, sync_popcore_id=? WHERE id=?',
-                            (row['price_id'], row['popcore_id'], row['id']))
-                changed += 1
+        for row in found:
+            con.execute('UPDATE dex_entries SET version=version+1, sync_price_id=?, sync_popcore_id=? WHERE id=?',
+                        (row['price_id'], row['popcore_id'], row['id']))
         con.commit()
     except Exception:
         con.rollback()
         raise
-    return changed
+    return len(found)
 
 
 def _next_batch(rows):
@@ -307,8 +313,20 @@ def _next_batch(rows):
     return picked
 
 
+def deletes_held(rows):
+    """True while a live entry is not accepted yet (waiting, refused, or behind a refused one). The website's delete
+    takes what still hangs under the row, so an entry the book moved out from under a deleted one must have arrived
+    there first: no delete goes until every live entry has."""
+    return any(row['deleted_at'] is None and row['state'] != 'sent' for row in rows.values())
+
+
 def _delete_batch(rows):
-    return sorted((row for row in rows.values() if row['state'] == 'delete'),
+    """Up to BATCH deletes, lowest level first. A row another row still points at waits: its children's deletes are
+    confirmed first, so a child the website refused to delete (a published listing) is never taken with its parent."""
+    if deletes_held(rows):
+        return []
+    pointed_at = {row[field] for row in rows.values() for field in REFS if row[field] is not None}
+    return sorted((row for row in rows.values() if row['state'] == 'delete' and row['id'] not in pointed_at),
                   key=lambda row: (-ORDER[row['kind']], row['id']))[:BATCH]
 
 
