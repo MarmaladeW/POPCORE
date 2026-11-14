@@ -478,15 +478,6 @@ class DexBookTests(IsolatedApiCase):
 
     # The full name (naming standard rule 7, owner 2026-11-14): put together, never typed; and the IP tag.
 
-    def raw(self, kind, name, parent=None, **fields):
-        """An entry written straight to the table, for shapes the editor's parent rule may not offer yet."""
-        columns = ['kind', 'name', 'parent_id', *fields]
-        with closing(self.connect()) as con:
-            cur = con.execute(f'INSERT INTO dex_entries({", ".join(columns)}) VALUES ({", ".join("?" * len(columns))})',
-                              (kind, name, parent, *fields.values()))
-            con.commit()
-            return cur.lastrowid
-
     def named_book(self):
         company = self.add('company', 'POP MART')
         hirono = self.add('ip', 'HIRONO', company)
@@ -505,10 +496,10 @@ class DexBookTests(IsolatedApiCase):
         loong = self.add('design', 'Loong', mixed)
         pin = self.add('product', 'Company pin', company)
         pokemon = self.add('partner', 'Pokémon')
-        pikachu = self.raw('series', 'Pikachu Series', pokemon)  # goods that carry only the partner's name
-        pika_figures = self.raw('product', 'Figures', pikachu)
-        pika_design = self.raw('design', 'Sleepy', pika_figures)
-        plush = self.raw('product', 'Pikachu Plush', pokemon)
+        pikachu = self.add('series', 'Pikachu Series', pokemon)  # goods that carry only the partner's name
+        pika_figures = self.add('product', 'Figures', pikachu)
+        pika_design = self.add('design', 'Sleepy', pika_figures)
+        plush = self.add('product', 'Pikachu Plush', pokemon)
         return locals()
 
     def test_full_name_is_put_together_from_the_place_in_the_book(self):
