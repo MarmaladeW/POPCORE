@@ -21,6 +21,10 @@ Rules (docs/dex-book.md):
   with deleted_at, so a later step can tell the website; the others go. Deleted rows are never read.
 - batch(con): inside a transaction the caller began, each write is a savepoint instead of a commit, so many writes,
   each with every rule, commit or roll back as one (dex_decisions applies the owner's review this way).
+- full_name (owner's naming standard, rule 7, 2026-11-14): put together here, never typed or stored. Every read
+  carries it, with `ip`: the IP tag the screens show (the IP above, else the IP it names, else the partner it sits
+  under).
+- price_history: the prices managers set for a design's POPCORE item; it only reads design_prices.
 """
 import json
 import sqlite3
@@ -131,27 +135,127 @@ def _brief(con, entry_id):
     return dict(row) if row else None
 
 
+# Full names and the IP tag (naming standard rule 7) ----------------------------------------------------
+
+def _starts_with(name, prefix):
+    """True when name already begins with prefix as whole words, in any case (HIRONO × Le Petit Prince Series)."""
+    name, prefix = name.casefold(), prefix.casefold()
+    return name.startswith(prefix) and (len(name) == len(prefix) or not name[len(prefix)].isalnum())
+
+
+def _join(prefix, name):
+    return name if prefix is None or _starts_with(name, prefix) else f'{prefix} {name}'
+
+
+def full_name(kind, name, ancestors):
+    """The name shoppers and staff see, put together from the entry's place in the book, never typed.
+    ancestors: the live entries above it, top first, each with kind and name.
+    - A series: its IP (or the partner it sits under) and its name; the IP is left out when the name starts with it.
+      A series straight under a company (a set with several IPs) has no IP in front.
+    - A product under a series: the series' full name and the product's own name (its type word: Figures…).
+    - A product with no series (a single item): its own name, as it is.
+    - A design: its product's full name, " - ", its own name.
+    - Anything else: its own name."""
+    parent = ancestors[-1] if ancestors else None
+    if kind == 'series':
+        return _join(parent['name'] if parent and parent['kind'] in ('ip', 'partner') else None, name)
+    if kind == 'product':
+        if parent and parent['kind'] == 'series':
+            return f"{full_name('series', parent['name'], ancestors[:-1])} {name}"
+        return name
+    if kind == 'design' and parent and parent['kind'] == 'product':
+        return f"{full_name('product', parent['name'], ancestors[:-1])} - {name}"
+    return name
+
+
+def _node(con, entry_id, memo):
+    if entry_id not in memo:
+        row = con.execute("""SELECT e.id, e.kind, e.name, e.parent_id, e.ip_id, ni.name AS ip_name FROM dex_entries e
+                             LEFT JOIN dex_entries ni ON ni.id=e.ip_id AND ni.deleted_at IS NULL
+                             WHERE e.id=? AND e.deleted_at IS NULL""", (entry_id,)).fetchone()
+        memo[entry_id] = dict(row) if row else None
+    return memo[entry_id]
+
+
+def _ancestors(con, parent_id, memo):
+    """The live entries above, top first, read once per call through memo."""
+    chain, seen = [], set()
+    while parent_id is not None and parent_id not in seen:
+        seen.add(parent_id)
+        node = _node(con, parent_id, memo)
+        if node is None:
+            break
+        chain.insert(0, node)
+        parent_id = node['parent_id']
+    return chain
+
+
+def ip_tag(kind, named_ip, ancestors):
+    """The IP an entry belongs to, for its tag: the IP above it; else the IP it (or its product) names (a set with
+    several IPs, ip_id); else the partner it sits under. None for companies, partners and IPs themselves."""
+    if kind in ('company', 'partner', 'ip'):
+        return None
+    for step in reversed(ancestors):
+        if step['kind'] == 'ip':
+            return {'id': step['id'], 'kind': 'ip', 'name': step['name']}
+    if named_ip:
+        return {'id': named_ip['id'], 'kind': 'ip', 'name': named_ip['name']}
+    for step in reversed(ancestors):
+        if step['kind'] == 'product' and step.get('ip_id') and step.get('ip_name'):
+            return {'id': step['ip_id'], 'kind': 'ip', 'name': step['ip_name']}
+    for step in reversed(ancestors):
+        if step['kind'] == 'partner':
+            return {'id': step['id'], 'kind': 'partner', 'name': step['name']}
+    return None
+
+
+def _named(con, entry, memo):
+    """Add full_name and ip to a shaped entry."""
+    ancestors = _ancestors(con, entry['parent_id'], memo)
+    entry['full_name'] = full_name(entry['kind'], entry['name'], ancestors)
+    entry['ip'] = ip_tag(entry['kind'], entry.get('named_ip'), ancestors)
+    return entry
+
+
+def names(con, entry_ids):
+    """{id: {id, kind, name, full_name, ip}} for live entries (the not-in-the-book list's suggestions)."""
+    memo, found = {}, {}
+    for entry_id in entry_ids:
+        node = _node(con, entry_id, memo) if entry_id is not None else None
+        if node is None:
+            continue
+        named_ip = {'id': node['ip_id'], 'name': node['ip_name']} if node['ip_id'] and node['ip_name'] else None
+        entry = {'id': node['id'], 'kind': node['kind'], 'name': node['name'], 'parent_id': node['parent_id'],
+                 'named_ip': named_ip}
+        _named(con, entry, memo)
+        found[entry_id] = {key: entry[key] for key in ('id', 'kind', 'name', 'full_name', 'ip')}
+    return found
+
+
 # Reads ------------------------------------------------------------------------------------------------
+
+def _rows(con, sql, params=()):
+    memo = {}
+    return [_named(con, _shape(row), memo) for row in con.execute(sql, params)]
+
 
 def children(con, parent_id):
     _need(con, parent_id)
-    return [_shape(row) for row in con.execute(
-        f'SELECT {_COLUMNS} {_FROM} AND e.parent_id=? ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id', (parent_id,))]
+    return _rows(con, f'SELECT {_COLUMNS} {_FROM} AND e.parent_id=? ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id',
+                 (parent_id,))
 
 
 def top(con, kind):
     if kind not in ('company', 'partner'):
         raise DexError('Only companies and partners are listed at the top.', 'invalid_input')
-    return [_shape(row) for row in con.execute(
-        f'SELECT {_COLUMNS} {_FROM} AND e.kind=? AND e.parent_id IS NULL ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id',
-        (kind,))]
+    return _rows(con, f"""SELECT {_COLUMNS} {_FROM} AND e.kind=? AND e.parent_id IS NULL
+                          ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id""", (kind,))
 
 
 def ips(con):
     """Every live IP, with its path (its company), for the IP picker."""
     found = []
-    for row in con.execute(f'SELECT {_COLUMNS} {_FROM} AND e.kind=? ORDER BY e.name COLLATE NOCASE, e.id', ('ip',)):
-        entry = _shape(row)
+    for entry in _rows(con, f'SELECT {_COLUMNS} {_FROM} AND e.kind=? ORDER BY e.name COLLATE NOCASE, e.id', ('ip',)):
         entry['path'] = _path(con, entry)
         found.append(entry)
     return found
@@ -162,31 +266,37 @@ def named(con, ip_id):
     if _need(con, ip_id)['kind'] != 'ip':
         raise DexError('Only an IP is named by other entries.', 'invalid_input')
     found = []
-    for row in con.execute(f"""SELECT {_COLUMNS} {_FROM} AND e.ip_id=?
-                               ORDER BY e.kind='design', e.name COLLATE NOCASE, e.id""", (ip_id,)):
-        entry = _shape(row)
+    for entry in _rows(con, f"""SELECT {_COLUMNS} {_FROM} AND e.ip_id=?
+                                ORDER BY e.kind='design', e.name COLLATE NOCASE, e.id""", (ip_id,)):
         entry['path'] = _path(con, entry)
         found.append(entry)
     return found
 
 
 def search(con, text, kinds=None):
-    text = (text or '').strip()
+    """Entries whose own name holds at least one of the words and whose full name holds them all, so
+    "hirono echo figures" finds HIRONO Echo Series Figures. Names holding the whole text come first, then shortest."""
+    text = ' '.join((text or '').split())
     if not text:
         return []
+    words = list(dict.fromkeys(text.casefold().split()))
     kinds = [kind for kind in (kinds or []) if kind in KINDS]
-    where, params = '', [_like(text)]
+    where = ' OR '.join(["e.name LIKE ? ESCAPE '\\'"] * len(words))
+    params = [_like(word) for word in words]
     if kinds:
-        where = f' AND e.kind IN ({",".join("?" * len(kinds))})'
+        where = f'({where}) AND e.kind IN ({",".join("?" * len(kinds))})'
         params += kinds
-    rows = con.execute(f"""SELECT {_COLUMNS} {_FROM} AND e.name LIKE ? ESCAPE '\\'{where}
-                           ORDER BY length(e.name), e.name COLLATE NOCASE, e.id LIMIT {SEARCH_LIMIT}""",
-                       params).fetchall()
-    found = []
-    for row in rows:
-        entry = _shape(row)
+    # One word: the own name holds it, so the full name does too, and the database can stop at the limit.
+    limit = f' LIMIT {SEARCH_LIMIT}' if len(words) == 1 else ''
+    rows = _rows(con, f"""SELECT {_COLUMNS} {_FROM} AND ({where})
+                          ORDER BY length(e.name), e.name COLLATE NOCASE, e.id{limit}""", params)
+    folded = text.casefold()
+    found = [entry for entry in rows if all(word in entry['full_name'].casefold() for word in words)]
+    found.sort(key=lambda entry: (folded not in entry['name'].casefold() and folded not in entry['full_name'].casefold(),
+                                  len(entry['name']), entry['name'].casefold(), entry['id']))
+    found = found[:SEARCH_LIMIT]
+    for entry in found:
         entry['path'] = _path(con, entry)
-        found.append(entry)
     return found
 
 
@@ -231,8 +341,44 @@ def unlinked(con, text='', page=1, per_page=50):
     return {'items': items, 'total': total, 'page': page, 'per_page': per_page}
 
 
-def detail(con, entry_id):
+def unlinked_names(con, items):
+    """Beside an unlinked item's suggestion (dex_load.suggest: {id, path, score}) and its box's book product, both left
+    as they are: `suggested_entry` and `box_entry_named`, each {id, kind, name, full_name, ip} or null."""
+    found = names(con, [entry['id'] for item in items for entry in (item.get('suggestion'), item.get('box_entry')) if entry])
+    for item in items:
+        item['suggested_entry'] = found.get(item['suggestion']['id']) if item.get('suggestion') else None
+        item['box_entry_named'] = found.get(item['box_entry']['id']) if item.get('box_entry') else None
+    return items
+
+
+def price_history(con, entry_id):
+    """The prices managers set for a book design's POPCORE item, newest first, with who set them, and the
+    item's price now. Read only: it only SELECTs from design_prices (design_prices.py writes it)."""
     entry = _need(con, entry_id)
+    if entry['kind'] != 'design':
+        raise DexError('Only a design has a price trend.', 'invalid_input')
+    market = entry['extras'].get('market_prices')
+    website = [{'price': point.get('price'), 'recorded_at': point.get('recorded_at'), 'source': point.get('source')}
+               for point in (market if isinstance(market, list) else [])
+               if isinstance(point, dict) and isinstance(point.get('price'), (int, float))
+               and not isinstance(point.get('price'), bool)]
+    if entry['product_id'] is None:
+        return {'linked': False, 'current_cents': None, 'points': [], 'website': website}
+    price = con.execute('SELECT price FROM products WHERE id=?', (entry['product_id'],)).fetchone()
+    try:
+        current = round(float(price['price']) * 100) if price and price['price'] not in (None, '') else None
+    except (TypeError, ValueError):
+        current = None
+    points = [dict(row) for row in con.execute(
+        """SELECT d.cents, d.previous_cents, d.source, d.set_at, d.set_by, em.name AS set_by_name
+           FROM design_prices d LEFT JOIN employees em ON em.auth0_id=d.set_by
+           WHERE d.product_id=? ORDER BY d.id DESC""", (entry['product_id'],))]
+    return {'linked': True, 'current_cents': current if current and current > 0 else None, 'points': points,
+            'website': website}
+
+
+def detail(con, entry_id):
+    entry = _named(con, _need(con, entry_id), {})
     entry['path'] = _path(con, entry)
     entry['allowed_children'] = list(CHILDREN[entry['kind']])
     entry['allowed_parents'] = list(PARENTS[entry['kind']])
@@ -240,9 +386,9 @@ def detail(con, entry_id):
         'id': entry['product_id'], 'sku': entry['product_sku'], 'name': entry['product_name']}
     entry['partner'] = _brief(con, entry['partner_id'])
     entry['character'] = _brief(con, entry['character_id'])
-    # The IP the entry sits under (or is): its characters are the ones the editor offers.
-    entry['ip'] = ({'id': entry['id'], 'kind': 'ip', 'name': entry['name']} if entry['kind'] == 'ip'
-                   else next((step for step in reversed(entry['path']) if step['kind'] == 'ip'), None))
+    # The IP the entry sits under (or is): its characters are the ones the editor offers. (`ip` is the tag.)
+    entry['ip_above'] = ({'id': entry['id'], 'kind': 'ip', 'name': entry['name']} if entry['kind'] == 'ip'
+                         else next((step for step in reversed(entry['path']) if step['kind'] == 'ip'), None))
     # Contract 1.3: the products and designs elsewhere (under a company) that name this IP.
     entry['named_by'] = named(con, entry['id']) if entry['kind'] == 'ip' else []
     return entry

@@ -1,6 +1,6 @@
 # The book contract: POPCORE and popcore.ca
 
-Version 1.3, draft, 13 Nov 2026 (1.3: a product or design in a series that spans several IPs names its own IP, `ip_ref`). Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
+Version 1.4, draft, 14 Nov 2026 (1.3: a product or design in a series that spans several IPs names its own IP, `ip_ref`. 1.4: a series or a product may sit straight under a partner; every product and design carries `full_name`; names follow the owner's naming standard). Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
 Nothing here is built on either side. Route names are proposals; the shapes and rules are the contract.
 Questions for the website session are in section 10. Answers change this file, not side notes.
 
@@ -22,8 +22,8 @@ One shape for every level.
 | `partner` | none | ordinary IP rows / `series.collab_ip_id` (unused) |
 | `ip` | `company` | `wp_popcore_ips` |
 | `character` | `ip` or `partner` | `wp_popcore_characters` |
-| `series` | `ip` or `company` | `wp_popcore_series` |
-| `product` | `series`, `ip` or `company` | `wp_popcore_product_lines`; with no series, an item figure |
+| `series` | `ip`, `company` or `partner` | `wp_popcore_series` |
+| `product` | `series`, `ip`, `company` or `partner` | `wp_popcore_product_lines`; with no series, an item figure |
 | `design` | `product` | `wp_popcore_figures` with a series |
 
 ```json
@@ -52,7 +52,9 @@ One shape for every level.
 - `website_id`: the row's number on the website when POPCORE knows it (every loaded entry does), else null.
 - `parent_ref`, `partner_ref`, `character_ref`, `ip_ref`: other entries' `ref`. `partner_ref` on series and products. `character_ref` on series, products and designs.
 - `ip_ref`: products and designs only, and only when no IP sits above the entry (its series is straight under a company, such as POP MART's anniversary sets, where each design is a different IP). It names the IP that design or product belongs to. Null everywhere else: the IP is then the one above. The website keeps it in `figures.ip_id`, so the design also shows on that IP's page.
-- `name`: the Dex name (the official English name).
+- `name`: the Dex name (the official English name), written to the owner's naming standard: IPs in capitals as their maker writes them, a series by its North American title, a product under a series by its type word alone (Figures, Vinyl Plush Pendant…), never "Blind Box".
+- `full_name`: products and designs only. The name shoppers and staff see, put together by POPCORE from the entry's place in the book (HIRONO Echo Series Figures; a design adds " - " and its own name). The website shows it as given and never builds its own.
+- A series or product straight under a `partner` is goods that carry only that outside name (Pokémon figures by another maker, NARUTO goods): the owner groups them by that name. This is different from `partner_ref`, which marks a toy maker's own series made together with the partner.
 - `picture_id`: a website media id (section 6), or null.
 - `blind_box`: products only. `item`: products only; true when the website holds it as an item figure with no series, false when it is a product line. Line numbers and item numbers overlap on the website, so a product is found by `website_id` together with `item`. `rarity`: designs only, the website's own words (`normal`, `popular`, `secret`, `super_secret`, `special`).
 - `popcore_id`: the POPCORE ID when the shop stocks it (`DR0133` on a product, `DR0133-03` on a design), else null. It is information for the website; the listing itself is made through section 7.

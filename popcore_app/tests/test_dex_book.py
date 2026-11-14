@@ -451,6 +451,187 @@ class DexBookTests(IsolatedApiCase):
         self.assertEqual(delete(book['company']).status_code, 200)
         self.assertIsNone(self.row(book['moon']))
 
+    # The full name (naming standard rule 7, owner 2026-11-14): put together, never typed; and the IP tag.
+
+    def raw(self, kind, name, parent=None, **fields):
+        """An entry written straight to the table, for shapes the editor's parent rule may not offer yet."""
+        columns = ['kind', 'name', 'parent_id', *fields]
+        with closing(self.connect()) as con:
+            cur = con.execute(f'INSERT INTO dex_entries({", ".join(columns)}) VALUES ({", ".join("?" * len(columns))})',
+                              (kind, name, parent, *fields.values()))
+            con.commit()
+            return cur.lastrowid
+
+    def named_book(self):
+        company = self.add('company', 'POP MART')
+        hirono = self.add('ip', 'HIRONO', company)
+        monsters = self.add('ip', 'THE MONSTERS', company)
+        echo = self.add('series', 'Echo Series', hirono)
+        figures = self.add('product', 'Figures', echo, blind_box=True)
+        sun = self.add('design', 'Sun', figures)
+        prince = self.add('series', 'HIRONO × Le Petit Prince Series', hirono)
+        prince_figures = self.add('product', 'Figures', prince)
+        salon = self.add('series', 'the monsters hair salon series', monsters)  # the IP in another case
+        pendant = self.add('product', 'Vinyl Plush Pendant', salon)
+        pianist = self.add('product', 'HIRONO The Pianist Figure', hirono)  # a single item
+        anniversary = self.add('series', 'Celebrating the Moment POP MART 15th Anniversary Series', company)
+        mixed = self.add('product', 'Figures', anniversary)
+        spotlight = self.add('design', 'Spotlight', mixed, ip_id=monsters)
+        loong = self.add('design', 'Loong', mixed)
+        pin = self.add('product', 'Company pin', company)
+        pokemon = self.add('partner', 'Pokémon')
+        pikachu = self.raw('series', 'Pikachu Series', pokemon)  # goods that carry only the partner's name
+        pika_figures = self.raw('product', 'Figures', pikachu)
+        pika_design = self.raw('design', 'Sleepy', pika_figures)
+        plush = self.raw('product', 'Pikachu Plush', pokemon)
+        return locals()
+
+    def test_full_name_is_put_together_from_the_place_in_the_book(self):
+        book = self.named_book()
+        expected = {
+            'figures': 'HIRONO Echo Series Figures',
+            'sun': 'HIRONO Echo Series Figures - Sun',
+            'echo': 'HIRONO Echo Series',
+            'prince': 'HIRONO × Le Petit Prince Series',            # the series already starts with its IP
+            'prince_figures': 'HIRONO × Le Petit Prince Series Figures',
+            'salon': 'the monsters hair salon series',               # in any case
+            'pendant': 'the monsters hair salon series Vinyl Plush Pendant',
+            'pianist': 'HIRONO The Pianist Figure',                  # a single item: its own name, as it is
+            'anniversary': 'Celebrating the Moment POP MART 15th Anniversary Series',  # no IP above
+            'mixed': 'Celebrating the Moment POP MART 15th Anniversary Series Figures',
+            'spotlight': 'Celebrating the Moment POP MART 15th Anniversary Series Figures - Spotlight',
+            'pin': 'Company pin',
+            'pikachu': 'Pokémon Pikachu Series',                    # a series straight under a partner
+            'pika_figures': 'Pokémon Pikachu Series Figures',
+            'pika_design': 'Pokémon Pikachu Series Figures - Sleepy',
+            'plush': 'Pikachu Plush',
+            'hirono': 'HIRONO', 'company': 'POP MART', 'pokemon': 'Pokémon',
+        }
+        for key, name in expected.items():
+            self.assertEqual(self.get(f'/api/dex/entries/{book[key]}')['full_name'], name, key)
+        # Children carry it too; the stored name stays the type word alone.
+        rows = self.get(f"/api/dex/entries?parent={book['echo']}")
+        self.assertEqual([(row['name'], row['full_name']) for row in rows], [('Figures', 'HIRONO Echo Series Figures')])
+        self.assertEqual(self.row(book['figures'])['name'], 'Figures')
+        # A rename above reaches every full name under it, with nothing typed twice.
+        self.assertEqual(self.patch(book['echo'], name='Echo Series 2').status_code, 200)
+        self.assertEqual(self.get(f"/api/dex/entries/{book['sun']}")['full_name'], 'HIRONO Echo Series 2 Figures - Sun')
+        self.assertEqual(self.patch(book['hirono'], name='HIRONO!').status_code, 200)
+        self.assertEqual(self.get(f"/api/dex/entries/{book['sun']}")['full_name'], 'HIRONO! Echo Series 2 Figures - Sun')
+
+    def test_the_ip_prefix_is_left_out_only_for_whole_words(self):
+        from dex_book import full_name
+        ip = [{'kind': 'company', 'name': 'POP MART'}, {'kind': 'ip', 'name': 'DIMOO'}]
+        self.assertEqual(full_name('series', 'DIMOO World × Disney Series', ip), 'DIMOO World × Disney Series')
+        self.assertEqual(full_name('series', 'DIMOOS Series', ip), 'DIMOO DIMOOS Series')
+        self.assertEqual(full_name('series', 'DIMOO', ip), 'DIMOO')
+        self.assertEqual(full_name('product', 'Figures', ip + [{'kind': 'series', 'name': 'Dimoo-Dating Series'}]),
+                         'Dimoo-Dating Series Figures')
+        self.assertEqual(full_name('design', 'Sun', []), 'Sun')  # nothing above it (never in a live book)
+
+    def test_every_read_carries_the_ip_tag(self):
+        book = self.named_book()
+        tag = lambda key: self.get(f'/api/dex/entries/{book[key]}')['ip']
+        hirono = {'id': book['hirono'], 'kind': 'ip', 'name': 'HIRONO'}
+        monsters = {'id': book['monsters'], 'kind': 'ip', 'name': 'THE MONSTERS'}
+        pokemon = {'id': book['pokemon'], 'kind': 'partner', 'name': 'Pokémon'}
+        for key in ('echo', 'figures', 'sun', 'pianist'):
+            self.assertEqual(tag(key), hirono, key)                          # the IP above
+        self.assertEqual(tag('spotlight'), monsters)                        # the IP it names
+        self.assertEqual(self.patch(book['mixed'], ip_id=book['hirono']).status_code, 200)
+        self.assertEqual(tag('loong'), hirono)                              # else the IP its product names
+        self.assertEqual(tag('spotlight'), monsters)                        # its own comes first
+        self.assertEqual(tag('mixed'), hirono)
+        for key in ('pikachu', 'pika_figures', 'pika_design', 'plush'):
+            self.assertEqual(tag(key), pokemon, key)                        # else the partner it sits under
+        for key in ('anniversary', 'pin', 'company', 'hirono', 'pokemon'):
+            self.assertIsNone(tag(key), key)
+        character = self.add('character', 'Hirono', book['hirono'])
+        self.assertEqual(tag('hirono'), None)
+        self.assertEqual(self.get(f'/api/dex/entries/{character}')['ip'], hirono)
+        # The editor's IP (above, or itself) is still there as ip_above.
+        self.assertEqual(self.get(f"/api/dex/entries/{book['hirono']}")['ip_above']['name'], 'HIRONO')
+        self.assertIsNone(self.get(f"/api/dex/entries/{book['spotlight']}")['ip_above'])
+        # Lists, the top, the IP picker, search and an IP's page carry it too.
+        self.assertEqual([row['ip'] for row in self.get(f"/api/dex/entries?parent={book['mixed']}")], [monsters, hirono])
+        self.assertEqual({row['ip'] for row in self.get('/api/dex/entries?kind=company')}, {None})
+        self.assertEqual({row['ip'] for row in self.get('/api/dex/entries?kind=ip')}, {None})
+        self.assertEqual([(row['full_name'], row['ip']) for row in self.get('/api/dex/entries?q=sleepy')],
+                         [('Pokémon Pikachu Series Figures - Sleepy', pokemon)])
+        self.assertEqual([row['full_name'] for row in self.get(f"/api/dex/entries?named_ip={book['monsters']}")],
+                         ['Celebrating the Moment POP MART 15th Anniversary Series Figures - Spotlight'])
+
+    def test_search_finds_an_entry_by_the_words_of_its_full_name(self):
+        book = self.named_book()
+        found = self.get('/api/dex/entries?q=hirono+echo+figures')
+        self.assertEqual([(row['id'], row['full_name']) for row in found], [(book['figures'], 'HIRONO Echo Series Figures')])
+        self.assertEqual([row['id'] for row in self.get('/api/dex/entries?q=HIRONO%20sun')], [book['sun']])
+        self.assertEqual([row['id'] for row in self.get('/api/dex/entries?q=echo+figures+hirono')], [book['figures']])
+        # Every word must be in the full name, and one in the entry's own name.
+        self.assertEqual(self.get('/api/dex/entries?q=hirono+echo+moon'), [])
+        self.assertEqual([row['id'] for row in self.get('/api/dex/entries?q=pikachu+figures')], [book['pika_figures']])
+        self.assertEqual([row['id'] for row in self.get('/api/dex/entries?q=hirono+figures&kinds=product')],
+                         [book['figures'], book['prince_figures']])  # "Figure" is not "figures"
+        # A name holding the whole text comes first.
+        self.assertEqual(self.get('/api/dex/entries?q=echo+series')[0]['id'], book['echo'])
+
+    def test_unlinked_items_carry_the_full_names_of_their_book_entries(self):
+        book = self.named_book()
+        self.assertEqual(self.patch(book['figures'], product_id=self.items['PM0100']).status_code, 200)
+        with closing(self.connect()) as con:  # PM0100-01 is a design of the PM0100 box
+            family = con.execute("INSERT INTO product_series(name, product_id) VALUES ('Echo box', ?)",
+                                 (self.items['PM0100'],)).lastrowid
+            con.execute('UPDATE products SET series_id=? WHERE id=?', (family, self.items['PM0100-01']))
+            con.commit()
+        listed = {item['sku']: item for item in self.get('/api/dex/unlinked')['items']}
+        design = listed['PM0100-01']
+        self.assertEqual(design['box_entry'], {'id': book['figures'], 'name': 'Figures'})
+        self.assertEqual((design['box_entry_named']['full_name'], design['box_entry_named']['ip']['name']),
+                         ('HIRONO Echo Series Figures', 'HIRONO'))
+        for item in listed.values():
+            if item['suggestion']:
+                self.assertEqual(item['suggested_entry']['id'], item['suggestion']['id'])
+            else:
+                self.assertIsNone(item['suggested_entry'])
+        self.assertIsNone(listed['PM0200']['box_entry_named'])
+
+    # A design's price trend (owner: "we should store these data, so it becomes a price trend over time").
+
+    def test_price_history_reads_the_prices_set_for_the_designs_item(self):
+        book = self.named_book()
+        item = self.items['PM0100-01']
+        prices = [{'price': 140, 'recorded_at': '2026-11-02', 'source': 'collector'}, {'price': 'x'}, 'bad']
+        self.assertEqual(self.patch(book['sun'], extras={'market_prices': prices}).status_code, 200)
+        unlinked = self.get(f"/api/dex/entries/{book['sun']}/prices", 'viewer')
+        self.assertEqual(unlinked, {'linked': False, 'current_cents': None, 'points': [],
+                                    'website': [{'price': 140, 'recorded_at': '2026-11-02', 'source': 'collector'}]})
+        self.assertEqual(self.patch(book['sun'], product_id=item).status_code, 200)
+        self.assertEqual(self.get(f"/api/dex/entries/{book['sun']}/prices")['points'], [])  # nothing set yet
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO employees(name, auth0_id) VALUES ('Mia', 'auth0|manager')")
+            for cents, previous, at, by in ((2500, None, '2026-11-10 15:00:00', 'auth0|manager'),
+                                            (2800, 2500, '2026-11-12 03:30:00', 'auth0|someone'),
+                                            (3200, 2800, '2026-11-13 18:00:00', 'auth0|manager')):
+                con.execute("""INSERT INTO design_prices(product_id, cents, previous_cents, source, set_by, set_at)
+                               VALUES (?, ?, ?, 'design_prices', ?, ?)""", (item, cents, previous, by, at))
+            con.execute('UPDATE products SET price=32 WHERE id=?', (item,))
+            con.commit()
+            before = con.execute('SELECT COUNT(*), MAX(id) FROM design_prices').fetchone()[:]
+        for role in ('viewer', 'staff', 'manager'):
+            trend = self.get(f"/api/dex/entries/{book['sun']}/prices", role)
+            self.assertEqual((trend['linked'], trend['current_cents']), (True, 3200))
+            self.assertEqual([(p['cents'], p['set_at'], p['set_by'], p['set_by_name']) for p in trend['points']],
+                             [(3200, '2026-11-13 18:00:00', 'auth0|manager', 'Mia'),
+                              (2800, '2026-11-12 03:30:00', 'auth0|someone', None),
+                              (2500, '2026-11-10 15:00:00', 'auth0|manager', 'Mia')])
+            self.assertEqual(len(trend['website']), 1)
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*), MAX(id) FROM design_prices').fetchone()[:], before)
+        self.assertEqual(self.code(self.client.get(f"/api/dex/entries/{book['figures']}/prices", headers=self.headers())),
+                         (400, 'invalid_input'))
+        self.assertEqual(self.client.get('/api/dex/entries/99999/prices', headers=self.headers()).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/dex/entries/{book['sun']}/prices").status_code, 401)
+
 
 if __name__ == '__main__':
     import unittest

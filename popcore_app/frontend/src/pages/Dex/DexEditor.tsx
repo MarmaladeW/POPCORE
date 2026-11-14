@@ -55,7 +55,7 @@ export default function DexEditor({ editing, onClose, onSaved }: {
   const entry = editing?.mode === 'edit' ? editing.entry : null
   const kind = editing ? (editing.mode === 'edit' ? editing.entry.kind : editing.kind) : null
   const context = editing ? (editing.mode === 'edit' ? editing.entry : editing.parent) : null
-  const ip: DexStep | null = context?.ip ?? null
+  const ip: DexStep | null = context?.ip_above ?? null
   const extraFields = kind ? EXTRA_FIELDS[kind] : []
   // Contract 1.3: a product or design with no IP above (a series with several IPs) names its own IP.
   const namesIp = !!kind && IP_KINDS.includes(kind) && !ip

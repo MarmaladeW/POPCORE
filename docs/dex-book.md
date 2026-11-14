@@ -67,9 +67,42 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
   when a live entry outside them names one as partner, character or IP (`dex_in_use`). Rows without a `website_id` are deleted;
   rows with one are kept with `deleted_at` so a later step can tell the website. No read ever returns a deleted row.
 
+## Full names and the IP tag (owner, 2026-11-14)
+
+The owner's naming standard (rule 7): a product under a series is stored by its type word alone (Figures, Vinyl Plush
+Pendant…), and **the full name is put together, never typed or stored**: HIRONO Echo Series Figures. One function
+builds it, `dex_book.full_name`, and every read returns it as `full_name` (contract 1.4):
+
+| Entry | Full name |
+|---|---|
+| Series | Its IP (or the partner it sits under) and its name: HIRONO Echo Series. The IP is left out when the name already starts with it as whole words, in any case (HIRONO × Le Petit Prince Series). A series straight under a company (a set with several IPs) has none. |
+| Product under a series | The series' full name and the product's own name: HIRONO Echo Series Figures; Celebrating the Moment POP MART 15th Anniversary Series Figures |
+| Product with no series | Its own name, as it is (a single item under an IP, partner or company) |
+| Design | Its product's full name, " - ", its own name: HIRONO Echo Series Figures - Sun |
+| Company, partner, IP, character | Its own name |
+
+A rename of an IP or series reaches every full name under it at once.
+
+Some IPs of other makers stay in mixed case (Baby Three, Nommi, MayMei). So that it is plain which words are the IP,
+every read also carries `ip`, `{id, kind, name}` or null: the IP above the entry; else the IP it names (`ip_id`, a
+set with several IPs), or failing that the IP its product names; else the partner it sits under (`kind: 'partner'`).
+Companies, partners and IPs themselves have none. The editor's own "IP above, or itself" is `ip_above` on a detail.
+
+**Search** finds an entry whose own name holds at least one of the words and whose full name holds them all:
+"hirono echo figures" finds HIRONO Echo Series Figures, and not its designs. Names holding the whole text come first.
+
+## A design's price trend
+
+Managers set design prices on 确认款价格 Design prices or in the design editor; POPCORE keeps every one with its date
+and who set it (`design_prices`, `popcore_app/design_prices.py`, live since 13 Nov). The book reads them, never writes:
+`dex_book.price_history` only SELECTs from `design_prices` (and the setter's name from `employees`). For a design
+linked to a POPCORE item it returns every price set for that item, newest first (`cents`, `previous_cents`, `source`,
+`set_at` UTC, `set_by`, `set_by_name`), and the item's price now (`current_cents`). It adds the website's market
+prices kept in the design's `extras.market_prices` (`{price, recorded_at, source}`, price in dollars) as `website`.
+
 ## Routes (`popcore_app/blueprints/dex.py`)
 
-Any signed-in role reads. Managers and admins write.
+Any signed-in role reads. Managers and admins write. Every entry a read returns carries `full_name` and `ip` (above).
 
 | Route | What |
 |---|---|
@@ -77,8 +110,9 @@ Any signed-in role reads. Managers and admins write.
 | `GET /api/dex/entries?kind=ip` | Every live IP, by name, each with its path (its company), for the IP picker |
 | `GET /api/dex/entries?named_ip=<id>` | The live products and designs that name this IP, products first, each with its path |
 | `GET /api/dex/entries?parent=<id>` | Live children, by `sort_order` then name, with child count, linked POPCORE ID and name, and `named_ip` |
-| `GET /api/dex/entries?q=<text>[&kinds=a,b]` | Name search, at most 50, each with its path of ancestors |
-| `GET /api/dex/entries/<id>` | One entry: path, allowed child and parent kinds, linked item, partner, character, the IP above (`ip`), the IP it names (`named_ip`), and on an IP `named_by` (as `?named_ip=`) |
+| `GET /api/dex/entries?q=<text>[&kinds=a,b]` | Search by the words of the full name (above), at most 50, each with its path of ancestors |
+| `GET /api/dex/entries/<id>` | One entry: path, allowed child and parent kinds, linked item, partner, character, the IP above or itself (`ip_above`), the IP it names (`named_ip`), and on an IP `named_by` (as `?named_ip=`) |
+| `GET /api/dex/entries/<id>/prices` | A design's price trend (above): `{linked, current_cents, points, website}`; 400 for other kinds |
 | `GET /api/dex/entries/<id>/removal` | What a delete would remove, and why it would be refused |
 | `POST /api/dex/entries` | Add (`kind`, `name`, `parent_id`, and the fields above) |
 | `PATCH /api/dex/entries/<id>` | Change any of `name`, `parent_id`, `partner_id`, `character_id`, `ip_id`, `blind_box`, `rarity`, `product_id`, `extras` |
@@ -97,6 +131,18 @@ IPs, searchable), and its character picker then offers the named IP's characters
 page with no IP above, each product and design row shows its IP; managers set it in the row with a small picker
 (one pick saves it, no drawer). An IP's page has a panel 也出现在 Also in listing the products and designs elsewhere
 that name it, each with its path and a link.
+
+Names (owner, 2026-11-14): a product's or design's card shows its full name as the title, with its own stored name
+(the type word, or the design name) and kind beneath. Rows keep the short name, since they sit under their parent.
+Search results, the "Also in" list and the "not in the book yet" suggestions show the full name. Wherever an entry
+has one, a small tag shows "IP" then the IP's name (or the partner's, for goods under a partner): on the entry card,
+in child rows (except where the row's own IP picker shows it), in search results and beside a suggestion. The tag
+shrinks with an ellipsis and never widens a row.
+
+价格走势 Price trend, on a design's page when it is linked to a POPCORE item (or the website gave it market prices),
+for every signed-in role: the price now, a small plain SVG line (no chart library) when two or more prices were set,
+with the website's prices as hollow dots on the same scale, then every price newest first with its Toronto date and
+who set it; the website's are marked 网站 Website. When nothing has been set it says so in one line.
 
 ## The load (step 2): `popcore_app/dex_load.py`, `scripts/load_dex_book.py`
 
@@ -238,7 +284,8 @@ the name matches in any case and `parent` is itself a reference (or null at the 
 `GET /api/dex/unlinked?q=&page=&per_page=` (any signed-in role; at most 100 a page): POPCORE items no live book entry
 links, with `total`. Boxes, ordinary items, unsorted items and confirmed designs; never sealed sets. A design comes
 with its box and the book product that box is linked to (`box_entry`). Every item carries `suggestion`
-(`{id, path, score}`, or null).
+(`{id, path, score}`, or null). Beside them, left as they are, `suggested_entry` and `box_entry_named` give those
+entries' `{id, kind, name, full_name, ip}` (or null).
 
 Screen `/dex/unlinked`, reached from the Dex home with its count. Managers use 放入图鉴 Put in the book: a box or an
 item becomes a book product under a series, IP or company picked by search, named by the item's name, blind box

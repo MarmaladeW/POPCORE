@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import {
   deleteEntry, getRemoval, ipEntries, reorderEntries, searchEntries, updateEntry,
-  type DexEntry, type DexKind, type DexSearchHit,
+  type DexEntry, type DexIpTag as IpTag, type DexKind, type DexSearchHit,
 } from '../../api/dex'
 import { KIND_LABEL, kindText } from '../../lib/dexFields'
 
@@ -17,6 +17,16 @@ export function DexThumb({ entry, size = 40 }: { entry: Pick<DexEntry, 'name' | 
   return <span className="pc-dex-thumb" style={{ width: size, height: size }} aria-hidden="true">
     {src && !broken ? <img src={src} alt="" loading="lazy" onError={() => setBroken(true)} />
       : <span>{entry.name.trim().charAt(0).toUpperCase() || '·'}</span>}
+  </span>
+}
+
+// The IP tag (owner, 2026-11-14: "maybe we should do something so ppl know that this is the IP name"): a small
+// label "IP" and the name, so it is plain which words are the IP, mixed case or not. A partner-homed entry's tag
+// carries the partner's name the same way. It shrinks with an ellipsis and never widens its row.
+export function DexIpTag({ tag }: { tag: IpTag | null | undefined }) {
+  if (!tag) return null
+  return <span className="pc-dex-ip" title={`${tag.kind === 'partner' ? 'IP (联名 partner)' : 'IP'}: ${tag.name}`}>
+    <b>IP</b> <span>{tag.name}</span>
   </span>
 }
 
@@ -64,11 +74,13 @@ export function DexRow({ entry, onUp, onDown, busy, extra }: {
   entry: DexEntry; onUp?: () => void; onDown?: () => void; busy?: boolean; extra?: ReactNode
 }) {
   const meta = [entry.child_count ? `${entry.child_count} 项 inside` : '',
-    entry.product_sku ? `POPCORE ${entry.product_sku}` : '',
-    !extra && entry.named_ip ? `IP ${entry.named_ip.name}` : ''].filter(Boolean).join(' · ')
+    entry.product_sku ? `POPCORE ${entry.product_sku}` : ''].filter(Boolean).join(' · ')
+  // The row keeps its short name (it sits under its parent); the IP tag shows unless the row's IP picker does.
+  const tag = extra ? null : entry.ip
   return <div className={extra ? 'pc-row pc-dex-row pc-dex-row-ip' : 'pc-row pc-dex-row'}>
     <DexThumb entry={entry} />
-    <Link className="pc-row-main" to={`/dex/${entry.id}`}><strong>{entry.name}</strong>{meta && <small>{meta}</small>}</Link>
+    <Link className="pc-row-main" to={`/dex/${entry.id}`}><strong>{entry.name}</strong>
+      {(meta || tag) && <span className="pc-dex-meta"><DexIpTag tag={tag} />{meta && <small>{meta}</small>}</span>}</Link>
     {extra}
     {(onUp || onDown) && <span className="pc-dex-move">
       <Button size="small" aria-label={`Move ${entry.name} up`} disabled={!onUp || busy} onClick={onUp}>↑</Button>
@@ -101,7 +113,7 @@ export function DexRows({ rows, parentId, canWrite, onChanged, extra }: {
     onDown={canWrite && index < rows.length - 1 ? () => move(index, 1) : undefined} />)}</>
 }
 
-// Search the book by name and jump to an entry.
+// Search the book by name (the words of the full name) and jump to an entry; each hit shows its full name.
 export function DexSearch() {
   const navigate = useNavigate()
   const [text, setText] = useState('')
@@ -120,8 +132,9 @@ export function DexSearch() {
     onSelect={(value: string) => { setText(''); navigate(`/dex/${value}`) }}
     options={hits.map(hit => ({
       value: String(hit.id),
-      label: <span className="pc-dex-hit"><strong>{hit.name}</strong>
-        <small>{KIND_LABEL[hit.kind].zh} · {hit.path.map(step => step.name).join(' › ') || '图鉴'}</small></span>,
+      label: <span className="pc-dex-hit"><strong>{hit.full_name}</strong>
+        <span className="pc-dex-meta"><DexIpTag tag={hit.ip} />
+          <small>{KIND_LABEL[hit.kind].zh} · {hit.path.map(step => step.name).join(' › ') || '图鉴'}</small></span></span>,
     }))}
     notFoundContent={text.trim() ? '没有找到 Nothing found' : null}>
     <Input.Search placeholder="搜索图鉴 Search the book" aria-label="Search the book" allowClear />
