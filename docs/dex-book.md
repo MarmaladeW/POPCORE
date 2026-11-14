@@ -54,7 +54,8 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
   Only the entry being changed is checked: moving a series or product does not re-check what sits under it, so a
   design that named an IP and is now under one keeps it until its next change, which must clear it.
 - `product_id`: a book product links a box or an ordinary item, never a confirmed design or a sealed set. A book
-  design links only a confirmed design. One POPCORE item links to at most one live entry (409).
+  design links a confirmed design; under a product that is not a blind box (`blind_box` 0), a design is a colour or
+  version sold on its own, so it may also link a single item (an ordinary or unsorted item; owner, 2026-11-14, DR0089). One POPCORE item links to at most one live entry (409).
 - A book link never holds the item back. Removing a design or deleting a product works as if the book did not
   link it (`product_id` is `ON DELETE SET NULL`, and `inventory_catalog._product_references` skips `dex_entries`).
   The entry stays in the book, unlinked. That unlink is made by the database and does not raise `version`, so

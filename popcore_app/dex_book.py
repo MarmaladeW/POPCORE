@@ -14,7 +14,8 @@ Rules (docs/dex-book.md):
   stays straight under its company), the live IP it belongs to, so it also shows on that IP's page. Refused when
   an IP sits above: its IP is the one above. Moving a parent does not re-check what sits under it.
 - product_id: a book product links an ordinary POPCORE item or a blind box (not a confirmed design or a
-  sealed set); a book design links a confirmed design. One POPCORE item, one live entry.
+  sealed set); a book design links a confirmed design, and under a product that is not a blind box (blind_box 0)
+  also a single item (a colour or version sold on its own). One POPCORE item, one live entry.
 - extras: the refined copy, only the keys the contract names for the kind (docs/dex-book-contract.md §4).
 - Every accepted change raises version by one.
 - Delete takes the entry and everything under it. It is refused while any of them is linked to a POPCORE
@@ -479,7 +480,12 @@ def _check(con, row, entry_id=None):
         if item is None:
             raise DexError('That POPCORE item does not exist.', 'product_not_found', 404)
         if kind == 'design' and item['stock_form'] != 'confirmed_design':
-            raise DexError('A design links only a confirmed design (确认款).', 'product_form')
+            # Owner, 2026-11-14 (DR0089, Sonny Angel's pink Cuddly Bear): under a product that is not a blind box, a
+            # design is a colour or version sold on its own, so it may link a single item too.
+            parent = con.execute('SELECT blind_box FROM dex_entries WHERE id=?', (parent_id,)).fetchone()
+            if item['stock_form'] not in (None, 'ordinary') or parent is None or parent['blind_box'] != 0:
+                raise DexError('A design links a confirmed design (确认款); under a product that is not a blind box, '
+                               'a single item too.', 'product_form')
         if kind == 'product' and item['stock_form'] in ('confirmed_design', 'sealed_set'):
             raise DexError('A product cannot link a confirmed design or a sealed set; link its box.', 'product_form')
         taken = con.execute('SELECT id, name FROM dex_entries WHERE product_id=? AND deleted_at IS NULL AND id IS NOT ?',
