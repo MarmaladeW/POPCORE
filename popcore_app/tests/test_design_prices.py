@@ -1,7 +1,9 @@
 """确认款价格 Design prices (owner, 2026-11-12): a manager sets confirmed designs' prices in bulk in POPCORE, and the
-website sync sends them like box prices, a jump of more than 30% waiting for a manager's OK ("Manager OK on big
-jumps"). A design is created with its box's price; that copy is never sent. A design that only carried its box's
-price on the website, or none, gets its first price without an OK, and the summary says so."""
+website sync sends them. A design's price never waits for an OK because of its size (owner, 2026-11-14: "for these
+confirmed option because i update it every week, so we dont approve these"); one that would end or restart a sale
+still waits, and a box's jump over 30% still waits. A design is created with its box's price; that copy is never
+sent. A design that only carried its box's price on the website, or none, gets its first price, and the summary
+says so."""
 import unittest
 from contextlib import closing
 from datetime import datetime, timezone
@@ -121,63 +123,78 @@ class DesignPriceTests(WebsiteSyncTests):
                 [(self.sun, 4500, 2299, 'design_prices', 'auth0|manager'),
                  (self.moon, 3150, 2299, 'design_editor', 'auth0|manager')])
 
-    def test_a_first_price_goes_and_a_big_jump_from_a_real_price_waits(self):
-        """Sun's website price is its box's and Moon has none: each gets its first price, which is no jump. Rain
-        and the secret are published with prices of their own: Rain's +4% goes, the secret's +36% waits for a
-        manager's OK. The summary before saving says so, judged as the sync judges a write."""
+    def test_a_first_price_and_a_big_jump_from_a_real_price_both_go_while_a_boxs_jump_waits(self):
+        """Sun's website price is its box's and Moon has none: each gets its first price. Rain and the secret are
+        published with prices of their own: Rain's +4% and the secret's +36% go too, with no manager's OK (owner,
+        2026-11-14). The box's +43% in the same pass still waits, with its Whole Set. The summary before saving
+        says so, judged as the sync judges a write."""
         self.turn_on()
+        self.popcore_price(self.box, 29.99, 'Echo Clover')  # Echo $20.99 → $29.99, its set $251.88 → $359.88
         new = {'PM0100-03': 9900, 'PM0100-04': 6000, 'PM0100-05': 3000, 'PM0100-06': 15000}
         check = self.prices(new, check=True)
         self.assertEqual(check.status_code, 200, check.get_json())
         result = check.get_json()
         self.assertEqual(self.effects(result), {
             'PM0100-03': [(30, 'send', False, [])], 'PM0100-04': [(31, 'send', True, [])],
-            'PM0100-05': [(32, 'send', True, [])],
-            'PM0100-06': [(33, 'held', False, [{'code': 'big_change', 'percent': 36}])]})
-        self.assertEqual(result['counts'], {'changes': 4, 'first': 4, 'website_first': 2, 'send': 3, 'daily': 0,
-                                            'held': 1, 'same': 0, 'not_linked': 0})
+            'PM0100-05': [(32, 'send', True, [])], 'PM0100-06': [(33, 'send', False, [])]})
+        self.assertEqual(result['counts'], {'changes': 4, 'first': 4, 'website_first': 2, 'send': 4, 'daily': 0,
+                                            'held': 0, 'same': 0, 'not_linked': 0})
         self.assertEqual({change['sku']: (change['old_cents'], change['new_cents'], change['box_cents'])
-                          for change in result['changes']}['PM0100-04'], (2099, 6000, 2099))
+                          for change in result['changes']}['PM0100-04'], (2099, 6000, 2999))
         self.assertEqual(self.by_sku()['PM0100-04']['price_cents'], 2099)  # the check saved nothing
         self.assertEqual(self.prices(new).get_json()['counts'], result['counts'])
         # The Website page says which design prices are first prices.
         self.assertEqual({row['popcore_id']: (row['price_state'], row['price_note']) for row in self.preview()['prices']
                           if row['popcore_id'].startswith('PM0100-0')},
                          {'PM0100-03': ('send', None), 'PM0100-04': ('send', 'first_design_price'),
-                          'PM0100-05': ('send', 'first_design_price'), 'PM0100-06': ('held', None)})
+                          'PM0100-05': ('send', 'first_design_price'), 'PM0100-06': ('send', None)})
         self.run_sync()
-        self.assertEqual(self.design_writes(every=False), {30: '99.00', 31: '60.00', 32: '30.00'})
-        preview = self.preview()
-        (held,) = preview['held_prices']
-        self.assertEqual([(option['popcore_id'], option['regular_cents'], option['price'], option['price_reasons'])
-                          for option in held['options']], [('PM0100-06', 10999, 15000, [{'code': 'big_change', 'percent': 36}])])
+        self.assertEqual(self.prices_written(), {30: '99.00', 31: '60.00', 32: '30.00', 33: '150.00'})
+        # Only the box and its set wait, for their 30% rule.
+        self.assertEqual(self.held_reasons(), {11: [{'code': 'big_change', 'percent': 43}],
+                                               12: [{'code': 'big_change', 'percent': 43}]})
+        with closing(self.connect()) as con:
+            self.assertEqual({tuple(row) for row in con.execute(
+                "SELECT wc_id, old_cents, new_cents, approved_by FROM website_price_writes WHERE popcore_id LIKE 'PM0100-0%'")},
+                {(30, 9500, 9900, None), (31, 2099, 6000, None), (32, None, 3000, None), (33, 10999, 15000, None)})
+        # A jump from the price POPCORE wrote goes too, drafts included: Sun +50%.
+        self.assertEqual(self.effects(self.prices({'PM0100-04': 9000}, check=True).get_json()),
+                         {'PM0100-04': [(31, 'send', False, [])]})
+
+    def test_a_designs_change_that_would_restart_a_sale_still_waits(self):
+        """Restarting a sale emails the product's followers, so a design's change that would start a sale again
+        still waits for a manager's OK, whatever its size: the secret has a sale of $120.00 above its $109.99,
+        which discounts again once POPCORE writes $150.00. A small change from a sale that discounts before and
+        after goes."""
+        self.woo.set_price(33, '109.99', '120.00')
+        self.woo.set_price(30, '95.00', '90.00')
+        self.turn_on()
+        self.assertEqual(self.effects(self.prices({'PM0100-03': 9900, 'PM0100-06': 15000}, check=True).get_json()), {
+            'PM0100-03': [(30, 'send', False, [])],
+            'PM0100-06': [(33, 'held', False, [{'code': 'sale_starts', 'sale_cents': 12000}])]})
+        self.prices({'PM0100-03': 9900, 'PM0100-06': 15000})
+        self.run_sync()
+        self.assertEqual(self.design_writes(every=False), {30: '99.00'})
+        self.assertEqual(self.held_reasons(), {33: [{'code': 'sale_starts', 'sale_cents': 12000}]})
         self.assertEqual(self.ok_prices(33).get_json(), {'ok': True})
         self.woo.writes.clear()
         self.run_sync()
         self.assertEqual(self.design_writes(every=False), {33: '150.00'})
-        with closing(self.connect()) as con:
-            self.assertEqual({tuple(row) for row in con.execute(
-                "SELECT wc_id, old_cents, new_cents, approved_by FROM website_price_writes WHERE popcore_id LIKE 'PM0100-0%'")},
-                {(30, 9500, 9900, None), (31, 2099, 6000, None), (32, None, 3000, None), (33, 10999, 15000, 'auth0|manager')})
-        # From now on each is measured from the price POPCORE wrote, drafts too: Sun +50% waits.
-        self.assertEqual(self.effects(self.prices({'PM0100-04': 9000}, check=True).get_json()),
-                         {'PM0100-04': [(31, 'held', False, [{'code': 'big_change', 'percent': 50}])]})
 
-    def test_a_drafts_price_is_not_its_own_until_popcore_writes_it_and_a_design_published_since_the_read_counts(self):
+    def test_a_drafts_first_price_goes_and_so_does_a_jump_once_it_is_published(self):
         """Customers cannot see a draft, and drafts mostly carry a box's price (often an old one), so a manager's
-        first price for a draft goes without an OK, also from a hand-set draft price. A draft published since the
-        daily read is judged as published when its items are read again just before the write."""
+        first price for a draft goes, also from a hand-set draft price. A draft published since the daily read
+        still gets its price with no OK: a design's price never waits for its size (owner, 2026-11-14)."""
         self.woo.set_price(32, '40.00')  # Moon: a hand-set price on a draft
         self.turn_on()
         self.assertEqual(self.effects(self.prices({'PM0100-05': 6000}, check=True).get_json()),
                          {'PM0100-05': [(32, 'send', True, [])]})
-        # Sun is published on the website after the read, still at the box's $20.99.
+        # Sun is published on the website after the read, still at the box's $20.99: +186% goes.
         self.prices({'PM0100-04': 6000})
         self.woo.products[31]['status'] = 'publish'
         self.run_sync()
-        self.assertEqual(self.design_writes(every=False), {})
-        self.assertEqual({option['wc_id']: option['price_reasons'] for group in self.preview()['held_prices']
-                          for option in group['options']}, {31: [{'code': 'big_change', 'percent': 186}]})
+        self.assertEqual(self.design_writes(every=False), {31: '60.00'})
+        self.assertEqual(self.preview()['held_prices'], [])
 
     def test_each_design_price_write_marks_the_design_as_priced_by_popcore(self):
         """The website reads `_popcore_design_price_at` to show "Set by POPCORE" and lock the price field (website
@@ -226,7 +243,7 @@ class DesignPriceTests(WebsiteSyncTests):
         self.assertEqual(self.designs('staff').status_code, 403)
         listing = self.designs().get_json()
         self.assertEqual(listing['website'], {'configured': True, 'enabled': False, 'refreshed_at': None})
-        self.assertEqual(listing['look_pct'], 30)
+        self.assertNotIn('look_pct', listing)
         (box,) = listing['boxes']
         self.assertEqual({key: box[key] for key in ('id', 'sku', 'name', 'price_cents', 'ip', 'brand')},
                          {'id': self.box, 'sku': 'PM0100', 'name': 'Echo', 'price_cents': 2099, 'ip': 'Echo IP',

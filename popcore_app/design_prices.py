@@ -11,6 +11,9 @@ better"; the designs are priced "based on the market price of the day". So:
 - Only such a price goes to the website (website_sync): a design's latest design_prices row, while
   products.price still holds it. A design whose price was never set, or was changed some other way since
   (a script, an import, the copy when it was added), keeps the website's price.
+- Such a price never waits for a manager's OK because of its size (owner, 2026-11-14: "for these confirmed
+  option because i update it every week, so we dont approve these"); only a change that would end or restart a
+  website sale waits, and a Daily Shop product waits for the hour after its reset.
 """
 import re
 from datetime import datetime, timezone
@@ -102,7 +105,7 @@ def listing(con):
             'web': web.get(row['id'], []),
         })
     return {'boxes': sorted(boxes.values(), key=lambda box: ((box['sku'] or '~'), box['name'])), 'designs': designs,
-            'today': today, 'look_pct': website_sync.PRICE_LOOK_PCT, 'website': website_sync.price_link(con)}
+            'today': today, 'website': website_sync.price_link(con)}
 
 
 def _read_changes(data):

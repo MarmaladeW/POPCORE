@@ -38,7 +38,7 @@ const changeOf = (design: DesignPriceRow, edit?: Edit) =>
 
 // What the website does with a typed price, as far as the page can tell; the summary before saving asks the
 // server, which judges it exactly as the website sync will.
-function hint(design: DesignPriceRow, edit: Edit | undefined, look: number): { text: string; tone?: 'warn' | 'out' } | null {
+function hint(design: DesignPriceRow, edit: Edit | undefined): { text: string; tone?: 'warn' | 'out' } | null {
   if (!edit) return null
   if (edit.invalid) return { text: '不是价格 · Not a price', tone: 'out' }
   if (!changeOf(design, edit)) return { text: '没有变化 · No change' }
@@ -47,9 +47,7 @@ function hint(design: DesignPriceRow, edit: Edit | undefined, look: number): { t
   if (item.regular_cents === cents) return { text: '网站已是此价 · The website has it' }
   if (item.base_cents === null) return { text: '首次定价 · First price' }
   const change = percent(item.base_cents, cents)
-  return Math.abs(change) > look
-    ? { text: `${change > 0 ? '+' : ''}${change}% · 需经理确认 Waits for an OK`, tone: 'warn' }
-    : { text: `${change > 0 ? '+' : ''}${change}%` }
+  return { text: `${change > 0 ? '+' : ''}${change}%` }
 }
 
 function popcoreNote(design: DesignPriceRow, box: DesignBox) {
@@ -66,8 +64,8 @@ function linkText(link: PriceLink) {
 
 // 确认款价格 Design prices: the owner prices confirmed designs "based on the market price of the day" and sets them
 // here in bulk (owner, 2026-11-12). A design starts with its box's price; only a price set here or in the design's
-// editor goes to popcore.ca. A jump of more than 30% from a design's own website price waits for a manager's OK on
-// 网站 Website; a first price (a draft at its box's price, or none) does not.
+// editor goes to popcore.ca. It never waits for a manager's OK because of its size (owner, 2026-11-14: "i update it
+// every week, so we dont approve these"); only a change that would end or restart a sale waits on 网站 Website.
 export default function DesignPrices() {
   const [data, setData] = useState<DesignPriceList>()
   const [error, setError] = useState('')
@@ -237,7 +235,7 @@ export default function DesignPrices() {
   return <div className="pc-dp">
     {header}
     {link ? <p className="pc-notice">{link}</p>
-      : <p className="pc-dp-lead">保存后一分钟内同步到网站 · Saved prices go to popcore.ca within a minute. A change of more than {data.look_pct}% from a design’s own website price waits for a manager’s OK on 网站 Website; a first price does not.</p>}
+      : <p className="pc-dp-lead">保存后一分钟内同步到网站 · Saved prices go to popcore.ca within a minute, big changes too: a design’s price needs no manager’s OK. Only a change that would end or restart a website sale waits for one on 网站 Website.</p>}
     <div className="pc-figures pc-figures-4">
       <div><span>确认款 Confirmed designs</span><strong>{data.designs.length}</strong><small>{data.boxes.length} 个产品 products</small></div>
       <div><span>已定价 Price set</span><strong>{set}</strong><small>These go to the website</small></div>
@@ -279,7 +277,7 @@ export default function DesignPrices() {
           <th>新价 New price</th><th>变化 Change</th>
         </tr></thead>
         {visible.map(group => <BoxGroup key={group.box.id ?? 'none'} box={group.box} rows={group.rows} drafts={drafts} edits={edits}
-          selected={selected} look={data.look_pct} onType={type} onPaste={paste} onToggle={toggle} />)}
+          selected={selected} onType={type} onPaste={paste} onToggle={toggle} />)}
       </table>
       {!groups.length && <p className="pc-quiet">没有 · No designs match.</p>}
       {groups.length > shown && <Button type="link" onClick={() => setShown(value => value + PAGE)}>
@@ -300,14 +298,14 @@ export default function DesignPrices() {
       {review?.error && <Alert role="alert" type="error" showIcon message={review.error}
         action={<Button size="small" onClick={() => { setReview(undefined); setAttempt(value => value + 1) }}>Reload</Button>} />}
       {!review?.summary && !review?.error && <Skeleton active />}
-      {review?.summary && <Summary summary={review.summary} look={data.look_pct} />}
+      {review?.summary && <Summary summary={review.summary} />}
     </Modal>
   </div>
 }
 
-const BoxGroup = memo(function BoxGroup({ box, rows, drafts, edits, selected, look, onType, onPaste, onToggle }: {
+const BoxGroup = memo(function BoxGroup({ box, rows, drafts, edits, selected, onType, onPaste, onToggle }: {
   box: DesignBox; rows: DesignPriceRow[]; drafts: Record<number, string>; edits: Record<number, Edit>
-  selected: ReadonlySet<number>; look: number; onType: (id: number, text: string) => void
+  selected: ReadonlySet<number>; onType: (id: number, text: string) => void
   onPaste: (event: ClipboardEvent<HTMLInputElement>, id: number) => void; onToggle: (rows: DesignPriceRow[], on: boolean) => void
 }) {
   const all = rows.every(row => selected.has(row.id)), some = rows.some(row => selected.has(row.id))
@@ -325,7 +323,7 @@ const BoxGroup = memo(function BoxGroup({ box, rows, drafts, edits, selected, lo
       </th>
     </tr>
     {rows.map(row => {
-      const edit = edits[row.id], note = hint(row, edit, look)
+      const edit = edits[row.id], note = hint(row, edit)
       return <tr key={row.id} className={row.id in drafts ? 'pc-dp-edited' : undefined}>
         <td className="pc-dp-pick"><Checkbox aria-label={`Select ${row.name}`} checked={selected.has(row.id)} onChange={event => onToggle([row], event.target.checked)} /></td>
         <td className="pc-dp-design"><strong>{row.name}{row.secret && <span className="pc-prod-secret">隐藏</span>}</strong><small>{row.sku}</small></td>
@@ -342,16 +340,15 @@ const BoxGroup = memo(function BoxGroup({ box, rows, drafts, edits, selected, lo
       </tr>
     })}
   </tbody>
-}, (before, after) => before.box === after.box && before.rows === after.rows && before.look === after.look
+}, (before, after) => before.box === after.box && before.rows === after.rows
   && before.onType === after.onType && before.onPaste === after.onPaste && before.onToggle === after.onToggle
   && before.rows.every(row => before.drafts[row.id] === after.drafts[row.id] && before.selected.has(row.id) === after.selected.has(row.id)))
 
-function effectText(item: DesignEffect, look: number) {
+function effectText(item: DesignEffect) {
   const from = item.regular_cents
   switch (item.state) {
     case 'held': return `网站 ${money(from)} → ${money(item.price)}: ${item.reasons.map(reason =>
-      reason.code === 'big_change' ? `${reason.percent > 0 ? '+' : ''}${reason.percent}%, more than ${look}%`
-        : reason.code === 'sale_stops' ? `its sale ${money(reason.sale_cents)} would end`
+      reason.code === 'sale_stops' ? `its sale ${money(reason.sale_cents)} would end`
           : reason.code === 'sale_starts' ? `its sale ${money(reason.sale_cents)} would start again` : 'goes with the other option').join('; ')}`
     case 'send': {
       if (item.first) return `网站 ${from ? `${money(from)} (${item.published ? 'live' : 'draft'})` : 'no price'} → ${money(item.price)}: first price`
@@ -365,7 +362,7 @@ function effectText(item: DesignEffect, look: number) {
 }
 
 // The summary before saving: the server applies the change, judges it as the website sync will, and undoes it.
-function Summary({ summary, look }: { summary: DesignPriceSummary; look: number }) {
+function Summary({ summary }: { summary: DesignPriceSummary }) {
   const { counts } = summary
   const held = summary.changes.filter(change => change.website.some(item => item.state === 'held'))
   const first = summary.changes.filter(change => !held.includes(change) && change.website.some(item => item.first && item.state !== 'same'))
@@ -375,7 +372,7 @@ function Summary({ summary, look }: { summary: DesignPriceSummary; look: number 
     <strong>{change.sku} {change.box_name ? `${change.box_name} · ` : ''}{change.name}</strong>
     <small>POPCORE {money(change.old_cents) || 'no price'}{change.first ? (change.old_cents !== null && change.old_cents === change.box_cents
       ? ' (box price, not its own)' : ' (never set)') : ''} → {money(change.new_cents)}
-      {change.website.map(item => ` · ${effectText(item, look)}`).join('')}</small>
+      {change.website.map(item => ` · ${effectText(item)}`).join('')}</small>
   </li>
   const link = linkText(summary.website)
   return <div className="pc-dp-summary">
@@ -386,7 +383,7 @@ function Summary({ summary, look }: { summary: DesignPriceSummary; look: number 
       <div><span>等经理确认 Wait for an OK</span><strong className={counts.held ? 'pc-figure-warn' : undefined}>{counts.held}</strong><small>On 网站 Website</small></div>
     </div>
     {link && <p className="pc-notice">{link}</p>}
-    {held.length > 0 && <section><h3>等经理确认 · Wait for a manager’s OK <small>more than {look}% from the price customers see, or a sale would change</small></h3><ul>{held.map(line)}</ul></section>}
+    {held.length > 0 && <section><h3>等经理确认 · Wait for a manager’s OK <small>a website sale would end or start again</small></h3><ul>{held.map(line)}</ul></section>}
     {first.length > 0 && <section><h3>首次定价 · First prices <small>the website had only the box’s price, a draft’s price, or none</small></h3><ul>{first.map(line)}</ul></section>}
     {rest.length > 0 && <section><h3>其他改动 · Other changes</h3><ul>{rest.map(line)}</ul></section>}
     {offline.length > 0 && <section><h3>不在网站 · Not on the website <small>POPCORE’s price only</small></h3><ul>{offline.map(line)}</ul></section>}
