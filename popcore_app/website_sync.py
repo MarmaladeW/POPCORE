@@ -42,9 +42,8 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
 - A price change waits for a manager's OK on the Website page when it is a first price, when it is
   over 30%, when the box or item has no Clover item name, when the website's Whole Set does not cost
   POPCORE's boxes per set times its Single Box, or when the item's sale price would end or start
-  discounting. A design's change waits only when it is over 30% from its own website price (the one
-  customers see, or the one POPCORE wrote) or moves a sale: a design with no price of its own there, such
-  as a draft at its box's price, gets its first price without an OK (owner, 2026-11-12). The other
+  discounting. A design's change never waits for its size, a first price included (owner, 2026-11-14:
+  the owner updates design prices every week); it waits only when it would end or start a sale. The other
   options of the same product wait with it, and an OK covers only the change it was given for. A Daily
   Shop product (`_popcore_daily_pool`) is repriced only in the hour after the daily reset
   (WEBSITE_DAILY_RESET, 20:00), so a deal in a customer's bag keeps its price that day.
@@ -94,7 +93,7 @@ VAULT_META, KIND_META = '_popcore_is_vault', '_popcore_kind'
 # POPCORE prices these from their Clover price. A confirmed design is priced only from a price a manager
 # set for it (design_prices.py): the price it was created with only repeats its box's.
 PRICED_FORMS = ('random_box', 'ordinary', 'sealed_set')
-# A price change of more than this percentage waits for a manager's OK.
+# A price change of more than this percentage waits for a manager's OK (not a confirmed design's: _design_reasons).
 PRICE_LOOK_PCT = 30
 # A Daily Shop product is repriced only this long after the daily reset.
 DAILY_WINDOW = timedelta(hours=1)
@@ -555,14 +554,10 @@ def _sale_reasons(old, new, sale):
 
 
 def _design_reasons(item):
-    """Why a design's new price waits for a manager's OK (owner, 2026-11-12: "Manager OK on big jumps"). A jump
-    is measured from the design's own website price (design_base). A design that has none, such as a draft
-    at its box's price or with no price, gets its first price: not a jump, so it goes."""
-    base, new = item['design_base'], item['price']
-    reasons = []
-    if base and abs(new - base) * 100 > PRICE_LOOK_PCT * base:
-        reasons.append({'code': 'big_change', 'percent': round(100 * (new - base) / base)})
-    return reasons + _sale_reasons(item['regular_cents'], new, item['sale_cents'])
+    """Why a design's new price waits for a manager's OK. Never for its size (owner, 2026-11-14: "for these
+    confirmed option because i update it every week, so we dont approve these"), however far it moves from the
+    design's own website price; only a change that would end or restart a sale waits."""
+    return _sale_reasons(item['regular_cents'], item['price'], item['sale_cents'])
 
 
 def _stored_cents(price):
@@ -589,7 +584,7 @@ def _design_base(item, context):
     - A price customers can see (the item is published) is the design's own, whatever it came from.
     - So is a price POPCORE wrote there.
     - A draft's other price is not: on 2026-11-10, 1,473 of the website's 1,521 design drafts carried their box's
-      price (often an old one) and 47 none, so a manager's first price for a draft is no jump."""
+      price (often an old one) and 47 none, so a manager's price for a draft is shown as its first price."""
     statuses, written = context
     old = item['regular_cents']
     if old and (_published(item, statuses) or written.get(item['wc_id']) == old):
