@@ -180,6 +180,55 @@ IPs' own names, filler words ("series", "figure", "blind box"…) and POPCORE ID
 ratio). For a confirmed design: the closest unlinked design under the book product its box is linked to. Below 60
 out of 100 there is no suggestion. Close words are not enough: the numbers in the two names must agree (a year, 400% against 1000%, Series 2 against 3), a real word must be left to compare once the IP's name and filler words are gone, and an item that points at an IP is only ever matched inside that IP.
 
+## Applying review decisions: `popcore_app/dex_decisions.py`, `scripts/apply_dex_decisions.py`
+
+The owner went through the loaded book in a guided review (13-14 Nov 2026) and decided card by card. The approved
+decisions are written as one decisions file, outside the repo, and applied with this tool. It writes only
+`dex_entries`, and every write goes through `dex_book`'s own `create`, `update` and `delete` as the actor
+`owner-review`, so every rule above holds; it copies none of them.
+
+```sh
+POPCORE_DB_PATH=/path/popcore.db python scripts/apply_dex_decisions.py --decisions book-decisions.json --out report-dir
+POPCORE_DB_PATH=/path/popcore.db python scripts/apply_dex_decisions.py ... --apply --backup /path/before-dex-decisions.db
+```
+
+A decisions file is a JSON list of operations (or `{"operations": [...]}`), run in order:
+
+| `op` | Fields | What it does |
+|---|---|---|
+| `create` | `kind`, `parent`, `name`, optional `blind_box`, `rarity`, `partner`, `character`, `ip`, `extras`, `key` | Makes the entry; later operations refer to it as `{"key": ...}` |
+| `set` | `entry`, `fields` (any of `name`, `partner`, `character`, `ip`, `blind_box`, `rarity`, `extras`) | Changes those fields (`extras` merges, as in the editor) |
+| `move` | `entry`, `parent` | Puts the entry under its new parent |
+| `delete` | `entry` | Deletes it with everything under it (the book's delete rules) |
+| `link` / `unlink` | `popcore_id`, `entry` | Links or unlinks the POPCORE item; a link never replaces another link (unlink first) |
+
+Every operation carries `why`: the card or decision it comes from and a plain reason (`{"card": "book D-040",
+"reason": "..."}`), shown in the report. An entry (and a parent, partner, character or IP) is referred to in one of three
+ways: `{"kind", "website_id", "item"}` (the website's number and the item flag); `{"key"}` of an earlier `create`;
+or `{"kind", "name", "parent"}` for entries with no website number (companies, partners, IPs new to the Dex), where
+the name matches in any case and `parent` is itself a reference (or null at the top).
+
+- **One transaction.** All operations run inside one `BEGIN IMMEDIATE` transaction. `dex_book.batch(con)` makes each
+  of `dex_book`'s writes a savepoint inside it instead of committing, so each one keeps all its checks. A dry run
+  (the default) rolls the whole transaction back, so the report shows exactly what each operation would do,
+  operations later in the file seeing the effect of earlier ones.
+- **Nothing half-applied.** An operation that cannot be done (an entry or item not found, a bad field, a rule that
+  refuses) is reported with the reason and its own savepoint is rolled back; the run carries on, so a dry run lists
+  every such operation. `--apply` commits only when no operation was refused; otherwise it writes nothing and exits 1.
+- **Re-runs.** An operation whose result already holds is "already done" and changes nothing (no version change): a
+  create finds its entry again by kind, parent and name (one made by `owner-review`; an entry someone else made with
+  that name is refused, refer to it instead); a set whose values hold; a move already under its parent; a delete of
+  a deleted entry; a link already made; an unlink of an item the entry does not link. Applying a file twice changes
+  nothing the second time.
+- **Backup.** `--apply` needs `--backup PATH`, a file that does not exist yet; the online backup is taken first.
+- **Report.** `dex-decisions-<time>.json` and `.xlsx` in `--out`: each operation, its status (would do, done,
+  already done, refused), what it did or would do, and why. The JSON summary goes to standard output.
+- When a rule blocks what a decision needs, the decisions file does it with these operations in the right order:
+  unlink before link; name a moved product so it does not clash with its new siblings, move it, then delete the
+  emptied series.
+- The load leaves alone rows a person changed, so a later load run does not undo what the decisions did: their rows
+  carry `updated_by='owner-review'`.
+
 ## Not in the book yet
 
 `GET /api/dex/unlinked?q=&page=&per_page=` (any signed-in role; at most 100 a page): POPCORE items no live book entry
@@ -199,5 +248,5 @@ All of these use the step 1 routes, so every rule above holds.
 3. POPCORE's half of the contract, behind its own switch: send changes and deletes, pictures.
 4. Listings by themselves and the catch-up.
 
-Tests: `popcore_app/tests/test_dex_book.py`, `popcore_app/tests/test_dex_load.py`,
+Tests: `popcore_app/tests/test_dex_book.py`, `popcore_app/tests/test_dex_load.py`, `popcore_app/tests/test_dex_decisions.py`,
 `popcore_app/tests/browser/check_dex_book.py`, `popcore_app/tests/browser/check_dex_unlinked.py`.

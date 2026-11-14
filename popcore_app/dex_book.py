@@ -19,9 +19,12 @@ Rules (docs/dex-book.md):
 - Delete takes the entry and everything under it. It is refused while any of them is linked to a POPCORE
   item, or a live entry names one as its partner, character or IP. Rows the website has (website_id) are kept
   with deleted_at, so a later step can tell the website; the others go. Deleted rows are never read.
+- batch(con): inside a transaction the caller began, each write is a savepoint instead of a commit, so many writes,
+  each with every rule, commit or roll back as one (dex_decisions applies the owner's review this way).
 """
 import json
 import sqlite3
+from contextlib import contextmanager
 
 
 class DexError(Exception):
@@ -349,8 +352,43 @@ def _actor(actor):
     return (actor or {}).get('sub')
 
 
+_BATCHES = set()  # connections inside one caller-held transaction (dex_decisions): each write is a savepoint
+
+
+@contextmanager
+def batch(con):
+    """Inside this block create, update, delete and reorder do not commit: each is a savepoint inside the
+    transaction the caller has already begun (BEGIN IMMEDIATE), so many writes, each with every rule, commit or
+    roll back as one. The caller commits or rolls back."""
+    if not con.in_transaction:
+        raise RuntimeError('dex_book.batch needs a transaction begun by the caller')
+    _BATCHES.add(id(con))
+    try:
+        yield con
+    finally:
+        _BATCHES.discard(id(con))
+
+
+def _write_in_batch(con, work):
+    con.execute('SAVEPOINT dex_write')
+    try:
+        result = work()
+    except sqlite3.IntegrityError as exc:
+        con.execute('ROLLBACK TO dex_write')
+        con.execute('RELEASE dex_write')
+        raise DexError('That clashes with another entry; reload and try again.', 'dex_conflict', 409) from exc
+    except Exception:
+        con.execute('ROLLBACK TO dex_write')
+        con.execute('RELEASE dex_write')
+        raise
+    con.execute('RELEASE dex_write')
+    return result
+
+
 def _write(con, work):
     """One write transaction; the name and link rules hold against another write at the same moment."""
+    if id(con) in _BATCHES:
+        return _write_in_batch(con, work)
     if con.in_transaction:
         con.commit()
     con.execute('BEGIN IMMEDIATE')
