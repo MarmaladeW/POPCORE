@@ -1,7 +1,8 @@
 """图鉴 Dex step 2: the one-time load of the website's book into dex_entries (owner, 2026-11-12: "The Dex itself
 lives on POPCORE"; dropped IPs are deleted for good; an outside name is a partner, never an IP under a toy maker).
 
-plan(con, export, ip_list) reads the website's book export (contract section 5) and the owner's checked IP list and
+plan(con, export, ip_list, evidence) reads the website's book export (contract section 5), the owner's checked IP list
+and, optionally, earlier linking work (read_evidence: claims that a POPCORE ID is a given book entry), and
 says what a load would do, without writing: rows to add, update, leave alone or store as deleted, the links to
 POPCORE items it would make, and everything it needs the owner to look at. apply(con, plan) does it in one
 transaction. Every row it writes passes dex_book's own checks (dex_book._check) and carries updated_by='load', which
@@ -53,6 +54,35 @@ def read_ip_list(path):
                     'company': (row.get('Checked company') or '').strip(),
                     'what': (row.get('What it is') or '').strip(), 'was_under': (row.get('Was listed under') or '').strip(),
                     'decision': (row.get('Owner decision') or '').strip(), 'note': (row.get('Note') or '').strip()})
+    return out
+
+
+EVIDENCE_COLUMNS = ('popcore_id', 'entry_kind', 'website_id', 'item', 'series_slug', 'source', 'date', 'confidence',
+                    'note')
+
+
+def read_evidence(path):
+    """Earlier linking work: one row per claim that a POPCORE ID is a book entry (docs/dex-book.md, "The load")."""
+    with open(path, encoding='utf-8-sig', newline='') as handle:
+        reader = csv.DictReader(handle)
+        missing = [column for column in EVIDENCE_COLUMNS if column not in (reader.fieldnames or [])]
+        if missing:
+            raise DexError(f'The evidence file lacks the columns {", ".join(missing)}.', 'invalid_input')
+        rows = list(reader)
+    out = []
+    for number, row in enumerate(rows, start=2):
+        kind = (row['entry_kind'] or '').strip()
+        level = (row['confidence'] or '').strip().casefold()
+        sku = (row['popcore_id'] or '').strip().upper()
+        wid = (row['website_id'] or '').strip()
+        item = (row['item'] or '').strip().casefold()
+        if kind not in ('product', 'design') or level not in ('high', 'medium') or not sku or \
+                (wid and not wid.isdigit()) or item not in ('', 'true', 'false'):
+            raise DexError(f'Evidence line {number} is not a claim this load reads.', 'invalid_input')
+        out.append({'line': number, 'sku': sku, 'kind': kind, 'website_id': int(wid) if wid else None,
+                    'item': kind == 'product' and item == 'true', 'series_slug': (row['series_slug'] or '').strip(),
+                    'source': (row['source'] or '').strip() or 'evidence', 'date': (row['date'] or '').strip(),
+                    'confidence': level, 'note': (row['note'] or '').strip()})
     return out
 
 
@@ -117,8 +147,8 @@ class _Plan:
                            'why': why, 'choices': choices})
 
 
-def plan(con, export, ip_list):
-    """What a load would do. Reads only."""
+def plan(con, export, ip_list, evidence=None):
+    """What a load would do. Reads only. evidence: read_evidence() claims, or None."""
     p = _Plan()
     entries = [entry for entry in export['entries'] if isinstance(entry, dict)]
     by_kind = defaultdict(list)
@@ -318,6 +348,8 @@ def plan(con, export, ip_list):
                    'product line.', website_id=wid)
             continue
         key = ('item', wid) if item else ('product', wid)
+        if wid is None:  # known to exist, number not known: found by its parent and name
+            key = (key[0], f'new:{entry.get("parent_kind")}:{entry.get("parent_website_id")}:{norm(entry.get("name"))}')
         if key in p.rows:
             p.flag('Product', None, entry.get('name'), f'Not loaded: the export has website number {wid} twice.',
                    website_id=wid)
@@ -350,12 +382,17 @@ def plan(con, export, ip_list):
         if parent not in p.rows:
             p.flag('Design', None, entry.get('name'), 'Not loaded: its product is not loaded.', website_id=wid)
             continue
+        key = ('design', wid) if wid is not None else \
+            ('design', f'new:{entry.get("parent_website_id")}:{norm(entry.get("name"))}')
+        if key in p.rows:
+            p.flag('Design', None, entry.get('name'), 'Not loaded: the export has this design twice.', website_id=wid)
+            continue
         rarity = entry.get('rarity')
         rarity = RARITY_WORDS.get(rarity, rarity) if rarity else None
         if rarity is not None and rarity not in dex_book.RARITIES:
-            p.flag('Design', ('design', wid), entry.get('name'), f'Unknown rarity "{rarity}"; loaded with none.', website_id=wid)
+            p.flag('Design', key, entry.get('name'), f'Unknown rarity "{rarity}"; loaded with none.', website_id=wid)
             rarity = None
-        _add(p, ('design', wid), kind='design', name=entry.get('name'), parent=parent, entry=entry, rarity=rarity,
+        _add(p, key, kind='design', name=entry.get('name'), parent=parent, entry=entry, rarity=rarity,
              deleted=p.rows[parent]['deleted'], character=char_key(entry))
 
     for key, row in p.rows.items():  # everything under a stored-as-deleted row is stored as deleted
@@ -364,7 +401,7 @@ def plan(con, export, ip_list):
 
     _doubles(p)
     _against_database(con, p)
-    _pair(con, p)
+    _pair(con, p, evidence or [])
     _plan_suggestions(p)
     for flag in p.flags:
         key = flag.pop('key')
@@ -567,7 +604,7 @@ def _box_sku(sku):
     return found.group(1) if found else sku
 
 
-def _pair(con, p):
+def _pair(con, p, evidence=()):
     items = _items(con)
     by_sku = {row['sku'].upper(): row for row in items if row['sku']}
     taken = {}  # product id -> entry id, for live links that stay
@@ -632,6 +669,10 @@ def _pair(con, p):
                 hits[item['id']] = item
         if len(hits) == 1:
             link(row, next(iter(hits.values())), 'By ID (website listing)')
+    # Earlier linking work (--evidence), after the ID pairing, so that what it pairs counts for the box and series
+    # steps below as it will on a re-run.
+    _pair_by_evidence(p, evidence, by_sku, used, taken, free, link)
+    products = [row for row in products if not row['product_id']]
     # 3. A product line through its designs' IDs, then through its series.
     children = defaultdict(list)
     for row in p.rows.values():
@@ -707,6 +748,13 @@ def _pair(con, p):
             p.flag('Design', row['key'], row['name'],
                    f'Name close to {scored[0][1]["sku"]} “{scored[0][1]["design_name"]}” but not equal. Pair them?',
                    scored[0][1]['sku'], row['website_id'])
+    # A claim asked about that a later step paired the same way needs no pick.
+    settled = [flag for flag, item_id, key in getattr(p, 'evidence_asked', [])
+               if key in p.rows and item_id and p.rows[key]['product_id'] == item_id]
+    if settled:
+        p.flags = [flag for flag in p.flags if not any(flag is done for done in settled)]
+        p.evidence['your_pick'] -= len(settled)
+        p.evidence['agrees'] += len(settled)
     # Not paired: POPCORE items with no live book link after the load.
     linked = set(used) | set(taken)
     p.linked_items = linked
@@ -715,6 +763,99 @@ def _pair(con, p):
         if row['paired'] and row['action'] in ('person', 'same') and row['existing'] and \
                 row['existing']['product_id'] != row['product_id']:
             row['action'] = 'update' if row['action'] == 'same' else row['action']
+
+
+def _pair_by_evidence(p, evidence, by_sku, used, taken, free, link):
+    """A high claim pairs the item ("Earlier linking work"). A medium claim, one that conflicts with the listing IDs,
+    with the pairing already made or with another claim, or one that names an entry the export lacks goes to the
+    owner's pick with the choice filled in. A link a person made is never touched."""
+    p.evidence = Counter()
+    p.evidence_asked = []  # (flag, item id, entry key): dropped at the end when a later step pairs them the same way
+    if not evidence:
+        return
+    holder_of = {row['product_id']: row for row in p.rows.values() if row['product_id']}  # item id -> its entry
+    by_entry = {}
+    for key, row in p.rows.items():
+        if row['kind'] in ('product', 'design') and row['website_id'] is not None and not row['deleted']:
+            by_entry[('item' if row['website_item'] else row['kind'], row['website_id'])] = key
+    claims = defaultdict(list)
+    for claim in evidence:
+        claims[claim['sku']].append(claim)
+    claimed = defaultdict(set)  # entry key -> POPCORE IDs claiming it
+    for sku, rows in claims.items():
+        for claim in rows:
+            key = by_entry.get(('item' if claim['item'] else claim['kind'], claim['website_id']))
+            claim['key'] = key
+            if key:
+                claimed[key].add(sku)
+
+    def where(claim):
+        kind = 'item' if claim['item'] else claim['kind']
+        return f'{kind} {claim["website_id"] if claim["website_id"] is not None else "(no number)"}' + \
+            (f' in {claim["series_slug"]}' if claim['series_slug'] else '')
+
+    def ask(claim, item, why):
+        p.evidence['your_pick'] += 1
+        label = (item or {}).get('name_cn_en') or (item or {}).get('jizhanming') or ''
+        key = claim['key']
+        row = p.rows.get(key) if key else None
+        name = row['name'] if row else label or claim['sku']
+        p.flag('Earlier linking', key, name, f'{why} Source: {claim["source"]} ({claim["date"]}, {claim["confidence"]})'
+               + (f'. {claim["note"]}' if claim['note'] else '') + '.',
+               f'Pair {claim["sku"]} “{label}” with {where(claim)}', row['website_id'] if row else claim['website_id'],
+               full=True)
+        p.evidence_asked.append((p.flags[-1], (item or {}).get('id'), key))
+
+    for sku in sorted(claims):
+        rows = claims[sku]
+        item = by_sku.get(sku)
+        targets = {claim['key'] for claim in rows}
+        newest = sorted(rows, key=lambda c: c['date'], reverse=True)
+        best = sorted(newest, key=lambda c: c['confidence'] != 'high')[0]  # high first, then the newest
+        if item is None:
+            p.evidence['popcore_id_unknown'] += 1
+            continue
+        if None in targets:
+            ask(next(c for c in rows if c['key'] is None), item, 'The claim names a book entry the export lacks (or one stored as deleted).')
+            continue
+        if len(targets) > 1:
+            ask(best, item, 'Sources disagree about this POPCORE item: ' + '; '.join(
+                f'{where(c)} ({c["source"]})' for c in rows) + '.')
+            continue
+        key = best['key']
+        row = p.rows[key]
+        if (item['stock_form'] == 'confirmed_design') != (row['kind'] == 'design') or item['stock_form'] == 'sealed_set':
+            ask(best, item, 'The POPCORE item is not of the kind the entry is (a design pairs with a design, a product '
+                'with a box or an item).')
+            continue
+        if row['product_id'] == item['id']:
+            p.evidence['agrees'] += 1
+            continue
+        if item['id'] in used or item['id'] in taken:
+            holder = holder_of.get(item['id'])
+            ask(best, item, 'The item is already paired with another entry'
+                + (f' ({holder["name"]}, {holder["paired"] or "kept"}).' if holder else '.'))
+            continue
+        if row['action'] == 'person' or row['product_id']:
+            by_person = row['action'] == 'person' or (row['existing'] or {}).get('updated_by', LOAD) != LOAD
+            ask(best, item, 'The entry is already paired with another item' + (' by a person' if by_person else '') + '.')
+            continue
+        if len(claimed[key]) > 1:
+            ask(best, item, 'Several POPCORE items are claimed for this entry: ' + ', '.join(sorted(claimed[key])) + '.')
+            continue
+        others = [i for i in row['listing_ids'] if i != sku and (row['kind'] == 'design' or _box_sku(i) != sku)
+                  and i in by_sku and (by_sku[i]['stock_form'] == 'confirmed_design') == (row['kind'] == 'design')]
+        if others:
+            ask(best, item, 'The website listings tie this entry to ' + ', '.join(sorted(set(others))) + '.')
+            continue
+        if best['confidence'] != 'high':
+            ask(best, item, 'A medium claim.')
+            continue
+        if not free(item, row):
+            ask(best, item, 'The item is already linked elsewhere.')
+            continue
+        link(row, item, f'Earlier linking work ({best["source"]})')
+        p.evidence['paired'] += 1
 
 
 def suggest_ip(item, ip_names):
@@ -948,7 +1089,8 @@ def summary(p):
     deleted = Counter(row['kind'] for row in p.rows.values() if row['deleted'])
     actions = Counter(row['action'] for row in p.rows.values())
     how = Counter('By ID' if pair['how'].startswith('By ID') else 'Through its series' if pair['how'].startswith('Through')
-                  else 'Already linked, kept' if pair['how'].startswith('Already') else 'By name' for pair in p.paired)
+                  else 'Already linked, kept' if pair['how'].startswith('Already')
+                  else 'Earlier linking work' if pair['how'].startswith('Earlier') else 'By name' for pair in p.paired)
     return {'entries_by_kind': {kind: live.get(kind, 0) for kind in ORDER},
             'stored_as_deleted_by_kind': {kind: deleted.get(kind, 0) for kind in ORDER if deleted.get(kind)},
             'actions': {ACTION_WORDS.get(k, k): v for k, v in actions.items()},
@@ -959,7 +1101,10 @@ def summary(p):
             'boxes_and_items_suggested_85_plus': sum(
                 1 for item in p.not_paired if item['stock_form'] != 'confirmed_design'
                 and (p.suggestions.get(item['id']) or {}).get('score', 0) >= 85), 'unmatched_names': len(p.unmatched),
-            'left_alone_people': actions.get('person', 0), 'no_longer_in_export': len(p.gone)}
+            'left_alone_people': actions.get('person', 0), 'no_longer_in_export': len(p.gone),
+            'no_website_number': sum(1 for row in p.rows.values() if row['website_id'] is None
+                                     and row['kind'] not in ('company', 'partner') and not row.get('new_to_dex')),
+            'evidence': {k: v for k, v in getattr(p, 'evidence', {}).items() if v}}
 
 
 def sheet_tabs(con, p, ip_list):
@@ -999,7 +1144,9 @@ def sheet_tabs(con, p, ip_list):
                  [(kind_words[row['kind']], path_of(p, row['key']), row['name'], row['website_id'] or '',
                    'Kept as deleted (the website will delete it)' if row['deleted'] else
                    'New to the Dex (from the IP list; the website has no row yet)'
-                   if row.get('new_to_dex') and row['action'] == 'add' else ACTION_WORDS.get(row['action'], ''),
+                   if row.get('new_to_dex') and row['action'] == 'add' else
+                   'New (no website number known)' if row['action'] == 'add' and row['website_id'] is None
+                   and row['kind'] not in ('company', 'partner') else ACTION_WORDS.get(row['action'], ''),
                    'yes' if row['picture_url'] else '', _sku(con, row['product_id'])) for row in loaded]))
     tabs.append(('Paired', ('Item ID', 'Item name', 'Book entry', 'How it was paired'),
                  [(pair['sku'], pair['item'], f'{path_of(p, pair["key"])} › {p.rows[pair["key"]]["name"]}', pair['how'])

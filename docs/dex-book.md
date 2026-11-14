@@ -89,6 +89,7 @@ characters, series, products, designs, no companies or partners) and the owner's
 ```sh
 POPCORE_DB_PATH=/path/popcore.db python scripts/load_dex_book.py --export book-export.json \
     --ip-list ip-list-checked.csv --out review-dir                  # dry run: reads only, writes the review sheet
+POPCORE_DB_PATH=/path/popcore.db python scripts/load_dex_book.py ... --evidence pairing-evidence.csv   # with earlier linking work
 POPCORE_DB_PATH=/path/popcore.db python scripts/load_dex_book.py ... --apply --backup /path/before-dex-load.db
 ```
 
@@ -131,9 +132,24 @@ What the plan does:
    product and one box; by name when it has several); then designs by name inside their paired box (the POPCORE
    design's `design_name`). Close names that are not equal are flagged, not paired. A link already made (by the
    load or a person) is kept, and an item linked elsewhere is never taken.
+   **Earlier linking work** (`--evidence PATH`, optional): a CSV of claims that a POPCORE ID is a given book entry,
+   columns `popcore_id, entry_kind (product|design), website_id, item (true|false, products), series_slug, source,
+   date, confidence (high|medium), note`, made from earlier linking work (POPCORE's 26 Oct Dex designs, the website
+   catalog files). It runs after the pairing by the item's own listing IDs and before the steps through a product's
+   designs, its series and names in a box, so a re-run pairs the same way. A `high` claim pairs the item, reported as
+   "Earlier linking work (<source>)". Each of these goes to the Your pick tab instead, with the pairing written in
+   Choices and the reason (and the claim's source and note) in "Why it needs you": a `medium` claim; a claim naming
+   an entry the export lacks; sources that name several entries for one item, or several items for one entry; an
+   entry whose own listing IDs name another POPCORE item of its kind; an item or entry already paired (by its IDs, a
+   person or an earlier load); an item of the wrong kind (a design pairs only with a confirmed design, a product with
+   a box or an item, never a sealed set). A claim a later step pairs the same way is not asked. A link a person made
+   is never replaced. A POPCORE ID that no longer exists is counted and skipped. The summary's `evidence` counts
+   claims paired, agreeing with a pairing already made, and asked.
 8. **Re-runs**: rows are found by kind + `website_id` (companies and partners also by name). A row the load wrote
    last (`updated_by='load'`) is updated when the export differs (version + 1); a row a person changed is left
-   alone and counted. A hand-made entry of the same kind, parent and name is adopted: it gets the website number
+   alone and counted. An entry the export knows but with no website number (`website_id` null) is found by its
+   parent and name, and is shown as "New (no website number known)". A hand-made entry of the same kind, parent and
+   name is adopted: it gets the website number
    and pictures, fills what is blank, keeps what the person typed, and stays the person's row (later runs leave
    it alone). A second run with the same inputs changes nothing.
 
