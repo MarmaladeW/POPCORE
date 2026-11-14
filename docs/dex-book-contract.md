@@ -1,11 +1,12 @@
 # The book contract: POPCORE and popcore.ca
 
-Version 1.4, draft, 14 Nov 2026 (1.3: a product or design in a series that spans several IPs names its own IP, `ip_ref`. 1.4: a series or a product may sit straight under a partner; every product and design carries `full_name`; names follow the owner's naming standard). Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
+Version 1.6, draft, 14 Nov 2026 (1.6: a product the shop stocks carries `price_history` too, and question 12; the brief for the website session is `prompt-for-website-session.md` beside this file. 1.5: a design carries `price_history`, POPCORE's recorded prices, which the website's price chart shows; it replaces `market_prices`. 1.3: a product or design in a series that spans several IPs names its own IP, `ip_ref`. 1.4: a series or a product may sit straight under a partner; every product and design carries `full_name`; names follow the owner's naming standard). Changes since 1.0: section 5 says the read is the website's own view until switch-over; `parent_category` is in a product's extras; a product carries `item`, and the read carries `parent_kind` (line and item numbers overlap on the website, and so do series and IP numbers); a character may sit under a partner; question 11 added. Written by the POPCORE session for the website session to build against.
 Nothing here is built on either side. Route names are proposals; the shapes and rules are the contract.
 Questions for the website session are in section 10. Answers change this file, not side notes.
 
 ## 1. Who holds what
 
+- **The owner's picture of the two systems** (14 Nov 2026): POPCORE is the core that runs everything; popcore.ca is the suit around it ("POPCORE being the core running component within popcore.ca, and popcore.ca is like iron man's hulk suit where POPCORE is like iron man"). Where this contract is silent, the fact lives in POPCORE and the website shows it.
 - **POPCORE holds the book**: Company → IP → Series → Product → Design, a list of Partners, a list of Characters per IP, each entry's Dex name, order, picture choice and a refined copy of the collector facts (section 4).
 - **popcore.ca holds a copy** and everything collectors and shoppers touch: the Dex pages, page addresses, collectors' marks, follows, votes and suggested edits, the picture files, and the shop listings.
 - POPCORE calls the website. The website never calls POPCORE.
@@ -88,10 +89,14 @@ An object of named values. A key that is absent is left alone on the website. A 
 | `ip` | `description`, `aliases`, `is_original` |
 | `character` | `description`, `aliases` |
 | `series` | `release_date`, `flavour_text`, `description`, `aliases`, `tags`, `designer` |
-| `product` | `format`, `release_label`, `description`, `retail_price`, `retail_price_box`, `retail_currency`, `variants_normal`, `variants_secret`, `secret_odds`, `parent_category` |
-| `design` | `weight`, `weight_range`, `shake_level`, `shake_note`, `flavour_text`, `market_prices` (list of `{price, recorded_at, source}`) |
+| `product` | `format`, `release_label`, `description`, `retail_price`, `retail_price_box`, `retail_currency`, `variants_normal`, `variants_secret`, `secret_odds`, `parent_category`, `price_history` (as on a design) |
+| `design` | `weight`, `weight_range`, `shake_level`, `shake_note`, `flavour_text`, `price_history` (list of `{price, recorded_at}`, oldest first) |
 
 POPCORE's value is the official one. What collectors add themselves stays on the website.
+
+**`price_history`** (owner, 14 Nov 2026: "the price history chart on popcore.ca should show the price change recorded in POPCORE"): every price POPCORE has recorded for the design's item, with the time it was set (UTC). It is always sent whole. The website's price chart for the design shows exactly these points and nothing else; points the website holds from before are replaced by them, not mixed in. A design the shop has never priced sends an empty list.
+
+A product the shop stocks (a single item, or a blind box's Single Box) carries the same key with its own recorded prices (owner, 14 Nov 2026, asked whether every item's price changes should be kept: "Yes, every item"). POPCORE starts keeping these when that change goes live, so an item's history begins with its price on that day. Until then the key is absent on products, which leaves the website's own points alone.
 
 ## 5. Reading the book: `GET /wp-json/popcore/v1/book`
 
@@ -198,3 +203,4 @@ Rules for the website:
 9. **Picture safety**: the owner says the pictures are hard to get. Are the originals in the website's backups, and where is a second copy kept?
 10. Anything in this contract that the website cannot do, or would do differently.
 11. **A series straight under a company** (POP MART's own sets, POPCAR, the POP MART catch-all): today every series page is addressed through an IP (`/dex/{ip}/{series}/`). How will the website show and address a series whose parent is a company, and should the "not an IP" rows be deleted at switch-over or kept as pages?
+12. **The price chart** (section 4): the chart sits on a figure today and holds 17 points of the website's own. Which designs are those 17 on (they are replaced when `price_history` arrives, so the owner should see them first)? An item figure can show a product's `price_history` as it is; should a blind box (a product line) show its Single Box price history, and where?

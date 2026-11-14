@@ -82,3 +82,39 @@ export interface DexPricePoint {
 export interface DexWebsitePrice { price: number; recorded_at: string | null; source: string | null }
 export interface DexPrices { linked: boolean; current_cents: number | null; points: DexPricePoint[]; website: DexWebsitePrice[] }
 export const entryPrices = (id: number) => client.get<DexPrices>(`/dex/entries/${id}/prices`).then(r => r.data)
+
+// 图鉴同步 Dex sync, step 3: POPCORE sends the book to popcore.ca behind its own switch (dex_sync.py). Times are UTC.
+export interface DexSyncProblem { code: string; message: string; at: string }
+export interface DexSyncRefused {
+  id: number; kind: DexKind; name: string; deleted: boolean; place: string[]; code: string; message: string; at: string | null
+}
+export interface DexSyncStatus {
+  configured: boolean; settings_problem: string | null; url: string | null; enabled: boolean
+  switched_at: string | null; switched_by: string | null; last_run: string | null
+  last_sent_at: string | null; last_sent_count: number; first_send_done: boolean
+  last_error: DexSyncProblem | null
+  // The last time an admin's turn-on asked the website's book route.
+  website_check: ({ ok: true; at: string } | ({ ok: false } & DexSyncProblem)) | null
+  counts: { waiting: number; sent: number; refused: number; behind: number; deletes: number }
+  refused: DexSyncRefused[]
+}
+export interface DexSyncPreview {
+  create: number; update: number; delete: number; removed_quietly: number
+  deletes: { id: number; kind: DexKind; name: string; website_id: number | null; place: string[] }[]
+}
+export interface DexSyncEntryState {
+  enabled: boolean; state: 'sent' | 'waiting' | 'refused' | 'behind'; version: number; sent_version: number
+  website_id: number | null; code: string | null; message: string | null
+}
+export const dexSyncStatus = () => client.get<DexSyncStatus>('/dex/sync').then(r => r.data)
+export const dexSyncPreview = () => client.get<DexSyncPreview>('/dex/sync/preview').then(r => r.data)
+export const dexSyncEntry = (id: number) => client.get<DexSyncEntryState>(`/dex/sync/entries/${id}`).then(r => r.data)
+export const switchDexSync = (on: boolean, confirm_deletes?: number) =>
+  client.post<DexSyncStatus>('/dex/sync/switch', { on, ...(confirm_deletes === undefined ? {} : { confirm_deletes }) }).then(r => r.data)
+export const retryDexSync = (target: number | 'all') =>
+  client.post<{ retried: number }>('/dex/sync/retry', target === 'all' ? { all: true } : { id: target }).then(r => r.data)
+export const uploadDexPicture = (id: number, file: File) => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post<DexDetail>(`/dex/entries/${id}/picture`, form).then(r => r.data)
+}

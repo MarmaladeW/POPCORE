@@ -1,11 +1,23 @@
 """图鉴 Dex: the book in POPCORE (owner, 2026-11-12: "The Dex itself lives on POPCORE"). Any signed-in role
-reads it; managers and admins write it. The rules are in dex_book.py and docs/dex-book.md."""
+reads it; managers and admins write it. The rules are in dex_book.py and docs/dex-book.md.
+
+Step 3, the Dex sync to popcore.ca (dex_sync.py): managers see its state and preview, retry refused entries and upload
+pictures; only admins turn it on or off."""
+import io
+
 from flask import Blueprint, jsonify, request
+from PIL import Image, ImageSequence, UnidentifiedImageError
 
 import dex_book
 import dex_load
+import dex_sync
 from auth import login_required, role_required
+from blueprints.products import MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS
 from db import get_db
+from website_sync import WebsiteError
+
+# The picture types the website takes (contract section 6), the same the app takes for product pictures.
+PICTURE_TYPES = {'JPEG': 'image/jpeg', 'PNG': 'image/png', 'WEBP': 'image/webp', 'AVIF': 'image/avif', 'GIF': 'image/gif'}
 
 bp = Blueprint('dex', __name__)
 
@@ -106,3 +118,111 @@ def dex_delete(entry_id):
 @role_required('manager')
 def dex_reorder():
     return _run(lambda con: dex_book.reorder(con, request.get_json(silent=True), request.jwt_payload))
+
+
+# ── Step 3: the Dex sync to popcore.ca ───────────────────────────────────────
+
+def _website_problem(exc):
+    """A failed call to the website as a plain answer. The book route missing, or the key refused there, means the
+    website's half of the sync is not there yet."""
+    if exc.code in ('website_half_missing', 'website_auth'):
+        message = dex_sync.HALF_MISSING if exc.code == 'website_half_missing' else str(exc)
+        return jsonify(error=message, code='website_half_missing'), 409
+    if exc.code == 'confirm_deletes':
+        return jsonify(error=str(exc), code=exc.code), 400
+    if exc.code == 'not_configured':
+        return jsonify(error=str(exc), code=exc.code), 400
+    return jsonify(error=str(exc), code=exc.code), 502
+
+
+@bp.get('/api/dex/sync')
+@role_required('manager')
+def dex_sync_status():
+    return jsonify(dex_sync.status(get_db()))
+
+
+@bp.get('/api/dex/sync/preview')
+@role_required('manager')
+def dex_sync_preview():
+    return jsonify(dex_sync.preview(get_db()))
+
+
+@bp.get('/api/dex/sync/entries/<int:entry_id>')
+@login_required
+def dex_sync_entry(entry_id):
+    """One entry's sync state for its page: sent, waiting, refused (with the website's reason) or behind."""
+    return _run(lambda con: dex_sync.entry_state(con, entry_id))
+
+
+@bp.post('/api/dex/sync/switch')
+@role_required('admin')
+def dex_sync_switch():
+    """Turn the Dex sync on or off (admins). On first asks the website's book route; with deletes in the preview the
+    request carries their count, typed by the admin (confirm_deletes)."""
+    body = request.get_json(silent=True) or {}
+    on = body.get('on')
+    if not isinstance(on, bool):
+        return jsonify(error='on is true or false.', code='invalid_input'), 400
+    confirm = body.get('confirm_deletes')
+    if isinstance(confirm, str) and confirm.strip().isdigit():
+        confirm = int(confirm.strip())
+    cfg, problem = dex_sync.settings()
+    if on and cfg is None:
+        return jsonify(error=problem, code='not_configured'), 400
+    con = get_db()
+    try:
+        dex_sync.switch(con, cfg, on, request.jwt_payload.get('sub'), confirm if isinstance(confirm, int) else None)
+    except WebsiteError as exc:
+        if con.in_transaction:
+            con.rollback()
+        return _website_problem(exc)
+    return jsonify(dex_sync.status(con))
+
+
+@bp.post('/api/dex/sync/retry')
+@role_required('manager')
+def dex_sync_retry():
+    """Send one refused entry ({id}) or every refused entry ({all: true}) again on the next pass."""
+    body = request.get_json(silent=True) or {}
+    entry_id = body.get('id')
+    if body.get('all') is not True and (isinstance(entry_id, bool) or not isinstance(entry_id, int)):
+        return jsonify(error='Give the entry’s id, or all.', code='invalid_input'), 400
+    return _run(lambda con: {'retried': dex_sync.retry(con, None if body.get('all') is True else entry_id)})
+
+
+@bp.post('/api/dex/entries/<int:entry_id>/picture')
+@role_required('manager')
+def dex_picture(entry_id):
+    """A manager uploads a picture for an entry: POPCORE passes the file to the website's pictures route and keeps
+    the id and addresses it returns (contract section 6). Same limits as product pictures."""
+    if request.content_length and request.content_length > 12 * 1024 * 1024:
+        return jsonify(error='That picture is too large (10 MB at most).', code='image_too_large'), 413
+    upload = request.files.get('file')
+    if upload is None:
+        return jsonify(error='Choose a picture file.', code='invalid_input'), 400
+    con = get_db()
+    if con.execute('SELECT 1 FROM dex_entries WHERE id=? AND deleted_at IS NULL', (entry_id,)).fetchone() is None:
+        return jsonify(error='That Dex entry does not exist.', code='dex_not_found'), 404
+    content = upload.stream.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        return jsonify(error='That picture is too large (10 MB at most).', code='image_too_large'), 413
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image_format = image.format
+            if image.width * image.height * getattr(image, 'n_frames', 1) > MAX_IMAGE_PIXELS:
+                return jsonify(error='That picture has too many pixels.', code='image_too_large'), 413
+            image.verify()
+        with Image.open(io.BytesIO(content)) as image:
+            for frame in ImageSequence.Iterator(image):
+                frame.load()
+        mimetype = PICTURE_TYPES[image_format]
+    except (KeyError, OSError, SyntaxError, UnidentifiedImageError, ValueError):
+        return jsonify(error='That is not a JPEG, PNG, WebP, AVIF or GIF picture.', code='invalid_image'), 400
+    cfg, problem = dex_sync.settings()
+    if cfg is None:
+        return jsonify(error=problem, code='not_configured'), 400
+    try:
+        picture_id, url, thumb = dex_sync.upload_picture(cfg, entry_id, content, upload.filename or 'picture', mimetype)
+    except WebsiteError as exc:
+        return _website_problem(exc)
+    return _run(lambda con: dex_book.set_picture(con, entry_id, picture_id, url, thumb, request.jwt_payload))
