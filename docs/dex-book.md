@@ -39,8 +39,11 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
 
 ## Rules (`popcore_app/dex_book.py`)
 
-- Allowed parents: ip under a company; character under an IP or a partner (contract 1.2); series under an IP or a company; product under a
-  series, an IP or a company; design under a product. Companies and partners have no parent.
+- Allowed parents: ip under a company; character under an IP or a partner (contract 1.2); series under an IP, a
+  company or a partner; product under a series, an IP, a company or a partner; design under a product. Companies and
+  partners have no parent. Under a partner sit goods that carry only that outside name, grouped by it (owner,
+  2026-11-14: "group it by IPs, Pokemon; NARUTO; Miffy…"): the Pokémon figures under Pokémon. A partner is deleted
+  with what sits under it, like any parent, with the same refusals.
 - A name is required. Two live entries of one kind under one parent cannot share a name, in any case (409).
 - `partner_id` only on series and products, and it must be a live partner. `character_id` only on series,
   products and designs, and it must be a live character. `blind_box` only on products. `rarity` only on designs.

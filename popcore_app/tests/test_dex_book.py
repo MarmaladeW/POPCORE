@@ -80,10 +80,14 @@ class DexBookTests(IsolatedApiCase):
         self.add('product', 'IP plush', ip)
         product = self.add('product', 'Company pin', company)
         self.add('design', 'Sun', product)
+        # Owner, 2026-11-14: goods that carry only an outside name sit straight under that partner.
+        under_partner = self.add('series', 'Battle Moment Series', partner)
+        self.add('product', 'Figures', under_partner)
+        self.add('product', 'Pikachu Figure - Chef', partner)
         self.assertTrue(series_under_company and partner)
         refused = [('company', company), ('partner', company), ('ip', None), ('ip', ip), ('character', company),
-                   ('series', partner), ('series', None), ('product', product), ('product', partner),
-                   ('design', series_under_ip), ('design', None)]
+                   ('series', None), ('series', product), ('product', product), ('product', None), ('design', partner),
+                   ('design', series_under_ip), ('design', None), ('ip', partner)]
         for kind, parent in refused:
             response = self.post(kind=kind, name='X', parent_id=parent)
             self.assertEqual(response.status_code, 400, (kind, parent, response.get_json()))
@@ -246,6 +250,27 @@ class DexBookTests(IsolatedApiCase):
         response = self.client.post('/api/dex/reorder', json={'parent_id': None, 'ids': [dreams, company]},
                                     headers=self.headers('manager'))
         self.assertEqual([row['name'] for row in response.get_json()], ['Dreams', 'POP MART'])
+
+    def test_deleting_a_partner_removes_what_sits_under_it_and_keeps_the_refusals(self):
+        partner = self.add('partner', 'Pokémon')
+        series = self.add('series', 'Battle Moment Series', partner)
+        line = self.add('product', 'Figures', series)
+        item = self.add('product', 'Pikachu Figure - Chef', partner)
+        self.patch(line, product_id=self.items['PM0100'])
+        response = self.client.delete(f'/api/dex/entries/{partner}', headers=self.headers('manager'))
+        self.assertEqual((response.status_code, response.get_json()['code']), (409, 'dex_linked'))
+        self.patch(line, product_id=None)
+        company = self.add('company', 'POP MART')
+        other = self.add('series', 'Pokémon Collab Series', company, partner_id=partner)
+        response = self.client.delete(f'/api/dex/entries/{partner}', headers=self.headers('manager'))
+        self.assertEqual((response.status_code, response.get_json()['code']), (409, 'dex_in_use'))
+        self.patch(other, partner_id=None)
+        self.assertEqual(self.get(f'/api/dex/entries/{partner}/removal')['counts'], {'partner': 1, 'series': 1, 'product': 2})
+        response = self.client.delete(f'/api/dex/entries/{partner}', headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as con:
+            left = {row[0] for row in con.execute('SELECT id FROM dex_entries')}
+        self.assertFalse({partner, series, line, item} & left)
 
     def test_delete_rules(self):
         company, ip, series, product, (sun, moon) = self.book()
