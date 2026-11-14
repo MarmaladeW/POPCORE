@@ -2116,6 +2116,7 @@ def _get_migrations():
         ('dex_entries_website_item',                   _migration_dex_entries_website_item),
         ('dex_entries_ip',                             _migration_dex_entries_ip),
         ('dex_entries_load_key',                       _migration_dex_entries_load_key),
+        ('dex_sync',                                   _migration_dex_sync),
         ('product_price_history',                      _migration_product_price_history),
     ]
 
@@ -2356,6 +2357,30 @@ def _migration_dex_entries_load_key(con, cur):
     if 'load_key' not in columns:
         cur.execute('ALTER TABLE dex_entries ADD COLUMN load_key TEXT')
     cur.execute("INSERT INTO _migrations(name) VALUES ('dex_entries_load_key')")
+
+
+def _migration_dex_sync(con, cur):
+    # 图鉴 Dex sync, step 3 (owner, 2026-11-14: "yes build the POPCORE -> popcore.ca sync"; and "the price history
+    # chart on popcore.ca should show the price change recorded in POPCORE"). The sync's own switch and last run live
+    # in a new small table, apart from the stock sync's website_state. Two nullable columns on dex_entries record the
+    # newest design_prices row and the POPCORE ID that the entry's current version carries, so the sender notices a
+    # new price or ID by itself (design_prices.py never raises a book version) and raises the version. They start at
+    # today's values, so turning on does not raise every linked entry's version. Older code never reads them.
+    cur.execute("""CREATE TABLE IF NOT EXISTS dex_sync_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(dex_entries)')}
+    if 'sync_price_id' not in columns:
+        cur.execute('ALTER TABLE dex_entries ADD COLUMN sync_price_id INTEGER')
+    if 'sync_popcore_id' not in columns:
+        cur.execute('ALTER TABLE dex_entries ADD COLUMN sync_popcore_id TEXT')
+    cur.execute("""UPDATE dex_entries SET
+                       sync_popcore_id=(SELECT p.sku FROM products p WHERE p.id=dex_entries.product_id),
+                       sync_price_id=CASE WHEN kind='design' THEN
+                           (SELECT MAX(d.id) FROM design_prices d WHERE d.product_id=dex_entries.product_id) END
+                   WHERE product_id IS NOT NULL""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('dex_sync')")
 
 
 # products.price in cents, or NULL when it holds no number.

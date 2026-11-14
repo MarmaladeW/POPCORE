@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
-import { Alert, Button, Skeleton } from 'antd'
+import { useEffect, useRef, useState } from 'react'
+import { Alert, Button, Skeleton, message } from 'antd'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
-import { childEntries, getEntry, type DexDetail, type DexEntry, type DexKind } from '../../api/dex'
+import {
+  childEntries, dexSyncEntry, getEntry, uploadDexPicture, type DexDetail, type DexEntry, type DexKind, type DexSyncEntryState,
+} from '../../api/dex'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
@@ -16,6 +18,26 @@ import './dex.css'
 const plain = (kind: DexKind) => kind === 'ip' ? 'IP' : KIND_LABEL[kind].en.toLowerCase()
 const show = (value: unknown) => Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? '是 Yes' : '否 No') : String(value)
 
+const SYNC_TEXT: Record<DexSyncEntryState['state'], string> = {
+  sent: '已发送 Sent', waiting: '待发送 Waiting', refused: '被拒 Refused', behind: '等上级 Waiting behind a refused entry',
+}
+
+// Step 3: where this entry stands with popcore.ca (sent, waiting, refused with the website's reason).
+function DexSyncState({ entryId, version }: { entryId: number; version: number }) {
+  const [state, setState] = useState<DexSyncEntryState | null>(null)
+  useEffect(() => {
+    let live = true
+    dexSyncEntry(entryId).then(next => { if (live) setState(next) }).catch(() => { if (live) setState(null) })
+    return () => { live = false }
+  }, [entryId, version])
+  if (!state) return null
+  return <p className="pc-dex-sync-state" aria-label="Dex sync state">
+    <span>网站 popcore.ca:</span><strong>{SYNC_TEXT[state.state]}</strong>
+    {state.state === 'refused' && <span>{state.code}: {state.message}</span>}
+    {!state.enabled && state.state !== 'sent' && <span>(图鉴同步关 Dex sync off)</span>}
+  </p>
+}
+
 // One entry of the 图鉴 Dex: where it sits, what it is, and what sits under it, grouped by kind.
 export default function DexEntryPage() {
   const id = Number(useParams().id)
@@ -26,6 +48,23 @@ export default function DexEntryPage() {
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
   const [editing, setEditing] = useState<DexEditing | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+
+  async function upload(file: File | undefined) {
+    if (!file) return
+    setUploading(true)
+    try {
+      await uploadDexPicture(id, file)
+      message.success('图片已上传 · Picture uploaded to popcore.ca')
+      setAttempt(n => n + 1)
+    } catch (cause) {
+      message.error(errorText(cause, 'The picture did not upload. Try again.'))
+    } finally {
+      setUploading(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
 
   useEffect(() => {
     let live = true
@@ -87,8 +126,12 @@ export default function DexEntryPage() {
         {entry.ip && <DexIpTag tag={entry.ip} />}
         {facts.length ? <dl>{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
           : <p className="pc-dex-note">{manager ? 'No details yet. 编辑 Edit adds them.' : 'No details yet.'}</p>}
+        <DexSyncState entryId={entry.id} version={entry.version} />
         {manager && <span className="pc-dex-actions">
           <Button onClick={() => setEditing({ mode: 'edit', entry })}>编辑 Edit</Button>
+          <Button loading={uploading} onClick={() => fileInput.current?.click()}>上传图片 Upload picture</Button>
+          <input ref={fileInput} className="pc-dex-file" type="file" aria-label="Picture file"
+            accept="image/jpeg,image/png,image/webp,image/avif,image/gif" onChange={event => upload(event.target.files?.[0])} />
           <Button danger onClick={() => confirmDelete(entry, () => navigate(back.to))}>删除 Delete</Button>
         </span>}
       </div>

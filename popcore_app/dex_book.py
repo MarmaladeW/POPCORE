@@ -17,7 +17,11 @@ Rules (docs/dex-book.md):
   sealed set); a book design links a confirmed design, and under a product that is not a blind box (blind_box 0)
   also a single item (a colour or version sold on its own). One POPCORE item, one live entry.
 - extras: the refined copy, only the keys the contract names for the kind (docs/dex-book-contract.md §4).
-- Every accepted change raises version by one.
+- Every accepted change raises version by one. Renaming or moving an entry also raises the version of every live
+  entry under it, since their full names changed (step 3 sends them again).
+- Step 3: dex_sync.py writes only the sync columns (sent_version, send_error, website_id and website_item from the
+  website's answer, sync_price_id, sync_popcore_id, version when it notices a new price or POPCORE ID) and removes a
+  deleted row once the website confirms its delete. Everything else is written here.
 - Delete takes the entry and everything under it. It is refused while any of them is linked to a POPCORE
   item, or a live entry names one as its partner, character or IP. Rows the website has (website_id) are kept
   with deleted_at, so a later step can tell the website; the others go. Deleted rows are never read.
@@ -635,6 +639,9 @@ def update(con, entry_id, data, actor):
              json.dumps(row['extras'], ensure_ascii=False),
              _next_order(con, row['parent_id'], entry['kind']) if moved else entry['sort_order'],
              _actor(actor), entry_id))
+        if moved or row['name'] != entry['name']:
+            # Step 3: the full names under it changed (contract 1.4), so everything under it is sent again.
+            _raise_under(con, entry_id)
     _write(con, work)
     return detail(con, entry_id)
 
@@ -697,6 +704,29 @@ def set_website_number(con, entry_id, website_id, website_item, actor):
     return _write(con, work)
 
 
+def _raise_under(con, entry_id):
+    """Raise the version of every live entry under entry_id (not itself): their full names changed."""
+    under = [one for one in _subtree(con, entry_id) if one != entry_id]
+    for start in range(0, len(under), 500):
+        part = under[start:start + 500]
+        con.execute(f'UPDATE dex_entries SET version=version+1 WHERE id IN ({",".join("?" * len(part))})', part)
+
+
+def set_picture(con, entry_id, picture_id, url, thumb_url, actor):
+    """Step 3 (contract section 6): the picture the website stored for this entry. Raises the version, so the entry
+    is sent again with its picture_id."""
+    if isinstance(picture_id, bool) or not isinstance(picture_id, int) or picture_id <= 0:
+        raise DexError('The website did not return a picture number.', 'invalid_input')
+
+    def work():
+        _need(con, entry_id)
+        con.execute("""UPDATE dex_entries SET picture_id=?, picture_url=?, thumb_url=?, version=version+1,
+                       updated_at=datetime('now'), updated_by=? WHERE id=?""",
+                    (picture_id, url, thumb_url, _actor(actor), entry_id))
+    _write(con, work)
+    return detail(con, entry_id)
+
+
 def _subtree(con, entry_id):
     return [row[0] for row in con.execute(
         """WITH RECURSIVE under(id, depth) AS (
@@ -735,11 +765,11 @@ def delete(con, entry_id, actor):
             raise DexError(f'“{first["name"]}” names it as its partner, character or IP. Change that first.', 'dex_in_use', 409)
         kept = removed = 0
         for one in plan['ids']:  # children first
-            website_id = con.execute('SELECT website_id FROM dex_entries WHERE id=?', (one,)).fetchone()[0]
-            if website_id is None:
+            known = con.execute('SELECT website_id, sent_version FROM dex_entries WHERE id=?', (one,)).fetchone()
+            if known['website_id'] is None and not known['sent_version']:  # the website never had it
                 con.execute('DELETE FROM dex_entries WHERE id=?', (one,))
                 removed += 1
-            else:  # the website has it: keep the row until the website is told (a later step)
+            else:  # the website has it: keep the row until the website confirms the delete (dex_sync.py)
                 con.execute("""UPDATE dex_entries SET deleted_at=datetime('now'), version=version+1,
                                updated_at=datetime('now'), updated_by=? WHERE id=?""", (_actor(actor), one))
                 kept += 1
