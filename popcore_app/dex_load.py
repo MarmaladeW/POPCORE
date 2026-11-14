@@ -265,6 +265,7 @@ def plan(con, export, ip_list, evidence=None):
         if key not in p.rows:
             _add(p, key, kind='ip', name=name, parent=company(row['company']))
             p.rows[key]['new_to_dex'] = True
+            p.rows[key]['load_key'] = 'ip-list:' + row['name'].casefold()  # the list row it came from
 
     own_ip_keys = [fate[1] for fate in ip_fate.values() if fate[0] == 'ip'] + \
         [key for key, row in p.rows.items() if row.get('new_to_dex')]
@@ -521,6 +522,7 @@ def _against_database(con, p):
                   if row['website_id'] is not None}
     top = {(row['kind'], row['name'].casefold()): row for row in existing
            if row['kind'] in ('company', 'partner') and row['parent_id'] is None}
+    by_load_key = {row['load_key']: row for row in existing if row.get('load_key')}
     loose = defaultdict(list)  # hand-made: no website number, live
     for row in existing:
         if row['website_id'] is None and row['deleted_at'] is None:
@@ -536,6 +538,10 @@ def _against_database(con, p):
                 found = by_website.get((kind, row['website_item'], row['website_id']))
             if found is None and kind in ('company', 'partner'):
                 found = top.get((kind, row['name'].casefold()))
+            if found is None and row.get('load_key'):  # an IP new to the Dex, by its IP-list row, whatever its name now
+                found = by_load_key.get(row['load_key'])
+                if found is not None:
+                    _drop_loose(loose, found)
             adopt = False
             if found is None and (row['parent'] is None or parent_id is not None):
                 for candidate in loose.get((kind, parent_id, row['name'].casefold()), []):
@@ -560,6 +566,12 @@ def _against_database(con, p):
               and row['id'] not in planned_ids and row['deleted_at'] is None]
 
 
+def _drop_loose(loose, found):
+    for rows in loose.values():
+        if found in rows:
+            rows.remove(found)
+
+
 def _values(row, ids):
     return {'name': row['name'], 'parent_id': ids.get(row['parent']) if row['parent'] else None,
             'partner_id': ids.get(row['partner']) if row['partner'] else None,
@@ -581,6 +593,8 @@ def _stored(found):
 
 
 def _differs(row, found, ids):
+    if row.get('load_key') and found.get('load_key') != row['load_key'] and found['updated_by'] == LOAD:
+        return True
     want, have = _values(row, ids), _stored(found)
     if any(row[field] and field_key not in ids for field, field_key in
            (('parent', row['parent']), ('partner', row['partner']), ('character', row['character']))):
@@ -1035,23 +1049,25 @@ def apply(con, p):
                     cur = con.execute(
                         """INSERT INTO dex_entries(kind, parent_id, partner_id, character_id, name, sort_order, blind_box,
                                rarity, product_id, picture_id, picture_url, thumb_url, extras, website_id, website_item,
-                               updated_by)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               load_key, updated_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (kind, check['parent_id'], check['partner_id'], check['character_id'], check['name'],
                          values['sort_order'], check['blind_box'], check['rarity'], check['product_id'],
                          values['picture_id'], values['picture_url'], values['thumb_url'], extras, row['website_id'],
-                         row['website_item'], LOAD))
+                         row['website_item'], row.get('load_key'), LOAD))
                     row['id'] = ids[row['key']] = cur.lastrowid
                 else:
                     con.execute(
                         """UPDATE dex_entries SET kind=kind, parent_id=?, partner_id=?, character_id=?, name=?, sort_order=?,
                                blind_box=?, rarity=?, product_id=?, picture_id=COALESCE(?, picture_id),
                                picture_url=COALESCE(?, picture_url), thumb_url=COALESCE(?, thumb_url), extras=?,
-                               website_id=?, website_item=?, version=version+1, updated_at=datetime('now'), updated_by=? WHERE id=?""",
+                               website_id=?, website_item=?, load_key=COALESCE(?, load_key), version=version+1,
+                               updated_at=datetime('now'), updated_by=? WHERE id=?""",
                         (check['parent_id'], check['partner_id'], check['character_id'], check['name'],
                          values['sort_order'] if action == 'update' else row['existing']['sort_order'],
                          check['blind_box'], check['rarity'], check['product_id'], values['picture_id'],
                          values['picture_url'], values['thumb_url'], extras, row['website_id'], row['website_item'],
+                         row.get('load_key'),
                          row['existing']['updated_by'] if action == 'adopt' else LOAD, row['id']))
                 counts[action] += 1
         # Deleted rows, children first: kept with deleted_at so step 3 can tell the website.

@@ -506,6 +506,35 @@ def reorder(con, data, actor):
     return children(con, parent_id) if parent_id is not None else top(con, _brief(con, ids[0])['kind'])
 
 
+def set_website_number(con, entry_id, website_id, website_item, actor):
+    """Give an entry the website's own number, for a row the website holds that the load did not load (owner's
+    review, 2026-11-14), so a later step joins the website's row instead of making it twice. Refused when another
+    entry of the kind (live, or kept for the website) holds the number, or the entry already has another number.
+    Returns True when it changed something."""
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id <= 0:
+        raise DexError('website_id is a positive number.', 'invalid_input')
+    website_item = 1 if website_item else 0
+
+    def work():
+        entry = _need(con, entry_id)
+        if website_item and entry['kind'] != 'product':
+            raise DexError('Only a product is an item figure on the website.', 'field_not_allowed')
+        now = con.execute('SELECT website_id, website_item FROM dex_entries WHERE id=?', (entry_id,)).fetchone()
+        if now['website_id'] == website_id and now['website_item'] == website_item:
+            return False
+        if now['website_id'] is not None:
+            raise DexError(f'This entry already has website number {now["website_id"]}.', 'website_number_set', 409)
+        other = con.execute("""SELECT id, name, deleted_at FROM dex_entries WHERE kind=? AND website_item=? AND website_id=?
+                               AND id<>?""", (entry['kind'], website_item, website_id, entry_id)).fetchone()
+        if other:
+            raise DexError(f'Website number {website_id} is already held by “{other["name"]}”'
+                           + (' (deleted, kept for the website).' if other['deleted_at'] else '.'), 'website_number_taken', 409)
+        con.execute("""UPDATE dex_entries SET website_id=?, website_item=?, version=version+1, updated_at=datetime('now'),
+                       updated_by=? WHERE id=?""", (website_id, website_item, _actor(actor), entry_id))
+        return True
+    return _write(con, work)
+
+
 def _subtree(con, entry_id):
     return [row[0] for row in con.execute(
         """WITH RECURSIVE under(id, depth) AS (

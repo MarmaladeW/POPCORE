@@ -234,6 +234,19 @@ class DexLoadTests(IsolatedApiCase):
         self.load()
         self.assertEqual(sum(1 for row in self.rows().values() if row['name'] == 'Nommi'), 1)
 
+    def test_a_new_to_dex_ip_a_person_renamed_is_left_alone(self):
+        self.load()
+        nommi = self.rows()[('ip', 'Nommi')]
+        self.assertEqual(nommi['load_key'], 'ip-list:nommi')
+        for name in ('NOMMI', 'Nommi the Sheep'):  # the same name in other capitals, then another name
+            response = self.client.patch(f'/api/dex/entries/{nommi["id"]}', json={'name': name},
+                                         headers=self.headers('manager'))
+            self.assertEqual(response.status_code, 200, response.get_json())
+            before = self.rows()
+            plan = self.load()
+            self.assertEqual(plan.rows[('ip', 'new:nommi')]['action'], 'person')  # found by its list row: left alone
+            self.assertEqual(self.rows(), before)  # no version change, no second Nommi
+
     def test_pairing_by_id_then_by_name(self):
         plan = self.load()
         sun, moon, star = self.one('design', 301), self.one('design', 302), self.one('design', 303)

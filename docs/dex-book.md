@@ -15,6 +15,8 @@ code still runs on a migrated database. Migration `dex_entries_website_item` (st
 `website_item` and replaces the unique index on `(kind, website_id)` by one on `(kind, website_item, website_id)`:
 on the website a product line and an item figure can carry the same number. Older code never sets it and gets 0.
 Migration `dex_entries_ip` (contract 1.3) adds the nullable `ip_id` and an index on it; older code never sets it.
+Migration `dex_entries_load_key` adds the nullable `load_key`: on an IP the load makes from the owner's IP list with no
+website number, the list row it came from (`ip-list:<name>`), so later load runs find it whatever its name now.
 
 | Column | Meaning |
 |---|---|
@@ -29,6 +31,7 @@ Migration `dex_entries_ip` (contract 1.3) adds the nullable `ip_id` and an index
 | `picture_id`, `picture_url`, `thumb_url` | The website's media, shown by address (no upload yet) |
 | `extras` | JSON, the refined copy (contract section 4) |
 | `website_id` | The row's number on popcore.ca; unique per kind and `website_item` |
+| `load_key` | On an IP the load made from the owner's IP list (no website number): the list row it came from |
 | `website_item` | 1 when the website holds the product as an item figure (no series), else 0 |
 | `version`, `sent_version`, `send_error` | `version` rises on every change; the others are used from step 3 |
 | `deleted_at` | Set on a deleted row the website still has, until the website confirms the delete |
@@ -164,8 +167,9 @@ What the plan does:
 8. **Re-runs**: rows are found by kind + `website_id` (companies and partners also by name). A row the load wrote
    last (`updated_by='load'`) is updated when the export differs (version + 1); a row a person changed is left
    alone and counted. An entry the export knows but with no website number (`website_id` null) is found by its
-   parent and name, and is shown as "New (no website number known)". A hand-made entry of the same kind, parent and
-   name is adopted: it gets the website number
+   parent and name, and is shown as "New (no website number known)". An IP new to the Dex is found first by its
+   `load_key` (the IP-list row it came from), so once a person renames it, later runs leave it alone and never make it
+   again. A hand-made entry of the same kind, parent and name is adopted: it gets the website number
    and pictures, fills what is blank, keeps what the person typed, and stays the person's row (later runs leave
    it alone). A second run with the same inputs changes nothing.
 
@@ -196,7 +200,7 @@ A decisions file is a JSON list of operations (or `{"operations": [...]}`), run 
 
 | `op` | Fields | What it does |
 |---|---|---|
-| `create` | `kind`, `parent`, `name`, optional `blind_box`, `rarity`, `partner`, `character`, `ip`, `extras`, `key` | Makes the entry; later operations refer to it as `{"key": ...}` |
+| `create` | `kind`, `parent`, `name`, optional `blind_box`, `rarity`, `partner`, `character`, `ip`, `extras`, `key`, `website_id`, `item` | Makes the entry; later operations refer to it as `{"key": ...}`. `website_id` and `item` give it the website's own number, for a row the website holds that the load did not load, so a later step joins the website's row instead of making it twice (`dex_book.set_website_number`, same transaction; 409 `website_number_taken` when another entry of the kind holds it) |
 | `set` | `entry`, `fields` (any of `name`, `partner`, `character`, `ip`, `blind_box`, `rarity`, `extras`) | Changes those fields (`extras` merges, as in the editor) |
 | `move` | `entry`, `parent` | Puts the entry under its new parent |
 | `delete` | `entry` | Deletes it with everything under it (the book's delete rules) |

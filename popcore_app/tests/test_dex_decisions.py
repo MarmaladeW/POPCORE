@@ -102,6 +102,30 @@ class DexDecisionsTests(IsolatedApiCase):
                          (series['id'], 1, self.items['PM0200'], {'retail_price': 22.0}))
         self.assertEqual((design['parent_id'], design['rarity'], design['website_id']), (line['id'], 'secret', None))
 
+    def test_a_create_keeps_the_websites_number(self):
+        operations = [
+            {'op': 'create', 'key': 'pendant', 'kind': 'product', 'parent': web('series', 10), 'name': 'Plush Pendant',
+             'website_id': 287, 'item': False, 'blind_box': True, 'why': why('D-040', 'the line the load left out')},
+            {'op': 'create', 'kind': 'design', 'parent': {'key': 'pendant'}, 'name': 'Cat Lover', 'website_id': 2823,
+             'why': why('D-041', 'its design')},
+            {'op': 'create', 'kind': 'product', 'parent': POP_MART, 'name': 'POP BEAN Bubble Tea', 'website_id': 25,
+             'item': True, 'why': why('D-029', 'an item figure the load left out')},
+        ]
+        result = self.run_ops(operations)
+        self.assertTrue(result['applied'], result['refused'])
+        line, design, item = (self.row(result['report'][n]['entry_id']) for n in range(3))
+        self.assertEqual((line['website_id'], line['website_item'], design['website_id'], item['website_id'], item['website_item']),
+                         (287, 0, 2823, 25, 1))
+        self.assertEqual(self.statuses(self.run_ops(operations)), ['already done'] * 3)
+        # A number another entry of the kind holds is refused, and nothing is written.
+        before = self.snapshot()
+        taken = self.run_ops([{'op': 'create', 'kind': 'design', 'parent': web('product', 20), 'name': 'Star',
+                               'website_id': 30, 'why': why()},
+                              {'op': 'create', 'kind': 'design', 'parent': web('product', 20), 'name': 'Comet',
+                               'website_id': 2823, 'why': why()}])
+        self.assertEqual([line.get('code') for line in taken['refused']], ['website_number_taken', 'website_number_taken'])
+        self.assertEqual(self.snapshot(), before)
+
     def test_set_changes_the_fields_given_and_raises_the_version(self):
         result = self.run_ops([
             {'op': 'set', 'entry': web('design', 31), 'fields': {'name': 'Moon', 'rarity': 'secret'}, 'why': why()},

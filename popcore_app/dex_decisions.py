@@ -3,7 +3,8 @@
 A decisions file is an ordered list of operations in a small fixed vocabulary:
 
 - create: kind, parent, name, optional blind_box, rarity, partner, character, ip, extras, and a key that later
-  operations can refer to;
+  operations can refer to; optionally the website's number and item flag (website_id, item) for a row the website
+  holds that the load did not load, so the website's row is joined later instead of made twice;
 - set: an entry and the fields to change (name, partner, character, ip, blind_box, rarity, extras);
 - move: an entry and its new parent;
 - delete: an entry, with everything under it;
@@ -29,7 +30,8 @@ OPS = ('create', 'set', 'move', 'delete', 'link', 'unlink')
 SET_FIELDS = ('name', 'partner', 'character', 'ip', 'blind_box', 'rarity', 'extras')
 REF_FIELDS = {'partner': 'partner_id', 'character': 'character_id', 'ip': 'ip_id'}
 OP_KEYS = {
-    'create': {'op', 'why', 'key', 'kind', 'parent', 'name', 'partner', 'character', 'ip', 'blind_box', 'rarity', 'extras'},
+    'create': {'op', 'why', 'key', 'kind', 'parent', 'name', 'partner', 'character', 'ip', 'blind_box', 'rarity', 'extras',
+               'website_id', 'item'},
     'set': {'op', 'why', 'entry', 'fields'},
     'move': {'op', 'why', 'entry', 'parent'},
     'delete': {'op', 'why', 'entry'},
@@ -189,6 +191,9 @@ def _create(con, op, keys):
     name = ' '.join(str(op.get('name') or '').split())
     if not name:
         raise Refused('A name is required.')
+    number = op.get('website_id')
+    if number is None and op.get('item'):
+        raise Refused('item goes with a website_id.')
     fields = {field: op[field] for field in SET_FIELDS if field in op and field != 'name'}
     wanted = _fields(con, fields, keys) if fields else {}
     same = [dict(row) for row in con.execute(
@@ -202,12 +207,17 @@ def _create(con, op, keys):
         if key:
             keys[key] = found['id']
         changed = _change(con, found['id'], wanted) if wanted else False
+        if number is not None:
+            changed = dex_book.set_website_number(con, found['id'], number, op.get('item'), ACTOR) or changed
         return found['id'], changed, f'{kind} “{found["name"]}” (#{found["id"]}) is already in the book' + \
-            (', its fields brought in line' if changed else '')
+            (', brought in line' if changed else '')
     entry = dex_book.create(con, {'kind': kind, 'parent_id': parent_id, 'name': name, **wanted}, ACTOR)
+    if number is not None:
+        dex_book.set_website_number(con, entry['id'], number, op.get('item'), ACTOR)
     if key:
         keys[key] = entry['id']
-    return entry['id'], True, f'make {kind} “{entry["name"]}” (#{entry["id"]})'
+    return entry['id'], True, f'make {kind} “{entry["name"]}” (#{entry["id"]})' + \
+        (f' with website number {number}' if number is not None else '')
 
 
 def _set(con, op, keys):
