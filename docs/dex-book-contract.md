@@ -96,7 +96,7 @@ POPCORE's value is the official one. What collectors add themselves stays on the
 
 **`price_history`** (owner, 14 Nov 2026: "the price history chart on popcore.ca should show the price change recorded in POPCORE"): every price POPCORE has recorded for the design's item, with the time it was set (UTC). It is always sent whole. The website's price chart for the design shows exactly these points and nothing else; points the website holds from before are replaced by them, not mixed in. A design the shop has never priced sends an empty list.
 
-A product the shop stocks (a single item, or a blind box's Single Box) carries the same key with its own recorded prices (owner, 14 Nov 2026, asked whether every item's price changes should be kept: "Yes, every item"). POPCORE starts keeping these when that change goes live, so an item's history begins with its price on that day. Until then the key is absent on products, which leaves the website's own points alone.
+A product the shop stocks (a single item, or a blind box's Single Box) carries the same key with its own recorded prices (owner, 14 Nov 2026, asked whether every item's price changes should be kept: "Yes, every item"). POPCORE keeps these from the day that change went live (pull request 214, November 2026), so an item's history begins with its price on that day. A product with no POPCORE item sends no key, which leaves the website's own points alone.
 
 ## 5. Reading the book: `GET /wp-json/popcore/v1/book`
 

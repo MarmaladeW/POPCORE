@@ -346,8 +346,18 @@ contract's keys for the kind. `market_prices` is never sent (contract 1.5 replac
 POPCORE"; contract 1.5). A design linked to a POPCORE item carries `extras.price_history`: every price recorded for that
 item in `design_prices`, oldest first, each `{"price": 25.99, "recorded_at": "2026-11-14T07:28:00Z"}` (the row's
 `set_at`, UTC). A design with no recorded price, or with no linked item, sends an empty list, so the website's chart
-shows only POPCORE's prices (contract section 4). A product sends no `price_history` yet (the key is absent, which
-leaves the website's own points alone; single items have no recorded prices yet). A new price makes the entry wait again; the status and the preview count it as waiting.
+shows only POPCORE's prices (contract section 4).
+
+A product linked to a POPCORE item carries `price_history` too (owner, 2026-11-14, asked whether every item's price
+changes should be kept: "Yes, every item"). Its points come from `product_price_history`: one row each time
+`products.price` really changes and an item's first price, written by three database triggers on `products` and by
+nothing else, so every way a price is saved is covered (the Products edit, imports, scripts). Each item got a starting
+point with its price on the day the table was added. A change to no price or to zero is not a point. The table has no
+foreign key on purpose: `inventory_catalog._product_references` and the Clover merge script count every table that
+points at `products`, and a price history must never hold an item back; its rows go with the item by a delete trigger.
+The item's history is chosen by its form, as `dex_book.price_history` does: `design_prices` for a confirmed design,
+`product_price_history` for any other item. A product with no linked item sends no `price_history` (the key is absent,
+which leaves the website's own points alone). A new price makes the entry wait again; the status and the preview count it as waiting.
 
 **Answers** (sections 3 and 8). Only HTTP 200 with a `results` list is read. `ok` stores the `website_id` (and
 `website_item` when the row was new) and the version sent, and clears the error; an entry changed while it was being
@@ -383,8 +393,7 @@ the website's half is missing the page says so plainly. On an entry's page: its 
 `GET /wp-json/popcore/v1/book` (500 a page, with the stock sync's key from the environment) and writes the
 `book-export.json` shape `scripts/load_dex_book.py` reads. It only reads; `--out` must not exist yet.
 
-**Not in this step.** Listings (contract section 7, step 4); a product's own `price_history` (contract 1.6: POPCORE
-keeps no item prices yet); re-loads after switch-over.
+**Not in this step.** Listings (contract section 7, step 4); re-loads after switch-over.
 
 ## Later steps
 

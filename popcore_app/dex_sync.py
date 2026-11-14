@@ -2,8 +2,9 @@
 sync"), behind its own switch, off until an admin turns it on. The contract is docs/dex-book-contract.md (1.7).
 
 - What needs sending: an entry whose version is above its sent_version. Every entry starts at 0, so the first run
-  sends the whole book. A new price recorded for a design's item (design_prices) or a new POPCORE ID on a linked item
-  is noticed here and raises the entry's version, since neither raises it by itself (owner, 2026-11-14: "the price
+  sends the whole book. A new price recorded for a linked item (design_prices for a confirmed design,
+  product_price_history for any other item) or a new POPCORE ID on a linked item is noticed here and raises the
+  entry's version, since neither raises it by itself (owner, 2026-11-14: "the price
   history chart on popcore.ca should show the price change recorded in POPCORE").
 - Order: parents before children (company, partner, ip, character, series, product, design), and an entry goes only
   once everything it points at (parent, partner, character, named IP) was accepted, or goes earlier in the same
@@ -113,8 +114,11 @@ def call(cfg, method, path, *, params=None, body=None, files=None, data=None):
 _ROWS = """SELECT e.id, e.kind, e.name, e.parent_id, e.partner_id, e.character_id, e.ip_id, e.version, e.sent_version,
                   e.send_error, e.deleted_at, e.website_id, e.website_item, e.sync_price_id, e.sync_popcore_id,
                   p.sku AS popcore_id,
-                  CASE WHEN e.kind='design' AND e.product_id IS NOT NULL THEN
-                      (SELECT MAX(d.id) FROM design_prices d WHERE d.product_id=e.product_id) END AS price_id
+                  CASE WHEN e.product_id IS NULL OR e.kind NOT IN ('product', 'design') THEN NULL
+                       WHEN p.stock_form='confirmed_design' THEN
+                           (SELECT MAX(d.id) FROM design_prices d WHERE d.product_id=e.product_id)
+                       ELSE (SELECT MAX(h.id) FROM product_price_history h
+                             WHERE h.product_id=e.product_id AND h.new_cents > 0) END AS price_id
            FROM dex_entries e LEFT JOIN products p ON p.id=e.product_id"""
 
 
@@ -236,10 +240,17 @@ def entry_state(con, entry_id):
 # ── What is sent ─────────────────────────────────────────────────────────────
 
 def _price_history(con, product_id):
-    """Every price recorded for the item, oldest first (contract 1.5). Only SELECTs from design_prices."""
-    return [{'price': row['cents'] / 100,
-             'recorded_at': row['set_at'].replace(' ', 'T') + ('' if row['set_at'].endswith('Z') else 'Z')}
-            for row in con.execute('SELECT cents, set_at FROM design_prices WHERE product_id=? ORDER BY id', (product_id,))]
+    """Every price recorded for the item, oldest first (contract section 4). Read only. A confirmed design's are the
+    prices managers set (design_prices); any other item's are its price changes the database recorded
+    (product_price_history; owner, 2026-11-14: "Yes, every item"), the same choice dex_book.price_history makes."""
+    form = con.execute('SELECT stock_form FROM products WHERE id=?', (product_id,)).fetchone()
+    if form is not None and form['stock_form'] == 'confirmed_design':
+        query = 'SELECT cents, set_at AS at FROM design_prices WHERE product_id=? ORDER BY id'
+    else:  # a change to no price, or to a price of zero, is not a point
+        query = """SELECT new_cents AS cents, changed_at AS at FROM product_price_history
+                   WHERE product_id=? AND new_cents > 0 ORDER BY id"""
+    return [{'price': row['cents'] / 100, 'recorded_at': row['at'].replace(' ', 'T') + ('' if row['at'].endswith('Z') else 'Z')}
+            for row in con.execute(query, (product_id,))]
 
 
 def entry(con, entry_id, memo=None):
@@ -256,6 +267,8 @@ def entry(con, entry_id, memo=None):
     extras = {key: stored[key] for key in dex_book.EXTRAS[kind] if key in stored and key != 'market_prices'}
     if kind == 'design':  # always whole; empty when the shop has never priced it, so the chart shows only POPCORE's
         extras['price_history'] = _price_history(con, row['product_id']) if row['product_id'] is not None else []
+    elif kind == 'product' and row['product_id'] is not None:  # a product the shop stocks (contract 1.6)
+        extras['price_history'] = _price_history(con, row['product_id'])
     if row['website_id'] is not None:
         item = bool(row['website_item'])
     else:  # new to the website: a product with no series is an item figure there (contract section 2)
@@ -280,8 +293,8 @@ def entry(con, entry_id, memo=None):
 # ── A pass ───────────────────────────────────────────────────────────────────
 
 def notice(con):
-    """A new recorded price for a design's item, or a new POPCORE ID on a linked item: raise the version, so the entry
-    is sent again (neither raises it by itself)."""
+    """A new recorded price for a linked item, or a new POPCORE ID on it: raise the version, so the entry is sent
+    again (neither raises it by itself)."""
     found = [row for row in con.execute(_ROWS + ' WHERE e.deleted_at IS NULL').fetchall()
              if row['price_id'] != row['sync_price_id'] or row['popcore_id'] != row['sync_popcore_id']]
     if not found:

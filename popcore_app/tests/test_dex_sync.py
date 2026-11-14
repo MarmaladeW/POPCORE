@@ -498,7 +498,7 @@ class DexSyncTests(IsolatedApiCase):
             {'price': 25.99, 'recorded_at': '2026-11-01T10:00:00Z'}, {'price': 27.99, 'recorded_at': '2026-11-07T10:00:00Z'},
             {'price': 29.99, 'recorded_at': '2026-11-13T10:00:00Z'}])
         self.assertEqual(shapes[designs[1]]['extras']['price_history'], [])  # never priced: the chart shows nothing
-        self.assertNotIn('price_history', shapes[product]['extras'])
+        self.assertEqual(shapes[product]['extras']['price_history'], [])  # stocked, no price recorded yet
         version = self.row(designs[0])['version']
         self.price('PM0100-01', 3199, '2026-11-14 10:00:00')
         self.assertEqual(self.status()['counts']['waiting'], 1)
@@ -508,6 +508,33 @@ class DexSyncTests(IsolatedApiCase):
         self.assertEqual((last['ref'], last['version']), (designs[0], version + 1))
         self.assertEqual(len(last['extras']['price_history']), 4)
         self.assertEqual(self.site.by_ref(designs[0])['entry']['extras']['price_history'][-1]['price'], 31.99)
+        self.assertEqual(self.status()['counts']['waiting'], 0)
+
+    def test_a_stocked_product_sends_its_own_price_changes(self):
+        """Owner, 2026-11-14, asked whether every item's price changes should be kept: "Yes, every item"."""
+        company, ip, series, product, designs = self.book(designs=0)
+        loose = self.add('product', 'Not stocked', series)
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET price=19.99 WHERE sku=?', ('PM0100',))
+            con.execute('UPDATE products SET price=0 WHERE sku=?', ('PM0100',))  # not a point
+            con.execute('UPDATE products SET price=24.99 WHERE sku=?', ('PM0100',))
+            con.commit()
+        self.on()
+        self.run_pass()
+        shapes = {entry['ref']: entry for entry in self.sent()}
+        self.assertEqual([point['price'] for point in shapes[product]['extras']['price_history']], [19.99, 24.99])
+        self.assertRegex(shapes[product]['extras']['price_history'][0]['recorded_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        self.assertNotIn('price_history', shapes[loose]['extras'])  # no POPCORE item: the website's own points stay
+        self.assertEqual(self.status()['counts']['waiting'], 0)
+        version = self.row(product)['version']
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET price=22 WHERE sku=?', ('PM0100',))
+            con.commit()
+        self.assertEqual(self.status()['counts']['waiting'], 1)
+        self.run_pass()
+        last = self.sent()[-1]
+        self.assertEqual((last['ref'], last['version']), (product, version + 1))
+        self.assertEqual([point['price'] for point in last['extras']['price_history']], [19.99, 24.99, 22.0])
         self.assertEqual(self.status()['counts']['waiting'], 0)
 
     def test_a_new_popcore_id_on_a_linked_item_sends_the_entry_again(self):
