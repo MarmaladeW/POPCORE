@@ -5,7 +5,8 @@ takes an online backup to --backup (required, and the file must not exist yet), 
 transaction, then prints the summary. Re-running is safe: rows a person changed are left alone and reported.
 
     POPCORE_DB_PATH=/path/popcore.db python scripts/load_dex_book.py --export book-export.json \
-        --ip-list ip-list-checked.csv --out review-dir [--apply --backup /path/before-dex-load.db]
+        --ip-list ip-list-checked.csv --out review-dir [--evidence pairing-evidence.csv] \
+        [--apply --backup /path/before-dex-load.db]
 """
 import argparse
 import json
@@ -58,6 +59,7 @@ def main(argv=None):
     parser.add_argument('--export', required=True, help="the website's book-export.json")
     parser.add_argument('--ip-list', required=True, help="the owner's checked IP list (CSV)")
     parser.add_argument('--out', required=True, help='folder for the review sheet')
+    parser.add_argument('--evidence', help='earlier linking work: claims that a POPCORE ID is a book entry (CSV)')
     parser.add_argument('--apply', action='store_true', help='write the plan (after the backup)')
     parser.add_argument('--backup', help='with --apply: where the online backup goes; must not exist yet')
     args = parser.parse_args(argv)
@@ -74,16 +76,18 @@ def main(argv=None):
 
     export = dex_load.read_export(args.export)
     ip_list = dex_load.read_ip_list(args.ip_list)
+    evidence = dex_load.read_evidence(args.evidence) if args.evidence else None
     con = sqlite3.connect(str(database), timeout=db.SQLITE_BUSY_TIMEOUT)
     con.row_factory = sqlite3.Row
     con.execute('PRAGMA foreign_keys = ON')
     try:
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='dex_entries'").fetchone() is None:
             parser.error('This database has no dex_entries table yet; start the app once so its migrations run')
-        plan = dex_load.plan(con, export, ip_list)
+        plan = dex_load.plan(con, export, ip_list, evidence)
         stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
         sheet = write_sheet(dex_load.sheet_tabs(con, plan, ip_list), args.out, stamp)
         result = {'database': str(database), 'export_made_at': export.get('made_at'), 'dry_run': not args.apply,
+                  'evidence': args.evidence, 'evidence_claims': len(evidence or []),
                   'plan': dex_load.summary(plan), 'review_sheet': str(sheet)}
         if args.apply:
             backup = sqlite3.connect(args.backup)

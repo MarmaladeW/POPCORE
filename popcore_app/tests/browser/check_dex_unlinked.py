@@ -68,9 +68,12 @@ async def run(browser, width):
         await fits(page, f'list-{width}.png')
 
         # A close name is suggested; 连接 Link links the item to that book entry (never done by itself).
-        await expect(listing.get_by_text('Suggested: POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box · 100/100')).to_be_visible()
+        # It shows the suggested entry's full name and its IP tag.
+        suggested = listing.locator('.pc-dex-suggest-line', has_text='Suggested: THE MONSTERS Fun Park Vinyl Figure Blind Box · 100/100')
+        await expect(suggested).to_be_visible()
+        await expect(suggested.locator('.pc-dex-ip')).to_have_text('IP THE MONSTERS')
         assert linked('PM0500') is None
-        await listing.get_by_role('button', name='Link PM0500 to POP MART › THE MONSTERS › Fun Park › Vinyl Figure Blind Box').click()
+        await listing.get_by_role('button', name='Link PM0500 to THE MONSTERS Fun Park Vinyl Figure Blind Box').click()
         await expect(listing.get_by_text('THE MONSTERS Fun Park Vinyl Figure', exact=False)).to_have_count(0)
         assert linked('PM0500') == {'kind': 'product', 'name': 'Vinyl Figure Blind Box', 'blind_box': 1,
                                     'parent': 'Fun Park'}, linked('PM0500')

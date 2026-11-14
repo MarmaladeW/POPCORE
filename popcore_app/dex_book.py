@@ -5,20 +5,32 @@ series, products and designs. This module is the only place that writes it. It n
 or anything the till reads; a book product or design only points at a POPCORE item by product_id.
 
 Rules (docs/dex-book.md):
-- Which kind may sit under which: PARENTS.
+- Which kind may sit under which: PARENTS. A series or a product may sit straight under a partner: goods that carry
+  only that outside name, grouped by it.
 - A name is required; two live entries of one kind under one parent cannot share a name (any case).
 - partner_id on series and products, a live partner; character_id on series, products and designs, a live
   character; blind_box on products; rarity on designs (the website's words).
+- ip_id (contract 1.3, owner 2026-11-13): on a product or design with no IP above it (a series with several IPs
+  stays straight under its company), the live IP it belongs to, so it also shows on that IP's page. Refused when
+  an IP sits above: its IP is the one above. Moving a parent does not re-check what sits under it.
 - product_id: a book product links an ordinary POPCORE item or a blind box (not a confirmed design or a
-  sealed set); a book design links a confirmed design. One POPCORE item, one live entry.
+  sealed set); a book design links a confirmed design, and under a product that is not a blind box (blind_box 0)
+  also a single item (a colour or version sold on its own). One POPCORE item, one live entry.
 - extras: the refined copy, only the keys the contract names for the kind (docs/dex-book-contract.md §4).
 - Every accepted change raises version by one.
 - Delete takes the entry and everything under it. It is refused while any of them is linked to a POPCORE
-  item, or a live entry names one as its partner or character. Rows the website has (website_id) are kept
+  item, or a live entry names one as its partner, character or IP. Rows the website has (website_id) are kept
   with deleted_at, so a later step can tell the website; the others go. Deleted rows are never read.
+- batch(con): inside a transaction the caller began, each write is a savepoint instead of a commit, so many writes,
+  each with every rule, commit or roll back as one (dex_decisions applies the owner's review this way).
+- full_name (owner's naming standard, rule 7, 2026-11-14): put together here, never typed or stored. Every read
+  carries it, with `ip`: the IP tag the screens show (the IP above, else the IP it names, else the partner it sits
+  under).
+- price_history: the prices managers set for a design's POPCORE item; it only reads design_prices.
 """
 import json
 import sqlite3
+from contextlib import contextmanager
 
 
 class DexError(Exception):
@@ -33,8 +45,10 @@ PARENTS = {
     'company': (), 'partner': (),
     'ip': ('company',),
     'character': ('ip', 'partner'),  # contract 1.2: a partner's own characters (Disney's princesses…)
-    'series': ('ip', 'company'),
-    'product': ('series', 'ip', 'company'),
+    # Under a partner: goods that carry only that outside name, grouped by it (owner, 2026-11-14: "group it by IPs,
+    # Pokemon; NARUTO; Miffy..."), such as the Pokémon figures under Pokémon.
+    'series': ('ip', 'company', 'partner'),
+    'product': ('series', 'ip', 'company', 'partner'),
     'design': ('product',),
 }
 CHILDREN = {kind: tuple(child for child in KINDS if kind in PARENTS[child]) for kind in KINDS}
@@ -50,22 +64,26 @@ EXTRAS = {
 }
 PARTNER_KINDS = ('series', 'product')
 CHARACTER_KINDS = ('series', 'product', 'design')
+IP_KINDS = ('product', 'design')
 MAX_NAME = 200
 MAX_EXTRAS = 20000
 SEARCH_LIMIT = 50
-EDITABLE = ('name', 'parent_id', 'partner_id', 'character_id', 'blind_box', 'rarity', 'product_id', 'extras')
+EDITABLE = ('name', 'parent_id', 'partner_id', 'character_id', 'ip_id', 'blind_box', 'rarity', 'product_id', 'extras')
 
 _COLUMNS = """e.id, e.kind, e.parent_id, e.partner_id, e.character_id, e.name, e.sort_order, e.blind_box, e.rarity,
     e.product_id, e.picture_id, e.picture_url, e.thumb_url, e.extras, e.website_id, e.version, e.created_at,
-    e.updated_at, e.updated_by,
+    e.updated_at, e.updated_by, e.ip_id, ni.name AS named_ip_name,
     (SELECT COUNT(*) FROM dex_entries c WHERE c.parent_id=e.id AND c.deleted_at IS NULL) AS child_count,
     p.sku AS product_sku, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS product_name"""
-_FROM = 'FROM dex_entries e LEFT JOIN products p ON p.id=e.product_id WHERE e.deleted_at IS NULL'
+_FROM = """FROM dex_entries e LEFT JOIN products p ON p.id=e.product_id
+    LEFT JOIN dex_entries ni ON ni.id=e.ip_id AND ni.deleted_at IS NULL WHERE e.deleted_at IS NULL"""
 
 
 def _shape(row):
     entry = dict(row)
     entry['blind_box'] = None if entry['blind_box'] is None else bool(entry['blind_box'])
+    name = entry.pop('named_ip_name')
+    entry['named_ip'] = None if entry['ip_id'] is None or name is None else {'id': entry['ip_id'], 'name': name}
     try:
         entry['extras'] = json.loads(entry['extras'] or '{}')
     except ValueError:
@@ -99,6 +117,21 @@ def _path(con, entry):
     return path
 
 
+def _ip_above(con, parent_id):
+    """The first IP met walking up from parent_id (itself included), or None."""
+    seen = set()
+    while parent_id is not None and parent_id not in seen:
+        seen.add(parent_id)
+        row = con.execute('SELECT id, kind, name, parent_id FROM dex_entries WHERE id=? AND deleted_at IS NULL',
+                          (parent_id,)).fetchone()
+        if row is None:
+            return None
+        if row['kind'] == 'ip':
+            return {'id': row['id'], 'kind': 'ip', 'name': row['name']}
+        parent_id = row['parent_id']
+    return None
+
+
 def _brief(con, entry_id):
     if entry_id is None:
         return None
@@ -106,39 +139,168 @@ def _brief(con, entry_id):
     return dict(row) if row else None
 
 
+# Full names and the IP tag (naming standard rule 7) ----------------------------------------------------
+
+def _starts_with(name, prefix):
+    """True when name already begins with prefix as whole words, in any case (HIRONO × Le Petit Prince Series)."""
+    name, prefix = name.casefold(), prefix.casefold()
+    return name.startswith(prefix) and (len(name) == len(prefix) or not name[len(prefix)].isalnum())
+
+
+def _join(prefix, name):
+    return name if prefix is None or _starts_with(name, prefix) else f'{prefix} {name}'
+
+
+def full_name(kind, name, ancestors):
+    """The name shoppers and staff see, put together from the entry's place in the book, never typed.
+    ancestors: the live entries above it, top first, each with kind and name.
+    - A series: its IP (or the partner it sits under) and its name; the IP is left out when the name starts with it.
+      A series straight under a company (a set with several IPs) has no IP in front.
+    - A product under a series: the series' full name and the product's own name (its type word: Figures…).
+    - A product with no series (a single item): its own name, as it is.
+    - A design: its product's full name, " - ", its own name.
+    - Anything else: its own name."""
+    parent = ancestors[-1] if ancestors else None
+    if kind == 'series':
+        return _join(parent['name'] if parent and parent['kind'] in ('ip', 'partner') else None, name)
+    if kind == 'product':
+        if parent and parent['kind'] == 'series':
+            return f"{full_name('series', parent['name'], ancestors[:-1])} {name}"
+        return name
+    if kind == 'design' and parent and parent['kind'] == 'product':
+        return f"{full_name('product', parent['name'], ancestors[:-1])} - {name}"
+    return name
+
+
+def _node(con, entry_id, memo):
+    if entry_id not in memo:
+        row = con.execute("""SELECT e.id, e.kind, e.name, e.parent_id, e.ip_id, ni.name AS ip_name FROM dex_entries e
+                             LEFT JOIN dex_entries ni ON ni.id=e.ip_id AND ni.deleted_at IS NULL
+                             WHERE e.id=? AND e.deleted_at IS NULL""", (entry_id,)).fetchone()
+        memo[entry_id] = dict(row) if row else None
+    return memo[entry_id]
+
+
+def _ancestors(con, parent_id, memo):
+    """The live entries above, top first, read once per call through memo."""
+    chain, seen = [], set()
+    while parent_id is not None and parent_id not in seen:
+        seen.add(parent_id)
+        node = _node(con, parent_id, memo)
+        if node is None:
+            break
+        chain.insert(0, node)
+        parent_id = node['parent_id']
+    return chain
+
+
+def ip_tag(kind, named_ip, ancestors):
+    """The IP an entry belongs to, for its tag: the IP above it; else the IP it (or its product) names (a set with
+    several IPs, ip_id); else the partner it sits under. None for companies, partners and IPs themselves."""
+    if kind in ('company', 'partner', 'ip'):
+        return None
+    for step in reversed(ancestors):
+        if step['kind'] == 'ip':
+            return {'id': step['id'], 'kind': 'ip', 'name': step['name']}
+    if named_ip:
+        return {'id': named_ip['id'], 'kind': 'ip', 'name': named_ip['name']}
+    for step in reversed(ancestors):
+        if step['kind'] == 'product' and step.get('ip_id') and step.get('ip_name'):
+            return {'id': step['ip_id'], 'kind': 'ip', 'name': step['ip_name']}
+    for step in reversed(ancestors):
+        if step['kind'] == 'partner':
+            return {'id': step['id'], 'kind': 'partner', 'name': step['name']}
+    return None
+
+
+def _named(con, entry, memo):
+    """Add full_name and ip to a shaped entry."""
+    ancestors = _ancestors(con, entry['parent_id'], memo)
+    entry['full_name'] = full_name(entry['kind'], entry['name'], ancestors)
+    entry['ip'] = ip_tag(entry['kind'], entry.get('named_ip'), ancestors)
+    return entry
+
+
+def names(con, entry_ids):
+    """{id: {id, kind, name, full_name, ip}} for live entries (the not-in-the-book list's suggestions)."""
+    memo, found = {}, {}
+    for entry_id in entry_ids:
+        node = _node(con, entry_id, memo) if entry_id is not None else None
+        if node is None:
+            continue
+        named_ip = {'id': node['ip_id'], 'name': node['ip_name']} if node['ip_id'] and node['ip_name'] else None
+        entry = {'id': node['id'], 'kind': node['kind'], 'name': node['name'], 'parent_id': node['parent_id'],
+                 'named_ip': named_ip}
+        _named(con, entry, memo)
+        found[entry_id] = {key: entry[key] for key in ('id', 'kind', 'name', 'full_name', 'ip')}
+    return found
+
+
 # Reads ------------------------------------------------------------------------------------------------
+
+def _rows(con, sql, params=()):
+    memo = {}
+    return [_named(con, _shape(row), memo) for row in con.execute(sql, params)]
+
 
 def children(con, parent_id):
     _need(con, parent_id)
-    return [_shape(row) for row in con.execute(
-        f'SELECT {_COLUMNS} {_FROM} AND e.parent_id=? ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id', (parent_id,))]
+    return _rows(con, f'SELECT {_COLUMNS} {_FROM} AND e.parent_id=? ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id',
+                 (parent_id,))
 
 
 def top(con, kind):
     if kind not in ('company', 'partner'):
         raise DexError('Only companies and partners are listed at the top.', 'invalid_input')
-    return [_shape(row) for row in con.execute(
-        f'SELECT {_COLUMNS} {_FROM} AND e.kind=? AND e.parent_id IS NULL ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id',
-        (kind,))]
+    return _rows(con, f"""SELECT {_COLUMNS} {_FROM} AND e.kind=? AND e.parent_id IS NULL
+                          ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id""", (kind,))
+
+
+def ips(con):
+    """Every live IP, with its path (its company), for the IP picker."""
+    found = []
+    for entry in _rows(con, f'SELECT {_COLUMNS} {_FROM} AND e.kind=? ORDER BY e.name COLLATE NOCASE, e.id', ('ip',)):
+        entry['path'] = _path(con, entry)
+        found.append(entry)
+    return found
+
+
+def named(con, ip_id):
+    """The live products and designs elsewhere in the book that name this IP, each with its path."""
+    if _need(con, ip_id)['kind'] != 'ip':
+        raise DexError('Only an IP is named by other entries.', 'invalid_input')
+    found = []
+    for entry in _rows(con, f"""SELECT {_COLUMNS} {_FROM} AND e.ip_id=?
+                                ORDER BY e.kind='design', e.name COLLATE NOCASE, e.id""", (ip_id,)):
+        entry['path'] = _path(con, entry)
+        found.append(entry)
+    return found
 
 
 def search(con, text, kinds=None):
-    text = (text or '').strip()
+    """Entries whose own name holds at least one of the words and whose full name holds them all, so
+    "hirono echo figures" finds HIRONO Echo Series Figures. Names holding the whole text come first, then shortest."""
+    text = ' '.join((text or '').split())
     if not text:
         return []
+    words = list(dict.fromkeys(text.casefold().split()))
     kinds = [kind for kind in (kinds or []) if kind in KINDS]
-    where, params = '', [_like(text)]
+    where = ' OR '.join(["e.name LIKE ? ESCAPE '\\'"] * len(words))
+    params = [_like(word) for word in words]
     if kinds:
-        where = f' AND e.kind IN ({",".join("?" * len(kinds))})'
+        where = f'({where}) AND e.kind IN ({",".join("?" * len(kinds))})'
         params += kinds
-    rows = con.execute(f"""SELECT {_COLUMNS} {_FROM} AND e.name LIKE ? ESCAPE '\\'{where}
-                           ORDER BY length(e.name), e.name COLLATE NOCASE, e.id LIMIT {SEARCH_LIMIT}""",
-                       params).fetchall()
-    found = []
-    for row in rows:
-        entry = _shape(row)
+    # One word: the own name holds it, so the full name does too, and the database can stop at the limit.
+    limit = f' LIMIT {SEARCH_LIMIT}' if len(words) == 1 else ''
+    rows = _rows(con, f"""SELECT {_COLUMNS} {_FROM} AND ({where})
+                          ORDER BY length(e.name), e.name COLLATE NOCASE, e.id{limit}""", params)
+    folded = text.casefold()
+    found = [entry for entry in rows if all(word in entry['full_name'].casefold() for word in words)]
+    found.sort(key=lambda entry: (folded not in entry['name'].casefold() and folded not in entry['full_name'].casefold(),
+                                  len(entry['name']), entry['name'].casefold(), entry['id']))
+    found = found[:SEARCH_LIMIT]
+    for entry in found:
         entry['path'] = _path(con, entry)
-        found.append(entry)
     return found
 
 
@@ -184,8 +346,44 @@ def unlinked(con, text='', page=1, per_page=50):
     return {'items': items, 'total': total, 'page': page, 'per_page': per_page}
 
 
-def detail(con, entry_id):
+def unlinked_names(con, items):
+    """Beside an unlinked item's suggestion (dex_load.suggest: {id, path, score}) and its box's book product, both left
+    as they are: `suggested_entry` and `box_entry_named`, each {id, kind, name, full_name, ip} or null."""
+    found = names(con, [entry['id'] for item in items for entry in (item.get('suggestion'), item.get('box_entry')) if entry])
+    for item in items:
+        item['suggested_entry'] = found.get(item['suggestion']['id']) if item.get('suggestion') else None
+        item['box_entry_named'] = found.get(item['box_entry']['id']) if item.get('box_entry') else None
+    return items
+
+
+def price_history(con, entry_id):
+    """The prices managers set for a book design's POPCORE item, newest first, with who set them, and the
+    item's price now. Read only: it only SELECTs from design_prices (design_prices.py writes it)."""
     entry = _need(con, entry_id)
+    if entry['kind'] != 'design':
+        raise DexError('Only a design has a price trend.', 'invalid_input')
+    market = entry['extras'].get('market_prices')
+    website = [{'price': point.get('price'), 'recorded_at': point.get('recorded_at'), 'source': point.get('source')}
+               for point in (market if isinstance(market, list) else [])
+               if isinstance(point, dict) and isinstance(point.get('price'), (int, float))
+               and not isinstance(point.get('price'), bool)]
+    if entry['product_id'] is None:
+        return {'linked': False, 'current_cents': None, 'points': [], 'website': website}
+    price = con.execute('SELECT price FROM products WHERE id=?', (entry['product_id'],)).fetchone()
+    try:
+        current = round(float(price['price']) * 100) if price and price['price'] not in (None, '') else None
+    except (TypeError, ValueError):
+        current = None
+    points = [dict(row) for row in con.execute(
+        """SELECT d.cents, d.previous_cents, d.source, d.set_at, d.set_by, em.name AS set_by_name
+           FROM design_prices d LEFT JOIN employees em ON em.auth0_id=d.set_by
+           WHERE d.product_id=? ORDER BY d.id DESC""", (entry['product_id'],))]
+    return {'linked': True, 'current_cents': current if current and current > 0 else None, 'points': points,
+            'website': website}
+
+
+def detail(con, entry_id):
+    entry = _named(con, _need(con, entry_id), {})
     entry['path'] = _path(con, entry)
     entry['allowed_children'] = list(CHILDREN[entry['kind']])
     entry['allowed_parents'] = list(PARENTS[entry['kind']])
@@ -193,9 +391,11 @@ def detail(con, entry_id):
         'id': entry['product_id'], 'sku': entry['product_sku'], 'name': entry['product_name']}
     entry['partner'] = _brief(con, entry['partner_id'])
     entry['character'] = _brief(con, entry['character_id'])
-    # The IP the entry sits under (or is): its characters are the ones the editor offers.
-    entry['ip'] = ({'id': entry['id'], 'kind': 'ip', 'name': entry['name']} if entry['kind'] == 'ip'
-                   else next((step for step in reversed(entry['path']) if step['kind'] == 'ip'), None))
+    # The IP the entry sits under (or is): its characters are the ones the editor offers. (`ip` is the tag.)
+    entry['ip_above'] = ({'id': entry['id'], 'kind': 'ip', 'name': entry['name']} if entry['kind'] == 'ip'
+                         else next((step for step in reversed(entry['path']) if step['kind'] == 'ip'), None))
+    # Contract 1.3: the products and designs elsewhere (under a company) that name this IP.
+    entry['named_by'] = named(con, entry['id']) if entry['kind'] == 'ip' else []
     return entry
 
 
@@ -249,6 +449,18 @@ def _check(con, row, entry_id=None):
         if found is None or found['kind'] != target:
             raise DexError(f'That {target} does not exist.', f'{target}_not_found')
 
+    # Contract 1.3: a product or design with no IP above names its own IP. row.get: the load's rows carry no ip_id.
+    ip_id = _id_or_none(row.get('ip_id'), 'ip_id')
+    if ip_id is not None:
+        if kind not in IP_KINDS:
+            raise DexError(f'Only {" and ".join(IP_KINDS)} entries name an IP.', 'field_not_allowed')
+        above = _ip_above(con, parent_id)
+        if above is not None:
+            raise DexError(f'Its IP is the one above ({above["name"]}); leave IP empty.', 'ip_above')
+        found = _brief(con, ip_id)
+        if found is None or found['kind'] != 'ip':
+            raise DexError('That IP does not exist.', 'ip_not_found')
+
     if row['blind_box'] is not None:
         if kind != 'product':
             raise DexError('Only products are marked blind box.', 'field_not_allowed')
@@ -269,7 +481,12 @@ def _check(con, row, entry_id=None):
         if item is None:
             raise DexError('That POPCORE item does not exist.', 'product_not_found', 404)
         if kind == 'design' and item['stock_form'] != 'confirmed_design':
-            raise DexError('A design links only a confirmed design (确认款).', 'product_form')
+            # Owner, 2026-11-14 (DR0089, Sonny Angel's pink Cuddly Bear): under a product that is not a blind box, a
+            # design is a colour or version sold on its own, so it may link a single item too.
+            parent = con.execute('SELECT blind_box FROM dex_entries WHERE id=?', (parent_id,)).fetchone()
+            if item['stock_form'] not in (None, 'ordinary') or parent is None or parent['blind_box'] != 0:
+                raise DexError('A design links a confirmed design (确认款); under a product that is not a blind box, '
+                               'a single item too.', 'product_form')
         if kind == 'product' and item['stock_form'] in ('confirmed_design', 'sealed_set'):
             raise DexError('A product cannot link a confirmed design or a sealed set; link its box.', 'product_form')
         taken = con.execute('SELECT id, name FROM dex_entries WHERE product_id=? AND deleted_at IS NULL AND id IS NOT ?',
@@ -291,8 +508,43 @@ def _actor(actor):
     return (actor or {}).get('sub')
 
 
+_BATCHES = set()  # connections inside one caller-held transaction (dex_decisions): each write is a savepoint
+
+
+@contextmanager
+def batch(con):
+    """Inside this block create, update, delete and reorder do not commit: each is a savepoint inside the
+    transaction the caller has already begun (BEGIN IMMEDIATE), so many writes, each with every rule, commit or
+    roll back as one. The caller commits or rolls back."""
+    if not con.in_transaction:
+        raise RuntimeError('dex_book.batch needs a transaction begun by the caller')
+    _BATCHES.add(id(con))
+    try:
+        yield con
+    finally:
+        _BATCHES.discard(id(con))
+
+
+def _write_in_batch(con, work):
+    con.execute('SAVEPOINT dex_write')
+    try:
+        result = work()
+    except sqlite3.IntegrityError as exc:
+        con.execute('ROLLBACK TO dex_write')
+        con.execute('RELEASE dex_write')
+        raise DexError('That clashes with another entry; reload and try again.', 'dex_conflict', 409) from exc
+    except Exception:
+        con.execute('ROLLBACK TO dex_write')
+        con.execute('RELEASE dex_write')
+        raise
+    con.execute('RELEASE dex_write')
+    return result
+
+
 def _write(con, work):
     """One write transaction; the name and link rules hold against another write at the same moment."""
+    if id(con) in _BATCHES:
+        return _write_in_batch(con, work)
     if con.in_transaction:
         con.commit()
     con.execute('BEGIN IMMEDIATE')
@@ -337,10 +589,10 @@ def create(con, data, actor):
     def work():
         _check(con, row)
         cur = con.execute(
-            """INSERT INTO dex_entries(kind, parent_id, partner_id, character_id, name, sort_order, blind_box, rarity,
-                                       product_id, extras, updated_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (kind, row['parent_id'], row['partner_id'], row['character_id'], row['name'],
+            """INSERT INTO dex_entries(kind, parent_id, partner_id, character_id, ip_id, name, sort_order, blind_box,
+                                       rarity, product_id, extras, updated_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (kind, row['parent_id'], row['partner_id'], row['character_id'], row['ip_id'], row['name'],
              _next_order(con, row['parent_id'], kind), row['blind_box'], row['rarity'], row['product_id'],
              json.dumps(row['extras'], ensure_ascii=False), _actor(actor)))
         return cur.lastrowid
@@ -369,10 +621,10 @@ def update(con, entry_id, data, actor):
             return  # nothing changed: no new version
         moved = row['parent_id'] != entry['parent_id']
         con.execute(
-            """UPDATE dex_entries SET name=?, parent_id=?, partner_id=?, character_id=?, blind_box=?, rarity=?,
+            """UPDATE dex_entries SET name=?, parent_id=?, partner_id=?, character_id=?, ip_id=?, blind_box=?, rarity=?,
                       product_id=?, extras=?, sort_order=?, version=version+1, updated_at=datetime('now'), updated_by=?
                WHERE id=?""",
-            (row['name'], row['parent_id'], row['partner_id'], row['character_id'],
+            (row['name'], row['parent_id'], row['partner_id'], row['character_id'], row['ip_id'],
              None if row['blind_box'] is None else int(row['blind_box']), row['rarity'], row['product_id'],
              json.dumps(row['extras'], ensure_ascii=False),
              _next_order(con, row['parent_id'], entry['kind']) if moved else entry['sort_order'],
@@ -410,6 +662,35 @@ def reorder(con, data, actor):
     return children(con, parent_id) if parent_id is not None else top(con, _brief(con, ids[0])['kind'])
 
 
+def set_website_number(con, entry_id, website_id, website_item, actor):
+    """Give an entry the website's own number, for a row the website holds that the load did not load (owner's
+    review, 2026-11-14), so a later step joins the website's row instead of making it twice. Refused when another
+    entry of the kind (live, or kept for the website) holds the number, or the entry already has another number.
+    Returns True when it changed something."""
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id <= 0:
+        raise DexError('website_id is a positive number.', 'invalid_input')
+    website_item = 1 if website_item else 0
+
+    def work():
+        entry = _need(con, entry_id)
+        if website_item and entry['kind'] != 'product':
+            raise DexError('Only a product is an item figure on the website.', 'field_not_allowed')
+        now = con.execute('SELECT website_id, website_item FROM dex_entries WHERE id=?', (entry_id,)).fetchone()
+        if now['website_id'] == website_id and now['website_item'] == website_item:
+            return False
+        if now['website_id'] is not None:
+            raise DexError(f'This entry already has website number {now["website_id"]}.', 'website_number_set', 409)
+        other = con.execute("""SELECT id, name, deleted_at FROM dex_entries WHERE kind=? AND website_item=? AND website_id=?
+                               AND id<>?""", (entry['kind'], website_item, website_id, entry_id)).fetchone()
+        if other:
+            raise DexError(f'Website number {website_id} is already held by “{other["name"]}”'
+                           + (' (deleted, kept for the website).' if other['deleted_at'] else '.'), 'website_number_taken', 409)
+        con.execute("""UPDATE dex_entries SET website_id=?, website_item=?, version=version+1, updated_at=datetime('now'),
+                       updated_by=? WHERE id=?""", (website_id, website_item, _actor(actor), entry_id))
+        return True
+    return _write(con, work)
+
+
 def _subtree(con, entry_id):
     return [row[0] for row in con.execute(
         """WITH RECURSIVE under(id, depth) AS (
@@ -432,7 +713,8 @@ def removal(con, entry_id):
             WHERE e.id IN ({marks}) ORDER BY e.id""", ids)]
     used = [dict(row) for row in con.execute(
         f"""SELECT id, kind, name FROM dex_entries WHERE deleted_at IS NULL AND id NOT IN ({marks})
-            AND (partner_id IN ({marks}) OR character_id IN ({marks})) ORDER BY id LIMIT 20""", ids * 3)]
+            AND (partner_id IN ({marks}) OR character_id IN ({marks}) OR ip_id IN ({marks})) ORDER BY id LIMIT 20""",
+        ids * 4)]
     return {'ids': ids, 'counts': counts, 'linked': linked, 'used_by': used}
 
 
@@ -444,7 +726,7 @@ def delete(con, entry_id, actor):
             raise DexError(f'“{first["name"]}” is linked to {first["sku"]}. Unlink it first.', 'dex_linked', 409)
         if plan['used_by']:
             first = plan['used_by'][0]
-            raise DexError(f'“{first["name"]}” names it as its partner or character. Change that first.', 'dex_in_use', 409)
+            raise DexError(f'“{first["name"]}” names it as its partner, character or IP. Change that first.', 'dex_in_use', 409)
         kept = removed = 0
         for one in plan['ids']:  # children first
             website_id = con.execute('SELECT website_id FROM dex_entries WHERE id=?', (one,)).fetchone()[0]
