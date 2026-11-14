@@ -5,7 +5,8 @@ series, products and designs. This module is the only place that writes it. It n
 or anything the till reads; a book product or design only points at a POPCORE item by product_id.
 
 Rules (docs/dex-book.md):
-- Which kind may sit under which: PARENTS.
+- Which kind may sit under which: PARENTS. A series or a product may sit straight under a partner: goods that carry
+  only that outside name, grouped by it.
 - A name is required; two live entries of one kind under one parent cannot share a name (any case).
 - partner_id on series and products, a live partner; character_id on series, products and designs, a live
   character; blind_box on products; rarity on designs (the website's words).
@@ -39,8 +40,10 @@ PARENTS = {
     'company': (), 'partner': (),
     'ip': ('company',),
     'character': ('ip', 'partner'),  # contract 1.2: a partner's own characters (Disney's princesses…)
-    'series': ('ip', 'company'),
-    'product': ('series', 'ip', 'company'),
+    # Under a partner: goods that carry only that outside name, grouped by it (owner, 2026-11-14: "group it by IPs,
+    # Pokemon; NARUTO; Miffy..."), such as the Pokémon figures under Pokémon.
+    'series': ('ip', 'company', 'partner'),
+    'product': ('series', 'ip', 'company', 'partner'),
     'design': ('product',),
 }
 CHILDREN = {kind: tuple(child for child in KINDS if kind in PARENTS[child]) for kind in KINDS}
