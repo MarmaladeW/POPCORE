@@ -493,6 +493,23 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.assertEqual(rows, {10: ('', None), 20: ('pm0200', self.item), 30: ('PM0100-03', None),
                                 95: ('pm0100-03', None)})
 
+    def test_a_retired_product_shows_sold_out_and_keeps_its_price(self):
+        """停用 (owner, 2026-11-11): a retired product is not sold, so its item is treated as an ID POPCORE
+        does not have, from the next run on, without waiting for the next catalogue read."""
+        self.popcore_price(self.item, 15.00, 'Bear Clover')
+        self.woo.set_price(20, '14.00')
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET retired_at=datetime('now') WHERE id=?", (self.item,))
+            con.commit()
+        preview = self.preview()
+        self.assertIn(20, [row['wc_id'] for row in preview['unknown_ids']])
+        self.assertEqual(self.change(preview, 20)['quantity'], 0)
+        self.assertNotIn('PM0200', [row['popcore_id'] for row in preview['prices']])
+        self.turn_on()
+        self.assertEqual((self.woo.item(20)['stock_quantity'], self.woo.item(20)['regular_price']), (0, '14.00'))
+
     def test_drafts_and_disabled_options_with_an_id_are_kept_in_step_too(self):
         """WooCommerce's REST API lists drafts and disabled (private) options with status=any. Their
         numbers are written like any item's, so they are right the moment the website publishes them."""

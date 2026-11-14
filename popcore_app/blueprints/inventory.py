@@ -116,7 +116,7 @@ def inventory_check_today():
         LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?
         LEFT JOIN inventory_checks ic
                ON ic.product_id = p.id AND ic.date = ? AND ic.store_id = ?
-        WHERE p.is_bestseller = 1
+        WHERE p.is_bestseller = 1 AND p.retired_at IS NULL
         ORDER BY p.ip_series, p.sku DESC
     ''', (store_id, today, store_id))
     rows = [dict(r) for r in cur.fetchall()]
@@ -237,7 +237,7 @@ def get_bestsellers():
                COALESCE(s.instore_qty, 0) AS instore_qty
         FROM products p
         LEFT JOIN stock s ON s.product_id = p.id AND s.store_id = ?
-        WHERE p.is_bestseller = 1
+        WHERE p.is_bestseller = 1 AND p.retired_at IS NULL
         ORDER BY p.ip_series, p.sku DESC
     ''', (store_id,))
     rows = [dict(r) for r in cur.fetchall()]

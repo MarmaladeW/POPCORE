@@ -1095,7 +1095,7 @@ def restock_suggestions(con, location_id, *, actor):
     targets = con.execute(
         """SELECT t.*, p.stock_unit, p.sku, p.jizhanming
            FROM inventory_floor_targets t JOIN products p ON p.id=t.product_id
-           WHERE t.location_id=? ORDER BY p.jizhanming, p.id""", (floor['id'],)
+           WHERE t.location_id=? AND p.retired_at IS NULL ORDER BY p.jizhanming, p.id""", (floor['id'],)
     ).fetchall()
     for target in targets:
         floor_qty = _balance(

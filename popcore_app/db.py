@@ -2116,7 +2116,19 @@ def _get_migrations():
         ('dex_entries_website_item',                   _migration_dex_entries_website_item),
         ('dex_entries_ip',                             _migration_dex_entries_ip),
         ('dex_entries_load_key',                       _migration_dex_entries_load_key),
+        ('product_retired',                            _migration_product_retired),
     ]
+
+
+def _migration_product_retired(con, cur):
+    # 停用 Retire (owner, 2026-11-11): a product POPCORE keeps for its stock or report history, but no
+    # longer sells, leaves everyday lists and matching while all its history stays. retired_by is the
+    # manager's Auth0 subject. Nothing else changes: un-retiring clears both.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(products)')}
+    for column in ('retired_at', 'retired_by'):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE products ADD COLUMN {column} TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('product_retired')")
 
 
 def _migration_report_stock_takes(con, cur):

@@ -86,7 +86,8 @@ def listing(con):
                       b.sku AS box_sku, COALESCE(NULLIF(b.jizhanming, ''), NULLIF(b.name_cn_en, ''), b.sku, s.name) AS box_name,
                       b.name_cn_en AS box_full_name, b.price AS box_price, b.ip_series, b.brand, s.name AS series_name
                FROM products d LEFT JOIN product_series s ON s.id=d.series_id LEFT JOIN products b ON b.id=s.product_id
-               WHERE d.stock_form='confirmed_design' ORDER BY d.sku, d.id"""):
+               WHERE d.stock_form='confirmed_design' AND d.retired_at IS NULL  -- 停用 retired designs are not listed
+               ORDER BY d.sku, d.id"""):
         box_id = row['box_id']
         if box_id not in boxes:
             boxes[box_id] = {'id': box_id, 'sku': row['box_sku'], 'name': row['box_name'] or row['series_name'] or '其他 Other',

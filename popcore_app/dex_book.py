@@ -318,7 +318,8 @@ def unlinked(con, text='', page=1, per_page=50):
     per_page = max(1, min(int(per_page), MAX_PAGE))
     page = max(1, int(page))
     where = f"""(p.stock_form IS NULL OR p.stock_form IN ({','.join('?' * len(UNLINKED_FORMS))}))
-                AND NOT EXISTS (SELECT 1 FROM dex_entries d WHERE d.product_id=p.id AND d.deleted_at IS NULL)"""
+                AND NOT EXISTS (SELECT 1 FROM dex_entries d WHERE d.product_id=p.id AND d.deleted_at IS NULL)
+                AND p.retired_at IS NULL"""  # 停用 retired items are not asked for
     params = list(UNLINKED_FORMS)
     text = (text or '').strip()
     if text:

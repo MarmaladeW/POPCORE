@@ -128,13 +128,13 @@ def _members(con, head, series_id):
         members.extend(('set', row, row['boxes_per_set']) for row in con.execute(
             f"""SELECT p.*, {LABEL_SQL} AS label, c.output_per_input AS boxes_per_set
                 FROM products p JOIN product_conversions c ON c.source_product_id=p.id
-                WHERE c.target_product_id=? AND p.stock_form='sealed_set'
+                WHERE c.target_product_id=? AND p.stock_form='sealed_set' AND p.retired_at IS NULL
                   AND c.version=(SELECT MAX(version) FROM product_conversions WHERE source_product_id=p.id)
                 ORDER BY p.id""", (head['id'],)))
     if series_id is not None:
         members.extend(('design', row, None) for row in con.execute(
             f"""SELECT *, {LABEL_SQL} AS label FROM products
-                WHERE series_id=? AND stock_form='confirmed_design' AND id<>?
+                WHERE series_id=? AND stock_form='confirmed_design' AND id<>? AND retired_at IS NULL
                 ORDER BY design_name COLLATE NOCASE, id""", (series_id, head['id'] if head else 0)))
     return members
 
@@ -216,7 +216,8 @@ def family_anchors(con, text):
     for row in con.execute(
             f"""SELECT p.id, p.sku, p.jizhanming, p.name_cn_en, p.design_name, p.series_id, p.stock_form,
                        {product_alias_text_sql('p')} AS alias_text, ps.name AS series_name
-                FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id"""):
+                FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id
+                WHERE p.retired_at IS NULL"""):  # 停用 retired products are not found
         products[row['id']] = row
         exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
         haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (

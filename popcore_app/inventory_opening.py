@@ -83,11 +83,11 @@ def count_sheet_rows(con, store_code, location_code, scope='legacy'):
             'store and location must name an active inventory location',
             'location_unknown',
         )
-    where = ''
+    where = 'WHERE p.retired_at IS NULL'  # 停用 retired products are not counted
     params = []
     if scope == 'legacy':
         # A sealed set (整端) has no legacy stock of its own; it is listed with its blind box.
-        where = """WHERE EXISTS (
+        where += """ AND EXISTS (
             SELECT 1 FROM stock st WHERE st.store_id=?
               AND (st.instore_qty != 0 OR st.upstairs_qty != 0 OR st.claw_qty != 0)
               AND (st.product_id=p.id OR st.product_id IN (

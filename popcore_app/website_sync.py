@@ -447,6 +447,11 @@ def plan(con, cfg):
     # Every item with a POPCORE ID: one POPCORE does not have (or that is on two items) shows sold out.
     items = [dict(row) for row in con.execute(
         "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') AND popcore_id != '' ORDER BY wc_id")]
+    # A 停用 retired product is not sold: its item shows sold out and keeps its price, as an ID POPCORE does not have.
+    retired = {row[0] for row in con.execute('SELECT id FROM products WHERE retired_at IS NOT NULL')}
+    for item in items:
+        if item['product_id'] in retired:
+            item['product_id'] = None
     pickup_by_parent = {}
     for item in items:
         by_store = stock.get(item['product_id'], {}) if item['product_id'] else {}

@@ -35,6 +35,7 @@ Each website product and variation carries its POPCORE ID in its own field, `_po
 There are four cases where an item does not link:
 
 - **A POPCORE ID that POPCORE does not have.** The item shows **sold out**, because POPCORE holds none of it. Most of these are Whole Sets whose blind box has no `<box>-SET` sealed-set product yet: see [Sealed-set products for Whole Set options](#sealed-set-products-for-whole-set-options). Once POPCORE has the product, the next catalogue read links it. The Website page lists these items.
+- **A 停用 retired product (owner, 2026-11-11).** POPCORE no longer sells it, so its item is treated as an ID POPCORE does not have from the next run on: it shows **sold out**, keeps the website's price, and is listed with those items. Un-retiring it links it again. See `docs/inventory-core.md`, Retired products.
 - **The same POPCORE ID on two or more website items.** One ID is on at most one item (owner, 2026-11-05). If two items carry the same ID, both would show the same stock and could sell it twice, so POPCORE links neither. Both show **sold out** and are listed as "Another website item carries this POPCORE ID too" until the website is fixed.
 - **No POPCORE ID.** The item is left as the website has it. The Website page lists these items with their SKU (a barcode), to help find them.
 - **A variable parent,** as above.

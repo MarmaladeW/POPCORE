@@ -57,9 +57,11 @@ def inventory_overview(con, actor, store_code, today=None):
         roles[location['store_code']].add(_role(location['code']))
     products = {row['id']: dict(row) for row in con.execute(
         '''SELECT p.id,p.sku,p.jizhanming,p.name_cn_en,p.price,p.stock_form,p.stock_unit,p.identity_status,p.series_id,
-                  p.design_name,p.boxes_per_dan,ps.name AS series_name
+                  p.design_name,p.boxes_per_dan,p.retired_at,ps.name AS series_name
            FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id''')}
     valid = {product_id for product_id, product in products.items() if _inventory_identity_valid(product)}
+    # 停用 Retired products still count in the figures if they hold stock, but are never listed.
+    listed = {product_id for product_id in valid if not products[product_id]['retired_at']}
     set_of = sealed_set_of_box(con)
     box_of = {set_id: box_id for box_id, set_id in set_of.items()}
 
@@ -136,7 +138,7 @@ def inventory_overview(con, actor, store_code, today=None):
     refill, low, sold_out = [], [], []
     for store in stores:
         floor_and_back = {'floor', 'back'} <= roles[store]
-        for product_id in valid:
+        for product_id in listed:
             product = products[product_id]
             key = store, product_id
             held = stock[key]
@@ -152,7 +154,7 @@ def inventory_overview(con, actor, store_code, today=None):
     low.sort(key=lambda row: (row['days_left'], -row['pace'], row['name']))
     sold_out.sort(key=lambda row: (-row['sold_recent'], row['name']))
     best = [item(key) for key, _ in sorted(week.items(), key=lambda pair: (-pair[1], products[pair[0][1]]['sku'] or ''))
-            if key[1] in products][:8]
+            if key[1] in products and not products[key[1]]['retired_at']][:8]
 
     # Recent changes: posted ledger documents of the last PACE_DAYS business days, per day and kind.
     changes = {}
@@ -189,7 +191,7 @@ def inventory_overview(con, actor, store_code, today=None):
         'running_low': low[:LIST_LIMIT], 'sold_out': sold_out[:LIST_LIMIT], 'best_sellers': best,
         'recent_changes': [{key: value for key, value in row.items() if key != 'latest'} | {'documents': len(row['documents'])}
                            for row in recent],
-        'not_set_up': len(products) - len(valid),
+        'not_set_up': sum(1 for product in products.values() if not product['retired_at']) - len(listed),
         # Retail value of the saleable stock above (and of each place in figures), for managers and admins only.
         'value': {**value, 'unpriced_products': len(value['unpriced_products'])} if priced else None,
     }

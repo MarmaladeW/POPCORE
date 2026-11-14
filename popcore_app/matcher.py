@@ -285,11 +285,13 @@ def load_report_picks(con) -> dict:
     state 'ok' is one product whose identity is unchanged since the pick; 'stale' means the product
     changed since; 'disputed' means one paste picked two products for the name. situations are the
     (store_id, section, display) a manager confirmed the pick in: only there does it confirm a line.
+    A pick of a 停用 retired product is left out (its row stays, so un-retiring brings it back).
     """
     picks = {}
     for row in con.execute("""SELECT p.*, c.name_key, c.note_key, c.identity_signature, c.raw_name AS pick_raw,
                                      c.note AS pick_note, c.picked_by, c.picked_at
                               FROM report_match_choices c JOIN products p ON p.id=c.product_id
+                              WHERE p.retired_at IS NULL
                               ORDER BY c.product_id"""):
         key = (row['name_key'], row['note_key'])
         pick = picks.setdefault(key, {'product_ids': [], 'state': 'ok', 'situations': set(), 'legacy': False,

@@ -608,7 +608,8 @@ def _items(con):
     rows = [dict(row) for row in con.execute(
         """SELECT p.id, p.sku, p.name_cn_en, p.jizhanming, p.design_name, p.stock_form, p.series_id, p.ip_series,
                   p.brand, ps.product_id AS family_owner
-           FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id""")]
+           FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id
+           WHERE p.retired_at IS NULL""")]  # 停用 retired items are never paired
     return rows
 
 
