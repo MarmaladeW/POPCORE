@@ -14,12 +14,14 @@ Migration `dex_entries` in `popcore_app/db.py` adds this one table and its index
 code still runs on a migrated database. Migration `dex_entries_website_item` (step 2, contract 1.2) adds
 `website_item` and replaces the unique index on `(kind, website_id)` by one on `(kind, website_item, website_id)`:
 on the website a product line and an item figure can carry the same number. Older code never sets it and gets 0.
+Migration `dex_entries_ip` (contract 1.3) adds the nullable `ip_id` and an index on it; older code never sets it.
 
 | Column | Meaning |
 |---|---|
 | `id` | The contract's `ref`: permanent, never reused (AUTOINCREMENT) |
 | `kind` | `company`, `partner`, `ip`, `character`, `series`, `product`, `design` |
 | `parent_id`, `partner_id`, `character_id` | Other entries |
+| `ip_id` | Products and designs with no IP above: the IP they belong to (contract 1.3, `ip_ref`) |
 | `name`, `sort_order` | The Dex name (official English) and the order among siblings |
 | `blind_box` | Products only, 0 or 1 |
 | `rarity` | Designs only: `normal`, `popular`, `secret`, `super_secret`, `special` |
@@ -39,6 +41,12 @@ on the website a product line and an item figure can carry the same number. Olde
 - A name is required. Two live entries of one kind under one parent cannot share a name, in any case (409).
 - `partner_id` only on series and products, and it must be a live partner. `character_id` only on series,
   products and designs, and it must be a live character. `blind_box` only on products. `rarity` only on designs.
+- `ip_id` (owner, 2026-11-13: a series with several IPs, such as POP MART's 15th Anniversary set, stays straight
+  under its company, and each design names its own IP, so it also shows on that IP's page): only on products and
+  designs, only when no IP sits above the entry (its parents are walked), and it must be a live IP. With an IP
+  above it must be empty (400 `ip_above`): its IP is the one above. It is an editable field and raises `version`.
+  Only the entry being changed is checked: moving a series or product does not re-check what sits under it, so a
+  design that named an IP and is now under one keeps it until its next change, which must clear it.
 - `product_id`: a book product links a box or an ordinary item, never a confirmed design or a sealed set. A book
   design links only a confirmed design. One POPCORE item links to at most one live entry (409).
 - A book link never holds the item back. Removing a design or deleting a product works as if the book did not
@@ -53,7 +61,7 @@ on the website a product line and an item figure can carry the same number. Olde
   nothing keeps the version.
 - Moving (a new `parent_id`) follows the parent rule and the name rule. A moved entry goes last among its new siblings.
 - Delete removes the entry and everything under it. It is refused (409) when any of them links a POPCORE item, or
-  when a live entry outside them names one as partner or character. Rows without a `website_id` are deleted;
+  when a live entry outside them names one as partner, character or IP (`dex_in_use`). Rows without a `website_id` are deleted;
   rows with one are kept with `deleted_at` so a later step can tell the website. No read ever returns a deleted row.
 
 ## Routes (`popcore_app/blueprints/dex.py`)
@@ -63,12 +71,14 @@ Any signed-in role reads. Managers and admins write.
 | Route | What |
 |---|---|
 | `GET /api/dex/entries?kind=company` / `?kind=partner` | The two top lists |
-| `GET /api/dex/entries?parent=<id>` | Live children, by `sort_order` then name, with child count and linked POPCORE ID and name |
+| `GET /api/dex/entries?kind=ip` | Every live IP, by name, each with its path (its company), for the IP picker |
+| `GET /api/dex/entries?named_ip=<id>` | The live products and designs that name this IP, products first, each with its path |
+| `GET /api/dex/entries?parent=<id>` | Live children, by `sort_order` then name, with child count, linked POPCORE ID and name, and `named_ip` |
 | `GET /api/dex/entries?q=<text>[&kinds=a,b]` | Name search, at most 50, each with its path of ancestors |
-| `GET /api/dex/entries/<id>` | One entry: path, allowed child and parent kinds, linked item, partner, character, its IP |
+| `GET /api/dex/entries/<id>` | One entry: path, allowed child and parent kinds, linked item, partner, character, the IP above (`ip`), the IP it names (`named_ip`), and on an IP `named_by` (as `?named_ip=`) |
 | `GET /api/dex/entries/<id>/removal` | What a delete would remove, and why it would be refused |
 | `POST /api/dex/entries` | Add (`kind`, `name`, `parent_id`, and the fields above) |
-| `PATCH /api/dex/entries/<id>` | Change any of `name`, `parent_id`, `partner_id`, `character_id`, `blind_box`, `rarity`, `product_id`, `extras` |
+| `PATCH /api/dex/entries/<id>` | Change any of `name`, `parent_id`, `partner_id`, `character_id`, `ip_id`, `blind_box`, `rarity`, `product_id`, `extras` |
 | `DELETE /api/dex/entries/<id>` | Delete, as above |
 | `POST /api/dex/reorder` | `{parent_id, ids}`: one kind's siblings in their new order (top lists: `parent_id: null`) |
 
@@ -78,6 +88,12 @@ Any signed-in role reads. Managers and admins write.
 picture, details, children by kind). Managers add, edit (drawer), move up and down, and delete with a confirm
 that says what goes. A book product can open the Add Product form (新建商品 New POPCORE item) with its name, and
 the new item is linked when the drawer is saved.
+
+A series with several IPs (contract 1.3): the editor of a product or design with no IP above has an IP picker (all
+IPs, searchable), and its character picker then offers the named IP's characters as well as the partner's. On a
+page with no IP above, each product and design row shows its IP; managers set it in the row with a small picker
+(one pick saves it, no drawer). An IP's page has a panel 也出现在 Also in listing the products and designs elsewhere
+that name it, each with its path and a link.
 
 ## The load (step 2): `popcore_app/dex_load.py`, `scripts/load_dex_book.py`
 

@@ -13,12 +13,16 @@ export interface DexEntry {
   product_id: number | null; product_sku: string | null; product_name: string | null
   picture_url: string | null; thumb_url: string | null; extras: DexExtras; website_id: number | null
   version: number; child_count: number; updated_at: string; updated_by: string | null
+  // Contract 1.3: a product or design with no IP above names its own IP (a series with several IPs).
+  ip_id: number | null; named_ip: { id: number; name: string } | null
 }
 export interface DexSearchHit extends DexEntry { path: DexStep[] }
 export interface DexDetail extends DexEntry {
   path: DexStep[]; allowed_children: DexKind[]; allowed_parents: DexKind[]
   product: { id: number; sku: string; name: string } | null
   partner: DexStep | null; character: DexStep | null; ip: DexStep | null
+  // On an IP: the products and designs elsewhere in the book that name it.
+  named_by: DexSearchHit[]
 }
 export interface DexRemoval {
   counts: Partial<Record<DexKind, number>>
@@ -26,7 +30,7 @@ export interface DexRemoval {
   used_by: DexStep[]
 }
 export type DexChange = Partial<{
-  name: string; parent_id: number | null; partner_id: number | null; character_id: number | null
+  name: string; parent_id: number | null; partner_id: number | null; character_id: number | null; ip_id: number | null
   blind_box: boolean | null; rarity: DexRarity | null; product_id: number | null; extras: DexExtras
 }>
 
@@ -34,6 +38,8 @@ export const topEntries = (kind: 'company' | 'partner') =>
   client.get<DexEntry[]>('/dex/entries', { params: { kind } }).then(r => r.data)
 export const childEntries = (parent: number) =>
   client.get<DexEntry[]>('/dex/entries', { params: { parent } }).then(r => r.data)
+// Every live IP with its company, for the IP picker.
+export const ipEntries = () => client.get<DexSearchHit[]>('/dex/entries', { params: { kind: 'ip' } }).then(r => r.data)
 export const searchEntries = (q: string, kinds?: DexKind[]) =>
   client.get<DexSearchHit[]>('/dex/entries', { params: { q, ...(kinds?.length ? { kinds: kinds.join(',') } : {}) } }).then(r => r.data)
 export const getEntry = (id: number) => client.get<DexDetail>(`/dex/entries/${id}`).then(r => r.data)

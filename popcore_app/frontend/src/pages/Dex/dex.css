@@ -49,3 +49,13 @@
 .pc-dex-unlinked small { color: var(--text-secondary); font-size: 12.5px; }
 .pc-dex-item .pc-row-main small.pc-dex-suggest { color: var(--text-primary); overflow-wrap: anywhere; white-space: normal; }
 .pc-dex-item .pc-dex-actions { flex: none; justify-content: flex-end; }
+/* Contract 1.3: a product or design row in a series with several IPs names its IP with a small picker. */
+.pc-dex-ip-pick { flex: 0 1 180px; min-width: 120px; }
+.pc-dex-ip-pick .ant-select-selector { height: 40px !important; align-items: center; }
+.pc-dex-also { color: inherit; text-decoration: none; }
+.pc-dex-also .pc-row-main small { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .pc-dex-row-ip { flex-wrap: wrap; }
+  .pc-dex-row-ip .pc-row-main { flex: 1 1 calc(100% - 50px); }
+  .pc-dex-row-ip .pc-dex-ip-pick { flex: 1 1 0; margin-left: 50px; }
+}

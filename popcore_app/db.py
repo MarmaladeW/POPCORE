@@ -2114,6 +2114,7 @@ def _get_migrations():
         ('design_prices',                              _migration_design_prices),
         ('dex_entries',                                _migration_dex_entries),
         ('dex_entries_website_item',                   _migration_dex_entries_website_item),
+        ('dex_entries_ip',                             _migration_dex_entries_ip),
     ]
 
 
@@ -2331,6 +2332,18 @@ def _migration_dex_entries_website_item(con, cur):
     cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_dex_entries_website_item
                    ON dex_entries(kind, website_item, website_id) WHERE website_id IS NOT NULL""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('dex_entries_website_item')")
+
+
+def _migration_dex_entries_ip(con, cur):
+    # 图鉴 Dex, contract 1.3 (owner, 2026-11-13): a series with several IPs (POP MART's 15th Anniversary set) stays
+    # straight under its company, and each product or design in it names its own IP, so it also shows on that
+    # IP's page. One nullable column and its index: older code never sets it and runs on a migrated database.
+    # Who may carry it (products and designs with no IP above, naming a live IP) is checked in dex_book.py.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(dex_entries)')}
+    if 'ip_id' not in columns:
+        cur.execute('ALTER TABLE dex_entries ADD COLUMN ip_id INTEGER REFERENCES dex_entries(id) ON DELETE SET NULL')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_dex_entries_ip ON dex_entries(ip_id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('dex_entries_ip')")
 
 
 def _migration_inventory_viewers(con, cur):
