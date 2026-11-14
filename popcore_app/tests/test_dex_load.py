@@ -234,6 +234,19 @@ class DexLoadTests(IsolatedApiCase):
         self.load()
         self.assertEqual(sum(1 for row in self.rows().values() if row['name'] == 'Nommi'), 1)
 
+    def test_a_new_to_dex_ip_a_person_renamed_is_left_alone(self):
+        self.load()
+        nommi = self.rows()[('ip', 'Nommi')]
+        self.assertEqual(nommi['load_key'], 'ip-list:nommi')
+        for name in ('NOMMI', 'Nommi the Sheep'):  # the same name in other capitals, then another name
+            response = self.client.patch(f'/api/dex/entries/{nommi["id"]}', json={'name': name},
+                                         headers=self.headers('manager'))
+            self.assertEqual(response.status_code, 200, response.get_json())
+            before = self.rows()
+            plan = self.load()
+            self.assertEqual(plan.rows[('ip', 'new:nommi')]['action'], 'person')  # found by its list row: left alone
+            self.assertEqual(self.rows(), before)  # no version change, no second Nommi
+
     def test_pairing_by_id_then_by_name(self):
         plan = self.load()
         sun, moon, star = self.one('design', 301), self.one('design', 302), self.one('design', 303)
@@ -320,8 +333,138 @@ class DexLoadTests(IsolatedApiCase):
         self.assertIsNone(self.one('design', 301)['product_id'])
         self.assertEqual(self.one('design', 303)['product_id'], self.items['PM0100-01'])
 
+    # Earlier linking work (--evidence): claims that a POPCORE ID is a given book entry.
+
+    def evidence(self, *claims):
+        """claims: (sku, kind, website_id, confidence[, item]) -> read_evidence() rows, through a real CSV."""
+        path = self.dir / 'evidence.csv'
+        with path.open('w', encoding='utf-8', newline='') as handle:
+            writer = csv.writer(handle)
+            writer.writerow(dex_load.EVIDENCE_COLUMNS)
+            for sku, kind, website_id, confidence, *item in claims:
+                writer.writerow((sku, kind, '' if website_id is None else website_id,
+                                 (item[0] if item else 'false') if kind == 'product' else '', 'have-a-seat',
+                                 'designs sheet', '2026-10-26', confidence, ''))
+        return dex_load.read_evidence(path)
+
+    def load_with(self, evidence, document=None):
+        with closing(self.connect()) as con:
+            plan = dex_load.plan(con, document or export(), dex_load.read_ip_list(self.ip_list_path), evidence)
+            dex_load.apply(con, plan)
+            return plan
+
+    def picks(self, plan):
+        return [flag for flag in plan.flags if flag['what'] == 'Earlier linking']
+
+    def test_a_high_claim_pairs_the_item_as_earlier_linking_work(self):
+        # "Star" and "Stars" are only close by name; the designs sheet names the design by number.
+        plan = self.load_with(self.evidence(('PM0100-03', 'design', 303, 'high')))
+        self.assertEqual(self.one('design', 303)['product_id'], self.items['PM0100-03'])
+        how = {pair['sku']: pair['how'] for pair in plan.paired}
+        self.assertEqual(how['PM0100-03'], 'Earlier linking work (designs sheet)')
+        self.assertEqual(dex_load.summary(plan)['paired']['Earlier linking work'], 1)
+        self.assertEqual(dex_load.summary(plan)['evidence'], {'paired': 1})
+        self.assertNotIn('Star', [flag['name'] for flag in plan.flags])  # no longer asked as a close name
+        # A second run with the same inputs changes nothing.
+        before = self.rows()
+        again = self.load_with(self.evidence(('PM0100-03', 'design', 303, 'high')))
+        self.assertEqual({row['action'] for row in again.rows.values()}, {'same'})
+        self.assertEqual(self.rows(), before)
+        self.assertEqual(dex_load.summary(again)['evidence'], {'agrees': 1})
+
+    def test_a_medium_claim_goes_to_your_pick_with_the_choice_filled_in(self):
+        plan = self.load_with(self.evidence(('PM0100-03', 'design', 303, 'medium')))
+        self.assertIsNone(self.one('design', 303)['product_id'])
+        [flag] = self.picks(plan)
+        self.assertEqual((flag['name'], flag['website_id']), ('Star', 303))
+        self.assertIn('A medium claim.', flag['why'])
+        self.assertIn('designs sheet', flag['why'])
+        self.assertTrue(flag['choices'].startswith('Pair PM0100-03 “Have a Seat PM0100-03” with design 303'))
+        self.assertEqual(flag['path'], 'POP MART › THE MONSTERS › Have a Seat › Vinyl Figure Blind Box › Star')
+
+    def test_a_medium_claim_a_later_step_pairs_the_same_way_is_not_asked(self):
+        plan = self.load_with(self.evidence(('PM0100-02', 'design', 302, 'medium')))  # Moon pairs by name in its box
+        self.assertEqual(self.one('design', 302)['product_id'], self.items['PM0100-02'])
+        self.assertEqual(self.picks(plan), [])
+        self.assertEqual(dex_load.summary(plan)['evidence'], {'agrees': 1})
+
+    def test_a_claim_that_conflicts_with_the_listing_ids_is_asked(self):
+        document = export()
+        # Bird's listing is PM0100-01, which Sun already has, so the ID pairing leaves Bird unpaired.
+        next(e for e in document['entries'] if e['kind'] == 'design' and e['website_id'] == 305)['listing_ids'] = ['PM0100-01']
+        plan = self.load_with(self.evidence(('PM0400', 'design', 305, 'high')), document)
+        self.assertIsNone(self.one('design', 305)['product_id'])
+        [flag] = self.picks(plan)
+        self.assertIn('The website listings tie this entry to PM0100-01.', flag['why'])
+
+    def test_claims_that_disagree_or_name_a_missing_entry_are_asked(self):
+        plan = self.load_with(self.evidence(
+            ('PM0400', 'design', 303, 'high'), ('PM0400', 'design', 305, 'high'),     # one item, two entries
+            ('PM0500', 'product', 205, 'high'),                                        # fine on its own
+            ('PM0200', 'product', 204, 'high'), ('PM0300', 'product', 204, 'high'),  # 204 is claimed twice
+            ('PM0100-03', 'design', 999, 'high'),                                      # not in the export
+            ('PM0100-03', 'design', 304, 'high')))                                     # stored as deleted (Yoki)
+        self.assertIsNone(self.one('design', 303)['product_id'])
+        self.assertIsNone(self.one('design', 305)['product_id'])
+        self.assertIsNone(self.one('product', 204)['product_id'])
+        self.assertIsNone(self.one('design', 304)['product_id'])
+        self.assertEqual(self.one('product', 205)['product_id'], self.items['PM0500'])
+        why = {flag['choices'].split(' ')[1]: flag['why'] for flag in self.picks(plan)}
+        self.assertEqual(set(why), {'PM0400', 'PM0200', 'PM0300', 'PM0100-03'})
+        self.assertIn('Sources disagree about this POPCORE item', why['PM0400'])
+        self.assertIn('Several POPCORE items are claimed for this entry: PM0200, PM0300.', why['PM0200'])
+        self.assertIn('names a book entry the export lacks (or one stored as deleted)', why['PM0100-03'])
+        # A claim never pairs an item with an entry of the other kind.
+        plan = self.plan_with(self.evidence(('PM0200', 'design', 303, 'high')))
+        self.assertIn('not of the kind', self.picks(plan)[0]['why'])
+
+    def plan_with(self, evidence):
+        with closing(self.connect()) as con:
+            return dex_load.plan(con, export(), dex_load.read_ip_list(self.ip_list_path), evidence)
+
+    def test_evidence_never_replaces_a_link_a_person_made(self):
+        self.load()
+        star = self.one('design', 303)
+        response = self.client.patch(f'/api/dex/entries/{star["id"]}', json={'product_id': self.items['PM0400']},
+                                     headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        plan = self.load_with(self.evidence(('PM0100-03', 'design', 303, 'high'), ('PM0400', 'design', 305, 'high')))
+        self.assertEqual(self.one('design', 303)['product_id'], self.items['PM0400'])
+        self.assertIsNone(self.one('design', 305)['product_id'])
+        why = {flag['choices'].split(' ')[1]: flag['why'] for flag in self.picks(plan)}
+        self.assertIn('already paired with another item by a person', why['PM0100-03'])
+        self.assertIn('already paired with another entry', why['PM0400'])
+
+    def test_a_design_with_no_website_number_loads_and_reruns_cleanly(self):
+        document = export()
+        document['entries'].append(entry('design', None, 'Comet', 201, rarity='normal'))
+        self.load(document)
+        comet = self.one('design', 'Comet')
+        self.assertIsNone(comet['website_id'])
+        self.assertEqual(self.name_of(comet['parent_id']), 'Vinyl Figure Blind Box')
+        before = self.rows()
+        self.assertEqual({row['action'] for row in self.plan(document).rows.values()}, {'same'})
+        self.load(document)
+        self.assertEqual(self.rows(), before)
+
+    def test_bad_evidence_is_refused(self):
+        path = self.dir / 'bad.csv'
+        path.write_text('popcore_id,entry_kind\nPM0100,product\n', encoding='utf-8')
+        with self.assertRaises(dex_load.DexError):
+            dex_load.read_evidence(path)
+        path.write_text(','.join(dex_load.EVIDENCE_COLUMNS) + '\nPM0100,series,101,,,,,high,\n', encoding='utf-8')
+        with self.assertRaises(dex_load.DexError):
+            dex_load.read_evidence(path)
+
+    def test_the_script_reads_evidence(self):
+        self.evidence(('PM0100-03', 'design', 303, 'high'))
+        code, out = self.run_script('--evidence', str(self.dir / 'evidence.csv'))
+        self.assertEqual(code, 0, out)
+        result = json.loads(out)
+        self.assertEqual((result['evidence_claims'], result['plan']['evidence']), (1, {'paired': 1}))
+
     def script(self):
-        spec = importlib.util.spec_from_file_location('load_dex_book', ROOT / 'scripts' / 'load_dex_book.py')
+        spec =importlib.util.spec_from_file_location('load_dex_book', ROOT / 'scripts' / 'load_dex_book.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module

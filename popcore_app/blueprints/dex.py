@@ -34,6 +34,10 @@ def dex_list():
     def work(con):
         if 'parent' in request.args:
             return dex_book.children(con, _number('parent'))
+        if 'named_ip' in request.args:  # contract 1.3: products and designs elsewhere that name this IP
+            return dex_book.named(con, _number('named_ip'))
+        if request.args.get('kind') == 'ip':  # every live IP, for the IP picker
+            return dex_book.ips(con)
         if 'q' in request.args:
             kinds = [kind for kind in request.args.get('kinds', '').split(',') if kind]
             return dex_book.search(con, request.args.get('q'), kinds)
@@ -57,6 +61,14 @@ def dex_removal(entry_id):
     return _run(work)
 
 
+@bp.get('/api/dex/entries/<int:entry_id>/prices')
+@login_required
+def dex_prices(entry_id):
+    """A design's price trend: the prices managers set for its POPCORE item (design_prices), and the website's
+    market prices in its extras. Any signed-in role reads it; nothing changes."""
+    return _run(lambda con: dex_book.price_history(con, entry_id))
+
+
 @bp.get('/api/dex/unlinked')
 @login_required
 def dex_unlinked():
@@ -67,6 +79,7 @@ def dex_unlinked():
         per_page = _number('per_page') if request.args.get('per_page') else 50
         found = dex_book.unlinked(con, request.args.get('q', ''), page, per_page)
         dex_load.suggestions_from_db(con, found['items'])  # the closest book entry by name, for a person to link
+        dex_book.unlinked_names(con, found['items'])  # their full names and IP tags, beside
         return found
     return _run(work)
 

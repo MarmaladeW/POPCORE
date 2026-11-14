@@ -7,7 +7,7 @@ import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
 import { kindText } from '../../lib/dexFields'
-import { errorText } from './DexParts'
+import { DexIpTag, errorText } from './DexParts'
 import './dex.css'
 
 const PER_PAGE = 50
@@ -16,6 +16,8 @@ const FORM_LABEL: Record<string, string> = {
 }
 const formLabel = (form: DexUnlinkedItem['stock_form']) => form ? FORM_LABEL[form] : '未分类 Not sorted yet'
 const itemName = (item: DexUnlinkedItem) => item.name_cn_en || item.jizhanming || item.sku
+// The suggested book entry by its full name (the path when the entry could not be named).
+const suggestedName = (item: DexUnlinkedItem) => item.suggested_entry?.full_name || item.suggestion?.path || ''
 
 // 不在图鉴里 Not in the book yet: POPCORE items no book entry links (never sealed sets). Managers put a box or an
 // item in the book under a series, IP or company; a design goes under the book product its box is linked to.
@@ -79,13 +81,15 @@ export default function DexUnlinked() {
             <strong>{item.sku} · {itemName(item)}</strong>
             <small>{[formLabel(item.stock_form), item.jizhanming && item.jizhanming !== itemName(item) ? `记账名 ${item.jizhanming}` : '',
               item.ip_series ? `系列 ${item.ip_series}` : '',
-              item.stock_form === 'confirmed_design' ? (item.box_entry ? `盒子在图鉴 Box in the book: ${item.box_entry.name}` : 'Its box is not in the book') : '',
+              item.stock_form === 'confirmed_design' ? (item.box_entry ? `盒子在图鉴 Box in the book: ${item.box_entry_named?.full_name ?? item.box_entry.name}` : 'Its box is not in the book') : '',
             ].filter(Boolean).join(' · ')}</small>
-            {item.suggestion && <small className="pc-dex-suggest">建议 Suggested: {item.suggestion.path} · {item.suggestion.score}/100</small>}
+            {item.suggestion && <span className="pc-dex-meta pc-dex-suggest-line">
+              <small className="pc-dex-suggest">建议 Suggested: {suggestedName(item)} · {item.suggestion.score}/100</small>
+              <DexIpTag tag={item.suggested_entry?.ip} /></span>}
           </span>
           {manager && <span className="pc-dex-actions">
             {item.suggestion && <Button size="small" type="primary" loading={linking === item.id}
-              aria-label={`Link ${item.sku} to ${item.suggestion.path}`} onClick={() => link(item)}>连接 Link</Button>}
+              aria-label={`Link ${item.sku} to ${suggestedName(item)}`} onClick={() => link(item)}>连接 Link</Button>}
             <Button size="small" aria-label={`Put ${item.sku} in the book`} onClick={() => setPlacing(item)}>放入图鉴 Put in the book</Button>
           </span>}
         </div>)}
@@ -117,7 +121,7 @@ function PutInBook({ item, onClose, onDone }: {
       if (ask !== asked.current) return
       setParents(hits.map(hit => ({
         value: hit.id,
-        label: `${hit.name} · ${kindText(hit.kind)}${hit.path.length ? ` · ${hit.path.map(step => step.name).join(' › ')}` : ''}`,
+        label: `${hit.full_name} · ${kindText(hit.kind)}${hit.path.length ? ` · ${hit.path.map(step => step.name).join(' › ')}` : ''}`,
       })))
     }).catch(() => {})
   }
@@ -151,7 +155,7 @@ function PutInBook({ item, onClose, onDone }: {
     {item && !blocked && <Form form={form} layout="vertical" requiredMark={false}
       initialValues={{ name: design ? (item.design_name || itemName(item)) : itemName(item) }}>
       <p className="pc-dex-note">{design
-        ? <>A book design under <Link to={`/dex/${item.box_entry!.id}`}>{item.box_entry!.name}</Link>, linked to {item.sku}.</>
+        ? <>A book design under <Link to={`/dex/${item.box_entry!.id}`}>{item.box_entry_named?.full_name ?? item.box_entry!.name}</Link>, linked to {item.sku}.</>
         : <>A book product{item.stock_form === 'random_box' ? ' (blind box)' : ''}, linked to {item.sku}.</>}</p>
       <Form.Item name="name" label="名称 Name" rules={[{ required: true, whitespace: true, message: 'A name is required.' }]}>
         <Input />

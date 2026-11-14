@@ -8,10 +8,11 @@ import {
 } from '../../api/dex'
 import { EXTRA_FIELDS, RARITIES, extrasChange, kindText, toInput, type ExtraField } from '../../lib/dexFields'
 import ProductModal from '../Products/ProductModal'
-import { errorText } from './DexParts'
+import { errorText, ipOptionRender, useIpOptions } from './DexParts'
 
 const PARTNER_KINDS: DexKind[] = ['series', 'product']
 const CHARACTER_KINDS: DexKind[] = ['series', 'product', 'design']
+const IP_KINDS: DexKind[] = ['product', 'design']
 type Option = { value: number; label: string }
 interface ItemHit { id: number; sku: string; name_cn_en: string | null; jizhanming: string | null; stock_form: string | null }
 
@@ -54,14 +55,18 @@ export default function DexEditor({ editing, onClose, onSaved }: {
   const entry = editing?.mode === 'edit' ? editing.entry : null
   const kind = editing ? (editing.mode === 'edit' ? editing.entry.kind : editing.kind) : null
   const context = editing ? (editing.mode === 'edit' ? editing.entry : editing.parent) : null
-  const ip: DexStep | null = context?.ip ?? null
+  const ip: DexStep | null = context?.ip_above ?? null
   const extraFields = kind ? EXTRA_FIELDS[kind] : []
+  // Contract 1.3: a product or design with no IP above (a series with several IPs) names its own IP.
+  const namesIp = !!kind && IP_KINDS.includes(kind) && !ip
+  const ipOptions = useIpOptions(!!editing && namesIp)
 
   const initialValues = useMemo(() => !kind ? {} : {
       name: entry?.name ?? '',
       parent_id: entry?.parent_id ?? undefined,
       partner_id: entry?.partner_id ?? undefined,
       character_id: entry?.character_id ?? undefined,
+      ip_id: entry?.ip_id ?? undefined,
       blind_box: entry?.blind_box ?? false,
       rarity: entry?.rarity ?? undefined,
       product_id: entry?.product_id ?? undefined,
@@ -80,19 +85,21 @@ export default function DexEditor({ editing, onClose, onSaved }: {
     return () => { live = false }
   }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Characters offered: the IP's, and the chosen partner's (contract 1.2: a character may sit under a partner).
-  // A design has no partner of its own; it takes its product's.
+  // Characters offered: the IP's (the one above, or the one this entry names), and the chosen partner's
+  // (contract 1.2: a character may sit under a partner). A design has no partner of its own; it takes its product's.
   const watchedPartner: number | undefined = Form.useWatch('partner_id', form)
   const partnerId = kind && PARTNER_KINDS.includes(kind) ? watchedPartner : context?.partner?.id
+  const watchedIp: number | undefined = Form.useWatch('ip_id', form)
+  const namedIpId = namesIp ? watchedIp : undefined
   useEffect(() => {
     if (!editing || !kind || !CHARACTER_KINDS.includes(kind)) { setCharacters([]); return }
     let live = true
-    const owners = [ip?.id, partnerId].filter((id): id is number => typeof id === 'number')
+    const owners = [ip?.id, namedIpId, partnerId].filter((id): id is number => typeof id === 'number')
     Promise.all(owners.map(id => childEntries(id))).then(groups => {
       if (live) setCharacters(groups.flat().filter(row => row.kind === 'character').map(row => ({ value: row.id, label: row.name })))
     }).catch(() => {})
     return () => { live = false }
-  }, [editing, partnerId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [editing, partnerId, namedIpId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function findParents(text: string) {
     if (!entry || !text.trim()) return
@@ -122,6 +129,8 @@ export default function DexEditor({ editing, onClose, onSaved }: {
     const body: DexChange = { name: values.name }
     if (PARTNER_KINDS.includes(kind)) body.partner_id = values.partner_id ?? null
     if (CHARACTER_KINDS.includes(kind)) body.character_id = values.character_id ?? null
+    // With an IP above, the IP is that one: a stale named IP is cleared.
+    if (IP_KINDS.includes(kind)) body.ip_id = namesIp ? values.ip_id ?? null : null
     if (kind === 'product') body.blind_box = !!values.blind_box
     if (kind === 'design') body.rarity = values.rarity ?? null
     if (kind === 'product' || kind === 'design') body.product_id = values.product_id ?? null
@@ -167,9 +176,15 @@ export default function DexEditor({ editing, onClose, onSaved }: {
       {PARTNER_KINDS.includes(kind) && <Form.Item name="partner_id" label="联名 Partner">
         <Select allowClear showSearch optionFilterProp="label" options={partners} placeholder="—" />
       </Form.Item>}
+      {namesIp && <Form.Item name="ip_id" label="IP"
+        extra="No IP sits above this entry (a series with several IPs). It also shows on the IP's page.">
+        <Select allowClear showSearch optionFilterProp="label" options={ipOptions} optionRender={ipOptionRender}
+          placeholder="—" aria-label="IP" />
+      </Form.Item>}
       {CHARACTER_KINDS.includes(kind) && <Form.Item name="character_id" label="角色 Character"
-        extra={ip ? `From ${ip.name}` : 'Characters come from the IP above; this entry has none.'}>
-        <Select allowClear showSearch optionFilterProp="label" options={characters} disabled={!ip && !partnerId} placeholder="—" />
+        extra={ip ? `From ${ip.name}` : namedIpId ? `From ${ipOptions.find(o => o.value === namedIpId)?.label ?? 'the IP named'}`
+          : 'Characters come from the IP above; this entry has none.'}>
+        <Select allowClear showSearch optionFilterProp="label" options={characters} disabled={!ip && !partnerId && !namedIpId} placeholder="—" />
       </Form.Item>}
       {kind === 'product' && <Form.Item name="blind_box" label="盲盒 Blind box" valuePropName="checked"><Switch /></Form.Item>}
       {kind === 'design' && <Form.Item name="rarity" label="稀有度 Rarity"><Select allowClear options={RARITIES} placeholder="—" /></Form.Item>}
