@@ -1,8 +1,9 @@
 """确认款价格 Design prices in a real browser against the real Flask app, a disposable database and a fake
 WooCommerce (owner, 2026-11-12): a manager finds designs by box, types prices, pastes a column copied from a
 spreadsheet, sets one price for a box's designs and raises them by a percentage, treats a secret apart, reviews
-what changes before saving, and saves. The website sync then sends the first prices and the small change, and
-holds the secret's jump of more than 30% for a manager's OK on 网站 Website. Staff cannot open the screen."""
+what changes before saving, and saves. The website sync then sends the first prices, the small change and the
+secret's +36% jump, with no manager's OK (owner, 2026-11-14): nothing waits on 网站 Website. Staff cannot open the
+screen."""
 import asyncio
 import subprocess
 import sys
@@ -77,7 +78,7 @@ async def run(browser, width):
         page = await open_as('manager')
         await page.goto(BASE + '/products/design-prices')
         await expect(page.get_by_role('link', name='确认款价格 Design prices')).to_have_attribute('aria-current', 'page')
-        await expect(page.get_by_text('Saved prices go to popcore.ca within a minute', exact=False)).to_be_visible()
+        await expect(page.get_by_text('Saved prices go to popcore.ca within a minute, big changes too', exact=False)).to_be_visible()
         await expect(page.get_by_text('盒价 · Box price, not its own').first).to_be_visible()
         def row(label):  # a design's row, found by its price input
             return page.locator('tr', has=page.get_by_label(f'New price for {label}', exact=True))
@@ -93,7 +94,8 @@ async def run(browser, width):
         await expect(page.get_by_text('3 prices pasted down the column', exact=False)).to_be_visible()
         await expect(page.get_by_label('New price for PM0100-05 Moon')).to_have_value('$30.00')
         star = row('PM0100-06 隐藏 Secret Star')
-        await expect(star.get_by_text('+36% · 需经理确认 Waits for an OK')).to_be_visible()
+        await expect(star.get_by_text('+36%', exact=True)).to_be_visible()
+        await expect(page.get_by_text('需经理确认', exact=False)).to_have_count(0)
         await expect(row('PM0100-04 Sun').get_by_text('首次定价 · First price')).to_be_visible()
 
         # The Little Prince: regular designs one price, then 10% more; its secret apart.
@@ -116,8 +118,8 @@ async def run(browser, width):
 
         await page.get_by_role('button', name='检查并保存 Review & save').click()
         dialog = page.get_by_role('dialog')
-        await expect(dialog.get_by_text('等经理确认 · Wait for a manager’s OK')).to_be_visible()
-        await expect(dialog.get_by_text('网站 $109.99 → $150.00: +36%, more than 30%', exact=False)).to_be_visible()
+        await expect(dialog.get_by_text('等经理确认 · Wait for a manager’s OK')).to_have_count(0)
+        await expect(dialog.get_by_text('网站 $109.99 → $150.00 (+36%)', exact=False)).to_be_visible()
         await expect(dialog.get_by_text('首次定价 · First prices')).to_be_visible()
         await expect(dialog.get_by_text('网站 no price → $30.00: first price', exact=False)).to_be_visible()
         await expect(dialog.get_by_text('网站 $20.99 (draft) → $60.00: first price', exact=False)).to_be_visible()
@@ -129,15 +131,16 @@ async def run(browser, width):
         fixture.woo.writes.clear()
         fixture.run_sync()
         assert {wc_id: fixture.woo.item(wc_id)['regular_price'] for wc_id in (30, 31, 32, 33, 90, 91, 94)} == {
-            30: '98.99', 31: '60.00', 32: '30.00', 33: '109.99', 90: '28.59', 91: '28.59', 94: '99.99'}, fixture.woo.writes
+            30: '98.99', 31: '60.00', 32: '30.00', 33: '150.00', 90: '28.59', 91: '28.59', 94: '99.99'}, fixture.woo.writes
         await page.get_by_role('button', name='今天改过 Changed today').click()
         await expect(page.get_by_text('已定价 Set', exact=False)).to_have_count(9)
         await fits(page, f'saved-{width}.png')
 
-        # The secret's jump waits on 网站 Website for a manager's OK.
+        # Nothing waits on 网站 Website: the secret's jump was written without an OK.
         await page.goto(BASE + '/website')
-        held = page.get_by_role('region', name='Prices waiting for an OK')
-        await expect(held.get_by_text('$109.99 → $150.00: +36%, a big change', exact=False)).to_be_visible()
+        await page.get_by_text('Prices POPCORE wrote lately').click()
+        await expect(page.get_by_text('$109.99 → $150.00 ·', exact=False)).to_be_visible()
+        await expect(page.get_by_role('region', name='Prices waiting for an OK')).to_have_count(0)
         await fits(page, f'website-{width}.png')
 
         page = await open_as('staff')
@@ -180,5 +183,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: design prices typed, pasted, set per box and raised, a secret apart, reviewed and saved; first prices '
-          'and a small change sent, a jump over 30% held for an OK; staff kept out; at 390 and 1440 px')
+    print('PASS: design prices typed, pasted, set per box and raised, a secret apart, reviewed and saved; first prices, '
+          'a small change and a +36% jump sent with no OK; staff kept out; at 390 and 1440 px')

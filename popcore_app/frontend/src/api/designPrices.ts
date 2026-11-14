@@ -5,7 +5,7 @@ import type { PriceReason } from './website'
 // sync sends them on. A design is created with its box's price; only a price set here (or in the design's own
 // editor) goes to popcore.ca. See docs/website-sync.md.
 
-// A design's website item. base_cents is the design's own website price, the one a jump is measured from:
+// A design's website item. base_cents is the design's own website price, the one its change is shown against:
 // null when it has none there (a draft, which mostly carries its box's price, or no price).
 export interface DesignWebItem {
   wc_id: number; name: string; status: string; published: boolean
@@ -24,7 +24,7 @@ export interface DesignBox {
 }
 export interface PriceLink { configured: boolean; enabled: boolean; refreshed_at: string | null }
 export interface DesignPriceList {
-  boxes: DesignBox[]; designs: DesignPriceRow[]; today: string; look_pct: number; website: PriceLink
+  boxes: DesignBox[]; designs: DesignPriceRow[]; today: string; website: PriceLink
 }
 export interface DesignPriceChange { product_id: number; cents: number; expected_cents: number | null }
 // What the website sync does with a design's new price: send it, wait for a manager's OK, wait for the Daily
