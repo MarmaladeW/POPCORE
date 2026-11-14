@@ -8,10 +8,12 @@ import { formatCents } from '../../lib/money'
 
 const W = 320, H = 72
 
-// 价格走势 Price trend on a design's page (owner: "just like on the website, we should store these data, so it
-// becomes a price trend over time"). It reads the prices managers set on 确认款价格 Design prices or in the design
-// editor (design_prices), newest first, and the website's market prices kept in the design's details. Read only.
-export default function DexPriceTrend({ entryId, linked, hasWebsite }: { entryId: number; linked: boolean; hasWebsite: boolean }) {
+// 价格走势 Price trend on a design's or product's page (owner: "just like on the website, we should store these data,
+// so it becomes a price trend over time"). For a confirmed design it reads the prices managers set on 确认款价格 Design
+// prices or in the design editor (design_prices); for any other item, its price changes POPCORE recorded (owner,
+// 2026-11-14: "Yes, every item"). Newest first, with the website's market prices kept in the entry's details. Read only.
+export default function DexPriceTrend({ entryId, design, linked, hasWebsite }:
+  { entryId: number; design: boolean; linked: boolean; hasWebsite: boolean }) {
   const [data, setData] = useState<DexPrices>()
   const [failed, setFailed] = useState(false)
   useEffect(() => {
@@ -43,7 +45,8 @@ export default function DexPriceTrend({ entryId, linked, hasWebsite }: { entryId
         {drawn.website.map((dot, index) => <circle key={`w${index}`} className="pc-dex-trend-web" cx={dot.x} cy={dot.y} r="3" />)}
       </svg>}
       {drawn && drawn.website.length > 0 && <p className="pc-dex-trend-key">● 已定价 Set in POPCORE · ○ 网站 Website</p>}
-      {data.linked && data.points.length === 0 && <p className="pc-quiet">还没有定过价 No price has been set for this design yet.</p>}
+      {data.linked && data.points.length === 0 && <p className="pc-quiet">{design
+        ? '还没有定过价 No price has been set for this design yet.' : '还没有价格记录 No price has been recorded for this item yet.'}</p>}
       {rows.length > 0 && <ol className="pc-dex-price-list">
         {rows.map(row => <li key={row.key}>
           <span>{torontoDay(row.at) || '—'}</span>

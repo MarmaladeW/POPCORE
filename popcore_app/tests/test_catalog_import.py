@@ -72,7 +72,13 @@ class CatalogImportTests(IsolatedApiCase):
                          ('ordinary', 'piece', 'verified', 'stable'))
         self.assertIn('long full product name', product['search_blob'])
         self.assertIsNotNone(self.product('New SKU-S'))
-        self.assertEqual(self.database_snapshot(exclude=('products',)), before_other_tables)
+        # Only the catalogue changes, and the price changes it made are recorded (owner, 2026-11-14: "Yes, every item").
+        self.assertEqual(self.database_snapshot(exclude=('products', 'product_price_history')),
+                         {k: v for k, v in before_other_tables.items() if k != 'product_price_history'})
+        with closing(self.connect()) as con:
+            self.assertEqual([tuple(r) for r in con.execute(
+                'SELECT product_id, old_cents, new_cents FROM product_price_history ORDER BY id')],
+                [(self.product_id, None, 950), (self.product('New SKU-S')['id'], None, 0)])
         after = self.database_snapshot()
         replay = self.confirm(rows)
         self.assertEqual(replay.status_code, 200, replay.get_json())

@@ -76,8 +76,9 @@ def dex_removal(entry_id):
 @bp.get('/api/dex/entries/<int:entry_id>/prices')
 @login_required
 def dex_prices(entry_id):
-    """A design's price trend: the prices managers set for its POPCORE item (design_prices), and the website's
-    market prices in its extras. Any signed-in role reads it; nothing changes."""
+    """A design's or product's price trend: its POPCORE item's prices (design_prices for a confirmed design,
+    product_price_history for any other item), and the website's market prices in its extras. Any signed-in
+    role reads it; nothing changes."""
     return _run(lambda con: dex_book.price_history(con, entry_id))
 
 

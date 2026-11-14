@@ -2117,6 +2117,7 @@ def _get_migrations():
         ('dex_entries_ip',                             _migration_dex_entries_ip),
         ('dex_entries_load_key',                       _migration_dex_entries_load_key),
         ('dex_sync',                                   _migration_dex_sync),
+        ('product_price_history',                      _migration_product_price_history),
     ]
 
 
@@ -2380,6 +2381,57 @@ def _migration_dex_sync(con, cur):
                            (SELECT MAX(d.id) FROM design_prices d WHERE d.product_id=dex_entries.product_id) END
                    WHERE product_id IS NOT NULL""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('dex_sync')")
+
+
+# products.price in cents, or NULL when it holds no number.
+_PRICE_CENTS = "CASE WHEN typeof({0}.price) IN ('integer', 'real') THEN CAST(ROUND({0}.price * 100) AS INTEGER) END"
+
+
+def _migration_product_price_history(con, cur):
+    # 价格走势 Price trend for every item (owner, 2026-11-14: "the price history chart on popcore.ca should show
+    # the price change recorded in POPCORE"; asked whether POPCORE should record price changes for every item,
+    # not only confirmed designs: "Yes, every item"). An item's price is saved from many places (the Products
+    # edit, sheet and catalogue imports, scripts), so the database keeps the history itself: one row each time
+    # products.price really changes, and an item's first price when it is added. Confirmed designs are left to
+    # design_prices, which stays the one history for them. The triggers only write to this table, so older code
+    # runs unchanged on a migrated database. No foreign key on purpose: several places count "every table that
+    # points at products" to decide whether an item may be removed or merged (inventory_catalog, the Clover merge
+    # and master-catalogue scripts), and a price history must never hold an item back. Its rows go with the item
+    # instead by the delete trigger; a merge keeps the surviving item's own history and drops the removed one's.
+    # The triggers read products.stock_form (create_catalog_identity): without it, wait for a later run.
+    if 'stock_form' not in {row[1] for row in cur.execute('PRAGMA table_info(products)')}:
+        return
+    cur.execute("""CREATE TABLE IF NOT EXISTS product_price_history (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        old_cents  INTEGER,
+        new_cents  INTEGER,
+        changed_at TEXT    NOT NULL DEFAULT (datetime('now')),
+        source     TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_product_price_history_product ON product_price_history(product_id, id)')
+    cur.execute(f"""CREATE TRIGGER IF NOT EXISTS products_price_history_update AFTER UPDATE OF price ON products
+        WHEN NEW.price IS NOT OLD.price AND NEW.stock_form IS NOT 'confirmed_design'
+        BEGIN
+            INSERT INTO product_price_history(product_id, old_cents, new_cents, source)
+            VALUES (NEW.id, {_PRICE_CENTS.format('OLD')}, {_PRICE_CENTS.format('NEW')}, 'update');
+        END""")
+    cur.execute(f"""CREATE TRIGGER IF NOT EXISTS products_price_history_insert AFTER INSERT ON products
+        WHEN typeof(NEW.price) IN ('integer', 'real') AND NEW.stock_form IS NOT 'confirmed_design'
+        BEGIN
+            INSERT INTO product_price_history(product_id, old_cents, new_cents, source)
+            VALUES (NEW.id, NULL, {_PRICE_CENTS.format('NEW')}, 'insert');
+        END""")
+    cur.execute("""CREATE TRIGGER IF NOT EXISTS products_price_history_delete AFTER DELETE ON products
+        BEGIN
+            DELETE FROM product_price_history WHERE product_id = OLD.id;
+        END""")
+    # A starting point for every item there is today; run again, it adds none for an item that has one.
+    cur.execute(f"""INSERT INTO product_price_history(product_id, old_cents, new_cents, source)
+        SELECT p.id, NULL, {_PRICE_CENTS.format('p')}, 'start' FROM products p
+        WHERE typeof(p.price) IN ('integer', 'real') AND p.stock_form IS NOT 'confirmed_design'
+          AND NOT EXISTS (SELECT 1 FROM product_price_history h WHERE h.product_id=p.id)""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('product_price_history')")
 
 
 def _migration_inventory_viewers(con, cur):
