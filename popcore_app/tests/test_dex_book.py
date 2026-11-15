@@ -248,6 +248,27 @@ class DexBookTests(IsolatedApiCase):
         self.assertEqual(self.client.get('/api/dex/entries?kind=company').status_code, 401)
         self.assertEqual(self.row(ip)['name'], 'Labubu')
 
+    def test_series_are_listed_by_release_date_newest_first(self):
+        """Owner, 2026-11-14: "the dex should be listed in date, not on the date created but the date of the series
+        was released"."""
+        company = self.add('company', 'POP MART')
+        ip = self.add('ip', 'HIRONO', company)
+        made = [self.add('series', name, ip, extras=extras) for name, extras in (
+            ('Road Journal Series', {}), ('Mime Series', {'release_date': '2023-07-13'}),
+            ('After Dark Series', {}), ('Echo Series', {'release_date': '2025-04-10'}),
+            ('Shelter Series', {'release_date': '2024-07-18'}), ('CLOT Series', {'release_date': '2024-07-18'}))]
+        character = self.add('character', 'Hirono', ip)
+        item = self.add('product', 'Hirono Big Figure', ip)
+        listed = self.get(f'/api/dex/entries?parent={ip}')
+        self.assertEqual([row['name'] for row in listed if row['kind'] == 'series'], [
+            'Echo Series', 'CLOT Series', 'Shelter Series', 'Mime Series',  # newest first; the same day by name
+            'After Dark Series', 'Road Journal Series'])  # no date: after them, by name, not in the order made
+        self.assertEqual({row['id'] for row in listed}, {*made, character, item})  # nothing lost, other kinds kept
+        # A date added later moves the series to its place.
+        self.assertEqual(self.patch(made[0], extras={'release_date': '2026-06-12'}).status_code, 200)
+        listed = self.get(f'/api/dex/entries?parent={ip}')
+        self.assertEqual([row['name'] for row in listed if row['kind'] == 'series'][:2], ['Road Journal Series', 'Echo Series'])
+
     def test_reorder_renumbers_one_group(self):
         company, ip, series, product, (sun, moon) = self.book()
         star = self.add('design', 'Star', product)

@@ -247,10 +247,20 @@ def _rows(con, sql, params=()):
     return [_named(con, _shape(row), memo) for row in con.execute(sql, params)]
 
 
+def _release_order(entries):
+    """Series are listed by the date they were released, newest first (owner, 2026-11-14: "the dex should be listed in
+    date, not on the date created but the date of the series was released"). A series with no release date comes after
+    them, by name. Every other kind keeps the book's own order (sort_order)."""
+    series = sorted((entry for entry in entries if entry['kind'] == 'series'), key=lambda entry: entry['name'].casefold())
+    series.sort(key=lambda entry: str(entry['extras'].get('release_date') or ''), reverse=True)  # stable: ties by name
+    in_order = iter(series)
+    return [next(in_order) if entry['kind'] == 'series' else entry for entry in entries]
+
+
 def children(con, parent_id):
     _need(con, parent_id)
-    return _rows(con, f'SELECT {_COLUMNS} {_FROM} AND e.parent_id=? ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id',
-                 (parent_id,))
+    return _release_order(_rows(
+        con, f'SELECT {_COLUMNS} {_FROM} AND e.parent_id=? ORDER BY e.sort_order, e.name COLLATE NOCASE, e.id', (parent_id,)))
 
 
 def top(con, kind):

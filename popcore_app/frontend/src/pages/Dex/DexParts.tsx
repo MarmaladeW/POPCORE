@@ -73,7 +73,10 @@ export function DexIpPick({ entry, options, onSaved }: {
 export function DexRow({ entry, onUp, onDown, busy, extra }: {
   entry: DexEntry; onUp?: () => void; onDown?: () => void; busy?: boolean; extra?: ReactNode
 }) {
-  const meta = [entry.child_count ? `${entry.child_count} 项 inside` : '',
+  // A series shows its release date: series are listed by it, newest first (owner, 2026-11-14).
+  const released = entry.kind !== 'series' ? ''
+    : entry.extras.release_date ? `发售 ${String(entry.extras.release_date)}` : '未填发售日期 No release date'
+  const meta = [released, entry.child_count ? `${entry.child_count} 项 inside` : '',
     entry.product_sku ? `POPCORE ${entry.product_sku}` : ''].filter(Boolean).join(' · ')
   // The row keeps its short name (it sits under its parent); the IP tag shows unless the row's IP picker does.
   const tag = extra ? null : entry.ip
@@ -89,7 +92,8 @@ export function DexRow({ entry, onUp, onDown, busy, extra }: {
   </div>
 }
 
-// A group of siblings in order, with move up / down for managers (one reorder call per move).
+// A group of siblings in order, with move up / down for managers (one reorder call per move). Series have no move
+// buttons: their order is their release date.
 export function DexRows({ rows, parentId, canWrite, onChanged, extra }: {
   rows: DexEntry[]; parentId: number | null; canWrite: boolean; onChanged: (rows: DexEntry[]) => void
   extra?: (row: DexEntry) => ReactNode
@@ -109,8 +113,8 @@ export function DexRows({ rows, parentId, canWrite, onChanged, extra }: {
     }
   }
   return <>{rows.map((row, index) => <DexRow key={row.id} entry={row} busy={busy} extra={extra?.(row)}
-    onUp={canWrite && index > 0 ? () => move(index, -1) : undefined}
-    onDown={canWrite && index < rows.length - 1 ? () => move(index, 1) : undefined} />)}</>
+    onUp={canWrite && row.kind !== 'series' && index > 0 ? () => move(index, -1) : undefined}
+    onDown={canWrite && row.kind !== 'series' && index < rows.length - 1 ? () => move(index, 1) : undefined} />)}</>
 }
 
 // Search the book by name (the words of the full name) and jump to an entry; each hit shows its full name.

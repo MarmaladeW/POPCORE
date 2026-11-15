@@ -152,6 +152,8 @@ export default function DexEntryPage() {
       label={`${KIND_LABEL[group.kind].en} here`} count={group.rows.length} tone="ok"
       action={manager && <Button size="small" onClick={() => setEditing({ mode: 'create', kind: group.kind, parent: entry })}>
         添加 Add {plain(group.kind)}</Button>}>
+      {group.kind === 'series' && group.rows.length > 1 && <p className="pc-quiet">按发售日期，新的在前 · Listed by release date, newest
+        first. A series with no release date comes after them, by name.</p>}
       {group.rows.length ? <DexRows rows={group.rows} parentId={entry.id} canWrite={manager} onChanged={next => setGroup(group.kind, next)}
         extra={ipPick(group.kind)} />
         : <p className="pc-quiet">No {plain(group.kind)} here yet.</p>}
