@@ -2118,6 +2118,7 @@ def _get_migrations():
         ('dex_entries_load_key',                       _migration_dex_entries_load_key),
         ('dex_sync',                                   _migration_dex_sync),
         ('product_price_history',                      _migration_product_price_history),
+        ('report_lines_from',                          _migration_report_lines_from),
     ]
 
 
@@ -2432,6 +2433,19 @@ def _migration_product_price_history(con, cur):
         WHERE typeof(p.price) IN ('integer', 'real') AND p.stock_form IS NOT 'confirmed_design'
           AND NOT EXISTS (SELECT 1 FROM product_price_history h WHERE h.product_id=p.id)""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('product_price_history')")
+
+
+def _migration_report_lines_from(con, cur):
+    # The daily report moves 入库, 出库, 出店入库, 出display入店 and 出店display by itself (owner, 2026-11-13).
+    # Before that those were recorded by hand (盘点 counts, 调拨 Transfer), so the report of an earlier day,
+    # read again, must not move them a second time: only reports dated from the day this first runs (the day
+    # the change goes live, Toronto time) are read the new way. The date is one row of app_settings
+    # (report_lines_from, YYYY-MM-DD); change it there to start on another day.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('report_lines_from', ?)",
+                (datetime.now(ZoneInfo('America/Toronto')).date().isoformat(),))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_lines_from')")
 
 
 def _migration_inventory_viewers(con, cur):

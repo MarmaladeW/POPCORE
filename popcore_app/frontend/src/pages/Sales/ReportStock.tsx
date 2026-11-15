@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Alert, Button, Skeleton, message } from 'antd'
 
 import {
-  checkReportStockNotice, getReportStockNotices, locationText, reasonText, retryReportStock,
+  checkReportStockNotice, getReportStockNotices, reasonText, retryReportStock, whereText,
   type ReportStockNotice, type ReportStockReason,
 } from '../../api/reportStock'
 import PageHeader from '../../components/pc/PageHeader'
@@ -82,7 +82,7 @@ export default function ReportStockPage() {
               title={`${row.name}${row.sku ? ` (${row.sku})` : ''} × ${row.quantity}`}
               meta={[reasonText[row.reason].en,
                 ...(row.reason === 'move_short' && row.where?.length
-                  ? row.where.map(code => code in (row.stock ?? {}) ? `${locationText[code] ?? code} ${row.stock![code]}` : locationText[code] ?? code)
+                  ? row.where.map(code => code in (row.stock ?? {}) ? `${whereText(code)} ${row.stock![code]}` : whereText(code))
                   : [`楼下 Floor ${row.floor}`, `楼上 Upstairs ${row.upstairs}`]),
                 row.counted_at ? `盘点 Counted ${torontoTime(row.counted_at)}` : null].filter(Boolean).join(' · ')}
               trailing={<span className="pc-row-actions">

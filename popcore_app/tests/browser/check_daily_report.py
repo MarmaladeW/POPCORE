@@ -329,6 +329,71 @@ async def live_stock_lines_flow(browser, viewport):
         await context.close()
 
 
+SENT = {'line_key': 'b2', 'section': 'transfer_out', 'label': '出库', 'raw': 'Test Product 12*1', 'kind': 'move',
+        'ratio': 1, 'wanted': 1, 'moved_before': 0, 'checked': 0, 'moving': 1, 'short': 0, 'problem': None,
+        'document_id': None,
+        'from': {'product_id': 3, 'sku': 'TEST-1-SET', 'name': 'Test Product 整端', 'unit': 'set', 'location': 'upstairs',
+                 'per': 1, 'before': 4, 'after': 3, 'store': None},
+        'to': {'product_id': 3, 'sku': 'TEST-1-SET', 'name': 'Test Product 整端', 'unit': 'set', 'location': 'warehouse',
+               'per': 1, 'before': 0, 'after': 1, 'store': 'MK'}}
+
+
+async def sent_and_left_out_flow(browser, viewport):
+    """出库 is a stock line that lands at the other store (ticked: on its floor), and a pre-order is listed as
+    left out (owner, 2026-11-13 and 2026-11-10)."""
+    def payload(path, query, request):
+        if path == '/api/sales/parse_report':
+            return {**api_payload(path, query, request), 'stock_mode': 'live', 'detected_date': '2026-11-12',
+                    'confirmed': [], 'cash_total_reported': None, 'cash_expected_reported': None,
+                    'review': [{**ITEM, 'raw_name': 'Test Product', 'section': 'transfer_out', 'qty': 1, 'box_size': 12,
+                                'loose_qty': 0, 'candidates': [{**PRODUCT, 'score': 100}]}],
+                    'employee_discounts': [], 'display_sales': [], 'claw_prizes': [], 'store_transfers': [],
+                    'left_out': [{'line': 3, 'text': 'Test Product*1（ITACHI）（预订单）', 'reason': 'pre_order'}]}
+        if path == '/api/sales/submit_daily_report':
+            return {'ok': True, 'dry_run': True, 'needs_confirmation': True, 'stock_digest': 'digest-2',
+                    'stock': {**STOCK, 'business_date': '2026-11-12', 'taken': 0, 'lines': [SENT]}}
+        return api_payload(path, query, request)
+
+    state = {'api_payload': payload}
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    try:
+        await page.goto(BASE + '/sales')
+        await page.locator('textarea').fill('2026.11.12 DT\n卡机汇总：\nTest Product*1（ITACHI）（预订单）\n出库：\nTest Product 12*1')
+        await page.get_by_role('button', name='Parse Report', exact=True).click()
+        # The pre-order is said by its line, and 出库 is no longer only a note.
+        await expect(page.get_by_text('预订单 Pre-orders：1 行没有算进这份日报 left out', exact=True)).to_be_visible()
+        left_out = page.get_by_role('list', name='Left out')
+        await expect(left_out.get_by_text('第 3 行 Line 3', exact=True)).to_be_visible()
+        await expect(left_out.get_by_text('Test Product*1（ITACHI）（预订单）', exact=True)).to_be_visible()
+        await expect(page.get_by_text('出库 / To the other store', exact=True)).to_have_count(0)
+        await page.get_by_role('tab', name='Review', exact=False).click()
+        await expect(page.get_by_text('楼上/仓库 → 另一家店楼上/仓库 Other store', exact=True)).to_be_visible()
+        await page.get_by_role('checkbox', name='到对方楼下 To their floor').check()
+        await expect(page.get_by_text('楼上/仓库 → 另一家店楼下 Other store floor', exact=True)).to_be_visible()
+        await page.get_by_role('button', name=re.compile(r'接\s*受')).click()
+        await page.get_by_role('button', name='Confirm & Log', exact=False).click()
+        dialog = page.get_by_role('dialog', name='确认库存变化 Confirm stock changes')
+        await expect(dialog).to_be_visible()
+        # The other store's side of the line is named with its store.
+        await expect(dialog.get_by_text('TEST-1-SET Test Product 整端 · 楼上 Upstairs 4 → 3', exact=False)).to_be_visible()
+        await expect(dialog.get_by_text('TEST-1-SET Test Product 整端 · MK 仓库 Warehouse 0 → 1', exact=False)).to_be_visible()
+        posts = [r for r in state['requests'] if r['path'] == '/api/sales/submit_daily_report']
+        assert len(posts) == 1 and posts[0]['post_data']['dry_run'] is True
+        (item,) = posts[0]['post_data']['items']
+        assert (item['section'], item['box_size'], item['num_boxes'], item['loose_qty'], item['to_floor']) == (
+            'transfer_out', 12, 1, 0, True), item
+        assert 'to_display' not in item, item
+        await page.wait_for_timeout(500)  # the dialog's opening animation
+        await page.screenshot(path=OUT / f'sent-to-other-store-{viewport["width"]}.png')
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
+    except Exception:
+        await page.screenshot(path=OUT / 'sent-failure.png', full_page=True)
+        raise
+    finally:
+        await context.close()
+
+
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / 'vite.log').open('w') as log:
@@ -348,6 +413,7 @@ async def main():
                         await flow(browser, size)
                         await receipt_flow(browser, size)
                         await live_stock_lines_flow(browser, size)
+                        await sent_and_left_out_flow(browser, size)
                 finally:
                     await browser.close()
         finally:

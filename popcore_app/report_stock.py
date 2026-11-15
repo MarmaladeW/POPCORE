@@ -21,15 +21,27 @@ floor; 卖display a sale from display, which the floor then does not take; 拆di
 入display upstairs to display; 娃娃机 a prize off the claw. A `(display)` line goes to display instead
 of the floor. Each line is kept per day in `report_stock_moves` with what it should move and what it
 moved, so a re-pasted day moves only the difference, as sales do, and what a source does not have
-waits as a `move_short` notice. 出库 to the other store and 入娃娃机 refills are not moved here: staff
-record them with 调拨 Transfer and the claw screen.
+waits as a `move_short` notice.
+
+More of the report moves by itself (owner, 2026-11-13), so a raw paste needs no hand steps: 入库 new goods
+into upstairs (or the warehouse), a written set size as whole sets, and a blind box's first whole sets give it
+its sealed set as the count card does; 出库 off this store's upstairs and onto the other live store at once,
+whole sets and boxes to its upstairs or warehouse, or to its floor when the manager says so; 出店入库 floor
+to upstairs; 出display入店 display to the floor, a written set size opening the display's whole set as boxes;
+出店display off display and out of the store. A day's lines post arrivals first, so what a report brings in
+can feed its own later lines. 入娃娃机 refills are not moved here: staff record them on the claw screen.
+Days before `report_lines_from` (the day this went live) were recorded by hand, so their reports keep the old
+reading of those sections and never move them a second time.
 """
 import hashlib
 import json
 import uuid
 
+from catalog_identity import CatalogConflict
 from goods_operations import _balance
-from inventory_commands import (InventoryConflict, InventoryError, _post_inventory_in_transaction,
+from identity_sheet import SUGGESTED_IDENTITY
+from inventory_catalog import sealed_set_for
+from inventory_commands import (InventoryConflict, InventoryError, _post_inventory_in_transaction, live_store_ids,
                                 require_inventory_access, store_is_live)
 
 REPORT_REASON = '日报 Daily report'
@@ -40,7 +52,17 @@ SHORT_REASONS = ('not_counted', 'not_enough_on_floor', 'set_size_unknown')
 LINE_SECTIONS = {
     'refill': '出库入店', 'stock_in': '入店', 'stock_out': '出店', 'display_sold': '卖display',
     'break_display': '拆display', 'display_stock_in': '入display', 'claw_prize': '娃娃机',
+    # Owner, 2026-11-13: these move by the report too.
+    'back_in': '入库', 'transfer_out': '出库', 'floor_to_back': '出店入库', 'display_to_floor': '出display入店',
 }
+# Lines written as sets, boxes or pieces: "X 12*8" is 8 sets of 12, "X*3" is 3 boxes or pieces.
+PACKED_SECTIONS = ('refill', 'stock_in', 'back_in', 'transfer_out', 'floor_to_back', 'display_to_floor')
+# The order a day's lines post in: what arrives first, then what moves inside the store, then what leaves,
+# so a report's own arrivals feed its later lines (DT 2026-11-11: 拆display of a box that day's 入店 brought).
+_STAGES = {'back_in': 0, 'stock_in': 1, 'display_to_floor': 2, 'refill': 3, 'display_stock_in': 3,
+           'break_display': 4, 'floor_to_back': 5, 'transfer_out': 6}
+_LAST_STAGE = 7
+MAX_SET_SIZE = 100
 
 
 class ReportLineError(InventoryError):
@@ -124,7 +146,69 @@ def _set_for_box(con, box_id):
            ORDER BY c.version DESC, c.id DESC LIMIT 1""", (box_id,)).fetchone()
 
 
-def _line_moves(con, line, item, product, at, back):
+def lines_from(con):
+    """The first business date whose report moves 入库, 出库, 出店入库, 出display入店 and 出店display by itself
+    (app_settings report_lines_from, set when this went live), or None when every day does. Earlier days had
+    them recorded by hand."""
+    row = con.execute("SELECT value FROM app_settings WHERE key='report_lines_from'").fetchone()
+    return (row[0] or '').strip() or None if row else None
+
+
+def other_store(con, store_id):
+    """Where 出库 goes (owner, 2026-11-13: off this store and onto the other at once): the one other live
+    store, with its upstairs or warehouse and its floor where their opening is verified. None when no other
+    store is live, or more than one is and the report cannot say which."""
+    live = live_store_ids(con) - {store_id}
+    stores = [row for row in con.execute('SELECT id, code FROM stores WHERE is_active=1 ORDER BY id') if row['id'] in live]
+    if len(stores) != 1:
+        return None
+    at = {row['code']: row['id'] for row in con.execute(
+        """SELECT l.code, l.id FROM inventory_locations l JOIN inventory_scope_state ss ON ss.location_id=l.id
+           WHERE l.store_id=? AND l.is_active=1 AND ss.opening_verified=1""", (stores[0]['id'],))}
+    return {'id': stores[0]['id'], 'code': stores[0]['code'], 'back': at.get('upstairs') or at.get('warehouse'),
+            'floor': at.get('floor')}
+
+
+def can_have_set(con, product):
+    """A blind box with no sealed set yet, whose first whole sets can give it one as the count card does: a
+    blind box, or a product not counted yet whose type says blind box (盲盒), with a SKU whose -SET is free.
+    A report line alone never makes anything else a blind box."""
+    form = product['stock_form'] or (SUGGESTED_IDENTITY.get((product['product_type'] or '').strip()) or (None, None))[0]
+    return (form == 'random_box' and bool(product['sku'])
+            and not con.execute('SELECT 1 FROM products WHERE sku=?', (f"{product['sku']}-SET",)).fetchone())
+
+
+def _sets_and_units(con, line, item, product, create=False):
+    """A line written as sets, boxes or pieces: (its whole set or None, the box or piece, boxes per set, whole
+    sets, loose units). With no whole set recorded every unit written is one box or piece. `create` gives a
+    blind box its sealed set on its first whole sets (owner, 2026-11-13: 入库 "hellokitty苹果贴贴12*8"), as the
+    count card does; inside a preview that is rolled back with everything else."""
+    name, size, sets, loose = _name(product), item['box_size'], item['num_boxes'], item['loose_qty']
+    if product['stock_form'] == 'sealed_set':
+        box, per = _stock_product(con, product)
+        if per is None:
+            raise ReportLineError(f'{name}: how many boxes a set holds was never recorded; record it in 产品 Products', line)
+        if size not in (1, per):
+            raise ReportLineError(f'{name}: the report says {size} per set, POPCORE records {per}', line)
+        return product, box, per, sets, loose
+    whole = _set_for_box(con, product['id']) if size > 1 and product['stock_form'] in (None, 'random_box') else None
+    if whole is None and create and size > 1 and can_have_set(con, product):
+        if size > MAX_SET_SIZE:
+            raise ReportLineError(f'{name}: a whole set cannot hold {size} boxes; check the line', line)
+        try:
+            sealed_set_for(con, product['id'], size)
+        except (InventoryError, CatalogConflict) as exc:
+            raise ReportLineError(f'{name}: its whole set (整端) could not be added: {exc}', line) from exc
+        product = con.execute('SELECT * FROM products WHERE id=?', (product['id'],)).fetchone()
+        whole = _set_for_box(con, product['id'])
+    if whole is None:
+        return None, product, 1, 0, size * sets + loose
+    if size != whole['boxes_per_set']:
+        raise ReportLineError(f"{name}: the report says {size} per set, POPCORE records {whole['boxes_per_set']}", line)
+    return whole, product, whole['boxes_per_set'], sets, loose
+
+
+def _line_moves(con, line, item, product, at, back, other=None):
     """What one report stock line moves: (kind, from product, from location, to product, to location,
     destination units per source unit, source units). 整端 whole sets stay upstairs; the floor and display
     hold blind boxes as boxes, so a set that comes down arrives as its recorded number of boxes."""
@@ -149,19 +233,7 @@ def _line_moves(con, line, item, product, at, back):
                 return [('move', product, back, product, display, 1, units)]
             return [('receipt', None, None, product, display, 1, units)]
         floor = need('floor', 'floor')
-        if product['stock_form'] == 'sealed_set':
-            whole, box, per = product, *_stock_product(con, product)
-            if per is None:
-                raise ReportLineError(f'{name}: how many boxes a set holds was never recorded; record it in 产品 Products', line)
-            if size not in (1, per):
-                raise ReportLineError(f'{name}: the report says {size} per set, POPCORE records {per}', line)
-        elif product['stock_form'] == 'random_box' and size > 1 and (whole := _set_for_box(con, product['id'])):
-            box, per = product, whole['boxes_per_set']
-            if size != per:
-                raise ReportLineError(f'{name}: the report says {size} per set, POPCORE records {per}', line)
-        else:
-            # No whole set to open: every unit written is one box or piece.
-            whole, box, per, sets, loose = None, product, 1, 0, size * sets + loose
+        whole, box, per, sets, loose = _sets_and_units(con, line, item, product)
         if section == 'stock_in':
             return [('receipt', None, None, box, floor, 1, per * sets + loose)]
         moves = []
@@ -170,6 +242,34 @@ def _line_moves(con, line, item, product, at, back):
         if loose:
             moves.append(('move', box, back, box, floor, 1, loose))
         return moves
+    if section in ('back_in', 'transfer_out', 'floor_to_back', 'display_to_floor'):
+        if section != 'display_to_floor' and back is None:
+            raise ReportLineError(f'{name}: this store has no upstairs or warehouse', line)
+        whole, box, per, sets, loose = _sets_and_units(con, line, item, product, create=section == 'back_in')
+        if section == 'back_in':
+            # New goods straight into upstairs or the warehouse: whole sets stay whole there.
+            return ([('receipt', None, None, whole, back, 1, sets)] if whole is not None and sets else []) + (
+                [('receipt', None, None, box, back, 1, loose)] if loose else [])
+        if section == 'floor_to_back':
+            # The floor holds boxes only, so what goes back up is boxes.
+            return [('move', box, need('floor', 'floor'), box, back, 1, per * sets + loose)]
+        if section == 'display_to_floor':
+            display, floor = need('display', 'display'), need('floor', 'floor')
+            return ([('correction', whole, display, box, floor, per, sets)] if whole is not None and sets else []) + (
+                [('move', box, display, box, floor, 1, loose)] if loose else [])
+        if other is None:
+            raise ReportLineError(f'{name}: 出库 goes to the other store, and POPCORE cannot tell which store that is '
+                                  '(none other is live, or more than one); record it with 调拨 Transfer', line)
+        if item.get('to_floor'):
+            # The other store's floor holds boxes only: a whole set arrives there as its boxes.
+            if other['floor'] is None:
+                raise ReportLineError(f"{name}: {other['code']} has no counted floor to receive this", line)
+            return ([('correction', whole, back, box, other['floor'], per, sets)] if whole is not None and sets else []) + (
+                [('move', box, back, box, other['floor'], 1, loose)] if loose else [])
+        if other['back'] is None:
+            raise ReportLineError(f"{name}: {other['code']} has no counted upstairs or warehouse to receive this", line)
+        return ([('move', whole, back, whole, other['back'], 1, sets)] if whole is not None and sets else []) + (
+            [('move', box, back, box, other['back'], 1, loose)] if loose else [])
     qty = item['qty']
     if section == 'stock_out':
         box, per = _stock_product(con, product)
@@ -195,12 +295,13 @@ def _describe(item):
     text = item.get('raw_name') or ''
     if item.get('notes'):
         text += f"（{item['notes']}）"
-    if item['section'] in ('refill', 'stock_in'):
+    if item['section'] in PACKED_SECTIONS:
         size, sets, loose = item['box_size'], item['num_boxes'], item['loose_qty']
         amount = (f'{size}*{sets}' if size > 1 else str(sets)) + (f'+{loose}' if loose else '')
     else:
         amount = str(item['qty'])
-    return f"{text} {amount}{'（display）' if item.get('to_display') else ''}".strip()
+    mark = '（display）' if item.get('to_display') else '（到对方楼下）' if item.get('to_floor') else ''
+    return f"{text} {amount}{mark}".strip()
 
 
 def plan_report_lines(con, store_id, items):
@@ -208,13 +309,20 @@ def plan_report_lines(con, store_id, items):
     moves, merged by what they move. Raises ReportLineError for a line this store cannot move."""
     at = _locations(con, store_id)
     back = at.get('upstairs') or at.get('warehouse')
+    other = other_store(con, store_id)
     planned = {}
-    for line, item in items:
+    # 入库 first: a set it adds is the set the day's other lines of that box then open or send.
+    for line, item in sorted(items, key=lambda pair: pair[1]['section'] != 'back_in'):
         product = con.execute('SELECT * FROM products WHERE id=?', (item['product_id'],)).fetchone()
-        for kind, source, source_at, target, target_at, ratio, units in _line_moves(con, line, item, product, at, back):
+        for kind, source, source_at, target, target_at, ratio, units in _line_moves(con, line, item, product, at, back,
+                                                                                   other):
             if units < 1:
                 continue
             shape = [item['section'], kind, source and source['id'], source_at, target and target['id'], target_at, ratio]
+            if item['section'] == 'back_in' and target['stock_form'] == 'sealed_set':
+                # A set this report adds has no id until it saves: its line is known by its box, so the
+                # preview the manager confirmed and the save are the same line.
+                shape[4] = f"set-of:{_stock_product(con, target)[0]['id']}"
             key = hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:16]
             entry = planned.setdefault(key, {
                 'line_key': key, 'section': item['section'], 'kind': kind,
@@ -247,91 +355,126 @@ def _available(con, product, location_id):
     return _balance(con, product['id'], location_id, 'saleable')['quantity']
 
 
+def _places(con, store_id):
+    """Every active location as (code, the store's code when it is another store's): a line may reach the
+    other store's upstairs, warehouse or floor."""
+    return {row['id']: (row['code'], None if row['store_id'] == store_id else row['store_code'])
+            for row in con.execute("""SELECT l.id, l.code, l.store_id, s.code AS store_code
+                                      FROM inventory_locations l JOIN stores s ON s.id=l.store_id""")}
+
+
 def _sync_lines(con, actor, store_id, store_code, day, counted):
     """Move each of the day's stock lines by the difference between what it should move and what it
-    moved (or a manager checked). Returns each line's effect and the products a source was short of."""
-    codes = {location_id: code for code, location_id in _locations(con, store_id).items()}
+    moved (or a manager checked). Arrivals post first and what leaves posts last; a line still short is
+    tried again while other lines keep moving, so a line fed by another line of the same report is never
+    left short by the order they were written or reviewed in. Returns each line's effect, the products a
+    source was short of and the documents posted."""
+    places = _places(con, store_id)
+    where = lambda location_id: ':'.join(filter(None, reversed(places.get(location_id, ('', None)))))
     product = lambda product_id: con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone()
-    results, short = [], {}
+    stored = lambda key: con.execute("""SELECT * FROM report_stock_moves WHERE store_id=? AND business_date=?
+                                        AND line_key=?""", (store_id, day, key)).fetchone()
+    results, documents = {}, []
     rows = con.execute("""SELECT rowid, * FROM report_stock_moves WHERE store_id=? AND business_date=?
                           ORDER BY rowid""", (store_id, day)).fetchall()
-    for row in rows:
-        if not (row['wanted'] or row['moved'] or row['checked']):
-            if not row['posts']:
-                con.execute('DELETE FROM report_stock_moves WHERE store_id=? AND business_date=? AND line_key=?',
-                            (store_id, day, row['line_key']))
-            continue
-        source = product(row['from_product_id']) if row['from_product_id'] else None
-        target = product(row['to_product_id']) if row['to_product_id'] else None
-        out = row['wanted'] - row['moved'] - row['checked']
-        sides = [(side, item, location_id, 1 if side == 'from' else row['ratio'])
-                 for side, item, location_id in (('from', source, row['from_location_id']),
-                                                 ('to', target, row['to_location_id'])) if item is not None]
-        before = {side: _balance(con, item['id'], location_id, 'saleable')['quantity'] for side, item, location_id, _ in sides}
-        # Forward a line takes from its source; putting it back takes from where it went.
-        taking = [entry for entry in sides if entry[0] == ('from' if out > 0 else 'to')]
-        moving, missing, problem, document_id = 0, 0, None, None
-        if out:
-            need = abs(out)
-            if any(item['identity_status'] != 'verified' for _, item, _, _ in sides):
-                missing, problem = need, 'not_counted'
-            else:
-                if taking:
-                    _, item, location_id, per = taking[0]
-                    moving = min(need, _available(con, item, location_id) // per)
+    pending = [row['line_key'] for row in sorted(rows, key=lambda row: (_STAGES.get(row['section'], _LAST_STAGE),
+                                                                         row['rowid']))]
+    while pending:
+        moved_any, again = False, []
+        for key in pending:
+            row = stored(key)
+            if not (row['wanted'] or row['moved'] or row['checked']):
+                if not row['posts']:
+                    con.execute('DELETE FROM report_stock_moves WHERE store_id=? AND business_date=? AND line_key=?',
+                                (store_id, day, key))
+                continue
+            source = product(row['from_product_id']) if row['from_product_id'] else None
+            target = product(row['to_product_id']) if row['to_product_id'] else None
+            out = row['wanted'] - row['moved'] - row['checked']
+            sides = [(side, item, location_id, 1 if side == 'from' else row['ratio'])
+                     for side, item, location_id in (('from', source, row['from_location_id']),
+                                                     ('to', target, row['to_location_id'])) if item is not None]
+            before = {side: _balance(con, item['id'], location_id, 'saleable')['quantity']
+                      for side, item, location_id, _ in sides}
+            # Forward a line takes from its source; putting it back takes from where it went.
+            taking = [entry for entry in sides if entry[0] == ('from' if out > 0 else 'to')]
+            moving, missing, problem = 0, 0, None
+            if out:
+                need = abs(out)
+                if any(item['identity_status'] != 'verified' for _, item, _, _ in sides):
+                    missing, problem = need, 'not_counted'
                 else:
-                    moving = need
-                missing = need - moving
-                problem = 'not_enough' if missing else None
-            if moving:
-                sign = 1 if out > 0 else -1
-                lines = []
-                for side, item, location_id, per in sides:
-                    adds = (side == 'to') == (sign > 0)
-                    balance = _balance(con, item['id'], location_id, 'saleable')
-                    lines.append({'product_id': item['id'], 'unit': item['stock_unit'], 'quantity': moving * per,
-                                  f"{'to' if adds else 'from'}_location_id": location_id,
-                                  f"{'to' if adds else 'from'}_disposition": 'saleable',
-                                  'expected_versions': {'to' if adds else 'from': balance['version']}})
-                kind = row['kind'] if sign > 0 else 'correction'
-                if kind == 'move':
-                    # A move is one line from its source to its destination.
-                    lines = [{**lines[0], **lines[1], 'expected_versions': {**lines[0]['expected_versions'],
-                                                                            **lines[1]['expected_versions']}}]
-                sequence = row['posts'] + 1
-                label = LINE_SECTIONS.get(row['section'], row['section'])
-                reason = f"{REPORT_REASON if sign > 0 else RETURN_REASON} {day} {label}：{row['raw']}"
-                document_id = _post_inventory_in_transaction(con, {
-                    'kind': kind, 'business_date': day, 'source_type': 'daily_report',
-                    'source_id': f"{store_code}:{day}:{row['line_key']}:{sequence}", 'reason': reason, 'lines': lines,
-                }, actor=actor, request_key=f"daily-report:{store_code}:{day}:{row['line_key']}:{sequence}",
-                    minimum_role='manager')['document_id']
-                since = row['updated_at'] if row['posts'] else None
-                con.execute("""UPDATE report_stock_moves SET moved=moved+?, posts=?, updated_at=datetime('now')
-                               WHERE store_id=? AND business_date=? AND line_key=?""",
-                            (sign * moving, sequence, store_id, day, row['line_key']))
-                for _, item, location_id, per in sides:
-                    when = _counted_since(con, location_id, day, item['id'], since)
-                    if when:
-                        _, quantity, _ = counted.get(item['id'], (item, 0, when))
-                        counted[item['id']] = (item, quantity + moving * per, when)
-            if missing:
-                _, item, location_id, per = taking[0] if taking else sides[0]
-                entry = short.setdefault(item['id'], [item, 0, set()])
-                entry[1] += missing * per
-                entry[2].add('not_counted' if problem == 'not_counted' else codes.get(location_id, ''))
-        results.append({
-            'line_key': row['line_key'], 'section': row['section'], 'label': LINE_SECTIONS.get(row['section']),
-            'raw': row['raw'], 'kind': row['kind'], 'ratio': row['ratio'], 'wanted': row['wanted'],
-            'moved_before': row['moved'], 'checked': row['checked'],
-            'moving': (1 if out > 0 else -1) * moving, 'short': missing, 'problem': problem,
-            'document_id': document_id,
-            **{side: {'product_id': item['id'], 'sku': item['sku'], 'name': _name(item), 'unit': item['stock_unit'],
-                      'location': codes.get(location_id), 'per': per, 'before': before[side],
-                      'after': _balance(con, item['id'], location_id, 'saleable')['quantity']}
-               for side, item, location_id, per in sides},
-        })
-    return results, short
+                    if taking:
+                        _, item, location_id, per = taking[0]
+                        moving = min(need, _available(con, item, location_id) // per)
+                    else:
+                        moving = need
+                    missing = need - moving
+                    problem = 'not_enough' if missing else None
+                if moving:
+                    sign = 1 if out > 0 else -1
+                    lines = []
+                    for side, item, location_id, per in sides:
+                        adds = (side == 'to') == (sign > 0)
+                        balance = _balance(con, item['id'], location_id, 'saleable')
+                        lines.append({'product_id': item['id'], 'unit': item['stock_unit'], 'quantity': moving * per,
+                                      f"{'to' if adds else 'from'}_location_id": location_id,
+                                      f"{'to' if adds else 'from'}_disposition": 'saleable',
+                                      'expected_versions': {'to' if adds else 'from': balance['version']}})
+                    kind = row['kind'] if sign > 0 else 'correction'
+                    if kind == 'move':
+                        # A move is one line from its source to its destination.
+                        lines = [{**lines[0], **lines[1], 'expected_versions': {**lines[0]['expected_versions'],
+                                                                                **lines[1]['expected_versions']}}]
+                    sequence = row['posts'] + 1
+                    label = LINE_SECTIONS.get(row['section'], row['section'])
+                    reason = f"{REPORT_REASON if sign > 0 else RETURN_REASON} {day} {label}：{row['raw']}"
+                    # The report is this store's: its manager's paste also puts 出库 onto the other store
+                    # (owner, 2026-11-13), so only this store's access is asked for.
+                    documents.append(_post_inventory_in_transaction(con, {
+                        'kind': kind, 'business_date': day, 'source_type': 'daily_report',
+                        'source_id': f"{store_code}:{day}:{key}:{sequence}", 'reason': reason, 'lines': lines,
+                    }, actor=actor, request_key=f"daily-report:{store_code}:{day}:{key}:{sequence}",
+                        access_store_ids=(store_id,), minimum_role='manager')['document_id'])
+                    since = row['updated_at'] if row['posts'] else None
+                    con.execute("""UPDATE report_stock_moves SET moved=moved+?, posts=?, updated_at=datetime('now')
+                                   WHERE store_id=? AND business_date=? AND line_key=?""",
+                                (sign * moving, sequence, store_id, day, key))
+                    for _, item, location_id, per in sides:
+                        # A count of this store the same day may already show what the line moved.
+                        when = None if places[location_id][1] else _counted_since(con, location_id, day, item['id'], since)
+                        if when:
+                            _, quantity, _ = counted.get(item['id'], (item, 0, when))
+                            counted[item['id']] = (item, quantity + moving * per, when)
+                    moved_any = True
+                if missing and problem == 'not_enough':
+                    again.append(key)
+            result = results.setdefault(key, {
+                'line_key': key, 'section': row['section'], 'label': LINE_SECTIONS.get(row['section']),
+                'raw': row['raw'], 'kind': row['kind'], 'ratio': row['ratio'], 'wanted': row['wanted'],
+                'moved_before': row['moved'], 'checked': row['checked'], 'moving': 0, 'document_id': None,
+                'sides': sides, 'before': before})
+            result['moving'] += (1 if out > 0 else -1) * moving
+            # Each side as this line left it, before the day's later lines touch the same stock.
+            result.update(short=missing, problem=problem, short_at=taking[0] if taking else sides[0],
+                          document_id=documents[-1] if moving else result['document_id'],
+                          after={side: _balance(con, item['id'], location_id, 'saleable')['quantity']
+                                 for side, item, location_id, _ in sides})
+        # Lines still short try again only while something else moved: it may have brought what they lack.
+        pending = again if moved_any else []
+    short = {}
+    for result in results.values():
+        sides, before, after = result.pop('sides'), result.pop('before'), result.pop('after')
+        _, item, location_id, per = result.pop('short_at')
+        if result['short']:
+            entry = short.setdefault(item['id'], [item, 0, set()])
+            entry[1] += result['short'] * per
+            entry[2].add('not_counted' if result['problem'] == 'not_counted' else where(location_id))
+        for side, item, location_id, per in sides:
+            result[side] = {'product_id': item['id'], 'sku': item['sku'], 'name': _name(item), 'unit': item['stock_unit'],
+                            'location': places[location_id][0], 'store': places[location_id][1], 'per': per,
+                            'before': before[side], 'after': after[side]}
+    return list(results.values()), short, documents
 
 
 def _display_relief(con, store_id, day, wanted):
@@ -374,7 +517,7 @@ def sync_report_stock(con, actor, store_id, store_code, day):
     _require_manager(con, actor, store_id)
     counted = {}
     # The stock lines move first, so boxes that came down or arrived that day can sell.
-    lines, moves_short = _sync_lines(con, actor, store_id, store_code, day, counted)
+    lines, moves_short, documents = _sync_lines(con, actor, store_id, store_code, day, counted)
     wanted, products, unknown_size = {}, {}, set()
     for row in con.execute(
             """SELECT p.*, SUM(s.qty_sold) AS sold
@@ -434,7 +577,6 @@ def sync_report_stock(con, actor, store_id, store_code, day):
                 counted[product_id] = (product, quantity + take, when)
         if take < delta:
             short[product_id] = (product, delta - take, 'not_enough_on_floor')
-    documents = [line['document_id'] for line in lines if line['document_id']]
     for kind, ledger, reason in (('consume', take_lines, REPORT_REASON), ('correction', return_lines, RETURN_REASON)):
         if not ledger:
             continue

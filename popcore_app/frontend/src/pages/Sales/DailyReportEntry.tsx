@@ -9,14 +9,14 @@ import {
   QuestionCircleOutlined, CloseCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
-import { locationText, reasonText, type ReportStockLine, type ReportStockResult, type ReportStockSide } from '../../api/reportStock'
+import { reasonText, whereText, type ReportStockLine, type ReportStockResult, type ReportStockSide } from '../../api/reportStock'
 import { productNames } from '../../lib/productLabel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
   parseReportBackend,
   type BackendProduct, type BackendCandidate, type ReportAnnotations,
-  type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem, type FormatCheck,
+  type BackendConfirmedItem, type BackendReviewItem, type BackendFailedItem, type FormatCheck, type LeftOutLine,
 } from '../../api/matcher'
 import {
   cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
@@ -36,6 +36,10 @@ const SECTION_META: Record<string, { label: string; color: string; live?: boolea
   break_display:     { label: '拆Display', color: 'red'     },
   display_stock_in:  { label: '入Display', color: 'cyan', live: true },
   claw_prize:        { label: '娃娃机出奖', color: 'gold', live: true },
+  back_in:           { label: '入库',      color: 'lime', live: true },
+  transfer_out:      { label: '出库',      color: 'volcano', live: true },
+  floor_to_back:     { label: '出店入库',  color: 'geekblue', live: true },
+  display_to_floor:  { label: '出Display入店', color: 'cyan', live: true },
 }
 
 // Section choices for a row: a legacy store keeps its old report sections.
@@ -49,7 +53,7 @@ const isStockLine = (section: string) => (STOCK_LINE_SECTIONS as readonly string
 
 function sideText(side?: ReportStockSide) {
   if (!side) return null
-  return `${side.sku ?? ''} ${side.name} · ${locationText[side.location] ?? side.location} ${side.before} → ${side.after}`
+  return `${side.sku ?? ''} ${side.name} · ${whereText(side.location, side.store)} ${side.before} → ${side.after}`
 }
 
 function SectionTag({ section }: { section: string }) {
@@ -106,6 +110,7 @@ function pickNote(row: ReviewRow, store: string): { text: string; tone?: 'warn' 
 
 type ActiveSection =
   | 'pos' | 'cash' | 'refill' | 'stock_in' | 'stock_out' | 'display_sold' | 'break_display' | 'display_stock_in' | 'claw_prize'
+  | 'back_in' | 'transfer_out' | 'floor_to_back' | 'display_to_floor'
 
 interface ConfirmedRow extends BackendConfirmedItem {
   _key: string
@@ -201,6 +206,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [reportNotes, setReportNotes] = useState<ReportAnnotations>({})
   const [metadataErrors, setMetadataErrors] = useState<string[]>([])
   const [formatChecks,  setFormatChecks]  = useState<FormatCheck[]>([])
+  // Lines the report leaves out on purpose: pre-orders are special orders, not sales of the day (owner, 2026-11-10).
+  const [leftOut,       setLeftOut]       = useState<LeftOutLine[]>([])
   const [multiDay,      setMultiDay]      = useState(false)
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
   const [stockResult,   setStockResult]   = useState<ReportStockResult | null>(null)
@@ -263,6 +270,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       setReportNotes(Object.fromEntries(REPORT_NOTE_SECTIONS.map(({ key }) => [key, res[key] ?? []])))
       setMetadataErrors(res.metadata_errors ?? [])
       setFormatChecks(res.format_checks ?? [])
+      setLeftOut(res.left_out ?? [])
       setMultiDay(res.multi_day ?? false)
 
       setUnknowns(
@@ -272,7 +280,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       if (res.confirmed.length + res.review.length + res.failed.length === 0
           && res.cash_total_reported == null && res.cash_expected_reported == null
           && !hasReportNotes(res)
-          && !res.metadata_errors?.length && !res.unknown_sections.length && !res.multi_day) {
+          && !res.metadata_errors?.length && !res.unknown_sections.length && !res.multi_day
+          && !res.left_out?.length) {
         message.warning('未找到可解析的产品行或报告备注')
         return
       }
@@ -396,7 +405,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   }
 
   function buildPayloadItem(
-    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string; to_display?: boolean; from_display?: boolean },
+    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string; to_display?: boolean; from_display?: boolean; to_floor?: boolean },
     product: BackendProduct,
     source_bucket: string,
   ) {
@@ -490,6 +499,12 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         {live && ['refill', 'stock_in', 'stock_out'].includes(row.section) && (
           <Checkbox checked={!!row[shown]} onChange={e => patchFn(row._key, { [shown]: e.target.checked })}>
             <span style={{ fontSize: 11 }}>{row.section === 'stock_out' ? '从 Display' : '放 Display'}</span>
+          </Checkbox>
+        )}
+        {live && row.section === 'transfer_out' && (
+          // 出库 lands in the other store's upstairs or warehouse unless the manager says it went onto its floor.
+          <Checkbox checked={!!row.to_floor} onChange={e => patchFn(row._key, { to_floor: e.target.checked })}>
+            <span style={{ fontSize: 11 }}>到对方楼下 To their floor</span>
           </Checkbox>
         )}
       </Space>
@@ -743,7 +758,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
             </div>}
             {!!stockResult.moves_short?.length && <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
               {stockResult.moves_short.map(row => <li key={row.product_id}>
-                {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity} ({reasonText.move_short.zh} {row.where.map(code => locationText[code] ?? code).join(', ')})
+                {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity} ({reasonText.move_short.zh} {row.where.map(code => whereText(code)).join(', ')})
               </li>)}
             </ul>}
             库存 Floor stock: {stockResult.taken} taken off{stockResult.returned ? `, ${stockResult.returned} put back` : ''}
@@ -847,7 +862,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         style={{ marginBottom: 8, borderRadius: 8 }}
         message={`对账汇总（summary only）将替换 ${parsedDate ?? '未选日期'} · ${parsedStore || '未选门店'} 已有日报销售及本次报告元数据，不是追加。`}
         description={live
-          ? '这家店已上线：销售从楼下扣；出库入店、入店、出店、卖/拆/入 Display、娃娃机出奖按行移库存，保存前会让你确认。重新粘贴同一天只移差额。出库和入娃娃机不移库存，请用 调拨 Transfer 和 娃娃机 补货 记录。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。'
+          ? '这家店已上线：销售从楼下扣；出库入店、入店、出店、入库、出库、出店入库、卖/拆/入/出 Display、娃娃机出奖按行移库存，保存前会让你确认。入库是新货进楼上/仓库；出库从这家店的楼上/仓库扣，同时加到另一家店。重新粘贴同一天只移差额。入娃娃机不移库存，请用 娃娃机 补货 记录。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。'
           : '销售汇总不创建收款或扣减销售库存；入店/出店/拆 Display 仍属于库存操作。有库存历史的日报可能需先对账，服务器会阻止直接替换。随手记 Non-POS 包含现金、e-transfer、微信、支付宝，每行支付方式未指定。'}
       />
 
@@ -876,6 +891,23 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                     <code key={i} style={{ display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{text}</code>
                   ))}
                   <div style={{ overflowWrap: 'anywhere' }}>{check.problem}</div>
+                </li>
+              ))}
+            </ul>
+          </>} />
+      )}
+
+      {/* Pre-orders: special orders, never a sale of the day (owner, 2026-11-10). */}
+      {leftOut.length > 0 && (
+        <Alert type="info" showIcon style={{ marginBottom: 8, borderRadius: 8 }}
+          message={`预订单 Pre-orders：${leftOut.length} 行没有算进这份日报 left out`}
+          description={<>
+            <div>预订单是特殊订单，不是当天的销售：不记销售，也不扣库存。如果其实是当天卖出的，返回去掉「预订单」再解析。A pre-order is a special order, not a sale of this day: no sale is saved and no stock is taken.</div>
+            <ul aria-label="Left out" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+              {leftOut.map((entry, index) => (
+                <li key={`${entry.line}-${index}`}>
+                  <strong>第 {entry.line} 行 Line {entry.line}</strong>
+                  <code style={{ marginLeft: 6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{entry.text}</code>
                 </li>
               ))}
             </ul>

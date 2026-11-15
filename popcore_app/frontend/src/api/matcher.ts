@@ -47,6 +47,8 @@ export interface BackendBaseItem {
   // A live store's (display) stock line: 出库入店/入店 to display, 出店 from display.
   to_display?: boolean
   from_display?: boolean
+  // 出库 to the other store's floor instead of its upstairs or warehouse (the manager says so in the review).
+  to_floor?: boolean
   // 名称记忆: what a manager picked for this name before (owner, 2026-11-03).
   pick?: ReportPickInfo
 }
@@ -99,12 +101,20 @@ export interface ParseReportResponse extends ReportAnnotations {
   cash_total_reported?: number | null
   cash_expected_reported?: number | null
   metadata_errors?: string[]
+  // Lines left out on purpose, by line in the paste: a pre-order is a special order, not a sale of the day.
+  left_out?: LeftOutLine[]
   // What may be written so that stock moves wrongly, by line in the paste (owner, 2026-11-06). Never blocks.
   format_checks?: FormatCheck[]
   parser_engine?: 'llm' | 'rules'
   multi_day?: boolean
   // live: the store's stock sections are stock lines that move stock (owner, 2026-11-03)
   stock_mode?: 'live' | 'legacy'
+}
+
+export interface LeftOutLine {
+  line: number
+  text: string
+  reason: 'pre_order'
 }
 
 /** fix: most likely a mistake; check: may be meant. `lines` are line numbers in the paste, `text` those lines as written. */

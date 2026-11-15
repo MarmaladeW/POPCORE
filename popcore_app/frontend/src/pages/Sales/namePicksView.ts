@@ -13,7 +13,9 @@ export const STATUS_TEXT: Record<NameStatus, { zh: string; en: string; tone: 'wa
 export const SECTION_TEXT: Record<string, string> = {
   pos: '卡机 POS', cash: '随手记 Non-POS', refill: '出库入店', stock_in: '入店', stock_out: '出店',
   display_sold: '卖Display', break_display: '拆Display', display_stock_in: '入Display', claw_prize: '娃娃机出奖',
+  back_in: '入库', transfer_out: '出库', floor_to_back: '出店入库', display_to_floor: '出Display入店',
 }
+const PACKED = ['refill', 'stock_in', 'back_in', 'transfer_out', 'floor_to_back', 'display_to_floor']
 
 /** A name the next paste would still ask about: what this page is for. */
 export const needsAnswer = (status: NameStatus) => status === 'open' || status === 'disputed' || status === 'stale' || status === 'confirm'
@@ -34,7 +36,7 @@ export const writtenName = (name: { raw_name: string; note: string }) => name.no
 /** How much the line said, in its own form: "× 2", or sets "12 × 2 + 1". */
 export function quantityText(name: Pick<PastedName, 'section' | 'qty' | 'box_size' | 'loose_qty'>): string {
   if (!name.qty) return ''
-  if ((name.section === 'refill' || name.section === 'stock_in') && (name.box_size ?? 1) > 1) {
+  if (PACKED.includes(name.section) && (name.box_size ?? 1) > 1) {
     return `${name.box_size} × ${name.qty}${name.loose_qty ? ` + ${name.loose_qty}` : ''}`
   }
   return `× ${name.qty + (name.loose_qty ?? 0)}`

@@ -23,8 +23,8 @@ from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm, _
 from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
 from goods_operations import _begin, _hash, _replay, _remember
 import report_checks
-from report_stock import (LINE_SECTIONS, ReportLineError, check_notice, live_since, open_notices,
-                          plan_report_lines, save_report_lines, sync_report_stock)
+from report_stock import (LINE_SECTIONS, PACKED_SECTIONS, ReportLineError, check_notice, lines_from, live_since,
+                          open_notices, other_store, plan_report_lines, save_report_lines, sync_report_stock)
 from inventory_visibility import inventory_hidden
 from report_names import all_picks, log_names, place_of, report_days, report_names, save_pick, status as name_status
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
@@ -944,7 +944,7 @@ def submit_daily_report():
             return jsonify(invalid_input('section_choices require an explicit heading')), 400
         header = unicodedata.normalize('NFKC', choice['header']).strip()
         section = choice.get('section')
-        heading = _detect_section_type(header, {})
+        heading = _detect_section_type(header, {})  # read as a legacy store does: only it has unknown 入库
         if (not header or len(header.splitlines()) != 1 or not header.endswith(':')
                 or not header[:-1].strip() or any(c in header[:-1] for c in ':*')
                 or not isinstance(section, str)
@@ -983,7 +983,7 @@ def submit_daily_report():
                 normalized['qty_cash'] = read_int(item.get('qty_cash', 0), 'qty_cash')
                 normalized['qty'] = read_int(item.get('qty', 0), 'qty')
                 read_int((normalized['qty_pos'] + normalized['qty_cash']) or normalized['qty'], 'qty_sold', minimum=1)
-            elif normalized['section'] not in {'stock_in', 'refill'}:
+            elif normalized['section'] not in PACKED_SECTIONS:
                 normalized['qty'] = read_int(item.get('qty'), 'qty', minimum=1)
             else:
                 normalized['box_size'] = read_int(
@@ -998,7 +998,7 @@ def submit_daily_report():
                     'total_units',
                     minimum=1,
                 )
-            for flag in ('to_display', 'from_display'):
+            for flag in ('to_display', 'from_display', 'to_floor'):
                 if item.get(flag) is not None and not isinstance(item[flag], bool):
                     raise ValueError(f'{flag} must be true or false')
                 normalized[flag] = item.get(flag) is True
@@ -1732,6 +1732,9 @@ _SECTION_MAP = [
     ('出库入店', 'refill'),
     # DT, 2026-11-07: "出库入display" is upstairs → display, as 入display is.
     ('出库入display', 'display_stock_in'), ('出库入展示', 'display_stock_in'),
+    # Owner, 2026-11-13: floor → upstairs, and display → floor ("出display 入店", DT 2026-11-12).
+    ('出店入库', 'floor_to_back'), ('出店入仓库', 'floor_to_back'),
+    ('出display入店', 'display_to_floor'), ('出展示入店', 'display_to_floor'),
     ('卡机汇总', 'pos'), ('随手记汇总', 'cash'), ('随手机汇总', 'cash'),
     ('随手记', 'cash'), ('卡机', 'pos'),
     ('入店display', 'display_stock_in'), ('出店display', 'display_stock_out'),
@@ -1739,11 +1742,17 @@ _SECTION_MAP = [
     ('入娃娃机', 'claw_stock_in'), ('娃娃机入', 'claw_stock_in'),
     ('娃娃机出', 'claw'), ('出娃娃机', 'claw'),
     ('入店', 'stock_in'), ('出店', 'stock_out'), ('出库', 'store_transfer'),
+    # 入库 is new goods straight into upstairs or the warehouse (owner, 2026-11-13).
+    ('入库', 'back_in'), ('入仓库', 'back_in'), ('入仓', 'back_in'),
     ('卖display', 'sell_display'), ('卖展示', 'sell_display'),
     ('拆display', 'break_display'), ('拆展示', 'break_display'),
     ('娃娃机', 'claw'), ('员工折扣', 'employee_discount'),
+    # A pre-order is a special order, not a daily-report sale (owner, 2026-11-10).
+    ('预订单', 'pre_order'), ('预定单', 'pre_order'), ('预订', 'pre_order'), ('预定', 'pre_order'),
     ('晚盘', 'skip'), ('博主探店', 'skip'), ('现金', 'cash_total'),
 ]
+# Headings only a live store's report can move; a legacy store reads them as it always did (unknown headings).
+_LIVE_ONLY_HEADINGS = {'back_in', 'floor_to_back', 'display_to_floor'}
 _REPORT_ANNOTATIONS = {
     'employee_discount': 'employee_discounts', 'sell_display': 'display_sales',
     'claw': 'claw_prizes', 'claw_stock_in': 'claw_stock_in',
@@ -1751,9 +1760,21 @@ _REPORT_ANNOTATIONS = {
     'store_transfer': 'store_transfers',
 }
 # At a live store these sections are stock lines rather than notes (owner, 2026-11-03), under the
-# names report_stock moves them by. 出库 and 入娃娃机 stay notes: staff record them with 调拨
-# Transfer and the claw screen.
+# names report_stock moves them by. 入娃娃机 stays a note: staff record it on the claw screen.
 _LIVE_LINE_SECTIONS = {'sell_display': 'display_sold', 'claw': 'claw_prize', 'display_stock_in': 'display_stock_in'}
+# More headings move by the report from the day that went live (owner, 2026-11-13): 出店display is 出店 from
+# display, and 出库 is a stock line once the other store is live. Earlier days keep them as notes.
+_LATER_LINE_SECTIONS = {'display_stock_out': 'stock_out', 'store_transfer': 'transfer_out'}
+# "（预订单）", "预订", "(预定)" after a sale, or "pre-order" (owner, 2026-11-10).
+_PRE_ORDER = r'预\s*[订定]\s*单?|pre-?\s*order'
+
+
+def _is_pre_order(text: str, note: str) -> bool:
+    """A sale marked as a pre-order, in a note or right after its quantity."""
+    return bool(re.search(_PRE_ORDER, note, re.I)
+                or re.search(rf'\*\s*\d+\s*[-—]?\s*(?:{_PRE_ORDER})\s*$', text, re.I))
+
+
 # "（diaplay）" is how staff mistype it (DT, 2026-11-07).
 _DISPLAY_WORD = r'(?:display|diaplay|dispaly|展示)'
 _DISPLAY_NOTE = re.compile(rf'\s*{_DISPLAY_WORD}\s*', re.I)
@@ -1845,10 +1866,13 @@ def _preprocess_text(text: str) -> str:
 
 
 
-def _detect_section_type(line: str, section_aliases: dict) -> tuple[str, str] | None:
-    """Headers need a delimiter or end-of-line; product quantities are not headers."""
+def _detect_section_type(line: str, section_aliases: dict, live: bool = False) -> tuple[str, str] | None:
+    """Headers need a delimiter or end-of-line; product quantities are not headers. `live` reads the
+    headings only a live store's report can move (入库, 出店入库, 出display入店)."""
     s = line.strip()
     for keyword, section in _SECTION_MAP:
+        if section in _LIVE_ONLY_HEADINGS and not live:
+            continue
         # Optional spaces allow "卖 display" without changing the item text.
         pattern = r'^(?:(?:今日|今天|[A-Za-z]{2,6})\s*)?' + r'\s*'.join(map(re.escape, keyword))
         match = re.match(pattern + r'(?:汇总)?(?:\s*[:：—-]\s*|\s*$)', s, re.I)
@@ -1967,11 +1991,11 @@ def _parse_token(token: str, section: str) -> dict | None:
     raw_name, star, qty_str = t.partition('*')
     raw_name = raw_name.strip()
     qty, flagged, loose_qty = 0, True, 0
-    packed = section in ('stock_in', 'refill')
+    packed = section in PACKED_SECTIONS
     box_size = 1 if packed else None
     out_pack = name_number = None
     if star:
-        if section in ('stock_in', 'refill', 'stock_out'):
+        if packed or section == 'stock_out':
             pack = re.match(r'^(.*?)(\d+)$', raw_name)
             # "Smiski拍拍灯v2*1" is one v2 lamp, not one set of 2.
             if pack and pack.group(1).strip() and not re.search(
@@ -1984,8 +2008,9 @@ def _parse_token(token: str, section: str) -> dict | None:
                     size = None
                 if packed:
                     box_size = size
-                elif re.search(r'[㐀-鿿]$', pack.group(1)):
-                    # "出店：最初的伙伴9*1" is one pack of 9; stock-out lines carry units only.
+                elif re.search(r'[㐀-鿿]$|:\s*$', pack.group(1)):
+                    # "出店：最初的伙伴9*1" is one pack of 9; stock-out lines carry units only. A colon before
+                    # the number sets it apart from the name too: "Smiski exercising：12*1" is 12 (MK, 2026-11-12).
                     # Other trailing digits ("Alpha 12*2") may be part of the product name.
                     out_pack = size if size is not None else 0
                 else:
@@ -2110,7 +2135,18 @@ def parse_daily_report():
     # A live store's stock sections are stock lines; a legacy store keeps its old report stock paths.
     resolved_store = _resolve_store(con, store_code)
     live = bool(resolved_store) and _is_authoritative(con, resolved_store[0])
-    annotations = ({key: field for key, field in _REPORT_ANNOTATIONS.items() if key not in _LIVE_LINE_SECTIONS}
+    # 入库, 出库, 出店入库, 出display入店 and 出店display move by the report from the day that went live (owner,
+    # 2026-11-13). Earlier days had them recorded by hand (counts, 调拨 Transfer): read again, their reports keep
+    # the old reading, so nothing moves twice.
+    moves_from = lines_from(con) if live else None
+    full = live and (moves_from is None or (detected_date or page_date or business_date()) >= moves_from)
+    live_sections = dict(_LIVE_LINE_SECTIONS)
+    if full:
+        live_sections['display_stock_out'] = _LATER_LINE_SECTIONS['display_stock_out']
+        if other_store(con, resolved_store[0]):
+            # 出库 needs one other live store to go to; until then it stays a note.
+            live_sections['store_transfer'] = _LATER_LINE_SECTIONS['store_transfer']
+    annotations = ({key: field for key, field in _REPORT_ANNOTATIONS.items() if key not in live_sections}
                    if live else _REPORT_ANNOTATIONS)
 
     # Report-header/date lines ("2026.04.01 DT汇总") are metadata, not products —
@@ -2134,7 +2170,7 @@ def parse_daily_report():
         s = line.strip()
         if not s or i in skipped_lines:
             continue
-        det = _detect_section_type(s, section_aliases)
+        det = _detect_section_type(s, section_aliases, full)
         if det is not None:
             # A bare "入库" is answered as the heading "入库:", the form a section choice is saved under.
             heading = s + ':' if det[0] == 'unknown' and not s.endswith((':', '：')) else s
@@ -2159,6 +2195,8 @@ def parse_daily_report():
     cash_expected_reported: float | None = None
     report_notes = {key: [] for key in _REPORT_NOTE_FIELDS}
     metadata_errors: list[str] = []
+    # Lines the report leaves out on purpose, said in the review: pre-orders (owner, 2026-11-10).
+    left_out: list[dict] = []
     if len(source_stores) > 1:
         metadata_errors.append('Multiple stores detected; import each store separately')
 
@@ -2195,21 +2233,36 @@ def parse_daily_report():
             item['note'] = '；'.join(filter(None, [item['note'], 'display']))
 
     def _parse_content(content: str, sec: str, hdr: str | None = None) -> None:
+        if sec == 'pre_order':
+            # Under a 预订单 heading every line is a special order: no sale, no stock.
+            left_out.append({'text': content, 'reason': 'pre_order'})
+            return
         if sec in annotations:
             if not _extract_note(content)[2]:
                 metadata_errors.append('Unclosed or unmatched note: ' + content)
             report_notes[annotations[sec]].append(content)
             return
         display_block = marks['block'] if live and sec == 'sell_display' else None
+        # 出店display: off display and out of the store, as "出店：X*1（display）" is.
+        off_display = live and sec == 'display_stock_out'
         if live:
-            sec = _LIVE_LINE_SECTIONS.get(sec, sec)
+            sec = live_sections.get(sec, sec)
         elif sec == 'refill':
             # 出库入店 is upstairs → floor, which a legacy store's 入店 already records.
             sec = 'stock_in'
         sales_line = sec in ('pos', 'cash') and hdr is None
         discount_index = None
+        sold = None  # the sale read just before on this line: (where its rows start, as written)
         for index, token in enumerate(_split_report_items(content)):
             place, assumed = None, False
+            if sales_line and sold and re.fullmatch(rf'[-—]?\s*(?:{_PRE_ORDER})', token.strip(), re.I):
+                # "X*2 预订": the mark after the space is the sale before it, which is then no sale.
+                del raw_items[sold[0]:]
+                marks['line'] = [item for item in marks['line'] if any(item is row for row in raw_items)]
+                left_out.append({'text': f'{sold[1]} {token}', 'reason': 'pre_order'})
+                sold = None
+                continue
+            sold = (len(raw_items), token) if sales_line else None
             if sales_line:
                 written = token
                 lead, rest = _leading_place_mark(token)
@@ -2233,6 +2286,10 @@ def parse_daily_report():
                 if place == 'display':
                     token += '(display)'
             item_text, annotation, balanced = _extract_note(token)
+            if sales_line and balanced and _is_pre_order(item_text, annotation):
+                # "火影忍者三代*1（ITACHI）（预订单）" (MK, 2026-11-11): a special order, not a sale of this day.
+                left_out.append({'text': written, 'reason': 'pre_order'})
+                continue
             if not balanced:
                 metadata_errors.append('Unclosed or unmatched note: ' + token)
             elif item_text.count('*') > 1:
@@ -2300,6 +2357,8 @@ def parse_daily_report():
             if item:
                 if hdr is not None:
                     item['unknown_header'] = hdr
+                if off_display:
+                    item['from_display'] = True
                 if display_block:
                     item['display_block'] = display_block
                 raw_items.append(item)
@@ -2373,21 +2432,25 @@ def parse_daily_report():
         s = line.strip()
         if not s or i in skipped_lines:
             continue
-        items_before, errors_before = len(raw_items), len(metadata_errors)
+        items_before, errors_before, left_before = len(raw_items), len(metadata_errors), len(left_out)
         marks['previous'], marks['line'], marks['number'] = marks['line'], [], line_numbers[i]
         if i in boundary_info:
             marks['block'] = line_numbers[i]
         _read_line(i, s)
         # Everything this line produced names its line in the paste (a place mark's sale keeps its own).
-        for item in raw_items[items_before:]:
+        for item in raw_items[items_before:] + left_out[left_before:]:
             item.setdefault('line', line_numbers[i])
         metadata_errors[errors_before:] = [f'第{line_numbers[i]}行 Line {line_numbers[i]}: {error}'
                                            for error in metadata_errors[errors_before:]]
 
+    for entry in left_out:
+        # Quoted as written when the whole line is the one left out.
+        if _preprocess_text(line_text.get(entry['line'], '')).strip() == entry['text']:
+            entry['text'] = line_text[entry['line']]
     # A 卖display section that repeats the sales' (display) marks would take display twice: it is left out,
     # and the format check says which lines.
     repeated = _repeated_display_blocks(raw_items) if live else []
-    left_out = [item for item in raw_items if item.get('display_block') in repeated]
+    repeats = [item for item in raw_items if item.get('display_block') in repeated]
     raw_items = [item for item in raw_items if item.get('display_block') not in repeated]
 
     # Format checks (owner, 2026-11-06): anything written so that it may move stock wrongly, by its line.
@@ -2395,12 +2458,21 @@ def parse_daily_report():
     first_line = next(((number, ln.strip()) for number, ln in numbered if ln.strip()), None)
     format_checks = report_checks.header_checks(header_at, detected_date, detected_store, page_date, page_store,
                                                 first_line=first_line)
+    # 出库 and 出店display are named by the stock lines they are read as, so a heading written twice is seen.
+    moved_as = {key: live_sections[key] for key in ('store_transfer', 'display_stock_out')
+                if live and key in live_sections}
     format_checks += report_checks.text_checks(
-        [(line_numbers[bi], bsec, bhdr) for bi, bsec, bhdr, _ in boundaries],
+        [(line_numbers[bi], moved_as.get(bsec, bsec), bhdr) for bi, bsec, bhdr, _ in boundaries],
         [item for item in raw_items if not item.get('unknown_header')],
         [item for item in raw_items if item.get('unknown_header')],
         handled={line for check in format_checks for line in check['lines']})
-    format_checks += report_checks.repeated_display_checks(repeated, left_out)
+    format_checks += report_checks.repeated_display_checks(repeated, repeats)
+    if live and not full:
+        # Said once, by the headings it is about, so an old day's 入库 or 出库 not moving is no surprise.
+        later = _LIVE_ONLY_HEADINGS | set(_LATER_LINE_SECTIONS)
+        old_way = [number for number, ln in numbered if (_detect_section_type(ln, {}, True) or ('',))[0] in later]
+        if old_way:
+            format_checks.append(report_checks.old_reading_check(old_way, moves_from))
 
     if llm_result:
         parser_engine       = 'llm'
@@ -2454,7 +2526,7 @@ def parse_daily_report():
                          cash_total_reported, parser_engine, multi_day,
                          aliases, all_products, cash_expected_reported, metadata_errors, report_notes,
                          report_picks, live, designs, resolved_store[0] if resolved_store else None,
-                         format_checks=format_checks, line_text=line_text)
+                         format_checks=format_checks, line_text=line_text, left_out=left_out)
 
 
 _GENERIC_WORDS = {'series', 'figure', 'figures', 'figurine', 'mini', 'blind', 'box', 'plush', 'vinyl', 'doll',
@@ -2471,8 +2543,23 @@ def _dash_design(raw_name: str, designs: list) -> int | None:
     the series and the design name written point to one design; a year or number written in X must be
     in the series' name ("2015" is never the 2016 series)."""
     head, dash, written = raw_name.rpartition('-')
+    return _series_design(head, written, designs) if dash else None
+
+
+def _note_design(raw_name: str, note: str, designs: list) -> int | None:
+    """"labubu喵喵毛绒*1（midnight kitty）" (DT, 2026-11-12): a design written as the note of its series,
+    which the name alone matches as the series' box. Returns the design when one note names one; a note
+    is a looser clue than a dash, so the name must be the series' own."""
+    found = {design for part in (note or '').split('；')
+             if part.strip() and not part.startswith('原文:') and not _DISPLAY_NOTE.fullmatch(part)
+             for design in [_series_design(raw_name, part, designs, least=90)] if design}
+    return found.pop() if len(found) == 1 else None
+
+
+def _series_design(head: str, written: str, designs: list, least: int = _SCORE_REVIEW) -> int | None:
+    """The one design named `written` in the series `head` names (by a score of at least `least`), or None."""
     wanted = _design_key(written)
-    if not dash or not _design_key(head) or len(wanted) < 2:
+    if not _design_key(head) or len(wanted) < 2:
         return None
     numbers = re.findall(r'\d{2,}', head)
     pool = [d for d in designs if all(
@@ -2490,7 +2577,7 @@ def _dash_design(raw_name: str, designs: list) -> int | None:
         return max(score, _SCORE_REVIEW if shared else 0)
 
     scored = sorted(((fits(d), d['id']) for d in named), reverse=True)
-    scored = [(score, design_id) for score, design_id in scored if score >= _SCORE_REVIEW]
+    scored = [(score, design_id) for score, design_id in scored if score >= least]
     if not scored or (len(scored) > 1 and scored[0][0] == scored[1][0]):
         return None
     return scored[0][1]
@@ -2520,7 +2607,7 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                   cash_total_reported, parser_engine, multi_day,
                   aliases, all_products, cash_expected_reported=None,
                   metadata_errors=None, report_notes=None, report_picks=None, live=False, designs=None,
-                  store_id=None, format_checks=None, line_text=None):
+                  store_id=None, format_checks=None, line_text=None, left_out=None):
     """Layers 4+5 — shared by both engines: alias lookup + fuzzy match +
     bucketing, stock plausibility flags, and the response payload."""
     confirmed: list[dict] = []
@@ -2581,7 +2668,8 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
             # A name reviewed with another note, or a changed note, must be reviewed again.
             hits = [(min(score, 99), product) for score, product in hits]
         design = (_dash_design(raw_name, designs or [])
-                  or _secret_design(raw_name, designs or [], all_products, aliases))
+                  or _secret_design(raw_name, designs or [], all_products, aliases)
+                  or _note_design(raw_name, qualifier, designs or []))
         if design in products_by_id and (not hits or hits[0][1]['id'] != design):
             # Suggested first, never confirmed by itself.
             hits = [(99, products_by_id[design])] + [hit for hit in hits if hit[1]['id'] != design]
@@ -2641,6 +2729,9 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
     # Where a product check points at the same lines as a text check, it says it better.
     same = {tuple(check['lines']) for check in known}
     checks = [check for check in format_checks or [] if tuple(check['lines']) not in same] + known
+    if live and store_id is not None:
+        # What the other store's 出库 already put here must not be added again by this report.
+        checks += report_checks.sent_here_checks(get_db(), confirmed + review, store_id, detected_date)
     for check in checks:
         check['text'] = [(line_text or {}).get(number, '') for number in check['lines']]
     checks.sort(key=lambda check: (check['lines'] or [0])[0])
@@ -2656,6 +2747,8 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         'cash_expected_reported': cash_expected_reported,
         **(report_notes or {key: [] for key in _REPORT_NOTE_FIELDS}),
         'metadata_errors': metadata_errors or [],
+        # Lines left out on purpose, by line: pre-orders are special orders, not sales of the day.
+        'left_out': left_out or [],
         # What may be written wrong, by line: 'fix' most likely is, 'check' may be meant. Never blocks the save.
         'format_checks':       checks,
         'parser_engine':       parser_engine,

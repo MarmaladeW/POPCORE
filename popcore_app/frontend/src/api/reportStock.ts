@@ -10,11 +10,13 @@ export interface ReportStockNotice {
   // move_short: where the line was short ('not_counted' when the product was never counted), and stock there now.
   where?: string[]; stock?: Record<string, number>
 }
-// One stock line of a report (出库入店, 入店, 出店, 卖display, 拆display, 入display, 娃娃机; owner, 2026-11-03):
-// what it moves now (negative: put back after a re-paste), what it moved before and what its source lacked.
+// One stock line of a report (出库入店, 入店, 出店, 卖display, 拆display, 入display, 娃娃机; owner, 2026-11-03;
+// 入库, 出库, 出店入库, 出display入店 since 2026-11-13): what it moves now (negative: put back after a
+// re-paste), what it moved before and what its source lacked. `store` is set when the side is the other
+// store's (出库 goes onto the other store at once).
 export interface ReportStockSide {
   product_id: number; sku: string | null; name: string; unit: string; location: string; per: number
-  before: number; after: number
+  before: number; after: number; store?: string | null
 }
 export interface ReportStockLine {
   line_key: string; section: string; label: string; raw: string; kind: string; ratio: number
@@ -31,10 +33,7 @@ export interface ReportStockResult {
   moves_short?: Array<{ product_id: number; sku: string | null; name: string; quantity: number; where: string[] }>
 }
 
-export const locationText: Record<string, string> = {
-  floor: '楼下 Floor', upstairs: '楼上 Upstairs', warehouse: '仓库 Warehouse', display: 'Display', claw: '娃娃机 Claw',
-  not_counted: '还没盘点 Not counted',
-}
+export { locationText, whereText } from '../lib/stockPlaces.ts'
 
 export const reasonText: Record<ReportStockReason, { zh: string; en: string; help: string }> = {
   not_counted: {
@@ -55,7 +54,7 @@ export const reasonText: Record<ReportStockReason, { zh: string; en: string; hel
   },
   move_short: {
     zh: '库存没移完', en: 'Stock line not moved in full',
-    help: 'A stock line on the report (出库入店, 入店, 出店, display, 娃娃机) needed more than where it comes from had, or the product was never counted here, so the rest did not move. Record or count what is missing, then take it off again. If a count after the report already shows it, mark it checked.',
+    help: 'A stock line on the report (出库入店, 入店, 出店, 入库, 出库, display, 娃娃机) needed more than where it comes from had, or the product was never counted here, so the rest did not move. Record or count what is missing, then take it off again. If a count after the report already shows it, mark it checked.',
   },
 }
 

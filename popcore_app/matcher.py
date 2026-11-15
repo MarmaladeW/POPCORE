@@ -258,8 +258,15 @@ def _limit_hits(hits: list, limit: int) -> list:
     return hits[:count]
 
 
+def _identity_notes(notes: str) -> str:
+    """The notes that say which product a line is. "原文: …" only keeps how a quantity was written
+    ("原文: SA animal ver2: 12*1"), so it never names or tells apart a product."""
+    return '；'.join(part for part in (notes or '').split('；') if not part.strip().startswith('原文:'))
+
+
 def report_match_query(raw_name: str, notes: str = '') -> str:
     """Preserve explicit identity clues in notes without treating tenders as variants."""
+    notes = _identity_notes(notes)
     cues = r'figure|figurine|手办|plush|毛绒|绒毛|vinyl|搪胶|keychain|keyring|挂件|钥匙扣|full[ _-]*set|sealed[ _-]*set|single[ _-]*box|(?<![A-Za-z])confirmed(?![A-Za-z])|指定款|明盒|整盒|整套|单盒|單盒|散盒|secret|hidden|隐藏|隱藏|秘密|[一二三四五六七八九十]+代|(?<![A-Za-z])(?:s|ver|version|series)\s*\d|\d+\s*(?:%|cm|mm)'
     return raw_name + ' ' + notes if re.search(cues, notes, re.I) else raw_name
 
@@ -267,7 +274,7 @@ def report_match_query(raw_name: str, notes: str = '') -> str:
 def report_match_key(raw_name: str, notes: str = '') -> tuple[str, str]:
     """Exact report identity: normalize typography, never remove meaningful letters."""
     return tuple(' '.join(unicodedata.normalize('NFKC', value).casefold().split())
-                 for value in (raw_name, notes))
+                 for value in (raw_name, _identity_notes(notes)))
 
 
 def report_identity_signature(product: dict) -> str:
