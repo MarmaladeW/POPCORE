@@ -25,7 +25,7 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
 | `kind` | `company`, `partner`, `ip`, `character`, `series`, `product`, `design` |
 | `parent_id`, `partner_id`, `character_id` | Other entries |
 | `ip_id` | Products and designs with no IP above: the IP they belong to (contract 1.3, `ip_ref`) |
-| `name`, `sort_order` | The Dex name (official English) and the order among siblings |
+| `name`, `sort_order` | The Dex name (official English) and the order among siblings. Series are the exception: they are listed by release date (see Rules) |
 | `blind_box` | Products only, 0 or 1 |
 | `rarity` | Designs only: `normal`, `popular`, `secret`, `super_secret`, `special` |
 | `product_id` | The POPCORE item (`products.id`); one live entry per item |
@@ -74,6 +74,14 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
   when a live entry outside them names one as partner, character or IP (`dex_in_use`). Rows without a `website_id` are deleted;
   rows the website has (a `website_id`, or sent before) are kept with `deleted_at` until the website confirms the delete
   (step 3). No read ever returns a deleted row.
+
+## Series are listed by release date (owner, 2026-11-14)
+
+"the dex should be listed in date, not on the date created but the date of the series was released". Wherever the book
+lists what sits under an entry (`dex_book.children`), series come newest release first (`extras.release_date`), the same
+day by name. A series with no release date comes after them, by name, never in the order it was made. Other kinds keep
+`sort_order`. A series row shows its release date and has no move up or down; `sort_order` on a series is not used.
+popcore.ca has no order column for series and sorts them itself, so the contract (1.8) gives it the same rule.
 
 ## Full names and the IP tag (owner, 2026-11-14)
 

@@ -202,6 +202,22 @@ async def run(browser, width):
                                                                            re.compile(r'Oct 20, 2026.*\$19\.99')])
         await fits(page, f'item-price-trend-{width}.png')
 
+        # Series are listed by the date they were released, newest first (owner, 2026-11-14: "the dex should be listed
+        # in date, not on the date created but the date of the series was released"); no date comes after, by name.
+        hirono = fixture.add('ip', 'HIRONO', book['POP MART']['id'])
+        for name, extras in (('Road Journal Series', {}), ('Mime Series', {'release_date': '2023-07-13'}),
+                             ('After Dark Series', {}), ('Echo Series', {'release_date': '2025-04-10'})):
+            fixture.add('series', name, hirono, extras=extras)
+        await page.goto(BASE + f'/dex/{hirono}')
+        listed = page.get_by_role('region', name='Series here')
+        await expect(listed.locator('.pc-dex-row strong')).to_have_text(
+            ['Echo Series', 'Mime Series', 'After Dark Series', 'Road Journal Series'])
+        await expect(listed.get_by_text('发售 2025-04-10')).to_be_visible()
+        await expect(listed.get_by_text('No release date').first).to_be_visible()
+        await expect(listed.get_by_text('Listed by release date, newest first')).to_be_visible()
+        assert await listed.get_by_role('button', name=re.compile('^Move ')).count() == 0  # the date is the order
+        await fits(page, f'series-by-release-{width}.png')
+
         # A series with several IPs stays under the company; each design names its IP from its row (no drawer).
         book = entries()
         company, monsters = book['POP MART']['id'], book['THE MONSTERS']['id']
