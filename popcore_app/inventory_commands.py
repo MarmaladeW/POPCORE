@@ -244,6 +244,59 @@ def _payload_hash(payload):
     return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
 
 
+def boxes_of_set(con, product_id):
+    """What a sealed set (整端) opens into: its blind box, boxes per set and the reviewed conversion, or None
+    for any other product. A set whose size was never recorded cannot be opened: the size is never assumed."""
+    product = con.execute('SELECT stock_form FROM products WHERE id=?', (product_id,)).fetchone()
+    if product is None or product['stock_form'] != 'sealed_set':
+        return None
+    conversion = con.execute(
+        """SELECT c.id, c.target_product_id, c.output_per_input, p.stock_form, p.stock_unit, p.identity_status
+           FROM product_conversions c JOIN products p ON p.id=c.target_product_id
+           WHERE c.source_product_id=? ORDER BY c.version DESC, c.id DESC LIMIT 1""", (product_id,)).fetchone()
+    if conversion is None or (conversion['stock_form'], conversion['stock_unit'],
+                              conversion['identity_status']) != ('random_box', 'box', 'verified'):
+        raise InventoryConflict(
+            'How many boxes this whole set (整端) holds was never recorded; record it in 产品 Products',
+            'set_size_unknown',
+        )
+    return {'conversion_id': conversion['id'], 'product_id': conversion['target_product_id'],
+            'per_set': conversion['output_per_input']}
+
+
+def expected_versions(con):
+    """Balance versions for the lines of one document, in the order they post: the first line on a balance
+    names its version now, and each later line on the same balance names the next one."""
+    seen = {}
+
+    def expect(product_id, location_id, disposition):
+        key = (product_id, location_id, disposition)
+        if key in seen:
+            seen[key] += 1
+        else:
+            row = con.execute(
+                """SELECT version FROM inventory_balances
+                   WHERE product_id=? AND location_id=? AND disposition=?""", key).fetchone()
+            seen[key] = row['version'] if row else 0
+        return seen[key]
+    return expect
+
+
+def _land_sets_as_boxes(con, payload, floors):
+    """整端 whole sets stay upstairs and a floor holds blind boxes as boxes only (owner, 2026-10-29), so a
+    sealed set that arrives saleable on one of `floors` lands as the boxes its conversion records: the line
+    still takes the set from its source, and its destination names the box balance."""
+    for line in payload['lines']:
+        if line['to_location_id'] not in floors or line['to_disposition'] != 'saleable':
+            continue
+        box = boxes_of_set(con, line['product_id'])
+        if box is None:
+            continue
+        line.update(target_product_id=box['product_id'], conversion_id=box['conversion_id'],
+                    conversion_factor=box['per_set'],
+                    target_quantity=receipt_units(box['per_set'], line['quantity']))
+
+
 def _validate_catalog_and_locations(con, payload):
     locations = {}
     store_ids = []
@@ -603,7 +656,7 @@ def _project_compatibility(con, document_id, kind, business_date, affected,
 def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
                     access_store_ids=None, allow_transit=False,
                     allow_delivery_provenance=False, allow_trade=False,
-                    minimum_role=None):
+                    minimum_role=None, sets_open_at=()):
     if owns_transaction and con.in_transaction:
         raise InventoryValidationError(
             'post_inventory must own the write transaction',
@@ -718,7 +771,12 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
         if normalized['kind'] == 'correction':
             _validate_exact_correction(con, normalized)
         restock_session_id = _validate_restock_complete(con, normalized)
-
+        if normalized['kind'] == 'restock_complete':
+            # A completed restock puts its goods on the floor, where a whole set is its boxes.
+            sets_open_at = {row[0] for row in con.execute(
+                "SELECT id FROM inventory_locations WHERE code='floor'")}
+        if sets_open_at:
+            _land_sets_as_boxes(con, normalized, set(sets_open_at))
 
         actor_sub = actor['sub']
         cur = con.execute(
@@ -738,7 +796,8 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
             target_product_id = line.get('target_product_id', line['product_id'])
             target_quantity = (
                 receipt_units(line['conversion_factor'], line['quantity'])
-                if normalized['kind'] == 'open_set' else line['quantity']
+                if normalized['kind'] == 'open_set'
+                else line.get('target_quantity', line['quantity'])
             )
             if line['from_location_id'] is not None and normalized['kind'] != 'open_set':
                 _consume_provenance(con, line, normalized['kind'])
@@ -866,14 +925,19 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
 def _post_inventory_in_transaction(con, payload, *, actor, request_key,
                                    access_store_ids=None, allow_transit=False,
                                    allow_delivery_provenance=False,
-                                   allow_trade=False, minimum_role=None):
-    """Post inventory inside a caller-owned transaction without committing it."""
+                                   allow_trade=False, minimum_role=None,
+                                   sets_open_at=()):
+    """Post inventory inside a caller-owned transaction without committing it.
+
+    ``sets_open_at`` names floor locations where a sealed set this document brings lands as its boxes
+    (a delivery received on the floor); the public commands route never names any."""
     return _post_inventory(
         con, payload, actor=actor, request_key=request_key,
         owns_transaction=False, access_store_ids=access_store_ids,
         allow_transit=allow_transit,
         allow_delivery_provenance=allow_delivery_provenance,
         allow_trade=allow_trade, minimum_role=minimum_role,
+        sets_open_at=sets_open_at,
     )
 
 

@@ -12,6 +12,21 @@ Build 3 adds local receiving, delivery, transfer, restock, count, and floor-targ
 - Returning a submitted count retains it as `returned` and creates a new draft recount. A zero-difference approval creates no fake stock movement.
 - Floor min/max targets produce suggestions only. Suggestions subtract outstanding inbound delivery quantities and are bounded by loose back-stock saleable quantity. They never post stock automatically.
 
+## Whole sets on the floor
+
+整端 whole sets are kept upstairs or in the warehouse; a floor holds blind boxes as boxes only (owner, 2026-10-29), and a set is no longer tracked as a set once it is downstairs (owner, 2026-11-06). The daily report already opened an 出库入店 `12*1` line this way. Deliveries now follow the same rule.
+
+- **A sealed set received saleable on a floor lands as its boxes.** The receive posts one `move` document: the set's line still takes the set out of delivery transit, and its destination is the blind box's floor balance with `output_per_input × N` boxes (`inventory_commands._land_sets_as_boxes`, named by `sets_open_at`). The document line keeps the set, the quantity in sets and the conversion it used; the delivery line still counts sets. The boxes are loose: no `inventory_open_sets` row is kept, so a sale or the daily report takes them without asking. This holds for a restock and for a transfer whose destination is a floor. A transfer into upstairs or the warehouse keeps the set whole, and a set received as held or damaged stays a set.
+- A sealed set whose size was never recorded (no conversion to a verified blind box) is refused with `set_size_unknown`: the size is never assumed. It can go back to its source, and the other lines are received as usual.
+- `restock_complete` (a live sheet completed without a delivery) lands sets the same way; its set line's `expected_versions.to` names the box balance on the floor.
+- `delivery_detail` gives each line `boxes_per_set` (when it is a set heading to a floor) and `landed_boxes` (the boxes it already put there, 0 for sets received before this rule), which the restock and transfer screens show as `1 端 = 12 盒`.
+
+**The picker records what came down.** `PATCH /api/restock/items/<id>/pick` accepts a found quantity above the requested one (up to 999). The sheet keeps what was asked; the delivery line's `requested_quantity` is the larger of the two, so the ledger's own checks still hold. Confirming the pick still refuses what the source does not hold. Picks stay locked once the goods are dispatched.
+
+**The floor counts what it sees.** On a restock, `receive` accepts a line quantity above what is in transit, including a line the picker marked out of stock: the difference comes straight off the source in the same document (source saleable → transit → floor), the delivery line and the sheet's found quantity rise to what really came down, and a second `dispatch` event (reason `Counted on the floor above the recorded pick`) records who counted it. It is refused with `insufficient_stock` when the source does not hold the difference, and nothing moves. A count below the pick leaves the rest in transit, as before: it is received later or returned to the source. A transfer is never received above what was sent, because its receiver has no say over the sending store's stock.
+
+**Sets already on a floor.** `scripts/open_floor_sets.py --db <db>` lists, read-only, every sealed set with saleable stock on a live store's floor and the boxes it becomes, and says which it must leave (size never recorded, product not verified). `--apply --backup <new path> --actor-sub <Auth0 subject>` takes the write lock, plans again under it, takes a checked SQLite backup, posts one `correction` document per store (each set off the floor, its boxes onto the same floor; source type `floor_sets_opened`), checks that every planned floor is what the plan said, that no balance drifted from its movements and that integrity and foreign keys hold, then commits. Any failed check rolls everything back and the backup stays. `--store DT` limits it to one store; a second run finds nothing left. The actor needs `inventory_access` for each store it changes.
+
 ## Local screens
 
 Select a specific store and open **Inventory** for the series roster. Each design has **Receive** and **Count** actions; the Goods workflow routes remain available for receiving, transfers, and counts. Transfer opens unfinished incoming transfers across all dates; managers can create a transfer separately. Restock keeps its request and picking screens; the **Receive** tab accepts partial received or returned quantities, with 0 leaving an item in transit. An unconfirmed request keeps the original quantities and request key for Retry.
@@ -53,6 +68,7 @@ $env:PLAYWRIGHT_BROWSERS_PATH = 'D:\dev\POPCORE\.local\playwright-browsers'
 .\.venv\Scripts\python.exe popcore_app\tests\browser\check_goods_flow.py
 .\.venv\Scripts\python.exe popcore_app\tests\browser\check_transfer_receiving.py
 .\.venv\Scripts\python.exe popcore_app\tests\browser\check_restock_receiving.py
+.\.venv\Scripts\python.exe popcore_app\tests\browser\check_restock_sets.py
 .\.venv\Scripts\python.exe popcore_app\tests\browser\check_store_day.py
 Set-Location popcore_app\frontend
 npm test

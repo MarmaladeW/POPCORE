@@ -7,8 +7,11 @@ from inventory_commands import (
     INVENTORY_BUSY_TIMEOUT_MS,
     InventoryBusy,
     InventoryConflict,
+    InventoryError,
     InventoryValidationError,
     _post_inventory_in_transaction,
+    boxes_of_set,
+    expected_versions,
     require_inventory_access,
     store_is_live,
 )
@@ -564,6 +567,8 @@ def delivery_detail(con, delivery_id, *, actor):
         'business_date', 'status', 'version', 'restock_session_id',
     )}
     result['lines'] = []
+    to_floor = con.execute('SELECT code FROM inventory_locations WHERE id=?',
+                           (row['destination_location_id'],)).fetchone()['code'] == 'floor'
     for line in con.execute(
         'SELECT * FROM inventory_delivery_lines WHERE delivery_id=? ORDER BY line_no',
         (delivery_id,),
@@ -573,8 +578,26 @@ def delivery_detail(con, delivery_id, *, actor):
             line['dispatched_quantity'] - line['received_quantity']
             - line['returned_quantity'] - line['loss_quantity']
         )
+        # A whole set received on a floor lands as its boxes: how many each set gives, and how many
+        # boxes this line already put on the floor (none for sets received before that rule).
+        item['boxes_per_set'] = _per_set(con, line['product_id']) if to_floor else None
+        item['landed_boxes'] = con.execute(
+            """SELECT COALESCE(SUM(l.quantity * l.conversion_factor), 0)
+               FROM inventory_delivery_events e
+               JOIN inventory_document_lines l ON l.document_id=e.inventory_document_id
+               WHERE e.delivery_id=? AND e.action='receive' AND l.product_id=?
+                 AND l.conversion_id IS NOT NULL""", (delivery_id, line['product_id'])).fetchone()[0]
         result['lines'].append(item)
     return result
+
+
+def _per_set(con, product_id):
+    """Boxes one whole set gives, or None for another product or a set whose size was never recorded."""
+    try:
+        box = boxes_of_set(con, product_id)
+    except InventoryError:
+        return None
+    return box['per_set'] if box else None
 
 
 def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
@@ -628,6 +651,11 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
         )}
         ledger_lines = []
         updates = []
+        # 整端 stay upstairs and a floor holds blind boxes as boxes (owner, 2026-10-29): a whole set
+        # received saleable on a floor lands as its boxes.
+        floor = destination['id'] if action == 'receive' and destination['code'] == 'floor' else None
+        expect = expected_versions(con)
+        above_pick, landed = [], []
         for item in requested:
             row = rows.get(item['line_no'])
             if row is None:
@@ -663,22 +691,46 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
                 })
                 updates.append(('dispatched_quantity', quantity, row['line_no']))
             elif action == 'receive':
-                if quantity > outstanding:
-                    raise InventoryConflict('Receipt exceeds outstanding transit', 'delivery_quantity_conflict')
                 if item['disposition'] not in {'saleable', 'hold', 'damaged'}:
                     raise InventoryValidationError('destination disposition is invalid')
                 if row['open_set_id'] is not None and item['disposition'] != 'saleable':
                     raise InventoryValidationError(
                         'opened-set delivery stock must be received as saleable'
                     )
-                transit_balance = _balance(con, row['product_id'], source['id'], 'transit')
-                target = _balance(con, row['product_id'], destination['id'], item['disposition'])
+                extra = quantity - outstanding
+                if extra > 0:
+                    # The floor counts what really came down (owner, 2026-11-15). More than the pick
+                    # recorded: the rest comes off the source now, which only a restock may do, since
+                    # its storage and its floor are one store's.
+                    if (current['kind'] != 'restock' or row['open_set_id'] is not None
+                            or source['store_id'] != destination['store_id']):
+                        raise InventoryConflict('Receipt exceeds outstanding transit',
+                                                'delivery_quantity_conflict')
+                    ledger_lines.append({
+                        'product_id': row['product_id'], 'unit': row['native_unit'],
+                        'quantity': extra, 'from_location_id': source['id'],
+                        'from_disposition': 'saleable', 'to_location_id': source['id'],
+                        'to_disposition': 'transit', 'expected_versions': {
+                            'from': expect(row['product_id'], source['id'], 'saleable'),
+                            'to': expect(row['product_id'], source['id'], 'transit'),
+                        },
+                    })
+                    above_pick.append((row['line_no'], row['product_id'],
+                                       row['dispatched_quantity'] + extra, extra))
+                box = (boxes_of_set(con, row['product_id'])
+                       if floor is not None and item['disposition'] == 'saleable' else None)
+                if box is not None:
+                    landed.append({'line_no': row['line_no'], 'product_id': row['product_id'],
+                                   'sets': quantity, 'box_product_id': box['product_id'],
+                                   'boxes': quantity * box['per_set']})
                 ledger_lines.append({
                     'product_id': row['product_id'], 'unit': row['native_unit'],
                     'quantity': quantity, 'from_location_id': source['id'],
                     'from_disposition': 'transit', 'to_location_id': destination['id'],
                     'to_disposition': item['disposition'], 'expected_versions': {
-                        'from': transit_balance['version'], 'to': target['version'],
+                        'from': expect(row['product_id'], source['id'], 'transit'),
+                        'to': expect(box['product_id'] if box is not None else row['product_id'],
+                                     destination['id'], item['disposition']),
                     },
                 })
                 updates.append(('received_quantity', quantity, row['line_no']))
@@ -724,12 +776,43 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
                 'lines': ledger_lines,
             }, actor=actor, request_key=f'inventory:{key}',
                 access_store_ids=(required_store,), allow_transit=True,
-                allow_delivery_provenance=(action == 'dispatch'))
+                allow_delivery_provenance=(action == 'dispatch'),
+                sets_open_at=(floor,) if floor is not None else ())
         if action in {'receive', 'return'}:
             restore_location = destination['id'] if action == 'receive' else source['id']
             for item in requested:
                 _restore_open_set(con, rows[item['line_no']], restore_location,
                                   item['quantity'])
+        if above_pick:
+            # What the floor counted above the pick is a pick too: the delivery and its sheet now say
+            # what really came down, and the event keeps who counted it.
+            catch_up = con.execute(
+                """INSERT INTO inventory_delivery_events
+                   (delivery_id, action, actor_sub, reason, inventory_document_id)
+                   VALUES (?, 'dispatch', ?, ?, ?)""",
+                (delivery_id, actor['sub'], 'Counted on the floor above the recorded pick',
+                 inventory_result['document_id']),
+            ).lastrowid
+            for index, (line_no, product_id, picked, extra) in enumerate(above_pick, 1):
+                con.execute(
+                    """UPDATE inventory_delivery_lines
+                       SET requested_quantity=MAX(requested_quantity,
+                                                  dispatched_quantity+short_quantity+?),
+                           dispatched_quantity=dispatched_quantity+?
+                       WHERE delivery_id=? AND line_no=?""",
+                    (extra, extra, delivery_id, line_no),
+                )
+                con.execute(
+                    """INSERT INTO inventory_delivery_event_lines
+                       (event_id, line_no, delivery_line_no, quantity, disposition)
+                       VALUES (?, ?, ?, ?, 'saleable')""",
+                    (catch_up, index, line_no, extra),
+                )
+                con.execute(
+                    """UPDATE restock_items SET found_qty=?, pick_status='found'
+                       WHERE session_id=? AND product_id=?""",
+                    (picked, current['restock_session_id'], product_id),
+                )
         event = con.execute(
             """INSERT INTO inventory_delivery_events
                (delivery_id, action, actor_sub, reason, inventory_document_id)
@@ -776,6 +859,8 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
                 inventory_result['document_id'] if inventory_result else None
             ),
         }
+        if landed:
+            response['landed_as_boxes'] = landed
         _remember(con, key, f'delivery_{action}', delivery_id, actor, digest, response)
         con.commit()
         return response

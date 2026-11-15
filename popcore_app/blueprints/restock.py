@@ -13,7 +13,7 @@ from blueprints.stores import _resolve_store
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
 from inventory_commands import (
     InventoryConflict, InventoryError, InventoryValidationError,
-    post_inventory, require_inventory_access,
+    boxes_of_set, expected_versions, post_inventory, require_inventory_access,
 )
 from goods_operations import act_on_delivery, create_delivery, delivery_detail
 from inventory_visibility import can_see_inventory, hide_balances, hide_quantities
@@ -471,9 +471,13 @@ def _restock_delivery(con, sid):
     if floor is None or back is None:
         raise InventoryConflict('Reviewed inventory locations are missing',
                                 'inventory_store_missing')
+    # The delivery carries what the pick found when that is more than the sheet asked for
+    # (owner, 2026-11-15: 2 sets brought down where the sheet said 1); the sheet keeps what was asked.
     lines = [dict(row) for row in con.execute(
         """SELECT ri.product_id, p.stock_unit AS unit,
-                  ri.requested_qty AS requested_quantity
+                  MAX(ri.requested_qty, CASE WHEN ri.pick_status='found'
+                                             THEN COALESCE(ri.found_qty, 0) ELSE 0 END)
+                      AS requested_quantity
            FROM restock_items ri JOIN products p ON p.id=ri.product_id
            WHERE ri.session_id=? ORDER BY ri.id""", (sid,)
     )]
@@ -715,9 +719,11 @@ def pick_restock_item(iid):
         except ValueError as exc:
             con.close()
             return jsonify(invalid_input(exc)), 400
-        if found_qty > item['requested_qty']:
+        # The picker records what really came down, which may be more than the sheet asked for
+        # (owner, 2026-11-15). Confirming the pick still refuses what upstairs does not have.
+        if found_qty > MAX_REQUEST:
             con.close()
-            return jsonify({'error': f'found_qty ({found_qty}) 不可超过 requested_qty ({item["requested_qty"]})'}), 400
+            return jsonify({'error': f'found_qty ({found_qty}) 不可超过 {MAX_REQUEST}'}), 400
 
     cur.execute(
         'UPDATE restock_items SET found_qty=?, pick_status=? WHERE id=?',
@@ -829,27 +835,20 @@ def complete_restock_session(sid):
             con.close()
             return jsonify({'ok': True, 'synced': 0, 'items': []})
         lines = []
-        for item in found_items:
-            source = con.execute(
-                """SELECT version FROM inventory_balances
-                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
-                (item['product_id'], back),
-            ).fetchone()
-            target = con.execute(
-                """SELECT version FROM inventory_balances
-                   WHERE product_id=? AND location_id=? AND disposition='saleable'""",
-                (item['product_id'], floor),
-            ).fetchone()
-            lines.append({
-                'product_id': item['product_id'], 'quantity': item['found_qty'],
-                'unit': item['stock_unit'], 'from_location_id': back,
-                'from_disposition': 'saleable', 'to_location_id': floor,
-                'to_disposition': 'saleable', 'expected_versions': {
-                    'from': source['version'] if source else 0,
-                    'to': target['version'] if target else 0,
-                },
-            })
+        expect = expected_versions(con)
         try:
+            for item in found_items:
+                # A whole set lands on the floor as its boxes, so its line names the box balance there.
+                box = boxes_of_set(con, item['product_id'])
+                lines.append({
+                    'product_id': item['product_id'], 'quantity': item['found_qty'],
+                    'unit': item['stock_unit'], 'from_location_id': back,
+                    'from_disposition': 'saleable', 'to_location_id': floor,
+                    'to_disposition': 'saleable', 'expected_versions': {
+                        'from': expect(item['product_id'], back, 'saleable'),
+                        'to': expect(box['product_id'] if box else item['product_id'], floor, 'saleable'),
+                    },
+                })
             result = post_inventory(
                 con, {'kind': 'restock_complete',
                       'business_date': business_date(),
