@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, REPORT_NOTE_SECTIONS, reportPayloadQuantities,
-  STOCK_LINE_SECTIONS, stockLineEffect,
+  cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, REPORT_NOTE_SECTIONS,
+  reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect,
 } from './dailyReportReview.ts'
+import { whereText } from '../../lib/stockPlaces.ts'
+import { quantityText, SECTION_TEXT } from './namePicksView.ts'
 
 test('report review never silently submits unresolved rows or invents packs and match scores', () => {
   const row = { section: 'cash', qty: 2, box_size: null, flagged: false, product: { id: 1 } }
@@ -57,8 +59,9 @@ test('a live store reviews its stock lines and sends what each one moves', () =>
   assert.equal(isReportRowReady(row, true), true)
   assert.equal(isReportRowReady({ ...row, box_size: null }, true), false)
   for (const section of STOCK_LINE_SECTIONS) {
-    assert.equal(isReportRowReady({ ...row, section, box_size: section === 'refill' || section === 'stock_in' ? 6 : null }, true), true)
+    assert.equal(isReportRowReady({ ...row, section, box_size: PACKED_SECTIONS.includes(section) ? 6 : null }, true), true)
     assert.ok(stockLineEffect({ section }))
+    assert.ok(SECTION_TEXT[section])
   }
   assert.equal(stockLineEffect({ section: 'pos' }), null)
   assert.equal(stockLineEffect({ section: 'refill', to_display: true }), '楼上/仓库 → Display')
@@ -68,8 +71,34 @@ test('a live store reviews its stock lines and sends what each one moves', () =>
   assert.deepEqual(reportPayloadQuantities({ section: 'stock_out', qty: 1, from_display: true }), { qty: 1, from_display: true })
   assert.deepEqual(reportPayloadQuantities({ section: 'cash', qty: 4 }), { qty_cash: 4 })
   assert.deepEqual(reportPayloadQuantities({ section: 'pos', qty: 4 }), { qty_pos: 4 })
-  // 出库 to the other store is kept as a note that points to 调拨 Transfer.
+  // 出库 stays a note that points to 调拨 Transfer only while the other store is not live.
   assert.ok(REPORT_NOTE_SECTIONS.some(({ key, description }) => key === 'store_transfers' && description.includes('调拨')))
+})
+
+test('入库, 出库, 出店入库 and 出display入店 are stock lines written as sets, boxes or pieces', () => {
+  // Owner, 2026-11-13: 入库 is new goods into upstairs; 出库 comes off this store and goes onto the other at once.
+  const row = { section: 'back_in', qty: 8, box_size: 12, loose_qty: 0, flagged: false, product: { id: 1 } }
+  assert.equal(isReportRowReady(row), false)
+  assert.equal(isReportRowReady(row, true), true)
+  assert.equal(isReportRowReady({ ...row, box_size: null }, true), false)
+  assert.deepEqual(reportPayloadQuantities(row), { box_size: 12, num_boxes: 8, loose_qty: 0 })
+  assert.equal(stockLineEffect(row), '新货 New goods → 楼上/仓库')
+  // 出库 lands in the other store's upstairs or warehouse; its floor only when the manager ticks it.
+  const sent = { section: 'transfer_out', qty: 30, box_size: 1, loose_qty: 0 }
+  assert.deepEqual(reportPayloadQuantities(sent), { box_size: 1, num_boxes: 30, loose_qty: 0, to_floor: false })
+  assert.deepEqual(reportPayloadQuantities({ ...sent, to_floor: true }), { box_size: 1, num_boxes: 30, loose_qty: 0, to_floor: true })
+  assert.equal(stockLineEffect(sent), '楼上/仓库 → 另一家店楼上/仓库 Other store')
+  assert.equal(stockLineEffect({ ...sent, to_floor: true }), '楼上/仓库 → 另一家店楼下 Other store floor')
+  assert.equal(stockLineEffect({ section: 'floor_to_back' }), '楼下 Floor → 楼上/仓库')
+  assert.equal(stockLineEffect({ section: 'display_to_floor' }), 'Display → 楼下 Floor')
+  assert.deepEqual(reportPayloadQuantities({ section: 'display_to_floor', qty: 1, box_size: 12 }), { box_size: 12, num_boxes: 1, loose_qty: 0 })
+  // The other store's side of a line is named with its store; a notice names it "MK:warehouse".
+  assert.equal(whereText('warehouse', 'MK'), 'MK 仓库 Warehouse')
+  assert.equal(whereText('MK:warehouse'), 'MK 仓库 Warehouse')
+  assert.equal(whereText('upstairs'), '楼上 Upstairs')
+  assert.equal(whereText('upstairs', null), '楼上 Upstairs')
+  assert.equal(quantityText({ section: 'transfer_out', qty: 3, box_size: 9, loose_qty: 0 }), '9 × 3')
+  assert.equal(quantityText({ section: 'back_in', qty: 2, box_size: 1, loose_qty: 0 }), '× 2')
 })
 
 test('a format check names the lines of the paste it points at, and its section', () => {
