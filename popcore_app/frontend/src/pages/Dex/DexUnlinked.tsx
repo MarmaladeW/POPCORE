@@ -6,7 +6,7 @@ import { createEntry, searchEntries, unlinkedItems, updateEntry, type DexUnlinke
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
-import { kindText } from '../../lib/dexFields'
+import { FORMATS, kindText } from '../../lib/dexFields'
 import { DexIpTag, errorText } from './DexParts'
 import './dex.css'
 
@@ -136,7 +136,7 @@ function PutInBook({ item, onClose, onDone }: {
         await createEntry({ kind: 'design', name: values.name, parent_id: item.box_entry!.id, product_id: item.id })
       } else {
         await createEntry({ kind: 'product', name: values.name, parent_id: values.parent_id,
-          blind_box: item.stock_form === 'random_box', product_id: item.id })
+          blind_box: item.stock_form === 'random_box', product_id: item.id, extras: { format: values.format } })
       }
       onDone(item)
     } catch (cause) {
@@ -164,6 +164,10 @@ function PutInBook({ item, onClose, onDone }: {
         rules={[{ required: true, message: 'Pick where it goes.' }]}>
         <Select showSearch filterOption={false} onSearch={findParents} options={parents} aria-label="Goes under"
           placeholder="搜索图鉴 Search the book" notFoundContent="输入名称搜索 Type a name" />
+      </Form.Item>}
+      {/* Contract 1.9 §4: every book product goes to popcore.ca with a format from the website's list. */}
+      {!design && <Form.Item name="format" label="形式 Format" rules={[{ required: true, message: 'Pick its format.' }]}>
+        <Select options={FORMATS} aria-label="形式 Format" placeholder="选择 Pick one" />
       </Form.Item>}
     </Form>}
   </Modal>

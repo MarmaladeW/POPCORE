@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { EXTRA_FIELDS, extrasChange, fromInput, kindText, toInput } from './dexFields.ts'
+import { EXTRA_FIELDS, FORMATS, extrasChange, fromInput, kindText, toInput } from './dexFields.ts'
 
 const field = (kind: keyof typeof EXTRA_FIELDS, key: string) => EXTRA_FIELDS[kind].find(entry => entry.key === key)!
 
@@ -29,6 +29,20 @@ test('only changed keys are sent, and a cleared one is sent as null', () => {
   assert.deepEqual(extrasChange('design', before, { weight: '112', shake_note: 'rattles', weight_range: '' }), {})
   assert.deepEqual(extrasChange('design', before, { weight: '113', shake_note: '' }), { weight: '113', shake_note: null })
   assert.deepEqual(extrasChange('ip', {}, { aliases: 'x, y', is_original: true }), { aliases: ['x', 'y'], is_original: true })
+})
+
+test("a product's format is a required pick from the website's seven", () => {
+  const format = field('product', 'format')
+  assert.equal(EXTRA_FIELDS.product[0], format)
+  assert.equal(format.input, 'choice')
+  assert.equal(format.required, true)
+  assert.deepEqual(FORMATS.map(option => option.value),
+    ['Figures', 'Plush Pendants', 'POP BEAN', 'Fragrance Blind Box', 'Blister Card', 'MEGA', 'Merchandise'])
+  assert.equal(format.options, FORMATS)
+  assert.equal(toInput(format, null), undefined)  // the pick shows its placeholder, not an empty value
+  assert.equal(toInput(format, 'MEGA'), 'MEGA')
+  assert.deepEqual(extrasChange('product', {}, { format: 'Blister Card' }), { format: 'Blister Card' })
+  assert.deepEqual(extrasChange('product', { format: 'Figures' }, { format: 'Figures' }), {})
 })
 
 test('levels read Chinese first, then English, without saying IP twice', () => {

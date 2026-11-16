@@ -108,16 +108,25 @@ export default function DexSyncPage() {
       </>}
     </Panel>
 
-    <Panel zh="条目" en="Entries" label="Entries" count={counts.waiting + counts.behind + counts.refused} tone={counts.refused ? 'warn' : 'ok'}>
+    <Panel zh="条目" en="Entries" label="Entries" count={counts.waiting + counts.behind + counts.refused + counts.held}
+      tone={counts.refused || counts.held ? 'warn' : 'ok'}>
       <div className="pc-dex-sync-counts">
         <div><strong>{counts.waiting}</strong><span>待发送 Waiting</span>{counts.deletes > 0 && <small>{counts.deletes} 删除 deletes</small>}</div>
         <div><strong>{counts.sent}</strong><span>已发送 Sent</span></div>
         <div><strong>{counts.refused}</strong><span>被拒 Refused</span></div>
-        <div><strong>{counts.behind}</strong><span>等上级 Behind a refused entry</span></div>
+        <div><strong>{counts.held}</strong><span>缺形式 Held: no format</span></div>
+        <div><strong>{counts.behind}</strong><span>等上级 Behind a refused or held entry</span></div>
       </div>
       {status.deletes_held && <p className="pc-quiet">删除先等着 · Deletes wait until the website has taken every other entry, so nothing the
-        book moved is deleted with its old place. Settle the refused entries first.</p>}
+        book moved is deleted with its old place. Settle the refused and held entries first.</p>}
     </Panel>
+
+    {status.held.length > 0 && <Panel zh="缺形式" en="Held: no format" label="Held: no format" count={counts.held} tone="warn">
+      <p className="pc-quiet">POPCORE does not send a product without a format (形式) from the website's list, and what sits under it waits
+        too. Open one, pick its format in the editor, and it goes with the next pass.</p>
+      {status.held.map(row => <ListRow key={row.id} label={KIND_LABEL[row.kind].zh} title={<Link to={`/dex/${row.id}`}>{row.name}</Link>}
+        meta={row.place.join(' › ')} />)}
+    </Panel>}
 
     {status.refused.length > 0 && <Panel zh="网站拒收" en="Refused by the website" label="Refused by the website" count={counts.refused} tone="warn"
       action={<Button size="small" loading={busy === 'retry:all'} disabled={!!busy}
@@ -141,6 +150,8 @@ export default function DexSyncPage() {
         <div><strong>{preview.update}</strong><span>更新 Updated</span></div>
         <div><strong>{preview.delete}</strong><span>删除 Deleted on the website</span></div>
       </div>
+      {preview.held > 0 && <p className="pc-quiet">{preview.held} of these products have no format yet: they wait, with what sits under them,
+        until a manager picks one (see Held: no format).</p>}
       {preview.removed_quietly > 0 && <p className="pc-quiet">{preview.removed_quietly} deleted entries the website never had are removed without sending.</p>}
       {preview.deletes.length > 0 && <section aria-label="Deletes">
         <h3 className="pc-dex-sync-sub">删除 Deletes on popcore.ca <small>with their pages, marks and follows; listings are unlinked, not deleted</small></h3>

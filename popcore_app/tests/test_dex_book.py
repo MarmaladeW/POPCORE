@@ -7,6 +7,7 @@ from contextlib import closing
 from support import IsolatedApiCase
 
 import db
+import dex_book
 from blueprints import dex
 
 
@@ -210,6 +211,21 @@ class DexBookTests(IsolatedApiCase):
         response = self.post(kind='product', name='Bad', parent_id=series, extras={'weight': 1})
         self.assertEqual(response.get_json()['code'], 'extras_unknown')
         self.assertEqual(self.post(kind='company', name='Odd', website_id=5).status_code, 400)  # not settable here
+
+    def test_a_products_format_is_one_of_the_websites_list(self):
+        """Contract 1.9 section 4: the website refuses any other format (format_unknown), Standalone included."""
+        company, ip, series, product, designs = self.book()
+        for value in dex_book.FORMATS:
+            self.assertEqual(self.patch(product, extras={'format': value}).status_code, 200, value)
+        self.assertEqual(len(dex_book.FORMATS), 7)
+        for value in ('Standalone', 'figures', '', 3):
+            response = self.patch(product, extras={'format': value})
+            self.assertEqual((response.status_code, response.get_json()['code']), (400, 'format_unknown'), value)
+        self.assertEqual(self.row(product)['extras'], '{"format": "Merchandise"}')
+        self.assertEqual(self.patch(product, extras={'format': None}).status_code, 200)  # none yet: the sync holds it
+        response = self.post(kind='product', name='Odd box', parent_id=series, extras={'format': 'Standalone'})
+        self.assertEqual(response.get_json()['code'], 'format_unknown')
+        self.assertEqual(self.post(kind='product', name='Mega box', parent_id=series, extras={'format': 'MEGA'}).status_code, 201)
 
     def test_every_change_raises_the_version(self):
         company, ip, series, product, designs = self.book()

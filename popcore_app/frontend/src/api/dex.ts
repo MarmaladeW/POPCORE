@@ -95,16 +95,18 @@ export interface DexSyncStatus {
   last_error: DexSyncProblem | null
   // The last time an admin's turn-on asked the website's book route.
   website_check: ({ ok: true; at: string } | ({ ok: false } & DexSyncProblem)) | null
-  counts: { waiting: number; sent: number; refused: number; behind: number; deletes: number }
+  counts: { waiting: number; sent: number; refused: number; held: number; behind: number; deletes: number }
   deletes_held: boolean
   refused: DexSyncRefused[]
+  // Products POPCORE does not send yet: no format from the website's list (contract 1.9 §4).
+  held: { id: number; kind: DexKind; name: string; place: string[] }[]
 }
 export interface DexSyncPreview {
-  create: number; update: number; delete: number; removed_quietly: number
+  create: number; update: number; delete: number; removed_quietly: number; held: number
   deletes: { id: number; kind: DexKind; name: string; website_id: number | null; place: string[] }[]
 }
 export interface DexSyncEntryState {
-  enabled: boolean; state: 'sent' | 'waiting' | 'refused' | 'behind'; version: number; sent_version: number
+  enabled: boolean; state: 'sent' | 'waiting' | 'refused' | 'held' | 'behind'; version: number; sent_version: number
   website_id: number | null; code: string | null; message: string | null
 }
 export const dexSyncStatus = () => client.get<DexSyncStatus>('/dex/sync').then(r => r.data)

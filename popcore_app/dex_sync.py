@@ -17,6 +17,9 @@ sync"), behind its own switch, off until an admin turns it on. The contract is d
 - Answers: ok stores the website_id and the version sent and clears the error. refused or error stores the website's
   code and message with the version it was for; that entry is not sent again until it changes or a manager retries.
   A call that fails (unreachable, timeout, not 200, key refused) marks nothing; the reason is kept as the last error.
+  While the website's own switch is off its book route answers 503 book_switch_off: a failed call like any other.
+- Held (contract 1.9 section 4, "nothing is sent with a guess"): a live product with no format from the website's list
+  is not sent. It waits as held, with what sits under it behind it, until a manager picks its format in the editor.
 - It reads website_sync.config() for the website's address and key and makes its own calls. It never touches stock,
   prices, orders or the stock sync's state.
 """
@@ -40,6 +43,7 @@ TIMEOUT = (5, 60)  # the website answers within 30 seconds; POPCORE waits 60 (co
 ORDER = {kind: index for index, kind in enumerate(dex_book.KINDS)}
 REFS = ('parent_id', 'partner_id', 'character_id', 'ip_id')
 REFUSED_LIST = 200
+HELD = ('format_missing', 'No format yet (形式): pick one in the editor, then it is sent.')
 HALF_MISSING = ('The website’s half of the book sync is not there yet: popcore.ca does not answer its book route. '
                 'Nothing was sent.')
 
@@ -113,7 +117,7 @@ def call(cfg, method, path, *, params=None, body=None, files=None, data=None):
 
 _ROWS = """SELECT e.id, e.kind, e.name, e.parent_id, e.partner_id, e.character_id, e.ip_id, e.version, e.sent_version,
                   e.send_error, e.deleted_at, e.website_id, e.website_item, e.sync_price_id, e.sync_popcore_id,
-                  p.sku AS popcore_id,
+                  p.sku AS popcore_id, CASE WHEN json_valid(e.extras) THEN json_extract(e.extras, '$.format') END AS format,
                   CASE WHEN e.product_id IS NULL OR e.kind NOT IN ('product', 'design') THEN NULL
                        WHEN p.stock_form='confirmed_design' THEN
                            (SELECT MAX(d.id) FROM design_prices d WHERE d.product_id=e.product_id)
@@ -132,8 +136,9 @@ def _error(row):
 
 def classify(con):
     """{id: facts} for every row, each with `state`:
-    sent (the website has this version), waiting, refused (at this version), behind (waits behind a refused entry),
-    delete (a deleted row to send), drop (a deleted row the website never had: removed without sending)."""
+    sent (the website has this version), waiting, refused (at this version), held (a product with no format: POPCORE
+    does not send it), behind (waits behind a refused or held entry), delete (a deleted row to send), drop (a deleted
+    row the website never had: removed without sending)."""
     rows = {row['id']: dict(row) for row in con.execute(_ROWS)}
     for row in rows.values():
         row['drift'] = row['deleted_at'] is None and (
@@ -146,17 +151,18 @@ def classify(con):
             had = row['website_id'] is not None or row['sent_version'] > 0
             row['state'] = 'refused' if had and refused else 'delete' if had else 'drop'
         else:
-            row['state'] = 'refused' if refused else 'waiting' if due else 'sent'
+            held = due and row['kind'] == 'product' and row['format'] not in dex_book.FORMATS
+            row['state'] = 'refused' if refused else 'held' if held else 'waiting' if due else 'sent'
 
     def blocked(row, seen):
-        """True when something this entry points at was refused, or waits behind a refused entry."""
+        """True when something this entry points at was refused or held, or waits behind one."""
         for field in REFS:
             dep = rows.get(row[field])
             if dep is None or dep['id'] in seen:
                 continue
             if dep['sent_version'] > 0 and dep['deleted_at'] is None:
                 continue  # the website knows it
-            if dep['state'] == 'refused' or blocked(dep, seen | {dep['id']}):
+            if dep['state'] in ('refused', 'held') or blocked(dep, seen | {dep['id']}):
                 return True
         return False
     for row in rows.values():
@@ -166,7 +172,7 @@ def classify(con):
 
 
 def _counts(rows):
-    counts = {'waiting': 0, 'sent': 0, 'refused': 0, 'behind': 0, 'deletes': 0}
+    counts = {'waiting': 0, 'sent': 0, 'refused': 0, 'held': 0, 'behind': 0, 'deletes': 0}
     for row in rows.values():
         key = {'delete': 'deletes', 'drop': None}.get(row['state'], row['state'])
         if key:
@@ -194,6 +200,13 @@ def _refused_list(con, rows):
     return found[:REFUSED_LIST]
 
 
+def _held_list(rows):
+    """Products POPCORE holds for want of a format, in book order, with where they sit."""
+    return [{'id': row['id'], 'kind': row['kind'], 'name': row['name'], 'place': _place(rows, row)}
+            for row in sorted((row for row in rows.values() if row['state'] == 'held'), key=lambda row: row['id'])
+            ][:REFUSED_LIST]
+
+
 def status(con):
     cfg, problem = settings()
     rows = classify(con)
@@ -206,22 +219,24 @@ def status(con):
         'first_send_done': state(con, 'first_send_done') is not None,
         'last_error': json.loads(error) if error else None,
         'website_check': json.loads(state(con, 'website_check')) if state(con, 'website_check') else None,
-        'counts': _counts(rows), 'refused': _refused_list(con, rows),
-        # Deletes that wait because a live entry was refused (not merely because the rest has not gone yet).
+        'counts': _counts(rows), 'refused': _refused_list(con, rows), 'held': _held_list(rows),
+        # Deletes that wait because a live entry was refused or held (not merely because the rest has not gone yet).
         'deletes_held': (any(row['state'] == 'delete' for row in rows.values()) and any(
-            row['deleted_at'] is None and row['state'] in ('refused', 'behind') for row in rows.values())),
+            row['deleted_at'] is None and row['state'] in ('refused', 'held', 'behind') for row in rows.values())),
     }
 
 
 def preview(con):
     """What the next full send does: entries the website will create, update and delete, and the deletes by name with
-    their place in the book."""
+    their place in the book. held: how many of those wait for a format (they go once they have one)."""
     rows = classify(con)
-    live = [row for row in rows.values() if row['state'] in ('waiting', 'behind', 'refused') and row['deleted_at'] is None]
+    live = [row for row in rows.values()
+            if row['state'] in ('waiting', 'behind', 'refused', 'held') and row['deleted_at'] is None]
     create = sum(1 for row in live if row['website_id'] is None and row['sent_version'] == 0)
     deletes = sorted((row for row in rows.values() if row['state'] in ('delete', 'refused') and row['deleted_at']),
                      key=lambda row: (-ORDER[row['kind']], row['id']))
     return {'create': create, 'update': len(live) - create, 'delete': len(deletes),
+            'held': sum(1 for row in live if row['state'] == 'held'),
             'removed_quietly': sum(1 for row in rows.values() if row['state'] == 'drop'),
             'deletes': [{'id': row['id'], 'kind': row['kind'], 'name': row['name'], 'website_id': row['website_id'],
                          'place': _place(rows, row)} for row in deletes]}
@@ -232,9 +247,10 @@ def entry_state(con, entry_id):
     row = rows.get(entry_id)
     if row is None or row['deleted_at'] is not None:
         raise dex_book.DexError('That Dex entry does not exist.', 'dex_not_found', 404)
+    code, message = (row['error'].get('code'), row['error'].get('message')) if row['state'] == 'refused' else \
+        HELD if row['state'] == 'held' else (None, None)
     return {'enabled': enabled(con), 'state': row['state'], 'version': row['version'], 'sent_version': row['sent_version'],
-            'website_id': row['website_id'], 'code': row['error'].get('code') if row['state'] == 'refused' else None,
-            'message': row['error'].get('message') if row['state'] == 'refused' else None}
+            'website_id': row['website_id'], 'code': code, 'message': message}
 
 
 # ── What is sent ─────────────────────────────────────────────────────────────
@@ -265,6 +281,9 @@ def entry(con, entry_id, memo=None):
         stored = {}
     # 1.5: price_history replaces market_prices; POPCORE keeps market_prices for its own screen and never sends it.
     extras = {key: stored[key] for key in dex_book.EXTRAS[kind] if key in stored and key != 'market_prices'}
+    for key in ('aliases', 'tags'):  # always a list (contract section 4); the load kept the website's text on a few
+        if isinstance(extras.get(key), str):
+            extras[key] = [part.strip() for part in extras[key].split(',') if part.strip()] or None
     if kind == 'design':  # always whole; empty when the shop has never priced it, so the chart shows only POPCORE's
         extras['price_history'] = _price_history(con, row['product_id']) if row['product_id'] is not None else []
     elif kind == 'product' and row['product_id'] is not None:  # a product the shop stocks (contract 1.6)
@@ -436,7 +455,8 @@ def run_once(con, cfg, clock=time.monotonic):
             _drop_unsent(con, rows)
             batch = _delete_batch(classify(con))
         if not batch:
-            if state(con, 'first_send_done') is None:
+            # A held product is still part of the first full send: it goes quiet too once it has its format.
+            if state(con, 'first_send_done') is None and not any(row['state'] == 'held' for row in rows.values()):
                 set_state(con, 'first_send_done', _now())
                 con.commit()
             break

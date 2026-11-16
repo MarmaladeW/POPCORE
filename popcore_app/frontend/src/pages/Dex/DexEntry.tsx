@@ -19,7 +19,8 @@ const plain = (kind: DexKind) => kind === 'ip' ? 'IP' : KIND_LABEL[kind].en.toLo
 const show = (value: unknown) => Array.isArray(value) ? value.join(', ') : typeof value === 'boolean' ? (value ? '是 Yes' : '否 No') : String(value)
 
 const SYNC_TEXT: Record<DexSyncEntryState['state'], string> = {
-  sent: '已发送 Sent', waiting: '待发送 Waiting', refused: '被拒 Refused', behind: '等上级 Waiting behind a refused entry',
+  sent: '已发送 Sent', waiting: '待发送 Waiting', refused: '被拒 Refused', held: '缺形式 Held: no format',
+  behind: '等上级 Waiting behind a refused or held entry',
 }
 
 // Step 3: where this entry stands with popcore.ca (sent, waiting, refused with the website's reason).
@@ -34,6 +35,7 @@ function DexSyncState({ entryId, version }: { entryId: number; version: number }
   return <p className="pc-dex-sync-state" aria-label="Dex sync state">
     <span>网站 popcore.ca:</span><strong>{SYNC_TEXT[state.state]}</strong>
     {state.state === 'refused' && <span>{state.code}: {state.message}</span>}
+    {state.state === 'held' && <span>{state.message}</span>}
     {!state.enabled && state.state !== 'sent' && <span>(图鉴同步关 Dex sync off)</span>}
   </p>
 }
