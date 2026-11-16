@@ -66,6 +66,10 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
   item. When both items are linked, the merge is refused as a collision and rolled back whole; unlink one first.
 - `extras` takes only the contract's keys for the kind (400 otherwise). A change merges: keys sent replace, keys
   not sent stay, `null` clears. `market_prices` is stored as given; the screen does not edit it.
+- A product's `extras.format` is one of the website's list, `dex_book.FORMATS` (contract 1.9 section 4): Figures,
+  Plush Pendants, POP BEAN, Fragrance Blind Box, Blister Card, MEGA, Merchandise. Anything else is refused (400
+  `format_unknown`), the website's old `Standalone` too. A product may have none yet; the sync then holds it (step 3).
+  The editor asks for one before it saves a product. See "Formats" below for how the book's products got theirs.
 - Every accepted change raises `version` by one and sets `updated_at` and `updated_by`. A change that changes
   nothing keeps the version. Renaming or moving an entry also raises the version of every live entry under it (their
   full names changed), so step 3 sends them again.
@@ -106,6 +110,26 @@ Companies, partners and IPs themselves have none. The editor's own "IP above, or
 
 **Search** finds an entry whose own name holds at least one of the words and whose full name holds them all:
 "hirono echo figures" finds HIRONO Echo Series Figures, and not its designs. Names holding the whole text come first.
+
+## Formats (contract 1.9 section 4)
+
+Every product goes to popcore.ca with a format from the website's list, and nothing is sent with a guess.
+`scripts/fill_dex_formats.py` gives the book's products theirs once, by the contract's order: the owner's pick
+(`--picks`, a JSON object of entry id to format); a format a person set in POPCORE (the entry was last changed by
+someone other than the load, the owner's review scripts or this script); the type word of the linked POPCORE item
+(吊卡 Blister Card; 大娃, 大娃 400%, 大娃 1000% MEGA; 周边, 配件, 积木 Merchandise; 盲盒 says nothing; 盲盒（杂项）
+takes the name's answer, Merchandise when the name gives none, and goes to the owner when the name says Figures); the
+product's own name (POP BEAN, MEGA or 400%/1000%, blister or hanging card, fragrance or scented, pendant, then goods
+words, then figure words; a name with goods and figure words settles nothing), which stands only when the linked item's
+name gives no other clear answer. What none of these settles is left with no format and listed for the owner, with the
+item's answer or the website's value as a suggestion. The website's own values are not trusted as they stand (it
+filled `Figures` silently); a product the rule settles gets the rule's value.
+
+Dry run by default; `--apply --backup NEW` takes an online backup first and writes every change in one transaction,
+as the actor `format-rule`. Re-running changes nothing. The report (`--out`) is a JSON file with every product (where it
+sits, its item and type word, the value before, the format, why) and a Markdown table of the owner's picks. On a copy
+of live (16 Nov 2026) it settled 885 of the 932 products and left 47 for the owner; the first send stayed 1,075
+creates, 3,807 updates and 43 deletes.
 
 ## A design's price trend
 
@@ -340,6 +364,12 @@ website answers `ok`; a deleted row the website never had is removed without sen
 
 A pass with nothing new only reads: it takes no write lock on the database the till writes to.
 
+**Held** (contract 1.9 section 4). A live product with no format from `dex_book.FORMATS` is not sent: it is `held`,
+worked out on every read and never stored, and what sits under it waits behind it (`behind`). Deletes wait too, since
+every live entry must be on the website first. The sync screen lists the held products (缺形式 Held: no format) with
+links to them; picking a format in the editor raises the version and the product goes with the next pass. Retry does
+not apply to a held product (409 `not_refused`), and the first full send stays quiet until no product is held.
+
 **Batches.** Up to 50 entries a call, one call at a time, as many calls as fit in about 20 seconds per pass.
 `quiet: true` until the first full send has finished (a pass that finds nothing left to send), then `false`.
 
@@ -348,7 +378,8 @@ A pass with nothing new only reads: it takes no write lock on the database the t
 `rarity` (designs), `popcore_id` (the live link's POPCORE ID, products and designs), `extras`, `version`, `deleted`,
 and `full_name` for products and designs. `item` is the stored `website_item` once the website has the row; for a
 product new to the website it is true when it does not sit under a series (an item figure). `extras` holds only the
-contract's keys for the kind. `market_prices` is never sent (contract 1.5 replaced it).
+contract's keys for the kind. `market_prices` is never sent (contract 1.5 replaced it). `aliases` and `tags` always
+go as lists (contract section 4): a value the load kept as the website's comma text is split on commas.
 
 **Price history** (owner, 2026-11-14: "the price history chart on popcore.ca should show the price change recorded in
 POPCORE"; contract 1.5). A design linked to a POPCORE item carries `extras.price_history`: every price recorded for that
