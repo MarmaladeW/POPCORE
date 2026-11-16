@@ -2119,6 +2119,7 @@ def _get_migrations():
         ('dex_sync',                                   _migration_dex_sync),
         ('product_price_history',                      _migration_product_price_history),
         ('report_lines_from',                          _migration_report_lines_from),
+        ('report_sets_opened',                         _migration_report_sets_opened),
     ]
 
 
@@ -2446,6 +2447,17 @@ def _migration_report_lines_from(con, cur):
     cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('report_lines_from', ?)",
                 (datetime.now(ZoneInfo('America/Toronto')).date().isoformat(),))
     cur.execute("INSERT INTO _migrations(name) VALUES ('report_lines_from')")
+
+
+def _migration_report_sets_opened(con, cur):
+    # A sale (or a line taking boxes off the floor) that the floor's loose boxes cannot cover opens a sealed
+    # set of that box by itself (owner, 2026-11-15: Angry Molly, DT Nov 14, "the floor is no box short").
+    # Each opening is a report_stock_moves row of section 'set_opened' (one per set, place and day); `covers`
+    # is how many of the day's boxes it was opened for, so a sale taken back off the report closes it again.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(report_stock_moves)')}
+    if 'covers' not in columns:
+        cur.execute('ALTER TABLE report_stock_moves ADD COLUMN covers INTEGER NOT NULL DEFAULT 0 CHECK (covers >= 0)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_sets_opened')")
 
 
 def _migration_inventory_viewers(con, cur):

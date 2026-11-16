@@ -32,6 +32,15 @@ to upstairs; 出display入店 display to the floor, a written set size opening t
 can feed its own later lines. 入娃娃机 refills are not moved here: staff record them on the claw screen.
 Days before `report_lines_from` (the day this went live) were recorded by hand, so their reports keep the old
 reading of those sections and never move them a second time.
+
+A floor that runs out of loose boxes opens a sealed set by itself (owner, 2026-11-15, Angry Molly at DT on Nov 14:
+3 sets, no loose box, 1 sold, staff opened a set but wrote no 出库入店 line: "the floor is no box short"). After the
+day's own lines moved, a sale (or a line taking boxes off the floor) that the loose boxes cannot cover opens as few
+of that box's own sealed sets as cover it, a set on the floor first, then upstairs or the warehouse, and takes the
+rest off; the preview and the result say so per product. Each opening is kept as a `set_opened` row with how many
+boxes it was opened for, so a re-paste opens nothing more for the same sale, and a sale taken back off the report
+closes the set again while the floor still has its boxes. A design (子项) never opens a set: a set holds every
+design, not that one. With no set to open the shortfall stays a "楼下不够" notice, as before.
 """
 import hashlib
 import json
@@ -63,6 +72,10 @@ _STAGES = {'back_in': 0, 'stock_in': 1, 'display_to_floor': 2, 'refill': 3, 'dis
            'break_display': 4, 'floor_to_back': 5, 'transfer_out': 6}
 _LAST_STAGE = 7
 MAX_SET_SIZE = 100
+# A sealed set the paste opened by itself because the floor ran out (owner, 2026-11-15).
+SET_OPENED = 'set_opened'
+_PLACE_NAMES = {'floor': '楼下 Floor', 'upstairs': '楼上 Upstairs', 'warehouse': '仓库 Warehouse'}
+_NO_LINE = '日报没写 出库入店 no 出库入店 line'
 
 
 class ReportLineError(InventoryError):
@@ -337,7 +350,9 @@ def plan_report_lines(con, store_id, items):
 def save_report_lines(con, store_id, day, lines):
     """This report is now the day: its lines are what the day should move. A line no longer on it
     wants nothing, so the next sync puts back what it moved."""
-    con.execute('UPDATE report_stock_moves SET wanted=0 WHERE store_id=? AND business_date=?', (store_id, day))
+    # Sets the paste opened by itself are not report lines: they follow the day's sales (see _close_sets).
+    con.execute('UPDATE report_stock_moves SET wanted=0 WHERE store_id=? AND business_date=? AND section!=?',
+                (store_id, day, SET_OPENED))
     for line in lines:
         con.execute(
             """INSERT INTO report_stock_moves(store_id, business_date, line_key, section, kind, from_product_id,
@@ -353,6 +368,126 @@ def _available(con, product, location_id):
     if product['stock_form'] == 'random_box':
         return _loose(con, product['id'], location_id)
     return _balance(con, product['id'], location_id, 'saleable')['quantity']
+
+
+def _set_to_open(con, box):
+    """The sealed set a short blind box may open: its own verified set with a known number of boxes. A design or
+    any other product has none: a set holds one of every design, so it never stands in for one of them."""
+    if box['stock_form'] != 'random_box' or box['identity_status'] != 'verified':
+        return None
+    whole = _set_for_box(con, box['id'])
+    if whole is None or not whole['boxes_per_set'] or whole['boxes_per_set'] < 1 or whole['identity_status'] != 'verified':
+        return None
+    return whole
+
+
+def _opened_rows(con, store_id, day, box_id):
+    return con.execute(
+        """SELECT m.*, l.code AS place FROM report_stock_moves m JOIN inventory_locations l ON l.id=m.from_location_id
+           WHERE m.store_id=? AND m.business_date=? AND m.section=? AND m.to_product_id=?""",
+        (store_id, day, SET_OPENED, box_id)).fetchall()
+
+
+def _opened_text(name, sets, place, why=_NO_LINE):
+    return f"{name}：开了 {sets} 端 Opened {sets} set{'s' if sets != 1 else ''} from {_PLACE_NAMES.get(place, place)} ({why})"
+
+
+def _post_set_change(con, actor, store_id, store_code, day, row_key, sequence, whole, place_id, box, floor_id, sets,
+                     per, reason):
+    """Open `sets` sealed sets at `place_id` onto the floor as their boxes (or close them again when `sets` is
+    negative), as a 出库入店 "N*1" line does, in the caller's transaction."""
+    opening = sets > 0
+    set_balance = _balance(con, whole['id'], place_id, 'saleable')
+    box_balance = _balance(con, box['id'], floor_id, 'saleable')
+    lines = [{'product_id': whole['id'], 'unit': whole['stock_unit'], 'quantity': abs(sets),
+              f"{'from' if opening else 'to'}_location_id": place_id,
+              f"{'from' if opening else 'to'}_disposition": 'saleable',
+              'expected_versions': {'from' if opening else 'to': set_balance['version']}},
+             {'product_id': box['id'], 'unit': box['stock_unit'], 'quantity': abs(sets) * per,
+              f"{'to' if opening else 'from'}_location_id": floor_id,
+              f"{'to' if opening else 'from'}_disposition": 'saleable',
+              'expected_versions': {'to' if opening else 'from': box_balance['version']}}]
+    return _post_inventory_in_transaction(con, {
+        'kind': 'correction', 'business_date': day, 'source_type': 'daily_report',
+        'source_id': f'{store_code}:{day}:{row_key}:{sequence}', 'reason': reason, 'lines': lines,
+    }, actor=actor, request_key=f'daily-report:{store_code}:{day}:{row_key}:{sequence}',
+        access_store_ids=(store_id,), minimum_role='manager')['document_id']
+
+
+def _open_sets(con, actor, store_id, store_code, day, box, boxes):
+    """The floor lacks `boxes` loose boxes of `box`: open as few of its own sealed sets as cover them, a set on
+    the floor first, then upstairs or the warehouse. Returns what was opened, per place."""
+    whole = _set_to_open(con, box)
+    at = _locations(con, store_id)
+    floor_id = at.get('floor')
+    if whole is None or boxes <= 0 or floor_id is None:
+        return []
+    per, opened = whole['boxes_per_set'], []
+    for code in ('floor', 'upstairs', 'warehouse'):
+        place_id = at.get(code)
+        if place_id is None or boxes <= 0:
+            continue
+        sets = min(-(-boxes // per), _balance(con, whole['id'], place_id, 'saleable')['quantity'])
+        if sets <= 0:
+            continue
+        covers = min(boxes, sets * per)
+        key = f"{SET_OPENED}:{whole['id']}:{place_id}"
+        row = con.execute('SELECT * FROM report_stock_moves WHERE store_id=? AND business_date=? AND line_key=?',
+                          (store_id, day, key)).fetchone()
+        sequence, total = (row['posts'] if row else 0) + 1, (row['moved'] if row else 0) + sets
+        reason = f"{REPORT_REASON} {day} 自动开端 Set opened：{_opened_text(_name(box), sets, code)}"
+        document = _post_set_change(con, actor, store_id, store_code, day, key, sequence, whole, place_id, box,
+                                    floor_id, sets, per, reason)
+        con.execute(
+            """INSERT INTO report_stock_moves(store_id, business_date, line_key, section, kind, from_product_id,
+                   from_location_id, to_product_id, to_location_id, ratio, wanted, moved, posts, covers, raw)
+               VALUES (?, ?, ?, ?, 'correction', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(store_id, business_date, line_key) DO UPDATE SET wanted=excluded.wanted,
+                   moved=excluded.moved, posts=excluded.posts, covers=covers+excluded.covers, raw=excluded.raw,
+                   updated_at=datetime('now')""",
+            (store_id, day, key, SET_OPENED, whole['id'], place_id, box['id'], floor_id, per, total, total, sequence,
+             covers, _opened_text(_name(box), total, code)))
+        opened.append(_opened_entry(box, whole, code, sets, per, document))
+        boxes -= covers
+    return opened
+
+
+def _opened_entry(box, whole, place, sets, per, document):
+    return {'product_id': box['id'], 'sku': box['sku'], 'name': _name(box), 'set_product_id': whole['id'],
+            'set_sku': whole['sku'], 'location': place, 'sets': sets, 'boxes': sets * per, 'per': per,
+            'document_id': document,
+            'text': (_opened_text(_name(box), sets, place) if sets > 0 else
+                     f"{_name(box)}：{-sets} 端重新算整端 {-sets} set{'s' if sets != -1 else ''} counted whole again in "
+                     f"{_PLACE_NAMES.get(place, place)} (这天的销售少了 the day sold fewer)")}
+
+
+def _close_sets(con, actor, store_id, store_code, day, box, freed):
+    """`freed` boxes of `box` came back to the floor because the day's report now sells or moves fewer: the sets
+    the paste opened for them are no longer needed, so they count whole again (the last opened first) while the
+    floor still holds their boxes loose. Returns what was closed."""
+    rows = sorted(_opened_rows(con, store_id, day, box['id']), key=lambda row: row['place'] == 'floor')
+    if not rows or freed <= 0:
+        return []
+    closed = []
+    for row in rows:
+        give = min(freed, row['covers'])
+        freed -= give
+        covers, per = row['covers'] - give, row['ratio']
+        sets = min(row['moved'] - -(-covers // per), _loose(con, box['id'], row['to_location_id']) // per)
+        document = None
+        if sets > 0:
+            whole = con.execute('SELECT * FROM products WHERE id=?', (row['from_product_id'],)).fetchone()
+            reason = (f"{RETURN_REASON} {day} 自动开端退回 Set counted whole again："
+                      f"{_name(box)} {sets} 端 → {_PLACE_NAMES.get(row['place'], row['place'])}")
+            document = _post_set_change(con, actor, store_id, store_code, day, row['line_key'], row['posts'] + 1, whole,
+                                        row['from_location_id'], box, row['to_location_id'], -sets, per, reason)
+            closed.append(_opened_entry(box, whole, row['place'], -sets, per, document))
+        moved = row['moved'] - max(sets, 0)
+        con.execute("""UPDATE report_stock_moves SET wanted=?, moved=?, covers=?, posts=posts+?, raw=?,
+                       updated_at=datetime('now') WHERE store_id=? AND business_date=? AND line_key=?""",
+                    (moved, moved, covers, 1 if document else 0, _opened_text(_name(box), moved, row['place']),
+                     store_id, day, row['line_key']))
+    return closed
 
 
 def _places(con, store_id):
@@ -374,94 +509,119 @@ def _sync_lines(con, actor, store_id, store_code, day, counted):
     product = lambda product_id: con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone()
     stored = lambda key: con.execute("""SELECT * FROM report_stock_moves WHERE store_id=? AND business_date=?
                                         AND line_key=?""", (store_id, day, key)).fetchone()
-    results, documents = {}, []
-    rows = con.execute("""SELECT rowid, * FROM report_stock_moves WHERE store_id=? AND business_date=?
-                          ORDER BY rowid""", (store_id, day)).fetchall()
+    results, documents, opened = {}, [], []
+    floor_id = _locations(con, store_id).get('floor')
+    rows = con.execute("""SELECT rowid, * FROM report_stock_moves WHERE store_id=? AND business_date=? AND section!=?
+                          ORDER BY rowid""", (store_id, day, SET_OPENED)).fetchall()
     pending = [row['line_key'] for row in sorted(rows, key=lambda row: (_STAGES.get(row['section'], _LAST_STAGE),
                                                                          row['rowid']))]
-    while pending:
-        moved_any, again = False, []
-        for key in pending:
-            row = stored(key)
-            if not (row['wanted'] or row['moved'] or row['checked']):
-                if not row['posts']:
-                    con.execute('DELETE FROM report_stock_moves WHERE store_id=? AND business_date=? AND line_key=?',
-                                (store_id, day, key))
-                continue
-            source = product(row['from_product_id']) if row['from_product_id'] else None
-            target = product(row['to_product_id']) if row['to_product_id'] else None
-            out = row['wanted'] - row['moved'] - row['checked']
-            sides = [(side, item, location_id, 1 if side == 'from' else row['ratio'])
-                     for side, item, location_id in (('from', source, row['from_location_id']),
-                                                     ('to', target, row['to_location_id'])) if item is not None]
-            before = {side: _balance(con, item['id'], location_id, 'saleable')['quantity']
-                      for side, item, location_id, _ in sides}
-            # Forward a line takes from its source; putting it back takes from where it went.
-            taking = [entry for entry in sides if entry[0] == ('from' if out > 0 else 'to')]
-            moving, missing, problem = 0, 0, None
-            if out:
-                need = abs(out)
-                if any(item['identity_status'] != 'verified' for _, item, _, _ in sides):
-                    missing, problem = need, 'not_counted'
-                else:
-                    if taking:
-                        _, item, location_id, per = taking[0]
-                        moving = min(need, _available(con, item, location_id) // per)
+    while True:
+        while pending:
+            moved_any, again = False, []
+            for key in pending:
+                row = stored(key)
+                if not (row['wanted'] or row['moved'] or row['checked']):
+                    if not row['posts']:
+                        con.execute('DELETE FROM report_stock_moves WHERE store_id=? AND business_date=? AND line_key=?',
+                                    (store_id, day, key))
+                    continue
+                source = product(row['from_product_id']) if row['from_product_id'] else None
+                target = product(row['to_product_id']) if row['to_product_id'] else None
+                out = row['wanted'] - row['moved'] - row['checked']
+                sides = [(side, item, location_id, 1 if side == 'from' else row['ratio'])
+                         for side, item, location_id in (('from', source, row['from_location_id']),
+                                                         ('to', target, row['to_location_id'])) if item is not None]
+                before = {side: _balance(con, item['id'], location_id, 'saleable')['quantity']
+                          for side, item, location_id, _ in sides}
+                # Forward a line takes from its source; putting it back takes from where it went.
+                taking = [entry for entry in sides if entry[0] == ('from' if out > 0 else 'to')]
+                moving, missing, problem = 0, 0, None
+                if out:
+                    need = abs(out)
+                    if any(item['identity_status'] != 'verified' for _, item, _, _ in sides):
+                        missing, problem = need, 'not_counted'
                     else:
-                        moving = need
-                    missing = need - moving
-                    problem = 'not_enough' if missing else None
-                if moving:
-                    sign = 1 if out > 0 else -1
-                    lines = []
-                    for side, item, location_id, per in sides:
-                        adds = (side == 'to') == (sign > 0)
-                        balance = _balance(con, item['id'], location_id, 'saleable')
-                        lines.append({'product_id': item['id'], 'unit': item['stock_unit'], 'quantity': moving * per,
-                                      f"{'to' if adds else 'from'}_location_id": location_id,
-                                      f"{'to' if adds else 'from'}_disposition": 'saleable',
-                                      'expected_versions': {'to' if adds else 'from': balance['version']}})
-                    kind = row['kind'] if sign > 0 else 'correction'
-                    if kind == 'move':
-                        # A move is one line from its source to its destination.
-                        lines = [{**lines[0], **lines[1], 'expected_versions': {**lines[0]['expected_versions'],
-                                                                                **lines[1]['expected_versions']}}]
-                    sequence = row['posts'] + 1
-                    label = LINE_SECTIONS.get(row['section'], row['section'])
-                    reason = f"{REPORT_REASON if sign > 0 else RETURN_REASON} {day} {label}：{row['raw']}"
-                    # The report is this store's: its manager's paste also puts 出库 onto the other store
-                    # (owner, 2026-11-13), so only this store's access is asked for.
-                    documents.append(_post_inventory_in_transaction(con, {
-                        'kind': kind, 'business_date': day, 'source_type': 'daily_report',
-                        'source_id': f"{store_code}:{day}:{key}:{sequence}", 'reason': reason, 'lines': lines,
-                    }, actor=actor, request_key=f"daily-report:{store_code}:{day}:{key}:{sequence}",
-                        access_store_ids=(store_id,), minimum_role='manager')['document_id'])
-                    since = row['updated_at'] if row['posts'] else None
-                    con.execute("""UPDATE report_stock_moves SET moved=moved+?, posts=?, updated_at=datetime('now')
-                                   WHERE store_id=? AND business_date=? AND line_key=?""",
-                                (sign * moving, sequence, store_id, day, key))
-                    for _, item, location_id, per in sides:
-                        # A count of this store the same day may already show what the line moved.
-                        when = None if places[location_id][1] else _counted_since(con, location_id, day, item['id'], since)
-                        if when:
-                            _, quantity, _ = counted.get(item['id'], (item, 0, when))
-                            counted[item['id']] = (item, quantity + moving * per, when)
-                    moved_any = True
-                if missing and problem == 'not_enough':
-                    again.append(key)
-            result = results.setdefault(key, {
-                'line_key': key, 'section': row['section'], 'label': LINE_SECTIONS.get(row['section']),
-                'raw': row['raw'], 'kind': row['kind'], 'ratio': row['ratio'], 'wanted': row['wanted'],
-                'moved_before': row['moved'], 'checked': row['checked'], 'moving': 0, 'document_id': None,
-                'sides': sides, 'before': before})
-            result['moving'] += (1 if out > 0 else -1) * moving
-            # Each side as this line left it, before the day's later lines touch the same stock.
-            result.update(short=missing, problem=problem, short_at=taking[0] if taking else sides[0],
-                          document_id=documents[-1] if moving else result['document_id'],
-                          after={side: _balance(con, item['id'], location_id, 'saleable')['quantity']
-                                 for side, item, location_id, _ in sides})
-        # Lines still short try again only while something else moved: it may have brought what they lack.
-        pending = again if moved_any else []
+                        if taking:
+                            _, item, location_id, per = taking[0]
+                            moving = min(need, _available(con, item, location_id) // per)
+                        else:
+                            moving = need
+                        missing = need - moving
+                        problem = 'not_enough' if missing else None
+                    if moving:
+                        sign = 1 if out > 0 else -1
+                        lines = []
+                        for side, item, location_id, per in sides:
+                            adds = (side == 'to') == (sign > 0)
+                            balance = _balance(con, item['id'], location_id, 'saleable')
+                            lines.append({'product_id': item['id'], 'unit': item['stock_unit'], 'quantity': moving * per,
+                                          f"{'to' if adds else 'from'}_location_id": location_id,
+                                          f"{'to' if adds else 'from'}_disposition": 'saleable',
+                                          'expected_versions': {'to' if adds else 'from': balance['version']}})
+                        kind = row['kind'] if sign > 0 else 'correction'
+                        if kind == 'move':
+                            # A move is one line from its source to its destination.
+                            lines = [{**lines[0], **lines[1], 'expected_versions': {**lines[0]['expected_versions'],
+                                                                                    **lines[1]['expected_versions']}}]
+                        sequence = row['posts'] + 1
+                        label = LINE_SECTIONS.get(row['section'], row['section'])
+                        reason = f"{REPORT_REASON if sign > 0 else RETURN_REASON} {day} {label}：{row['raw']}"
+                        # The report is this store's: its manager's paste also puts 出库 onto the other store
+                        # (owner, 2026-11-13), so only this store's access is asked for.
+                        documents.append(_post_inventory_in_transaction(con, {
+                            'kind': kind, 'business_date': day, 'source_type': 'daily_report',
+                            'source_id': f"{store_code}:{day}:{key}:{sequence}", 'reason': reason, 'lines': lines,
+                        }, actor=actor, request_key=f"daily-report:{store_code}:{day}:{key}:{sequence}",
+                            access_store_ids=(store_id,), minimum_role='manager')['document_id'])
+                        since = row['updated_at'] if row['posts'] else None
+                        con.execute("""UPDATE report_stock_moves SET moved=moved+?, posts=?, updated_at=datetime('now')
+                                       WHERE store_id=? AND business_date=? AND line_key=?""",
+                                    (sign * moving, sequence, store_id, day, key))
+                        for _, item, location_id, per in sides:
+                            # A count of this store the same day may already show what the line moved.
+                            when = None if places[location_id][1] else _counted_since(con, location_id, day, item['id'], since)
+                            if when:
+                                _, quantity, _ = counted.get(item['id'], (item, 0, when))
+                                counted[item['id']] = (item, quantity + moving * per, when)
+                        if sign < 0 and source is not None and row['from_location_id'] == floor_id:
+                            # Boxes this line no longer takes are back on the floor: a set opened for them closes.
+                            closed = _close_sets(con, actor, store_id, store_code, day, source, moving)
+                            opened += closed
+                            documents += [entry['document_id'] for entry in closed]
+                        moved_any = True
+                    if missing and problem == 'not_enough':
+                        again.append(key)
+                result = results.setdefault(key, {
+                    'line_key': key, 'section': row['section'], 'label': LINE_SECTIONS.get(row['section']),
+                    'raw': row['raw'], 'kind': row['kind'], 'ratio': row['ratio'], 'wanted': row['wanted'],
+                    'moved_before': row['moved'], 'checked': row['checked'], 'moving': 0, 'document_id': None,
+                    'sides': sides, 'before': before})
+                result['moving'] += (1 if out > 0 else -1) * moving
+                # Each side as this line left it, before the day's later lines touch the same stock.
+                result.update(short=missing, problem=problem, short_at=taking[0] if taking else sides[0],
+                              document_id=documents[-1] if moving else result['document_id'],
+                              after={side: _balance(con, item['id'], location_id, 'saleable')['quantity']
+                                     for side, item, location_id, _ in sides})
+            # Lines still short try again only while something else moved: it may have brought what they lack.
+            pending = again if moved_any else []
+        # The floor ran out for a line taking boxes off it: open the box's own sealed sets (owner, 2026-11-15),
+        # then let those lines take the rest. Only forward lines, never a line being put back.
+        lacking = {}
+        for key, result in results.items():
+            side, item, location_id, per = result['short_at']
+            if result['short'] and result['problem'] == 'not_enough' and side == 'from' and location_id == floor_id:
+                entry = lacking.setdefault(item['id'], [item, 0, []])
+                entry[1] += result['short'] * per
+                entry[2].append(key)
+        pending = []
+        for item, need, keys in lacking.values():
+            done = _open_sets(con, actor, store_id, store_code, day, item, need - _loose(con, item['id'], floor_id))
+            if done:
+                opened += done
+                documents += [entry['document_id'] for entry in done]
+                pending += keys
+        if not pending:
+            break
     short = {}
     for result in results.values():
         sides, before, after = result.pop('sides'), result.pop('before'), result.pop('after')
@@ -474,7 +634,7 @@ def _sync_lines(con, actor, store_id, store_code, day, counted):
             result[side] = {'product_id': item['id'], 'sku': item['sku'], 'name': _name(item), 'unit': item['stock_unit'],
                             'location': places[location_id][0], 'store': places[location_id][1], 'per': per,
                             'before': before[side], 'after': after[side]}
-    return list(results.values()), short, documents
+    return list(results.values()), short, documents, opened
 
 
 def _display_relief(con, store_id, day, wanted):
@@ -517,7 +677,7 @@ def sync_report_stock(con, actor, store_id, store_code, day):
     _require_manager(con, actor, store_id)
     counted = {}
     # The stock lines move first, so boxes that came down or arrived that day can sell.
-    lines, moves_short, documents = _sync_lines(con, actor, store_id, store_code, day, counted)
+    lines, moves_short, documents, opened = _sync_lines(con, actor, store_id, store_code, day, counted)
     wanted, products, unknown_size = {}, {}, set()
     for row in con.execute(
             """SELECT p.*, SUM(s.qty_sold) AS sold
@@ -536,7 +696,7 @@ def sync_report_stock(con, actor, store_id, store_code, day):
         'SELECT * FROM report_stock_takes WHERE store_id=? AND business_date=?', (store_id, day))}
     for product_id in set(kept) - set(products):
         products[product_id] = con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone()
-    take_lines, return_lines, short, changes = [], [], {}, {}
+    take_lines, return_lines, short, changes, freed = [], [], {}, {}, {}
     for product_id in sorted(set(wanted) | set(kept)):
         product = products[product_id]
         taken = kept[product_id]['taken'] if product_id in kept else 0
@@ -552,6 +712,8 @@ def sync_report_stock(con, actor, store_id, store_code, day):
                                      'to_location_id': floor['id'], 'to_disposition': 'saleable',
                                      'expected_versions': {'to': balance['version']}})
             changes[product_id] = (-give, -unchecked)
+            if give:
+                freed[product_id] = give
             continue
         if delta == 0:
             continue
@@ -561,9 +723,14 @@ def sync_report_stock(con, actor, store_id, store_code, day):
         if product['identity_status'] != 'verified':
             short[product_id] = (product, delta, 'not_counted')
             continue
+        available = _available(con, product, floor['id'])
+        if delta > available:
+            # The loose boxes run out after the day's own lines moved: open a sealed set (owner, 2026-11-15).
+            done = _open_sets(con, actor, store_id, store_code, day, product, delta - available)
+            opened += done
+            documents += [entry['document_id'] for entry in done]
+            available = _available(con, product, floor['id'])
         balance = _balance(con, product_id, floor['id'], 'saleable')
-        available = (_loose(con, product_id, floor['id']) if product['stock_form'] == 'random_box'
-                     else balance['quantity'])
         take = min(delta, available)
         if take:
             take_lines.append({'product_id': product_id, 'unit': product['stock_unit'], 'quantity': take,
@@ -587,6 +754,11 @@ def sync_report_stock(con, actor, store_id, store_code, day):
             'source_id': f'{store_code}:{day}:{key[:12]}', 'reason': reason, 'lines': ledger,
         }, actor=actor, request_key=f'inventory:daily-report:{key}', minimum_role='manager')
         documents.append(document['document_id'])
+    for product_id, boxes in freed.items():
+        # Fewer sold: a set opened for those sales counts whole again while the floor has its boxes.
+        closed = _close_sets(con, actor, store_id, store_code, day, products[product_id], boxes)
+        opened += closed
+        documents += [entry['document_id'] for entry in closed]
     for product_id, (taken, checked) in changes.items():
         if product_id in kept:
             # updated_at marks the last time this day took stock, for the same-day count check.
@@ -601,6 +773,8 @@ def sync_report_stock(con, actor, store_id, store_code, day):
     return {
         'business_date': day, 'documents': documents,
         'lines': lines,
+        # Sealed sets this save opened (or counted whole again) by itself, per product and place.
+        'sets_opened': opened,
         'from_display': [{'product_id': product_id, 'sku': products[product_id]['sku'],
                           'name': _name(products[product_id]), 'quantity': units}
                          for product_id, units in relief.items()],

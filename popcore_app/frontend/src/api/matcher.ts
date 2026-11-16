@@ -51,6 +51,9 @@ export interface BackendBaseItem {
   to_floor?: boolean
   // 名称记忆: what a manager picked for this name before (owner, 2026-11-03).
   pick?: ReportPickInfo
+  // The paste line this row was read from, and the repeat it belongs to when that line repeats an earlier block.
+  line?: number
+  repeat_id?: string
 }
 
 // 'remembered' confirmed the line (same store and section); 'confirm' asks once here; 'stale' the product
@@ -124,6 +127,9 @@ export interface FormatCheck {
   text: string[]
   section: string | null
   problem: string
+  // A stock block written again word for word (owner, 2026-11-15): the manager drops the repeat or counts both.
+  repeat_id?: string
+  repeat_lines?: number[]
 }
 
 export interface ReportMetadata extends ReportAnnotations {
