@@ -34,7 +34,7 @@ export interface WorkflowResult {
 
 export interface ReceiptLine {line_no:number;product_id:number;native_unit:NativeUnit;expected_quantity:number|null;saleable_quantity:number;damaged_quantity:number;hold_quantity:number;discrepancy_note:string|null}
 export interface ReceiptDetail extends WorkflowResult {store_id:number;destination_location_id:number;business_date:string;shipment_reference:string|null;supplier:string|null;lines:ReceiptLine[]}
-export interface TransferLine {line_no:number;product_id:number;native_unit:NativeUnit;requested_quantity:number;dispatched_quantity:number;received_quantity:number;returned_quantity:number;loss_quantity:number;short_quantity:number;outstanding_transit:number}
+export interface TransferLine {line_no:number;product_id:number;native_unit:NativeUnit;requested_quantity:number;dispatched_quantity:number;received_quantity:number;returned_quantity:number;loss_quantity:number;short_quantity:number;outstanding_transit:number;boxes_per_set?:number|null;landed_boxes?:number}
 export interface TransferDetail extends WorkflowResult {kind:'transfer'|'restock';source_location_id:number;destination_location_id:number;business_date:string;restock_session_id:number|null;lines:TransferLine[]}
 export interface IncomingTransfer {
   id: number

@@ -152,6 +152,9 @@ button.pc-rq-group { cursor: pointer; }
 .pc-pick-btn:focus-visible { z-index: 2; outline: 2px solid var(--surface-ink); outline-offset: 1px; }
 .pc-recv-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 14px; }
 .pc-recv-transit { color: var(--status-restock-ink); font-weight: 500; }
+/* What a line's quantity means: a whole set lands as boxes; a quantity above what was asked or picked. */
+.pc-set-lands, .pc-pick-line-text > small.pc-set-lands { display: block; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.pc-above, .pc-pick-line-text > small.pc-above { display: block; color: var(--status-restock-ink); font-size: 12px; font-weight: 500; line-height: 1.45; }
 
 .pc-restock-time { margin-left: 10px; color: var(--text-tertiary); font-size: 13px; font-weight: 400; }
 

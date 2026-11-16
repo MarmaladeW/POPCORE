@@ -78,6 +78,10 @@ export interface RestockSession {
       loss_quantity: number
       short_quantity: number
       outstanding_transit: number
+      // A whole set received on the floor lands as its boxes: boxes in one set, and how many boxes
+      // this line already put on the floor (0 for sets received before that rule).
+      boxes_per_set?: number | null
+      landed_boxes?: number
     }>
   }
 }

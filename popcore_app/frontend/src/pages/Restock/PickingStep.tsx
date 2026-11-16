@@ -7,7 +7,7 @@ import { CheckOutlined, CloseOutlined, ShopOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import type { RestockSession, RestockItem } from './index'
-import { withUnit } from './units'
+import { MAX_QUANTITY, setAsBoxes, withUnit } from './units'
 import HiddenStock from './HiddenStock'
 import Icon from '../../components/pc/Icon'
 import { useIsPhone } from '../../components/pc/useIsPhone'
@@ -51,6 +51,12 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
 
   // What the box shows is what 找到 saves: the typed quantity, else the saved one, else the request.
   const shownFoundQty = (item: RestockItem) => localFoundQty[item.id] ?? (item.found_qty || item.requested_qty)
+  // The picker records what really came down, which may be more than the sheet asked for (owner, 2026-11-15).
+  const aboveRequest = (item: RestockItem, quantity: number) =>
+    quantity > item.requested_qty ? `比申请多 ${quantity - item.requested_qty}` : ''
+  // A whole set is put on the floor as its boxes: "1 端 = 12 盒".
+  const lands = (item: RestockItem, quantity: number | null | undefined) =>
+    live && item.role === 'set' ? setAsBoxes(quantity, item.boxes_per_set) : ''
 
   // ── Pick update ───────────────────────────────────────────────────────────
 
@@ -118,6 +124,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
         <div>
           <div style={{ fontWeight: 500 }}>{r.jizhanming || r.name_cn_en}</div>
           <Text type="secondary" style={{ fontSize: 12 }}>{r.sku}</Text>
+          {lands(r, 1) && <div className="pc-set-lands">到楼下按盒上架 · {lands(r, 1)}</div>}
         </div>
       ),
     },
@@ -140,20 +147,25 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
       render: (_, r) => {
         if (locked) {
           return r.pick_status === 'found'
-            ? <Tag color="success">{withUnit(r.found_qty, r.stock_unit)}</Tag>
+            ? <><Tag color="success">{withUnit(r.found_qty, r.stock_unit)}</Tag>
+                {aboveRequest(r, r.found_qty ?? 0) && <div className="pc-above">{aboveRequest(r, r.found_qty ?? 0)}</div>}</>
             : <Tag color="default">—</Tag>
         }
         return (
-          <InputNumber
-            min={1}
-            max={r.requested_qty}   // ← max = requested_qty (not 999)
-            precision={0}
-            value={shownFoundQty(r)}
-            onChange={v => setLocalFoundQty(prev => ({ ...prev, [r.id]: v ?? 1 }))}
-            style={{ width: 85 }}
-            size="small"
-            disabled={r.pick_status === 'not_found'}
-          />
+          <>
+            <InputNumber
+              min={1}
+              max={MAX_QUANTITY}
+              precision={0}
+              value={shownFoundQty(r)}
+              onChange={v => setLocalFoundQty(prev => ({ ...prev, [r.id]: v ?? 1 }))}
+              style={{ width: 85 }}
+              size="small"
+              disabled={r.pick_status === 'not_found'}
+            />
+            {r.pick_status !== 'not_found' && aboveRequest(r, shownFoundQty(r))
+              && <div className="pc-above">{aboveRequest(r, shownFoundQty(r))}</div>}
+          </>
         )
       },
     },
@@ -201,8 +213,12 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
     {
       title: '找到数量',
       dataIndex: 'found_qty',
-      width: 100,
-      render: (v, r) => <Tag color="success">{withUnit(v, r.stock_unit)}</Tag>,
+      width: 150,
+      render: (v, r) => <>
+        <Tag color="success">{withUnit(v, r.stock_unit)}</Tag>
+        {lands(r, v) && <div className="pc-set-lands">楼下上架 {lands(r, v)}</div>}
+        {aboveRequest(r, v ?? 0) && <div className="pc-above">{aboveRequest(r, v ?? 0)}</div>}
+      </>,
     },
   ]
 
@@ -219,7 +235,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
     >
       <p style={{ marginBottom: 12 }}>
         {live
-          ? '以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存：'
+          ? '以下商品将从仓库库存转为运输中，收货确认后才会进入门店库存。整端到楼下按盒上架：'
           : '以下商品将从仓库库存转入门店库存：'}
       </p>
       {previewItems.length === 0
@@ -261,6 +277,10 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
               <span className="pc-rq-line-name">{label}</span>
               <small>申请 <b>{withUnit(item.requested_qty, item.stock_unit)}</b> · {item.stock_hidden
                 ? (item.out_of_stock ? '楼上缺货' : '楼上有货') : `快照 ${withUnit(item.warehouse_stock_snapshot, item.stock_unit)}`}</small>
+              {lands(item, locked ? item.found_qty : shownFoundQty(item)) && !out
+                && <small className="pc-set-lands">到楼下按盒上架 · {lands(item, locked ? item.found_qty : shownFoundQty(item))}</small>}
+              {!out && aboveRequest(item, locked ? item.found_qty ?? 0 : shownFoundQty(item))
+                && <small className="pc-above">{aboveRequest(item, locked ? item.found_qty ?? 0 : shownFoundQty(item))}</small>}
             </span>
             {locked
               ? <span className={`pc-rq-status${found ? ' is-ok' : out ? ' is-out' : ''}`}>
@@ -268,7 +288,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
                   {found ? `已找到 ${withUnit(item.found_qty, item.stock_unit)}` : out ? '缺货' : '待确认'}
                 </span>
               : <span className="pc-pick-controls">
-                  <QtyStepper value={shownFoundQty(item)} min={1} max={item.requested_qty} disabled={out}
+                  <QtyStepper value={shownFoundQty(item)} min={1} max={MAX_QUANTITY} disabled={out}
                     label={`找到数量 ${group.title} ${label}`} unit={undefined}
                     onChange={value => setLocalFoundQty(prev => ({ ...prev, [item.id]: value }))} />
                   <span className="pc-pick-choice">

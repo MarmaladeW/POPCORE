@@ -57,8 +57,12 @@ async def checks(browser, fixture):
         await expect(modal.get_by_role('tab',name='收货 Receive',exact=True)).to_have_attribute('aria-selected','true')
     await amount.fill('0')
     await expect(receive).to_be_disabled()
+    # The floor counts what it sees: one more than the pick recorded can be received (it comes straight
+    # off upstairs), but only what is in transit can be sent back.
     await amount.fill('5')
-    await expect(receive).to_be_disabled()
+    await expect(receive).to_be_enabled()
+    await expect(return_to_source).to_be_disabled()
+    await expect(modal.get_by_text('比拣货多 1',exact=False)).to_be_visible()
     await amount.fill('2')
     await receive.click()
     await expect(modal.get_by_text('Unable to confirm this request. Retry to check its result.',exact=True)).to_be_visible()
