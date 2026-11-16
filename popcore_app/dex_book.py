@@ -16,7 +16,8 @@ Rules (docs/dex-book.md):
 - product_id: a book product links an ordinary POPCORE item or a blind box (not a confirmed design or a
   sealed set); a book design links a confirmed design, and under a product that is not a blind box (blind_box 0)
   also a single item (a colour or version sold on its own). One POPCORE item, one live entry.
-- extras: the refined copy, only the keys the contract names for the kind (docs/dex-book-contract.md §4).
+- extras: the refined copy, only the keys the contract names for the kind (docs/dex-book-contract.md §4). A product's
+  format is one of FORMATS, the website's list (contract 1.9 §4), or none yet; the sync holds a product with none.
 - Every accepted change raises version by one. Renaming or moving an entry also raises the version of every live
   entry under it, since their full names changed (step 3 sends them again).
 - Step 3: dex_sync.py writes only the sync columns (sent_version, send_error, website_id and website_item from the
@@ -66,6 +67,9 @@ EXTRAS = {
                 'variants_normal', 'variants_secret', 'secret_odds', 'parent_category'),
     'design': ('weight', 'weight_range', 'shake_level', 'shake_note', 'flavour_text', 'market_prices'),
 }
+# Contract 1.9 §4: the website's list, in its order. Anything else is refused there (format_unknown), so here too.
+# Standalone is the website's old value and is never set or sent.
+FORMATS = ('Figures', 'Plush Pendants', 'POP BEAN', 'Fragrance Blind Box', 'Blister Card', 'MEGA', 'Merchandise')
 PARTNER_KINDS = ('series', 'product')
 CHARACTER_KINDS = ('series', 'product', 'design')
 IP_KINDS = ('product', 'design')
@@ -520,6 +524,8 @@ def _check(con, row, entry_id=None):
     unknown = sorted(set(extras) - set(EXTRAS[kind]))
     if unknown:
         raise DexError(f'A {kind} has no {", ".join(unknown)}.', 'extras_unknown')
+    if kind == 'product' and extras.get('format') is not None and extras['format'] not in FORMATS:
+        raise DexError(f'Format is one of {", ".join(FORMATS)}.', 'format_unknown')
     if len(json.dumps(extras, ensure_ascii=False)) > MAX_EXTRAS:
         raise DexError('Those details are too long.', 'invalid_input')
 

@@ -22,8 +22,24 @@ export const RARITIES: { value: DexRarity; label: string }[] = [
   { value: 'special', label: '特别 Special' },
 ]
 
-export type ExtraInput = 'text' | 'long' | 'number' | 'list' | 'yesno'
-export interface ExtraField { key: string; label: string; input: ExtraInput }
+export type ExtraInput = 'text' | 'long' | 'number' | 'list' | 'yesno' | 'choice'
+export interface ExtraField {
+  key: string; label: string; input: ExtraInput
+  options?: { value: string; label: string }[]  // a choice's values
+  required?: boolean  // the editor asks for it before saving
+}
+
+// Contract 1.9 §4: a product's format is one of the website's list; nothing else is accepted, and the sync holds a
+// product with none. The values are the website's words.
+export const FORMATS: { value: string; label: string }[] = [
+  { value: 'Figures', label: '手办 Figures' },
+  { value: 'Plush Pendants', label: '毛绒挂件 Plush Pendants' },
+  { value: 'POP BEAN', label: 'POP BEAN' },
+  { value: 'Fragrance Blind Box', label: '香氛盲盒 Fragrance Blind Box' },
+  { value: 'Blister Card', label: '吊卡 Blister Card' },
+  { value: 'MEGA', label: '大娃 MEGA' },
+  { value: 'Merchandise', label: '周边 Merchandise' },
+]
 
 const f = (key: string, label: string, input: ExtraInput = 'text'): ExtraField => ({ key, label, input })
 export const EXTRA_FIELDS: Record<DexKind, ExtraField[]> = {
@@ -34,7 +50,7 @@ export const EXTRA_FIELDS: Record<DexKind, ExtraField[]> = {
   series: [f('release_date', '发售日期 Release date'), f('flavour_text', '文案 Flavour text', 'long'),
     f('description', '介绍 Description', 'long'), f('aliases', '别名 Other names', 'list'), f('tags', '标签 Tags', 'list'),
     f('designer', '设计师 Designer')],
-  product: [f('format', '形式 Format'), f('release_label', '发售 Release label'), f('description', '介绍 Description', 'long'),
+  product: [{ ...f('format', '形式 Format', 'choice'), options: FORMATS, required: true }, f('release_label', '发售 Release label'), f('description', '介绍 Description', 'long'),
     f('retail_price', '零售价 Retail price', 'number'), f('retail_price_box', '整端零售价 Retail price, box', 'number'),
     f('retail_currency', '币种 Currency'), f('variants_normal', '普通款数 Normal designs', 'number'),
     f('variants_secret', '隐藏款数 Secret designs', 'number'), f('secret_odds', '隐藏概率 Secret odds'),
@@ -47,7 +63,7 @@ type FormValue = string | number | boolean | null | undefined
 
 // A stored value as its input shows it.
 export function toInput(field: ExtraField, value: unknown): FormValue {
-  if (value === null || value === undefined) return field.input === 'yesno' ? undefined : ''
+  if (value === null || value === undefined) return field.input === 'yesno' || field.input === 'choice' ? undefined : ''
   if (field.input === 'list') return Array.isArray(value) ? value.join(', ') : String(value)
   if (field.input === 'number') return typeof value === 'number' ? value : Number(value)
   if (field.input === 'yesno') return Boolean(value)

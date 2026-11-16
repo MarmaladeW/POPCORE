@@ -94,7 +94,7 @@ async def run(browser, width):
         await page.goto(BASE + '/dex/sync')
         refused = page.get_by_role('region', name='Refused by the website')
         await expect(refused.get_by_text('bad_name: Not taken.', exact=False)).to_be_visible()
-        await expect(page.get_by_role('region', name='Entries').get_by_text('等上级 Behind a refused entry')).to_be_visible()
+        await expect(page.get_by_role('region', name='Entries').get_by_text('等上级 Behind a refused or held entry')).to_be_visible()
         await expect(page.get_by_role('region', name='Dex sync').get_by_role('button', name='关闭 Turn off')).to_have_count(0)
         await fits(page, f'on-{width}.png')
         del fixture.site.refuse[series]
@@ -102,6 +102,28 @@ async def run(browser, width):
         await expect(page.get_by_text('Echo Series goes again with the next pass')).to_be_visible()
         fixture.run_pass()
         assert fixture.status()['counts']['refused'] == 0
+
+        # Contract 1.9 section 4: a product with no format is held, listed, and goes once a manager picks one.
+        bare = fixture.add('product', 'Mystery box', series, blind_box=True)
+        fixture.add('design', 'Hidden', bare, rarity='secret')
+        fixture.run_pass()
+        await page.goto(BASE + '/dex/sync')
+        held = page.get_by_role('region', name='Held: no format')
+        await expect(held.get_by_role('link', name='Mystery box')).to_be_visible()
+        await expect(held.get_by_text('POP MART › HIRONO › Echo Series')).to_be_visible()
+        await fits(page, f'held-{width}.png')
+        await held.get_by_role('link', name='Mystery box').click()
+        await expect(page.get_by_label('Dex sync state')).to_contain_text('缺形式 Held: no format')
+        await page.get_by_role('button', name='编辑 Edit').click()
+        drawer = page.get_by_role('dialog')
+        await drawer.get_by_role('combobox', name='形式 Format').click()
+        await page.locator('.ant-select-item-option', has_text='香氛盲盒 Fragrance Blind Box').click()
+        await drawer.get_by_role('button', name='保存 Save').click()
+        await expect(page.get_by_role('dialog')).to_have_count(0)
+        await expect(page.get_by_label('Dex sync state')).to_contain_text('待发送 Waiting')
+        fixture.run_pass()
+        assert fixture.site.by_ref(bare)['entry']['extras']['format'] == 'Fragrance Blind Box'
+        assert (fixture.status()['counts']['held'], fixture.status()['counts']['behind']) == (0, 0), fixture.status()['counts']
 
         # The entry page: its state, and Upload picture for managers only.
         await page.goto(BASE + f'/dex/{product}')
@@ -152,4 +174,5 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: Dex sync: off with the first send and its deletes by name; turn-on refused plainly while the website '
           "half is missing and needing the typed count; on with a refused entry, its reason and Retry; the entry page's "
-          'state with Upload picture for managers only; at 390 and 1440 px')
+          'state with Upload picture for managers only; a product with no format held and listed, then sent once its format '
+          'is picked in the editor; at 390 and 1440 px')

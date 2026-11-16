@@ -5,6 +5,7 @@ same pages with no write controls. Contract 1.3 (owner, 2026-11-13): a series wi
 the manager tags two of its designs with different IPs from the rows, and each shows on its own IP's page.
 Widths 390 and 1440, no sideways overflow."""
 import asyncio
+import json
 import re
 import subprocess
 import sys
@@ -84,6 +85,13 @@ async def run(browser, width):
         # Only boxes and ordinary items are offered: never a design or the sealed set.
         for sku in ('PM0100-01', 'PM0100-SET'):
             await expect(page.locator('.ant-select-item-option', has_text=sku)).to_have_count(0)
+        # Contract 1.9 section 4: a product is not saved without its format, picked from the website's list.
+        await drawer.get_by_role('button', name='保存 Save').click()
+        await expect(drawer.get_by_text('形式 Format: pick one')).to_be_visible()
+        await drawer.get_by_role('combobox', name='形式 Format').click()
+        await expect(page.locator('.ant-select-dropdown:visible .ant-select-item-option')).to_have_count(7)
+        await page.locator('.ant-select-item-option', has_text='手办 Figures').click()
+        await drawer.get_by_label('介绍 Description').fill('Six seated friends')  # a collector fact reaches the book
         await drawer.get_by_role('button', name='保存 Save').click()
         await expect(page.get_by_role('heading', name='Echo box', exact=True)).to_be_visible()
         card = page.get_by_role('region', name='Entry')
@@ -91,6 +99,7 @@ async def run(browser, width):
         await expect(card.get_by_text('是 Yes')).to_be_visible()
         product = entries()['Echo box']
         assert (product['product_id'], product['blind_box']) == (fixture.items['PM0100'], 1), product
+        assert json.loads(product['extras']) == {'format': 'Figures', 'description': 'Six seated friends'}, product
         # Naming standard rule 7: the title is the full name, put together; its own name and the IP tag beneath.
         await expect(card.get_by_role('heading', name='THE MONSTERS Have a Seat Echo box', exact=True)).to_be_visible()
         await expect(card.locator('.pc-dex-own')).to_contain_text('Echo box')
@@ -319,7 +328,8 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: Dex book from empty: company, IP, series, product linked to its POPCORE box, designs added, '
+    print('PASS: Dex book from empty: company, IP, series, product linked to its POPCORE box (not saved until its format '
+          'is picked from the seven; a typed collector fact saved with it), designs added, '
           'renamed, reordered and deleted; a linked product kept; designs in a mixed series name their IPs from the rows '
           'and show on each IP\'s page; full names and the IP tag on a product page and in search; a design\'s price trend '
           'with three set prices and a website price; a single item\'s price trend from its three recorded changes; '

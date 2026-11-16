@@ -169,7 +169,8 @@ class DexSyncTests(IsolatedApiCase):
         company = self.add('company', 'POP MART')
         ip = self.add('ip', 'HIRONO', company)
         series = self.add('series', 'Echo Series', ip)
-        product = self.add('product', 'Figures', series, blind_box=True, product_id=self.items['PM0100'] if link else None)
+        product = self.add('product', 'Figures', series, blind_box=True, product_id=self.items['PM0100'] if link else None,
+                           extras={'format': 'Figures'})
         made = [self.add('design', f'Design {n:02d}', product, rarity='normal') for n in range(designs)]
         return company, ip, series, product, made
 
@@ -305,6 +306,56 @@ class DexSyncTests(IsolatedApiCase):
         self.run_pass()
         counts = self.status()['counts']
         self.assertEqual((counts['refused'], counts['behind'], counts['waiting']), (0, 0, 0))
+
+    def test_a_product_with_no_format_is_held_with_what_sits_under_it_until_one_is_picked(self):
+        """Contract 1.9 section 4: format goes on every product, and nothing is sent with a guess."""
+        company, ip, series, product, designs = self.book()
+        bare = self.add('product', 'Mystery box', series, blind_box=True)
+        under = self.add('design', 'Hidden', bare, rarity='secret')
+        old = self.add('product', 'Old line', series, extras={'format': 'Figures'})
+        with closing(self.connect()) as con:  # a row the website has, then deleted: its delete must wait too
+            dex_book.set_website_number(con, old, 77, False, ACTOR)
+        self.site.preload('product', 77, 'Old line')
+        self.remove(old)
+        state = self.status()
+        self.assertEqual((state['counts']['held'], state['counts']['behind']), (1, 1))
+        self.assertEqual(state['held'], [{'id': bare, 'kind': 'product', 'name': 'Mystery box',
+                                          'place': ['POP MART', 'HIRONO', 'Echo Series']}])
+        self.assertEqual(state['refused'], [])
+        preview = self.client.get('/api/dex/sync/preview', headers=self.headers('manager')).get_json()
+        self.assertEqual((preview['create'], preview['held'], preview['delete']), (8, 1, 1))
+        entry = self.client.get(f'/api/dex/sync/entries/{bare}', headers=self.headers('staff')).get_json()
+        self.assertEqual((entry['state'], entry['code']), ('held', 'format_missing'))
+        self.on()
+        self.run_pass()
+        self.assertEqual({entry['ref'] for entry in self.sent()}, {company, ip, series, product, *designs})
+        self.assertTrue(self.status()['deletes_held'])
+        self.assertIsNone(self.row(bare)['send_error'])  # held is worked out, never stored
+        self.assertFalse(self.status()['first_send_done'])  # it is still part of the first, quiet send
+        response = self.client.post('/api/dex/sync/retry', json={'id': bare}, headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 409)  # not refused by the website: a retry cannot send it
+        self.change(bare, extras={'format': 'Fragrance Blind Box'})
+        self.run_pass()
+        shapes = {entry['ref']: entry for entry in self.sent()}
+        self.assertEqual(shapes[bare]['extras']['format'], 'Fragrance Blind Box')
+        self.assertIn(under, shapes)
+        self.assertEqual([quiet for quiet, refs in self.site.batches if bare in refs], [True])
+        self.assertIsNone(self.row(old))  # the delete went once every live entry was accepted
+        counts = self.status()['counts']
+        self.assertEqual((counts['held'], counts['behind'], counts['waiting']), (0, 0, 0))
+        self.assertTrue(self.status()['first_send_done'])
+
+    def test_aliases_and_tags_are_always_sent_as_lists(self):
+        company, ip, series, product, designs = self.book(designs=0)
+        with closing(self.connect()) as con:  # the load kept one series' tags as the website's comma text
+            con.execute("""UPDATE dex_entries SET extras='{"tags": "cute, , sweet", "aliases": " "}' WHERE id=?""", (series,))
+            con.commit()
+        self.change(ip, extras={'aliases': ['拉布布']})
+        self.on()
+        self.run_pass()
+        shapes = {entry['ref']: entry for entry in self.sent()}
+        self.assertEqual(shapes[series]['extras'], {'tags': ['cute', 'sweet'], 'aliases': None})
+        self.assertEqual(shapes[ip]['extras'], {'aliases': ['拉布布']})
 
     def test_a_child_refused_only_because_its_parent_was_refused_in_the_same_batch_is_not_marked(self):
         company, ip, series, product, designs = self.book()
@@ -513,7 +564,7 @@ class DexSyncTests(IsolatedApiCase):
     def test_a_stocked_product_sends_its_own_price_changes(self):
         """Owner, 2026-11-14, asked whether every item's price changes should be kept: "Yes, every item"."""
         company, ip, series, product, designs = self.book(designs=0)
-        loose = self.add('product', 'Not stocked', series)
+        loose = self.add('product', 'Not stocked', series, extras={'format': 'Merchandise'})
         with closing(self.connect()) as con:
             con.execute('UPDATE products SET price=19.99 WHERE sku=?', ('PM0100',))
             con.execute('UPDATE products SET price=0 WHERE sku=?', ('PM0100',))  # not a point

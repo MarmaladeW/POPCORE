@@ -28,13 +28,16 @@ const itemLabel = (item: Pick<ItemHit, 'sku' | 'name_cn_en' | 'jizhanming'>) =>
 const linkable = (kind: DexKind, form: string | null) =>
   kind === 'design' ? form === 'confirmed_design' : form !== 'confirmed_design' && form !== 'sealed_set'
 
-function ExtraInputFor({ field }: { field: ExtraField }) {
+// Form.Item hands its child the value, onChange and id: they must reach the input, or what is typed never reaches
+// the form (nothing in 图鉴资料 was saved before this passed them on).
+function ExtraInputFor({ field, ...control }: { field: ExtraField; [prop: string]: unknown }) {
   switch (field.input) {
-    case 'long': return <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
-    case 'number': return <InputNumber style={{ width: '100%' }} />
-    case 'list': return <Input placeholder="用逗号分开 Separate with commas" />
-    case 'yesno': return <Select allowClear options={[{ value: true, label: '是 Yes' }, { value: false, label: '否 No' }]} />
-    default: return <Input />
+    case 'long': return <Input.TextArea {...control} autoSize={{ minRows: 2, maxRows: 6 }} />
+    case 'number': return <InputNumber {...control} style={{ width: '100%' }} />
+    case 'list': return <Input {...control} placeholder="用逗号分开 Separate with commas" />
+    case 'yesno': return <Select {...control} allowClear options={[{ value: true, label: '是 Yes' }, { value: false, label: '否 No' }]} />
+    case 'choice': return <Select {...control} allowClear options={field.options} placeholder="选择 Pick one" aria-label={field.label} />
+    default: return <Input {...control} />
   }
 }
 
@@ -125,7 +128,12 @@ export default function DexEditor({ editing, onClose, onSaved }: {
   async function save() {
     if (!editing || !kind) return
     let values
-    try { values = await form.validateFields() } catch { return }
+    try { values = await form.validateFields() } catch (invalid) {
+      // The format sits low in the drawer: bring the first field still to fill into view.
+      const first = (invalid as { errorFields?: { name: (string | number)[] }[] })?.errorFields?.[0]?.name
+      if (first) form.scrollToField(first)
+      return
+    }
     const body: DexChange = { name: values.name }
     if (PARTNER_KINDS.includes(kind)) body.partner_id = values.partner_id ?? null
     if (CHARACTER_KINDS.includes(kind)) body.character_id = values.character_id ?? null
@@ -203,7 +211,8 @@ export default function DexEditor({ editing, onClose, onSaved }: {
       </Form.Item>}
       {extraFields.length > 0 && <fieldset className="pc-dex-extras">
         <legend>图鉴资料 Collector facts</legend>
-        {extraFields.map(field => <Form.Item key={field.key} name={`x_${field.key}`} label={field.label}>
+        {extraFields.map(field => <Form.Item key={field.key} name={`x_${field.key}`} label={field.label}
+          rules={field.required ? [{ required: true, message: `${field.label}: pick one` }] : undefined}>
           <ExtraInputFor field={field} />
         </Form.Item>)}
       </fieldset>}

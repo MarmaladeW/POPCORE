@@ -85,6 +85,10 @@ async def run(browser, width):
         await dialog.get_by_role('combobox', name='Goes under').fill('Have a')
         await page.locator('.ant-select-item-option', has_text='Have a Seat · 系列 Series').first.click()
         await dialog.get_by_role('button', name='放入 Put in').click()
+        await expect(dialog.get_by_text('Pick its format.')).to_be_visible()  # contract 1.9 section 4
+        await dialog.get_by_role('combobox', name='形式 Format').click()
+        await page.locator('.ant-select-item-option', has_text='周边 Merchandise').click()
+        await dialog.get_by_role('button', name='放入 Put in').click()
         await expect(page.get_by_role('dialog')).to_have_count(0)
         await expect(listing.get_by_text('PM0200 · Have a Seat PM0200')).to_have_count(0)
         assert linked('PM0200') == {'kind': 'product', 'name': 'Have a Seat PM0200', 'blind_box': 0,
@@ -157,6 +161,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: Dex not-in-the-book list: count on the Dex home, an item put under a series, a design under its '
+    print('PASS: Dex not-in-the-book list: count on the Dex home, an item put under a series (with its format), a design under its '
           "box's book product, a design with no box in the book refused plainly, a suggested entry linked, search; staff see no write controls; "
           'at 390 and 1440 px')
