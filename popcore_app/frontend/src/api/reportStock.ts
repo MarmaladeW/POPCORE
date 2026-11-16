@@ -31,6 +31,13 @@ export interface ReportStockResult {
   lines?: ReportStockLine[]
   from_display?: Array<{ product_id: number; sku: string | null; name: string; quantity: number }>
   moves_short?: Array<{ product_id: number; sku: string | null; name: string; quantity: number; where: string[] }>
+  // Sealed sets the paste opened by itself because the floor ran out (negative: counted whole again).
+  sets_opened?: ReportSetOpened[]
+}
+
+export interface ReportSetOpened {
+  product_id: number; sku: string | null; name: string; set_product_id: number; set_sku: string | null
+  location: string; sets: number; boxes: number; per: number; document_id: number; text: string
 }
 
 export { locationText, whereText } from '../lib/stockPlaces.ts'

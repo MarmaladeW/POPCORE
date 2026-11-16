@@ -2,14 +2,16 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Input, Button, Table, Tag, Select, Space,
-  Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge, Modal, Checkbox,
+  Alert, message, AutoComplete, InputNumber, Tooltip, Tabs, Badge, Modal, Checkbox, Radio,
 } from 'antd'
 import {
   CheckCircleOutlined, WarningOutlined, DeleteOutlined,
   QuestionCircleOutlined, CloseCircleOutlined,
 } from '@ant-design/icons'
 import client from '../../api/client'
-import { reasonText, whereText, type ReportStockLine, type ReportStockResult, type ReportStockSide } from '../../api/reportStock'
+import {
+  reasonText, whereText, type ReportSetOpened, type ReportStockLine, type ReportStockResult, type ReportStockSide,
+} from '../../api/reportStock'
 import { productNames } from '../../lib/productLabel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -21,6 +23,7 @@ import {
 import {
   cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
   reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, validReportQuantity,
+  applyRepeatChoice, dropRepeats, type RepeatChoice,
 } from './dailyReportReview'
 import { placeText } from './namePicksView'
 
@@ -87,6 +90,17 @@ function StockLinesList({ lines }: { lines: ReportStockLine[] }) {
         </div>
       ))}
     </div>
+  )
+}
+
+/** Sealed sets the paste opened by itself because the floor ran out (owner, 2026-11-15), one line per product and place. */
+function SetsOpenedList({ rows }: { rows: ReportSetOpened[] }) {
+  return (
+    <ul aria-label="Sets opened" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+      {rows.map(row => <li key={`${row.set_product_id}-${row.location}-${row.document_id}`} style={{ overflowWrap: 'anywhere' }}>
+        {row.sku ? `${row.sku} · ` : ''}{row.text}{row.sets > 0 ? ` · +${row.boxes} 盒 boxes to 楼下 Floor` : ''}
+      </li>)}
+    </ul>
   )
 }
 
@@ -209,6 +223,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   // Lines the report leaves out on purpose: pre-orders are special orders, not sales of the day (owner, 2026-11-10).
   const [leftOut,       setLeftOut]       = useState<LeftOutLine[]>([])
   const [multiDay,      setMultiDay]      = useState(false)
+  // A stock block written twice word for word (owner, 2026-11-15): dropped unless the manager counts both.
+  const [repeatChoices, setRepeatChoices] = useState<Record<string, RepeatChoice>>({})
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
   const [stockResult,   setStockResult]   = useState<ReportStockResult | null>(null)
   // At a live store the stock lines move stock too; the manager confirms them first (owner, 2026-11-03).
@@ -232,7 +248,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
       const mk = (prefix: string, i: number, name: string) => `${prefix}-${i}-${name}`
 
-      setConfirmed(res.confirmed.map((it, i) => ({
+      // Rows of a repeated block start left out: 去掉重复 Drop the repeat is the default.
+      setRepeatChoices({})
+      setConfirmed(dropRepeats(res.confirmed.map((it, i) => ({
         ...it,
         _key:     mk('c', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -240,9 +258,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
-      })))
+      }))))
 
-      setReview(res.review.map((it, i) => ({
+      setReview(dropRepeats(res.review.map((it, i) => ({
         ...it,
         _key:     mk('r', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -252,9 +270,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         notes:    it.note ?? '',
         originalTopId: it.candidates[0]?.id ?? it.product.id,
         accepted: false,
-      })))
+      }))))
 
-      setFailed(res.failed.map((it, i) => ({
+      setFailed(dropRepeats(res.failed.map((it, i) => ({
         ...it,
         _key:     mk('f', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -263,7 +281,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
         section:  it.section ?? 'unknown',
-      })))
+      }))))
 
       setCashTotalReported(res.cash_total_reported ?? null)
       setCashExpected(res.cash_expected_reported ?? null)
@@ -310,6 +328,13 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   }
 
   // ── Item update helpers ───────────────────────────────────────────────────
+
+  function chooseRepeat(repeatId: string, choice: RepeatChoice) {
+    setRepeatChoices(prev => ({ ...prev, [repeatId]: choice }))
+    setConfirmed(prev => applyRepeatChoice(prev, repeatId, choice))
+    setReview(prev => applyRepeatChoice(prev, repeatId, choice))
+    setFailed(prev => applyRepeatChoice(prev, repeatId, choice))
+  }
 
   function patchConfirmed(key: string, patch: Partial<ConfirmedRow>) {
     setConfirmed(prev => prev.map(r => r._key === key ? { ...r, ...patch } : r))
@@ -761,6 +786,10 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                 {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity} ({reasonText.move_short.zh} {row.where.map(code => whereText(code)).join(', ')})
               </li>)}
             </ul>}
+            {!!stockResult.sets_opened?.length && <>
+              <div>自动开端 Sets opened (no 出库入店 line):</div>
+              <SetsOpenedList rows={stockResult.sets_opened} />
+            </>}
             库存 Floor stock: {stockResult.taken} taken off{stockResult.returned ? `, ${stockResult.returned} put back` : ''}
             {stockResult.short.length > 0 && <>
               <div style={{ marginTop: 6 }}>未扣 Not taken off:</div>
@@ -815,6 +844,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
           message="这一天之前粘贴过：只移差额，删掉的行会退回。This day was pasted before: only the difference moves, and lines no longer on it are put back." />}
         {previewChanges.some(l => l.short) && <Alert type="warning" showIcon style={{ marginBottom: 8 }}
           message="不够的部分不会移，会留在 日报库存核对 等你处理。What a source lacks does not move and waits in Report stock checks." />}
+        {!!stockPreview?.stock?.sets_opened?.length && <Alert type="info" showIcon style={{ marginBottom: 8 }}
+          message={stockPreview.stock.sets_opened.some(row => row.sets > 0)
+            ? '楼下的散盒不够，自动开端 The floor ran out of loose boxes, so sealed sets open'
+            : '销售少了，自动开的整端重新算整端 Fewer sold: sets opened for them count whole again'}
+          description={<>
+            <div>销售（或从楼下拿走的行）比楼下的散盒多，同一家店有这个盲盒的整端：保存时开整端放到楼下再扣，不需要写 出库入店。如果其实没开，返回改日报。The sale needs more boxes than the floor has loose: a sealed set of it opens onto the floor. Go back if no set was opened.</div>
+            <SetsOpenedList rows={stockPreview.stock.sets_opened} />
+          </>} />}
         <StockLinesList lines={previewChanges} />
         {stockPreview?.stock && <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
           销售 Sales: {stockPreview.stock.taken} 从楼下扣 off the floor
@@ -891,6 +928,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                     <code key={i} style={{ display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{text}</code>
                   ))}
                   <div style={{ overflowWrap: 'anywhere' }}>{check.problem}</div>
+                  {check.repeat_id && (
+                    <Radio.Group size="small" style={{ marginTop: 4 }} aria-label={`Repeat ${check.repeat_id}`}
+                      value={repeatChoices[check.repeat_id] ?? 'drop'}
+                      onChange={e => chooseRepeat(check.repeat_id!, e.target.value)}>
+                      <Radio value="drop">去掉重复 Drop the repeat</Radio>
+                      <Radio value="both">两次都算 Count both</Radio>
+                    </Radio.Group>
+                  )}
                 </li>
               ))}
             </ul>

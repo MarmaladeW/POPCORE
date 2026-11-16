@@ -1330,9 +1330,12 @@ def submit_daily_report():
             save_report_lines(con, store_id, d, plan_report_lines(con, store_id, stock_items))
         # A live store's floor follows the day's sales (owner, 2026-10-29) and its stock lines.
         stock = sync_report_stock(con, request.jwt_payload, store_id, store_code, d)
-        changes = [line for line in (stock or {}).get('lines', []) if line['moving'] or line['short']]
-        digest = hashlib.sha256(json.dumps(sorted(
-            (line['line_key'], line['moving'], line['short']) for line in changes)).encode()).hexdigest()[:16]
+        changes = [(line['line_key'], line['moving'], line['short'])
+                   for line in (stock or {}).get('lines', []) if line['moving'] or line['short']]
+        # A sealed set the paste opens by itself (owner, 2026-11-15) is confirmed like a line.
+        changes += [(f"{opened['set_product_id']}:{opened['location']}", opened['sets'], 0)
+                    for opened in (stock or {}).get('sets_opened', [])]
+        digest = hashlib.sha256(json.dumps(sorted(changes)).encode()).hexdigest()[:16]
         if dry_run or (changes and data.get('stock_digest') != digest):
             # The manager confirms what the stock lines move before a report saves (owner, 2026-11-03).
             con.rollback()
@@ -2162,6 +2165,16 @@ def parse_daily_report():
         for m in [_DATE_RE.search(lines[i])] if m
     }
     multi_day = len(distinct_dates) > 1
+    # The whole report pasted twice into the box (owner, 2026-11-15): the same date header again, with the same
+    # lines after it. Only the first copy is read, and a format check says so.
+    pasted_twice = None
+    heads = sorted(skipped_lines)
+    if len(heads) >= 2 and report_checks.same_text(lines[heads[0]]) == report_checks.same_text(lines[heads[1]]):
+        texts = [report_checks.same_text(ln) for ln in lines]
+        second = [t for t in texts[heads[1]:] if t]
+        if second and second in ([t for t in texts[:heads[1]] if t], [t for t in texts[heads[0]:heads[1]] if t]):
+            skipped_lines |= set(range(heads[1], len(lines)))
+            pasted_twice = (line_numbers[heads[1]], line_numbers[heads[0]])
 
     # ── Layer 2: Scan section boundaries ────────────────────────────────────
     # Boundary = (line_index, section_type, header_text, inline_content)
@@ -2450,8 +2463,31 @@ def parse_daily_report():
     # A 卖display section that repeats the sales' (display) marks would take display twice: it is left out,
     # and the format check says which lines.
     repeated = _repeated_display_blocks(raw_items) if live else []
-    repeats = [item for item in raw_items if item.get('display_block') in repeated]
+    display_repeats = [item for item in raw_items if item.get('display_block') in repeated]
     raw_items = [item for item in raw_items if item.get('display_block') not in repeated]
+
+    # A stock section that repeats itself word for word (owner, 2026-11-15: DT's Nov 14 入库 block written twice):
+    # each repeat is pointed out with a choice, and its rows come marked so the paste screen leaves them out
+    # unless the manager chooses to count both.
+    def _stock_section(sec):
+        if sec in annotations:
+            return None
+        sec = live_sections.get(sec, sec) if live else ('stock_in' if sec == 'refill' else sec)
+        return sec if sec in LINE_SECTIONS else None
+
+    parts = []
+    for index, (bi, bsec, _, binline) in enumerate(boundaries):
+        sec = _stock_section(bsec)
+        if sec is None:
+            continue
+        end = boundaries[index + 1][0] if index + 1 < len(boundaries) else len(lines)
+        parts.append((line_numbers[bi], sec, ([(line_numbers[bi], binline)] if binline else []) + [
+            (line_numbers[i], lines[i]) for i in range(bi + 1, end) if i not in skipped_lines and lines[i].strip()]))
+    repeats = report_checks.repeated_blocks(parts)
+    repeat_of_line = {line: repeat['id'] for repeat in repeats for line in repeat['lines']}
+    for item in raw_items:
+        if item.get('line') in repeat_of_line:
+            item['repeat_id'] = repeat_of_line[item['line']]
 
     # Format checks (owner, 2026-11-06): anything written so that it may move stock wrongly, by its line.
     header_at = next((line_numbers[i] for i, ln in enumerate(lines) if ln in header_lines), None)
@@ -2462,11 +2498,16 @@ def parse_daily_report():
     moved_as = {key: live_sections[key] for key in ('store_transfer', 'display_stock_out')
                 if live and key in live_sections}
     format_checks += report_checks.text_checks(
-        [(line_numbers[bi], moved_as.get(bsec, bsec), bhdr) for bi, bsec, bhdr, _ in boundaries],
+        [(line_numbers[bi], moved_as.get(bsec, bsec), bhdr) for bi, bsec, bhdr, _ in boundaries
+         if line_numbers[bi] not in repeat_of_line],
         [item for item in raw_items if not item.get('unknown_header')],
         [item for item in raw_items if item.get('unknown_header')],
-        handled={line for check in format_checks for line in check['lines']})
-    format_checks += report_checks.repeated_display_checks(repeated, repeats)
+        # A repeat's own lines are said once, by the repeat check below.
+        handled={line for check in format_checks for line in check['lines']} | set(repeat_of_line))
+    format_checks += [report_checks.repeat_check(repeat) for repeat in repeats]
+    if pasted_twice:
+        format_checks.append(report_checks.report_twice_check(*pasted_twice))
+    format_checks += report_checks.repeated_display_checks(repeated, display_repeats)
     if live and not full:
         # Said once, by the headings it is about, so an old day's 入库 or 出库 not moving is no surprise.
         later = _LIVE_ONLY_HEADINGS | set(_LATER_LINE_SECTIONS)
