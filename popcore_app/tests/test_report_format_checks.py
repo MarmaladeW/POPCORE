@@ -67,7 +67,9 @@ class ReportFormatCheckTests(IsolatedApiCase):
         parsed = self.parse('2026.11.3 DT\nsa dream*1\n卡机汇总：\nmerodi点心*12\n'
                             '出库入店：\nsa dream 12*1\n出库入店：\nsa dream 12*1', date='2026-11-03')
         self.assertEqual(self.found(parsed), [
-            ('check', [2], '随手记'), ('check', [4], '卡机'), ('check', [5, 7], '出库入店'), ('check', [6, 8], '入店')])
+            ('check', [2], '随手记'), ('check', [4], '卡机'), ('check', [5, 6, 7, 8], '入店')])
+        # A heading written again with the same lines is one repeat, which the paste leaves out unless counted both.
+        self.assertEqual(self.check_at(parsed, [5, 6, 7, 8])['repeat_id'], 'section:7')
         self.assertIn('12', self.check_at(parsed, [4])['problem'])
 
     def test_a_number_read_as_part_of_a_name_on_出店_is_explained(self):

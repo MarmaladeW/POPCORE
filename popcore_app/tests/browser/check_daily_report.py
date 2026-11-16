@@ -394,6 +394,68 @@ async def sent_and_left_out_flow(browser, viewport):
         await context.close()
 
 
+OPENED = {'product_id': 1, 'sku': 'TEST-1', 'name': 'Test Product', 'set_product_id': 3, 'set_sku': 'TEST-1-SET',
+          'location': 'upstairs', 'sets': 1, 'boxes': 8, 'per': 8, 'document_id': 9,
+          'text': 'Test Product：开了 1 端 Opened 1 set from 楼上 Upstairs (日报没写 出库入店 no 出库入店 line)'}
+
+
+async def repeat_and_opened_set_flow(browser, viewport):
+    """A stock block written twice is left out unless the manager counts both, and a set the paste opens because
+    the floor ran out is said before anything saves (owner, 2026-11-15)."""
+    back_in = {**ITEM, 'raw_name': 'Test Product', 'section': 'back_in', 'qty': 2, 'box_size': 1, 'loose_qty': 0,
+               'candidates': [{**PRODUCT, 'score': 100}]}
+    repeat = {'level': 'check', 'lines': [4, 5, 6, 7], 'section': '入库', 'repeat_id': 'block:6-7', 'repeat_lines': [6, 7],
+              'text': ['Test Product*2', 'Other*1', 'Test Product*2', 'Other*1'],
+              'problem': '第 6–7 行：这 2 行和第 4–5 行一字不差，多半是复制粘贴重复了。'}
+
+    def payload(path, query, request):
+        if path == '/api/sales/parse_report':
+            return {**api_payload(path, query, request), 'stock_mode': 'live', 'detected_date': '2026-11-14',
+                    'cash_total_reported': None, 'cash_expected_reported': None,
+                    'review': [{**back_in, 'line': 4}, {**back_in, 'line': 6, 'repeat_id': 'block:6-7'}],
+                    'employee_discounts': [], 'display_sales': [], 'claw_prizes': [], 'format_checks': [repeat]}
+        if path == '/api/sales/submit_daily_report':
+            return {'ok': True, 'dry_run': True, 'needs_confirmation': True, 'stock_digest': 'digest-3',
+                    'stock': {**STOCK, 'business_date': '2026-11-14', 'lines': [], 'sets_opened': [OPENED]}}
+        return api_payload(path, query, request)
+
+    state = {'api_payload': payload}
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    try:
+        await page.goto(BASE + '/sales')
+        await page.locator('textarea').fill('2026.11.14 DT\n卡机汇总：\nTest Product*1\n入库：\nTest Product*2\nOther*1\nTest Product*2\nOther*1')
+        await page.get_by_role('button', name='Parse Report', exact=True).click()
+        drop = page.get_by_role('radio', name='去掉重复 Drop the repeat')
+        await expect(drop).to_be_checked()
+        await page.get_by_role('tab', name='Review', exact=False).click()
+        accept = page.get_by_role('button', name=re.compile(r'接\s*受'))
+        await expect(accept).to_have_count(1)
+        await page.get_by_role('radio', name='两次都算 Count both').check()
+        await expect(accept).to_have_count(2)
+        await drop.check()
+        await expect(accept).to_have_count(1)
+        await page.wait_for_timeout(300)
+        await page.screenshot(path=OUT / f'repeat-{viewport["width"]}.png', full_page=True)
+        await accept.click()
+        await page.get_by_role('button', name='Confirm & Log', exact=False).click()
+        dialog = page.get_by_role('dialog', name='确认库存变化 Confirm stock changes')
+        await expect(dialog).to_be_visible()
+        await expect(dialog.get_by_text('楼下的散盒不够，自动开端', exact=False)).to_be_visible()
+        await expect(dialog.get_by_text('开了 1 端 Opened 1 set from 楼上 Upstairs', exact=False)).to_be_visible()
+        posts = [r for r in state['requests'] if r['path'] == '/api/sales/submit_daily_report']
+        assert len(posts) == 1 and posts[0]['post_data']['dry_run'] is True
+        assert [item['section'] for item in posts[0]['post_data']['items']] == ['pos', 'back_in'], posts[0]['post_data']['items']
+        await page.wait_for_timeout(500)  # the dialog's opening animation
+        await page.screenshot(path=OUT / f'set-opened-{viewport["width"]}.png')
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
+    except Exception:
+        await page.screenshot(path=OUT / 'repeat-failure.png', full_page=True)
+        raise
+    finally:
+        await context.close()
+
+
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / 'vite.log').open('w') as log:
@@ -414,6 +476,7 @@ async def main():
                         await receipt_flow(browser, size)
                         await live_stock_lines_flow(browser, size)
                         await sent_and_left_out_flow(browser, size)
+                        await repeat_and_opened_set_flow(browser, size)
                 finally:
                     await browser.close()
         finally:

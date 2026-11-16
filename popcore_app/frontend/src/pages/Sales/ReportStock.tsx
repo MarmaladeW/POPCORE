@@ -76,7 +76,8 @@ export default function ReportStockPage() {
             action={retryable ? <Button size="small" loading={busy === key} disabled={!!busy && busy !== key}
               onClick={() => run(key, async () => {
                 const stock = await retryReportStock(storeCode, day)
-                return `${stock?.taken ?? 0} taken off the floor`
+                const opened = (stock?.sets_opened ?? []).filter(row => row.sets > 0)
+                return `${stock?.taken ?? 0} taken off the floor${opened.length ? ` · ${opened.map(row => row.text).join('; ')}` : ''}`
               })}>再扣一次 Take off again</Button> : undefined}>
             {rows.map(row => <ListRow key={row.id} label={reasonText[row.reason].zh}
               title={`${row.name}${row.sku ? ` (${row.sku})` : ''} × ${row.quantity}`}

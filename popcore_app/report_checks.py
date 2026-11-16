@@ -290,3 +290,84 @@ def product_checks(con, rows, unmatched=()):
                               f'{display}，销售只记 {sales}。按现在的匹配。Display sold {display}, sales list {sales}.',
                               'display_sold'))
     return out
+
+
+# ── Repeated blocks (owner, 2026-11-15) ─────────────────────────────────────
+# DT's Nov 14 入库 repeated a five-line block by a copy/paste slip; pasted raw, the goods would have been added
+# twice without a word. Stock sections only: in 卡机/随手记 one line is one sale, so the same line twice is normal.
+_PUNCTUATION = str.maketrans({'，': ',', '：': ':', '；': ';', '（': '(', '）': ')', '、': ',', '。': '.', '＊': '*',
+                              '×': '*', '【': '[', '】': ']', '“': '"', '”': '"', '‘': "'", '’': "'"})
+
+
+def same_text(text):
+    """A line as compared for a repeat: spacing, case and full- or half-width punctuation do not count."""
+    import unicodedata
+    return re.sub(r'\s+', '', unicodedata.normalize('NFKC', text or '').translate(_PUNCTUATION).casefold())
+
+
+def _span(lines):
+    return f'第 {lines[0]} 行' if len(lines) == 1 else f'第 {lines[0]}–{lines[-1]} 行'
+
+
+def _en_span(lines):
+    return f'line {lines[0]}' if len(lines) == 1 else f'lines {lines[0]}–{lines[-1]}'
+
+
+def repeated_blocks(parts):
+    """Where a stock section repeats itself word for word: a heading written again with the same lines
+    ('section'), or a run of two or more lines written again later in the same section ('block'). `parts` are
+    the stock sections as written: (heading line, section, [(line, text), ...]), in paste order. A single line
+    written twice is not a block: it may be meant (two sets), so text_checks only asks about it.
+    Returns each repeat with its id, the copy's lines (heading included) and the lines it repeats."""
+    repeats, copied = [], set()
+    by_section = defaultdict(list)
+    for heading, section, lines in parts:
+        lines = [(line, same_text(text)) for line, text in lines if same_text(text)]
+        for earlier_heading, earlier in by_section[section]:
+            if lines and [text for _, text in earlier] == [text for _, text in lines]:
+                copy = [heading] + [line for line, _ in lines]
+                repeats.append({'id': f'section:{heading}', 'kind': 'section', 'section': section, 'lines': copy,
+                                'of': [earlier_heading] + [line for line, _ in earlier]})
+                copied.update(copy)
+                break
+        else:
+            by_section[section].append((heading, lines))
+    for section, groups in by_section.items():
+        seq = [(line, text) for _, lines in groups for line, text in lines if line not in copied]
+        j = 0
+        while j < len(seq):
+            best, start = 0, None
+            for i in range(j):
+                k = 0
+                while j + k < len(seq) and i + k < j and seq[i + k][1] == seq[j + k][1]:
+                    k += 1
+                if k > best:
+                    best, start = k, i
+            if best >= 2:
+                copy = [line for line, _ in seq[j:j + best]]
+                repeats.append({'id': f'block:{copy[0]}-{copy[-1]}', 'kind': 'block', 'section': section, 'lines': copy,
+                                'of': [line for line, _ in seq[start:start + best]]})
+                j += best
+            else:
+                j += 1
+    repeats.sort(key=lambda repeat: repeat['lines'][0])
+    return repeats
+
+
+def repeat_check(repeat):
+    """The format check of one repeat, with the manager's choice: drop the repeat (default) or count both."""
+    copy, of = repeat['lines'], repeat['of']
+    what = '这个标题和下面的行' if repeat['kind'] == 'section' else f'这 {len(copy)} 行'
+    check = _check('check', [*of, *copy],
+                   f'{_span(copy)}：{what}和{_span(of)}一字不差，多半是复制粘贴重复了。默认「去掉重复」只算一次；'
+                   f'如果真的是两批货，选「两次都算」。{_en_span(copy).capitalize()} repeat {_en_span(of)} word for word: '
+                   'the repeat is dropped unless you choose Count both.', repeat['section'])
+    check['repeat_id'] = repeat['id']
+    check['repeat_lines'] = copy
+    return check
+
+
+def report_twice_check(line, first):
+    """The whole report pasted twice into the box (same date header twice, the same lines after it)."""
+    return _check('fix', [first, line], f'整份日报贴了两次：第 {line} 行起和第 {first} 行起一模一样，只读第一份。'
+                                        f'The whole report is pasted twice (from line {line}): only the first copy is read.')

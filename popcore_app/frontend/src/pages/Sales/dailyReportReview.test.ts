@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, REPORT_NOTE_SECTIONS,
-  reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect,
+  reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, applyRepeatChoice, dropRepeats,
 } from './dailyReportReview.ts'
 import { whereText } from '../../lib/stockPlaces.ts'
 import { quantityText, SECTION_TEXT } from './namePicksView.ts'
@@ -105,4 +105,15 @@ test('a format check names the lines of the paste it points at, and its section'
   assert.equal(formatCheckWhere({ lines: [82, 86], section: '出库入店' }), '第 82、86 行 Line 82, 86 · 出库入店')
   assert.equal(formatCheckWhere({ lines: [1], section: null }), '第 1 行 Line 1')
   assert.equal(formatCheckWhere({ lines: [], section: null }), '整份日报 Whole report')
+})
+
+test('a repeated stock block is left out until the manager counts both', () => {
+  const rows: { raw_name: string; line: number; repeat_id?: string; removed?: boolean }[] = [
+    { raw_name: 'a', line: 3 }, { raw_name: 'a', line: 8, repeat_id: 'block:8-9' },
+    { raw_name: 'b', line: 9, repeat_id: 'block:8-9' }, { raw_name: 'c', line: 12, repeat_id: 'section:11' }]
+  const first = dropRepeats(rows)
+  assert.deepEqual(first.map(row => !!row.removed), [false, true, true, true])
+  const both = applyRepeatChoice(first, 'block:8-9', 'both')
+  assert.deepEqual(both.map(row => !!row.removed), [false, false, false, true])
+  assert.deepEqual(applyRepeatChoice(both, 'block:8-9', 'drop').map(row => !!row.removed), [false, true, true, true])
 })

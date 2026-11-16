@@ -105,3 +105,16 @@ export function matchFeedback(
 export function cashDifference(actual: number | null, expected: number | null): number | null {
   return actual == null || expected == null ? null : Math.round((actual - expected) * 100) / 100
 }
+
+// A stock block written twice word for word (owner, 2026-11-15): its repeat is left out unless the manager counts both.
+export type RepeatChoice = 'drop' | 'both'
+
+/** Rows read from a repeat are removed while the choice is to drop it, and back when both count. Other rows stay. */
+export function applyRepeatChoice<T extends { repeat_id?: string; removed?: boolean }>(rows: T[], repeatId: string, choice: RepeatChoice): T[] {
+  return rows.map(row => row.repeat_id === repeatId ? { ...row, removed: choice === 'drop' } : row)
+}
+
+/** The rows as first read: every repeat dropped. */
+export function dropRepeats<T extends { repeat_id?: string; removed?: boolean }>(rows: T[]): T[] {
+  return rows.map(row => row.repeat_id ? { ...row, removed: true } : row)
+}
