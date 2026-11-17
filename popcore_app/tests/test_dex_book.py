@@ -302,6 +302,29 @@ class DexBookTests(IsolatedApiCase):
                                     headers=self.headers('manager'))
         self.assertEqual([row['name'] for row in response.get_json()], ['Dreams', 'POP MART'])
 
+    def test_ip_order_is_one_ranking_across_companies(self):
+        # The website's Dex home shows the first eight IPs by this number, whatever their company (owner, 2026-11-17:
+        # LILIOS, the first IP of a new company, had taken 10 and pushed in among the main eight).
+        dreams = self.add('company', 'Dreams')
+        sonny = self.add('ip', 'Sonny Angel', dreams)
+        pop_mart = self.add('company', 'POP MART')
+        hirono, chaka = self.add('ip', 'HIRONO', pop_mart), self.add('ip', 'CHAKA', pop_mart)
+        trend_memo = self.add('company', 'Trend MEMO')
+        lilios = self.add('ip', 'LILIOS', trend_memo)
+        self.assertEqual([self.row(i)['sort_order'] for i in (sonny, hirono, chaka, lilios)], [10, 20, 30, 40])
+        # A moved IP keeps its place.
+        self.assertEqual(self.patch(lilios, parent_id=pop_mart).status_code, 200)
+        self.assertEqual(self.row(lilios)['sort_order'], 40)
+        # Reordering one company's IPs hands out the numbers they hold; Sonny Angel keeps 10.
+        response = self.client.post('/api/dex/reorder', json={'parent_id': pop_mart, 'ids': [lilios, chaka, hirono]},
+                                    headers=self.headers('manager'))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual([row['name'] for row in response.get_json()], ['LILIOS', 'CHAKA', 'HIRONO'])
+        self.assertEqual([self.row(i)['sort_order'] for i in (sonny, lilios, chaka, hirono)], [10, 20, 30, 40])
+        # Other kinds still count among their own siblings.
+        series = self.add('series', 'Echo Series', sonny)
+        self.assertEqual(self.row(series)['sort_order'], 10)
+
     def test_deleting_a_partner_removes_what_sits_under_it_and_keeps_the_refusals(self):
         partner = self.add('partner', 'Pokémon')
         series = self.add('series', 'Battle Moment Series', partner)
