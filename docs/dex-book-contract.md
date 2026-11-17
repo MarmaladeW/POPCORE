@@ -1,9 +1,13 @@
 # The book contract: POPCORE and popcore.ca
 
-Version 1.9.4, 16 Nov 2026. Written by the POPCORE session; the website session builds against it. Only the POPCORE
+Version 1.9.6, 16 Nov 2026. Written by the POPCORE session; the website session builds against it. Only the POPCORE
 session changes it; answers change this file, not side notes. Version 1.8 is kept beside it as `contract-1.8.md`.
 
-**1.9.4** (16 Nov): POPCORE's format work is built (pull request on branch `claude/dex-formats`, not merged): a product with no format from the list is held and not sent, with what sits under it; a script gives the book's products their formats by the section 4 rule and leaves the rest to the owner (on a copy of live: 885 of 932 settled, 47 for the owner); `aliases` and `tags` always go as lists (sections 4, 8, 13).
+**1.9.6** (16 Nov): package 3 is live on popcore.ca (Dex 2.17.0, catalog 1.3.2, theme 1.61.42, ~16:20 EST). `POST /pictures` and `POST /listings` exist (same key; the route list at `/wp-json/popcore/v1` shows both, read 16 Nov). The price chart now shows only points POPCORE sends in `price_history`; points typed in wp-admin are never shown, and wp-admin no longer takes prices. Refusal codes for pictures and listings are in sections 6 and 7. POPCORE's Dex switch stays off until switch-over day. POPCORE's picture button is not behind that switch, so from now an upload in POPCORE's book really lands in the website's media library (attached to nothing; the Dex page changes only when the entry is sent). POPCORE has no listings sender yet (step 4).
+
+**1.9.5** (16 Nov): the format work is live (POPCORE pull request 219, deployed 07:40 UTC) and every product the rule settles has its format on live (07:40 UTC, backup first): 885 of 932. The other 47 are held, not sent, until the owner picks (section 13).
+
+**1.9.4** (16 Nov): POPCORE's format work is built (POPCORE pull request 219, not merged): a product with no format from the list is held and not sent, with what sits under it; a script gives the book's products their formats by the section 4 rule and leaves the rest to the owner (on a copy of live: 885 of 932 settled, 47 for the owner); `aliases` and `tags` always go as lists (sections 4, 8, 13).
 
 **1.9.3** (15 Nov): package 2 is live on popcore.ca (Dex 2.16.0 and theme 1.61.41, ~20:05 EST). `POST /book` exists; while the website's own switch is off it answers HTTP 503 `book_switch_off` and applies nothing (sections 3, 8, 10, 12). POPCORE's Dex switch stays off until switch-over day. The read, taken again after package 2, is unchanged (section 5).
 
@@ -179,6 +183,7 @@ Answer: `{"picture_id": 9912, "url": "…", "thumb_url": "…"}`. The file goes 
 POPCORE then sends the entry with that `picture_id`. A replacement is a new upload. POPCORE never deletes a picture.
 POPCORE's screens show pictures straight from `url` and `thumb_url`, so those must be public addresses.
 The server must accept at least 11 MB uploads (`upload_max_filesize`, `post_max_size`); AVIF only where the server's image library reads it.
+Refusals (package 3): HTTP 400 or 413 with `code` `file_missing`, `file_type` (judged by what the file holds; also AVIF when the server cannot read it), `file_too_big`, `ref_missing` (`ref` must be a whole number above 0) or `upload_failed`; nothing is stored. The route does not check `ref` against the book; the file keeps it as `_popcore_book_ref`.
 **Picture safety** (answer 9): today the only copies are the website's weekly backup (two kept, on the server) and an 11 Sep copy on the owner's Mac. Off-server storage is connected before switch-over (owner).
 
 ## 7. Listings: `POST /wp-json/popcore/v1/listings`
@@ -207,6 +212,8 @@ POPCORE states the facts of a stocked item that has no listing. The website buil
 
 Answer, HTTP 200: `{"results": [{"popcore_id": "DR0133", "status": "created", "product_id": 8123}]}`, with `status`:
 `created` (new draft), `completed` (the listing existed and a missing Single Box or Whole Set option was added), `exists` (nothing to do), `refused` or `error` with `code` + `message`.
+
+Codes (package 3): `item_malformed` (an item's fields are wrong), `book_unknown` (`book_ref` is not a book row the website knows), `id_in_use` (an ID is on a different item, on more than one item, or Single Box and Whole Set sit on two listings), `listing_not_variable` (a simple listing holds the ID, so it cannot take the missing option; never converted), `options_unusual` (the listing's options are not the usual Single Box / Whole Set, or a published listing's Size lacks the value; added by hand), `listing_failed` (status `error`: nothing was made for that item). Each item is its own transaction: one refusal never undoes another item. At most 50 items per call. The whole request: HTTP 400 `listings_malformed` (nothing made), HTTP 503 `dex_missing` (the Dex plugin is not active). A `completed` option on a published listing is added unpublished, for a person to check.
 
 Rules for the website:
 
@@ -274,15 +281,15 @@ On the day:
 Each package is one release, built on a branch, reviewed once, tested on a copy of the live database, uploaded by the owner.
 1. **Numbers and the read** (live 15 Nov, 2.15.0): `ref` and `version` on the five Dex tables, and `GET /book`. Nothing else.
 2. **Accepting the book** (live 15 Nov ~20:05 EST, Dex 2.16.0 and theme 1.61.41), behind the website's own switch, off: the IP-row label (ip, company, partner), the company link and code, `full_name` on lines and designs, `ip_ref` on lines, price point times and the list of forwarded addresses; then `POST /book` with every rule of section 3, companies and partners, addresses for series under a company or partner and items with no character, forwarding, and the formats MEGA and Merchandise.
-3. **Prices, pictures and drafts**: the price chart from `price_history`, `POST /pictures`, `POST /listings` (with `completed`).
+3. **Prices, pictures and drafts** (live 16 Nov ~16:20 EST, Dex 2.17.0, catalog 1.3.2, theme 1.61.42): the price chart from `price_history` only, `POST /pictures`, `POST /listings` (with `completed`).
 4. **Switch-over day**: the wp-admin locks; the catalog's IP and series lists become a copy of the book; then section 10.
 
 POPCORE's sender can rehearse against a local copy of the website with packages 1 and 2, if the owner wants that.
 
 ## 13. Open
 
-- **POPCORE, before package 2 is used:** every product's `format` (section 4). Built on branch `claude/dex-formats` (not merged): the format list is checked on every save, the editor asks for a format on a product, the sender holds a product with none, and `scripts/fill_dex_formats.py` gives the book's products theirs. On a copy of live (16 Nov) it settled 885 of 932 (the 13 wrong `Figures` included) and left 47 for the owner (30 with a suggestion from the item's name or the website). Then the owner's picks; nothing is sent before that.
-- **POPCORE:** `aliases` and `tags` always go as lists. Built on the same branch (the one series holding a text is split on commas when sent).
+- **POPCORE, before package 2 is used:** every product's `format` (section 4). LIVE since 16 Nov 2026 07:40 UTC (pull request 219): the list is checked on every save, the editor asks for a format, the sender holds a product with none. `scripts/fill_dex_formats.py` ran on live the same minute (backup first): 885 of 932 products have their format (601 changed, the 13 wrong `Figures` included; 3 website values changed by POPCORE's type word: 667 and 681 to Merchandise, 670 to Blister Card). **47 wait for the owner** (30 with a suggestion): POP BEAN lines named Figures, MEGA 100% series, hanging cards the book calls pendants, Smiski strap accessories, Sonny Angel rows the name does not explain, and some singles. They and the 118 designs under them are held, and the deletes wait, until they are picked. Nothing else is sent before that, and the switch stays off.
+- **POPCORE:** `aliases` and `tags` always go as lists. LIVE in the same pull request (the one series holding a text is split on commas when sent).
 - **Owner:** whether a blind box page shows its Single Box price chart (section 4); the website's suggestion is not in this job.
 - **Owner:** off-server storage for pictures before switch-over (section 6).
 - **Owner, from the website's list:** listings 28856 (PM0567-01 vs PM0568-07) and 8046 (PM0111, merged into PM0096).
