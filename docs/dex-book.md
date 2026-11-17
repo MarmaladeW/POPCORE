@@ -139,6 +139,14 @@ and who set it (`design_prices`, `popcore_app/design_prices.py`, live since 13 N
 linked to a POPCORE item it returns every price set for that item, newest first (`cents`, `previous_cents`, `source`,
 `set_at` UTC, `set_by`, `set_by_name`), and the item's price now (`current_cents`). It adds the website's market
 prices kept in the design's `extras.market_prices` (`{price, recorded_at, source}`, price in dollars) as `website`.
+`confirmed_design` says whether the linked item is a confirmed design (its prices are `design_prices`) or any other
+item (its recorded changes, `product_price_history`).
+
+The book keeps no price of its own. 改价 Change price on the panel (managers; owner, 17 Nov: "Yes, build it") saves the
+item's one price where it already lives: a confirmed design's through `POST /api/design-prices` (as on Design
+prices: kept in `design_prices`, sent to popcore.ca, refused with `prices_changed` when the price moved after the page
+loaded), any other item's through `PATCH /api/products/<id>` (as the Products edit; the website sync judges it as
+usual). Nothing in the book changes; the trend reads the new price back.
 
 ## Routes (`popcore_app/blueprints/dex.py`)
 
@@ -152,7 +160,7 @@ Any signed-in role reads. Managers and admins write. Every entry a read returns 
 | `GET /api/dex/entries?parent=<id>` | Live children, by `sort_order` then name, with child count, linked POPCORE ID and name, and `named_ip` |
 | `GET /api/dex/entries?q=<text>[&kinds=a,b]` | Search by the words of the full name (above), at most 50, each with its path of ancestors |
 | `GET /api/dex/entries/<id>` | One entry: path, allowed child and parent kinds, linked item, partner, character, the IP above or itself (`ip_above`), the IP it names (`named_ip`), and on an IP `named_by` (as `?named_ip=`) |
-| `GET /api/dex/entries/<id>/prices` | A design's price trend (above): `{linked, current_cents, points, website}`; 400 for other kinds |
+| `GET /api/dex/entries/<id>/prices` | A design's price trend (above): `{linked, confirmed_design, current_cents, points, website}`; 400 for other kinds |
 | `GET /api/dex/entries/<id>/removal` | What a delete would remove, and why it would be refused |
 | `POST /api/dex/entries` | Add (`kind`, `name`, `parent_id`, and the fields above) |
 | `PATCH /api/dex/entries/<id>` | Change any of `name`, `parent_id`, `partner_id`, `character_id`, `ip_id`, `blind_box`, `rarity`, `product_id`, `extras` |
@@ -182,7 +190,10 @@ shrinks with an ellipsis and never widens a row.
 价格走势 Price trend, on a design's page when it is linked to a POPCORE item (or the website gave it market prices),
 for every signed-in role: the price now, a small plain SVG line (no chart library) when two or more prices were set,
 with the website's prices as hollow dots on the same scale, then every price newest first with its Toronto date and
-who set it; the website's are marked 网站 Website. When nothing has been set it says so in one line.
+who set it; the website's are marked 网站 Website. When nothing has been set it says so in one line. A manager sees
+改价 Change price in its header when the entry is linked: the price now, the new price, one line on what saving does
+(the till's price, and how popcore.ca follows), then 保存 Save; a design's saved price shows what the website does
+with it, as Design prices' summary does.
 
 ## The load (step 2): `popcore_app/dex_load.py`, `scripts/load_dex_book.py`
 

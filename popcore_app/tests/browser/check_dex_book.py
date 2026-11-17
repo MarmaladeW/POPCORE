@@ -29,6 +29,8 @@ async def run(browser, width):
     from test_dex_book import DexBookTests
     fixture = DexBookTests()
     fixture.setUp()
+    from blueprints import design_prices as design_price_routes
+    fixture.app.register_blueprint(design_price_routes.bp)  # 改价 Change price saves a design's price there
     contexts = []
 
     def entries():
@@ -48,8 +50,10 @@ async def run(browser, width):
             if not parsed.path.startswith('/api/'):
                 await route.continue_(); return
             body = route.request.post_data_json if route.request.post_data else None
+            key = route.request.headers.get('idempotency-key')
             response = fixture.client.open(parsed.path + ('?' + parsed.query if parsed.query else ''),
-                                           method=route.request.method, headers=fixture.headers(role), json=body)
+                                           method=route.request.method, json=body,
+                                           headers={**fixture.headers(role), **({'Idempotency-Key': key} if key else {})})
             await route.fulfill(status=response.status_code, body=response.data, content_type=response.content_type)
         await page.route('**/*', flask_boundary)
         return page
@@ -190,6 +194,42 @@ async def run(browser, width):
                                          re.compile(r'Nov 2, 2026.*\$36\.00.*网站 Website.*collector')])
         await fits(page, f'price-trend-{width}.png')
 
+        # 改价 Change price (owner, 2026-11-17: "Yes, build it"): the design's one price, saved as on Design prices.
+        design_item = fixture.items['PM0100-01']
+        await trend.get_by_role('button', name='改价 Change price').click()
+        dialog = page.get_by_role('dialog')
+        price = dialog.get_by_role('textbox', name='New price')
+        await expect(price).to_have_value('32.00')
+        await expect(dialog.get_by_role('button', name='保存 Save')).to_be_disabled()  # the price it has
+        await expect(dialog.get_by_text('as on 确认款价格 Design prices', exact=False)).to_be_visible()
+        await price.fill('free')
+        await expect(dialog.get_by_text('Type a price over $0, like 45.99.')).to_be_visible()
+        await expect(dialog.get_by_role('button', name='保存 Save')).to_be_disabled()
+        await price.fill('34.50')
+        await fits(page, f'change-price-{width}.png')
+        with closing(fixture.connect()) as con:  # changed some other way while the dialog was open
+            con.execute('UPDATE products SET price=33 WHERE id=?', (design_item,))
+            con.commit()
+            before = con.execute('SELECT COUNT(*) FROM design_prices').fetchone()[0]
+        await dialog.get_by_role('button', name='保存 Save').click()
+        await expect(dialog.get_by_role('alert')).to_contain_text('changed since the page was loaded: PM0100-01')
+        with closing(fixture.connect()) as con:
+            assert con.execute('SELECT COUNT(*) FROM design_prices').fetchone()[0] == before
+            assert con.execute('SELECT price FROM products WHERE id=?', (design_item,)).fetchone()[0] == 33
+        await dialog.get_by_role('button', name='取消 Cancel').click()
+        await page.goto(BASE + f'/dex/{sun}')
+        await expect(trend.locator('.pc-dex-price-now')).to_have_text('现价 Price now $33.00')
+        await trend.get_by_role('button', name='改价 Change price').click()
+        await dialog.get_by_role('textbox', name='New price').fill('34.50')
+        await dialog.get_by_role('button', name='保存 Save').click()
+        await expect(page.get_by_role('dialog')).to_have_count(0)
+        await expect(trend.locator('.pc-dex-price-now')).to_have_text('现价 Price now $34.50')
+        await expect(trend.locator('.pc-dex-price-list li').first).to_have_text(re.compile(r'\$34\.50.*Mia'))
+        with closing(fixture.connect()) as con:
+            last = con.execute('SELECT cents, previous_cents, source, set_by FROM design_prices ORDER BY id DESC LIMIT 1')
+            assert last.fetchone()[:] == (3450, 3300, 'design_prices', 'auth0|manager')
+            assert con.execute('SELECT price FROM products WHERE id=?', (design_item,)).fetchone()[0] == 34.5
+
         # A single item's price trend (owner, 2026-11-14: "Yes, every item"): the changes POPCORE recorded for it.
         book = entries()
         figure = fixture.add('product', 'The Pianist Figure', book['THE MONSTERS']['id'])
@@ -210,6 +250,19 @@ async def run(browser, width):
                                                                            re.compile(r'Nov 5, 2026.*\$24\.99'),
                                                                            re.compile(r'Oct 20, 2026.*\$19\.99')])
         await fits(page, f'item-price-trend-{width}.png')
+        # 改价 Change price on an item that is not a design: its own price, as the Products edit saves it.
+        await trend.get_by_role('button', name='改价 Change price').click()
+        dialog = page.get_by_role('dialog')
+        await expect(dialog.get_by_text('as on the Products edit', exact=False)).to_be_visible()
+        await dialog.get_by_role('textbox', name='New price').fill('23.50')
+        await dialog.get_by_role('button', name='保存 Save').click()
+        await expect(page.get_by_role('dialog')).to_have_count(0)
+        await expect(trend.locator('.pc-dex-price-now')).to_have_text('现价 Price now $23.50')
+        await expect(trend.locator('.pc-dex-price-list li')).to_have_count(4)
+        with closing(fixture.connect()) as con:
+            pianist = fixture.items['PM0200']
+            assert con.execute('SELECT price FROM products WHERE id=?', (pianist,)).fetchone()[0] == 23.5
+            assert con.execute('SELECT COUNT(*) FROM design_prices WHERE product_id=?', (pianist,)).fetchone()[0] == 0
 
         # Series are listed by the date they were released, newest first (owner, 2026-11-14: "the dex should be listed
         # in date, not on the date created but the date of the series was released"); no date comes after, by name.
@@ -283,9 +336,10 @@ async def run(browser, width):
         for name in ('编辑 Edit', '删除 Delete', '添加 Add design', 'Move Sun Star up', 'Move Sun Star down'):
             await expect(page.get_by_role('button', name=name)).to_have_count(0)
         await fits(page, f'staff-product-{width}.png')
-        # Any signed-in role sees a design's price trend.
+        # Any signed-in role sees a design's price trend; only managers change the price.
         await page.goto(BASE + f'/dex/{entries()["Sun Star"]["id"]}')
-        await expect(page.get_by_role('region', name='Price trend').locator('.pc-dex-price-list li')).to_have_count(4)
+        await expect(page.get_by_role('region', name='Price trend').locator('.pc-dex-price-list li')).to_have_count(5)
+        await expect(page.get_by_role('button', name='改价 Change price')).to_have_count(0)
         # Staff see each design's IP in its row, with no picker.
         await page.goto(BASE + f'/dex/{box}')
         designs = page.get_by_role('region', name='Design here')
@@ -333,4 +387,5 @@ if __name__ == '__main__':
           'renamed, reordered and deleted; a linked product kept; designs in a mixed series name their IPs from the rows '
           'and show on each IP\'s page; full names and the IP tag on a product page and in search; a design\'s price trend '
           'with three set prices and a website price; a single item\'s price trend from its three recorded changes; '
-          'staff see no write controls and see the trend; at 390 and 1440 px')
+          '改价 Change price on a design (refused when the price moved meanwhile, then saved as on Design prices) and on '
+          'an item (saved as the Products edit); staff see no write controls and see the trend; at 390 and 1440 px')
