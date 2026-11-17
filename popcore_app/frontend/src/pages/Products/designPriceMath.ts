@@ -1,5 +1,7 @@
 // 确认款价格 Design prices: the arithmetic behind the bulk editor (owner, 2026-11-12), kept apart so it can be tested.
 
+import type { DesignEffect } from '../../api/designPrices'
+
 export const MAX_CENTS = 100_000_000 // $1,000,000, as the design editor allows
 
 // "45.99", "$45.99", "CA$1,299", "45" → cents; anything else (or 0) → null.
@@ -56,4 +58,22 @@ export function placePaste(lines: PasteLine[], order: readonly { id: number; sku
     if (row && line.text) placed[row.id] = line.text
   })
   return { placed, missed: Math.max(0, start + lines.length - order.length), byId }
+}
+
+// What the website sync does with a design's new price, in one line (Design prices' summary, the Dex's 改价).
+export function effectText(item: DesignEffect) {
+  const from = item.regular_cents
+  switch (item.state) {
+    case 'held': return `网站 ${money(from)} → ${money(item.price)}: ${item.reasons.map(reason =>
+      reason.code === 'sale_stops' ? `its sale ${money(reason.sale_cents)} would end`
+          : reason.code === 'sale_starts' ? `its sale ${money(reason.sale_cents)} would start again` : 'goes with the other option').join('; ')}`
+    case 'send': {
+      if (item.first) return `网站 ${from ? `${money(from)} (${item.published ? 'live' : 'draft'})` : 'no price'} → ${money(item.price)}: first price`
+      const change = from && item.price ? percent(from, item.price) : 0
+      return `网站 ${money(from)} → ${money(item.price)} (${change > 0 ? '+' : ''}${change}%)`
+    }
+    case 'daily': return `网站 ${money(from)} → ${money(item.price)} after the Daily Shop’s reset`
+    case 'same': return `网站 already ${money(item.price)}`
+    default: return '网站 keeps its price'
+  }
 }

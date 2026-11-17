@@ -2,13 +2,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Clipboard
 import { Alert, Button, Checkbox, Input, Modal, Segmented, Select, Skeleton, message } from 'antd'
 
 import {
-  checkDesignPrices, getDesignPrices, saveDesignPrices, type DesignBox, type DesignEffect, type DesignPriceChange,
+  checkDesignPrices, getDesignPrices, saveDesignPrices, type DesignBox, type DesignPriceChange,
   type DesignPriceList, type DesignPriceRow, type DesignPriceSummary, type PriceLink,
 } from '../../api/designPrices'
 import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { ProductsTabs } from './ProductsNav'
-import { adjust, money, parseMoney, percent, placePaste, plainMoney, readPaste } from './designPriceMath'
+import { adjust, effectText, money, parseMoney, percent, placePaste, plainMoney, readPaste } from './designPriceMath'
 import './products.css'
 import './designPrices.css'
 
@@ -343,23 +343,6 @@ const BoxGroup = memo(function BoxGroup({ box, rows, drafts, edits, selected, on
 }, (before, after) => before.box === after.box && before.rows === after.rows
   && before.onType === after.onType && before.onPaste === after.onPaste && before.onToggle === after.onToggle
   && before.rows.every(row => before.drafts[row.id] === after.drafts[row.id] && before.selected.has(row.id) === after.selected.has(row.id)))
-
-function effectText(item: DesignEffect) {
-  const from = item.regular_cents
-  switch (item.state) {
-    case 'held': return `网站 ${money(from)} → ${money(item.price)}: ${item.reasons.map(reason =>
-      reason.code === 'sale_stops' ? `its sale ${money(reason.sale_cents)} would end`
-          : reason.code === 'sale_starts' ? `its sale ${money(reason.sale_cents)} would start again` : 'goes with the other option').join('; ')}`
-    case 'send': {
-      if (item.first) return `网站 ${from ? `${money(from)} (${item.published ? 'live' : 'draft'})` : 'no price'} → ${money(item.price)}: first price`
-      const change = from && item.price ? percent(from, item.price) : 0
-      return `网站 ${money(from)} → ${money(item.price)} (${change > 0 ? '+' : ''}${change}%)`
-    }
-    case 'daily': return `网站 ${money(from)} → ${money(item.price)} after the Daily Shop’s reset`
-    case 'same': return `网站 already ${money(item.price)}`
-    default: return '网站 keeps its price'
-  }
-}
 
 // The summary before saving: the server applies the change, judges it as the website sync will, and undoes it.
 function Summary({ summary }: { summary: DesignPriceSummary }) {

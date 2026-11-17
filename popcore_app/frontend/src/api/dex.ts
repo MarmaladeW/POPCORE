@@ -75,12 +75,15 @@ export const unlinkedItems = (q = '', page = 1, per_page = 50) =>
   client.get<DexUnlinkedPage>('/dex/unlinked', { params: { q, page, per_page } }).then(r => r.data)
 
 // A design's price trend: the prices managers set for its POPCORE item (design_prices, newest first; set_at UTC),
-// and the website's market prices kept in its extras.
+// and the website's market prices kept in its extras. confirmed_design: the item is a confirmed design, whose price
+// is set as on 确认款价格 Design prices; any other item's is its own price, as the Products edit sets it.
 export interface DexPricePoint {
   cents: number; previous_cents: number | null; source: string; set_at: string; set_by: string; set_by_name: string | null
 }
 export interface DexWebsitePrice { price: number; recorded_at: string | null; source: string | null }
-export interface DexPrices { linked: boolean; current_cents: number | null; points: DexPricePoint[]; website: DexWebsitePrice[] }
+export interface DexPrices {
+  linked: boolean; confirmed_design: boolean; current_cents: number | null; points: DexPricePoint[]; website: DexWebsitePrice[]
+}
 export const entryPrices = (id: number) => client.get<DexPrices>(`/dex/entries/${id}/prices`).then(r => r.data)
 
 // 图鉴同步 Dex sync, step 3: POPCORE sends the book to popcore.ca behind its own switch (dex_sync.py). Times are UTC.
