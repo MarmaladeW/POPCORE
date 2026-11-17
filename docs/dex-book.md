@@ -25,7 +25,7 @@ website number, the list row it came from (`ip-list:<name>`), so later load runs
 | `kind` | `company`, `partner`, `ip`, `character`, `series`, `product`, `design` |
 | `parent_id`, `partner_id`, `character_id` | Other entries |
 | `ip_id` | Products and designs with no IP above: the IP they belong to (contract 1.3, `ip_ref`) |
-| `name`, `sort_order` | The Dex name (official English) and the order among siblings. Series are the exception: they are listed by release date (see Rules) |
+| `name`, `sort_order` | The Dex name (official English) and the order among siblings. Series are the exception: they are listed by release date (see Rules). IPs are the other: their number is one ranking across every company, since the website's Dex home shows the first eight IPs by it (a new IP goes last, a moved IP keeps its number, reordering a company's IPs shares out the numbers they hold) |
 | `blind_box` | Products only, 0 or 1 |
 | `rarity` | Designs only: `normal`, `popular`, `secret`, `super_secret`, `special` |
 | `product_id` | The POPCORE item (`products.id`); one live entry per item |

@@ -20,6 +20,11 @@ Rules (docs/dex-book.md):
   format is one of FORMATS, the website's list (contract 1.9 §4), or none yet; the sync holds a product with none.
 - Every accepted change raises version by one. Renaming or moving an entry also raises the version of every live
   entry under it, since their full names changed (step 3 sends them again).
+- sort_order is the order among siblings, except for IPs: an IP's is one ranking across every company, because the
+  website's Dex home shows the first eight IPs by it, whoever makes them. A new IP goes to the end of that ranking,
+  a moved IP keeps its place, and reordering one company's IPs shares out the numbers they already hold, so the IPs
+  of other companies keep theirs (owner, 2026-11-17: LILIOS and WAKUKU, each the first IP of a new company, had
+  taken number 10 and landed among the main eight).
 - Step 3: dex_sync.py writes only the sync columns (sent_version, send_error, website_id and website_item from the
   website's answer, sync_price_id, sync_popcore_id, version when it notices a new price or POPCORE ID) and removes a
   deleted row once the website confirms its delete. Everything else is written here.
@@ -589,8 +594,12 @@ def _write(con, work):
 
 
 def _next_order(con, parent_id, kind):
-    row = con.execute('SELECT MAX(sort_order) FROM dex_entries WHERE parent_id IS ? AND kind=? AND deleted_at IS NULL',
-                      (parent_id, kind)).fetchone()
+    """The number after the last sibling's; for an IP, after the last IP of any company (one ranking)."""
+    if kind == 'ip':
+        row = con.execute("SELECT MAX(sort_order) FROM dex_entries WHERE kind='ip' AND deleted_at IS NULL").fetchone()
+    else:
+        row = con.execute('SELECT MAX(sort_order) FROM dex_entries WHERE parent_id IS ? AND kind=? AND deleted_at IS NULL',
+                          (parent_id, kind)).fetchone()
     return (row[0] or 0) + 10
 
 
@@ -655,7 +664,7 @@ def update(con, entry_id, data, actor):
             (row['name'], row['parent_id'], row['partner_id'], row['character_id'], row['ip_id'],
              None if row['blind_box'] is None else int(row['blind_box']), row['rarity'], row['product_id'],
              json.dumps(row['extras'], ensure_ascii=False),
-             _next_order(con, row['parent_id'], entry['kind']) if moved else entry['sort_order'],
+             _next_order(con, row['parent_id'], entry['kind']) if moved and entry['kind'] != 'ip' else entry['sort_order'],
              _actor(actor), entry_id))
         if moved or row['name'] != entry['name']:
             # Step 3: the full names under it changed (contract 1.4), so everything under it is sent again.
@@ -685,10 +694,12 @@ def reorder(con, data, actor):
             (parent_id, first['kind']))}
         if set(group) != set(ids):
             raise DexError('The list does not match the entries here; reload and try again.', 'order_stale', 409)
-        for position, entry_id in enumerate(ids, start=1):
-            if group[entry_id] != position * 10:
+        # IPs share one ranking across companies: hand this company's numbers out again in the new order.
+        numbers = sorted(group.values()) if first['kind'] == 'ip' else [position * 10 for position in range(1, len(ids) + 1)]
+        for number, entry_id in zip(numbers, ids):
+            if group[entry_id] != number:
                 con.execute("""UPDATE dex_entries SET sort_order=?, version=version+1, updated_at=datetime('now'),
-                               updated_by=? WHERE id=?""", (position * 10, _actor(actor), entry_id))
+                               updated_by=? WHERE id=?""", (number, _actor(actor), entry_id))
     _write(con, work)
     return children(con, parent_id) if parent_id is not None else top(con, _brief(con, ids[0])['kind'])
 
