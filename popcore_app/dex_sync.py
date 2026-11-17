@@ -1,5 +1,7 @@
 """图鉴 Dex sync, step 3: POPCORE sends the book to popcore.ca (owner, 2026-11-14: "yes build the POPCORE -> popcore.ca
-sync"), behind its own switch, off until an admin turns it on. The contract is docs/dex-book-contract.md (1.7).
+sync"), behind its own switch, off until an admin turns it on. The contract is docs/dex-book-contract.md (1.9.6).
+Step 4, at the end of this file: listings for stocked items with no listing, from a preview list a manager approves
+(contract sections 7 and 10).
 
 - What needs sending: an entry whose version is above its sent_version. Every entry starts at 0, so the first run
   sends the whole book. A new price recorded for a linked item (design_prices for a confirmed design,
@@ -30,6 +32,7 @@ from datetime import datetime, timezone
 
 import requests
 
+import design_prices
 import dex_book
 import website_sync
 from website_sync import WebsiteError
@@ -46,6 +49,9 @@ REFUSED_LIST = 200
 HELD = ('format_missing', 'No format yet (形式): pick one in the editor, then it is sent.')
 HALF_MISSING = ('The website’s half of the book sync is not there yet: popcore.ca does not answer its book route. '
                 'Nothing was sent.')
+LISTINGS_MISSING = ('popcore.ca does not answer its listings route (catalog 1.3.2 or later makes it). Nothing was made.')
+# The whole listings call turned down (contract section 7): a failed call, like any other.
+LISTINGS_CALL_CODES = ('listings_malformed', 'dex_missing')
 
 
 def _now():
@@ -90,7 +96,8 @@ def settings():
 
 def call(cfg, method, path, *, params=None, body=None, files=None, data=None):
     """One call to popcore.ca's book routes with the stock sync's key; returns (data, headers).
-    POST /book counts only HTTP 200 (contract section 3); the others any 2xx."""
+    POST /book and POST /listings count only HTTP 200 (contract sections 3 and 7); the others any 2xx. A listings call
+    the website turns down whole keeps the website's code (400 listings_malformed, 503 dex_missing)."""
     try:
         response = requests.request(method, f"{cfg['url']}{ROUTE}{path}", params=params, json=body, files=files,
                                     data=data, auth=(cfg['key'], cfg['secret']), timeout=TIMEOUT,
@@ -103,13 +110,15 @@ def call(cfg, method, path, *, params=None, body=None, files=None, data=None):
         answer = None
     status = response.status_code
     if status == 404:
-        raise WebsiteError(HALF_MISSING, 'website_half_missing', 404)
+        raise WebsiteError(LISTINGS_MISSING if path == '/listings' else HALF_MISSING, 'website_half_missing', 404)
     if status in (401, 403):
         raise WebsiteError('The website refused POPCORE’s key on its book route. Its half of the book sync may not be '
                            'there yet, or the key is not allowed on it.', 'website_auth', status)
-    if not (status == 200 if (method, path) == ('POST', '/book') else 200 <= status < 300):
+    if not (status == 200 if (method, path) in (('POST', '/book'), ('POST', '/listings')) else 200 <= status < 300):
         message = answer.get('message') if isinstance(answer, dict) else None
-        raise WebsiteError(str(message or f'The website answered HTTP {status}.')[:300], 'website_error', status)
+        code = answer.get('code') if isinstance(answer, dict) else None
+        code = code if path == '/listings' and code in LISTINGS_CALL_CODES else 'website_error'
+        raise WebsiteError(str(message or f'The website answered HTTP {status}.')[:300], code, status)
     return answer, response.headers
 
 
@@ -495,6 +504,7 @@ def background_sync():
             set_state(con, 'last_error', json.dumps({'code': 'dex_sync_failed', 'message':
                                                      f'POPCORE could not finish a Dex sync pass ({type(exc).__name__}).',
                                                      'at': _now()}))
+        _listings_pass(con, cfg)  # step 4: approved listings, after the book (their book_ref must be on the website)
         set_state(con, 'last_run', _now())
         con.commit()
     finally:
@@ -559,3 +569,353 @@ def upload_picture(cfg, entry_id, content, filename, mimetype):
         raise WebsiteError('The website’s answer to the picture could not be read.', 'website_answer')
     url, thumb = answer.get('url'), answer.get('thumb_url')
     return picture_id, url if isinstance(url, str) else None, thumb if isinstance(thumb, str) else None
+
+
+# ── Step 4: listings for stocked items with no listing (contract section 7) ──
+#
+# The catch-up (contract section 10, step 4): a preview list of POPCORE items with stock a web order may take whose
+# POPCORE ID (or, for a blind box, whose Whole Set ID) is on no website item in the stock sync's last catalogue read.
+# A manager approves it; nothing goes out by itself, and nothing goes out while the Dex switch is off. An approved item
+# goes once its book entry was accepted by the website (book_ref), in calls of up to 50 on the Dex sync's pass. The
+# website makes a draft by its own rules and answers each item: created, completed, exists, or refused / error with a
+# code. A refused item is listed for a manager and goes again only when what POPCORE would send changes or a manager
+# retries. After a created or completed answer the stock sync is asked for its next catalogue read, which brings the
+# draft its stock, price and pickup stores (contract 7.7).
+
+LISTING_KINDS = {'random_box': 'blind_box', 'ordinary': 'ordinary', 'confirmed_design': 'confirmed_design'}
+LISTING_ORDER = {'blind_box': 0, 'ordinary': 1, 'confirmed_design': 2}  # a design's box goes before it
+LISTING_DONE = ('created', 'completed', 'exists')
+LISTING_CODES = ('item_malformed', 'book_unknown', 'id_in_use', 'listing_not_variable', 'options_unusual',
+                 'listing_failed')
+LISTING_LIST = 500
+
+
+def _book_kind(listing_kind):
+    """The book entry a listing's book_ref names: a design for a confirmed design, else a product."""
+    return 'design' if listing_kind == 'confirmed_design' else 'product'
+
+
+def _starting_name(con, product, entry, memo):
+    """The listing's starting name (owner, 12 Nov 2026: "a listing's name starts from POPCORE and is then the
+    website's"): the book entry's full name, the name shoppers and staff see (contract section 2); POPCORE's own name
+    when the book gives none. Sent once only: an answered item is never sent again."""
+    if entry is not None:
+        name = dex_book.full_name(entry['kind'], entry['name'], dex_book._ancestors(con, entry['parent_id'], memo))
+        if name and name.strip():
+            return name.strip()[:200]
+    return (product['name_cn_en'] or product['jizhanming'] or product['sku']).strip()[:200]
+
+
+def _whole_set(product, by_sku):
+    """(set product row, boxes per set or None) for a blind box with a Whole Set in POPCORE, else (None, None).
+    set_id is always exactly <ID>-SET (contract section 7). Its size is the one the stock sync prices it by: the set's
+    boxes per set, else its box's (website_sync._wanted_price), so the draft starts at the price the sync then keeps."""
+    found = by_sku.get(f"{product['sku']}-SET".upper())
+    if found is None or found['stock_form'] != 'sealed_set':
+        return None, None
+    try:
+        boxes = int(found['boxes_per_dan'] or product['boxes_per_dan'] or 0)
+    except (TypeError, ValueError):
+        boxes = 0
+    return found, boxes if boxes >= 1 else None
+
+
+def listing_item(con, product, entry, by_sku, confirmed, memo=None):
+    """One item as contract section 7 sends it. product: its products row; entry: its live book entry (book_ref).
+    price_cents is the regular price the stock sync gives the item (a verified POPCORE item); for a design only a price
+    a manager set (design_prices.confirmed), never the box's price."""
+    memo = {} if memo is None else memo
+    kind = LISTING_KINDS[product['stock_form']]
+    if kind == 'confirmed_design':
+        price = (confirmed.get(product['id']) or {}).get('cents')
+    else:
+        price = design_prices.cents(product['price']) if product['identity_status'] == 'verified' else None
+    item = {'popcore_id': product['sku'], 'kind': kind, 'name': _starting_name(con, product, entry, memo),
+            'book_ref': entry['id'] if entry is not None else None,
+            'popcore_type': (product['product_type'] or '').strip() or None, 'price_cents': price}
+    if kind == 'blind_box':
+        found, boxes = _whole_set(product, by_sku)
+        item.update(set_id=f"{product['sku']}-SET" if found is not None else None,
+                    boxes_per_set=boxes if found is not None else None,
+                    set_price_cents=boxes * price if found is not None and boxes and price else None)
+    return item
+
+
+def _catalogue(con):
+    """What the listings work reads: products by id and by ID, live book entries by item, the IDs on a website item in
+    the last catalogue read (trash left out, as the website does), and the approved rows."""
+    products = {row['id']: row for row in con.execute(
+        """SELECT id, sku, name_cn_en, jizhanming, price, product_type, stock_form, identity_status, boxes_per_dan
+           FROM products WHERE sku IS NOT NULL AND TRIM(sku) != ''""")}
+    by_sku = {row['sku'].upper(): row for row in products.values()}
+    entries = {row['product_id']: row for row in con.execute(
+        """SELECT id, kind, name, parent_id, product_id, sent_version FROM dex_entries
+           WHERE deleted_at IS NULL AND product_id IS NOT NULL""")}
+    listed = {row[0].upper() for row in con.execute(
+        "SELECT popcore_id FROM website_items WHERE kind != 'variable' AND popcore_id != ''")}
+    rows = {row['product_id']: dict(row) for row in con.execute('SELECT * FROM dex_listings')}
+    return products, by_sku, entries, listed, rows
+
+
+def _entry_for(entries, product):
+    """The item's live book entry when it is of the kind its listing names, else None."""
+    entry = entries.get(product['id'])
+    kind = LISTING_KINDS.get(product['stock_form'])
+    return entry if entry is not None and kind and entry['kind'] == _book_kind(kind) else None
+
+
+def _accepted(entry):
+    """The website knows the entry by its ref: it took a version of it (contract 7: asked only after that)."""
+    return entry is not None and entry['sent_version'] > 0
+
+
+def _listing_row(row, products):
+    product = products.get(row['product_id'])
+    return {'product_id': row['product_id'], 'popcore_id': product['sku'] if product else row['popcore_id'],
+            'state': row['state'], 'approved_by': row['approved_by'], 'approved_at': row['approved_at'],
+            'sent_at': row['sent_at'], 'answered_at': row['answered_at'],
+            'website_product_id': row['website_product_id'], 'code': row['code'], 'message': row['message'],
+            'name': (json.loads(row['sent_item']).get('name') if row['sent_item'] else None)
+            or (product and (product['name_cn_en'] or product['jizhanming'])) or row['popcore_id']}
+
+
+def listings(con):
+    """The catch-up preview (read only): stocked items with no listing, each `ready` (its book entry is on the
+    website), `book_waiting` (in the book, not taken by the website yet: approvable, it waits) or `not_in_book` (no
+    book entry of its kind links it: link it in the book first); then the approved items, the refused ones and the
+    answered ones."""
+    read_at = website_sync.state(con, 'refreshed_at')
+    products, by_sku, entries, listed, rows = _catalogue(con)
+    confirmed = design_prices.confirmed(con)
+    stock = website_sync._shelf_stock(con)[0] if read_at else {}
+    memo, candidates = {}, []
+    for product in sorted(products.values(), key=lambda row: (LISTING_ORDER.get(LISTING_KINDS.get(row['stock_form']), 9),
+                                                               row['sku'].upper())):
+        kind = LISTING_KINDS.get(product['stock_form'])
+        if kind is None:
+            continue
+        units = sum(stock.get(product['id'], {}).values())
+        found, _ = _whole_set(product, by_sku) if kind == 'blind_box' else (None, None)
+        set_units = sum(stock.get(found['id'], {}).values()) if found is not None else 0
+        if units + set_units <= 0:
+            continue
+        ids = [product['sku']] + ([f"{product['sku']}-SET"] if found is not None else [])
+        missing = [one for one in ids if one.upper() not in listed]
+        if not missing:
+            continue
+        row = rows.get(product['id'])
+        if row is not None and (row['state'] not in LISTING_DONE or (row['answered_at'] or '') >= (read_at or '')):
+            continue  # approved, refused, or answered since the last catalogue read: listed below
+        entry = _entry_for(entries, product)
+        item = listing_item(con, product, entry, by_sku, confirmed, memo)
+        candidates.append({
+            **item, 'product_id': product['id'], 'stock': units, 'set_stock': set_units if found is not None else None,
+            'missing': missing, 'action': 'complete' if product['sku'].upper() in listed else 'new',
+            'state': 'ready' if _accepted(entry) else 'book_waiting' if entry is not None else 'not_in_book',
+            'entry': None if entry is None else {'id': entry['id'], 'kind': entry['kind'], 'name': entry['name']},
+            'again': row is not None})
+    answered = [_listing_row(row, products) for row in rows.values()]
+    approved = []
+    for row in sorted((one for one in answered if one['state'] == 'approved'), key=lambda one: one['popcore_id'].upper()):
+        product = products.get(row['product_id'])
+        entry = _entry_for(entries, product) if product else None
+        row['waits'] = None if _accepted(entry) else 'book' if entry is not None else 'not_in_book'
+        approved.append(row)
+    refused = sorted((one for one in answered if one['state'] in ('refused', 'error')),
+                     key=lambda one: one['answered_at'] or '', reverse=True)
+    done = sorted((one for one in answered if one['state'] in LISTING_DONE),
+                  key=lambda one: one['answered_at'] or '', reverse=True)
+    error = state(con, 'listings_last_error')
+    counts = {'candidates': len(candidates), **{key: sum(1 for one in candidates if one['state'] == key)
+                                               for key in ('ready', 'book_waiting', 'not_in_book')},
+              'approvable': sum(1 for one in candidates if one['state'] != 'not_in_book'),
+              'new': sum(1 for one in candidates if one['action'] == 'new'),
+              'complete': sum(1 for one in candidates if one['action'] == 'complete'),
+              'approved': len(approved), 'refused': len(refused), 'done': len(done),
+              **{key: sum(1 for one in done if one['state'] == key) for key in LISTING_DONE}}
+    return {'enabled': enabled(con), 'catalogue_read_at': read_at, 'counts': counts,
+            'candidates': candidates[:LISTING_LIST], 'approved': approved[:LISTING_LIST], 'refused': refused[:LISTING_LIST],
+            'done': done[:100], 'last_error': json.loads(error) if error else None}
+
+
+def approve_listings(con, product_ids, actor_sub, count=None):
+    """A manager approves items from the preview list (product_ids), or every approvable one (product_ids None, with
+    count: how many the screen showed, so a list that changed meanwhile is not approved unseen)."""
+    found = listings(con)
+    approvable = {one['product_id']: one for one in found['candidates'] if one['state'] != 'not_in_book'}
+    if product_ids is None:
+        if count != len(approvable):
+            raise dex_book.DexError(f'The list changed: {len(approvable)} can be approved now. Look again.',
+                                    'list_changed', 409)
+        product_ids = list(approvable)
+    elif not product_ids or any(one not in approvable for one in product_ids):
+        raise dex_book.DexError('That item is not on the list to approve: it has a listing, no stock, is approved '
+                                'already, or is not in the book.', 'not_listable', 409)
+    now = _now()
+    _begin(con)
+    try:
+        for one in product_ids:
+            con.execute("""INSERT INTO dex_listings(product_id, popcore_id, state, approved_by, approved_at)
+                           VALUES (?, ?, 'approved', ?, ?)
+                           ON CONFLICT(product_id) DO UPDATE SET popcore_id=excluded.popcore_id, state='approved',
+                               approved_by=excluded.approved_by, approved_at=excluded.approved_at, sent_item=NULL,
+                               sent_at=NULL, answered_at=NULL, website_product_id=NULL, code=NULL, message=NULL""",
+                        (one, approvable[one]['popcore_id'], actor_sub or '', now))
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return {'approved': len(product_ids)}
+
+
+def _change_listing(con, product_id, states, sql, missing):
+    _begin(con)
+    try:
+        changed = con.execute(f"UPDATE dex_listings SET {sql} WHERE product_id=? AND state IN ({','.join('?' * len(states))})"
+                              if sql else
+                              f"DELETE FROM dex_listings WHERE product_id=? AND state IN ({','.join('?' * len(states))})",
+                              (product_id, *states)).rowcount
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    if not changed:
+        raise dex_book.DexError(missing, 'listing_not_found', 409)
+    return changed
+
+
+def withdraw_listing(con, product_id):
+    """Take an approved (not yet answered) or refused item off the list; it shows in the preview again."""
+    return {'withdrawn': _change_listing(con, product_id, ('approved', 'refused', 'error'), None,
+                                         'Only an approved or refused item can be withdrawn.')}
+
+
+def retry_listings(con, product_id=None):
+    """A refused item (or every refused item) goes again with the next pass."""
+    if product_id is not None:
+        return {'retried': _change_listing(con, product_id, ('refused', 'error'), "state='approved', code=NULL, message=NULL",
+                                           'That item is not refused by the website.')}
+    _begin(con)
+    try:
+        changed = con.execute("""UPDATE dex_listings SET state='approved', code=NULL, message=NULL
+                                 WHERE state IN ('refused', 'error')""").rowcount
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return {'retried': changed}
+
+
+def _listing_batch(con):
+    """Up to BATCH approved items whose book entry the website has, boxes first: (row, item) pairs. A refused item is
+    picked again only when what POPCORE would send for it changed (contract section 8). Read only."""
+    if con.execute("SELECT 1 FROM dex_listings WHERE state IN ('approved', 'refused', 'error') LIMIT 1").fetchone() is None:
+        return []  # nothing approved: one small read a pass
+    products, by_sku, entries, _, rows = _catalogue(con)
+    confirmed, memo, picked = design_prices.confirmed(con), {}, []
+    for row in rows.values():
+        if row['state'] not in ('approved', 'refused', 'error'):
+            continue
+        product = products.get(row['product_id'])
+        if product is None or product['stock_form'] not in LISTING_KINDS:
+            continue
+        entry = _entry_for(entries, product)
+        if not _accepted(entry):
+            continue  # waits until the book send has it
+        item = listing_item(con, product, entry, by_sku, confirmed, memo)
+        if row['state'] != 'approved' and row['sent_item'] == json.dumps(item, ensure_ascii=False, sort_keys=True):
+            continue
+        picked.append((row, item))
+    picked.sort(key=lambda pair: (LISTING_ORDER[pair[1]['kind']], pair[1]['popcore_id'].upper()))
+    return picked[:BATCH]
+
+
+def _whole_number(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def send_listings_batch(con, cfg, batch):
+    """One POST /listings call. Returns how many items the answer settled. A call that fails marks nothing."""
+    items = [item for _, item in batch]
+    answer, _ = call(cfg, 'POST', '/listings', body={'items': items})
+    results = answer.get('results') if isinstance(answer, dict) else None
+    if not isinstance(results, list):
+        raise WebsiteError('The website’s answer to the listings could not be read.', 'website_answer')
+    by_id = {}
+    for result in results:
+        if isinstance(result, dict) and isinstance(result.get('popcore_id'), str):
+            by_id.setdefault(result['popcore_id'].strip().upper(), result)
+    if len(results) == len(items):  # an item whose ID the website could not read answers with none: by its place
+        for item, result in zip(items, results):
+            if isinstance(result, dict) and result.get('popcore_id') is None:
+                by_id.setdefault(item['popcore_id'].upper(), result)
+    now, settled, refresh = _now(), 0, False
+    _begin(con)
+    try:
+        for row, item in batch:
+            result = by_id.get(item['popcore_id'].upper())
+            if result is None:
+                continue  # no answer for it: it stays as it was and goes again
+            status, code = result.get('status'), result.get('code')
+            message = result.get('message') if isinstance(result.get('message'), str) else None
+            if status in LISTING_DONE:
+                code = None
+                refresh = refresh or status in ('created', 'completed')
+            elif status in ('refused', 'error'):
+                code = str(code or ('listing_failed' if status == 'error' else 'refused'))[:80]
+                message = message or 'The website did not make it.'
+            else:
+                message = f'The website answered “{str(status)[:40]}” for it, which POPCORE cannot read.'
+                status, code = 'error', 'website_answer'
+            con.execute("""INSERT INTO dex_listings(product_id, popcore_id, state, approved_by, approved_at, sent_item,
+                               sent_at, answered_at, website_product_id, code, message)
+                           VALUES (:product_id, :popcore_id, :state, :approved_by, :approved_at, :sent_item, :at, :at,
+                               :website_product_id, :code, :message)
+                           ON CONFLICT(product_id) DO UPDATE SET popcore_id=excluded.popcore_id, state=excluded.state,
+                               sent_item=excluded.sent_item, sent_at=excluded.sent_at, answered_at=excluded.answered_at,
+                               website_product_id=excluded.website_product_id, code=excluded.code,
+                               message=excluded.message""",
+                        {'product_id': row['product_id'], 'popcore_id': item['popcore_id'], 'state': status,
+                         'approved_by': row['approved_by'], 'approved_at': row['approved_at'],
+                         'sent_item': json.dumps(item, ensure_ascii=False, sort_keys=True), 'at': now,
+                         'website_product_id': _whole_number(result.get('product_id')), 'code': code,
+                         'message': message[:500] if message else None})
+            settled += 1
+        if refresh:  # the draft gets its stock, price and pickup stores from the stock sync's next read (contract 7.7)
+            website_sync.set_state(con, 'refresh_requested', '1')
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return settled
+
+
+def send_listings(con, cfg, clock=time.monotonic):
+    """The listings part of a pass, while the switch is on. Raises WebsiteError when a call fails."""
+    started, settled = clock(), 0
+    while clock() - started < PASS_SECONDS:
+        batch = _listing_batch(con)
+        if not batch:
+            break
+        done = send_listings_batch(con, cfg, batch)
+        settled += done
+        if not done:
+            break  # the website answered nothing about this call; try again next pass
+    return settled
+
+
+def _listings_pass(con, cfg):
+    """send_listings with its failure kept apart from the book's (listings_last_error); never raised."""
+    error = None
+    try:
+        send_listings(con, cfg)
+    except WebsiteError as exc:
+        error = {'code': exc.code, 'message': str(exc), 'at': _now()}
+    except Exception as exc:  # noqa: BLE001 — kept and logged, never raised into the scheduler
+        log.exception('Dex listings failed')
+        error = {'code': 'dex_listings_failed', 'message': f'POPCORE could not finish the listings ({type(exc).__name__}).',
+                 'at': _now()}
+    if error is not None and con.in_transaction:
+        con.rollback()
+    if error is not None or state(con, 'listings_last_error') is not None:
+        set_state(con, 'listings_last_error', json.dumps(error, ensure_ascii=False) if error else None)

@@ -2120,6 +2120,7 @@ def _get_migrations():
         ('product_price_history',                      _migration_product_price_history),
         ('report_lines_from',                          _migration_report_lines_from),
         ('report_sets_opened',                         _migration_report_sets_opened),
+        ('dex_listings',                               _migration_dex_listings),
     ]
 
 
@@ -2458,6 +2459,33 @@ def _migration_report_sets_opened(con, cur):
     if 'covers' not in columns:
         cur.execute('ALTER TABLE report_stock_moves ADD COLUMN covers INTEGER NOT NULL DEFAULT 0 CHECK (covers >= 0)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('report_sets_opened')")
+
+
+def _migration_dex_listings(con, cur):
+    # 图鉴 Dex step 4: listings for stocked items with no listing on popcore.ca (contract 1.9.6 section 7; owner,
+    # 12 Nov 2026: "a listing's name starts from POPCORE and is then the website's"; contract section 10, step 4: the
+    # catch-up runs from a preview list the owner approves). One row per POPCORE item a manager approved, with the
+    # website's answer once it came. Nothing is sent without a row here, and only while the Dex switch is on. No
+    # foreign key on purpose, as product_price_history: the places that count "every table that points at products"
+    # before an item may be removed or merged must never be held back by an approval. Its row goes with the item by
+    # the trigger instead. Older code never reads this table.
+    cur.execute("""CREATE TABLE IF NOT EXISTS dex_listings (
+        product_id         INTEGER PRIMARY KEY,
+        popcore_id         TEXT    NOT NULL,
+        state              TEXT    NOT NULL CHECK (state IN ('approved', 'created', 'completed', 'exists', 'refused', 'error')),
+        approved_by        TEXT    NOT NULL,
+        approved_at        TEXT    NOT NULL,
+        sent_item          TEXT,
+        sent_at            TEXT,
+        answered_at        TEXT,
+        website_product_id INTEGER,
+        code               TEXT,
+        message            TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_dex_listings_state ON dex_listings(state)')
+    cur.execute("""CREATE TRIGGER IF NOT EXISTS dex_listings_product_gone AFTER DELETE ON products
+                   BEGIN DELETE FROM dex_listings WHERE product_id=OLD.id; END""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('dex_listings')")
 
 
 def _migration_inventory_viewers(con, cur):

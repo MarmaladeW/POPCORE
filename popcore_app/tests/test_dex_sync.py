@@ -65,6 +65,20 @@ class FakeBook:
         self.live_listing = set()  # website ids a published listing points at
         self.during = None  # called once while a batch is being answered
         self.pictures = []
+        # Listings (contract section 7): the shop's products, each {type, kind, ids: {role: ID}, unusual}.
+        self.shop = {}
+        self.next_product = 8100
+        self.listing_status = None  # answer the listings route with this HTTP status (400, 503)
+        self.listing_bad = set()  # IDs answered item_malformed
+        self.listing_fail = set()  # IDs answered error listing_failed
+        self.listing_silent = set()  # IDs left out of the answer
+        self.listing_calls = []  # each call's items
+
+    def listing(self, ids, type_='simple', kind='ordinary', unusual=False):
+        """A listing the shop already has: ids {role: ID}, role single / set (a blind box's options) or own."""
+        self.next_product += 1
+        self.shop[self.next_product] = {'type': type_, 'kind': kind, 'ids': dict(ids), 'unusual': unusual}
+        return self.next_product
 
     def by_ref(self, ref):
         return next((row for row in self.rows.values() if row.get('ref') == ref), None)
@@ -101,7 +115,74 @@ class FakeBook:
                 during()
             self.batches.append((json['quiet'], [entry['ref'] for entry in json['entries']]))
             return Response(200, {'results': [self.apply(entry) for entry in json['entries']]})
+        if method == 'POST' and path == '/listings':
+            if self.listing_status == 400:
+                return Response(400, {'code': 'listings_malformed', 'message': 'The body must be a JSON object with an "items" list. Nothing was made.'})
+            if self.listing_status == 503:
+                return Response(503, {'code': 'dex_missing', 'message': 'The Dex plugin (popcore-dex) is not active, so listings cannot be made.'})
+            if not isinstance(json, dict) or not isinstance(json.get('items'), list) or len(json['items']) > 50:
+                return Response(400, {'code': 'listings_malformed', 'message': 'A call holds at most 50 items.'})
+            self.listing_calls.append(json['items'])
+            results = [self.make(item) for item in json['items']]
+            return Response(200, {'results': [one for one in results if one['popcore_id'] not in self.listing_silent]})
         return Response(404, {'message': 'No route'})
+
+    # Listings, as the catalog's PCAT_Listings makes them (contract section 7, package 3) -------------------------
+
+    def holders(self, popcore_id):
+        return [(number, role) for number, product in self.shop.items() for role, held in product['ids'].items()
+                if held.upper() == popcore_id.upper()]
+
+    def make(self, item):
+        popcore_id = str(item.get('popcore_id') or '').upper()
+        answer = lambda status, product_id=None, code=None, message=None: {
+            'popcore_id': popcore_id or None, 'status': status, 'product_id': product_id,
+            **({'code': code, 'message': message} if code else {})}
+        shape_ok = (popcore_id and item.get('kind') in ('blind_box', 'ordinary', 'confirmed_design')
+                    and isinstance(item.get('name'), str) and item['name'].strip()
+                    and isinstance(item.get('book_ref'), int) and item['book_ref'] > 0
+                    and all(item.get(key) is None or (isinstance(item[key], int) and item[key] >= 0)
+                            for key in ('price_cents', 'set_price_cents', 'boxes_per_set'))
+                    and (item['kind'] != 'blind_box' or item.get('set_id') in (None, f"{item['popcore_id']}-SET")))
+        if not shape_ok or popcore_id in self.listing_bad:
+            return answer('refused', code='item_malformed', message='"name" must be the starting name.')
+        ids = {'single': popcore_id, **({'set': f'{popcore_id}-SET'} if item.get('set_id') else {})} \
+            if item['kind'] == 'blind_box' else {'own': popcore_id}
+        listings, held = set(), set()
+        for role, one in ids.items():
+            found = self.holders(one)
+            if not found:
+                continue
+            if len(found) > 1:
+                return answer('refused', code='id_in_use', message=f'{one} is on more than one item already.')
+            number, held_role = found[0]
+            product = self.shop[number]
+            mine = held_role == role and (product['kind'] == item['kind'] or role != 'own')
+            if not mine:
+                return answer('refused', number, 'id_in_use', f'{one} is already on #{number}, which is not this item.')
+            listings.add(number)
+            held.add(role)
+        if len(listings) > 1:
+            return answer('refused', code='id_in_use', message='Its Single Box and Whole Set IDs are on two different listings.')
+        if listings:
+            number = listings.pop()
+            missing = {role: one for role, one in ids.items() if role not in held}
+            if not missing:
+                return answer('exists', number)
+            if self.shop[number]['type'] != 'variable':
+                return answer('refused', number, 'listing_not_variable', f'#{number} is a simple listing.')
+            if self.shop[number]['unusual']:
+                return answer('refused', number, 'options_unusual', 'Its options are not Single Box / Whole Set.')
+            self.shop[number]['ids'].update(missing)
+            return answer('completed', number)
+        row = self.by_ref(item['book_ref'])
+        if row is None or (row['kind'] == 'design') != (item['kind'] == 'confirmed_design'):
+            return answer('refused', code='book_unknown', message=f"book_ref {item['book_ref']} is not known.")
+        if popcore_id in self.listing_fail:
+            return answer('error', code='listing_failed', message='Nothing was made for this item: boom.')
+        number = self.listing(ids, 'variable' if item['kind'] == 'blind_box' else 'simple', item['kind'])
+        self.shop[number].update(name=item['name'], item=item)
+        return answer('created', number)
 
     def known(self, ref):
         return ref is None or self.by_ref(ref) is not None
@@ -716,3 +797,468 @@ class DexSyncTests(IsolatedApiCase):
         self.assertIsNone(self.row(designs[1])['sync_popcore_id'])
         with closing(self.connect()) as con:
             self.assertEqual(dex_sync.notice(con), 0)  # nothing new to notice: no version raised
+
+
+LIVE_DATE = '2026-11-01'
+UNITS = {'random_box': 'box', 'sealed_set': 'set', 'confirmed_design': 'piece', 'ordinary': 'piece'}
+
+
+class DexListingsTests(IsolatedApiCase):
+    """图鉴 Dex step 4 (contract 1.9.6 sections 7 and 10): listings for stocked items with no listing, from a preview
+    list a manager approves, sent only while the Dex switch is on and once the book entry is on the website. Sonny
+    Angel Makeup Angel (DR0133, DR0133-SET, DR0133-01 to -05) is the contract's test: the box and its Whole Set are on
+    popcore.ca already, the five designs are not."""
+
+    def setUp(self):
+        super().setUp()
+        from scripts.inventory_opening import main as opening_cli
+        self.app.register_blueprint(dex.bp)
+        self.env = patch.dict(os.environ, ENV)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.site = FakeBook()
+        self.web = patch('requests.request', side_effect=self.site.request)
+        self.web.start()
+        self.addCleanup(self.web.stop)
+        with closing(self.connect()) as con:
+            dt = con.execute("SELECT id FROM stores WHERE code='DT'").fetchone()[0]
+            self.locations = {row[0]: row[1] for row in con.execute(
+                'SELECT code, id FROM inventory_locations WHERE store_id=?', (dt,))}
+            self.items = {}
+            for sku, name, form, price, per_set in (
+                    ('DR0133', 'Sonny Angel x Shu Uemura Makeup Angel Series', 'random_box', 29.99, 6),
+                    ('DR0133-SET', 'Sonny Angel x Shu Uemura Makeup Angel Series · 整端 Sealed set', 'sealed_set', 179.94, 6),
+                    ('DR0133-01', 'Makeup Angel · Artsy Peacock', 'confirmed_design', 28.99, None),
+                    ('DR0133-02', 'Makeup Angel · Zen Deer', 'confirmed_design', 30.99, None),
+                    ('DR0133-03', 'Makeup Angel · Lava Fox', 'confirmed_design', 30.99, None),
+                    ('DR0133-04', 'Makeup Angel · Solar Tanuki', 'confirmed_design', 30.99, None),
+                    ('DR0133-05', 'Makeup Angel · Shu-Shu Monkey', 'confirmed_design', 29.99, None),
+                    ('PM0100', 'Echo Series Figures', 'random_box', 15.99, 12),
+                    ('PM0100-SET', 'Echo Series 整端', 'sealed_set', 191.88, 12),
+                    ('PM0200', 'Bear Phone Strap', 'ordinary', 12.00, None),
+                    ('PM0300', 'Twinkle Figures', 'random_box', 16.99, None),
+                    ('PM0400', 'Not In The Book Plush', 'ordinary', 20.00, None),
+                    ('PM0500', 'Sold Out Figures', 'random_box', 15.99, None)):
+                self.items[sku] = con.execute(
+                    """INSERT INTO products(sku, name_cn_en, jizhanming, stock_form, stock_unit, price, product_type,
+                                            boxes_per_dan, identity_status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'verified')""",
+                    (sku, name, name, form, UNITS[form], price, '周边' if form == 'ordinary' else '盲盒',
+                     per_set)).lastrowid
+            con.execute("""INSERT INTO product_conversions(source_product_id, target_product_id, output_per_input, version)
+                           VALUES (?, ?, 6, 1)""", (self.items['DR0133-SET'], self.items['DR0133']))
+            # The manager's prices for four designs (14 Nov); -05 has none, so it never takes the box's price.
+            for sku, cents in (('DR0133-01', 2899), ('DR0133-02', 3099), ('DR0133-03', 3099), ('DR0133-04', 3099)):
+                con.execute("""INSERT INTO design_prices(product_id, cents, previous_cents, source, set_by, set_at)
+                               VALUES (?, ?, 2999, 'design_prices', 'auth0|manager', '2026-11-14 19:12:24')""",
+                            (self.items[sku], cents))
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|admin', ?)", (dt,))
+            for sku, code, quantity in (('DR0133', 'floor', 181), ('DR0133-SET', 'upstairs', 38),
+                                        *((f'DR0133-0{n}', 'upstairs', 50 + n) for n in range(1, 6)),
+                                        ('PM0100', 'floor', 20), ('PM0200', 'floor', 3), ('PM0300', 'upstairs', 4),
+                                        ('PM0400', 'floor', 2), ('PM0500', 'floor', 0)):
+                form = con.execute('SELECT stock_form FROM products WHERE id=?', (self.items[sku],)).fetchone()[0]
+                con.execute("""INSERT INTO opening_counts(location_id, product_id, stock_form, quantity, counted_by)
+                               VALUES (?, ?, ?, ?, 'auth0|admin')""", (self.locations[code], self.items[sku], form, quantity))
+            con.commit()
+        empty = [arg for code in sorted(self.locations) if code not in ('floor', 'upstairs')
+                 for arg in ('--empty-location', f'DT-{code}')]
+        with redirect_stdout(io.StringIO()):
+            opening_cli(['intake', '--db', db_path(), '--from-app', '--store', 'DT', *empty, '--business-date', LIVE_DATE,
+                         '--actor-sub', 'auth0|admin', '--apply', '--backup', str(Path(self.tempdir.name) / 'before-dt.db')])
+        # The book, as live holds Makeup Angel (designs 3877-3881 on line 515), and Echo, Bear, Twinkle, Sold Out.
+        self.company = self.add('company', 'Dreams')
+        self.ip = self.add('ip', 'Sonny Angel', self.company)
+        series = self.add('series', 'Makeup Angel Series', self.ip)
+        self.box = self.add('product', 'Limited Mini Figure', series, blind_box=True, product_id=self.items['DR0133'],
+                            extras={'format': 'Figures'})
+        self.designs = [self.add('design', name, self.box, rarity='normal', product_id=self.items[f'DR0133-0{n}'])
+                        for n, name in enumerate(('Artsy Peacock', 'Zen Deer', 'Lava Fox', 'Solar Tanuki',
+                                                  'Shu-Shu Monkey'), 1)]
+        echo = self.add('series', 'Echo Series', self.ip)
+        self.echo = self.add('product', 'Figures', echo, blind_box=True, product_id=self.items['PM0100'],
+                             extras={'format': 'Figures'})
+        self.bear = self.add('product', 'Bear Phone Strap', self.ip, product_id=self.items['PM0200'],
+                             extras={'format': 'Merchandise'})
+        twinkle = self.add('series', 'Twinkle Series', self.ip)
+        self.twinkle = self.add('product', 'Figures', twinkle, blind_box=True, product_id=self.items['PM0300'],
+                                extras={'format': 'Figures'})
+        self.add('product', 'Sold Out Figures', self.ip, product_id=self.items['PM0500'], extras={'format': 'Figures'})
+        # popcore.ca has DR0133 and DR0133-SET on one listing (series 537), and the stock sync's last read saw them.
+        self.site.listing({'single': 'DR0133', 'set': 'DR0133-SET'}, 'variable', 'blind_box')
+        self.read({'DR0133': self.items['DR0133'], 'DR0133-SET': self.items['DR0133-SET']})
+
+    # Helpers ---------------------------------------------------------------------------------------------
+
+    def add(self, kind, name, parent=None, **fields):
+        with closing(self.connect()) as con:
+            return dex_book.create(con, {'kind': kind, 'name': name, 'parent_id': parent, **fields}, ACTOR)['id']
+
+    def read(self, ids, at='2026-11-01T12:00:00'):
+        """The stock sync's catalogue read: these POPCORE IDs on website items (variations of one listing)."""
+        with closing(self.connect()) as con:
+            con.execute('DELETE FROM website_items')
+            for number, (popcore_id, product_id) in enumerate(ids.items(), 1):
+                con.execute("""INSERT INTO website_items(wc_id, parent_id, kind, sku, popcore_id, name, status, product_id)
+                               VALUES (?, 1, 'variation', '', ?, ?, 'publish', ?)""",
+                            (100 + number, popcore_id, popcore_id, product_id))
+            import website_sync
+            website_sync.set_state(con, 'refreshed_at', at)
+            website_sync.set_state(con, 'refresh_requested', None)
+            con.commit()
+
+    def on(self):
+        with closing(self.connect()) as con:
+            dex_sync.set_state(con, 'enabled', '1')
+            con.commit()
+
+    def run_pass(self):
+        dex_sync.background_sync()
+
+    def preview(self, role='manager'):
+        response = self.client.get('/api/dex/listings', headers=self.headers(role))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        return response.get_json()
+
+    def approve(self, **body):
+        return self.client.post('/api/dex/listings/approve', json=body, headers=self.headers('manager'))
+
+    def row(self, sku):
+        with closing(self.connect()) as con:
+            found = con.execute('SELECT * FROM dex_listings WHERE product_id=?', (self.items[sku],)).fetchone()
+            return dict(found) if found else None
+
+    def refresh_asked(self):
+        import website_sync
+        with closing(self.connect()) as con:
+            return website_sync.state(con, 'refresh_requested')
+
+    def sent(self):
+        return [item for call in self.site.listing_calls for item in call]
+
+    def by_id(self, preview):
+        return {one['popcore_id']: one for one in preview['candidates']}
+
+    # The preview -----------------------------------------------------------------------------------------
+
+    def test_the_preview_lists_stocked_items_with_no_listing_and_nothing_goes_without_approval(self):
+        preview = self.preview()
+        found = self.by_id(preview)
+        # DR0133 and DR0133-SET are on popcore.ca; PM0500 has no stock; the sealed sets are never items of their own.
+        self.assertEqual(sorted(found), ['DR0133-01', 'DR0133-02', 'DR0133-03', 'DR0133-04', 'DR0133-05',
+                                         'PM0100', 'PM0200', 'PM0300', 'PM0400'])
+        self.assertEqual([one['popcore_id'] for one in preview['candidates']][:3], ['PM0100', 'PM0300', 'PM0200'])
+        self.assertEqual(preview['catalogue_read_at'], '2026-11-01T12:00:00')
+        self.assertEqual({key: preview['counts'][key] for key in ('candidates', 'ready', 'book_waiting', 'not_in_book',
+                                                                  'approvable', 'new', 'complete')},
+                         {'candidates': 9, 'ready': 0, 'book_waiting': 8, 'not_in_book': 1, 'approvable': 8,
+                          'new': 9, 'complete': 0})
+        design = found['DR0133-01']
+        self.assertEqual({key: design[key] for key in ('kind', 'name', 'book_ref', 'price_cents', 'popcore_type',
+                                                       'state', 'missing', 'action', 'stock')},
+                         {'kind': 'confirmed_design', 'name': 'Sonny Angel Makeup Angel Series Limited Mini Figure - Artsy Peacock',
+                          'book_ref': self.designs[0], 'price_cents': 2899, 'popcore_type': '盲盒',
+                          'state': 'book_waiting', 'missing': ['DR0133-01'], 'action': 'new', 'stock': 51})
+        self.assertNotIn('set_id', design)
+        self.assertIsNone(found['DR0133-05']['price_cents'])  # no manager price: never the box's 29.99
+        self.assertEqual((found['PM0400']['state'], found['PM0400']['entry'], found['PM0400']['book_ref']),
+                         ('not_in_book', None, None))
+        echo = found['PM0100']
+        self.assertEqual({key: echo[key] for key in ('kind', 'set_id', 'boxes_per_set', 'price_cents', 'set_price_cents',
+                                                     'missing', 'stock', 'set_stock')},
+                         {'kind': 'blind_box', 'set_id': 'PM0100-SET', 'boxes_per_set': 12, 'price_cents': 1599,
+                          'set_price_cents': 19188, 'missing': ['PM0100', 'PM0100-SET'], 'stock': 20, 'set_stock': 0})
+        twinkle = found['PM0300']  # no Whole Set in POPCORE
+        self.assertEqual((twinkle['set_id'], twinkle['boxes_per_set'], twinkle['set_price_cents']), (None, None, None))
+        self.assertEqual(self.client.get('/api/dex/listings', headers=self.headers('staff')).status_code, 403)
+        # Switch on, nothing approved: the book goes, no listing does.
+        self.on()
+        self.run_pass()
+        self.assertEqual(self.site.listing_calls, [])
+        self.assertEqual(self.preview()['counts']['ready'], 8)
+
+    def test_no_catalogue_read_means_no_preview(self):
+        with closing(self.connect()) as con:
+            con.execute("DELETE FROM website_state WHERE key='refreshed_at'")
+            con.commit()
+        preview = self.preview()
+        self.assertEqual((preview['catalogue_read_at'], preview['candidates'], preview['counts']['candidates']), (None, [], 0))
+
+    # Makeup Angel ----------------------------------------------------------------------------------------
+
+    def test_makeup_angel_five_designs_are_created_tied_to_their_box_and_dex_designs(self):
+        response = self.approve(all=True, count=8)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json(), {'approved': 8})
+        preview = self.preview()
+        self.assertEqual((preview['counts']['approved'], preview['counts']['candidates']), (8, 1))
+        self.assertTrue(all(one['waits'] == 'book' for one in preview['approved']))
+        # The switch is off: nothing goes, and nothing is written.
+        before = self.snapshot(['dex_listings', 'dex_entries'])
+        self.run_pass()
+        self.assertEqual(self.site.calls, [])
+        self.assertEqual(self.snapshot(['dex_listings', 'dex_entries']), before)
+        self.on()
+        self.run_pass()
+        # The book went first, then one listings call: boxes and items before the designs.
+        self.assertEqual(len(self.site.listing_calls), 1)
+        self.assertEqual([item['popcore_id'] for item in self.sent()],
+                         ['PM0100', 'PM0300', 'PM0200', 'DR0133-01', 'DR0133-02', 'DR0133-03', 'DR0133-04', 'DR0133-05'])
+        designs = {item['popcore_id']: item for item in self.sent() if item['kind'] == 'confirmed_design'}
+        self.assertEqual(designs['DR0133-03'], {
+            'popcore_id': 'DR0133-03', 'kind': 'confirmed_design',
+            'name': 'Sonny Angel Makeup Angel Series Limited Mini Figure - Lava Fox', 'book_ref': self.designs[2],
+            'popcore_type': '盲盒', 'price_cents': 3099})
+        self.assertEqual([designs[f'DR0133-0{n}']['price_cents'] for n in range(1, 6)], [2899, 3099, 3099, 3099, None])
+        self.assertEqual([designs[f'DR0133-0{n}']['book_ref'] for n in range(1, 6)], self.designs)
+        echo = self.sent()[0]
+        self.assertEqual(echo, {'popcore_id': 'PM0100', 'kind': 'blind_box', 'name': 'Sonny Angel Echo Series Figures',
+                                'book_ref': self.echo, 'popcore_type': '盲盒', 'price_cents': 1599,
+                                'set_id': 'PM0100-SET', 'boxes_per_set': 12, 'set_price_cents': 19188})
+        self.assertNotIn('set_id', self.sent()[2])  # an ordinary item carries no Whole Set
+        for n in range(1, 6):
+            row = self.row(f'DR0133-0{n}')
+            self.assertEqual(row['state'], 'created')
+            made = self.site.shop[row['website_product_id']]
+            self.assertEqual((made['type'], made['kind'], made['ids']), ('simple', 'confirmed_design', {'own': f'DR0133-0{n}'}))
+            self.assertEqual(self.site.by_ref(made['item']['book_ref'])['kind'], 'design')
+        self.assertEqual(self.site.shop[self.row('PM0100')['website_product_id']]['ids'],
+                         {'single': 'PM0100', 'set': 'PM0100-SET'})
+        self.assertEqual(self.refresh_asked(), '1')  # the stock sync reads the catalogue again next
+        preview = self.preview()
+        self.assertEqual((preview['counts']['approved'], preview['counts']['created'], preview['counts']['done']), (0, 8, 8))
+        self.assertEqual(sorted(one['popcore_id'] for one in preview['candidates']), ['PM0400'])
+        # Answered items are never sent again, and the name went once only.
+        self.run_pass()
+        self.assertEqual(len(self.site.listing_calls), 1)
+
+    def test_a_box_whose_whole_set_is_missing_is_completed_and_one_already_whole_answers_exists(self):
+        # The read saw PM0100's Single Box only; popcore.ca holds it on a variable listing.
+        number = self.site.listing({'single': 'PM0100'}, 'variable', 'blind_box')
+        self.read({'DR0133': self.items['DR0133'], 'PM0100': self.items['PM0100']})
+        preview = self.by_id(self.preview())
+        # DR0133-SET is missing from this read, so Makeup Angel's box is offered too.
+        self.assertEqual((preview['PM0100']['action'], preview['PM0100']['missing']), ('complete', ['PM0100-SET']))
+        self.assertEqual((preview['DR0133']['action'], preview['DR0133']['missing']), ('complete', ['DR0133-SET']))
+        self.on()
+        self.run_pass()  # the book goes: the boxes are ready
+        self.assertEqual(self.approve(product_ids=[self.items['PM0100'], self.items['DR0133']]).status_code, 200)
+        self.run_pass()
+        self.assertEqual((self.row('PM0100')['state'], self.row('PM0100')['website_product_id']), ('completed', number))
+        self.assertEqual(self.site.shop[number]['ids'], {'single': 'PM0100', 'set': 'PM0100-SET'})
+        self.assertEqual(self.row('DR0133')['state'], 'exists')  # the website's own check: it has both already
+        self.assertEqual(self.sent()[0]['set_price_cents'], 17994)
+        self.assertEqual(self.refresh_asked(), '1')
+
+    def test_an_exists_answer_alone_asks_for_no_catalogue_read(self):
+        self.read({})  # a stale read: it saw nothing, popcore.ca has Makeup Angel's box
+        self.on()
+        self.run_pass()
+        self.approve(product_ids=[self.items['DR0133']])
+        self.run_pass()
+        self.assertEqual(self.row('DR0133')['state'], 'exists')
+        self.assertIsNone(self.refresh_asked())
+
+    # Refusals ----------------------------------------------------------------------------------------------
+
+    def test_every_refusal_code_is_kept_listed_and_not_sent_again(self):
+        self.site.listing({'single': 'PM0300'}, 'simple', 'blind_box')  # simple listing: no Whole Set option to add
+        self.site.listing({'own': 'DR0133-02'}, 'simple', 'ordinary')  # the ID is on another kind of item
+        self.site.listing({'single': 'PM0100'}, 'variable', 'blind_box', unusual=True)
+        self.site.listing_bad.add('DR0133-03')
+        self.site.listing_fail.add('DR0133-04')
+        self.on()
+        self.run_pass()
+        # popcore.ca lost Bear's row: its book_ref is unknown there.
+        self.site.rows = {key: row for key, row in self.site.rows.items() if row.get('ref') != self.bear}
+        # Twinkle gets a Whole Set in POPCORE, so the website must add an option to its simple listing.
+        with closing(self.connect()) as con:
+            con.execute("""INSERT INTO products(sku, name_cn_en, jizhanming, stock_form, stock_unit, price, identity_status)
+                           VALUES ('PM0300-SET', 'Twinkle 整端', 'Twinkle 整端', 'sealed_set', 'set', 101.94, 'verified')""")
+            con.execute("UPDATE products SET boxes_per_dan=6 WHERE sku='PM0300'")
+            con.commit()
+        self.read({'DR0133': self.items['DR0133'], 'DR0133-SET': self.items['DR0133-SET'], 'PM0300': self.items['PM0300']})
+        self.assertEqual(self.approve(all=True, count=8).status_code, 200)
+        self.run_pass()
+        codes = {one['popcore_id']: (one['state'], one['code']) for one in self.preview()['refused']}
+        self.assertEqual(codes, {
+            'PM0100': ('refused', 'options_unusual'), 'PM0300': ('refused', 'listing_not_variable'),
+            'PM0200': ('refused', 'book_unknown'), 'DR0133-02': ('refused', 'id_in_use'),
+            'DR0133-03': ('refused', 'item_malformed'), 'DR0133-04': ('error', 'listing_failed')})
+        refused = {one['popcore_id']: one for one in self.preview()['refused']}
+        self.assertIn('simple listing', refused['PM0300']['message'])
+        self.assertEqual({self.row(sku)['state'] for sku in ('DR0133-01', 'DR0133-05')}, {'created'})
+        self.assertEqual(self.preview()['counts']['refused'], 6)
+        self.assertIsNone(self.row('PM0200')['website_product_id'])
+        # Not sent again every pass.
+        self.run_pass()
+        self.run_pass()
+        self.assertEqual(len(self.site.listing_calls), 1)
+        # Sent again when what POPCORE sends changes: a new manager price for Zen Deer.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET price=32.99 WHERE sku='DR0133-02'")
+            con.execute("""INSERT INTO design_prices(product_id, cents, previous_cents, source, set_by)
+                           VALUES (?, 3299, 3099, 'design_prices', 'auth0|manager')""", (self.items['DR0133-02'],))
+            con.commit()
+        self.run_pass()
+        self.assertEqual([item['popcore_id'] for item in self.site.listing_calls[-1]], ['DR0133-02'])
+        self.assertEqual(self.site.listing_calls[-1][0]['price_cents'], 3299)
+        # Or when a manager retries: one, then all.
+        self.site.listing_fail.clear()
+        retry = self.client.post('/api/dex/listings/retry', json={'product_id': self.items['DR0133-04']},
+                                 headers=self.headers('manager'))
+        self.assertEqual(retry.get_json(), {'retried': 1})
+        self.run_pass()
+        self.assertEqual(self.row('DR0133-04')['state'], 'created')
+        self.assertEqual(self.client.post('/api/dex/listings/retry', json={'product_id': self.items['DR0133-04']},
+                                          headers=self.headers('manager')).status_code, 409)
+        self.site.listing_bad.clear()
+        self.assertEqual(self.client.post('/api/dex/listings/retry', json={'all': True},
+                                          headers=self.headers('manager')).get_json(), {'retried': 5})
+        self.run_pass()
+        self.assertEqual(self.row('DR0133-03')['state'], 'created')
+        self.assertEqual(self.row('PM0200')['state'], 'refused')
+        # Withdrawn: back in the preview.
+        withdrawn = self.client.post('/api/dex/listings/withdraw', json={'product_id': self.items['PM0200']},
+                                     headers=self.headers('manager'))
+        self.assertEqual(withdrawn.get_json(), {'withdrawn': 1})
+        self.assertIn('PM0200', self.by_id(self.preview()))
+        self.assertEqual(self.client.post('/api/dex/listings/withdraw', json={'product_id': self.items['DR0133-03']},
+                                          headers=self.headers('manager')).status_code, 409)
+
+    def test_an_item_with_no_answer_stays_approved_and_goes_again(self):
+        self.on()
+        self.run_pass()
+        self.site.listing_silent.add('DR0133-01')
+        self.approve(product_ids=[self.items['DR0133-01'], self.items['DR0133-02']])
+        self.run_pass()
+        self.assertEqual((self.row('DR0133-01')['state'], self.row('DR0133-02')['state']), ('approved', 'created'))
+        self.site.listing_silent.clear()
+        self.run_pass()
+        # The website made it the first time without saying so: sent again, it answers exists, never a second one.
+        self.assertEqual(self.row('DR0133-01')['state'], 'exists')
+        self.assertEqual(len(self.site.holders('DR0133-01')), 1)
+
+    # Failed calls ------------------------------------------------------------------------------------------
+
+    def test_a_failed_listings_call_marks_nothing_and_the_next_pass_tries_again(self):
+        self.on()
+        self.run_pass()
+        self.approve(product_ids=[self.items['DR0133-01']])
+        for broken, code in ((400, 'listings_malformed'), (503, 'dex_missing'), ('down', 'website_unavailable'),
+                             ('missing', 'website_half_missing'), ('auth', 'website_auth')):
+            if broken == 'down':
+                self.site.down = True
+            elif broken == 'missing':
+                self.site.missing = True
+            elif broken == 'auth':
+                self.env.stop()
+                self.env = patch.dict(os.environ, {**ENV, 'WEBSITE_KEY': 'ck_wrong'})
+                self.env.start()
+            else:
+                self.site.listing_status = broken
+            before = self.snapshot(['dex_listings'])
+            self.run_pass()
+            self.assertEqual(self.snapshot(['dex_listings']), before)
+            error = self.preview()['last_error']
+            self.assertEqual(error['code'], code, error)
+            if broken == 503:
+                self.assertIn('not active', error['message'])
+            if broken == 'missing':
+                self.assertIn('listings route', error['message'])
+            self.site.down = self.site.missing = False
+            self.site.listing_status = None
+        self.env.stop()
+        self.env = patch.dict(os.environ, ENV)
+        self.env.start()
+        self.run_pass()
+        self.assertEqual(self.row('DR0133-01')['state'], 'created')
+        self.assertIsNone(self.preview()['last_error'])
+        # The book's own last error is the book's: a listings failure never shows there.
+        status = self.client.get('/api/dex/sync', headers=self.headers('manager')).get_json()
+        self.assertIsNone(status['last_error'])
+
+    def test_a_status_popcore_cannot_read_marks_the_item_and_a_crash_is_kept_apart(self):
+        self.on()
+        self.run_pass()
+        self.approve(product_ids=[self.items['DR0133-01']])
+        original = self.site.make
+        self.site.make = lambda item: {**original(item), 'status': 'maybe'}
+        self.run_pass()
+        self.assertEqual((self.row('DR0133-01')['state'], self.row('DR0133-01')['code']), ('error', 'website_answer'))
+        with patch.object(dex_sync, 'send_listings', side_effect=RuntimeError('boom')), self.assertLogs('dex_sync', 'ERROR'):
+            self.run_pass()
+        self.assertEqual(self.preview()['last_error']['code'], 'dex_listings_failed')
+
+    # Waiting for the book ----------------------------------------------------------------------------------
+
+    def test_an_approved_item_waits_until_its_book_entry_is_on_the_website(self):
+        self.site.refuse[self.designs[0]] = 'possible_duplicate'
+        self.approve(product_ids=[self.items['DR0133-01'], self.items['DR0133-02']])
+        self.on()
+        self.run_pass()
+        self.assertEqual([item['popcore_id'] for item in self.sent()], ['DR0133-02'])
+        waiting = {one['popcore_id']: one for one in self.preview()['approved']}
+        self.assertEqual((waiting['DR0133-01']['state'], waiting['DR0133-01']['waits']), ('approved', 'book'))
+        self.assertIsNone(self.row('DR0133-01')['sent_at'])
+        # Taken off the book: it is not in the book, and still waits.
+        with closing(self.connect()) as con:
+            dex_book.update(con, self.designs[0], {'product_id': None}, ACTOR)
+        self.assertEqual(self.preview()['approved'][0]['waits'], 'not_in_book')
+        self.run_pass()
+        self.assertEqual(len(self.site.listing_calls), 1)
+
+    # Approving -----------------------------------------------------------------------------------------------
+
+    def test_approving_follows_the_list(self):
+        self.assertEqual(self.client.post('/api/dex/listings/approve', json={'all': True, 'count': 8},
+                                          headers=self.headers('staff')).status_code, 403)
+        response = self.approve(all=True, count=9)
+        self.assertEqual((response.status_code, response.get_json()['code']), (409, 'list_changed'))
+        response = self.approve(product_ids=[self.items['PM0400']])  # not in the book
+        self.assertEqual((response.status_code, response.get_json()['code']), (409, 'not_listable'))
+        response = self.approve(product_ids=[self.items['DR0133']])  # it has its listing
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.approve(product_ids=['DR0133-01']).status_code, 400)
+        self.assertEqual(self.approve().status_code, 400)
+        self.assertEqual(self.approve(product_ids=[self.items['DR0133-01'], self.items['DR0133-01']]).get_json(), {'approved': 1})
+        self.assertEqual(self.approve(product_ids=[self.items['DR0133-01']]).status_code, 409)  # approved already
+        row = self.row('DR0133-01')
+        self.assertEqual((row['state'], row['popcore_id'], row['approved_by']), ('approved', 'DR0133-01', 'auth0|manager'))
+        self.assertEqual(self.client.post('/api/dex/listings/withdraw', json={'product_id': self.items['DR0133-01']},
+                                          headers=self.headers('manager')).get_json(), {'withdrawn': 1})
+        self.assertIsNone(self.row('DR0133-01'))
+        # An item made earlier whose ID a newer catalogue read still lacks (its draft was deleted) shows again.
+        self.on()
+        self.run_pass()
+        self.approve(product_ids=[self.items['DR0133-05']])
+        self.run_pass()
+        self.assertNotIn('DR0133-05', self.by_id(self.preview()))
+        self.read({'DR0133': self.items['DR0133'], 'DR0133-SET': self.items['DR0133-SET']}, at='2099-01-01T00:00:00')
+        again = self.by_id(self.preview())['DR0133-05']
+        self.assertTrue(again['again'])
+        self.assertEqual(self.approve(product_ids=[self.items['DR0133-05']]).status_code, 200)
+        self.assertEqual(self.row('DR0133-05')['state'], 'approved')
+
+    def test_an_item_removed_from_popcore_leaves_the_list(self):
+        self.approve(product_ids=[self.items['PM0200']])
+        with closing(self.connect()) as con:
+            con.execute('PRAGMA foreign_keys=OFF')
+            con.execute('DELETE FROM products WHERE id=?', (self.items['PM0200'],))
+            con.commit()
+        self.assertIsNone(self.row('PM0200'))
+
+    def test_the_migration_runs_twice(self):
+        import db
+        with closing(self.connect()) as con:
+            con.execute("DELETE FROM _migrations WHERE name='dex_listings'")
+            con.commit()
+        db.migrate_db()
+        db.migrate_db()
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM _migrations WHERE name='dex_listings'").fetchone()[0], 1)
+
+
+def db_path():
+    import db
+    return db.DB_PATH

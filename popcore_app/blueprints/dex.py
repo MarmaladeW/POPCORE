@@ -2,7 +2,7 @@
 reads it; managers and admins write it. The rules are in dex_book.py and docs/dex-book.md.
 
 Step 3, the Dex sync to popcore.ca (dex_sync.py): managers see its state and preview, retry refused entries and upload
-pictures; only admins turn it on or off."""
+pictures; only admins turn it on or off. Step 4: managers approve listings for stocked items with none."""
 import io
 
 from flask import Blueprint, jsonify, request
@@ -189,6 +189,61 @@ def dex_sync_retry():
     if body.get('all') is not True and (isinstance(entry_id, bool) or not isinstance(entry_id, int)):
         return jsonify(error='Give the entry’s id, or all.', code='invalid_input'), 400
     return _run(lambda con: {'retried': dex_sync.retry(con, None if body.get('all') is True else entry_id)})
+
+
+# ── Step 4: listings on popcore.ca for stocked items with none (contract section 7) ──
+
+def _item_id(body, field='product_id'):
+    value = body.get(field)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise dex_book.DexError(f'Give the item’s {field}.', 'invalid_input')
+    return value
+
+
+@bp.get('/api/dex/listings')
+@role_required('manager')
+def dex_listings():
+    """The catch-up preview: stocked items with no listing (ready, waiting for their book entry, or not in the book),
+    the approved ones, the refused ones with the website's reason, and the answered ones. Nothing changes."""
+    return _run(dex_sync.listings)
+
+
+@bp.post('/api/dex/listings/approve')
+@role_required('manager')
+def dex_listings_approve():
+    """{product_ids: [...]} or {all: true, count: n} (n: how many the screen showed). Approved items go to
+    popcore.ca on the Dex sync's pass, only while its switch is on and once their book entry is on the website."""
+    body = request.get_json(silent=True) or {}
+    actor = request.jwt_payload.get('sub')
+
+    def work(con):
+        if body.get('all') is True:
+            count = body.get('count')
+            if isinstance(count, bool) or not isinstance(count, int):
+                raise dex_book.DexError('Give the count the screen showed.', 'invalid_input')
+            return dex_sync.approve_listings(con, None, actor, count)
+        ids = body.get('product_ids')
+        if not isinstance(ids, list) or not ids or len(ids) > dex_sync.LISTING_LIST or any(
+                isinstance(one, bool) or not isinstance(one, int) for one in ids):
+            raise dex_book.DexError('Give the items’ product_ids, or all with the count.', 'invalid_input')
+        return dex_sync.approve_listings(con, list(dict.fromkeys(ids)), actor)
+    return _run(work)
+
+
+@bp.post('/api/dex/listings/withdraw')
+@role_required('manager')
+def dex_listings_withdraw():
+    """{product_id}: an approved or refused item comes off the list and shows in the preview again."""
+    body = request.get_json(silent=True) or {}
+    return _run(lambda con: dex_sync.withdraw_listing(con, _item_id(body)))
+
+
+@bp.post('/api/dex/listings/retry')
+@role_required('manager')
+def dex_listings_retry():
+    """{product_id} or {all: true}: refused items go again with the next pass."""
+    body = request.get_json(silent=True) or {}
+    return _run(lambda con: dex_sync.retry_listings(con, None if body.get('all') is True else _item_id(body)))
 
 
 @bp.post('/api/dex/entries/<int:entry_id>/picture')

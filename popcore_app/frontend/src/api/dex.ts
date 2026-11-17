@@ -121,3 +121,44 @@ export const uploadDexPicture = (id: number, file: File) => {
   form.append('file', file)
   return client.post<DexDetail>(`/dex/entries/${id}/picture`, form).then(r => r.data)
 }
+
+// 图鉴 Dex step 4: listings on popcore.ca for stocked items with none (contract §7). A manager approves them from the
+// preview; they go as drafts on the Dex sync's pass once it is on and the item's book entry is on the website.
+export type DexListingKind = 'blind_box' | 'ordinary' | 'confirmed_design'
+export type DexListingState = 'approved' | 'created' | 'completed' | 'exists' | 'refused' | 'error'
+export interface DexListingCandidate {
+  product_id: number; popcore_id: string; kind: DexListingKind; name: string; book_ref: number | null
+  popcore_type: string | null; price_cents: number | null
+  set_id?: string | null; boxes_per_set?: number | null; set_price_cents?: number | null
+  // Units a web order may take; a blind box's sealed sets beside (null with no Whole Set).
+  stock: number; set_stock: number | null
+  missing: string[]; action: 'new' | 'complete'
+  state: 'ready' | 'book_waiting' | 'not_in_book'
+  entry: { id: number; kind: DexKind; name: string } | null
+  // Made before, but a newer catalogue read still lacks it.
+  again: boolean
+}
+export interface DexListingRow {
+  product_id: number; popcore_id: string; name: string; state: DexListingState
+  approved_by: string; approved_at: string; sent_at: string | null; answered_at: string | null
+  website_product_id: number | null; code: string | null; message: string | null
+  // Approved rows only: what it waits for (null: it goes with the next pass while the switch is on).
+  waits?: 'book' | 'not_in_book' | null
+}
+export interface DexListings {
+  enabled: boolean; catalogue_read_at: string | null
+  counts: {
+    candidates: number; ready: number; book_waiting: number; not_in_book: number; approvable: number
+    new: number; complete: number; approved: number; refused: number; done: number
+    created: number; completed: number; exists: number
+  }
+  candidates: DexListingCandidate[]; approved: DexListingRow[]; refused: DexListingRow[]; done: DexListingRow[]
+  last_error: DexSyncProblem | null
+}
+export const dexListings = () => client.get<DexListings>('/dex/listings').then(r => r.data)
+export const approveDexListings = (target: number[] | { all: true; count: number }) =>
+  client.post<{ approved: number }>('/dex/listings/approve', Array.isArray(target) ? { product_ids: target } : target).then(r => r.data)
+export const withdrawDexListing = (product_id: number) =>
+  client.post<{ withdrawn: number }>('/dex/listings/withdraw', { product_id }).then(r => r.data)
+export const retryDexListings = (target: number | 'all') =>
+  client.post<{ retried: number }>('/dex/listings/retry', target === 'all' ? { all: true } : { product_id: target }).then(r => r.data)

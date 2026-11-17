@@ -106,3 +106,5 @@
 .pc-dex-sync-state span { overflow-wrap: anywhere; min-width: 0; }
 .pc-dex-file { display: none; }
 @media (max-width: 600px) { .pc-dex-sync-counts > div:last-child:nth-child(odd) { grid-column: span 2; } }
+/* Step 4: a refused listing's two buttons sit side by side, and wrap on a phone. */
+.pc-dex-listing-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex: none; }

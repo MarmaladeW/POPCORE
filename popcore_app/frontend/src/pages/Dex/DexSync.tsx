@@ -3,22 +3,17 @@ import { Alert, Button, Input, Modal, Popconfirm, Skeleton, message } from 'antd
 import { Link } from 'react-router-dom'
 
 import {
-  dexSyncPreview, dexSyncStatus, retryDexSync, switchDexSync, type DexSyncPreview, type DexSyncStatus,
+  dexListings, dexSyncPreview, dexSyncStatus, retryDexSync, switchDexSync, type DexListings, type DexSyncPreview,
+  type DexSyncStatus,
 } from '../../api/dex'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { ListRow, Panel } from '../../components/pc/Panel'
 import { KIND_LABEL } from '../../lib/dexFields'
-import { errorText } from './DexParts'
+import DexListingsPanels from './DexListings'
+import { errorText, when } from './DexParts'
 import './dex.css'
 
-// Times are saved in UTC and shown as Toronto time.
-export function when(utc: string | null) {
-  if (!utc) return '—'
-  const time = new Date(`${utc.replace(' ', 'T').replace(/Z$/, '')}Z`)
-  return Number.isNaN(time.getTime()) ? utc
-    : time.toLocaleString('en-CA', { timeZone: 'America/Toronto', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
-}
 
 const kindName = (kind: keyof typeof KIND_LABEL) => `${KIND_LABEL[kind].zh} ${KIND_LABEL[kind].en}`
 
@@ -29,6 +24,7 @@ export default function DexSyncPage() {
   const admin = useHasRole('admin')
   const [status, setStatus] = useState<DexSyncStatus>()
   const [preview, setPreview] = useState<DexSyncPreview>()
+  const [listings, setListings] = useState<DexListings>()
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
   const [busy, setBusy] = useState('')
@@ -39,8 +35,8 @@ export default function DexSyncPage() {
 
   useEffect(() => {
     let live = true
-    const load = () => Promise.all([dexSyncStatus(), dexSyncPreview()]).then(([next, nextPreview]) => {
-      if (live) { setStatus(next); setPreview(nextPreview); setError('') }
+    const load = () => Promise.all([dexSyncStatus(), dexSyncPreview(), dexListings()]).then(([next, nextPreview, nextListings]) => {
+      if (live) { setStatus(next); setPreview(nextPreview); setListings(nextListings); setError('') }
     }).catch(cause => { if (live) setError(errorText(cause, 'Unable to load the Dex sync.')) })
     load()
     // The sync runs every 30 seconds on the server; keep the page in step while it is open.
@@ -79,7 +75,7 @@ export default function DexSyncPage() {
   if (error) return <div className="pc-dex">{header}
     <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={() => setAttempt(n => n + 1)}>Retry</Button>} />
   </div>
-  if (!status || !preview) return <div className="pc-dex">{header}<div className="pc-panel"><div className="pc-quiet"><Skeleton active /></div></div></div>
+  if (!status || !preview || !listings) return <div className="pc-dex">{header}<div className="pc-panel"><div className="pc-quiet"><Skeleton active /></div></div></div>
 
   const counts = status.counts
   const missing = status.website_check && !status.website_check.ok ? status.website_check : null
@@ -161,6 +157,8 @@ export default function DexSyncPage() {
           {showAll ? 'Show fewer' : `Show all ${preview.deletes.length}`}</Button>}
       </section>}
     </Panel>}
+
+    <DexListingsPanels data={listings} busy={busy} run={run} />
 
     <Modal open={turningOn} title="开启图鉴同步 Turn the Dex sync on" okText="开启 Turn on" cancelText="取消 Cancel"
       okButtonProps={{ disabled: !typedOk, loading: busy === 'switch' }} onCancel={() => setTurningOn(false)} onOk={turnOn}>
