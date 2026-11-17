@@ -139,7 +139,7 @@ export default function DexEntryPage() {
       </div>
     </section>
     {(entry.kind === 'design' || entry.kind === 'product') && <DexPriceTrend entryId={entry.id} design={entry.kind === 'design'}
-      linked={entry.product_id !== null}
+      linked={entry.product_id !== null} productId={entry.product_id} canEdit={manager}
       hasWebsite={Array.isArray(entry.extras.market_prices) && entry.extras.market_prices.length > 0} />}
     {entry.kind === 'ip' && entry.named_by.length > 0 && <Panel zh="也出现在" en="Also in" label="Also in"
       count={entry.named_by.length} tone="ok">

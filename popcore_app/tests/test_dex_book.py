@@ -670,7 +670,7 @@ class DexBookTests(IsolatedApiCase):
         prices = [{'price': 140, 'recorded_at': '2026-11-02', 'source': 'collector'}, {'price': 'x'}, 'bad']
         self.assertEqual(self.patch(book['sun'], extras={'market_prices': prices}).status_code, 200)
         unlinked = self.get(f"/api/dex/entries/{book['sun']}/prices", 'viewer')
-        self.assertEqual(unlinked, {'linked': False, 'current_cents': None, 'points': [],
+        self.assertEqual(unlinked, {'linked': False, 'confirmed_design': False, 'current_cents': None, 'points': [],
                                     'website': [{'price': 140, 'recorded_at': '2026-11-02', 'source': 'collector'}]})
         self.assertEqual(self.patch(book['sun'], product_id=item).status_code, 200)
         self.assertEqual(self.get(f"/api/dex/entries/{book['sun']}/prices")['points'], [])  # nothing set yet
@@ -686,7 +686,7 @@ class DexBookTests(IsolatedApiCase):
             before = con.execute('SELECT COUNT(*), MAX(id) FROM design_prices').fetchone()[:]
         for role in ('viewer', 'staff', 'manager'):
             trend = self.get(f"/api/dex/entries/{book['sun']}/prices", role)
-            self.assertEqual((trend['linked'], trend['current_cents']), (True, 3200))
+            self.assertEqual((trend['linked'], trend['confirmed_design'], trend['current_cents']), (True, True, 3200))
             self.assertEqual([(p['cents'], p['set_at'], p['set_by'], p['set_by_name']) for p in trend['points']],
                              [(3200, '2026-11-13 18:00:00', 'auth0|manager', 'Mia'),
                               (2800, '2026-11-12 03:30:00', 'auth0|someone', None),
@@ -714,7 +714,8 @@ class DexBookTests(IsolatedApiCase):
             before = con.execute('SELECT COUNT(*), MAX(id) FROM product_price_history').fetchone()[:]
         for role in ('viewer', 'staff', 'manager'):
             trend = self.get(f"/api/dex/entries/{book['pianist']}/prices", role)
-            self.assertEqual((trend['linked'], trend['current_cents'], trend['website']), (True, 3200, []))
+            self.assertEqual((trend['linked'], trend['confirmed_design'], trend['current_cents'], trend['website']),
+                             (True, False, 3200, []))
             self.assertEqual([(p['cents'], p['previous_cents'], p['source'], p['set_by'], p['set_by_name'])
                               for p in trend['points']],
                              [(3200, None, 'update', None, None), (2800, 2500, 'update', None, None),
