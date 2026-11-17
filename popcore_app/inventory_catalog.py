@@ -9,7 +9,8 @@ import uuid
 
 import design_prices
 from catalog_identity import (
-    FORMS_TO_UNITS, CatalogConflict, normalize_design_name, product_alias_text_sql, update_product_identity,
+    FORMS_TO_UNITS, CatalogConflict, normalize_design_name, official_design_label, product_alias_text_sql,
+    update_product_identity,
 )
 from goods_operations import _begin, _replay, _remember
 from sealed_sets import create_sealed_set, sealed_set_item
@@ -313,7 +314,8 @@ def add_designs(con, product_id, data, *, actor, request_key):
         product_ids = []
         for design in names:
             number += 1
-            design_sku, jizhanming, name = f'{sku}-{number:02d}', f'{parent_name} {design}', f'{full_name} · {design}'
+            design_sku, jizhanming = f'{sku}-{number:02d}', f'{parent_name} {design}'
+            name = f'{full_name} · {official_design_label(design)}'
             search = ' '.join(value for value in (design_sku, jizhanming, name, product['brand'], product['ip_series'])
                               if value).lower()
             product_ids.append(con.execute(
@@ -441,7 +443,8 @@ def edit_design(con, design_id, data, *, actor):
             parent_name = _display_name(head) if head else ''
             full_name = ((head['name_cn_en'] or _display_name(head)).strip() if head else '')
             updates.update(design_name=name, jizhanming=f'{parent_name} {name}'.strip(),
-                           name_cn_en=f'{full_name} · {name}' if full_name else name)
+                           name_cn_en=f'{full_name} · {official_design_label(name)}' if full_name
+                           else official_design_label(name))
             updates['search_blob'] = ' '.join(value for value in (
                 design['sku'], updates['jizhanming'], updates['name_cn_en'], design['brand'], design['ip_series'])
                 if value).lower()

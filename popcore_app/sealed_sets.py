@@ -34,7 +34,8 @@ def sealed_set_item(box, boxes):
         'box_product_id': box['id'], 'box_sku': box['sku'], 'name': name,
         'boxes_per_set': boxes, 'set_sku': f"{box['sku']}{SET_SUFFIX}" if box['sku'] else None,
         'set_jizhanming': f'{name} 整端',
-        'set_name': f"{(box['name_cn_en'] or name).strip()} · 整端 Sealed set",
+        # The official name is English (owner, 2026-11-09); popcore.ca sells a sealed set as a Whole Set.
+        'set_name': f"{(box['name_cn_en'] or name).strip()} · Whole Set",
         'set_price': round(box['price'] * boxes, 2) if box['price'] is not None else None,
     }
 
