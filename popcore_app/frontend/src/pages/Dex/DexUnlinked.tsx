@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Form, Input, Modal, Pagination, Select, Skeleton, message } from 'antd'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { createEntry, searchEntries, unlinkedItems, updateEntry, type DexUnlinkedItem, type DexUnlinkedPage } from '../../api/dex'
 import { useHasRole } from '../../auth/useRole'
@@ -23,8 +23,10 @@ const suggestedName = (item: DexUnlinkedItem) => item.suggested_entry?.full_name
 // item in the book under a series, IP or company; a design goes under the book product its box is linked to.
 export default function DexUnlinked() {
   const manager = useHasRole('manager')
-  const [text, setText] = useState('')
-  const [query, setQuery] = useState('')
+  // ?q= opens it on one item (the listings panel's 放进图鉴 Put in the book link).
+  const [params] = useSearchParams()
+  const [text, setText] = useState(() => params.get('q') || '')
+  const [query, setQuery] = useState(() => (params.get('q') || '').trim())
   const [page, setPage] = useState(1)
   const [data, setData] = useState<DexUnlinkedPage>()
   const [error, setError] = useState('')

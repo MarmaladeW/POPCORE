@@ -10,6 +10,14 @@ import { KIND_LABEL, kindText } from '../../lib/dexFields'
 
 export const errorText = (cause: any, fallback = 'That did not save. Try again.') => cause?._serverMessage || fallback
 
+// Times are saved in UTC and shown as Toronto time.
+export function when(utc: string | null) {
+  if (!utc) return '—'
+  const time = new Date(`${utc.replace(' ', 'T').replace(/Z$/, '')}Z`)
+  return Number.isNaN(time.getTime()) ? utc
+    : time.toLocaleString('en-CA', { timeZone: 'America/Toronto', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
 // The entry's picture from the website, by address (no upload in step 1); a letter when it has none.
 export function DexThumb({ entry, size = 40 }: { entry: Pick<DexEntry, 'name' | 'thumb_url' | 'picture_url'>; size?: number }) {
   const src = entry.thumb_url || entry.picture_url

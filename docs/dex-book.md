@@ -443,12 +443,89 @@ the website's half is missing the page says so plainly. On an entry's page: its 
 `GET /wp-json/popcore/v1/book` (500 a page, with the stock sync's key from the environment) and writes the
 `book-export.json` shape `scripts/load_dex_book.py` reads. It only reads; `--out` must not exist yet.
 
-**Not in this step.** Listings (contract section 7, step 4); re-loads after switch-over.
+**Not in this step.** Listings (contract section 7: step 4, below); re-loads after switch-over.
 
-## Later steps
+## Step 4: listings on popcore.ca and the catch-up (`popcore_app/dex_sync.py`, end of the file)
 
-4. Listings by themselves and the catch-up.
+POPCORE's half of contract section 7 ([dex-book-contract.md](dex-book-contract.md) 1.9.6). The website's half, `POST
+/wp-json/popcore/v1/listings` in catalog 1.3.2, went live on 16 Nov 2026. Contract section 10 says the catch-up for
+stocked items with no listing runs from a preview list the owner approves, with Sonny Angel Makeup Angel (DR0133,
+DR0133-SET, DR0133-01 to -05) as the test. So nothing goes out by itself: a manager approves each item, or the
+whole list, and nothing goes while the Dex switch is off. It is tested against the pretend website in
+`tests/test_dex_sync.py` (`DexListingsTests`). `website_sync.py` is not changed: the listings read its last catalogue
+read (`website_items`), its shelf stock and its `refresh_requested` state.
+
+**The preview** (`dex_sync.listings`, read only). A POPCORE item is listed when:
+- it is a blind box (`random_box`), an ordinary item or a confirmed design, with an ID (a sealed set is never an item
+  of its own: it is its box's Whole Set option);
+- it has stock a web order may take on a live store's shelves (`website_sync._shelf_stock`, as the stock sync counts
+  it), or, for a blind box, its sealed set has;
+- its ID is on no website item in the stock sync's last catalogue read (the website leaves trash out the same way), or,
+  for a blind box with a Whole Set in POPCORE, the Whole Set's ID is missing (the website will then answer
+  `completed`). With no catalogue read yet, nothing is listed.
+
+Each item is `ready` (its book entry, a product for a box or an item, a design for a confirmed design, has been
+accepted by the website, so `book_ref` works), `book_waiting` (in the book, not on the website yet: it can be
+approved, and it waits) or `not_in_book` (no live book entry of its kind links it; it cannot be approved, and
+the screen links to 不在图鉴里 Not in the book yet).
+
+**What is sent** (`dex_sync.listing_item`): `popcore_id`, `kind` (`blind_box`, `ordinary`, `confirmed_design`),
+`name`, `book_ref` (the book entry's id), `popcore_type` (`products.product_type`) and `price_cents`; a blind box adds
+`set_id` = exactly `<ID>-SET` when POPCORE has that sealed set (else null), `boxes_per_set` and `set_price_cents`.
+- `name` is the book entry's full name (contract section 2: the name shoppers and staff see; POPCORE's own
+  `name_cn_en` when the book gives none). It is the starting name only and goes with the one call that makes the
+  draft (owner, 12 Nov 2026: "a listing's name starts from POPCORE and is then the website's"): an answered item
+  is never sent again.
+- `price_cents` follows the stock sync's own rule, so the draft starts at the price the sync then keeps: a verified
+  item's `products.price`; for a design only a price a manager set (`design_prices.confirmed`), never the box's price,
+  else null. `set_price_cents` is the boxes per set (the set's, else its box's) times the box's price.
+
+**Approving** (managers). One item, or all of them with the count the screen showed (409 `list_changed` when the list
+changed meanwhile). An approval is a row in `dex_listings` (migration `dex_listings`: one row per POPCORE item, no
+foreign key on purpose, like `product_price_history`, and removed with the item by a trigger). An approved or refused
+item can be withdrawn; it then shows in the preview again.
+
+**Sending.** On the Dex sync's 30-second pass, after the book, only while the switch is on: approved items whose book
+entry the website has, boxes and items before designs (a design's box is made first), up to 50 a call, as many calls as
+fit in about 20 seconds. An approved item whose book entry is not on the website yet waits (held for a format, refused,
+or not sent yet). A pass with nothing approved reads one row and writes nothing.
+
+**Answers** (contract sections 7 and 8). Matched by `popcore_id`, any case:
+- `created`, `completed`, `exists`: kept with the website's product number and any note (a draft whose series the
+  catalog's lists lack is still `created`, with a message). After a `created` or `completed` the stock sync is asked
+  for its next catalogue read (`refresh_requested`), which brings the draft its stock, price and pickup stores
+  (contract 7.7). An item made earlier whose ID a newer catalogue read still lacks (its draft was deleted) shows in the
+  preview again.
+- `refused` or `error` with `item_malformed`, `book_unknown`, `id_in_use`, `listing_not_variable`, `options_unusual` or
+  `listing_failed`: kept with the code and message and listed for a manager with a plain hint. It is not sent again
+  every pass: only when what POPCORE would send for it changes (a new manager price, a new book entry) or a manager
+  presses Retry.
+- An item the answer does not mention stays approved and goes again (the website answers `exists` if it made it).
+- A call that fails marks nothing and is kept apart from the book's error (`listings_last_error`): HTTP 400
+  `listings_malformed`, 503 `dex_missing`, a missing route (404), a refused key, unreachable, or an answer that cannot
+  be read. The next pass tries again.
+
+**Routes** (`blueprints/dex.py`, managers):
+
+| Route | What |
+|---|---|
+| `GET /api/dex/listings` | The preview (`candidates`), the approved items with what each waits for, the refused ones, the answered ones, counts, the catalogue read's time and the last failed call |
+| `POST /api/dex/listings/approve` | `{product_ids: [...]}`, or `{all: true, count}`; 409 `not_listable` for an item not on the list, `list_changed` for a stale count |
+| `POST /api/dex/listings/withdraw` | `{product_id}`: an approved or refused item comes off the list |
+| `POST /api/dex/listings/retry` | `{product_id}` or `{all: true}`: refused items go again with the next pass |
+
+**Screens.** On 图鉴同步 Dex sync (`/dex/sync`): 网站上架 Listings on popcore.ca with the counts (可发送 Ready, 等图鉴
+Waiting for the book send, 不在图鉴 Not in the book, 已批准 Approved, 被拒 Refused, 已完成 Done), the list to approve with
+each item's options, prices and stock, 批准 Approve and 全部批准 Approve all; 已批准 Approved, not sent yet, with what each
+waits for and 撤回 Withdraw; 网站拒收 Listings refused by popcore.ca with the reason, 重试 Retry, 全部重试 Retry all and
+Withdraw; 已完成 Answered by popcore.ca. Browser check: `tests/browser/check_dex_listings.py`.
+
+**Rehearsal** (16 Nov 2026, the nightly copy of live with the formats fill, `POPCORE_DB_PATH` on a scratch copy):
+69 stocked items have no listing: 61 in the book (30 blind boxes, 16 items, 15 designs; 44 new listings and 25
+boxes missing only their Whole Set), 8 not in the book. With the pretend website after a first full send, 59 of the 61
+go (2 wait behind products held for a format), Makeup Angel's five designs are made, and 3 boxes whose ID sits on a
+simple listing answer `listing_not_variable`.
 
 Tests: `popcore_app/tests/test_dex_book.py`, `popcore_app/tests/test_dex_load.py`, `popcore_app/tests/test_dex_decisions.py`,
 `popcore_app/tests/test_dex_sync.py`, `popcore_app/tests/browser/check_dex_book.py`, `popcore_app/tests/browser/check_dex_unlinked.py`,
-`popcore_app/tests/browser/check_dex_sync.py`.
+`popcore_app/tests/browser/check_dex_sync.py`, `popcore_app/tests/browser/check_dex_listings.py`.
