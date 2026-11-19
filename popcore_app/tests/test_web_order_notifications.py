@@ -102,7 +102,8 @@ class WebOrderNotificationTests(BoardCase):
         self.assertEqual(push.unb64(answer['key'])[:1], b'\x04')
         path = push.key_file()
         self.assertEqual(path.parent, push.Path(push.db.DB_PATH).parent)
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        if os.name == 'posix':  # Windows has no owner-only file modes; the server is Linux
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(self.client.get('/api/website/notifications', headers=STAFF).get_json()['key'], answer['key'])
         with closing(self.connect()) as con:  # never in the database
             self.assertNotIn('PRIVATE KEY', '\n'.join(con.iterdump()))
