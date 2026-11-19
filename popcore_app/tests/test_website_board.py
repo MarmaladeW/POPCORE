@@ -20,7 +20,10 @@ def _days_ago(days):
     return (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%S')
 
 
-class WebOrdersBoardTests(WebsiteCase):
+class BoardCase(WebsiteCase):
+    """DT live with nine web orders in every state, and a staff member with DT access (test_web_order_notifications.py
+    builds on it)."""
+
     def setUp(self):
         super().setUp()
         self.turn_on()
@@ -65,6 +68,8 @@ class WebOrdersBoardTests(WebsiteCase):
         return self.client.post(f'/api/website/board/orders/{order_id}/{action}',
                                 json={'code': code} if code else {}, headers=headers)
 
+
+class WebOrdersBoardTests(BoardCase):
     def test_orders_sit_in_their_columns_oldest_first_with_nothing_personal(self):
         response = self.client.get('/api/website/board', headers=STAFF)
         board = response.get_json()

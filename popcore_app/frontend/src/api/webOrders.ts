@@ -48,3 +48,14 @@ export const markWebOrderReady = (id: number) =>
   client.post<WebOrderStep>(`/website/board/orders/${id}/ready`).then(r => r.data)
 export const handWebOrderOver = (id: number, code: string) =>
   client.post<WebOrderStep>(`/website/board/orders/${id}/handed-over`, { code }).then(r => r.data)
+
+// Notifications for new web orders (owner, 2026-11-19): Web Push to the devices a person turns on.
+export type WebOrderDevices = { devices: number }
+export const getWebOrderNotifications = () =>
+  client.get<WebOrderDevices & { key: string }>('/website/notifications').then(r => r.data)
+export const notifyThisDevice = (subscription: PushSubscriptionJSON) =>
+  client.post<WebOrderDevices>('/website/notifications', { subscription }).then(r => r.data)
+export const stopNotifyingThisDevice = (endpoint: string) =>
+  client.post<WebOrderDevices>('/website/notifications/off', { endpoint }).then(r => r.data)
+export const testWebOrderNotification = () =>
+  client.post<WebOrderDevices & { sent: number; failed: number }>('/website/notifications/test').then(r => r.data)

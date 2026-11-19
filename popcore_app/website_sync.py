@@ -56,6 +56,7 @@ Nothing is written to the website until an admin turns the sync on. The backgrou
 last set it. A full reread of the website's catalogue every day catches edits made there.
 """
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -1182,7 +1183,9 @@ def apply_order(con, cfg, order):
                            :delivery)""",
                     {**facts, 'lines': json.dumps(facts['lines'])})
         con.commit()
-        return record(con, cfg, facts['wc_order_id'])
+        result = record(con, cfg, facts['wc_order_id'])
+        _announce(con, cfg, facts['wc_order_id'])
+        return result
     if row['state'] == 'needs_review':
         _read_ids(con, cfg, facts['lines'])  # before the writes below
     # The pickup code comes later for orders paid before 2026-11-16, and the FleetNow facts once it is booked.
@@ -1210,6 +1213,17 @@ def apply_order(con, cfg, order):
                        WHERE wc_order_id=?""", (facts['wc_order_id'],))
         con.commit()
     return state_of(con, facts['wc_order_id'])
+
+
+def _announce(con, cfg, wc_order_id):
+    """A phone notification for a new paid web order (push_notifications.py). It never holds up the sync."""
+    try:
+        import push_notifications
+        push_notifications.new_order(con, cfg, wc_order_id)
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        logging.getLogger(__name__).exception('Web order notification failed')
 
 
 def state_of(con, wc_order_id):

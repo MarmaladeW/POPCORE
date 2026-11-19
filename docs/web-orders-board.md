@@ -86,6 +86,32 @@ Both are pickup only; FleetNow moves deliveries.
 
 The sync's REST key needs Read/Write, which it already has for products. Confirm it on the first real Ready press.
 
+## Notifications for new orders
+
+Owner, 2026-11-19: "the order on woocommerce does not notify me, it only notifies the one email that is setted, so we
+need our own notification thing." Two kinds, both for new paid web orders only:
+
+- **On a phone or computer, even with POPCORE closed** (`push_notifications.py`). On 网站订单, a person taps
+  **在本设备开启 Notify me on this device** and allows notifications. From then on that device gets a notification for
+  every new paid web order of the stores they have store operations access for: "网站订单 #35864 · 自取 DT pickup" with
+  its lines (and "需要经理 Needs a manager" first when POPCORE could not take it out of stock). Tapping it opens
+  网站订单. **测试 Test** sends one to every device of that person; **关闭 Turn off** stops this device.
+  - iPhone and iPad: only POPCORE added to the Home Screen (Share → Add to Home Screen, iOS 16.4 or later) and opened
+    from there can turn them on. In Safari itself the page says so.
+  - It is standard Web Push: no app store, no outside account. Each message is signed with POPCORE's own key (VAPID,
+    RFC 8292) and encrypted for that one device (RFC 8291), so Google, Apple or Mozilla, who carry it, cannot read it.
+    Messages hold the order number, store and lines, never anything about the customer, and expire after a day.
+  - POPCORE posts only to the browsers' push services (`fcm.googleapis.com`, `*.push.apple.com`,
+    `*.push.services.mozilla.com`, `*.notify.windows.com`); a page cannot make it post anywhere else. A device the push
+    service says is gone is forgotten. A failed notification never holds up the sync.
+  - The key is made on first use in `push-vapid-key.pem` beside the database (`PUSH_KEY_FILE` overrides; mode 600,
+    ignored by git, not in the database or its backups). If it is lost, a new one is made and every device taps Notify
+    me again.
+  - The service worker (`/sw.js`) only shows these notifications. It caches nothing.
+- **On the open board**: a new order pops up at the bottom right at the next refresh and stays until closed, with a
+  chime. **提示音 Sound** turns the chime off for that browser. Browsers play sound only after someone has touched the
+  page, so on the shop computer click anywhere on the board once after opening it.
+
 ## What the board never does
 
 Cancel, refund or edit an order; send an email (the website sends them all); book FleetNow (a manager uses "Dispatch
@@ -102,5 +128,5 @@ via Fleetnow" on the website's order screen); move stock; set a delivery order's
 
 ## Checks
 
-`popcore_app/tests/test_website_board.py` and `popcore_app/tests/browser/check_web_orders.py` (screenshots in
+`popcore_app/tests/test_website_board.py`, `popcore_app/tests/test_web_order_notifications.py` and `popcore_app/tests/browser/check_web_orders.py` (screenshots in
 `.local/web-orders/`).

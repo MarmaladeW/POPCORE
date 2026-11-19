@@ -2122,6 +2122,7 @@ def _get_migrations():
         ('report_sets_opened',                         _migration_report_sets_opened),
         ('dex_listings',                               _migration_dex_listings),
         ('website_order_board',                        _migration_website_order_board),
+        ('push_subscriptions',                         _migration_push_subscriptions),
     ]
 
 
@@ -2502,6 +2503,23 @@ def _migration_website_order_board(con, cur):
         cur.execute('ALTER TABLE website_orders ADD COLUMN delivery TEXT')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_website_orders_pickup_code ON website_orders(pickup_code)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_board')")
+
+
+def _migration_push_subscriptions(con, cur):
+    # Notifications for new web orders (owner, 2026-11-19: "we need our own notification thing"): the browsers and
+    # Home Screen apps that asked for them, one row per device, each with its owner's sign-in (push_notifications.py).
+    # The push keys of a device are not secrets; POPCORE's own signing key is a file, never in the database.
+    cur.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions (
+        endpoint     TEXT    PRIMARY KEY,
+        auth0_sub    TEXT    NOT NULL,
+        p256dh       TEXT    NOT NULL,
+        auth         TEXT    NOT NULL,
+        failures     INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        last_sent_at TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_push_subscriptions_sub ON push_subscriptions(auth0_sub)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscriptions')")
 
 
 def _migration_inventory_viewers(con, cur):

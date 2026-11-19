@@ -1,4 +1,4 @@
-import type { WebOrderCard, WebOrderCodeResult, WebOrderColumn, WebOrderLine } from '../../api/webOrders.ts'
+import type { WebOrderCard, WebOrderCodeResult, WebOrderColumn, WebOrderLine, WebOrdersBoard } from '../../api/webOrders.ts'
 import { whereText } from '../../lib/stockPlaces.ts'
 
 // The five columns, left to right (website session's brief, 2026-11-19).
@@ -95,4 +95,26 @@ export function codeMissText(result: Exclude<WebOrderCodeResult, { found: true }
     case 'status': return `${STATUS[result.status ?? ''] ?? `The website has this order as “${result.status}”.`} It cannot be handed over here: ask a manager.`
   }
   return ''
+}
+
+/** Every order on the board that is still open: the five columns and Needs a manager. */
+export const openCards = (board: WebOrdersBoard): WebOrderCard[] =>
+  [...Object.values(board.columns).flat(), ...board.needs_manager]
+
+/** Open orders the board did not have before: the ones to announce. */
+export const newCards = (board: WebOrdersBoard, seen: Set<number>): WebOrderCard[] =>
+  openCards(board).filter(card => !seen.has(card.id))
+
+/** A new order as the board's pop-up says it. */
+export const announceText = (card: WebOrderCard) =>
+  `${card.kind === 'pickup' ? `自取 ${card.store} pickup` : '配送 Delivery'} · ${card.lines.map(line => `${line.name} × ${line.quantity}`).join(', ')}`
+
+// POPCORE's push key travels as base64url; browsers take and give it as bytes.
+export function keyBytes(text: string): Uint8Array<ArrayBuffer> {
+  const plain = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - text.length % 4) % 4))
+  return Uint8Array.from(plain, ch => ch.charCodeAt(0))
+}
+export function keyText(bytes: ArrayBuffer | Uint8Array | null | undefined): string {
+  if (!bytes) return ''
+  return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }

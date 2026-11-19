@@ -11,6 +11,7 @@ import os
 
 from flask import Blueprint, jsonify, request
 
+import push_notifications as push
 import website_board as board
 import website_sync as sync
 from auth import role_required
@@ -214,3 +215,47 @@ def web_orders_step(wc_order_id, action):
     except (board.BoardError, sync.WebsiteError) as exc:
         return _board_error(exc)
     return jsonify(result=result, noted=noted)
+
+
+# ── Notifications for new web orders (push_notifications.py) ───────────────
+
+@bp.get('/api/website/notifications')
+@role_required('staff')
+def web_orders_notifications():
+    """POPCORE's public push key, and how many devices this person has turned on."""
+    con = get_db()
+    return jsonify(key=push.public_key(), devices=push.devices(con, request.jwt_payload['sub']))
+
+
+@bp.post('/api/website/notifications')
+@role_required('staff')
+def web_orders_notify_me():
+    """Turn notifications on for this device, as {"subscription": the browser's PushSubscription JSON}."""
+    data = request.get_json(silent=True) or {}
+    con = get_db()
+    try:
+        push.subscribe(con, request.jwt_payload['sub'], data.get('subscription'))
+    except push.PushError as exc:
+        return jsonify(error=str(exc), code='invalid_input'), 400
+    return jsonify(devices=push.devices(con, request.jwt_payload['sub']))
+
+
+@bp.post('/api/website/notifications/off')
+@role_required('staff')
+def web_orders_notify_off():
+    data = request.get_json(silent=True) or {}
+    con = get_db()
+    if isinstance(data.get('endpoint'), str):
+        push.unsubscribe(con, request.jwt_payload['sub'], data['endpoint'])
+    return jsonify(devices=push.devices(con, request.jwt_payload['sub']))
+
+
+@bp.post('/api/website/notifications/test')
+@role_required('staff')
+def web_orders_notify_test():
+    """A test notification to every device of this person."""
+    con = get_db()
+    rows = con.execute('SELECT * FROM push_subscriptions WHERE auth0_sub=?', (request.jwt_payload['sub'],)).fetchall()
+    sent, failed = push.send(con, rows, {'title': '网站订单 Web orders', 'body': '通知已开启 Notifications are on.',
+                                         'url': '/web-orders', 'tag': 'web-order-test'})
+    return jsonify(sent=sent, failed=failed, devices=push.devices(con, request.jwt_payload['sub']))

@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { Alert, Button, Input, Popconfirm, Skeleton, message } from 'antd'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Alert, Button, Input, Popconfirm, Skeleton, message, notification } from 'antd'
 
 import {
   findWebOrderCode, getWebOrdersBoard, handWebOrderOver, markWebOrderReady,
@@ -8,7 +8,10 @@ import {
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
-import { COLUMNS, ageText, codeMissText, deliveryFacts, longWait, picksText, reasonText, websiteTime } from './webOrdersView'
+import Notifications, { chime, soundOn } from './Notifications'
+import {
+  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, longWait, newCards, openCards, picksText, reasonText, websiteTime,
+} from './webOrdersView'
 import './webOrders.css'
 
 // The board follows the sync's pace (every 30 seconds) without reloading the page.
@@ -137,11 +140,22 @@ export default function WebOrdersPage() {
   const [loadedAt, setLoadedAt] = useState(Date.now())
   const [attempt, setAttempt] = useState(0)
   const [busy, setBusy] = useState(0)
+  // The open orders the board last showed, per store choice: one it did not have is new.
+  const seen = useRef<{ store?: string; ids: Set<number> } | null>(null)
 
   useEffect(() => {
     let live = true
     const load = () => getWebOrdersBoard(store).then(next => {
       if (!live) return
+      if (seen.current && seen.current.store === store) {
+        const fresh = newCards(next, seen.current.ids)
+        for (const card of fresh) notification.info({
+          key: `web-order-${card.id}`, duration: 0, placement: 'bottomRight',
+          message: `新网站订单 New web order #${card.number}`, description: announceText(card),
+        })
+        if (fresh.length && soundOn()) chime()
+      }
+      seen.current = { store, ids: new Set(openCards(next).map(card => card.id)) }
       setBoard(next)
       setError('')
       setLoadedAt(Date.now())
@@ -186,6 +200,8 @@ export default function WebOrdersPage() {
     <p className="pc-web-fresh">
       {board.stores.join(' + ') || '—'} · <span>更新 Updated {clock(now)}</span> · <span>网站同步 Website read {clock(syncedAt)}</span> · <span>每 30 秒 every 30 s</span>
     </p>
+
+    <Notifications />
 
     <CodeBox store={store} onChange={reload} />
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { WebOrderCard } from '../../api/webOrders.ts'
-import { ageText, codeMissText, deliveryFacts, longWait, picksText, reasonText } from './webOrdersView.ts'
+import type { WebOrderCard, WebOrdersBoard } from '../../api/webOrders.ts'
+import { ageText, announceText, codeMissText, deliveryFacts, keyBytes, keyText, longWait, newCards, picksText, reasonText } from './webOrdersView.ts'
 
 const now = Date.parse('2026-11-19T18:00:00Z')
 const card = (fields: Partial<WebOrderCard>): WebOrderCard =>
@@ -42,4 +42,25 @@ test('reasons and code misses are in staff words', () => {
   assert.equal(codeMissText({ found: false, why: 'other_store', store: 'MK' }), 'MK 的订单 · This order is for pickup at MK.')
   assert.match(codeMissText({ found: false, why: 'cancelled' }), /Hand nothing over/)
   assert.match(codeMissText({ found: false, why: 'status', status: 'on-hold' }), /payment is not settled.*ask a manager/)
+})
+
+test('the board announces only open orders it did not have before', () => {
+  const board = (ids: number[], waiting: number[] = []): WebOrdersBoard => ({
+    configured: true, enabled: true, last_run: null, stores: ['DT'], done_today: [card({ id: 99 })],
+    columns: { pick: ids.map(id => card({ id })), ready: [], pack: [], booked: [], out: [] },
+    needs_manager: waiting.map(id => card({ id, reason: 'not_enough_stock' })),
+  })
+  assert.deepEqual(newCards(board([1, 2], [3]), new Set([1])).map(found => found.id), [2, 3])
+  assert.deepEqual(newCards(board([1]), new Set([1, 2])), [])
+  assert.equal(announceText(card({ lines: [{ name: 'Echo', quantity: 2, popcore_id: 'PM0100', picks: [] }] })), '自取 DT pickup · Echo × 2')
+  assert.equal(announceText(card({ kind: 'delivery', lines: [] })), '配送 Delivery · ')
+})
+
+test('POPCORE’s push key goes to the browser as bytes and back', () => {
+  const key = 'BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8'
+  const bytes = keyBytes(key)
+  assert.equal(bytes.length, 65)
+  assert.equal(bytes[0], 4)
+  assert.equal(keyText(bytes.buffer), key)
+  assert.equal(keyText(null), '')
 })

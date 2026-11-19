@@ -2,7 +2,8 @@
 (owner, 2026-11-19): staff see DT's web orders in their five columns, the ones that need a manager and those done
 today; Ready moves a pickup on the website; the code box finds an order by its code and shows the customer's first
 name, and Handed over completes it and clears the name; the board's data holds nothing personal and no pickup code;
-viewers cannot open the page."""
+viewers cannot open the page; a new order pops up at the board's next refresh and the notifications control is
+there (owner, 2026-11-19)."""
 import asyncio
 import subprocess
 import sys
@@ -23,6 +24,7 @@ async def fits(page, name):
 async def run(browser, width):
     sys.path.insert(0, str(ROOT / 'popcore_app/tests'))
     from test_website_board import PRIVATE, WebOrdersBoardTests
+    from test_website_sync import _ago
     fixture = WebOrdersBoardTests()
     fixture.setUp()
     contexts, board_bodies = [], []
@@ -32,7 +34,9 @@ async def run(browser, width):
         contexts.append(context)
         await context.add_init_script(
             f"window.__FOUNDATION_AUTH={{role:'{role}',token:'{role}'}};"
-            f"localStorage.setItem('popcore_selected_store',JSON.stringify({{id:{fixture.dt},code:'DT',name:'Downtown'}}))")
+            f"localStorage.setItem('popcore_selected_store',JSON.stringify({{id:{fixture.dt},code:'DT',name:'Downtown'}}));"
+            # Headless Chromium always answers "denied"; a browser nobody has asked yet answers "default".
+            "Object.defineProperty(Notification,'permission',{get:()=>'default'})")
         page = await context.new_page()
 
         async def flask_boundary(route):
@@ -52,7 +56,13 @@ async def run(browser, width):
 
     try:
         page = await open_as('staff')
+        await page.clock.install()  # the board's 30-second refresh is moved on by hand below
         await page.goto(BASE + '/web-orders')
+        # Notifications: this browser can take them, and nothing is turned on until someone taps.
+        notify = page.get_by_role('region', name='Notifications')
+        await expect(notify.get_by_role('button', name='在本设备开启 Notify me on this device')).to_be_visible()
+        await expect(notify.get_by_role('switch')).to_be_checked()
+        assert await page.evaluate("navigator.serviceWorker.register('/sw.js').then(r => r.unregister())")
         pick = page.get_by_role('region', name='Pickup · to pick')
         await expect(pick.get_by_text('#701')).to_be_visible()
         await expect(pick.get_by_text('Bear 记账名')).to_be_visible()
@@ -99,6 +109,16 @@ async def run(browser, width):
         await page.get_by_text('Done today').click()
         await expect(page.locator('.pc-web-done').get_by_text('#702')).to_be_visible()
 
+        # A new paid order pops up on the board at its next refresh.
+        fixture.woo.order(720, [(11, 1)], pickup='dt', modified=_ago(0))
+        fixture.run_sync()
+        await page.clock.fast_forward(31_000)
+        popup = page.locator('.ant-notification-notice').filter(has_text='新网站订单 New web order #720')
+        await expect(popup).to_be_visible()
+        await expect(popup.get_by_text('自取 DT pickup · Echo × 1')).to_be_visible()
+        await expect(pick.get_by_text('#720')).to_be_visible()
+        await fits(page, f'new-order-{width}.png')
+
         for body in board_bodies:
             for value in (*PRIVATE, 'Sammy', 'K7R4MX', 'ACD346', 'HJK777', 'MKP999'):
                 assert value not in body, value
@@ -144,4 +164,5 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: web orders board columns, Ready, the code box with the first name, Handed over clearing it, '
-          'nothing personal in the board data, viewers kept out, at 390 and 1440 px')
+          'nothing personal in the board data, a new order popping up, the notifications control and its service '
+          'worker, viewers kept out, at 390 and 1440 px')
