@@ -26,10 +26,12 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   its best day of the last 30 reports, once for every shop day not reported; a shop day starts at
   WEBSITE_SHOP_OPENS (owner, 2026-11-02). Once the report is in, nothing is held until the shop opens.
 - Pickup: a product's `_popcore_pickup_stores` lists the live stores that have it.
-- Orders: a paid web order takes its items out of the filling store's stock (the pickup store, or
-  WEBSITE_DELIVERY_STORE for delivery), back stock first and the floor last, as a separate
-  Website order outside the store's sales and closing (owner, 2026-11-01). A cancelled order puts
-  them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
+- Orders: a paid web order takes its items out of the live stores' stock, WEBSITE_DELIVERY_STORE (DT)
+  first, then the pickup store, then any other live store (owner, 2026-11-19: "the first place to deduct
+  from should always be dt, as we ship our product from downtown"); in each store the floor first, then
+  upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). It
+  is a separate Website order outside the stores' sales and closing (owner, 2026-11-01). A cancelled
+  order puts them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
 - Prices (owner, 2026-11-10: "it should be POPCORE automatically sending price to the website too";
   until then prices stayed on the website, owner 2026-11-01). A linked Single Box or simple product
   gets its POPCORE product's price, which is its Clover price; a Whole Set gets boxes per set × that
@@ -80,8 +82,12 @@ SOURCE_CANCEL = 'website_order_cancel'
 ORDER_REASON = '网站订单 Website order'
 CANCEL_REASON = '网站订单取消 Website order cancelled'
 SHELF_LOCATIONS = ('floor', 'upstairs', 'warehouse')
-# Web orders are picked from back stock first, so the floor stays as the shop's daily report expects.
-PICK_ORDER = ('upstairs', 'warehouse', 'floor')
+# Web orders are picked from the floor first, then upstairs, then the warehouse (owner, 2026-11-19: "stock should be
+# taken from floor first, as we have many loose box orders, those are always taken from floor"). Boxes kept in opened
+# sets never count. The order holds for every stock form (designs and items on the floor come off it first too). A
+# Whole Set (`<box>-SET`) is its own product and sealed sets are kept upstairs or in the warehouse, so its orders still
+# take sealed sets, never loose floor boxes.
+PICK_ORDER = ('floor', 'upstairs', 'warehouse')
 PICKUP_META = '_popcore_pickup_stores'
 ID_META = '_popcore_id'
 DAILY_META = '_popcore_daily_pool'
@@ -974,30 +980,38 @@ def _read_ids(con, cfg, lines):
     return lines
 
 
-def _filling_store(con, cfg, order_row):
+def _filling_stores(con, cfg, order_row):
+    """The live stores a web order is taken from, in order: WEBSITE_DELIVERY_STORE (DT) first, whatever the pickup
+    store (owner, 2026-11-19: "the first place to deduct from should always be dt, as we ship our product from
+    downtown"), then the pickup store, then any other live store."""
     live = live_store_ids(con)
-    codes = {row[1]: row[0] for row in con.execute('SELECT id, code FROM stores')}
-    if order_row['pickup_store'] and codes.get(order_row['pickup_store']) in live:
-        return codes[order_row['pickup_store']]
-    store_id = codes.get(cfg['delivery_store'])
-    return store_id if store_id in live else None
+    codes = {row[1]: row[0] for row in con.execute('SELECT id, code FROM stores ORDER BY code')}
+    stores = []
+    for store_id in (codes.get(cfg['delivery_store']), codes.get(order_row['pickup_store'] or ''), *codes.values()):
+        if store_id in live and store_id not in stores:
+            stores.append(store_id)
+    return stores
 
 
-def _take(con, store_id, lines):
-    """Consume lines picked back stock first, or (None, problem) when the store cannot fill them."""
-    locations = {row[0]: row[1] for row in con.execute(
-        'SELECT code, id FROM inventory_locations WHERE store_id=? AND is_active=1', (store_id,))}
+def _take(con, store_ids, lines):
+    """Consume lines picked store by store in `store_ids` order and, in each store, in PICK_ORDER (the floor first,
+    then upstairs, then the warehouse; boxes kept in opened sets excluded), with the stores they come from in that
+    order, or (None, [], problem) when the stores together cannot fill them."""
+    places = []
+    for store_id in store_ids:
+        locations = {row[0]: row[1] for row in con.execute(
+            'SELECT code, id FROM inventory_locations WHERE store_id=? AND is_active=1', (store_id,))}
+        places += [(store_id, locations[code]) for code in PICK_ORDER if code in locations]
     wanted = {}
     for line in lines:
         wanted[line['product_id']] = wanted.get(line['product_id'], 0) + line['quantity']
-    take = []
+    take, used = [], set()
     for product_id, quantity in wanted.items():
         product = con.execute('SELECT stock_form, stock_unit FROM products WHERE id=?', (product_id,)).fetchone()
         left = quantity
-        for code in PICK_ORDER:
-            if left == 0 or code not in locations:
-                continue
-            location_id = locations[code]
+        for store_id, location_id in places:
+            if left == 0:
+                break
             balance = _balance(con, product_id, location_id, 'saleable')
             available = balance['quantity']
             if product['stock_form'] == 'random_box':
@@ -1010,10 +1024,11 @@ def _take(con, store_id, lines):
                 take.append({'product_id': product_id, 'unit': product['stock_unit'] or 'piece', 'quantity': units,
                              'from_location_id': location_id, 'from_disposition': 'saleable',
                              'expected_versions': {'from': balance['version']}})
+                used.add(store_id)
                 left -= units
         if left:
-            return None, 'not_enough_stock'
-    return take, None
+            return None, [], 'not_enough_stock'
+    return take, [store_id for store_id in store_ids if store_id in used], None
 
 
 def _grant(con):
@@ -1043,16 +1058,19 @@ def record(con, cfg, wc_order_id):
                 line['product_id'] = _product_for_id(con, line['popcore_id'])
         con.execute('UPDATE website_orders SET lines=? WHERE wc_order_id=?', (json.dumps(lines), wc_order_id))
         problem = None
-        store_id = _filling_store(con, cfg, row)
+        stores = _filling_stores(con, cfg, row)
+        # The order's store is the first it takes from (DT unless DT had none of it), or DT while it waits.
+        store_id = stores[0] if stores else None
         if not lines:
             problem = 'no_items'
         elif any(line['product_id'] is None for line in lines):
             problem = 'unknown_item'
-        elif store_id is None:
+        elif not stores:
             problem = 'no_live_store'
         take = None
         if problem is None:
-            take, problem = _take(con, store_id, lines)
+            take, used, problem = _take(con, stores, lines)
+            store_id = used[0] if used else store_id
         document_id = None
         if problem is None:
             paid = _gmt(row['paid_at']) or _now()
@@ -1063,8 +1081,7 @@ def record(con, cfg, wc_order_id):
                     'kind': 'consume', 'business_date': paid.astimezone(TORONTO).date().isoformat(),
                     'source_type': SOURCE_ORDER, 'source_id': str(wc_order_id),
                     'reason': f"{ORDER_REASON} #{row['number']}", 'lines': take,
-                }, actor=website_actor(), request_key=f'website:order:{wc_order_id}',
-                    access_store_ids=(store_id,))['document_id']
+                }, actor=website_actor(), request_key=f'website:order:{wc_order_id}')['document_id']
             except (InventoryError, PermissionError) as exc:
                 con.execute('ROLLBACK TO website_take')
                 problem = exc.code if isinstance(exc, InventoryError) else 'no_store_access'
@@ -1101,7 +1118,7 @@ def _reverse(con, wc_order_id):
             'kind': 'correction', 'business_date': datetime.now(TORONTO).date().isoformat(),
             'source_type': SOURCE_CANCEL, 'source_id': str(wc_order_id), 'correction_of': row['inventory_document_id'],
             'reason': f"{CANCEL_REASON} #{row['number']}", 'lines': lines,
-        }, actor=website_actor(), request_key=f'website:cancel:{wc_order_id}', access_store_ids=(row['store_id'],),
+        }, actor=website_actor(), request_key=f'website:cancel:{wc_order_id}',  # every store the order came from
             minimum_role='manager')['document_id']
         con.execute("""UPDATE website_orders SET state='cancelled', problem=NULL, reversal_document_id=?,
                            updated_at=datetime('now') WHERE wc_order_id=?""", (document_id, wc_order_id))
@@ -1278,6 +1295,9 @@ def status(con):
 
 
 def orders(con, limit=100):
+    """The latest web orders, waiting ones first. Each line carries its product's name as staff know it (owner,
+    2026-11-19): the 记账名, or the official name when it has none. `store_codes` are the stores a recorded order
+    came from, its own store first."""
     codes = {row[0]: row[1] for row in con.execute('SELECT id, code FROM stores')}
     rows = []
     for row in con.execute(
@@ -1285,7 +1305,17 @@ def orders(con, limit=100):
                LIMIT ?""", (limit,)):
         item = dict(row)
         item['lines'] = json.loads(item['lines'] or '[]')
+        for line in item['lines']:
+            product = con.execute('SELECT jizhanming, name_cn_en FROM products WHERE id=?',
+                                  (line['product_id'],)).fetchone() if line.get('product_id') else None
+            line['popcore_name'] = ((product['jizhanming'] or '').strip() or product['name_cn_en']) if product else None
         item['store_code'] = codes.get(item['store_id'])
+        taken_from = {store_id for (store_id,) in con.execute(
+            """SELECT DISTINCT l.store_id FROM inventory_document_lines d
+               JOIN inventory_locations l ON l.id=d.from_location_id WHERE d.document_id=?""",
+            (item['inventory_document_id'],))} if item['inventory_document_id'] else set()
+        item['store_codes'] = [codes[store_id] for store_id in sorted(
+            taken_from, key=lambda store_id: (store_id != item['store_id'], codes.get(store_id) or ''))]
         rows.append(item)
     return rows
 

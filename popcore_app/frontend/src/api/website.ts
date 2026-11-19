@@ -69,8 +69,11 @@ export type WebsiteOrderState = 'new' | 'recorded' | 'needs_review' | 'cancelled
 export interface WebsiteOrder {
   wc_order_id: number; number: string; wc_status: string; paid_at: string | null; total_cents: number | null
   payment: string | null; fulfilment: string | null; pickup_store: string | null; store_code: string | null
+  // The stores a recorded order came from, its own store (DT unless DT had none of it) first.
+  store_codes: string[]
   state: WebsiteOrderState; problem: string | null; refunded: number; dismiss_reason: string | null
-  lines: Array<{ popcore_id?: string; name: string; quantity: number; product_id: number | null }>
+  // popcore_name: the product's 记账名, or its official name when it has none (owner, 2026-11-19).
+  lines: Array<{ popcore_id?: string; name: string; quantity: number; product_id: number | null; popcore_name?: string | null }>
 }
 
 export const problemText: Record<string, string> = {

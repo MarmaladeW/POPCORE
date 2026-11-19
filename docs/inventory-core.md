@@ -128,7 +128,7 @@ Inventory → 损耗 Loss (`/stock/loss`) records stock that broke, was stolen o
 | daily report sales sections | Take that day's sales off the live store's floor (owner, 2026-10-29); see **Daily reports at a live store** below. |
 | daily report stock sections | At a live store, each line moves its stock by the difference from what that day already moved, after the manager confirms it (owner, 2026-11-03); see **Daily reports at a live store** below. 入库, 出库, 出店入库, 出display入店 and 出店display move too (owner, 2026-11-13); 入娃娃机 stays a note. A legacy store keeps its old 入店/出店/拆Display paths. |
 | 损耗 Loss (managers and admins) | Broken: a `move` to `damaged` at the same location; stolen, missing, other: a `consume`. The pile's back-to-sale is a `move`, throwing away a `consume` from `damaged`; an undo is the exact `correction`. See **损耗 Loss** above. |
-| paid web order (popcore.ca) | One `consume` by the `popcore:website` actor, back stock first; a cancel is its exact `correction`. See `website-sync.md`. |
+| paid web order (popcore.ca) | One `consume` by the `popcore:website` actor, DT first and then the other live stores, and in each store the floor first, then upstairs, then the warehouse (owner, 2026-11-19); a cancel is its exact `correction`. See `website-sync.md`. |
 | report resubmission with old stock history | Remains blocked with `reconciliation_required`. |
 | restock completion | Authoritative sessions use the Build 3 delivery lifecycle: pick to owned transit, then receive, return, loss resolution, or reasoned short-close. Older completed `restock_complete` documents remain history. |
 | completed restock deletion | Rejected; use a later correction. Draft session deletion remains available. |
