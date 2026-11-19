@@ -1,0 +1,147 @@
+"""网站订单 Web orders in a real browser against the real Flask app, a disposable database and a fake WooCommerce
+(owner, 2026-11-19): staff see DT's web orders in their five columns, the ones that need a manager and those done
+today; Ready moves a pickup on the website; the code box finds an order by its code and shows the customer's first
+name, and Handed over completes it and clears the name; the board's data holds nothing personal and no pickup code;
+viewers cannot open the page."""
+import asyncio
+import subprocess
+import sys
+from urllib.parse import urlsplit
+from playwright.async_api import async_playwright, expect
+from check_foundation import FRONTEND, HERE, ROOT
+
+PORT = 5198
+BASE = f'http://127.0.0.1:{PORT}'
+OUT = ROOT / '.local' / 'web-orders'
+
+
+async def fits(page, name):
+    assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), name
+    await page.screenshot(path=OUT / name, animations='disabled', full_page=True)
+
+
+async def run(browser, width):
+    sys.path.insert(0, str(ROOT / 'popcore_app/tests'))
+    from test_website_board import PRIVATE, WebOrdersBoardTests
+    fixture = WebOrdersBoardTests()
+    fixture.setUp()
+    contexts, board_bodies = [], []
+
+    async def open_as(role):
+        context = await browser.new_context(viewport={'width': width, 'height': 900})
+        contexts.append(context)
+        await context.add_init_script(
+            f"window.__FOUNDATION_AUTH={{role:'{role}',token:'{role}'}};"
+            f"localStorage.setItem('popcore_selected_store',JSON.stringify({{id:{fixture.dt},code:'DT',name:'Downtown'}}))")
+        page = await context.new_page()
+
+        async def flask_boundary(route):
+            parsed = urlsplit(route.request.url)
+            if parsed.hostname not in ('127.0.0.1', 'localhost'):
+                await route.abort(); return
+            if not parsed.path.startswith('/api/'):
+                await route.continue_(); return
+            body = route.request.post_data_json if route.request.post_data else None
+            response = fixture.client.open(parsed.path + ('?' + parsed.query if parsed.query else ''),
+                                           method=route.request.method, headers=fixture.headers(role), json=body)
+            if parsed.path == '/api/website/board':
+                board_bodies.append(response.get_data(as_text=True))
+            await route.fulfill(status=response.status_code, body=response.data, content_type=response.content_type)
+        await page.route('**/*', flask_boundary)
+        return page
+
+    try:
+        page = await open_as('staff')
+        await page.goto(BASE + '/web-orders')
+        pick = page.get_by_role('region', name='Pickup · to pick')
+        await expect(pick.get_by_text('#701')).to_be_visible()
+        await expect(pick.get_by_text('Bear 记账名')).to_be_visible()
+        await expect(pick.get_by_text('PM0200 · DT 楼下 Floor 1')).to_be_visible()
+        ready = page.get_by_role('region', name='Pickup · ready, waiting for the customer')
+        await expect(ready.get_by_text('已等 4 天 · Waiting 4 days')).to_be_visible()
+        pack = page.get_by_role('region', name='Delivery · to pack')
+        await expect(pack.get_by_text('送达 Fri Nov 21, 2–6 pm')).to_be_visible()
+        await expect(pack.get_by_text('区域 Zone Downtown')).to_be_visible()
+        booked = page.get_by_role('region', name='Delivery · booked, waiting for the courier')
+        await expect(booked.get_by_text('FleetNow DO202611190000000001 · CONFIRMED')).to_be_visible()
+        await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('#705')).to_be_visible()
+        manager = page.get_by_role('region', name='Needs a manager')
+        await expect(manager.get_by_text('库存不够', exact=False)).to_be_visible()
+        await expect(manager.get_by_text('A special order waiting for stock', exact=False)).to_be_visible()
+        # Only the pickup to pick has a button; nothing else on the board does.
+        await expect(page.get_by_role('button', name='拣好了 Ready')).to_have_count(1)
+        await fits(page, f'board-{width}.png')
+
+        # Ready: the website moves it and emails the customer; the card moves over.
+        await pick.get_by_role('button', name='拣好了 Ready').click()
+        await page.get_by_role('button', name='Ready', exact=True).click()
+        await expect(page.get_by_text('#701 is ready', exact=False)).to_be_visible()
+        assert fixture.woo.orders[701]['status'] == 'ready-pickup'
+        await expect(ready.get_by_text('#701')).to_be_visible()
+        await expect(pick.get_by_text('没有 · None')).to_be_visible()
+
+        # The code box: an unknown code says so; the right one shows the order and the first name.
+        code = page.get_by_role('region', name='Pickup code')
+        await code.get_by_label('取货码 Pickup code').fill('zzzzzz')
+        await code.get_by_role('button', name='查找 Find').click()
+        await expect(code.get_by_text('No pickup order has this code', exact=False)).to_be_visible()
+        await code.get_by_label('取货码 Pickup code').fill('acd-346')
+        await code.get_by_role('button', name='查找 Find').click()
+        await expect(code.get_by_text('Private', exact=True)).to_be_visible()
+        await expect(code.get_by_text('Sammy', exact=True)).to_be_visible()
+        await fits(page, f'code-{width}.png')
+        await code.get_by_role('button', name='已取货 Handed over').click()
+        await page.get_by_role('button', name='Handed over', exact=True).click()
+        await expect(page.get_by_text('#702 handed over', exact=False)).to_be_visible()
+        assert fixture.woo.orders[702]['status'] == 'completed'
+        await expect(page.get_by_text('Private', exact=True)).to_have_count(0)
+        await expect(ready.get_by_text('#702')).to_have_count(0)
+        await page.get_by_text('Done today').click()
+        await expect(page.locator('.pc-web-done').get_by_text('#702')).to_be_visible()
+
+        for body in board_bodies:
+            for value in (*PRIVATE, 'Sammy', 'K7R4MX', 'ACD346', 'HJK777', 'MKP999'):
+                assert value not in body, value
+
+        page = await open_as('viewer')
+        await page.goto(BASE + '/web-orders')
+        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+    finally:
+        for context in contexts:
+            await context.close()
+        fixture.tearDown()
+        fixture.doCleanups()
+
+
+async def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    with (OUT / 'vite.log').open('w') as log:
+        process = subprocess.Popen(['node', str(FRONTEND / 'node_modules/vite/bin/vite.js'), '--config',
+                                    str(HERE / 'vite.config.mjs'), '--port', str(PORT)],
+                                   cwd=FRONTEND, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            for _ in range(100):
+                if process.poll() is not None:
+                    raise RuntimeError('Vite stopped')
+                try:
+                    _, writer = await asyncio.open_connection('127.0.0.1', PORT)
+                    writer.close(); await writer.wait_closed(); break
+                except OSError:
+                    await asyncio.sleep(.1)
+            else:
+                raise RuntimeError('Vite did not start')
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                try:
+                    for width in (390, 1440):
+                        await run(browser, width)
+                finally:
+                    await browser.close()
+        finally:
+            process.terminate(); process.wait(timeout=10)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+    print('PASS: web orders board columns, Ready, the code box with the first name, Handed over clearing it, '
+          'nothing personal in the board data, viewers kept out, at 390 and 1440 px')
