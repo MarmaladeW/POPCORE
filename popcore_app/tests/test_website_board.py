@@ -1,0 +1,224 @@
+"""网站订单 Web orders board (owner, 2026-11-19; the popcore.ca website session's brief of the same day): staff with
+store operations access see their stores' paid web orders in five columns, the orders that need a manager and those
+done today; Ready and Handed over move a pickup order on the website and leave a note; the code box finds a pickup
+order by its code and reads the customer's first name live. Nothing personal and no pickup code reaches the board's
+data, and nothing personal is stored."""
+import json
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+
+from test_website_sync import WebsiteCase, _ago
+
+import website_sync
+
+STAFF = {'Authorization': 'Bearer staff'}            # auth0|staff, DT store operations access, named Amy
+OTHER = {'Authorization': 'Bearer staff:other'}      # auth0|other, no store operations access
+PRIVATE = ('Private', 'Person', '416-555', 'Secret St', 'someone@example.com')
+
+
+def _days_ago(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%S')
+
+
+class BoardCase(WebsiteCase):
+    """DT live with nine web orders in every state, and a staff member with DT access (test_web_order_notifications.py
+    builds on it)."""
+
+    def setUp(self):
+        super().setUp()
+        self.turn_on()
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (self.dt,))
+            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|staff', 'Amy')")
+            con.execute("UPDATE products SET jizhanming='Bear 记账名' WHERE id=?", (self.item,))
+            # Orders paid in the last week count, so a pickup can have waited days.
+            website_sync.set_state(con, 'since', _days_ago(7))
+            website_sync.set_state(con, 'orders_after', _days_ago(7))
+            con.commit()
+        woo = self.woo
+        woo.order(701, [(20, 1)], pickup='dt', paid=_ago(50), meta=[('_popcore_pickup_code', 'K7R4MX')])
+        woo.order(702, [(11, 2)], pickup='dt', status='ready-pickup', paid=_days_ago(4),
+                  meta=[('_popcore_pickup_code', 'ACD346'), ('_pcc_collector_name', 'Sammy')])
+        woo.order(703, [(11, 1)], paid=_ago(40), meta=[('_pcc_delivery_window', 'Fri Nov 21, 2–6 pm'),
+                                                       ('_pcc_delivery_service', 'normal'),
+                                                       ('_pcc_delivery_zone', 'Downtown')])
+        woo.order(704, [(20, 1)], status='dispatched', paid=_ago(300), meta=[
+            ('_pcc_delivery_window', 'Thu Nov 20, 2–6 pm'), ('_pcc_delivery_service', 'door'),
+            ('fleetnow_order_no', 'DO202611190000000001'), ('fleetnow_pickup_window', '13:00–14:00'),
+            ('fleetnow_delivery_window', '14:00–18:00'), ('fleetnow_status', 'CONFIRMED')])
+        woo.order(705, [(11, 1)], status='out-for-delivery', paid=_ago(400))
+        woo.order(706, [(20, 1)], pickup='dt', status='awaiting-stock', paid=_ago(30))   # a special order
+        woo.order(707, [(12, 3)], pickup='dt', paid=_ago(20), meta=[('_popcore_pickup_code', 'HJK777')])  # only 2 sets
+        woo.order(708, [(11, 1)], pickup='dt', status='completed', paid=_ago(10))
+        woo.order(709, [(11, 1)], pickup='mk', paid=_ago(5), meta=[('_popcore_pickup_code', 'MKP999')])
+        self.run_sync()
+
+    def board(self, headers=STAFF, store=None):
+        response = self.client.get('/api/website/board' + (f'?store={store}' if store else ''), headers=headers)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        return response.get_json()
+
+    def numbers(self, cards):
+        return [card['number'] for card in cards]
+
+    def code(self, code, headers=STAFF, store='DT'):
+        return self.client.post('/api/website/board/code', json={'code': code, 'store': store}, headers=headers)
+
+    def step(self, order_id, action, code=None, headers=STAFF):
+        return self.client.post(f'/api/website/board/orders/{order_id}/{action}',
+                                json={'code': code} if code else {}, headers=headers)
+
+
+class WebOrdersBoardTests(BoardCase):
+    def test_orders_sit_in_their_columns_oldest_first_with_nothing_personal(self):
+        response = self.client.get('/api/website/board', headers=STAFF)
+        board = response.get_json()
+        self.assertEqual(board['stores'], ['DT'])
+        self.assertEqual({name: self.numbers(cards) for name, cards in board['columns'].items()},
+                         {'pick': ['701'], 'ready': ['702'], 'pack': ['703'], 'booked': ['704'], 'out': ['705']})
+        # The MK pickup is on MK's board only, though DT's stock filled it (DT first, owner 2026-11-19).
+        self.assertEqual([(card['number'], card['reason']) for card in board['needs_manager']],
+                         [('706', 'status'), ('707', 'not_enough_stock')])
+        self.assertEqual(self.numbers(board['done_today']), ['708'])
+        pick = board['columns']['pick'][0]
+        self.assertEqual((pick['kind'], pick['store'], pick['status'], pick['taken_elsewhere']),
+                         ('pickup', 'DT', 'processing', []))
+        # Lines by 记账名, with where they were taken from (the floor first, owner 2026-11-19).
+        self.assertEqual(pick['lines'], [{'name': 'Bear 记账名', 'quantity': 1, 'popcore_id': 'PM0200',
+                                          'picks': [{'store': 'DT', 'place': 'floor', 'quantity': 1}]}])
+        self.assertEqual(board['columns']['pack'][0]['delivery'],
+                         {'window': 'Fri Nov 21, 2–6 pm', 'service': 'normal', 'zone': 'Downtown'})
+        self.assertEqual(board['columns']['booked'][0]['delivery'], {
+            'window': 'Thu Nov 20, 2–6 pm', 'service': 'door', 'fleetnow_no': 'DO202611190000000001',
+            'fleetnow_pickup': '13:00–14:00', 'fleetnow_delivery': '14:00–18:00', 'fleetnow_status': 'CONFIRMED'})
+        self.assertNotIn('delivery', pick)
+        # Nothing personal and no pickup code, on the board or in the managers' order list.
+        manager_orders = self.client.get('/api/website/orders', headers=self.headers('manager')).get_data(as_text=True)
+        for text in (response.get_data(as_text=True), manager_orders):
+            for value in (*PRIVATE, 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
+                self.assertNotIn(value, text)
+        # One store only, and none without store operations access; viewers cannot open it.
+        self.assertEqual(self.board(store='MK')['stores'], [])
+        self.assertEqual(self.board(OTHER)['columns']['pick'], [])
+        self.assertEqual(self.client.get('/api/website/board', headers=self.headers('viewer')).status_code, 403)
+
+    def test_a_pickup_taken_from_another_store_says_so(self):
+        with closing(self.connect()) as con:
+            mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (mk,))
+            con.commit()
+        board = self.board(store='MK')
+        self.assertEqual([(card['number'], card['taken_elsewhere']) for card in board['columns']['pick']],
+                         [('709', ['DT'])])
+        self.assertEqual(self.numbers(self.board()['columns']['pick']), ['701', '709'])
+
+    def test_ready_moves_a_pickup_on_the_website_and_says_who(self):
+        response = self.step(701, 'ready')
+        self.assertEqual(response.get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.orders[701]['status'], 'ready-pickup')
+        self.assertEqual(self.woo.notes, [(701, {'note': 'Ready in popcore.store by Amy', 'customer_note': False})])
+        self.assertEqual(self.numbers(self.board()['columns']['ready']), ['702', '701'])
+        # A second press is safe: the website is already there.
+        self.assertEqual(self.step(701, 'ready').get_json(), {'result': 'already', 'noted': None})
+        self.assertEqual(self.woo.status_writes, [(701, 'ready-pickup')])
+        # Deliveries are FleetNow's; other stores and other people's stores are not this board's.
+        self.assertEqual(self.step(703, 'ready').get_json()['code'], 'not_pickup')
+        self.assertEqual(self.step(709, 'ready').status_code, 403)
+        self.assertEqual(self.step(701, 'ready', headers=OTHER).status_code, 403)
+        self.assertEqual(self.woo.status_writes, [(701, 'ready-pickup')])
+
+    def test_ready_reads_the_website_first_and_waits_for_its_answer(self):
+        # Cancelled on the website a minute ago: never put back to ready.
+        self.woo.orders[701]['status'] = 'cancelled'
+        response = self.step(701, 'ready')
+        self.assertEqual((response.status_code, response.get_json()['code']), (409, 'status_changed'))
+        self.assertEqual(self.woo.status_writes, [])
+        self.assertNotIn('701', self.numbers(self.board()['columns']['pick']))
+        # The website refuses: nothing shows as done.
+        self.woo.orders[707]['status'] = 'processing'
+        with closing(self.connect()) as con:  # a manager settled 707, so it is back in its column
+            con.execute("UPDATE website_orders SET state='dismissed' WHERE wc_order_id=707")
+            con.commit()
+        self.woo.refuse_orders = True
+        response = self.step(707, 'ready')
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('Something went wrong.', response.get_json()['error'])
+        self.assertEqual(self.numbers(self.board()['columns']['pick']), ['707'])
+        # The status went but the note did not: done, and the page says the note is missing.
+        self.woo.refuse_orders, self.woo.refuse_notes = False, True
+        self.assertEqual(self.step(707, 'ready').get_json(), {'result': 'done', 'noted': False})
+        self.assertEqual(self.woo.orders[707]['status'], 'ready-pickup')
+
+    def test_the_code_box_finds_the_order_and_reads_the_name_live(self):
+        with closing(self.connect()) as con:  # an order closed long ago that happens to have the same code
+            con.execute("""INSERT INTO website_orders(wc_order_id, number, wc_status, paid_at, lines, state, fulfilment,
+                               pickup_store, pickup_code)
+                           VALUES (600, '600', 'completed', ?, '[]', 'recorded', 'pickup', 'DT', 'K7R4MX')""",
+                        (_days_ago(400),))
+            con.commit()
+        response = self.code(' k7r-4mx ')
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        found = response.get_json()
+        self.assertEqual((found['found'], found['first_name'], found['collector'], found['needs_manager']),
+                         (True, 'Private', None, False))
+        self.assertEqual((found['order']['number'], found['order']['store'], found['order']['lines'][0]['name']),
+                         ('701', 'DT', 'Bear 记账名'))
+        self.assertNotIn('K7R4MX', response.get_data(as_text=True))
+        for value in PRIVATE[1:]:
+            self.assertNotIn(value, response.get_data(as_text=True))
+        self.assertEqual(self.code('ACD346').get_json()['collector'], 'Sammy')
+        # Never kept: the name is nowhere in the database.
+        with closing(self.connect()) as con:
+            dump = '\n'.join(con.iterdump())
+        for value in (*PRIVATE, 'Sammy'):
+            self.assertNotIn(value, dump)
+        # Unknown, another store's, or closed on the website: said plainly, with nothing about the order.
+        self.assertEqual(self.code('ZZZZZZ').get_json(), {'found': False, 'why': 'not_found'})
+        self.assertEqual(self.code('MKP999').get_json(), {'found': False, 'why': 'other_store', 'store': 'MK'})
+        self.assertEqual(self.code('HJK777').get_json()['found'], True)  # 707 waits for a manager but is handed over
+        self.assertEqual(self.code('HJK777').get_json()['needs_manager'], True)
+        self.woo.orders[701]['status'] = 'cancelled'  # a minute ago on the website; the sync has not read it yet
+        self.assertEqual(self.code('K7R4MX').get_json(), {'found': False, 'why': 'cancelled'})
+        self.assertNotIn('701', self.numbers(self.board()['columns']['pick']))
+        self.woo.orders[706]['meta_data'].append({'key': '_popcore_pickup_code', 'value': 'AWT333'})
+        self.woo.orders[706]['date_modified_gmt'] = _ago(0)
+        self.run_sync()
+        self.assertEqual(self.code('AWT333').get_json(), {'found': False, 'why': 'status', 'status': 'awaiting-stock'})
+        self.assertEqual(self.code('', ).status_code, 400)
+
+    def test_handed_over_needs_the_code(self):
+        self.assertEqual(self.step(702, 'handed-over').get_json()['code'], 'code_needed')
+        self.assertEqual(self.step(702, 'handed-over', code='ACD347').status_code, 403)
+        self.assertEqual(self.woo.status_writes, [])
+        self.assertEqual(self.step(702, 'handed-over', code='acd-346').get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.orders[702]['status'], 'completed')
+        self.assertEqual(self.woo.notes[-1], (702, {'note': 'Handed over in popcore.store by Amy', 'customer_note': False}))
+        board = self.board()
+        self.assertEqual(self.numbers(board['columns']['ready']), [])
+        self.assertEqual(sorted(self.numbers(board['done_today'])), ['702', '708'])  # within 30 s at most
+        # Staff skipped Ready: a processing order is handed over too.
+        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX').get_json()['result'], 'done')
+        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX').get_json(), {'result': 'already', 'noted': None})
+        self.assertEqual(self.woo.status_writes, [(702, 'completed'), (701, 'completed')])
+        # The sync reads both changes back; nothing moves in stock.
+        self.run_sync()
+        self.assertEqual(self.numbers(self.board()['columns']['pick']), [])
+        self.assertIsNone(self.state('last_error'))
+
+    def test_orders_recorded_before_the_board_read_their_facts_once(self):
+        with closing(self.connect()) as con:
+            con.execute('UPDATE website_orders SET pickup_code=NULL, delivery=NULL')
+            con.commit()
+        self.woo.reads.clear()
+        self.run_sync()
+        with closing(self.connect()) as con:
+            rows = {row[0]: (row[1], row[2]) for row in con.execute(
+                'SELECT wc_order_id, pickup_code, delivery FROM website_orders')}
+        self.assertEqual(rows[701], ('K7R4MX', '{}'))
+        self.assertEqual(json.loads(rows[703][1])['zone'], 'Downtown')
+        self.assertEqual(rows[708], (None, None))  # done: never read again
+        reads = [params['include'] for path, params in self.woo.reads if path == '/orders' and 'include' in params]
+        self.assertEqual(reads, ['701,702,703,704,705,706,707,709'])
+        self.woo.reads.clear()
+        self.run_sync()
+        self.assertFalse([params for path, params in self.woo.reads if 'include' in params and path == '/orders'])

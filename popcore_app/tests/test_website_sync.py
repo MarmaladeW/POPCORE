@@ -63,6 +63,10 @@ class FakeWoo:
         self.every_write = []  # never cleared
         self.refuse = False
         self.refuse_ids = set()  # items a batch write reports an error for
+        self.status_writes = []  # (order id, status) of every order PUT
+        self.notes = []  # (order id, note body)
+        self.refuse_orders = False  # order PUTs answer 500
+        self.refuse_notes = False  # notes answer 500
 
     def product(self, wc_id, popcore_id='', *, sku='', kind='simple', in_stock=True, pickup=None, name=None,
                 status='publish', price='', sale='', meta=()):
@@ -96,11 +100,13 @@ class FakeWoo:
     def parent_of(self, wc_id):
         return next((parent for parent, variations in self.variations.items() if wc_id in variations), None)
 
-    def order(self, order_id, lines, *, status='processing', paid=None, modified=None, pickup=None):
+    def order(self, order_id, lines, *, status='processing', paid=None, modified=None, pickup=None, meta=()):
         """lines: (website item id, quantity). A line names its product and variation, and carries the
-        item's SKU (a barcode), as WooCommerce's line_items do."""
+        item's SKU (a barcode), as WooCommerce's line_items do. meta: more (key, value) order fields, such as
+        the pickup code or the delivery window."""
         paid = paid or _ago(1)
-        meta = [{'key': '_pcc_fulfillment_type', 'value': 'pickup' if pickup else 'delivery'}]
+        meta = [{'key': '_pcc_fulfillment_type', 'value': 'pickup' if pickup else 'delivery'},
+                *({'key': key, 'value': value} for key, value in meta)]
         if pickup:
             meta.append({'key': '_popcore_pickup_store_id', 'value': pickup})
         line_items = []
@@ -113,7 +119,8 @@ class FakeWoo:
             'id': order_id, 'number': str(order_id), 'status': status, 'date_paid_gmt': paid,
             'date_modified_gmt': modified or paid, 'total': '45.20', 'total_tax': '5.20',
             'payment_method': 'stripe', 'payment_method_title': 'Credit Card (Stripe)', 'transaction_id': 'pi_123',
-            'billing': {'email': 'someone@example.com', 'first_name': 'Private'}, 'meta_data': meta,
+            'billing': {'email': 'someone@example.com', 'first_name': 'Private', 'last_name': 'Person',
+                        'phone': '416-555-0199', 'address_1': '1 Secret St'}, 'meta_data': meta,
             'line_items': line_items}
 
     def item(self, wc_id):
@@ -129,9 +136,11 @@ class FakeWoo:
             return Response(401, {'code': 'woocommerce_rest_cannot_view', 'message': 'Sorry, you cannot list resources.'})
         path = urlsplit(url).path.removeprefix('/wp-json/wc/v3')
         params = params or {}
+        parts = path.strip('/').split('/')
+        if parts[0] == 'orders' and len(parts) >= 2:
+            return self.order_request(method, parts, params, json)
         if method == 'GET':
             self.reads.append((path, dict(params)))
-            parts = path.strip('/').split('/')
             if len(parts) in (2, 4) and parts[0] == 'products':  # one product, or one variation
                 item = (self.products.get(int(parts[1])) if len(parts) == 2
                         else self.variations.get(int(parts[1]), {}).get(int(parts[3])))
@@ -181,8 +190,33 @@ class FakeWoo:
             return Response(200, {'update': results})
         return Response(404, {'message': 'No route'})
 
+    def order_request(self, method, parts, params, body):
+        """One order (GET, or PUT of its status) and its notes (POST), as the website session checked them."""
+        order = self.orders.get(int(parts[1]))
+        if order is None:
+            return Response(404, {'code': 'woocommerce_rest_shop_order_invalid_id', 'message': 'Invalid ID.'})
+        if method == 'GET' and len(parts) == 2:
+            self.reads.append(('/' + '/'.join(parts), dict(params)))
+            fields = params.get('_fields')
+            return Response(200, {key: value for key, value in order.items()
+                                  if not fields or key in fields.split(',')})
+        if method == 'PUT' and len(parts) == 2:
+            if self.refuse_orders:
+                return Response(500, {'message': 'Something went wrong.'})
+            self.status_writes.append((order['id'], body['status']))
+            order.update(status=body['status'], date_modified_gmt=_ago(0))
+            return Response(200, dict(order))
+        if method == 'POST' and parts[2:] == ['notes']:
+            if self.refuse_notes:
+                return Response(500, {'message': 'Something went wrong.'})
+            self.notes.append((order['id'], dict(body)))
+            return Response(201, {'id': len(self.notes), **body})
+        return Response(404, {'message': 'No route'})
 
-class WebsiteSyncTests(IsolatedApiCase):
+
+class WebsiteCase(IsolatedApiCase):
+    """The fake website and two live-store helpers, without tests (test_website_board.py builds on it)."""
+
     def setUp(self):
         super().setUp()
         self.app.register_blueprint(website.bp)
@@ -323,6 +357,8 @@ class WebsiteSyncTests(IsolatedApiCase):
         return {option['wc_id']: option['price_reasons'] for group in self.preview()['held_prices']
                 for option in group['options']}
 
+
+class WebsiteSyncTests(WebsiteCase):
     def test_nothing_is_written_before_an_admin_turns_it_on(self):
         self.assertEqual(self.client.post('/api/website/refresh', headers=self.headers('manager')).status_code, 403)
         self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).status_code, 409)

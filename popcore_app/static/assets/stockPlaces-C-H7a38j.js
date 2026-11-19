@@ -1,0 +1,1 @@
+var e={floor:`楼下 Floor`,upstairs:`楼上 Upstairs`,warehouse:`仓库 Warehouse`,display:`Display`,claw:`娃娃机 Claw`,not_counted:`还没盘点 Not counted`};function t(t,n){let[r,i]=t.includes(`:`)?t.split(`:`):[n??``,t];return`${r?`${r} `:``}${e[i]??i}`}export{t};

@@ -56,6 +56,7 @@ Nothing is written to the website until an admin turns the sync on. The backgrou
 last set it. A full reread of the website's catalogue every day catches edits made there.
 """
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -957,7 +958,32 @@ def _order_facts(con, order):
             'tax_cents': _cents(order.get('total_tax')),
             'payment': str(order.get('payment_method_title') or order.get('payment_method') or '')[:80],
             'transaction_id': str(order.get('transaction_id') or '')[:120] or None,
-            'fulfilment': fulfilment, 'pickup_store': pickup, 'lines': lines}
+            'fulfilment': fulfilment, 'pickup_store': pickup, 'lines': lines, **board_facts(order)}
+
+
+# What the web orders board keeps of an order besides its lines (website session's brief, 2026-11-19). None of it is
+# personal: the customer's name, phone, email, address and notes are never kept.
+DELIVERY_META = {'window': '_pcc_delivery_window', 'service': '_pcc_delivery_service', 'zone': '_pcc_delivery_zone',
+                 'fleetnow_no': 'fleetnow_order_no', 'fleetnow_pickup': 'fleetnow_pickup_window',
+                 'fleetnow_delivery': 'fleetnow_delivery_window', 'fleetnow_status': 'fleetnow_status'}
+# The pickup code the website emails the customer (6 of ACDEFHJKMNPRTUVWXY34679). It proves the person at the
+# counter is the customer, so POPCORE keeps it only to find the order by it and never sends it to a page.
+CODE_META = '_popcore_pickup_code'
+
+
+def clean_code(value):
+    """A pickup code as staff type it, in capitals with letters and digits only: k7r-4mx → K7R4MX."""
+    return ''.join(ch for ch in str(value or '').upper() if ch.isascii() and ch.isalnum())[:32]
+
+
+def board_facts(order):
+    """The pickup code and the delivery facts of an order from its meta_data (`delivery` as JSON)."""
+    delivery = {}
+    for key, meta in DELIVERY_META.items():
+        value = _meta(order, meta)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool) and str(value).strip():
+            delivery[key] = str(value).strip()[:200]
+    return {'pickup_code': clean_code(_meta(order, CODE_META)) or None, 'delivery': json.dumps(delivery)}
 
 
 def _read_ids(con, cfg, lines):
@@ -1150,18 +1176,25 @@ def apply_order(con, cfg, order):
             return None  # paid before the sync was turned on: the opening count already holds it
         _read_ids(con, cfg, facts['lines'])
         con.execute("""INSERT INTO website_orders(wc_order_id, number, wc_status, paid_at, modified_at, total_cents,
-                           tax_cents, payment, transaction_id, fulfilment, pickup_store, lines, state)
+                           tax_cents, payment, transaction_id, fulfilment, pickup_store, lines, state, pickup_code,
+                           delivery)
                        VALUES (:wc_order_id, :number, :wc_status, :paid_at, :modified_at, :total_cents, :tax_cents,
-                           :payment, :transaction_id, :fulfilment, :pickup_store, :lines, 'new')""",
+                           :payment, :transaction_id, :fulfilment, :pickup_store, :lines, 'new', :pickup_code,
+                           :delivery)""",
                     {**facts, 'lines': json.dumps(facts['lines'])})
         con.commit()
-        return record(con, cfg, facts['wc_order_id'])
+        result = record(con, cfg, facts['wc_order_id'])
+        _announce(con, cfg, facts['wc_order_id'])
+        return result
     if row['state'] == 'needs_review':
         _read_ids(con, cfg, facts['lines'])  # before the writes below
+    # The pickup code comes later for orders paid before 2026-11-16, and the FleetNow facts once it is booked.
     con.execute("""UPDATE website_orders SET wc_status=?, modified_at=?, total_cents=?, tax_cents=?,
-                       refunded=CASE WHEN ?='refunded' THEN 1 ELSE refunded END, updated_at=datetime('now')
+                       refunded=CASE WHEN ?='refunded' THEN 1 ELSE refunded END, pickup_code=?, delivery=?,
+                       updated_at=datetime('now')
                    WHERE wc_order_id=?""",
-                (status, facts['modified_at'], facts['total_cents'], facts['tax_cents'], status, facts['wc_order_id']))
+                (status, facts['modified_at'], facts['total_cents'], facts['tax_cents'], status, facts['pickup_code'],
+                 facts['delivery'], facts['wc_order_id']))
     if row['state'] == 'needs_review':
         # Lines are reread so a fixed link or POPCORE ID on the website lets the next try fill it.
         con.execute('UPDATE website_orders SET lines=?, pickup_store=? WHERE wc_order_id=?',
@@ -1180,6 +1213,17 @@ def apply_order(con, cfg, order):
                        WHERE wc_order_id=?""", (facts['wc_order_id'],))
         con.commit()
     return state_of(con, facts['wc_order_id'])
+
+
+def _announce(con, cfg, wc_order_id):
+    """A phone notification for a new paid web order (push_notifications.py). It never holds up the sync."""
+    try:
+        import push_notifications
+        push_notifications.new_order(con, cfg, wc_order_id)
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        logging.getLogger(__name__).exception('Web order notification failed')
 
 
 def state_of(con, wc_order_id):
@@ -1202,6 +1246,23 @@ def poll_orders(con, cfg):
     set_state(con, 'orders_after', _iso(max(after, newest, started - timedelta(minutes=5))))
     con.commit()
     return len(orders)
+
+
+def read_board_facts(con, cfg):
+    """Open orders recorded before the board came (`delivery` never read) read their pickup code and delivery facts
+    once, so they show complete on the board without waiting for the website to change them."""
+    ids = [row[0] for row in con.execute(
+        """SELECT wc_order_id FROM website_orders
+           WHERE delivery IS NULL AND wc_status NOT IN ('completed', 'cancelled', 'refunded') ORDER BY wc_order_id""")]
+    for start in range(0, len(ids), BATCH):
+        part = ids[start:start + BATCH]
+        found = {order['id']: order for order in _all(cfg, '/orders', {'include': ','.join(map(str, part)),
+                                                                        'status': 'any'})}
+        for wc_order_id in part:
+            facts = board_facts(found[wc_order_id]) if wc_order_id in found else {'pickup_code': None, 'delivery': '{}'}
+            con.execute('UPDATE website_orders SET pickup_code=?, delivery=? WHERE wc_order_id=?',
+                        (facts['pickup_code'], facts['delivery'], wc_order_id))
+        con.commit()
 
 
 # ── Turning it on, and the background job ───────────────────────────────────
@@ -1232,6 +1293,7 @@ def run_once(con, cfg):
     _grant(con)
     con.commit()
     poll_orders(con, cfg)
+    read_board_facts(con, cfg)
     for row in con.execute("SELECT wc_order_id FROM website_orders WHERE state='new'").fetchall():
         record(con, cfg, row[0])
     push(con, cfg)
@@ -1304,6 +1366,7 @@ def orders(con, limit=100):
             """SELECT * FROM website_orders ORDER BY state NOT IN ('needs_review', 'cancel_failed'), paid_at DESC
                LIMIT ?""", (limit,)):
         item = dict(row)
+        del item['pickup_code']  # never sent to a page (website_board.py)
         item['lines'] = json.loads(item['lines'] or '[]')
         for line in item['lines']:
             product = con.execute('SELECT jizhanming, name_cn_en FROM products WHERE id=?',

@@ -1,0 +1,243 @@
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Alert, Button, Input, Popconfirm, Skeleton, message, notification } from 'antd'
+
+import {
+  findWebOrderCode, getWebOrdersBoard, handWebOrderOver, markWebOrderReady,
+  type WebOrderCard, type WebOrderCodeResult, type WebOrdersBoard, type WebOrderStep,
+} from '../../api/webOrders'
+import PageHeader from '../../components/pc/PageHeader'
+import { Panel } from '../../components/pc/Panel'
+import { ALL_STORES, useAppStore } from '../../store'
+import Notifications, { chime, soundOn } from './Notifications'
+import {
+  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, longWait, newCards, openCards, picksText, reasonText, websiteTime,
+} from './webOrdersView'
+import './webOrders.css'
+
+// The board follows the sync's pace (every 30 seconds) without reloading the page.
+const REFRESH_MS = 30_000
+// A found order's customer name leaves the screen by itself after this long.
+const CODE_CARD_MS = 3 * 60_000
+
+const clock = (time: number | null) => time === null ? '—'
+  : new Date(time).toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false })
+
+const errorText = (cause: any, fallback: string) => cause?._serverMessage || fallback
+
+function stepMessage(step: WebOrderStep, done: string, already: string) {
+  if (step.result === 'already') message.info(already)
+  else if (step.noted === false) message.warning(`${done} The website did not take the note saying who did it.`)
+  else message.success(done)
+}
+
+function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: number; action?: React.ReactNode; extra?: React.ReactNode }) {
+  const waited = longWait(card, now)
+  const elsewhere = card.taken_elsewhere ?? []
+  return <article className="pc-web-card" aria-label={`Order #${card.number}`}>
+    <header>
+      <strong>#{card.number}</strong>
+      <span>{card.kind === 'pickup' ? `自取 ${card.store}` : '配送 Delivery'}</span>
+      <time>{ageText(card.paid_at, now)}</time>
+    </header>
+    {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
+    {elsewhere.length > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
+      从 {elsewhere.join(' + ')} 拿 · Taken from {elsewhere.join(' + ')}: bring it to {card.store}</p>}
+    <ul className="pc-web-lines">
+      {card.lines.map((line, index) => <li key={index}>
+        <span><strong>{line.name}</strong> × {line.quantity}</span>
+        {(line.popcore_id || line.picks.length > 0) && <small>{[line.popcore_id, picksText(line)].filter(Boolean).join(' · ')}</small>}
+      </li>)}
+    </ul>
+    {card.kind === 'delivery' && deliveryFacts(card).length > 0 && <ul className="pc-web-facts">
+      {deliveryFacts(card).map(fact => <li key={fact}>{fact}</li>)}
+    </ul>}
+    {extra}
+    {action}
+  </article>
+}
+
+// The code the customer gives at the counter: the only way to Handed over. The first name (and who collects) is read
+// live from the website for this one order and leaves the screen when the card closes.
+function CodeBox({ store, onChange }: { store?: string; onChange: () => void }) {
+  const [code, setCode] = useState('')
+  const [typed, setTyped] = useState('')
+  const [result, setResult] = useState<WebOrderCodeResult | null>(null)
+  const [busy, setBusy] = useState('')
+  const [now, setNow] = useState(Date.now())
+  const close = () => { setResult(null); setTyped('') }
+
+  useEffect(() => {
+    if (!result) return
+    const timer = window.setTimeout(close, CODE_CARD_MS)
+    return () => window.clearTimeout(timer)
+  }, [result])
+
+  async function find(event: FormEvent) {
+    event.preventDefault()
+    if (!code.trim()) return
+    setBusy('find')
+    try {
+      const found = await findWebOrderCode(code, store)
+      setResult(found)
+      setTyped(code)
+      setCode('')
+      setNow(Date.now())
+      if (found.found) onChange()  // its status was read live
+    } catch (cause) {
+      message.error(errorText(cause, 'The website could not be asked. Try again.'))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function handOver(card: WebOrderCard) {
+    setBusy('hand')
+    try {
+      stepMessage(await handWebOrderOver(card.id, typed), `#${card.number} handed over. The website emails the customer.`,
+        `#${card.number} was already handed over.`)
+      close()
+      onChange()
+    } catch (cause) {
+      message.error(errorText(cause, 'The website did not take it. Nothing changed; try again.'))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return <section className="pc-panel pc-web-code" aria-label="Pickup code">
+    <form onSubmit={find}>
+      <label htmlFor="web-order-code"><strong>取货码</strong> <small>Pickup code</small></label>
+      <Input id="web-order-code" value={code} onChange={event => setCode(event.target.value)} autoComplete="off"
+        spellCheck={false} maxLength={16} placeholder="例 e.g. K7R4MX" disabled={!!busy} />
+      <Button type="primary" htmlType="submit" loading={busy === 'find'} disabled={!code.trim() || !!busy}>查找 Find</Button>
+    </form>
+    {result && !result.found && <Alert role="status" type="info" showIcon message={codeMissText(result)}
+      action={<Button size="small" onClick={close}>关闭 Close</Button>} />}
+    {result?.found && <OrderCard card={result.order} now={now}
+      extra={<>
+        <p className="pc-web-customer">顾客 Customer: <strong>{result.first_name || '—'}</strong>
+          {result.collector && <> · Collecting: <strong>{result.collector}</strong></>}</p>
+        {result.needs_manager && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
+          POPCORE could not take this order out of stock. Hand it over, then tell a manager.</p>}
+      </>}
+      action={<div className="pc-web-actions">
+        <Popconfirm title={`Hand over #${result.order.number}?`} description="The website marks it completed and emails the customer."
+          okText="Handed over" onConfirm={() => handOver(result.order)}>
+          <Button type="primary" loading={busy === 'hand'} disabled={!!busy}>已取货 Handed over</Button>
+        </Popconfirm>
+        <Button onClick={close} disabled={!!busy}>关闭 Close</Button>
+      </div>} />}
+  </section>
+}
+
+// 网站订单 Web orders: the shop computer's order fulfilment screen (owner, 2026-11-19). Two buttons only, Ready and
+// Handed over; everything else is for looking. Nothing personal is on it, and never the pickup code.
+export default function WebOrdersPage() {
+  const selected = useAppStore(state => state.selectedStore)
+  const store = selected && selected.code !== ALL_STORES.code ? selected.code : undefined
+  const [board, setBoard] = useState<WebOrdersBoard>()
+  const [error, setError] = useState('')
+  const [loadedAt, setLoadedAt] = useState(Date.now())
+  const [attempt, setAttempt] = useState(0)
+  const [busy, setBusy] = useState(0)
+  // The open orders the board last showed, per store choice: one it did not have is new.
+  const seen = useRef<{ store?: string; ids: Set<number> } | null>(null)
+
+  useEffect(() => {
+    let live = true
+    const load = () => getWebOrdersBoard(store).then(next => {
+      if (!live) return
+      if (seen.current && seen.current.store === store) {
+        const fresh = newCards(next, seen.current.ids)
+        for (const card of fresh) notification.info({
+          key: `web-order-${card.id}`, duration: 0, placement: 'bottomRight',
+          message: `新网站订单 New web order #${card.number}`, description: announceText(card),
+        })
+        if (fresh.length && soundOn()) chime()
+      }
+      seen.current = { store, ids: new Set(openCards(next).map(card => card.id)) }
+      setBoard(next)
+      setError('')
+      setLoadedAt(Date.now())
+    }).catch(cause => { if (live) setError(errorText(cause, 'Unable to load the web orders.')) })
+    load()
+    const timer = window.setInterval(load, REFRESH_MS)
+    return () => { live = false; window.clearInterval(timer) }
+  }, [store, attempt])
+
+  const reload = () => setAttempt(value => value + 1)
+
+  async function ready(card: WebOrderCard) {
+    setBusy(card.id)
+    try {
+      stepMessage(await markWebOrderReady(card.id), `#${card.number} is ready. The website emails the customer their pickup code.`,
+        `#${card.number} was already ready on the website.`)
+    } catch (cause) {
+      message.error(errorText(cause, 'The website did not take it. Nothing changed; try again.'))
+    } finally {
+      setBusy(0)
+      reload()
+    }
+  }
+
+  const header = <PageHeader title="网站订单" sub="Web orders · popcore.ca" />
+  if (!board) return <div className="pc-web-orders">
+    {header}
+    {error ? <Alert role="alert" type="error" showIcon message={error} action={<Button onClick={reload}>Retry</Button>} />
+      : <div className="pc-panel"><div className="pc-quiet"><Skeleton active /></div></div>}
+  </div>
+
+  const now = loadedAt
+  const syncedAt = websiteTime(board.last_run)
+  return <div className="pc-web-orders">
+    {header}
+    {error && <Alert role="alert" type="warning" showIcon message={`${error} The board shows what it last read.`}
+      action={<Button size="small" onClick={reload}>Retry</Button>} />}
+    {!board.configured ? <Alert type="warning" showIcon message="No website key is set on the server, so no web orders reach POPCORE." />
+      : !board.enabled && <Alert type="warning" showIcon message="网站同步已关闭 · The website sync is off: new orders and changes do not reach this board." />}
+    {board.stores.length === 0 && <Alert type="info" showIcon
+      message={store ? `You have no 门店操作权限 Store operations access for ${store}.` : 'You have no 门店操作权限 Store operations access. An admin grants it under Users.'} />}
+    <p className="pc-web-fresh">
+      {board.stores.join(' + ') || '—'} · <span>更新 Updated {clock(now)}</span> · <span>网站同步 Website read {clock(syncedAt)}</span> · <span>每 30 秒 every 30 s</span>
+    </p>
+
+    <Notifications />
+
+    <CodeBox store={store} onChange={reload} />
+
+    <div className="pc-web-columns">
+      {COLUMNS.map(column => {
+        const cards = board.columns[column.key]
+        return <section key={column.key} className="pc-web-column" aria-label={column.en}>
+          <header className="pc-panel-head">
+            <h2><span>{column.zh}</span> <small>{column.en}</small></h2>
+            <span className="pc-panel-count">{cards.length}</span>
+          </header>
+          {cards.length === 0 ? <p className="pc-quiet">没有 · None</p> : cards.map(card => <OrderCard key={card.id} card={card} now={now}
+            action={column.key === 'pick' ? <div className="pc-web-actions">
+              <Popconfirm title={`#${card.number} 拣好了? Mark it ready?`}
+                description="The website emails the customer that it is ready, with their pickup code." okText="Ready"
+                onConfirm={() => ready(card)}>
+                <Button loading={busy === card.id} disabled={!!busy}>拣好了 Ready</Button>
+              </Popconfirm>
+            </div> : undefined} />)}
+        </section>
+      })}
+    </div>
+
+    <Panel zh="需要经理" en="Needs a manager" label="Needs a manager" count={board.needs_manager.length}
+      tone={board.needs_manager.length ? 'warn' : 'ok'}>
+      {board.needs_manager.length === 0 ? <p className="pc-quiet">没有 · Nothing waits for a manager.</p>
+        : <div className="pc-web-grid">{board.needs_manager.map(card => <OrderCard key={card.id} card={card} now={now}
+          extra={<p className="pc-web-reason">{reasonText(card)}</p>} />)}</div>}
+    </Panel>
+
+    <details className="pc-panel pc-web-done">
+      <summary><strong>今天完成</strong> <small>Done today</small> <span className="pc-panel-count">{board.done_today.length}</span></summary>
+      {board.done_today.length === 0 ? <p className="pc-quiet">没有 · None yet today.</p>
+        : <div className="pc-web-grid">{board.done_today.map(card => <OrderCard key={card.id} card={card} now={now}
+          extra={<p className="pc-web-reason">{{ completed: '已完成 Completed', cancelled: '已取消 Cancelled', refunded: '已退款 Refunded' }[card.status] ?? card.status}
+            {card.done_at ? ` · ${clock(websiteTime(card.done_at))}` : ''}</p>} />)}</div>}
+    </details>
+  </div>
+}

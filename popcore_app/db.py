@@ -2121,6 +2121,8 @@ def _get_migrations():
         ('report_lines_from',                          _migration_report_lines_from),
         ('report_sets_opened',                         _migration_report_sets_opened),
         ('dex_listings',                               _migration_dex_listings),
+        ('website_order_board',                        _migration_website_order_board),
+        ('push_subscriptions',                         _migration_push_subscriptions),
     ]
 
 
@@ -2486,6 +2488,38 @@ def _migration_dex_listings(con, cur):
     cur.execute("""CREATE TRIGGER IF NOT EXISTS dex_listings_product_gone AFTER DELETE ON products
                    BEGIN DELETE FROM dex_listings WHERE product_id=OLD.id; END""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('dex_listings')")
+
+
+def _migration_website_order_board(con, cur):
+    # 网站订单 Web orders board (owner, 2026-11-19: "an account/screen to show all of the delivery order/pickup order,
+    # to be on the computer in the store"). Each web order keeps its pickup code, only to find the order when staff
+    # type it (never sent to a page), and its delivery facts (the window and service the customer chose, the zone,
+    # and FleetNow's number, windows and status) as JSON. Nothing personal. `delivery` stays NULL on orders recorded
+    # before this until the sync reads them (website_sync.read_board_facts).
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_orders)')}
+    if 'pickup_code' not in columns:
+        cur.execute('ALTER TABLE website_orders ADD COLUMN pickup_code TEXT')
+    if 'delivery' not in columns:
+        cur.execute('ALTER TABLE website_orders ADD COLUMN delivery TEXT')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_website_orders_pickup_code ON website_orders(pickup_code)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_board')")
+
+
+def _migration_push_subscriptions(con, cur):
+    # Notifications for new web orders (owner, 2026-11-19: "we need our own notification thing"): the browsers and
+    # Home Screen apps that asked for them, one row per device, each with its owner's sign-in (push_notifications.py).
+    # The push keys of a device are not secrets; POPCORE's own signing key is a file, never in the database.
+    cur.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions (
+        endpoint     TEXT    PRIMARY KEY,
+        auth0_sub    TEXT    NOT NULL,
+        p256dh       TEXT    NOT NULL,
+        auth         TEXT    NOT NULL,
+        failures     INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        last_sent_at TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_push_subscriptions_sub ON push_subscriptions(auth0_sub)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscriptions')")
 
 
 def _migration_inventory_viewers(con, cur):

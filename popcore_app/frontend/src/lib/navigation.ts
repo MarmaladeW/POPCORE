@@ -16,6 +16,8 @@ const item = {
   // Without 库存查看 the 库存 entry opens 晚盘 only (owner, 2026-11-01).
   eveningCount: { key: '/stock/count', zh: '晚盘', en: 'Evening count', icon: 'count' },
   restock: { key: '/restock', zh: '补货', en: 'Restock', icon: 'swap' },
+  // The shop computer's pickup and delivery orders from popcore.ca (owner, 2026-11-19).
+  webOrders: { key: '/web-orders', zh: '网站订单', en: 'Web orders', icon: 'web' },
   // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs.
   sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
   reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '经理' },
@@ -33,9 +35,9 @@ export const removedFromMenus = ['/trades', '/today']
 
 export function railGroups(access: NavAccess): NavGroup[] {
   const daily: NavItem[] = [item.home]
-  if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock)
-  else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock)
-  else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock)
+  if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock, item.webOrders)
+  else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock, item.webOrders)
+  else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock, item.webOrders)
   const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
@@ -46,7 +48,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
 
 export function moreItems(access: NavAccess): NavItem[] {
   return [
-    ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock] : []),
+    ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock, item.webOrders] : []),
     item.products,
     item.dex,
     ...(access.manager ? [item.sales, item.reports, item.website] : []),
