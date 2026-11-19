@@ -25,6 +25,11 @@ const reportText = (row: WebsiteStatus['report'][number]) =>
 
 const money = (cents: number | null) => cents === null ? '' : `$${(cents / 100).toFixed(2)}`
 
+// Staff know products by name, not by POPCORE ID (owner, 2026-11-19): the 记账名, else the official name, else the
+// website's name for a line POPCORE could not link.
+const linesText = (order: WebsiteOrder) =>
+  order.lines.map(line => `${line.popcore_name || line.name || line.popcore_id} × ${line.quantity}`).join(', ')
+
 // Why a price change waits for a manager's OK (owner, 2026-11-10).
 function reasonText(reason: PriceReason) {
   switch (reason.code) {
@@ -134,7 +139,7 @@ export default function WebsitePage() {
       </p> : <>
         {status.last_error && <Alert type="error" showIcon message={status.last_error.message}
           description={`Last tried ${when(status.last_error.at)}`} />}
-        <ListRow label="网站" title={status.url} meta={`Live stores: ${status.live_stores.join(', ') || 'none'} · Delivery orders from ${status.delivery_store}${status.keep_back ? ` · Also kept back on every item: ${status.keep_back}` : ''}`} />
+        <ListRow label="网站" title={status.url} meta={`Live stores: ${status.live_stores.join(', ') || 'none'} · Orders from ${status.delivery_store} first, then the other live stores${status.keep_back ? ` · Also kept back on every item: ${status.keep_back}` : ''}`} />
         <ListRow label="日报" title={status.report.length ? status.report.map(reportText).join(' · ') : 'No live store yet'}
           meta={`${status.report.length ? `Sales in up to ${status.report.map(row => `${row.reported_through ?? '—'}${status.report.length > 1 ? ` (${row.store})` : ''}`).join(', ')}. ` : ''}${preview?.shop_hold.items ?`${preview.shop_hold.units} units of ${preview.shop_hold.items} items held back for the shop. ` : preview ? 'Nothing held back for the shop. ' : ''}Until a shop day’s report is in, each item holds back what the shop sold on its best day of the last 30 reports; a shop day starts at ${status.shop_opens}.`} />
         <ListRow label="产品" title={status.refreshed_at ? `Read ${when(status.refreshed_at)}` : 'Not read yet'}
@@ -212,7 +217,7 @@ export default function WebsitePage() {
     <Panel zh="待处理网站订单" en="Web orders to review" count={waiting.length} label="Web orders to review" tone={waiting.length ? 'warn' : 'ok'}>
       {waiting.length === 0 ? <p className="pc-quiet">没有 · Every paid web order came out of stock.</p>
         : waiting.map(order => <ListRow key={order.wc_order_id} label={`#${order.number}`}
-          title={order.lines.map(line => `${line.popcore_id || line.name} × ${line.quantity}`).join(', ')}
+          title={linesText(order)}
           meta={[order.state === 'cancel_failed' ? `取消未退回 · Cancelled on the website, not yet back in stock (${order.problem})`
             : problemText[order.problem || ''] || order.problem, when(order.paid_at), money(order.total_cents)].filter(Boolean).join(' · ')}
           trailing={<span className="pc-row-actions">
@@ -228,8 +233,8 @@ export default function WebsitePage() {
     <Panel zh="网站订单" en="Web orders" count={status.orders.recorded} label="Web orders" tone="ok">
       {recent.length === 0 ? <p className="pc-quiet">No web orders yet.</p>
         : recent.map(order => <ListRow key={order.wc_order_id} label={`#${order.number}`}
-          title={order.lines.map(line => `${line.popcore_id || line.name} × ${line.quantity}`).join(', ')}
-          meta={[{ recorded: `出库 ${order.store_code}`, cancelled: '已取消 Cancelled', dismissed: `已处理 Settled: ${order.dismiss_reason}`, new: '新 New' }[order.state as string],
+          title={linesText(order)}
+          meta={[{ recorded: `出库 ${order.store_codes?.length ? order.store_codes.join(' + ') : order.store_code}`, cancelled: '已取消 Cancelled', dismissed: `已处理 Settled: ${order.dismiss_reason}`, new: '新 New' }[order.state as string],
             order.refunded ? '已退款 Refunded on the website' : null, order.fulfilment, when(order.paid_at), money(order.total_cents)].filter(Boolean).join(' · ')} />)}
     </Panel>
 

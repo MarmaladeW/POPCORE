@@ -1,7 +1,7 @@
 """popcore.ca takes its stock from POPCORE (owner, 2026-10-25 and 2026-11-01): website items are
 linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07), the live stores'
 shelves set the website number, paid web orders take their items
-out of the filling store's back stock first and stay out of its closing, a cancel puts them back,
+out of the filling store's floor first (owner, 2026-11-19), then upstairs, and stay out of its closing, a cancel puts them back,
 and nothing is written to the website before an admin turns the sync on. Since 2026-11-10 POPCORE
 also writes the regular prices of linked boxes, Whole Sets and items, never sale prices; big or doubtful
 changes wait for a manager's OK, and Daily Shop products wait for the reset. A design gets only a price a
@@ -380,21 +380,23 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.run_sync()
         self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'manage_stock': True, 'stock_quantity': 3})])
 
-    def test_a_paid_order_takes_back_stock_first_and_stays_out_of_closing(self):
+    def test_a_paid_order_takes_the_floor_first_and_stays_out_of_closing(self):
         self.turn_on()
-        self.woo.order(500, [(11, 6), (20, 2)])
+        self.woo.order(500, [(11, 12), (12, 1), (20, 2)])
         self.woo.products[20]['stock_quantity'] = 2  # the website lowered its own number at payment
         self.run_sync()
         order = self.order_row(500)
         self.assertEqual((order['state'], order['store_id'], order['problem']), ('recorded', self.dt, None))
         self.assertEqual([(line['popcore_id'], line['product_id']) for line in json.loads(order['lines'])],
-                         [('PM0100', self.box), ('PM0200', self.item)])
+                         [('PM0100', self.box), ('PM0100-SET', self.set), ('PM0200', self.item)])
         self.assertNotIn('someone@example.com', json.dumps(order))
-        # Upstairs first (4 boxes), the floor for the rest.
-        self.assertEqual((self.balance(self.box, 'upstairs'), self.balance(self.box, 'floor')), (0, 8))
-        self.assertEqual((self.balance(self.item, 'upstairs'), self.balance(self.item, 'floor')), (0, 2))
+        # Owner, 2026-11-19: the floor first (all 10 boxes), then upstairs for the rest; the items all from the floor.
+        self.assertEqual((self.balance(self.box, 'upstairs'), self.balance(self.box, 'floor')), (2, 0))
+        self.assertEqual((self.balance(self.item, 'upstairs'), self.balance(self.item, 'floor')), (1, 1))
+        # A Whole Set is its own product, held upstairs: it takes a sealed set, never floor boxes.
+        self.assertEqual(self.balance(self.set, 'upstairs'), 1)
         written = {update['id']: update.get('stock_quantity') for _, update in self.woo.writes}
-        self.assertEqual(written, {11: 8, 20: 2})
+        self.assertEqual(written, {11: 2, 12: 1, 20: 2})
         with closing(self.connect()) as con:
             document = con.execute('SELECT * FROM inventory_documents WHERE id=?',
                                    (order['inventory_document_id'],)).fetchone()
@@ -406,7 +408,7 @@ class WebsiteSyncTests(IsolatedApiCase):
             self.assertNotIn(order['inventory_document_id'], [row[0] for row in facts['inventory_documents']])
         # Read again in the overlap: nothing moves twice.
         self.run_sync()
-        self.assertEqual(self.balance(self.box, 'floor'), 8)
+        self.assertEqual((self.balance(self.box, 'upstairs'), self.balance(self.box, 'floor')), (2, 0))
         # Cancelled on the website: the items go back where they came from.
         self.woo.orders[500].update(status='cancelled', date_modified_gmt=_ago(0))
         self.run_sync()
@@ -414,6 +416,22 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.assertEqual(order['state'], 'cancelled')
         self.assertEqual((self.balance(self.box, 'upstairs'), self.balance(self.box, 'floor')), (4, 10))
         self.assertEqual((self.balance(self.item, 'upstairs'), self.balance(self.item, 'floor')), (1, 3))
+        self.assertEqual(self.balance(self.set, 'upstairs'), 2)
+
+    def test_floor_boxes_kept_in_an_opened_set_are_not_picked(self):
+        """Only the floor's loose boxes are picked first; boxes kept in an opened set stay, and upstairs fills the rest."""
+        with closing(self.connect()) as con:
+            document = con.execute("SELECT id FROM inventory_documents WHERE kind='opening'").fetchone()[0]
+            con.execute("""INSERT INTO inventory_open_sets(opening_document_id, random_product_id, location_id, purpose,
+                               remaining_qty) VALUES (?, ?, ?, 'customer_tray', 9)""",
+                        (document, self.box, self.locations['floor']))
+            con.commit()
+        self.turn_on()
+        self.woo.order(508, [(11, 3)])
+        self.run_sync()
+        self.assertEqual(self.order_row(508)['state'], 'recorded')
+        # 1 loose box on the floor, then 2 from upstairs.
+        self.assertEqual((self.balance(self.box, 'upstairs'), self.balance(self.box, 'floor')), (2, 9))
 
     def test_an_order_popcore_cannot_fill_waits_and_holds_its_units(self):
         self.turn_on()
@@ -454,6 +472,59 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.run_sync()
         self.assertEqual((self.order_row(503)['state'], self.order_row(503)['store_id']), ('recorded', self.dt))
 
+    def test_dt_is_taken_from_first_then_the_other_live_stores(self):
+        """Owner, 2026-11-19: "the first place to deduct from should always be dt, as we ship our product from
+        downtown." With MK live, an MK pickup still comes off DT first; only what DT lacks comes from MK."""
+        mk, mk_locations = self.open_mk(5)
+        self.turn_on()
+
+        def mk_floor():
+            with closing(self.connect()) as con:
+                return con.execute("""SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?
+                                      AND disposition='saleable'""", (self.box, mk_locations['floor'])).fetchone()[0]
+
+        def dt_and_mk():
+            return self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'), mk_floor()
+
+        self.woo.order(509, [(11, 3)], pickup='mk')
+        self.run_sync()
+        self.assertEqual((self.order_row(509)['state'], self.order_row(509)['store_id']), ('recorded', self.dt))
+        self.assertEqual(dt_and_mk(), (7, 4, 5))
+        # 13 boxes: DT's floor (7), then DT's upstairs (4), then 2 from MK's floor.
+        self.woo.order(510, [(11, 13)])
+        self.run_sync()
+        self.assertEqual((self.order_row(510)['state'], self.order_row(510)['store_id']), ('recorded', self.dt))
+        self.assertEqual(dt_and_mk(), (0, 0, 3))
+        # DT has none left: an MK pickup comes from MK, and the order's store is MK.
+        self.woo.order(511, [(11, 1)], pickup='mk')
+        self.run_sync()
+        self.assertEqual((self.order_row(511)['state'], self.order_row(511)['store_id']), ('recorded', mk))
+        self.assertEqual(dt_and_mk(), (0, 0, 2))
+        orders = {row['wc_order_id']: row for row in
+                  self.client.get('/api/website/orders', headers=self.headers('manager')).get_json()['orders']}
+        self.assertEqual({number: orders[number]['store_codes'] for number in (509, 510, 511)},
+                         {509: ['DT'], 510: ['DT', 'MK'], 511: ['MK']})
+        # A cancel puts every box back where it came from, in both stores.
+        self.woo.orders[510].update(status='cancelled', date_modified_gmt=_ago(0))
+        self.run_sync()
+        self.assertIsNone(self.state('last_error'))
+        self.assertEqual(self.order_row(510)['state'], 'cancelled')
+        self.assertEqual(dt_and_mk(), (7, 4, 4))
+
+    def test_order_lines_show_the_name_staff_know(self):
+        """Owner, 2026-11-19: show the 记账名, or the official name when there is none, not just the POPCORE ID."""
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET jizhanming='Echo 记账名' WHERE id=?", (self.box,))
+            con.execute("UPDATE products SET jizhanming='  ', name_cn_en='Bear Charm Official' WHERE id=?", (self.item,))
+            con.commit()
+        self.turn_on()
+        self.woo.order(512, [(11, 1), (20, 1), (50, 1)])  # the tote bag has no POPCORE ID
+        self.run_sync()
+        order = self.client.get('/api/website/orders', headers=self.headers('manager')).get_json()['orders'][0]
+        self.assertEqual([(line['popcore_id'], line['popcore_name']) for line in order['lines']],
+                         [('PM0100', 'Echo 记账名'), ('PM0200', 'Bear Charm Official'), ('', None)])
+        self.assertEqual(order['lines'][2]['name'], 'Tote bag')  # the page falls back to the website's name
+
     def test_orders_paid_before_the_switch_are_ignored(self):
         self.turn_on()
         self.woo.order(504, [(20, 1)], paid=_ago(120), modified=_ago(1))
@@ -471,7 +542,7 @@ class WebsiteSyncTests(IsolatedApiCase):
         self.run_sync()
         order = self.order_row(505)
         self.assertEqual((order['state'], json.loads(order['lines'])[0]['popcore_id']), ('recorded', 'PM0200'))
-        self.assertEqual((self.balance(self.item, 'upstairs'), self.balance(self.item, 'floor')), (0, 3))
+        self.assertEqual((self.balance(self.item, 'upstairs'), self.balance(self.item, 'floor')), (1, 2))
         self.assertEqual((self.order_row(506)['state'], self.order_row(506)['problem']), ('needs_review', 'unknown_item'))
         self.assertIsNone(self.state('last_error'))
 

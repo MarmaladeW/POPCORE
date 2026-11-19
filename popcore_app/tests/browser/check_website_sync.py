@@ -100,10 +100,11 @@ async def run(browser, width):
         fixture.run_sync()
         await page.reload()
         review = page.get_by_role('region', name='Web orders to review')
-        await expect(review.get_by_text('PM0100-SET × 3')).to_be_visible()
+        # Lines are named by 记账名, not POPCORE ID (owner, 2026-11-19).
+        await expect(review.get_by_text('Echo 整端 × 3')).to_be_visible()
         await expect(review.get_by_text('库存不够', exact=False)).to_be_visible()
         recorded = page.get_by_role('region', name='Web orders')
-        await expect(recorded.get_by_text('PM0200 × 1')).to_be_visible()
+        await expect(recorded.get_by_text('Bear 吊卡 × 1')).to_be_visible()
         await expect(recorded.get_by_text('出库 DT', exact=False)).to_be_visible()
         await fits(page, f'orders-{width}.png')
 
