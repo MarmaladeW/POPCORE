@@ -297,7 +297,11 @@ async def run(browser, width):
                     fixture.box, fixture.dt) == [(7,)]
         # Afterwards a recount corrects stock at once.
         await card.get_by_label(re.compile('^散盒 Single boxes')).fill('6')
-        await card.get_by_role('button', name='保存 Save').click()
+        # The card reads itself again after a save; let that finish first, or on a slow runner (CI, 2026-11-20) it can
+        # pick up the other phone's count below and this card's save is no longer stale.
+        async with page.expect_response(lambda response: '/api/counting/card' in response.url
+                                        and response.request.method == 'GET'):
+            await card.get_by_role('button', name='保存 Save').click()
         await expect(card.get_by_role('status')).to_contain_text('库存 7 → 6')
         # Another phone recounts the same box first: this card's save is refused, the card reloads,
         # and the warning stays up so the counter knows to count again.
