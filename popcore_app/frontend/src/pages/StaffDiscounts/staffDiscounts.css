@@ -1,0 +1,104 @@
+/* 员工折扣 Staff discounts (owner, 2026-11-19): the month's money on top (managers), people beside what waits for a
+   manager, then the month's records. White boxes, hairlines, sharp corners, a dot plus words for status; at 4 a person
+   reads in amber, over 4 in red. */
+.pc-sd { display: grid; gap: 16px; }
+.pc-sd-months .pc-day-date { min-width: 132px; cursor: default; }
+.pc-sd-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 0; color: var(--text-primary); font-size: 13.5px; font-weight: 600; line-height: 20px; }
+.pc-sd-title small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-sd .ant-btn small { color: inherit; font-size: 11.5px; opacity: .72; }
+
+.pc-sd-month { display: grid; gap: 10px; }
+.pc-sd-figures { grid-template-columns: repeat(var(--pc-sd-cells, 2), minmax(0, 1fr)); margin-bottom: 0; }
+.pc-sd-figures span small { color: var(--text-tertiary); font-size: 12px; }
+
+.pc-sd-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "people waiting" "uses uses" "ignored ignored"; gap: 16px; align-items: start; }
+.pc-sd-people { grid-area: people; }
+.pc-sd-waiting { grid-area: waiting; }
+.pc-sd-uses { grid-area: uses; }
+.pc-sd-ignored { grid-area: ignored; }
+.pc-sd-rows { margin: 0; padding: 0; list-style: none; }
+.pc-sd-panel-notice { padding: 12px 16px 0; }
+.pc-sd-head-end { display: inline-flex; flex: none; align-items: center; gap: 12px; }
+.pc-sd-add.ant-btn { height: 32px; padding-inline: 10px; font-size: 12.5px; }
+
+/* People: rank, name and where they stand, four pips, then used / 4. */
+.pc-sd-person { min-height: 56px; }
+.pc-sd-standing { display: flex; align-items: center; gap: 6px; }
+.pc-sd-dot-ok { background: var(--status-ok-dot); }
+.pc-sd-dot-warn { background: var(--status-restock-dot); }
+.pc-sd-dot-out { background: var(--status-out-ink); }
+.pc-sd-dot-none { background: var(--line-strong); }
+.pc-sd-person.is-warn .pc-sd-standing, .pc-sd-person.is-warn .pc-sd-count b { color: var(--status-restock-ink); }
+.pc-sd-person.is-out { background: var(--status-out-tint); }
+.pc-sd-person.is-out .pc-sd-standing, .pc-sd-person.is-out .pc-sd-count b { color: var(--status-out-ink); }
+.pc-sd-person.is-none .pc-row-main strong { color: var(--text-secondary); }
+.pc-sd-pips { display: inline-flex; flex: none; gap: 3px; }
+.pc-sd-pips i { width: 8px; height: 8px; border: 1px solid var(--line-strong); }
+.pc-sd-pips i.is-used { border-color: var(--surface-ink); background: var(--surface-ink); }
+.pc-sd-pips i.is-over { border-color: var(--status-out-ink); background: var(--status-out-ink); }
+.pc-sd-count { display: inline-flex; flex: none; align-items: baseline; justify-content: flex-end; gap: 3px; min-width: 52px; white-space: nowrap; }
+.pc-sd-count b { color: var(--text-primary); font-size: 17px; font-weight: 600; line-height: 22px; }
+.pc-sd-count small { color: var(--text-tertiary); font-size: 11.5px; }
+
+/* Waiting and ignored lines: the day and store, who the line names, its products and text, then the manager's buttons. */
+.pc-sd-wait { flex-wrap: wrap; align-items: flex-start; row-gap: 8px; }
+.pc-sd-when { display: grid; gap: 4px; align-content: start; color: var(--text-secondary); font-size: 11.5px; line-height: 17px; }
+.pc-sd-wait .pc-row-main small { overflow-wrap: anywhere; }
+.pc-sd-raw { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.pc-sd-actions { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; }
+.pc-sd-wait .pc-sd-actions { margin-left: auto; }
+.pc-sd-actions .ant-btn { height: 36px; padding-inline: 10px; font-size: 13px; }
+
+/* The month's records: one grid row each, columns on desktop, stacked on phone. */
+.pc-sd-use { display: grid; grid-template-columns: 52px minmax(96px, 150px) minmax(0, 1fr) 48px 112px 132px auto; grid-template-areas: "when who what n paid source actions"; align-items: start; gap: 4px 14px; padding: 12px 16px; }
+.pc-sd-use + .pc-sd-use { border-top: 1px solid var(--line-hair); }
+.pc-sd-use > .pc-sd-when { grid-area: when; }
+.pc-sd-who { display: grid; grid-area: who; min-width: 0; }
+.pc-sd-who strong { overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 500; line-height: 19.5px; text-overflow: ellipsis; white-space: nowrap; }
+.pc-sd-who small, .pc-sd-paid small, .pc-sd-source small { color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; }
+.pc-sd-what { grid-area: what; min-width: 0; color: var(--text-primary); font-size: 13px; line-height: 19.5px; overflow-wrap: anywhere; }
+.pc-sd-n { grid-area: n; color: var(--text-secondary); font-size: 12px; line-height: 19.5px; text-align: right; white-space: nowrap; }
+.pc-sd-n b { color: var(--text-primary); font-size: 15px; font-weight: 600; }
+.pc-sd-paid { display: grid; grid-area: paid; justify-items: end; }
+.pc-sd-paid b { color: var(--text-primary); font-size: 13px; font-weight: 600; line-height: 19.5px; }
+.pc-sd-source { display: grid; grid-area: source; color: var(--text-secondary); font-size: 12px; line-height: 19.5px; }
+.pc-sd-edited { color: var(--status-restock-ink) !important; }
+.pc-sd-use > .pc-sd-actions { grid-area: actions; margin-top: -6px; }
+
+/* Dialogs: labels over fields, two fields a row where they fit, the products as rows. */
+.pc-sd-dialog { display: grid; gap: 14px; padding-top: 4px; }
+.pc-sd-dialog-what { display: grid; gap: 2px; margin: 0; padding: 10px 12px; background: var(--surface-soft); color: var(--text-secondary); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.pc-sd-dialog-what strong { color: var(--text-primary); font-weight: 600; }
+.pc-sd-dialog-what small { color: var(--text-tertiary); font-size: 12px; }
+.pc-sd-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
+.pc-sd-field > label, .pc-sd-products legend { margin: 0; padding: 0; color: var(--text-secondary); font-size: 12px; font-weight: 500; line-height: 18px; }
+.pc-sd-field > label small, .pc-sd-products legend small { color: var(--text-tertiary); font-weight: 400; }
+.pc-sd-field .ant-select, .pc-sd-field .ant-input-number { width: 100%; }
+.pc-sd-field input, .pc-sd-field textarea, .pc-sd-product input { font-size: 16px; }
+.pc-sd-field-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.pc-sd-products { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.pc-sd-products legend { margin-bottom: 6px; }
+.pc-sd-product { display: grid; grid-template-columns: minmax(0, 1fr) 76px 40px; gap: 6px; }
+.pc-sd-products > .ant-btn { justify-self: start; }
+.pc-sd-hint { margin: 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
+.pc-sd-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+.pc-sd-dialog-actions .ant-btn { min-height: 40px; }
+
+@media (max-width: 1023px) {
+  .pc-sd-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "people" "waiting" "uses" "ignored"; gap: 12px; }
+}
+@media (max-width: 767px) {
+  .pc-sd { gap: 12px; }
+  .pc-sd > .pc-day { width: 100%; margin-bottom: 0; }
+  .pc-sd-figures { grid-template-columns: 1fr 1fr; }
+  .pc-sd-figures > .pc-sd-total { grid-column: 1 / -1; }
+  .pc-sd-figures > div:nth-child(2n) { border-left: 0; }
+  .pc-sd-figures > div:nth-child(n + 2) { border-top: 1px solid var(--line-hair); }
+  .pc-sd-use { grid-template-columns: 44px minmax(0, 1fr) auto; grid-template-areas: "when who n" "when what what" "when paid source" "actions actions actions"; padding: 12px; }
+  .pc-sd-paid { justify-items: start; }
+  .pc-sd-source { justify-items: end; text-align: right; }
+  .pc-sd-use > .pc-sd-actions { margin-top: 0; }
+  .pc-sd-add.ant-btn small { display: none; }
+  .pc-sd-wait .pc-sd-actions { flex-basis: 100%; }
+  .pc-sd-dialog-actions .ant-btn { flex: 1; min-height: 48px; }
+}

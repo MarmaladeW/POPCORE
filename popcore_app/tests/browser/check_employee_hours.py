@@ -1,4 +1,4 @@
-"""正 and 训 marks, the per-employee monthly hours page and the 员工 list + detail, against the real
+"""正 and 训 marks, the per-employee monthly hours page and the 员工 list + detail (ranks since 2026-11-19), against the real
 Flask app and a disposable database (owner, 2026-11-03/04). The browser clock is fixed on
 2026-10-28, inside the October wage period (Oct 4 – Nov 3)."""
 import asyncio
@@ -14,6 +14,8 @@ from playwright.async_api import async_playwright, expect
 from check_foundation import FRONTEND, HERE, ROOT
 
 sys.path.insert(0, str(HERE.parent))
+from unittest.mock import Mock, patch
+
 from support import IsolatedApiCase
 from blueprints import users as users_blueprint
 
@@ -21,12 +23,13 @@ PORT = 5197
 BASE = f'http://127.0.0.1:{PORT}'
 OUT = ROOT / '.local' / 'employee-hours'
 NOW = datetime(2026, 10, 28, 17, tzinfo=timezone.utc)  # 13:00 in Toronto
-USERS = [{'id': 'auth0|admin', 'username': 'admin1', 'role': 'admin', 'is_active': 1,
+USERS = [{'id': 'auth0|admin', 'username': 'admin1', 'role': 'admin', 'rank': None, 'is_active': 1,
           'created_at': '2026-08-01 10:00:00', 'last_login': '2026-10-28 09:02:00'},
-         {'id': 'auth0|jessi', 'username': 'jessi', 'role': 'staff', 'is_active': 1,
+         {'id': 'auth0|jessi', 'username': 'jessi', 'role': 'staff', 'rank': 'regular', 'is_active': 1,
           'created_at': '2026-08-03 14:20:00', 'last_login': '2026-10-27 11:57:00'},
-         {'id': 'auth0|amy', 'username': 'amy', 'role': 'staff', 'is_active': 1,
+         {'id': 'auth0|amy', 'username': 'amy', 'role': 'staff', 'rank': 'trainee', 'is_active': 1,
           'created_at': '2026-09-20 12:00:00', 'last_login': ''}]
+ROLE_IDS = {'admin': 'rol_admin', 'manager': 'rol_manager', 'staff': 'rol_staff', 'viewer': 'rol_viewer'}
 
 
 def seed(case):
@@ -88,9 +91,23 @@ async def open_as(browser, case, role, width, store='ALL'):
     return context, page
 
 
+WIDEST = '''() => [...document.querySelectorAll('body *')]
+  .map(el => ({el, r: el.getBoundingClientRect()}))
+  .filter(({r}) => r.width > 0 && r.right > innerWidth - 12)
+  .sort((a, b) => b.r.right - a.r.right).slice(0, 6)
+  .map(({el, r}) => `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)} right=${Math.round(r.right)}`)'''
+
+
+OPEN_POPUP = '''() => [...document.querySelectorAll('.ant-select-dropdown, .ant-picker-dropdown')]
+  .some(el => el.getBoundingClientRect().width > 0)'''
+
+
 async def fits(page, name):
     width = page.viewport_size['width']
-    assert await page.evaluate('document.documentElement.scrollWidth') <= width + 2, name
+    # A dropdown or date panel still closing can stick out for a moment on a slow runner (CI, 2026-11-20): measure the
+    # page once they are gone, and name what sticks out if it still does.
+    await page.wait_for_function(f'() => !({OPEN_POPUP})()')
+    assert await page.evaluate('document.documentElement.scrollWidth') <= width + 2, (name, await page.evaluate(WIDEST))
     await page.screenshot(path=OUT / name, full_page=True, animations='disabled')
 
 
@@ -221,10 +238,12 @@ async def users_page(browser, case, width):
         people = page.get_by_role('region', name='员工列表 People')
         jessi = people.get_by_role('button', name=re.compile(r'^Jessi'))
         amy = people.get_by_role('button', name=re.compile(r'^Amy'))
-        await expect(jessi.locator('.pc-regular-mark')).to_have_count(1)
+        # Ranks (owner, 2026-11-19): a badge and the rank's name in the list.
+        await expect(jessi.locator('.pc-rank-regular')).to_have_count(1)
+        await expect(jessi.locator('.pc-role')).to_have_text('正式员工')
         await expect(jessi).to_contain_text('排班 DT MK')
-        await expect(amy.locator('.pc-regular-mark')).to_have_count(0)
-        await expect(amy.locator('.pc-training-mark')).to_have_count(1)
+        await expect(amy.locator('.pc-rank-trainee')).to_have_count(1)
+        await expect(amy.locator('.pc-role')).to_have_text('培训员工')
         await expect(amy).to_contain_text('从未登录')
         if phone:
             await expect(page.get_by_role('checkbox')).to_have_count(0)  # the list alone
@@ -235,21 +254,34 @@ async def users_page(browser, case, width):
         await expect(detail.get_by_role('checkbox', name='jessi: DT scheduling', exact=True)).to_be_checked()
         await expect(detail.get_by_role('checkbox', name='jessi: MK scheduling', exact=True)).to_be_checked()
         await expect(detail.get_by_label('转正日期 Regular since')).to_have_value('2026-10-15')
-        await expect(detail.get_by_role('radio', name='转正')).to_be_checked()
+        await expect(detail.locator('.ant-select').filter(has=page.get_by_label('职位 Position'))).to_contain_text('正式员工')
         await expect(detail.locator('.pc-ud-state')).to_contain_text('已转正')
         await fits(page, f'users-jessi-{width}.png')
         if phone:
             await page.go_back()
         await amy.click()
         detail = page.get_by_role('region', name='Amy 详情 Details')
-        await expect(detail.get_by_role('radio', name='培训中')).to_be_checked()
+        await expect(detail.locator('.ant-select').filter(has=page.get_by_label('职位 Position'))).to_contain_text('培训员工')
         await expect(detail.get_by_label('转正日期 Regular since')).to_have_count(0)
         await fits(page, f'users-amy-training-{width}.png')
-        # 转正 replaces training; it starts today and the date can be moved.
-        await detail.locator('.ant-segmented').filter(has_text='培训中').get_by_text('转正', exact=True).click()
-        await expect(page.get_by_text('转正日期已保存 · 2026-10-28', exact=True)).to_be_visible()
+        # 正式员工 replaces 培训员工: staff rights in Auth0, 转正 from today, and the date can be moved.
+        roles = {}
+
+        def add_role(path, json=None, **kwargs):
+            roles[path] = json['roles']
+            return Mock(ok=True)
+        with patch.object(users_blueprint, '_get_role_map', return_value=ROLE_IDS), \
+                patch.object(users_blueprint, '_mgmt_get', return_value=Mock(ok=True, json=lambda: [{'id': 'rol_staff'}])), \
+                patch.object(users_blueprint, '_mgmt_post', side_effect=add_role), \
+                patch.object(users_blueprint, '_mgmt_delete', return_value=Mock(ok=True)), \
+                patch.object(users_blueprint, 'business_date', return_value='2026-10-28'):  # the browser's day
+            await detail.locator('.ant-select').filter(has=page.get_by_label('职位 Position')).click()
+            await page.locator('.ant-select-item-option').filter(has_text='正式员工 Regular staff').click()
+            await expect(page.get_by_text('职位已改为 正式员工', exact=True)).to_be_visible()
+        assert roles == {'users/auth0%7Camy/roles': ['rol_staff']}, roles
         with closing(case.connect()) as con:
-            assert tuple(con.execute('SELECT is_training, regular_since FROM employees WHERE id=202').fetchone()) == (0, '2026-10-28')
+            row = tuple(con.execute('SELECT rank, is_training, regular_since FROM employees WHERE id=202').fetchone())
+            assert row == ('regular', 0, '2026-10-28'), row
         picker = detail.get_by_label('转正日期 Regular since')
         await picker.click()
         if phone:  # read-only on phone (no keyboard): pick from the calendar
@@ -261,7 +293,7 @@ async def users_page(browser, case, width):
         await expect(detail.locator('.pc-ud-state')).to_contain_text('已转正')
         with closing(case.connect()) as con:
             assert tuple(con.execute('SELECT is_training, regular_since FROM employees WHERE id=202').fetchone()) == (0, '2026-10-20')
-            con.execute('UPDATE employees SET regular_since=NULL, is_training=1 WHERE id=202'); con.commit()
+            con.execute("UPDATE employees SET regular_since=NULL, is_training=1, rank='trainee' WHERE id=202"); con.commit()
         # Scheduling stores tick in the same grid as access.
         mk = detail.get_by_role('checkbox', name='amy: MK scheduling', exact=True)
         await mk.check()

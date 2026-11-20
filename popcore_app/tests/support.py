@@ -22,6 +22,7 @@ import db  # noqa: E402
 import exchange_rates  # noqa: E402,F401
 import payment_evidence  # noqa: E402
 import condition_evidence  # noqa: E402
+import watch_list  # noqa: E402
 from blueprints import checkout, closing as closing_blueprint, counting, goods, inventory, losses, payments, products, reports, restock, sale_documents, sales, schedule, special_orders, stock, store_events, stores, trades, today  # noqa: E402
 
 
@@ -40,10 +41,12 @@ class IsolatedApiCase(unittest.TestCase):
         self.original_upload_dir = products.HIDDEN_IMG_DIR
         self.original_evidence_dir = payment_evidence.EVIDENCE_DIR
         self.original_condition_evidence_dir = condition_evidence.EVIDENCE_DIR
+        self.original_watch_list_dir = watch_list.PHOTO_DIR
         self.upload_dir = Path(self.tempdir.name) / 'uploads'
         products.HIDDEN_IMG_DIR = str(self.upload_dir)
         payment_evidence.EVIDENCE_DIR = self.upload_dir / 'payment_evidence'
         condition_evidence.EVIDENCE_DIR = self.upload_dir / 'condition_evidence'
+        watch_list.PHOTO_DIR = self.upload_dir / 'watch_list'
         db.migrate_db()
 
         with closing(self.connect()) as con:
@@ -108,6 +111,7 @@ class IsolatedApiCase(unittest.TestCase):
         products.HIDDEN_IMG_DIR = self.original_upload_dir
         payment_evidence.EVIDENCE_DIR = self.original_evidence_dir
         condition_evidence.EVIDENCE_DIR = self.original_condition_evidence_dir
+        watch_list.PHOTO_DIR = self.original_watch_list_dir
         db.DB_PATH = self.original_db_path
         self.tempdir.cleanup()
         tempfile.tempdir = self.original_tempdir

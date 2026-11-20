@@ -17,7 +17,7 @@ def main():
  database=work/'source.db';old=db.DB_PATH;db.DB_PATH=str(database)
  try:db.migrate_db()
  finally:db.DB_PATH=old
- roots={kind:work/'source-attachments'/kind for kind in ('product','payment','condition')}
+ roots={kind:work/'source-attachments'/kind for kind in ('product','payment','condition','watch')}
  for root in roots.values():root.mkdir(parents=True)
  with sqlite3.connect(database) as con:
   store=con.execute("SELECT id FROM stores WHERE code='DT'").fetchone()[0]
@@ -29,10 +29,13 @@ def main():
   con.execute("INSERT INTO payment_evidence(payment_id,object_id,mime_type,byte_size,uploader_sub) VALUES (?,'payment.bin','image/png',7,'fixture')",(payment,))
   case=con.execute("INSERT INTO condition_cases(store_id,sale_id,sale_line_no,observed_condition,created_by) VALUES (?,?,1,'sealed','fixture')",(store,sale)).lastrowid
   con.execute("INSERT INTO condition_evidence(case_id,object_id,mime_type,byte_size,content_hash,uploaded_by) VALUES (?,'condition.bin','image/png',9,?,'fixture')",(case,'0'*64))
+  # 可疑人员 Watch list (owner, 2026-11-19): a record's photo is restored with it.
+  watch=con.execute("INSERT INTO watch_list_entries(info,store_id,seen_on,created_by) VALUES ('Recovery person',?,'2026-09-09','fixture')",(store,)).lastrowid
+  con.execute("INSERT INTO watch_list_photos(entry_id,object_id,mime_type,byte_size,width,height,uploaded_by) VALUES (?,'watch.bin','image/jpeg',5,1,1,'fixture')",(watch,))
   closing=con.execute("INSERT INTO closing_sessions(store_id,business_date,status,created_by) VALUES (?,'2026-09-09','closed','fixture')",(store,)).lastrowid
   con.execute("INSERT INTO closing_snapshots(closing_session_id,source_token,snapshot_json,reviewed_by) VALUES (?,'token','{\"store_id\":1}','fixture')",(closing,))
   con.execute('CREATE TABLE recovery_probe(id INTEGER PRIMARY KEY,value TEXT NOT NULL)');con.commit()
- files={'product':('1/product.bin',b'product'),'payment':('payment.bin',b'payment'),'condition':('condition.bin',b'condition')}
+ files={'product':('1/product.bin',b'product'),'payment':('payment.bin',b'payment'),'condition':('condition.bin',b'condition'),'watch':('watch.bin',b'watch')}
  for kind,(name,content) in files.items():path=roots[kind]/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
  stop=threading.Event();started=threading.Event()
  def writer():
@@ -48,8 +51,10 @@ def main():
    'foreign_key_errors':len(con.execute('PRAGMA foreign_key_check').fetchall()),
    'sale_id':con.execute('SELECT id FROM sale_documents').fetchone()[0],
    'closing_snapshots':con.execute('SELECT COUNT(*) FROM closing_snapshots').fetchone()[0],
-   'probe_rows':con.execute('SELECT COUNT(*) FROM recovery_probe').fetchone()[0]}
+   'probe_rows':con.execute('SELECT COUNT(*) FROM recovery_probe').fetchone()[0],
+   'watch_list_photos':con.execute('SELECT COUNT(*) FROM watch_list_photos').fetchone()[0]}
  assert facts['integrity']=='ok' and facts['foreign_key_errors']==0 and facts['sale_id']==sale and facts['closing_snapshots']==1 and facts['probe_rows']>=1
+ assert facts['watch_list_photos']==1 and (restored/'attachments'/'watch'/'watch.bin').read_bytes()==b'watch'
  corrupt=output.parent/(output.name+'-corrupt');shutil.copytree(output,corrupt);target=next((corrupt/'attachments').rglob('*.bin'));target.write_bytes(b'changed')
  try:restore_package(corrupt,output.parent/(output.name+'-corrupt-restore'));raise AssertionError('corrupt attachment accepted')
  except ValueError:pass

@@ -2123,6 +2123,10 @@ def _get_migrations():
         ('dex_listings',                               _migration_dex_listings),
         ('website_order_board',                        _migration_website_order_board),
         ('push_subscriptions',                         _migration_push_subscriptions),
+        ('employee_ranks',                             _migration_employee_ranks),
+        ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
+        ('watch_list',                                 _migration_watch_list),
+        ('staff_discounts',                            _migration_staff_discounts),
     ]
 
 
@@ -2520,6 +2524,114 @@ def _migration_push_subscriptions(con, cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_push_subscriptions_sub ON push_subscriptions(auth0_sub)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscriptions')")
+
+
+def _migration_employee_ranks(con, cur):
+    # Ranks (owner, 2026-11-19): 店长, 副店长, 资深员工, 正式员工, 培训员工 (ranks.py). People already marked 培训中 become
+    # 培训员工 and those 转正 become 正式员工; 店长, 副店长 and 资深员工 are picked in Users.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(employees)')}
+    if 'rank' not in columns:
+        cur.execute("""ALTER TABLE employees ADD COLUMN rank TEXT CHECK (rank IS NULL OR rank IN
+                       ('store_manager', 'assistant_manager', 'senior', 'regular', 'trainee'))""")
+    cur.execute("UPDATE employees SET rank='trainee' WHERE rank IS NULL AND is_training=1")
+    cur.execute("UPDATE employees SET rank='regular' WHERE rank IS NULL AND regular_since IS NOT NULL")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('employee_ranks')")
+
+
+def _migration_shift_positions_back_and_markham(con, cur):
+    # Owner, 2026-11-19: the position "End" is now "Back", and Markham's shifts get positions too: Cashier and Sales.
+    import json as _json
+    cur.execute("UPDATE shifts SET position='Back' WHERE position='End'")
+    row = cur.execute("SELECT value FROM app_settings WHERE key='schedule_positions'").fetchone()
+    if row is not None:
+        try:
+            positions = _json.loads(row[0] or '{}')
+        except ValueError:
+            positions = None
+        if isinstance(positions, dict):
+            positions = {code: ['Back' if name == 'End' else name for name in names] if isinstance(names, list) else names
+                         for code, names in positions.items()}
+            positions.setdefault('MK', ['Cashier', 'Sales'])
+            cur.execute("UPDATE app_settings SET value=? WHERE key='schedule_positions'",
+                        (_json.dumps(positions, ensure_ascii=False),))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('shift_positions_back_and_markham')")
+
+
+def _migration_watch_list(con, cur):
+    # 可疑人员 Watch list (owner, 2026-11-19: "upload images of stealers, so everyone can recognize the people that stole
+    # from the store ... and we can mark if it is resolved or not"). One row per person, with free-text information,
+    # the store (optional) and the date seen; photos are private files under the upload root (watch_list.py), one
+    # row each. Managers write; everyone signed in reads.
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_list_entries (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        info         TEXT    NOT NULL,
+        store_id     INTEGER REFERENCES stores(id),
+        seen_on      TEXT    NOT NULL,
+        status       TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+        resolved_at  TEXT,
+        resolved_by  TEXT,
+        resolve_note TEXT,
+        created_by   TEXT    NOT NULL,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_by   TEXT,
+        updated_at   TEXT
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_list_photos (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id    INTEGER NOT NULL REFERENCES watch_list_entries(id) ON DELETE CASCADE,
+        object_id   TEXT    NOT NULL UNIQUE,
+        mime_type   TEXT    NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+        byte_size   INTEGER NOT NULL CHECK (byte_size > 0),
+        width       INTEGER NOT NULL,
+        height      INTEGER NOT NULL,
+        uploaded_by TEXT    NOT NULL,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_list_photos_entry ON watch_list_photos(entry_id, id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('watch_list')")
+
+
+def _migration_staff_discounts(con, cur):
+    # 员工折扣 Staff discounts (owner, 2026-11-19: "each 正式员工 and above have 4 discount per month, we wanna keep
+    # track of that"). One row per use record (staff_discounts.py): a 日报 员工折扣 line, keyed by store, day, its text
+    # and which copy of that text it is on the day, or one a manager added by hand. `uses` counts its products ("one use
+    # is one product"). A row with no person, or that could not be read, waits for a manager; `edited_at` marks a
+    # manager's fix, which a re-paste never touches. The names a report writes are remembered once a manager picks
+    # the person, so "zm" means that person from then on.
+    cur.execute("""CREATE TABLE IF NOT EXISTS staff_discount_uses (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        date           TEXT    NOT NULL,
+        store          TEXT    NOT NULL,
+        source         TEXT    NOT NULL CHECK (source IN ('report', 'manual')),
+        raw_text       TEXT,
+        occurrence     INTEGER NOT NULL DEFAULT 1,
+        written_name   TEXT,
+        employee_id    INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+        items          TEXT    NOT NULL DEFAULT '[]',
+        uses           INTEGER NOT NULL DEFAULT 0 CHECK (uses >= 0),
+        amount_cents   INTEGER CHECK (amount_cents IS NULL OR amount_cents >= 0),
+        payment        TEXT,
+        readable       INTEGER NOT NULL DEFAULT 1 CHECK (readable IN (0, 1)),
+        ignored_reason TEXT,
+        request_key    TEXT,
+        created_by     TEXT,
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        edited_by      TEXT,
+        edited_at      TEXT
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_discount_report_line
+                   ON staff_discount_uses(store, date, raw_text, occurrence) WHERE source='report'""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_discount_request
+                   ON staff_discount_uses(request_key) WHERE request_key IS NOT NULL""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_staff_discount_date ON staff_discount_uses(date)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS staff_discount_aliases (
+        alias_norm  TEXT    PRIMARY KEY,
+        alias       TEXT    NOT NULL,
+        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        created_by  TEXT,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('staff_discounts')")
 
 
 def _migration_inventory_viewers(con, cur):

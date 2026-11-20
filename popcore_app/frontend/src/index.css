@@ -216,21 +216,24 @@
   font-variant-numeric: tabular-nums;
   opacity: 0.95;
 }
+/* A shift's position stands out (owner, 2026-11-19: "more accented (more obvious) in the shift table"): a white chip
+   with its emoji and dark bold text on any employee colour. */
 .pc-shift-pos {
   flex-shrink: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  border: 1px solid currentColor;
-  border-radius: 3px;
-  padding: 0 3px;
-  opacity: 0.85;
+  line-height: 16px;
+  color: var(--text-primary);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  padding: 0 4px;
 }
+.pc-shift-pos-inline { display: inline-block; vertical-align: 1px; }
+.pc-mobile-shift-pos { font-size: 12px; line-height: 1; }
 .pc-shift-half,
 .pc-shift-finished {
   flex-shrink: 0;

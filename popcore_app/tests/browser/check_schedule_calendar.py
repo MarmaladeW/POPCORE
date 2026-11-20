@@ -470,7 +470,8 @@ async def run_checks(browser, case):
     await page.set_viewport_size({'width':1440,'height':900})
     await page.get_by_role('button', name='Month', exact=True).click()
     await page.get_by_role('button', name='Refresh', exact=True).click()
-    await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-pos').first).to_have_text('Cashier')
+    # Positions stand out with their emoji (owner, 2026-11-19).
+    await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-pos').first).to_have_text('💰 Cashier')
     await expect(calendars.nth(1).locator('.pc-shift').filter(has_text='Mason').locator('.pc-shift-pos').first).to_be_visible()
     for width, height in ((1440,900), (1280,800), (1366,768), (1920,1080), (3840,2160)):
         await page.set_viewport_size({'width':width,'height':height})

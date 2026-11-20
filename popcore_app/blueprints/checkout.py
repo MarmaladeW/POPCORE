@@ -10,6 +10,7 @@ from checkout_access import REGISTER_SUB, checkout_access, require_checkout
 from checkout_operations import (attach_photo, change_checkout, checkout_detail, choose_boxes, receive_manual,
     undo_manual, checkout_row, create_checkout, is_clover, manager, read_order_note)
 from db import get_db
+import ranks
 from goods_operations import _begin, _remember, _replay
 from inventory_commands import InventoryError, InventoryConflict
 from payment_evidence import evidence_path, prepare_image, publish, remove_unreferenced
@@ -122,7 +123,7 @@ def queue():
     staff = [dict(row) for row in con.execute("""SELECT a.auth0_sub AS value,
         COALESCE(NULLIF(e.name,''),a.auth0_sub) AS label FROM inventory_access a
         JOIN employees e ON e.auth0_id=a.auth0_sub AND e.is_active=1
-        WHERE a.store_id=? ORDER BY label""", (store_id,))] if view == 'live' else []
+        WHERE a.store_id=? ORDER BY """ + ranks.order_by('e'), (store_id,))] if view == 'live' else []
     return jsonify(orders=[checkout_detail(con,row['id'],actor) for row in rows[:100]],staff=staff,
                    next_before_id=rows[99]['id'] if len(rows)>100 else None,
                    clover=clover or {'enabled':False,'connected':False,

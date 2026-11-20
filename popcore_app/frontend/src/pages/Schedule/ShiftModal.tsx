@@ -11,7 +11,7 @@ import {
   type Shift,
 } from './scheduleApi'
 import {
-  DEFAULT_STORE_HOURS, hoursForStore, positionsForStore, presetTimes,
+  DEFAULT_STORE_HOURS, hoursForStore, positionsForStore, positionText, presetTimes,
   type OpenHoursConfig, type PositionsMap, type ShiftPreset, type StoreHoursMap,
 } from './openHours'
 import { scheduleApiErrorMessage } from './employeeScheduling'
@@ -159,7 +159,7 @@ export default function ShiftModal({
     // keep a saved position visible even if it was removed from settings
     ...(existing?.position && !positionOptions.includes(existing.position)
       ? [existing.position] : []),
-  ].map(p => ({ value: p, label: p }))
+  ].map(p => ({ value: p, label: positionText(p) }))
 
   /** Times for a preset — custom slots are fixed, built-ins follow store hours. */
   const timesForPreset = (p: Exclude<Preset, 'custom'>, hours = openHours): { start: string; end: string } => {
@@ -581,7 +581,7 @@ export default function ShiftModal({
                 >
                   <Select
                     allowClear
-                    placeholder="e.g. Front / Cashier / End"
+                    placeholder="e.g. Front / Cashier / Back"
                     options={positionSelectOptions}
                     getPopupContainer={(trigger) => trigger.parentElement!}
                   />

@@ -40,9 +40,9 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # Extra fixed shift slots selectable in the shift dialog besides
     # full day / half days, JSON array of {label, start, end}.
     'schedule_shift_presets': '[]',
-    # In-store positions per store, JSON keyed by store code
-    # (e.g. Downtown has Front / Cashier / End).
-    'schedule_positions': '{"DT": ["Front", "Cashier", "End"]}',
+    # In-store positions per store, JSON keyed by store code (owner, 2026-11-19: "End" is now "Back", and Markham's
+    # positions are Cashier and Sales).
+    'schedule_positions': '{"DT": ["Front", "Cashier", "Back"], "MK": ["Cashier", "Sales"]}',
     'checkout_cny_per_cad': '',
 }
 

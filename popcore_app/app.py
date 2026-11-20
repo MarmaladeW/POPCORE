@@ -81,6 +81,8 @@ from blueprints.website   import bp as website_bp
 from blueprints.design_prices import bp as design_prices_bp
 from blueprints.losses    import bp as losses_bp
 from blueprints.dex       import bp as dex_bp
+from blueprints.watch_list import bp as watch_list_bp
+from blueprints.staff_discounts import bp as staff_discounts_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 app.register_blueprint(users_bp)
@@ -109,6 +111,8 @@ app.register_blueprint(website_bp)
 app.register_blueprint(design_prices_bp)
 app.register_blueprint(losses_bp)
 app.register_blueprint(dex_bp)
+app.register_blueprint(watch_list_bp)
+app.register_blueprint(staff_discounts_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.

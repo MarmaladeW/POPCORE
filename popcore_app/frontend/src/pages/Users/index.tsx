@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import {
-  Popconfirm, ColorPicker, Form, Input, Select, Segmented,
+  Popconfirm, ColorPicker, Form, Input, Select,
   Switch, message, Checkbox, Alert, DatePicker,
 } from 'antd'
 import dayjs from 'dayjs'
@@ -32,7 +32,8 @@ import {
 } from '../Schedule/employeeScheduling'
 import { isRegularOn } from '../Schedule/monthlyDetail'
 import RegularMark from '../Schedule/RegularMark'
-import TrainingMark from '../Schedule/TrainingMark'
+import RankBadge from '../../components/pc/RankBadge'
+import { POSITION_OPTIONS, positionBody, positionLabel, positionOf, rankInfo, withPosition } from '../../lib/ranks'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -42,6 +43,8 @@ interface User {
   id: string
   username: string
   role: string
+  // 店长 … 培训员工 (owner, 2026-11-19); null for an admin, a viewer, or staff not given one yet.
+  rank: string | null
   is_active: number
   created_at: string
   last_login: string
@@ -116,13 +119,7 @@ interface FutureShift {
   store_name: string
 }
 
-const ROLE_OPTIONS = [
-  { value: 'viewer',  label: '查看者' },
-  { value: 'staff',   label: '店员' },
-  { value: 'manager', label: '经理' },
-  { value: 'admin',   label: '管理员' },
-]
-const roleLabel = (role: string) => ROLE_OPTIONS.find(o => o.value === role)?.label ?? role
+// One picker (owner, 2026-11-19): a rank sets the rights, 店长/副店长 manager and the rest staff (lib/ranks.ts).
 
 /** Full-spectrum picker with the curated calendar colors kept as shortcuts. */
 function EmployeeColorPicker({ value, onChange, disabled = false }: {
@@ -274,9 +271,8 @@ function PersonRow({ user, entry, isSelf, selected, chevron, today, onSelect }: 
         <strong>{name}{isSelf && <span className="pc-users-me">我</span>}</strong>
         <small>{meta}</small>
       </span>
-      {isRegularOn(entry?.regularSince, today) && <RegularMark since={entry?.regularSince} />}
-      {entry?.isTraining && <TrainingMark />}
-      <span className="pc-role">{roleLabel(user.role)}</span>
+      <RankBadge rank={user.rank} />
+      <span className="pc-role">{positionLabel(user)}</span>
       {chevron && <ChevronRight className="pc-person-chevron" aria-hidden="true" />}
     </button>
   </li>
@@ -368,15 +364,15 @@ function UserDetail({
   // Managers and admins always see stock, so only other roles are picked.
   const alwaysSeesStock = user.role === 'manager' || user.role === 'admin'
   const regularNow = isRegularOn(entry?.regularSince, today)
-  const status: EmployeeStatus = entry?.isTraining ? 'training' : entry?.regularSince ? 'regular' : 'none'
-  const marks = <>{regularNow && <RegularMark since={entry?.regularSince} />}{entry?.isTraining && <TrainingMark />}</>
+  const marks = <RankBadge rank={user.rank} />
+  const rank = rankInfo(user.rank)
 
   return <div className="pc-ud">
     <header className="pc-ud-head">
       <span className="pc-person-dot pc-ud-dot" style={entry ? { background: entry.color } : undefined} aria-hidden="true" />
       <div className="pc-ud-title">
         {showName && <h2>{name}{isSelf && <span className="pc-users-me">我</span>}{marks}</h2>}
-        <p>{!showName && marks}{user.username} · {roleLabel(user.role)} · {user.is_active === 1 ? '启用' : '已停用'}</p>
+        <p>{!showName && marks}{user.username} · {positionLabel(user)} · {user.is_active === 1 ? '启用' : '已停用'}</p>
       </div>
     </header>
 
@@ -390,31 +386,27 @@ function UserDetail({
           </div>
           : <span className="pc-ud-muted">首次登录后可设置 · After their first sign-in</span>}
       </Field>
-      <Field label="角色" en="Role" hint={isSelf ? '不能修改自己的角色（防止失去管理员权限）' : undefined}>
-        <Segmented block aria-label="角色 Role" size={isMobile ? 'large' : 'middle'} value={user.role}
-          disabled={isSelf || roleSaving} options={ROLE_OPTIONS} onChange={value => void saveRole(String(value))} />
+      <Field label="职位" en="Position" hint={isSelf ? '不能修改自己的角色（防止失去管理员权限）'
+        : '店长和副店长有经理权限，其他职位有店员权限；查看者只能看 · 店长 and 副店长 have manager rights, the others staff rights; a viewer only looks'}>
+        <Select aria-label="职位 Position" size={isMobile ? 'large' : 'middle'} value={positionOf(user)}
+          placeholder={user.role === 'manager' ? '经理 · 选职位 Pick a position' : '店员 · 选职位 Pick a position'}
+          disabled={isSelf || roleSaving} options={POSITION_OPTIONS} style={{ width: '100%', maxWidth: 280 }}
+          getPopupContainer={trigger => trigger.parentElement!} onChange={value => void saveRole(String(value))} />
       </Field>
       {entry && <Field label="颜色" en="Colour">
         <EmployeeColorPicker value={entry.color || '#6366f1'} disabled={savingColor} onChange={onColor} />
       </Field>}
-      {entry && <Field label="状态" en="Status"
-        hint={status === 'training'
-          ? '排班和月工时都标 训 · Marked 训 in the schedule and monthly hours'
-          : status === 'regular'
-            ? regularNow
-              ? '从这天起，排班和月工时都标 正 · Marked 正 from this date in the schedule and monthly hours'
-              : `${entry.regularSince} 起标 正 · Marked 正 from ${entry.regularSince}`
-            : '培训中标 训；转正从选的那天起标 正 · Training shows 训; 转正 shows 正 from the day you pick'}>
-        <Segmented block aria-label="状态 Status" size={isMobile ? 'large' : 'middle'} value={status} disabled={savingStatus}
-          options={[{ value: 'none', label: '无' }, { value: 'training', label: '培训中' }, { value: 'regular', label: '转正' }]}
-          onChange={value => onStatus(value as EmployeeStatus, value === 'regular' ? today : undefined)} />
-        {status === 'regular' && <div className="pc-ud-inline pc-ud-gap">
+      {entry && rank && rank.value !== 'trainee' && <Field label="转正日期" en="Regular since"
+        hint={regularNow ? '从这天起，排班和月工时都标 正 · Marked 正 from this date in the schedule and monthly hours'
+          : entry.regularSince ? `${entry.regularSince} 起标 正 · Marked 正 from ${entry.regularSince}`
+            : '选转正那天，之后的班标 正 · Pick the day they became regular; shifts from then show 正'}>
+        <div className="pc-ud-inline">
           <DatePicker aria-label="转正日期 Regular since" allowClear={false}
-            value={dayjs(entry.regularSince)} disabled={savingStatus}
+            value={entry.regularSince ? dayjs(entry.regularSince) : undefined} disabled={savingStatus}
             inputReadOnly={isMobile} getPopupContainer={trigger => trigger.parentElement!}
             onChange={value => value && onStatus('regular', value.format('YYYY-MM-DD'))} />
           {regularNow && <span className="pc-ud-state"><RegularMark since={entry.regularSince} />已转正</span>}
-        </div>}
+        </div>
       </Field>}
     </Group>
 
@@ -556,8 +548,8 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
 
   async function handleCreate() {
     try {
-      const vals = await form.validateFields()
-      const resp = await client.post('/users', vals)
+      const { role: position, ...vals } = await form.validateFields()
+      const resp = await client.post('/users', { ...vals, ...withPosition({ role: 'viewer' }, position) })
       if (resp.data?.warning) {
         message.warning(resp.data.warning, 6)
       } else {
@@ -585,13 +577,15 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
     }
   }
 
-  async function changeRole(u: User, role: string) {
+  async function changeRole(u: User, value: string) {
     // Changing your own role is blocked server-side (it would lock you out of this page).
-    if (me?.sub === u.id || role === u.role) return
+    if (me?.sub === u.id || value === positionOf(u)) return
     try {
-      await client.patch(`/users/${encodeURIComponent(u.id)}`, { role })
-      setUsers(prev => prev.map(row => row.id === u.id ? { ...row, role } : row))
-      message.success(`角色已改为 ${roleLabel(role)}`)
+      await client.patch(`/users/${encodeURIComponent(u.id)}`, positionBody(value))
+      const next = withPosition(u, value)
+      setUsers(prev => prev.map(row => row.id === u.id ? next : row))
+      loadStores()  // 培训员工 and 转正 follow the rank
+      message.success(`职位已改为 ${positionLabel(next)}`)
     } catch (err: any) {
       message.error(err?.response?.data?.error ?? '角色更新失败')
     }
@@ -841,11 +835,11 @@ export default function UsersPage({ embedded = false }: { embedded?: boolean }) 
             </Form.Item>
             <Form.Item
               name="role"
-              label="角色"
-              rules={[{ required: true, message: '请选择角色' }]}
+              label="职位 Position"
+              rules={[{ required: true, message: '请选择职位' }]}
             >
               <Select
-                options={ROLE_OPTIONS}
+                options={POSITION_OPTIONS}
                 getPopupContainer={(trigger) => trigger.parentElement!}
               />
             </Form.Item>

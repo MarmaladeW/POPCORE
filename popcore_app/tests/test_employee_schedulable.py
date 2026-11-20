@@ -68,6 +68,7 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
                 is_schedulable INTEGER NOT NULL DEFAULT 1,
                 regular_since TEXT,
                 is_training INTEGER NOT NULL DEFAULT 0,
+                rank TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE TABLE stores (

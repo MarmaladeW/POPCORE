@@ -85,3 +85,11 @@
   .pc-page-tabs a { padding-bottom: 10px; white-space: nowrap; }
   .pc-page-tabs a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
+
+/* Ranks (owner, 2026-11-19): 长 副 资 正 训, a tinted square with the glyph, as the owner's mock-up shows them. */
+.pc-rank { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; font-size: 12.5px; font-weight: 600; line-height: 1; }
+.pc-rank-store_manager { background: #232a3a; color: #e9c46a; }
+.pc-rank-assistant_manager { background: #e8def6; color: #5b3d98; }
+.pc-rank-senior { background: #dde7f7; color: #33548c; }
+.pc-rank-regular { background: #dcece3; color: var(--status-ok-ink); }
+.pc-rank-trainee { background: #f8ecd6; color: var(--status-restock-ink); }

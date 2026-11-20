@@ -179,7 +179,8 @@
 .pc-calendar-date-grid .fc-event.pc-ev { background: transparent !important; border: 0 !important; box-shadow: none; }
 .pc-shift-bar { border-radius: 0; border-left: 3px solid var(--emp, var(--text-tertiary)); background: color-mix(in srgb, var(--emp, #9aa1ab) 13%, white); color: var(--text-primary) !important; }
 .pc-shift-bar .pc-shift-name { font-weight: 600; }
-.pc-shift-bar .pc-shift-time, .pc-shift-bar .pc-shift-pos { color: var(--text-secondary); font-weight: 400; }
+.pc-shift-bar .pc-shift-time { color: var(--text-secondary); font-weight: 400; }
+.pc-shift-bar .pc-shift-pos { align-self: flex-start; }
 .pc-shift-bar .pc-shift-half { border: 1px solid var(--line-soft); background: white; color: var(--text-secondary); }
 .pc-mobile-shift { border-left: 2px solid var(--emp, var(--text-tertiary)); background: color-mix(in srgb, var(--emp, #9aa1ab) 16%, white) !important; color: var(--text-primary) !important; }
 .pc-calendar-store-title, .pc-store-calendar-title { font-size: 13.5px; font-weight: 600; }

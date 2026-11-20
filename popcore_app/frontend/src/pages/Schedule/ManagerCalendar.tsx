@@ -50,6 +50,8 @@ import {
   type ShiftPreset,
   type StaffRequirements,
   type StoreHoursMap,
+  positionEmoji,
+  positionText,
 } from './openHours'
 import ShiftModal from './ShiftModal'
 import ScheduleDayPanel from './ScheduleDayPanel'
@@ -478,6 +480,7 @@ export default function ManagerCalendar() {
             style={{ '--emp': employeeColor } as CSSProperties}
           >
             <span>{compactEmployeeLabel(employeeName)} {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}{p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}{finished && ' ✓'}</span>
+            {p.position && <span className="pc-mobile-shift-pos" aria-hidden="true">{positionEmoji(p.position)}</span>}
             <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
           </div>
         )
@@ -497,7 +500,7 @@ export default function ManagerCalendar() {
             {halfTag && <span className="pc-shift-half">{halfTag}</span>}
             <span className="pc-shift-time">{range}</span>
           </div>
-          {p.position && <span className="pc-shift-pos">{p.position}</span>}
+          {p.position && <span className="pc-shift-pos">{positionText(p.position)}</span>}
         </div>
       )
     }
@@ -512,7 +515,7 @@ export default function ManagerCalendar() {
         </div>
         <div className="pc-shift-name">{p.emp_name}</div>
         {finished && <div><span className="pc-shift-finished">{finished}</span></div>}
-        {p.position && <div className="pc-shift-pos">{p.position}</div>}
+        {p.position && <div className="pc-shift-pos">{positionText(p.position)}</div>}
       </div>
     )
   }

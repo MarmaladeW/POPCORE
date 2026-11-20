@@ -1,0 +1,94 @@
+/* 可疑人员 Watch list (owner, 2026-11-19): white boxes on the ground, hairlines, sharp corners, ink for the chosen
+   option, a dot plus words for status. Each record: photos on the left, what is known beside them; one column on phones. */
+.pc-watch { display: grid; gap: 16px; min-width: 0; }
+.pc-watch small { font-weight: 400; }
+.pc-watch .ant-btn small { color: inherit; font-size: 11.5px; opacity: .72; }
+.pc-watch-privacy { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 14px; border: 1px solid var(--line-hair); background: var(--surface-default); color: var(--text-secondary); font-size: 12.5px; line-height: 19px; }
+.pc-watch-privacy .pc-icon { flex: none; margin-top: 2px; color: var(--text-tertiary); }
+.pc-watch-privacy small { margin-left: 6px; color: var(--text-tertiary); font-size: 12px; }
+
+.pc-watch-list > * + * { border-top: 1px solid var(--line-hair); }
+.pc-watch-card { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 16px; padding: 16px; }
+.pc-watch-body { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.pc-watch-status { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.pc-watch-status > span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--text-primary); font-weight: 500; }
+.pc-watch-info { margin: 0; color: var(--text-primary); font-size: 14px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pc-watch-card.is-resolved .pc-watch-info { color: var(--text-secondary); }
+.pc-watch-resolution { margin: 0; padding: 8px 12px; background: var(--surface-soft); color: var(--text-secondary); font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; }
+.pc-watch-resolution span { display: block; color: var(--text-primary); white-space: pre-wrap; }
+.pc-watch-meta { margin: 0; color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; }
+.pc-watch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; }
+.pc-watch-actions .ant-btn { min-height: 40px; }
+.pc-watch-actions .ant-btn .pc-icon { margin-right: 2px; }
+.pc-watch-progress { color: var(--text-secondary); font-size: 12px; }
+
+/* Photos: the first one large, the rest beside and under it; a click opens one full size. */
+.pc-watch-photos { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; align-content: start; }
+.pc-watch-card .pc-watch-photos > :first-child { grid-column: span 2; grid-row: span 2; }
+.pc-watch-card .pc-watch-photos > :only-child { grid-column: 1 / -1; }
+.pc-watch-photo, .pc-watch-photo.ant-image { display: block; width: 100%; aspect-ratio: 1; overflow: hidden; background: var(--surface-soft); }
+.pc-watch-photo .ant-image-img { width: 100%; height: 100%; object-fit: cover; }
+.pc-watch-photo .ant-image-mask { border-radius: 0; }
+.pc-watch-zoom { font-size: 12px; }
+.pc-watch-photo.is-missing { display: grid; place-content: center; padding: 8px; color: var(--text-tertiary); font-size: 11px; line-height: 16px; text-align: center; }
+.pc-watch-photo.is-missing small { display: block; }
+
+/* Resolved ones, folded shut. */
+.pc-watch-resolved { border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-watch-resolved summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; cursor: pointer; list-style: none; }
+.pc-watch-resolved summary::-webkit-details-marker { display: none; }
+.pc-watch-resolved summary:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-watch-resolved[open] summary { border-bottom: 1px solid var(--line-hair); }
+.pc-watch-resolved-title { color: var(--text-primary); font-size: 13.5px; font-weight: 600; line-height: 20px; }
+.pc-watch-resolved-title small { color: var(--text-tertiary); font-size: 12px; }
+.pc-watch-chevron { margin-left: 6px; color: var(--text-tertiary); transition: transform .15s ease-out; }
+.pc-watch-resolved[open] .pc-watch-chevron { transform: rotate(180deg); }
+
+/* Add or edit. */
+.pc-watch-form { display: grid; gap: 16px; min-width: 0; padding: 16px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-watch-list .pc-watch-form { border-width: 0; }
+.pc-watch-list > * + .pc-watch-form { border-top-width: 1px; }
+.pc-watch-form-title { margin: 0; color: var(--text-primary); font-size: 13.5px; font-weight: 600; line-height: 20px; }
+.pc-watch-form-title small { color: var(--text-tertiary); font-size: 12px; }
+.pc-watch-field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.pc-watch-field > legend, .pc-watch-field > span, .pc-watch-resolve label > span { margin-bottom: 0; padding: 0; color: var(--text-secondary); font-size: 12px; font-weight: 500; line-height: 18px; }
+.pc-watch-field > legend { margin-bottom: 6px; }
+.pc-watch-field small, .pc-watch-resolve label small { color: var(--text-tertiary); }
+.pc-watch-form textarea, .pc-watch-resolve textarea { font-size: 16px; }
+.pc-watch-date .ant-input { min-height: 44px; font-size: 16px; }
+.pc-watch-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 220px); gap: 16px; align-items: start; }
+.pc-watch-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-watch-choices button { min-height: 44px; padding: 0 14px; border: 1px solid var(--line-soft); background: var(--surface-default); color: var(--text-primary); font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+.pc-watch-choices button small { color: var(--text-tertiary); font-size: 12px; }
+.pc-watch-choices button:hover { border-color: var(--line-strong); }
+.pc-watch-choices button[aria-pressed='true'] { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.pc-watch-choices button[aria-pressed='true'] small { color: var(--text-on-ink-secondary); }
+.pc-watch-choices button:focus-visible, .pc-watch-pick button:focus-visible, .pc-watch-pick-add:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-watch-photos-edit { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.pc-watch-pick { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.pc-watch-pick > img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--surface-soft); }
+.pc-watch-pick.is-removed > img, .pc-watch-pick.is-removed > .pc-watch-photo { opacity: .35; }
+.pc-watch-pick button { min-height: 32px; padding: 0 6px; border: 1px solid var(--line-soft); background: var(--surface-default); color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.pc-watch-pick button[aria-pressed='true'] { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.pc-watch-pick-add { display: grid; place-content: center; justify-items: center; gap: 2px; aspect-ratio: 1; padding: 0; border: 1px dashed var(--line-strong); background: var(--surface-subtle); color: var(--text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; }
+.pc-watch-pick-add small { color: var(--text-tertiary); font-size: 11px; }
+.pc-watch-pick-add:hover { border-color: var(--text-secondary); }
+.pc-watch-file { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); opacity: 0; }
+.pc-watch-hint { margin: 0; color: var(--status-restock-ink); font-size: 12px; }
+.pc-watch-resolve { display: grid; gap: 8px; }
+.pc-watch-resolve label { display: grid; gap: 6px; }
+
+@media (max-width: 1023px) {
+  .pc-watch-card { grid-template-columns: minmax(0, 280px) minmax(0, 1fr); }
+}
+@media (max-width: 767.98px) {
+  .pc-watch { gap: 12px; }
+  .pc-watch-privacy small { display: block; margin-left: 0; }
+  .pc-watch-card { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px 12px; }
+  .pc-watch-form { padding: 14px 12px; }
+  .pc-watch-row { grid-template-columns: minmax(0, 1fr); }
+  .pc-watch-actions .ant-btn { flex: 1 1 auto; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-watch-chevron { transition: none; }
+}

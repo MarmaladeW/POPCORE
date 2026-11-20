@@ -8,8 +8,11 @@ KINDS={
  'product':('hidden_images','filename'),
  'payment':('payment_evidence','object_id'),
  'condition':('condition_evidence','object_id'),
+ # 可疑人员 Watch list photos (owner, 2026-11-19). Databases from before it have no such table and no photos.
+ 'watch':('watch_list_photos','object_id'),
 }
 def _references(con,kind,table,column):
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():return []
     query=f'SELECT {column} FROM {table}'
     if kind=='payment' and con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='checkout_evidence'").fetchone():
         query+=' UNION SELECT object_id FROM checkout_evidence'

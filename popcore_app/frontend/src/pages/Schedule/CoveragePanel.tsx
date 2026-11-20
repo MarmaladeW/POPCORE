@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { rankIndex } from '../../lib/ranks'
 import { createPortal } from 'react-dom'
 import { Input, message } from 'antd'
 import dayjs from 'dayjs'
@@ -157,6 +158,8 @@ export default function CoveragePanel({
   const people = useMemo(
     () => [...employees].sort((a, b) =>
       Number(!!entries[a.id]?.considered) - Number(!!entries[b.id]?.considered) ||
+      // 店长 first (owner, 2026-11-19).
+      rankIndex(a.rank) - rankIndex(b.rank) ||
       (a.name || a.email || '').localeCompare(b.name || b.email || '')),
     [employees, entries],
   )

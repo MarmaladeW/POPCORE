@@ -12,6 +12,15 @@
 .pc-loss-quiet { margin: 0; color: var(--text-tertiary); font-size: 12px; line-height: 18px; }
 .pc-loss .ant-btn small { color: inherit; font-size: 11.5px; opacity: .72; }
 
+/* 可疑人员 Watch list, one row above the page's work (owner, 2026-11-19). */
+.pc-loss-watch { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 10px 14px; border: 1px solid var(--line-hair); background: var(--surface-default); color: var(--text-primary); text-decoration: none; }
+.pc-loss-watch:hover { border-color: var(--line-strong); color: var(--text-primary); }
+.pc-loss-watch:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.pc-loss-watch > .pc-icon:first-child { color: var(--text-secondary); }
+.pc-loss-watch > .pc-icon:last-child { color: var(--text-tertiary); }
+.pc-loss-watch .pc-row-main strong small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; }
+.pc-loss-watch .pc-row-main small .pc-dot { vertical-align: 1px; }
+
 /* Search, then one card for the chosen product. */
 .pc-loss-search { display: grid; gap: 12px; }
 .pc-loss-search-input.ant-input-affix-wrapper { min-height: 48px; font-size: 16px; }
