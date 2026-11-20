@@ -17,7 +17,8 @@ staff, **培训员工** Trainee (`popcore_app/ranks.py`, `frontend/src/lib/ranks
   first becomes 正式员工 or above, and can be moved in Users. The schedule's 训 and 正 marks and the monthly hours keep
   working from it.
 - The upgrade made people marked 培训中 into 培训员工 and people 转正 into 正式员工. 店长, 副店长 and 资深员工 are picked in
-  Users.
+  Users. The upgrade could not see Auth0 roles, so the first time an admin opens Users, any 管理员 or 查看者 account it
+  ranked loses its rank again.
 - Every list of people shows them in rank order, 店长 first, then by name: Users, the schedule's people, coverage and the
   monthly hours. Each person shows a badge: 长 副 资 正 训.
 

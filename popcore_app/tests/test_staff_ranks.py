@@ -111,6 +111,18 @@ class StaffRankTests(IsolatedApiCase):
             ('zimo', 'staff', 'senior'), ('celia', 'staff', 'regular'), ('yc', 'staff', 'trainee'),
             ('amy', 'viewer', None)])
         self.assertEqual(roles['auth0|amy'], 'rol_viewer')
+        # A viewer or an admin the upgrade gave a rank (marked 转正 before) loses it when Users is read.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE employees SET rank='regular' WHERE auth0_id='auth0|amy'")
+            con.execute("INSERT INTO employees(auth0_id, name, rank) VALUES ('auth0|owner', 'Owner', 'regular')")
+            con.commit()
+        with patch.object(users, 'AUTH0_MGMT_CLIENT_ID', 'id'), patch.object(users, 'AUTH0_MGMT_CLIENT_SECRET', 'secret'), \
+                patch.object(users, '_mgmt_get', return_value=Mock(ok=True, json=lambda: auth0_users)), \
+                patch.object(users, '_get_role_map', return_value=ROLE_IDS), \
+                patch.object(users, '_fetch_role_member_ids', side_effect=lambda role: members[role]):
+            self.client.get('/api/users', headers=self.headers('admin'))
+        self.assertEqual((self.employee('auth0|amy')['rank'], self.employee('auth0|owner')['rank']), (None, None))
+        self.assertEqual(self.employee('auth0|celia')['rank'], 'regular')
 
     def test_old_statuses_become_ranks_and_positions_move_to_back(self):
         con = sqlite3.connect(':memory:')

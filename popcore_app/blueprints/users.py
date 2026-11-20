@@ -106,6 +106,12 @@ def list_users():
             'created_at': u.get('created_at', ''),
             'last_login': u.get('last_login', ''),
         })
+    # The upgrade gave a rank to everyone marked 培训中 or 转正 without knowing their Auth0 role: an admin or a viewer
+    # keeps none, so they never count as staff (员工折扣 eligibility, rank order).
+    rankless = [user['id'] for user in result if user['role'] in ('admin', 'viewer') and rank_by_user.get(user['id'])]
+    if rankless:
+        con.execute(f"UPDATE employees SET rank=NULL WHERE auth0_id IN ({','.join('?' * len(rankless))})", rankless)
+        con.commit()
     order = {rank: index for index, rank in enumerate(ranks.RANKS)}
     role_order = {'admin': -1, 'viewer': len(ranks.RANKS) + 1}
     result.sort(key=lambda user: (role_order.get(user['role'], order.get(user['rank'], len(ranks.RANKS))),
