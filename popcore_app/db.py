@@ -2126,6 +2126,7 @@ def _get_migrations():
         ('employee_ranks',                             _migration_employee_ranks),
         ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
         ('watch_list',                                 _migration_watch_list),
+        ('staff_discounts',                            _migration_staff_discounts),
     ]
 
 
@@ -2588,6 +2589,50 @@ def _migration_watch_list(con, cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_list_photos_entry ON watch_list_photos(entry_id, id)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('watch_list')")
+
+
+def _migration_staff_discounts(con, cur):
+    # 员工折扣 Staff discounts (owner, 2026-11-19: "each 正式员工 and above have 4 discount per month, we wanna keep
+    # track of that"). One row per use record (staff_discounts.py): a 日报 员工折扣 line, keyed by store, day, its text
+    # and which copy of that text it is on the day, or one a manager added by hand. `uses` counts its products ("one use
+    # is one product"). A row with no person, or that could not be read, waits for a manager; `edited_at` marks a
+    # manager's fix, which a re-paste never touches. The names a report writes are remembered once a manager picks
+    # the person, so "zm" means that person from then on.
+    cur.execute("""CREATE TABLE IF NOT EXISTS staff_discount_uses (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        date           TEXT    NOT NULL,
+        store          TEXT    NOT NULL,
+        source         TEXT    NOT NULL CHECK (source IN ('report', 'manual')),
+        raw_text       TEXT,
+        occurrence     INTEGER NOT NULL DEFAULT 1,
+        written_name   TEXT,
+        employee_id    INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+        items          TEXT    NOT NULL DEFAULT '[]',
+        uses           INTEGER NOT NULL DEFAULT 0 CHECK (uses >= 0),
+        amount_cents   INTEGER CHECK (amount_cents IS NULL OR amount_cents >= 0),
+        payment        TEXT,
+        readable       INTEGER NOT NULL DEFAULT 1 CHECK (readable IN (0, 1)),
+        ignored_reason TEXT,
+        request_key    TEXT,
+        created_by     TEXT,
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        edited_by      TEXT,
+        edited_at      TEXT
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_discount_report_line
+                   ON staff_discount_uses(store, date, raw_text, occurrence) WHERE source='report'""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_discount_request
+                   ON staff_discount_uses(request_key) WHERE request_key IS NOT NULL""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_staff_discount_date ON staff_discount_uses(date)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS staff_discount_aliases (
+        alias_norm  TEXT    PRIMARY KEY,
+        alias       TEXT    NOT NULL,
+        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        created_by  TEXT,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('staff_discounts')")
+
 
 def _migration_inventory_viewers(con, cur):
     # Only the workers an admin picks see a store's stock (owner, 2026-11-01). Managers and admins
