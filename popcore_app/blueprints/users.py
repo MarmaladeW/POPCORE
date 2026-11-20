@@ -14,6 +14,7 @@ def _is_valid_hex(color: str) -> bool:
     return bool(_HEX_RE.match(color))
 
 from db import get_db, HIDDEN_IMG_DIR
+import ranks
 from checkout_access import business_date
 from auth import (
     login_required, role_required,
@@ -88,17 +89,27 @@ def list_users():
         for member_id in member_ids:
             role_by_user[member_id] = role_name
 
+    # Ranks (owner, 2026-11-19) live on the employees row; people are listed 店长 first (ranks.py).
+    con = get_db()
+    rank_by_user = {row[0]: row[1] for row in con.execute('SELECT auth0_id, rank FROM employees')}
     result = []
     for u in users:
         uid = u['user_id']
+        role = role_by_user.get(uid, 'viewer')
         result.append({
             'id':         uid,
             'username':   u.get('username') or u.get('nickname') or uid,
-            'role':       role_by_user.get(uid, 'viewer'),
+            'role':       role,
+            # Only staff and managers carry a rank; a viewer or an admin never does.
+            'rank':       rank_by_user.get(uid) if role in ('staff', 'manager') else None,
             'is_active':  0 if u.get('blocked') else 1,
             'created_at': u.get('created_at', ''),
             'last_login': u.get('last_login', ''),
         })
+    order = {rank: index for index, rank in enumerate(ranks.RANKS)}
+    role_order = {'admin': -1, 'viewer': len(ranks.RANKS) + 1}
+    result.sort(key=lambda user: (role_order.get(user['role'], order.get(user['rank'], len(ranks.RANKS))),
+                                  user['username'].lower()))
     return jsonify(result)
 
 
@@ -111,7 +122,13 @@ def create_user():
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
     role     = (data.get('role') or 'viewer').strip()
+    rank     = data.get('rank')
     trainee_id = data.get('trainee_id')
+    # A rank sets the role (owner, 2026-11-19; ranks.py).
+    if rank is not None:
+        if rank not in ranks.RANKS:
+            return jsonify({'error': '无效职位 Unknown rank'}), 400
+        role = ranks.RANK_ROLE[rank]
     if not username or not password:
         return jsonify({'error': '用户名和密码必填'}), 400
     if len(password) < 8:
@@ -182,6 +199,8 @@ def create_user():
                     break
             except Exception:
                 pass
+    if rank is not None:
+        _save_rank(user_id, rank)
     warning = None
     if not assigned and role != 'viewer':
         warning = (f'用户已创建，但角色 {role} 分配失败，请在"编辑"中重新设置角色 / '
@@ -189,11 +208,40 @@ def create_user():
     return jsonify({'ok': True, 'id': user_id, 'warning': warning}), 201
 
 
+def _save_rank(auth0_id, rank):
+    """Keep a person's rank on their employees row (made now if they have not signed in yet). 培训员工 is 培训中, and 正式员工
+    and above are 转正 from the day it was first given, so the schedule's 训/正 marks follow."""
+    from blueprints.schedule import _get_or_create_employee
+    con = get_db()
+    _get_or_create_employee(con, auth0_id)
+    if rank == 'trainee':
+        con.execute('UPDATE employees SET rank=?, is_training=1, regular_since=NULL WHERE auth0_id=?', (rank, auth0_id))
+    elif rank is None:
+        con.execute('UPDATE employees SET rank=NULL WHERE auth0_id=?', (auth0_id,))
+    else:
+        con.execute('''UPDATE employees SET rank=?, is_training=0, regular_since=COALESCE(regular_since, ?)
+                       WHERE auth0_id=?''', (rank, business_date(), auth0_id))
+    con.commit()
+
+
 @bp.route('/api/users/<string:uid>', methods=['PATCH'])
 @role_required('admin')
 def update_user(uid):
     uid_enc = urllib.parse.quote(uid, safe='')
     data    = request.get_json() or {}
+
+    # A rank (owner, 2026-11-19) sets the role: 店长 and 副店长 manager, the others staff (ranks.py). A viewer or an admin
+    # has no rank.
+    rank = data.get('rank') if 'rank' in data else None
+    if 'rank' in data:
+        if rank is not None and rank not in ranks.RANKS:
+            return jsonify({'error': '无效职位 Unknown rank'}), 400
+        if rank is not None:
+            data['role'] = ranks.RANK_ROLE[rank]
+        elif data.get('role') not in ('viewer', 'admin'):
+            return jsonify({'error': 'Only a viewer or an admin has no rank'}), 400
+    elif data.get('role') in ('viewer', 'admin'):
+        data['rank'] = None
 
     if 'role' in data:
         if uid == request.jwt_payload.get('sub', ''):
@@ -224,6 +272,9 @@ def update_user(uid):
                                              'New role added but removing the old one failed — save again'}), 502
         except Exception as exc:
             return jsonify({'error': f'Auth0 request failed: {exc}'}), 502
+
+    if 'rank' in data:
+        _save_rank(uid, data['rank'])
 
     body = {}
     if 'is_active' in data:
@@ -293,15 +344,14 @@ def get_employee_stores():
     rows = con.execute('''
         SELECT e.id AS employee_id, e.auth0_id, e.name,
                COALESCE(e.color, '#6366f1') AS color,
-               e.is_schedulable, e.regular_since, e.is_training,
+               e.is_schedulable, e.regular_since, e.is_training, e.rank,
                GROUP_CONCAT(s.code) AS store_codes
         FROM employees e
         LEFT JOIN employee_stores es ON es.employee_id = e.id
         LEFT JOIN stores s ON s.id = es.store_id AND s.is_active = 1
         WHERE e.is_active = 1
-        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable, e.regular_since, e.is_training
-        ORDER BY e.name
-    ''').fetchall()
+        GROUP BY e.id, e.auth0_id, e.name, e.color, e.is_schedulable, e.regular_since, e.is_training, e.rank
+        ORDER BY ''' + ranks.order_by('e')).fetchall()
     con.close()
     result = []
     for r in rows:
@@ -314,6 +364,7 @@ def get_employee_stores():
             'is_schedulable': r['is_schedulable'],
             'regular_since': r['regular_since'],
             'is_training': r['is_training'],
+            'rank':        r['rank'],
             'stores':      codes,
         })
     return jsonify(result)
@@ -402,6 +453,11 @@ def patch_employee_status(employee_id):
         return jsonify({'error': 'Employee not found'}), 404
     con.execute('UPDATE employees SET is_training = ?, regular_since = ? WHERE id = ?',
                 (1 if status == 'training' else 0, regular_since, employee_id))
+    # The rank follows (owner, 2026-11-19): 培训中 is 培训员工; 转正 makes a 培训员工 a 正式员工 and keeps a higher rank.
+    if status == 'training':
+        con.execute("UPDATE employees SET rank='trainee' WHERE id=? AND (rank IS NULL OR rank='regular')", (employee_id,))
+    elif status == 'regular':
+        con.execute("UPDATE employees SET rank='regular' WHERE id=? AND (rank IS NULL OR rank='trainee')", (employee_id,))
     con.commit()
     updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
     con.close()

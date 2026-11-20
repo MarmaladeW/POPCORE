@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db
+import ranks
 from auth import (
     login_required, role_required,
     ROLE_HIERARCHY, ROLE_CLAIM,
@@ -229,7 +230,7 @@ def schedule_me_patch():
 def schedule_employees():
     con  = get_db()
     rows = con.execute(
-        'SELECT * FROM employees WHERE is_active = 1 ORDER BY name'
+        f"SELECT * FROM employees WHERE is_active = 1 ORDER BY {ranks.order_by('')}"
     ).fetchall()
     employees = [dict(r) for r in rows]
 
@@ -263,7 +264,10 @@ def schedule_employees():
             pass  # non-fatal: return whatever names we have
 
     con.close()
-    employees.sort(key=lambda e: (e.get('is_trainee') or 0, e.get('name') or e.get('email') or ''))
+    # 店长 first, then by rank (owner, 2026-11-19), names fetched above included; old trainee records last.
+    order = {rank: index for index, rank in enumerate(ranks.RANKS)}
+    employees.sort(key=lambda e: (e.get('is_trainee') or 0, order.get(e.get('rank'), len(ranks.RANKS)),
+                                  (e.get('name') or e.get('email') or '').lower()))
     return jsonify(employees)
 
 
@@ -545,7 +549,7 @@ def schedule_avail_all():
         con.close()
         return err
     query = '''
-        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
+        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
                COALESCE(st.code, '') AS store_code
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
@@ -559,7 +563,7 @@ def schedule_avail_all():
         query  += ' AND a.date >= ?'; params.append(start)
     if end:
         query  += ' AND a.date <= ?'; params.append(end)
-    query += ' ORDER BY a.date, e.name'
+    query += f" ORDER BY a.date, {ranks.order_by('e')}"
     con.execute('BEGIN')
     rows = con.execute(query, params).fetchall()
     result = _availability_rows(con, rows)
@@ -634,7 +638,7 @@ def schedule_shifts_get():
     if store_code == 'ALL':
         if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -646,7 +650,7 @@ def schedule_shifts_get():
         else:
             emp = _get_or_create_employee(con, auth0_id)
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -660,7 +664,7 @@ def schedule_shifts_get():
             query += ' AND s.date <= ?'; params.append(end)
     elif ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -677,7 +681,7 @@ def schedule_shifts_get():
     else:
         emp = _get_or_create_employee(con, auth0_id)
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -690,7 +694,7 @@ def schedule_shifts_get():
         if end:
             query += ' AND s.date <= ?'; params.append(end)
 
-    query += ' ORDER BY s.date, e.name'
+    query += f" ORDER BY s.date, {ranks.order_by('e')}"
     rows = con.execute(query, params).fetchall()
     con.close()
     return jsonify([dict(r) for r in rows])
@@ -709,7 +713,7 @@ def schedule_shifts_me():
         return err
     emp    = _get_or_create_employee(con, auth0_id)
     query  = '''
-        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training,
+        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
                COALESCE(st.code, '') AS store_code
         FROM shifts s
         JOIN employees e ON e.id = s.employee_id
@@ -1104,7 +1108,7 @@ def schedule_report_monthly():
     # keep the hours they worked.
     emps = con.execute(f'''SELECT * FROM employees
         WHERE id IN (SELECT employee_id FROM shifts WHERE {shift_filter})
-        ORDER BY name''', filter_params).fetchall()
+        ORDER BY {ranks.order_by('')}''', filter_params).fetchall()
     emp_ids = [e['id'] for e in emps]
 
     if not emp_ids:
@@ -1153,6 +1157,7 @@ def schedule_report_monthly():
             'is_trainee':  emp['is_trainee'] if 'is_trainee' in emp.keys() else 0,
             'regular_since': emp['regular_since'],
             'is_training': emp['is_training'],
+            'rank':        emp['rank'],
             'total_hours': round(total_hours, 2),
             'weeks':       weeks,
         })
@@ -1230,6 +1235,7 @@ def schedule_report_monthly_employee(emp_id):
             'is_trainee':    emp['is_trainee'],
             'regular_since': emp['regular_since'],
             'is_training':   emp['is_training'],
+            'rank':          emp['rank'],
         },
         'total_hours': round(sum(s['hours'] for s in shifts), 2),
         'shifts':      shifts,

@@ -2,7 +2,7 @@ import { Button } from '@/components/ui/button'
 import type { Availability, Employee, Shift } from './scheduleApi'
 import { availabilityIssue } from './availabilityPeriod'
 import { EMPLOYEE_PALETTE, textColorOn } from '@/lib/palette'
-import { hoursForStore, shiftKindFor, type StoreHoursMap } from './openHours'
+import { hoursForStore, positionText, shiftKindFor, type StoreHoursMap } from './openHours'
 import { shiftKindLabel, shiftTimeRange } from './schedulePresentation'
 import { isRegularOn } from './monthlyDetail'
 import RegularMark from './RegularMark'
@@ -56,7 +56,7 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
               {employeeName(shift.employee_id, shift.employee_name || employees.find(employee => employee.id === shift.employee_id)?.name || 'Employee')}
               <span className={`pc-assignment-kind pc-assignment-kind-${kind}`}>{shiftKindLabel(kind)}</span>
             </div>
-            <small>{shiftTimeRange(shift.start_time, shift.end_time, shift.actual_end_time)}{shift.position ? ` · ${shift.position}` : ''}</small>
+            <small>{shiftTimeRange(shift.start_time, shift.end_time, shift.actual_end_time)}{shift.position && <> · <span className="pc-shift-pos pc-shift-pos-inline">{positionText(shift.position)}</span></>}</small>
             {issue && !shift.is_trainee && <small role="status">Review: {issue}</small>}
           </div><Button variant="outline" onClick={() => onEdit(shift)}>Edit</Button></div>
         })}

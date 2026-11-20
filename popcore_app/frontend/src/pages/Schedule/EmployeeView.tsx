@@ -18,6 +18,7 @@ import {
 } from './scheduleApi'
 import {
   DEFAULT_STORE_HOURS, businessHoursFrom, gridWindow, parseStoreOpenHours, unionHours, hoursForStore, shiftKindFor,
+  positionText,
 } from './openHours'
 import { shiftKindLabel } from './schedulePresentation'
 
@@ -74,7 +75,7 @@ export default function EmployeeView() {
     for (const s of shifts) {
       evts.push({
         id: `shift-${s.id}`,
-        title: `${s.store_code || ''} ${s.start_time}–${s.end_time}${s.position ? ` · ${s.position}` : ''}`,
+        title: `${s.store_code || ''} ${s.start_time}–${s.end_time}${s.position ? ` · ${positionText(s.position)}` : ''}`,
         start: `${s.date}T${s.start_time}`,
         end: `${s.date}T${s.end_time}`,
         backgroundColor: '#6366F1',
@@ -186,7 +187,7 @@ export default function EmployeeView() {
             return <div className="pc-personal-shift" title={`${arg.event.title} · ${label}`}>
               <strong>{shift.store_code} · {label}</strong>
               <span>{shift.start_time}–{shift.end_time}</span>
-              {shift.position && <span>{shift.position}</span>}
+              {shift.position && <span className="pc-shift-pos">{positionText(shift.position)}</span>}
             </div>
           }}
           datesSet={handleDatesSet}

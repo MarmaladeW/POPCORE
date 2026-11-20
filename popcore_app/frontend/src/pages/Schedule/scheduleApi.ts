@@ -15,6 +15,8 @@ export interface Employee {
   regular_since?: string | null
   /** 培训中: their shifts are marked 训 while it is on. */
   is_training?: number
+  // 店长 … 培训员工 (owner, 2026-11-19; lib/ranks.ts).
+  rank?: string | null
   created_at: string
 }
 
@@ -74,6 +76,8 @@ export interface Shift {
   is_trainee?: number
   regular_since?: string | null
   is_training?: number
+  // 店长 … 培训员工 (owner, 2026-11-19; lib/ranks.ts).
+  rank?: string | null
   store_code?: string
 }
 
@@ -102,6 +106,8 @@ export interface EmployeeMonthlyHours {
   is_trainee?: number
   regular_since?: string | null
   is_training?: number
+  // 店长 … 培训员工 (owner, 2026-11-19; lib/ranks.ts).
+  rank?: string | null
   total_hours: number
   weeks: Record<string, WeekBreakdown>
 }
@@ -121,6 +127,7 @@ export interface EmployeeMonthDetail {
     is_trainee: number
     regular_since: string | null
     is_training: number
+  rank?: string | null
   }
   total_hours: number
   shifts: DetailShift[]
@@ -185,6 +192,7 @@ export interface EmployeeStoreAssignment {
   is_schedulable: number
   regular_since: string | null
   is_training: number
+  rank?: string | null
   stores:      string[]   // store codes, e.g. ['DT', 'MK']
 }
 

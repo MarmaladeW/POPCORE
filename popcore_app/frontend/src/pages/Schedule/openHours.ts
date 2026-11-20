@@ -165,7 +165,7 @@ export function parseShiftPresets(raw: string | null | undefined): ShiftPreset[]
 export type PositionsMap = Record<string, string[]>
 
 /** Parse the schedule_positions app setting (JSON keyed by store code with an
- *  array of position names, e.g. {"DT": ["Front", "Cashier", "End"]}). */
+ *  array of position names, e.g. {"DT": ["Front", "Cashier", "Back"], "MK": ["Cashier", "Sales"]}). */
 export function parsePositions(raw: string | null | undefined): PositionsMap {
   if (!raw) return {}
   try {
@@ -182,6 +182,16 @@ export function parsePositions(raw: string | null | undefined): PositionsMap {
     return {}
   }
 }
+
+// Each position at a glance (owner, 2026-11-19: "the positions should be more accented (more obvious) in the shift
+// table. also can use emoji for different positions"). "End" is the old name of Back.
+const POSITION_EMOJI: Record<string, string> = { front: '👋', cashier: '💰', back: '📦', end: '📦', sales: '🛍️' }
+
+/** A position's emoji, or a pin for one added in Settings without its own. */
+export const positionEmoji = (name: string) => POSITION_EMOJI[name.trim().toLowerCase()] ?? '📍'
+
+/** A position as the schedule shows it: "📦 Back". */
+export const positionText = (name: string) => `${positionEmoji(name)} ${name}`
 
 /** Positions configured for one store ('*' acts as an all-stores fallback). */
 export function positionsForStore(storeCode: string, map: PositionsMap): string[] {
