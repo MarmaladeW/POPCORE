@@ -17,7 +17,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps
 
 import payment_evidence
 from checkout_access import business_date
@@ -76,7 +76,7 @@ def prepare_photo(upload):
             clean.save(output, format='JPEG', quality=85, optimize=True)
     except WatchListError:
         raise
-    except (OSError, SyntaxError, UnidentifiedImageError, ValueError, Image.DecompressionBombError) as exc:
+    except Exception as exc:  # a broken file can fail anywhere in decoding (UnidentifiedImageError, OSError, bad EXIF...)
         raise WatchListError('The file is not a photo that can be read', 'invalid_image') from exc
     data = output.getvalue()
     return {'object_id': f'{uuid.uuid4().hex}.jpg', 'mime_type': 'image/jpeg', 'content': data,
@@ -145,8 +145,10 @@ _SELECT = """SELECT w.*, s.code AS store_code, s.name AS store_name,
 def _records(con, where='', params=()):
     rows = con.execute(f"""{_SELECT} {where}
         ORDER BY w.status = 'resolved', w.seen_on DESC, w.id DESC""", params).fetchall()
+    ids = [row['id'] for row in rows]
     photos = {}
-    for photo in con.execute('SELECT id, entry_id, width, height FROM watch_list_photos ORDER BY entry_id, id'):
+    for photo in con.execute(f"""SELECT id, entry_id, width, height FROM watch_list_photos
+                                 WHERE entry_id IN ({','.join('?' * len(ids))}) ORDER BY entry_id, id""", ids):
         photos.setdefault(photo['entry_id'], []).append({'id': photo['id'], 'width': photo['width'],
                                                          'height': photo['height']})
     return [{
@@ -264,10 +266,13 @@ def remove_photo(con, actor, entry_id, photo_id):
                       (photo_id, entry_id)).fetchone()
     if row is None:
         raise WatchListError('This photo was not found; it may have been removed', 'not_found', 404)
-    if con.execute('SELECT COUNT(*) FROM watch_list_photos WHERE entry_id = ?', (entry_id,)).fetchone()[0] <= 1:
+    # One statement, so two removals at once can never take the last photo.
+    if con.execute('''DELETE FROM watch_list_photos WHERE id = ?
+                      AND (SELECT COUNT(*) FROM watch_list_photos WHERE entry_id = ?) > 1''',
+                   (photo_id, entry_id)).rowcount == 0:
+        con.rollback()
         raise WatchListError('A record keeps at least one photo. Add the new photo first, or delete the record',
                              'last_photo', 409)
-    con.execute('DELETE FROM watch_list_photos WHERE id = ?', (photo_id,))
     con.execute("UPDATE watch_list_entries SET updated_by = ?, updated_at = datetime('now') WHERE id = ?",
                 (actor['sub'], entry_id))
     con.commit()
