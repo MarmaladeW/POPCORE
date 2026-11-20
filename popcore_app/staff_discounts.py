@@ -42,7 +42,7 @@ PAYMENTS = tuple(_METHODS)
 _METHOD = '(?:' + '|'.join(sorted((re.escape(word) for words in _METHODS.values() for word in words),
                                   key=len, reverse=True)) + ')'
 # "Celia使用员工折扣购入…"; a line under the 员工折扣 heading may leave 使用员工折扣 out ("staff购买…").
-_VERB = re.compile(r'^(?P<who>.*?)\s*(?:使用\s*)?(?:员工\s*折扣\s*)?(?:购入|购买)(?P<rest>.*)$', re.S)
+_VERB = re.compile(r'^(?P<who>.*?)\s*(?:使用\s*)?(?:员工\s*折扣\s*)?[,:]?\s*(?:购入|购买)(?P<rest>.*)$', re.S)
 _DATE = re.compile(r'^\d{4}[./-]\d{1,2}[./-]\d{1,2}\s*')
 _LEFT = re.compile(r'(?:[本今这]个?月\s*)?还?剩(?:余|下)?\s*\d+\s*次?')
 # Pieces are split by commas, 、, + and ;, after a written quantity by a space or a payment ("X*1 卡机18.07"), and by
@@ -213,7 +213,8 @@ def _entry(row, manager):
         'id': row['id'], 'date': row['date'], 'store': row['store'], 'store_name': row['store_name'],
         'source': row['source'], 'employee_id': row['employee_id'], 'name': row['person_name'],
         'rank': row['person_rank'], 'written_name': row['written_name'], 'items': json.loads(row['items']),
-        'uses': row['uses'], 'payment': row['payment'], 'state': state, 'waiting_for': waiting_for,
+        'uses': row['uses'], 'payment': row['payment'], 'readable': bool(row['readable']), 'state': state,
+        'waiting_for': waiting_for,
         'ignored_reason': row['ignored_reason'], 'edited': row['edited_at'] is not None,
         'edited_by_name': row['edited_by_name'], 'created_by_name': row['created_by_name'],
     }

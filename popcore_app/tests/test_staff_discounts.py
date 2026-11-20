@@ -91,6 +91,7 @@ class StaffDiscountTests(StaffDiscountCase):
         # The parser's own joins and dates: "X*1, EMT24, 本月剩余3次" and a day written first.
         dated = parse_line('2026.9.9 staff使用员工折扣购入Test Product*1, EMT24, 本月剩余3次')
         self.assertEqual((dated['name'], dated['uses'], dated['amount_cents']), ('staff', 1, 2400))
+        self.assertEqual(parse_line('Celia 使用员工折扣，购入Labubu*1')['name'], 'Celia')
         for unreadable in ('Celia员工折扣两个', 'Celia使用员工折扣购入Labubu, emt 20', 'Celia使用员工折扣购入'):
             with self.subTest(unreadable=unreadable):
                 self.assertFalse(parse_line(unreadable)['readable'])
