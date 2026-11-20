@@ -2125,6 +2125,7 @@ def _get_migrations():
         ('push_subscriptions',                         _migration_push_subscriptions),
         ('employee_ranks',                             _migration_employee_ranks),
         ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
+        ('watch_list',                                 _migration_watch_list),
     ]
 
 
@@ -2554,6 +2555,39 @@ def _migration_shift_positions_back_and_markham(con, cur):
                         (_json.dumps(positions, ensure_ascii=False),))
     cur.execute("INSERT INTO _migrations(name) VALUES ('shift_positions_back_and_markham')")
 
+
+def _migration_watch_list(con, cur):
+    # 可疑人员 Watch list (owner, 2026-11-19: "upload images of stealers, so everyone can recognize the people that stole
+    # from the store ... and we can mark if it is resolved or not"). One row per person, with free-text information,
+    # the store (optional) and the date seen; photos are private files under the upload root (watch_list.py), one
+    # row each. Managers write; everyone signed in reads.
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_list_entries (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        info         TEXT    NOT NULL,
+        store_id     INTEGER REFERENCES stores(id),
+        seen_on      TEXT    NOT NULL,
+        status       TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+        resolved_at  TEXT,
+        resolved_by  TEXT,
+        resolve_note TEXT,
+        created_by   TEXT    NOT NULL,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_by   TEXT,
+        updated_at   TEXT
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_list_photos (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id    INTEGER NOT NULL REFERENCES watch_list_entries(id) ON DELETE CASCADE,
+        object_id   TEXT    NOT NULL UNIQUE,
+        mime_type   TEXT    NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+        byte_size   INTEGER NOT NULL CHECK (byte_size > 0),
+        width       INTEGER NOT NULL,
+        height      INTEGER NOT NULL,
+        uploaded_by TEXT    NOT NULL,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_list_photos_entry ON watch_list_photos(entry_id, id)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('watch_list')")
 
 def _migration_inventory_viewers(con, cur):
     # Only the workers an admin picks see a store's stock (owner, 2026-11-01). Managers and admins
