@@ -16,6 +16,8 @@ export interface Store {
   color: string
   /** 库存查看: whether this account may see the store's stock (from /api/stores). */
   inventory_visible?: boolean
+  /** 门店操作权限 Store operations access here (from /api/stores): a 查看者 Viewer counter account gets 网站订单. */
+  operations?: boolean
 }
 
 /** Sentinel representing "all stores combined" — read-only, never written to. */

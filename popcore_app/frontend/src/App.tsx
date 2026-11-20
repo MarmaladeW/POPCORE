@@ -66,11 +66,13 @@ function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNo
   return useHasRole(minRole) ? <>{element}</> : <Unauthorized />
 }
 
-// 库存 and the tools reached from it (盘点, 入店/入库, 调拨, 娃娃机) need 库存查看 at the selected store.
-function InventoryRoute({ element }: { element: React.ReactNode }) {
+// 库存 and the tools reached from it (盘点, 入店/入库, 调拨, 娃娃机) need 库存查看 at the selected store. `readOnly` pages
+// (the 库存 lists) also open for a 查看者 Viewer with 库存查看, a counter account (owner, 2026-11-19): they show
+// their changing buttons to staff only, and the server takes changes from staff and above only.
+function InventoryRoute({ element, readOnly = false }: { element: React.ReactNode; readOnly?: boolean }) {
   const staff = useHasRole('staff'), visible = useInventoryVisible()
   const storesLoaded = useAppStore(state => state.stores.length > 0)
-  if (!staff) return <Unauthorized />
+  if (!staff && !readOnly) return <Unauthorized />
   if (visible) return <>{element}</>
   return storesLoaded ? <InventoryHidden /> : <div role="status" aria-live="polite">Loading page…</div>
 }
@@ -184,8 +186,8 @@ function AppInner() {
           <Route path="/products/series" element={<SeriesCatalogPage />} />
           <Route path="/products/clover-matching" element={<RoleRoute minRole="manager" element={<CloverMatchingPage />} />} />
           <Route path="/products/design-prices" element={<RoleRoute minRole="manager" element={<DesignPricesPage />} />} />
-          <Route path="/stock"          element={<InventoryRoute element={<SeriesInventory />} />} />
-          <Route path="/stock/products" element={<InventoryRoute element={<StockPage />} />} />
+          <Route path="/stock"          element={<InventoryRoute readOnly element={<SeriesInventory />} />} />
+          <Route path="/stock/products" element={<InventoryRoute readOnly element={<StockPage />} />} />
           <Route path="/goods/receiving" element={<InventoryRoute element={<GoodsPage initialTab="receiving" />} />} />
           <Route path="/goods/transfers" element={<InventoryRoute element={<GoodsPage initialTab="transfers" />} />} />
           <Route path="/goods/counts"    element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="counts" />} />} />
@@ -203,7 +205,7 @@ function AppInner() {
           <Route path="/sales/report-stock" element={<RoleRoute minRole="manager" element={<ReportStockPage />} />} />
           <Route path="/sales/name-picks" element={<RoleRoute minRole="manager" element={<NamePicksPage />} />} />
           <Route path="/website" element={<RoleRoute minRole="manager" element={<WebsitePage />} />} />
-          <Route path="/web-orders" element={<RoleRoute minRole="staff" element={<WebOrdersPage />} />} />
+          <Route path="/web-orders" element={<RoleRoute minRole="viewer" element={<WebOrdersPage />} />} />
           <Route path="/dex" element={<RoleRoute minRole="viewer" element={<DexHome />} />} />
           <Route path="/dex/unlinked" element={<RoleRoute minRole="viewer" element={<DexUnlinkedPage />} />} />
           <Route path="/dex/sync" element={<RoleRoute minRole="manager" element={<DexSyncPage />} />} />

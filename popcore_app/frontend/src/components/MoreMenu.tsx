@@ -4,6 +4,7 @@ import { useAuth0 } from '@auth0/auth0-react'
 import { useHasRole, useRole } from '../auth/useRole'
 import { useInventoryVisible } from '../auth/useInventoryVisible'
 import { moreItems } from '../lib/navigation'
+import { useAppStore } from '../store'
 import { ROLE_LABELS } from './AppLayout'
 import Icon from './pc/Icon'
 import PageHeader from './pc/PageHeader'
@@ -14,7 +15,8 @@ export default function MoreMenu() {
   const phone = useIsPhone()
   const { user, logout } = useAuth0()
   const role = useRole()
-  const access = { staff: useHasRole('staff'), manager: useHasRole('manager'), admin: useHasRole('admin'), inventory: useInventoryVisible() }
+  const access = { staff: useHasRole('staff'), manager: useHasRole('manager'), admin: useHasRole('admin'), inventory: useInventoryVisible(),
+    operations: useAppStore(state => state.stores.some(store => store.operations)) }
   if (!phone) return <Navigate to="/" replace />
   return <div className="pc-more">
     <PageHeader title="更多" sub="More" />

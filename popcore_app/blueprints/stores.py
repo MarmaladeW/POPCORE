@@ -35,10 +35,14 @@ def list_stores():
         "SELECT id, code, name, COALESCE(color, '#6366f1') AS color"
         " FROM stores WHERE is_active = 1 ORDER BY id"
     ).fetchall()
-    # Whether this account may see each store's stock (库存查看), so the app shows or hides 库存.
+    # Whether this account may see each store's stock (库存查看), so the app shows or hides 库存, and whether it has
+    # 门店操作权限 Store operations access there, so a 查看者 Viewer counter account gets 网站订单 (owner, 2026-11-19).
     visible = visible_store_ids(con, request.jwt_payload)
+    operations = {row[0] for row in con.execute('SELECT store_id FROM inventory_access WHERE auth0_sub=?',
+                                                (request.jwt_payload.get('sub'),))}
     con.close()
-    return jsonify([{**dict(r), 'inventory_visible': r['id'] in visible} for r in rows])
+    return jsonify([{**dict(r), 'inventory_visible': r['id'] in visible, 'operations': r['id'] in operations}
+                    for r in rows])
 
 
 @bp.route('/api/stores/<int:store_id>/color', methods=['PATCH'])

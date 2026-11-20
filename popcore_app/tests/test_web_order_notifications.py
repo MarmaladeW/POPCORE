@@ -129,7 +129,9 @@ class WebOrderNotificationTests(BoardCase):
         self.assertEqual(self.client.get('/api/website/notifications', headers=MK_STAFF).get_json()['devices'], 1)
         self.assertEqual(self.client.post('/api/website/notifications/off', json={'endpoint': device.endpoint},
                                           headers=MK_STAFF).get_json(), {'devices': 0})
-        self.assertEqual(self.client.get('/api/website/notifications', headers=self.headers('viewer')).status_code, 403)
+        # A viewer counter account turns them on too (owner, 2026-11-19); an account with no role cannot.
+        self.assertEqual(self.client.get('/api/website/notifications', headers=self.headers('viewer')).status_code, 200)
+        self.assertEqual(self.client.get('/api/website/notifications', headers=self.headers('norole')).status_code, 403)
 
     def test_a_new_paid_order_reaches_the_devices_of_its_store_only(self):
         dt, mk, nobody = Device('dt'), Device('mk'), Device('nobody')

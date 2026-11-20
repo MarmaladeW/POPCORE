@@ -65,7 +65,9 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   const selected = selectedId ? data?.series.find(series=>series.id===selectedId)
     : plain ? {id:0, name:plain.name, product_id:plain.id, products:[plain, ...(plain.variations ?? [])]} : undefined
   const standalone = !!plain
-  const canWork = storeCode!=='ALL' && ['staff','manager','admin'].includes(role)
+  // A 查看者 Viewer counter account only looks (owner, 2026-11-19).
+  const staffRole = ['staff','manager','admin'].includes(role)
+  const canWork = storeCode!=='ALL' && staffRole
   const manager = storeCode!=='ALL' && ['manager','admin'].includes(role)
   const mutation = useCheckoutMutation(()=>{
     setSaved('identify')
@@ -213,7 +215,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
         <footer className="pc-series-footer">
           {selected?.product_id&&manager&&<Link to={`/products?product_id=${selected.product_id}`}>添加确认款或整端 Add designs or a sealed set</Link>}
           {selected?.product_id&&manager&&!standalone&&<RemoveDesigns productId={selected.product_id} designCount={designs.length} onDone={()=>setParams({product_id:String(selected.product_id)})}/>}
-          <nav aria-label="Inventory tools" className="pc-inventory-tools"><Link to="/products">Products</Link><Link to="/restock">Restock</Link><Link to="/trades">Trades</Link><Link to="/stock/products">All products</Link></nav>
+          <nav aria-label="Inventory tools" className="pc-inventory-tools"><Link to="/products">Products</Link>{staffRole&&<><Link to="/restock">Restock</Link><Link to="/trades">Trades</Link></>}<Link to="/stock/products">All products</Link></nav>
         </footer>
       </>}
     <Drawer rootClassName="pc-inventory-drawer" title="Identify boxes" width="min(100%, 560px)" open={panel==='identify'} onClose={()=>{if(!locked)setPanel(undefined)}} keyboard={!locked} maskClosable={!locked} closable={!locked} destroyOnClose

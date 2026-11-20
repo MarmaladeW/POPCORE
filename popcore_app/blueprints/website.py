@@ -4,8 +4,9 @@ Managers see the sync, what the next push would change and the web orders, settl
 could not fill, and OK the price changes that wait for them. Only admins reread the catalogue or
 turn the sync on and off.
 
-网站订单 Web orders (website_board.py): staff with store operations access see their stores' orders, find a
-pickup order by its code and mark pickup orders Ready and Handed over.
+网站订单 Web orders (website_board.py): anyone with store operations access for a store, staff or a 查看者 Viewer
+counter account (owner, 2026-11-19), sees its orders, finds a pickup order by its code and marks pickup orders Ready and
+Handed over. Viewers can do nothing else anywhere: every other write needs staff or above.
 """
 import os
 
@@ -167,7 +168,7 @@ def _private(response):
 
 
 @bp.get('/api/website/board')
-@role_required('staff')
+@role_required('viewer')
 def web_orders_board():
     cfg, error = _config()
     if error:
@@ -182,7 +183,7 @@ def web_orders_board():
 
 
 @bp.post('/api/website/board/code')
-@role_required('staff')
+@role_required('viewer')
 def web_orders_code():
     data = request.get_json(silent=True) or {}
     if not isinstance(data.get('code'), str) or not data['code'].strip():
@@ -201,7 +202,7 @@ def web_orders_code():
 
 @bp.post('/api/website/board/orders/<int:wc_order_id>/ready', defaults={'action': 'ready'})
 @bp.post('/api/website/board/orders/<int:wc_order_id>/handed-over', defaults={'action': 'handed_over'})
-@role_required('staff')
+@role_required('viewer')
 def web_orders_step(wc_order_id, action):
     data = request.get_json(silent=True) or {}
     cfg, error = _config()
@@ -220,7 +221,7 @@ def web_orders_step(wc_order_id, action):
 # ── Notifications for new web orders (push_notifications.py) ───────────────
 
 @bp.get('/api/website/notifications')
-@role_required('staff')
+@role_required('viewer')
 def web_orders_notifications():
     """POPCORE's public push key, and how many devices this person has turned on."""
     con = get_db()
@@ -228,7 +229,7 @@ def web_orders_notifications():
 
 
 @bp.post('/api/website/notifications')
-@role_required('staff')
+@role_required('viewer')
 def web_orders_notify_me():
     """Turn notifications on for this device, as {"subscription": the browser's PushSubscription JSON}."""
     data = request.get_json(silent=True) or {}
@@ -241,7 +242,7 @@ def web_orders_notify_me():
 
 
 @bp.post('/api/website/notifications/off')
-@role_required('staff')
+@role_required('viewer')
 def web_orders_notify_off():
     data = request.get_json(silent=True) or {}
     con = get_db()
@@ -251,7 +252,7 @@ def web_orders_notify_off():
 
 
 @bp.post('/api/website/notifications/test')
-@role_required('staff')
+@role_required('viewer')
 def web_orders_notify_test():
     """A test notification to every device of this person."""
     con = get_db()

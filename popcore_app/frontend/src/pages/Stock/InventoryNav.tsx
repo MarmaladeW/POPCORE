@@ -33,7 +33,9 @@ const links: Array<{ to: string; zh: string; en: string; icon: IconName; claw?: 
 // and 损耗 last, for managers and admins only.
 export default function InventoryNav({ hasClaw, phone }: { hasClaw: boolean; phone: boolean }) {
   const path = useLocation().pathname
-  const manager = useHasRole('manager')
+  const manager = useHasRole('manager'), staff = useHasRole('staff')
+  // Every tool here changes stock: a 查看者 Viewer counter account (owner, 2026-11-19) gets none of them.
+  if (!staff) return null
   return <nav className={phone ? 'pc-inv-nav pc-inv-nav-phone' : 'pc-inv-nav'} aria-label="Inventory sections">
     {links.filter(link => (!link.claw || hasClaw) && (!link.manager || manager)).map(link => <Link key={link.to} to={link.to} className="pc-btn" aria-current={path === link.to ? 'page' : undefined}>
       <Icon name={link.icon} size={18} />{link.zh} <small>{link.en}</small>
