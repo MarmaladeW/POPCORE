@@ -417,8 +417,10 @@ export default function StockPage() {
       <nav className="pc-inventory-tools pc-stock-links" aria-label="Inventory tools">
         <Link to="/stock">Series inventory</Link>
         <Link to="/products">Products</Link>
-        <Link to="/restock">Restock</Link>
-        <Link to="/trades">Trades</Link>
+        <RoleGuard minRole="staff">
+          <Link to="/restock">Restock</Link>
+          <Link to="/trades">Trades</Link>
+        </RoleGuard>
       </nav>
       {isAll && <p className="pc-notice">Viewing all stores combined. Please select a specific store to make changes.</p>}
 

@@ -97,10 +97,10 @@ class WebOrdersBoardTests(BoardCase):
         for text in (response.get_data(as_text=True), manager_orders):
             for value in (*PRIVATE, 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
                 self.assertNotIn(value, text)
-        # One store only, and none without store operations access; viewers cannot open it.
+        # One store only, and none without store operations access; an account with no role cannot open it.
         self.assertEqual(self.board(store='MK')['stores'], [])
         self.assertEqual(self.board(OTHER)['columns']['pick'], [])
-        self.assertEqual(self.client.get('/api/website/board', headers=self.headers('viewer')).status_code, 403)
+        self.assertEqual(self.client.get('/api/website/board', headers=self.headers('norole')).status_code, 403)
 
     def test_a_pickup_taken_from_another_store_says_so(self):
         with closing(self.connect()) as con:
@@ -222,3 +222,51 @@ class WebOrdersBoardTests(BoardCase):
         self.woo.reads.clear()
         self.run_sync()
         self.assertFalse([params for path, params in self.woo.reads if 'include' in params and path == '/orders'])
+
+
+class CounterAccountTests(BoardCase):
+    """Owner, 2026-11-19: the store computer's account looks up products, stock and Dex prices but edits nothing, and
+    uses the board's two buttons. It is a 查看者 Viewer with DT store operations access and 库存查看."""
+    COUNTER = {'Authorization': 'Bearer viewer:counter'}  # auth0|counter
+
+    def setUp(self):
+        super().setUp()
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (self.dt,))
+            con.execute("INSERT INTO inventory_viewers(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (self.dt,))
+            con.commit()
+
+    def test_a_viewer_counter_account_works_the_board_and_reads_stock_but_changes_nothing(self):
+        board = self.board(self.COUNTER)
+        self.assertEqual((board['stores'], self.numbers(board['columns']['pick'])), (['DT'], ['701']))
+        self.assertEqual(self.step(701, 'ready', headers=self.COUNTER).get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.notes[-1][1]['note'], 'Ready in popcore.store by auth0|counter')
+        self.assertEqual(self.code('K7R4MX', headers=self.COUNTER).get_json()['first_name'], 'Private')
+        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX', headers=self.COUNTER).get_json()['result'], 'done')
+        # The menus learn where it has store operations access.
+        stores = {row['code']: row for row in self.client.get('/api/stores', headers=self.COUNTER).get_json()}
+        self.assertEqual((stores['DT']['operations'], stores['DT']['inventory_visible'], stores['MK']['operations']),
+                         (True, True, False))
+        # It reads DT's stock ...
+        self.assertEqual(self.client.get('/api/inventory/series?store_code=DT', headers=self.COUNTER).status_code, 200)
+        self.assertEqual(self.client.get('/api/inventory/overview?store_code=DT', headers=self.COUNTER).status_code, 200)
+        # ... and changes none of it, whatever its store access.
+        with closing(self.connect()) as con:
+            version = con.execute("""SELECT version FROM inventory_balances WHERE product_id=? AND location_id=?
+                                     AND disposition='saleable'""", (self.item, self.locations['upstairs'])).fetchone()[0]
+        move = self.client.post('/api/inventory/commands', headers={**self.COUNTER, 'Idempotency-Key': 'counter-move'}, json={
+            'kind': 'move', 'business_date': '2026-11-01', 'lines': [{
+                'product_id': self.item, 'unit': 'piece', 'quantity': 1, 'from_location_id': self.locations['upstairs'],
+                'from_disposition': 'saleable', 'to_location_id': self.locations['floor'], 'to_disposition': 'saleable',
+                'expected_versions': {'from': version, 'to': 0}}]})
+        self.assertEqual(move.status_code, 403, move.get_json())
+        self.assertEqual(self.balance(self.item, 'upstairs'), 1)
+        # Website settings stay with managers.
+        self.assertEqual(self.client.get('/api/website/orders', headers=self.COUNTER).status_code, 403)
+
+    def test_a_viewer_without_store_operations_access_gets_nothing_from_the_board(self):
+        plain = {'Authorization': 'Bearer viewer'}
+        self.assertEqual(self.board(plain)['stores'], [])
+        self.assertEqual(self.step(701, 'ready', headers=plain).status_code, 403)
+        self.assertEqual(self.code('K7R4MX', headers=plain).get_json(), {'found': False, 'why': 'other_store', 'store': 'DT'})
+        self.assertEqual(self.woo.status_writes, [])

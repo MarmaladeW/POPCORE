@@ -29,7 +29,8 @@ async def run(browser, width):
     fixture.setUp()
     contexts, board_bodies = [], []
 
-    async def open_as(role):
+    async def open_as(role, token=None):
+        token = token or role  # the server's sign-in: 'viewer:counter' is the viewer auth0|counter
         context = await browser.new_context(viewport={'width': width, 'height': 900})
         contexts.append(context)
         await context.add_init_script(
@@ -47,7 +48,8 @@ async def run(browser, width):
                 await route.continue_(); return
             body = route.request.post_data_json if route.request.post_data else None
             response = fixture.client.open(parsed.path + ('?' + parsed.query if parsed.query else ''),
-                                           method=route.request.method, headers=fixture.headers(role), json=body)
+                                           method=route.request.method, headers={'Authorization': f'Bearer {token}'},
+                                           json=body)
             if parsed.path == '/api/website/board':
                 board_bodies.append(response.get_data(as_text=True))
             await route.fulfill(status=response.status_code, body=response.data, content_type=response.content_type)
@@ -123,9 +125,31 @@ async def run(browser, width):
             for value in (*PRIVATE, 'Sammy', 'K7R4MX', 'ACD346', 'HJK777', 'MKP999'):
                 assert value not in body, value
 
+        # The store computer's account (owner, 2026-11-19): a 查看者 Viewer with DT store operations access and 库存查看.
+        with fixture.connect() as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (fixture.dt,))
+            con.execute("INSERT INTO inventory_viewers(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (fixture.dt,))
+        page = await open_as('viewer', 'viewer:counter')
+        await page.goto(BASE + '/web-orders')
+        await expect(page.get_by_role('region', name='Pickup · to pick').get_by_text('#720')).to_be_visible()
+        await expect(page.get_by_role('button', name='拣好了 Ready')).to_have_count(1)
+        if width > 600:  # the rail: 网站订单 and 库存, nothing that changes anything
+            rail = page.get_by_role('navigation', name='Primary navigation')
+            await expect(rail.get_by_role('link', name='网站订单 Web orders')).to_be_visible()
+            await expect(rail.get_by_role('link', name='库存 Inventory')).to_be_visible()
+            await expect(rail.get_by_role('link', name='买单 Checkout')).to_have_count(0)
+            await rail.get_by_role('link', name='库存 Inventory').click()
+        else:
+            await page.goto(BASE + '/stock')
+        await expect(page.get_by_role('heading', name='库存', exact=False).first).to_be_visible()
+        await expect(page.get_by_role('navigation', name='Inventory sections')).to_have_count(0)
+        await expect(page.get_by_text("You don't have permission", exact=False)).to_have_count(0)
+        await fits(page, f'counter-stock-{width}.png')
+
+        # A viewer without store operations access gets the board's notice and nothing else.
         page = await open_as('viewer')
         await page.goto(BASE + '/web-orders')
-        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        await expect(page.get_by_text('You have no 门店操作权限 Store operations access', exact=False)).to_be_visible()
     finally:
         for context in contexts:
             await context.close()
@@ -165,4 +189,4 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: web orders board columns, Ready, the code box with the first name, Handed over clearing it, '
           'nothing personal in the board data, a new order popping up, the notifications control and its service '
-          'worker, viewers kept out, at 390 and 1440 px')
+          'worker, a viewer counter account working the board and reading 库存 without tools, at 390 and 1440 px')

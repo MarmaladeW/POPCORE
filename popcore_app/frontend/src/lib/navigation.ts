@@ -2,7 +2,13 @@
 // Pages that left the menus keep their routes: /trades, /today.
 
 // inventory: 库存查看 at the selected store (always true for managers and admins).
-export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inventory: boolean }
+// operations: 门店操作权限 Store operations access at some store. A 查看者 Viewer with it is a counter account (owner,
+// 2026-11-19): 网站订单, and with 库存查看 the 库存 pages to look at, beside Products and the Dex; it changes nothing else.
+export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inventory: boolean; operations?: boolean }
+
+// What a viewer counter account looks at besides Products and the Dex.
+const counterItems = (access: NavAccess): NavItem[] =>
+  [...(access.operations ? [item.webOrders] : []), ...(access.inventory ? [item.stock] : [])]
 export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count' | 'web'
 export type NavItem = { key: string; zh: string; en: string; icon: NavIcon; note?: string }
 export type NavGroup = { label: string; items: NavItem[] }
@@ -38,6 +44,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
   if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock, item.webOrders)
   else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock, item.webOrders)
   else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock, item.webOrders)
+  else daily.push(...counterItems(access))
   const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
@@ -48,7 +55,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
 
 export function moreItems(access: NavAccess): NavItem[] {
   return [
-    ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock, item.webOrders] : []),
+    ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock, item.webOrders] : counterItems(access)),
     item.products,
     item.dex,
     ...(access.manager ? [item.sales, item.reports, item.website] : []),

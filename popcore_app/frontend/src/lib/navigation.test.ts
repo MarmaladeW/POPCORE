@@ -120,3 +120,14 @@ test('without 库存查看, 库存 becomes 晚盘 and 入店 leaves the menus', 
   assert.equal(activeSection('/goods/counts', false, false), '/stock/count')
   assert.deepEqual(bottomItems(unpicked, '/stock/count').map(entry => entry.zh), ['首页', '买单', '晚盘', '排班'])
 })
+
+test('a viewer counter account gets 网站订单 and 库存 to look at, beside Products and the Dex', () => {
+  // Owner, 2026-11-19: the store computer's account. 查看者 Viewer, with store operations access (and 库存查看).
+  const counter: NavAccess = { ...roles.viewer, operations: true, inventory: true }
+  assert.deepEqual(railGroups(counter)[0].items.map(entry => entry.zh), ['首页', '网站订单', '库存'])
+  assert.deepEqual(moreItems(counter).map(entry => entry.key), ['/web-orders', '/stock', '/products', '/dex'])
+  assert.deepEqual(railGroups({ ...counter, inventory: false })[0].items.map(entry => entry.key), ['/', '/web-orders'])
+  for (const key of ['/checkout', '/incoming', '/restock', '/summary', '/stock/count']) assert.ok(!rail(counter).includes(key), key)
+  // A viewer without store operations access sees neither.
+  assert.deepEqual(railGroups(roles.viewer)[0].items.map(entry => entry.key), ['/'])
+})

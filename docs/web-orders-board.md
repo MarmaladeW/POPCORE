@@ -8,10 +8,29 @@ replaced its pickup-code brief of 2026-11-16. Code: `website_board.py`, routes i
 
 ## Who sees what
 
-- Staff and above open it. Each user sees the orders of the stores they have **Users → Store operations access**
+- Anyone with a role opens it. Each user sees the orders of the stores they have **Users → Store operations access**
   for; with a store selected in the top bar, only that store's. A pickup belongs to its pickup store. Every delivery
   goes out of `WEBSITE_DELIVERY_STORE` (DT), so deliveries show on DT's board.
 - The page reads the board every 30 seconds, the sync's pace, without reloading.
+
+### The store computer's account
+
+Owner, 2026-11-19: "they can also check the products and stocks for names, stocks, and check the dex for prices, but
+they wont be able to edit anything from there." An admin makes it in 员工 Users:
+
+1. A new account, for example `dt-counter` named DT 柜台, with the role **查看者 Viewer**.
+2. **门店操作权限 Store operations access: DT.** This opens 网站订单 for DT, Ready and Handed over included.
+3. **库存查看 Inventory view: DT.** This opens 库存 (the overview, the series lists and All products) to look at.
+4. Optionally turn off its schedule listing, so it does not appear among the staff to schedule.
+
+What it can do: 网站订单 with its two buttons and notifications, 库存 to look at, 产品 Products and 图鉴 Dex (prices
+included) to look at, and 排班 Schedule to look at, as any viewer. What it cannot do: anything else. Every other change
+in POPCORE needs Staff or above on the server, store operations access included: a viewer posting a stock move is
+refused. The 库存 pages show their 入库, 调拨, 晚盘, 娃娃机, count and move buttons to staff only, and the menus give it no
+买单 Checkout, 入店, 补货, 汇总 or 晚盘.
+
+A viewer without store operations access gets an empty board and no 网站订单 in the menu. Notes on the website name the
+account ("Ready in popcore.store by DT 柜台"), so personal sign-ins remain the way to record who pressed.
 
 ## The board
 
