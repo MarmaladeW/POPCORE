@@ -91,9 +91,23 @@ async def open_as(browser, case, role, width, store='ALL'):
     return context, page
 
 
+WIDEST = '''() => [...document.querySelectorAll('body *')]
+  .map(el => ({el, r: el.getBoundingClientRect()}))
+  .filter(({r}) => r.width > 0 && r.right > innerWidth - 12)
+  .sort((a, b) => b.r.right - a.r.right).slice(0, 6)
+  .map(({el, r}) => `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)} right=${Math.round(r.right)}`)'''
+
+
+OPEN_POPUP = '''() => [...document.querySelectorAll('.ant-select-dropdown, .ant-picker-dropdown')]
+  .some(el => el.getBoundingClientRect().width > 0)'''
+
+
 async def fits(page, name):
     width = page.viewport_size['width']
-    assert await page.evaluate('document.documentElement.scrollWidth') <= width + 2, name
+    # A dropdown or date panel still closing can stick out for a moment on a slow runner (CI, 2026-11-20): measure the
+    # page once they are gone, and name what sticks out if it still does.
+    await page.wait_for_function(f'() => !({OPEN_POPUP})()')
+    assert await page.evaluate('document.documentElement.scrollWidth') <= width + 2, (name, await page.evaluate(WIDEST))
     await page.screenshot(path=OUT / name, full_page=True, animations='disabled')
 
 
