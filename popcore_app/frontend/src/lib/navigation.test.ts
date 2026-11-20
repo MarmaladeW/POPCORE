@@ -15,8 +15,8 @@ const unpicked: NavAccess = { ...roles.staff, inventory: false }
 const before: Record<string, string[]> = {
   viewer: ['/', '/schedule', '/products', '/dex'],
   staff: ['/', '/checkout', '/incoming', '/claw', '/summary', '/stock', '/restock', '/special-orders', '/today', '/trades', '/schedule', '/products', '/dex',
-    // 网站订单 Web orders came after the redesign (owner, 2026-11-19).
-    '/web-orders'],
+    // 网站订单 Web orders and 员工折扣 Staff discounts came after the redesign (owner, 2026-11-19).
+    '/web-orders', '/staff-discounts'],
 }
 before.manager = [...before.staff, '/sales', '/reports', '/website']
 before.admin = [...before.manager, '/users', '/settings']
@@ -48,14 +48,17 @@ test('every other page stays reachable from the rail, and on phone from the menu
 
 test('menus never offer a page above the role', () => {
   assert.ok(!rail(roles.viewer).includes('/checkout'))
+  assert.ok(!rail(roles.viewer).includes('/staff-discounts') && !phone(roles.viewer).includes('/staff-discounts'))
   assert.ok(!rail(roles.staff).includes('/sales'))
   assert.ok(!railGroups(roles.staff).flatMap(group => group.items).some(entry => entry.zh === '销售'))
   assert.ok(!rail(roles.manager).includes('/users'))
   assert.ok(!moreItems(roles.manager).some(entry => entry.key === '/settings'))
 })
 
-test('更多 lists 库存, 补货, 网站订单, 产品, 图鉴, 销售, 报表, 网站, 员工, 设置 in order, by role', () => {
-  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['库存', '补货', '网站订单', '产品', '图鉴', '销售', '报表', '网站', '员工', '设置'])
+test('更多 lists 库存, 补货, 网站订单, 产品, 图鉴, 销售, 员工折扣, 报表, 网站, 员工, 设置 in order, by role', () => {
+  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['库存', '补货', '网站订单', '产品', '图鉴', '销售', '员工折扣', '报表', '网站', '员工', '设置'])
+  // Staff find 员工折扣 after 网站订单; a manager finds it beside 销售.
+  assert.deepEqual(moreItems(roles.staff).map(entry => entry.zh), ['库存', '补货', '网站订单', '员工折扣', '产品', '图鉴'])
   assert.equal(moreItems(roles.admin).find(entry => entry.zh === '销售')?.key, '/summary')
   assert.deepEqual(moreItems(roles.viewer).map(entry => entry.key), ['/products', '/dex'])
 })
@@ -63,9 +66,9 @@ test('更多 lists 库存, 补货, 网站订单, 产品, 图鉴, 销售, 报表,
 test('rails follow the Figma groups', () => {
   assert.deepEqual(railGroups(roles.admin).map(group => group.label), ['日常', '查看', '计划与管理'])
   assert.deepEqual(railGroups(roles.staff).map(group => group.label), ['日常', '计划'])
-  assert.deepEqual(railGroups(roles.manager)[1].items.map(entry => entry.zh), ['销售', '报表', '网站'])
+  assert.deepEqual(railGroups(roles.manager)[1].items.map(entry => entry.zh), ['销售', '员工折扣', '报表', '网站'])
   assert.deepEqual(railGroups(roles.manager)[0].items.map(entry => entry.zh), ['首页', '买单', '入店', '库存', '补货', '网站订单'])
-  assert.deepEqual(railGroups(roles.staff)[0].items.map(entry => entry.zh), ['首页', '买单', '入店', '汇总', '库存', '补货', '网站订单'])
+  assert.deepEqual(railGroups(roles.staff)[0].items.map(entry => entry.zh), ['首页', '买单', '入店', '汇总', '库存', '补货', '网站订单', '员工折扣'])
 })
 
 test('the bottom bar promotes the open 更多 section before 排班', () => {
@@ -111,8 +114,8 @@ test('nested pages light up their section', () => {
 })
 
 test('without 库存查看, 库存 becomes 晚盘 and 入店 leaves the menus', () => {
-  assert.deepEqual(railGroups(unpicked)[0].items.map(entry => entry.zh), ['首页', '买单', '汇总', '晚盘', '补货', '网站订单'])
-  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/stock/count', '/restock', '/web-orders', '/products', '/dex'])
+  assert.deepEqual(railGroups(unpicked)[0].items.map(entry => entry.zh), ['首页', '买单', '汇总', '晚盘', '补货', '网站订单', '员工折扣'])
+  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/stock/count', '/restock', '/web-orders', '/staff-discounts', '/products', '/dex'])
   assert.deepEqual(homeShortcuts(unpicked).map(entry => entry.key), ['/checkout', '/stock/count', '/restock', '/summary'])
   const everywhere = [...rail(unpicked), ...phone(unpicked)]
   for (const key of ['/stock', '/incoming', '/claw']) assert.ok(!everywhere.includes(key), key)
