@@ -2123,6 +2123,8 @@ def _get_migrations():
         ('dex_listings',                               _migration_dex_listings),
         ('website_order_board',                        _migration_website_order_board),
         ('push_subscriptions',                         _migration_push_subscriptions),
+        ('employee_ranks',                             _migration_employee_ranks),
+        ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
     ]
 
 
@@ -2520,6 +2522,37 @@ def _migration_push_subscriptions(con, cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_push_subscriptions_sub ON push_subscriptions(auth0_sub)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscriptions')")
+
+
+def _migration_employee_ranks(con, cur):
+    # Ranks (owner, 2026-11-19): 店长, 副店长, 资深员工, 正式员工, 培训员工 (ranks.py). People already marked 培训中 become
+    # 培训员工 and those 转正 become 正式员工; 店长, 副店长 and 资深员工 are picked in Users.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(employees)')}
+    if 'rank' not in columns:
+        cur.execute("""ALTER TABLE employees ADD COLUMN rank TEXT CHECK (rank IS NULL OR rank IN
+                       ('store_manager', 'assistant_manager', 'senior', 'regular', 'trainee'))""")
+    cur.execute("UPDATE employees SET rank='trainee' WHERE rank IS NULL AND is_training=1")
+    cur.execute("UPDATE employees SET rank='regular' WHERE rank IS NULL AND regular_since IS NOT NULL")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('employee_ranks')")
+
+
+def _migration_shift_positions_back_and_markham(con, cur):
+    # Owner, 2026-11-19: the position "End" is now "Back", and Markham's shifts get positions too: Cashier and Sales.
+    import json as _json
+    cur.execute("UPDATE shifts SET position='Back' WHERE position='End'")
+    row = cur.execute("SELECT value FROM app_settings WHERE key='schedule_positions'").fetchone()
+    if row is not None:
+        try:
+            positions = _json.loads(row[0] or '{}')
+        except ValueError:
+            positions = None
+        if isinstance(positions, dict):
+            positions = {code: ['Back' if name == 'End' else name for name in names] if isinstance(names, list) else names
+                         for code, names in positions.items()}
+            positions.setdefault('MK', ['Cashier', 'Sales'])
+            cur.execute("UPDATE app_settings SET value=? WHERE key='schedule_positions'",
+                        (_json.dumps(positions, ensure_ascii=False),))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('shift_positions_back_and_markham')")
 
 
 def _migration_inventory_viewers(con, cur):
