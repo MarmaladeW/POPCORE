@@ -1,6 +1,8 @@
 import { Alert, Button, Input, InputNumber, Popconfirm, Skeleton, type InputRef } from 'antd'
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { getLossPage, searchLossProducts, type DamagedItem, type LossPage as Page, type LossProduct, type LossReason, type LossRecord } from '../../api/losses'
+import { getWatchList } from '../../api/watchList'
 import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
@@ -64,6 +66,7 @@ export default function LossPage() {
   return <div className="pc-loss">
     <PageHeader title="损耗" sub={phone ? undefined : `Loss${store?.name && storeCode ? ` · ${store.name}` : ''}`}
       back={phone ? { label:'库存', to:'/stock' } : undefined} />
+    <WatchListLink />
     {!storeCode ? <Alert type="info" showIcon message="Choose one store to record losses." />
       : loaded?.error ? <Alert type="error" showIcon message={loaded.error} action={<Button onClick={reload}>Retry</Button>} />
       : !data ? <Skeleton active paragraph={{ rows:5 }} />
@@ -77,6 +80,27 @@ export default function LossPage() {
         <Records records={data.records ?? []} month={month} onDone={reload} />
       </div>}
   </div>
+}
+
+// 可疑人员 Watch list, its own page for every role (owner, 2026-11-19: "in the 损耗 section, there can be a section where I
+// can upload images of stealers"). Managers reach it from here too, with how many records are open.
+function WatchListLink() {
+  const [open, setOpen] = useState<number>()
+  useEffect(() => {
+    const controller = new AbortController()
+    getWatchList(controller.signal)
+      .then(page => { if (!controller.signal.aborted && Array.isArray(page?.records)) setOpen(page.records.filter(record => record.status === 'open').length) })
+      .catch(() => undefined)
+    return () => controller.abort()
+  }, [])
+  return <Link to="/watch-list" className="pc-loss-watch">
+    <Icon name="eye" size={18} />
+    <span className="pc-row-main">
+      <strong>可疑人员 <small>Watch list</small></strong>
+      <small>{open !== undefined && <><i className={open ? 'pc-dot pc-dot-out' : 'pc-dot pc-dot-ok'} aria-hidden="true" /> {open} 未解决 open · </>}Photos and notes of people who stole from the stores</small>
+    </span>
+    <Icon name="right" size={14} />
+  </Link>
 }
 
 function RecordLoss({ storeCode, onSaved }:{ storeCode:string; onSaved:()=>void }) {

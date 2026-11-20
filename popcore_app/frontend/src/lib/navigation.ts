@@ -9,7 +9,7 @@ export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inve
 // What a viewer counter account looks at besides Products and the Dex.
 const counterItems = (access: NavAccess): NavItem[] =>
   [...(access.operations ? [item.webOrders] : []), ...(access.inventory ? [item.stock] : [])]
-export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count' | 'web'
+export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count' | 'web' | 'eye'
 export type NavItem = { key: string; zh: string; en: string; icon: NavIcon; note?: string }
 export type NavGroup = { label: string; items: NavItem[] }
 
@@ -24,6 +24,9 @@ const item = {
   restock: { key: '/restock', zh: '补货', en: 'Restock', icon: 'swap' },
   // The shop computer's pickup and delivery orders from popcore.ca (owner, 2026-11-19).
   webOrders: { key: '/web-orders', zh: '网站订单', en: 'Web orders', icon: 'web' },
+  // Photos and notes of people who stole from the stores (owner, 2026-11-19: "so everyone can recognize the people that
+  // stole from the store ... also something showing in the store computer"): every role, the counter account included.
+  watchList: { key: '/watch-list', zh: '可疑人员', en: 'Watch list', icon: 'eye' },
   // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs.
   sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
   reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '经理' },
@@ -45,6 +48,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
   else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock, item.webOrders)
   else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock, item.webOrders)
   else daily.push(...counterItems(access))
+  daily.push(item.watchList)
   const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
@@ -56,6 +60,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
 export function moreItems(access: NavAccess): NavItem[] {
   return [
     ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock, item.webOrders] : counterItems(access)),
+    item.watchList,
     item.products,
     item.dex,
     ...(access.manager ? [item.sales, item.reports, item.website] : []),
