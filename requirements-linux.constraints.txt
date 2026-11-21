@@ -3,7 +3,7 @@
 # Install with: python -m pip install -r requirements-dev.txt -c requirements-linux.constraints.txt
 APScheduler==3.11.3
 blinker==1.9.0
-certifi==2026.7.22
+certifi==2026.10.18
 cffi==2.1.1
 charset-normalizer==3.5.1
 click==8.5.0
