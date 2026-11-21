@@ -82,6 +82,27 @@ def normalize_design_name(value):
     return unicodedata.normalize('NFKC', ' '.join(value.split())).casefold()
 
 
+# Owner, 2026-11-09: the 记账名 can stay Chinese, the official name cannot. A design's name keeps the tags staff
+# write (隐藏 finds secrets in a report paste; 旧版 / 特别色 mark another Dex edition, owner 2026-11-17), and its
+# official name carries their English words instead.
+_EDITION_TAGS = (('旧版', 'Original'), ('特别色', 'Special Color'))
+
+
+def official_design_label(design):
+    """A design's name as its official name reads it: 隐藏 X → X (Secret), 旧版 X → X (Original),
+    特别色 X → X (Special Color), X异色 → X (Different Colour), full-width brackets → plain ones."""
+    label = ' '.join(design.replace('（', ' (').replace('）', ')').split()).replace('( ', '(')
+    if label.startswith('隐藏'):
+        label = label[len('隐藏'):].strip()
+        return label if 'secret' in label.casefold() else f'{label} (Secret)'.strip()
+    for tag, word in _EDITION_TAGS:
+        if label.startswith(tag):
+            return f'{label[len(tag):].strip()} ({word})'
+    if label.endswith('异色'):
+        return f"{label[:-len('异色')].strip()} (Different Colour)"
+    return label
+
+
 def product_alias_text_sql(alias='p'):
     """SQL for every saved alias of one product (legacy shop names kept by merges)."""
     return (f"COALESCE((SELECT group_concat(a.alias, ' ') FROM product_aliases a "
