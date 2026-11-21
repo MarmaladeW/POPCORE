@@ -502,8 +502,9 @@ def _record_opening(con, actor, store_id, location, members, entries):
     return outcome
 
 
-def _correct_stock(con, actor, store_id, location, members, entries, request_key):
-    """A live store: post the differences as one correction, kept as an approved count."""
+def _correct_stock(con, actor, store_id, location, members, entries, request_key, section_count_id=None):
+    """A live store: post the differences as one correction, kept as an approved count (and with the
+    分区盘点 section count it was entered for, if any)."""
     balances = {entry['product_id']: _balance(con, entry['product_id'], location['id'], 'saleable')
                 for entry in entries}
     if any(entry['balance_version'] is None for entry in entries):
@@ -554,6 +555,9 @@ def _correct_stock(con, actor, store_id, location, members, entries, request_key
              entry['quantity'], current['version']))
         results.append({'product_id': product['id'], 'quantity': entry['quantity'],
                         'previous_count': None, 'popcore_quantity': current['quantity']})
+    if section_count_id is not None:
+        from count_sections import link_save  # count_sections reads this module's helpers
+        link_save(con, section_count_id, location['id'], count_id, [entry['product_id'] for entry in entries])
     if lines:
         # Anyone who may count at a live store corrects it at once; managers look over the
         # differences afterwards instead of approving each count first (owner, 2026-10-27).
@@ -577,9 +581,13 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
     designs_checked = data.get('designs_checked')
     if designs_checked not in (None, True, False):
         raise InventoryValidationError('designs_checked must be true or false')
+    section_count_id = data.get('section_count_id')
+    if section_count_id is not None:
+        section_count_id = read_int(section_count_id, 'section_count_id', minimum=1)
     intent = {'store_code': (store_code or '').strip().upper(), 'location': (location_code or '').strip().lower(),
               'product_id': product_id, 'entries': entries, 'designs_checked': designs_checked,
-              **({'new_sealed_set': new_set} if new_set else {})}
+              **({'new_sealed_set': new_set} if new_set else {}),
+              **({'section_count_id': section_count_id} if section_count_id else {})}
     _begin(con)
     try:
         key, digest, prior = _replay(con, request_key, 'count_save', actor, intent)
@@ -588,6 +596,11 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             return prior
         scope = _scope(con, actor, store_code, location_code)
         location = scope['location']
+        if section_count_id is not None:
+            if not scope['live']:
+                raise InventoryValidationError('Section counts are for a live store', 'store_not_live')
+            from count_sections import open_count_for_save
+            open_count_for_save(con, section_count_id, scope['store']['id'])
         head, series_id = _family(con, product_id)
         if location['code'] in BOXES_ONLY and (new_set or any(
                 role == 'set' and product['id'] in {entry['product_id'] for entry in entries}
@@ -649,7 +662,7 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
                 'SELECT designs_checked_at FROM product_series WHERE id=?', (series_id,)).fetchone()[0]:
             raise InventoryValidationError('Check the designs are right before counting them', 'designs_unchecked')
         record = _correct_stock if scope['live'] else _record_opening
-        kwargs = {'request_key': key} if scope['live'] else {}
+        kwargs = {'request_key': key, 'section_count_id': section_count_id} if scope['live'] else {}
         # Only boxes per set was saved: no count to record, nor an empty one to keep at a live store.
         outcome = (record(con, actor, scope['store']['id'], location, members, entries, **kwargs)
                    if entries else {'results': []})

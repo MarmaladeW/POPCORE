@@ -2127,6 +2127,7 @@ def _get_migrations():
         ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
         ('watch_list',                                 _migration_watch_list),
         ('staff_discounts',                            _migration_staff_discounts),
+        ('count_sections',                             _migration_count_sections),
     ]
 
 
@@ -2632,6 +2633,70 @@ def _migration_staff_discounts(con, cur):
         created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('staff_discounts')")
+
+
+def _migration_count_sections(con, cur):
+    # 分区盘点 Section count (owner, 2026-11-20): a live store is counted one section every two weeks.
+    # count_section_parts puts each (kind, group) of lines in a section, and each kind's '*' part takes
+    # whatever no part names (a new IP), so every line lands in one section (count_sections.py). Sections
+    # left out of a saved layout are retired, not deleted, so their counts keep their name.
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_sections (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        name        TEXT    NOT NULL,
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        retired_at  TEXT,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_by  TEXT,
+        updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_section_parts (
+        store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        kind        TEXT    NOT NULL CHECK (kind IN ('display', 'blind_box', 'design', 'other')),
+        group_key   TEXT    NOT NULL,
+        section_id  INTEGER NOT NULL REFERENCES count_sections(id) ON DELETE CASCADE,
+        PRIMARY KEY (store_id, kind, group_key)
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_section_layouts (
+        store_id    INTEGER PRIMARY KEY REFERENCES stores(id) ON DELETE RESTRICT,
+        version     INTEGER NOT NULL DEFAULT 0,
+        updated_by  TEXT,
+        updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    # One count of one section: who counted (the manager enters), and the lines it covers, taken when it
+    # starts so the list stays put while the count corrects stock; lines found on the shelf are added.
+    cur.execute("""CREATE TABLE IF NOT EXISTS section_counts (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id            INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        section_id          INTEGER NOT NULL REFERENCES count_sections(id) ON DELETE RESTRICT,
+        section_name        TEXT    NOT NULL,
+        counter_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+        counter_name        TEXT    NOT NULL,
+        business_date       TEXT    NOT NULL,
+        started_by          TEXT    NOT NULL,
+        started_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+        finished_by         TEXT,
+        finished_at         TEXT
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_section_counts_open
+                   ON section_counts(section_id) WHERE finished_at IS NULL""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_section_counts_store ON section_counts(store_id, id)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS section_count_lines (
+        section_count_id INTEGER NOT NULL REFERENCES section_counts(id) ON DELETE CASCADE,
+        location_id      INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+        product_id       INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        card_product_id  INTEGER NOT NULL,
+        kind             TEXT    NOT NULL,
+        book_quantity    INTEGER NOT NULL,
+        added            INTEGER NOT NULL DEFAULT 0 CHECK (added IN (0, 1)),
+        PRIMARY KEY (section_count_id, location_id, product_id)
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS section_count_saves (
+        section_count_id   INTEGER NOT NULL REFERENCES section_counts(id) ON DELETE CASCADE,
+        inventory_count_id INTEGER NOT NULL UNIQUE REFERENCES inventory_counts(id) ON DELETE CASCADE,
+        PRIMARY KEY (section_count_id, inventory_count_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('count_sections')")
 
 
 def _migration_inventory_viewers(con, cur):
