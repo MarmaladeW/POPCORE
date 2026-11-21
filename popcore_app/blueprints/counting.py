@@ -2,6 +2,7 @@
 how much of a location is counted. See stock_counting.py."""
 from flask import Blueprint, jsonify, request
 
+import count_sections
 from auth import role_required
 from db import get_db
 from inventory_commands import InventoryError
@@ -61,3 +62,67 @@ def progress():
     args = request.args
     return _answer(lambda con: count_progress(
         con, request.jwt_payload, args.get('store_code'), args.get('location') or ''))
+
+
+# 分区盘点 Section count: the manager enters what the counter found, one section at a time
+# (owner, 2026-11-20). See count_sections.py.
+
+def _body():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+@bp.get('/api/counting/sections')
+@role_required('manager')
+def sections():
+    return _answer(lambda con: count_sections.sections_overview(con, request.jwt_payload, request.args.get('store_code')))
+
+
+@bp.get('/api/counting/sections/proposal')
+@role_required('manager')
+def sections_proposal():
+    return _answer(lambda con: count_sections.sections_proposal(con, request.jwt_payload, request.args.get('store_code')))
+
+
+@bp.put('/api/counting/sections')
+@role_required('manager')
+def save_sections():
+    body = _body()
+    return _answer(lambda con: count_sections.save_layout(con, request.jwt_payload, body.get('store_code'), body))
+
+
+@bp.get('/api/counting/counters')
+@role_required('manager')
+def counters():
+    return _answer(lambda con: count_sections.counters(con, request.jwt_payload, request.args.get('store_code')))
+
+
+@bp.get('/api/counting/section-counts')
+@role_required('manager')
+def section_count_history():
+    return _answer(lambda con: count_sections.history(con, request.jwt_payload, request.args.get('store_code')))
+
+
+@bp.post('/api/counting/section-counts')
+@role_required('manager')
+def start_section_count():
+    body = _body()
+    return _answer(lambda con: count_sections.start_count(con, request.jwt_payload, body.get('store_code'), body))
+
+
+@bp.get('/api/counting/section-counts/<int:section_count_id>')
+@role_required('manager')
+def section_count(section_count_id):
+    return _answer(lambda con: count_sections.count_view(con, request.jwt_payload, section_count_id))
+
+
+@bp.get('/api/counting/section-counts/<int:section_count_id>/summary')
+@role_required('manager')
+def section_count_summary(section_count_id):
+    return _answer(lambda con: count_sections.summary(con, request.jwt_payload, section_count_id))
+
+
+@bp.post('/api/counting/section-counts/<int:section_count_id>/finish')
+@role_required('manager')
+def finish_section_count(section_count_id):
+    return _answer(lambda con: count_sections.finish_count(con, request.jwt_payload, section_count_id))
