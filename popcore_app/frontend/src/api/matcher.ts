@@ -26,6 +26,8 @@ export interface BackendProduct {
   price: number
   ip_series: string
   product_type: string
+  // A design's own name (子项), which a pick shows first (owner, 2026-11-22).
+  design_name?: string | null
 }
 
 export interface BackendCandidate extends BackendProduct {
