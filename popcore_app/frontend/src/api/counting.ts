@@ -88,6 +88,8 @@ export async function saveCount(
   body: {
     store_code: string; location: string; product_id: number; entries: CountEntry[]; designs_checked?: boolean
     new_sealed_set?: { quantity: number; boxes_per_set: number }
+    // 分区盘点: the section count this card was entered for.
+    section_count_id?: number
   },
   key: string,
 ) {

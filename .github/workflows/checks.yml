@@ -88,6 +88,7 @@ jobs:
       - run: python popcore_app/tests/browser/check_design_labels.py
       - run: python popcore_app/tests/browser/check_series_worksheet.py
       - run: python popcore_app/tests/browser/check_stocktake.py
+      - run: python popcore_app/tests/browser/check_section_count.py
       - run: python popcore_app/tests/browser/check_report_stock.py
       - run: python popcore_app/tests/browser/check_website_sync.py
       - run: python popcore_app/tests/browser/check_web_orders.py

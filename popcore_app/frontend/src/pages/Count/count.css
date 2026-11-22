@@ -55,3 +55,75 @@
   .pc-count-card { padding: 12px; }
   .pc-count-input .ant-input-number { width: 84px; }
 }
+
+/* 分区盘点 Section count: the list of six sections, the editor and one section count. */
+.pc-count-sections-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 10px 14px; color: var(--text-primary); text-decoration: none; background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; }
+.pc-count-sections-link span:first-child { display: grid; }
+.pc-count-sections-link small { color: var(--text-secondary); font-size: 13px; }
+.pc-count-sections-link:hover { color: var(--text-primary); border-color: var(--line-strong); }
+.pc-sections-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; }
+.pc-sections-next > div { display: grid; gap: 2px; min-width: 0; }
+.pc-sections-next > div > small { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+/* Status is a dot plus text (tokens.css): green when on time, red once overdue. */
+.pc-sections-next > div > small::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--status-ok-dot); }
+.pc-sections-next.is-overdue > div > small::before { background: var(--status-out-ink); }
+.pc-sections-next > div > strong { font-size: 1.125rem; overflow-wrap: anywhere; }
+.pc-sections-next > div > span { color: var(--text-secondary); font-size: 13px; }
+.pc-sections-next.is-overdue > div > span { color: var(--status-out-ink); }
+.pc-sections-next .ant-btn, .pc-sections-next .pc-btn { min-height: 44px; }
+.pc-sections-list, .pc-sections-history, .pc-sections-names, .pc-sections-groups, .pc-sections-rows { display: grid; margin: 0; padding: 0; list-style: none; }
+.pc-sections-list li, .pc-sections-rows li { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 8px 0; }
+.pc-sections-list li + li, .pc-sections-history li + li, .pc-sections-groups li + li, .pc-sections-rows li + li { border-top: 1px solid var(--line-hair, #eceef1); }
+.pc-sections-list .ant-btn, .pc-sections-list .pc-btn { flex: none; min-height: 44px; }
+.pc-sections-lines { display: grid; flex: none; width: 52px; text-align: center; font-size: 1.125rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pc-sections-lines small { font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
+.pc-sections-history a { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; color: var(--text-primary); text-decoration: none; }
+.pc-sections-history a > span:first-child, .pc-sections-groups li > span, .pc-sections-rows li > span:first-child { display: grid; min-width: 0; }
+.pc-sections-history small, .pc-sections-groups small, .pc-sections-rows small { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.pc-sections-history a > span:last-child { flex: none; font-size: 12px; color: var(--text-tertiary); }
+.pc-sections-field { display: grid; gap: 6px; margin: 12px 0; }
+.pc-sections-field > span { font-size: 13px; color: var(--text-secondary); }
+.pc-sections-field .ant-select { width: 100%; }
+.pc-sections-editor { display: grid; gap: 14px; }
+.pc-sections-names li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.pc-sections-names .ant-input { min-height: 44px; }
+.pc-sections-size { flex: none; width: 48px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.pc-sections-size.is-uneven { color: var(--status-out-ink); font-weight: 600; }
+.pc-sections-new { grid-template-columns: 1fr minmax(0, 220px); align-items: center; }
+.pc-sections-groups li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; }
+.pc-sections-groups .ant-select { flex: none; width: min(220px, 50%); }
+.pc-sections-back.ant-btn { justify-self: start; min-height: 44px; }
+.pc-sections-progress { margin: 0; color: var(--text-secondary); font-size: 14px; }
+.pc-sections-progress strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.pc-sections-find { display: flex; gap: 8px; }
+.pc-sections-find .ant-select { flex: none; width: 140px; }
+.pc-sections-find .ant-input-affix-wrapper, .pc-sections-find .ant-select-selector { min-height: 44px; }
+.pc-sections-finish { position: sticky; bottom: 12px; }
+.pc-sections-summary { display: grid; gap: 10px; padding: 14px 16px; background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; }
+.pc-sections-summary p { margin: 0; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.pc-sections-summary p strong { color: var(--text-primary); }
+.pc-sections-summary dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.pc-sections-summary dl div { display: grid; gap: 2px; }
+.pc-sections-summary dt { font-size: 12px; color: var(--text-secondary); }
+.pc-sections-summary dd { margin: 0; font-size: 1.125rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pc-sections-summary .is-more, .pc-sections-figure em.is-more { color: var(--status-ok-ink); }
+.pc-sections-summary .is-less, .pc-sections-figure em.is-less { color: var(--status-out-ink); }
+.pc-sections-rows li { justify-content: space-between; min-height: 52px; }
+.pc-sections-figure { flex: none; font-variant-numeric: tabular-nums; }
+.pc-sections-figure em { margin-left: 8px; font-style: normal; font-weight: 600; }
+/* Inside a panel the section screens keep the panel's 16px sides. */
+.pc-sections .pc-panel > :not(.pc-panel-head) { margin-left: 16px; margin-right: 16px; }
+.pc-sections .pc-panel > .pc-count-quiet { margin-top: 10px; margin-bottom: 10px; }
+.pc-sections .pc-panel > :last-child:not(.pc-panel-head) { margin-bottom: 12px; }
+.pc-sections .pc-panel > .ant-alert, .pc-sections .pc-panel > .pc-count-results { margin-top: 12px; }
+.pc-sections-flags { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.pc-sections-flag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; color: var(--status-out-ink); }
+.pc-sections-flag::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pc-sections-flag.is-new { color: var(--status-restock-ink); }
+.pc-sections-suggest { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+.pc-sections-suggest .ant-btn { min-height: 40px; }
+@media (max-width: 480px) {
+  .pc-sections-summary dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pc-sections-new { grid-template-columns: 1fr; }
+  .pc-sections-find .ant-select { width: 120px; }
+}

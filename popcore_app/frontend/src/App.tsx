@@ -35,6 +35,8 @@ const GoodsPage=lazyPage(()=>import('./pages/Stock/Goods'))
 const RestockPage=lazyPage(()=>import('./pages/Restock'))
 const CountHub=lazyPage(()=>import('./pages/Stock/CountHub'))
 const CountPage=lazyPage(()=>import('./pages/Count'))
+const SectionsPage=lazyPage(()=>import('./pages/Count/Sections'))
+const SectionCountPage=lazyPage(()=>import('./pages/Count/SectionCount'))
 const ClawPage=lazyPage(()=>import('./pages/Stock/ClawPage'))
 const LossPage=lazyPage(()=>import('./pages/Stock/LossPage'))
 const ValuePage=lazyPage(()=>import('./pages/Stock/ValuePage'))
@@ -183,6 +185,8 @@ function AppInner() {
           <Route path="/stock/value" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<ValuePage />} />} />} />
           <Route path="/stock/count" element={<RoleRoute minRole="staff" element={<CountHub />} />} />
           <Route path="/count" element={<InventoryRoute element={<CountPage />} />} />
+          <Route path="/count/sections" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<SectionsPage />} />} />} />
+          <Route path="/count/sections/:id" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<SectionCountPage />} />} />} />
           <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
           <Route path="/products/series" element={<SeriesCatalogPage />} />
