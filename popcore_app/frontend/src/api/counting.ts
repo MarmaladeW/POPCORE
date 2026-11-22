@@ -4,7 +4,8 @@ import client from './client'
 export type CountRole = 'box' | 'item' | 'set' | 'design'
 export type CountForm = 'random_box' | 'ordinary' | 'sealed_set' | 'confirmed_design'
 
-export interface CountLocation { id: number; code: string; name: string; counted: number }
+// marked: open 待盘点 count-next-time marks at this place (count_marks.py).
+export interface CountLocation { id: number; code: string; name: string; counted: number; marked: number }
 export interface CountScope { store: { id: number; code: string; name: string }; live: boolean; locations: CountLocation[] }
 
 export interface CountResult {
@@ -40,6 +41,8 @@ export interface CountItem {
   other_stock?: Array<{ disposition: string; quantity: number }>
   // version: the saved count this card shows, so a save notices someone else's newer count.
   count?: { quantity: number; counted_at: string; counted_by: string; version: number }
+  // 待盘点: a manager marked this item to count here next time; saving a count of it closes the mark.
+  mark?: { id: number; reason: string; marked_by: string; marked_at: string }
 }
 
 export interface CountCard {

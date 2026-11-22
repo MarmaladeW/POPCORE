@@ -47,6 +47,7 @@ import hashlib
 import json
 import uuid
 
+import count_marks
 from catalog_identity import FORMS_TO_UNITS, CatalogConflict, update_product_identity
 from goods_operations import _balance
 from identity_sheet import SUGGESTED_IDENTITY
@@ -898,6 +899,10 @@ def open_notices(con, store_ids):
                         'floor': stock['floor'], 'upstairs': stock['upstairs'], 'stock': stock,
                         'where': row['detail'].split(',') if row['reason'] == 'move_short' and row['detail'] else [],
                         'updated_at': row['updated_at']})
+    # 待盘点: the product's open count-next-time marks here, and this notice's marks a count has closed.
+    marks = count_marks.notice_marks(con, notices)
+    for notice in notices:
+        notice.update(marks[notice['id']])
     return notices
 
 

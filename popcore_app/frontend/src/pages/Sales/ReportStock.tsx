@@ -9,6 +9,7 @@ import {
 import PageHeader from '../../components/pc/PageHeader'
 import { ListRow, Panel } from '../../components/pc/Panel'
 import { useAppStore } from '../../store'
+import { MarkForm, MarkedPlaces, markDay } from '../Count/CountMarks'
 import { dayTitle } from './SalesNav'
 import './reportStock.css'
 
@@ -17,6 +18,18 @@ function torontoTime(utc: string) {
   const time = new Date(`${utc.replace(' ', 'T')}Z`)
   return Number.isNaN(time.getTime()) ? utc
     : time.toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+// 下次盘点: where to count a notice's product. The place it was short, and upstairs or the warehouse when they
+// hold some (stock may have come down without a line, as Eevee at DT on 2026-11-20).
+function presetPlaces(row: ReportStockNotice) {
+  const short = row.reason === 'move_short' ? (row.where ?? []).filter(code => code in (row.stock ?? {})) : ['floor']
+  const back = ['upstairs', 'warehouse'].filter(code => (row.stock?.[code] ?? 0) > 0)
+  return [...new Set([...short, ...back])]
+}
+const presetReason = (row: ReportStockNotice) => {
+  const [, month, day] = row.business_date.split('-')
+  return `日报 ${Number(month)}/${Number(day)} ${reasonText[row.reason].zh} × ${row.quantity}`
 }
 
 // 日报库存核对: what a live store's daily report could not take off the floor, or may have taken
@@ -28,6 +41,7 @@ export default function ReportStockPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [attempt, setAttempt] = useState(0)
+  const [marking, setMarking] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -79,7 +93,7 @@ export default function ReportStockPage() {
                 const opened = (stock?.sets_opened ?? []).filter(row => row.sets > 0)
                 return `${stock?.taken ?? 0} taken off the floor${opened.length ? ` · ${opened.map(row => row.text).join('; ')}` : ''}`
               })}>再扣一次 Take off again</Button> : undefined}>
-            {rows.map(row => <ListRow key={row.id} label={reasonText[row.reason].zh}
+            {rows.map(row => <div key={row.id} className="pc-stock-notice"><ListRow label={reasonText[row.reason].zh}
               title={`${row.name}${row.sku ? ` (${row.sku})` : ''} × ${row.quantity}`}
               meta={[reasonText[row.reason].en,
                 ...(row.reason === 'move_short' && row.where?.length
@@ -89,13 +103,27 @@ export default function ReportStockPage() {
               trailing={<span className="pc-row-actions">
                 {row.reason === 'set_size_unknown' ? <Link className="pc-btn" to="/products">产品 Products</Link>
                   : <Link className="pc-btn" to={`/count?location=${row.where?.find(code => code in (row.stock ?? {})) ?? 'floor'}&product=${row.product_id}`}>盘点 Count</Link>}
+                {marking !== row.id && <Button size="small" onClick={() => setMarking(row.id)}>下次盘点 Count next time</Button>}
                 <Button size="small" loading={busy === `check:${row.id}`} disabled={!!busy && busy !== `check:${row.id}`}
                   aria-label={`Mark ${row.name} checked`}
                   onClick={() => run(`check:${row.id}`, async () => {
                     await checkReportStockNotice(row.id)
                     return `${row.name} checked`
                   })}>已核对 Checked</Button>
-              </span>} />)}
+              </span>} />
+              {(row.marks?.length || row.counted_marks?.length || marking === row.id) ? <div className="pc-stock-notice-marks">
+                {row.counted_marks?.map(mark => <p key={mark.id} className="pc-stock-notice-counted">
+                  <span className="pc-mark-flag is-done">已点 Counted {whereText(mark.place)}</span>
+                  <small>{mark.closed_by} {mark.closed_at ? markDay(mark.closed_at) : ''} · 看过再按 已核对 Check it, then press 已核对</small>
+                </p>)}
+                <MarkedPlaces marks={row.marks ?? []} nameOf={code => whereText(code)} onRemoved={() => setAttempt(value => value + 1)} />
+                {marking === row.id && <MarkForm storeCode={storeCode} productId={row.product_id} productName={row.name}
+                  sealedSet={row.unit === 'set'} preset={presetPlaces(row)} reason={presetReason(row)} noticeId={row.id}
+                  marked={(row.marks ?? []).map(mark => mark.place)} nameOf={code => whereText(code)}
+                  onCancel={() => setMarking(0)}
+                  onMarked={() => { setMarking(0); message.success(`${row.name} 待盘点 · marked to count next time`); setAttempt(value => value + 1) }} />}
+              </div> : null}
+            </div>)}
           </Panel>
         })}
       </>}

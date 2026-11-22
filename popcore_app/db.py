@@ -2129,6 +2129,7 @@ def _get_migrations():
         ('staff_discounts',                            _migration_staff_discounts),
         ('display_in_new_goods',                       _migration_display_in_new_goods),
         ('count_sections',                             _migration_count_sections),
+        ('count_marks',                                _migration_count_marks),
     ]
 
 
@@ -2698,6 +2699,36 @@ def _migration_count_sections(con, cur):
         PRIMARY KEY (section_count_id, inventory_count_id)
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('count_sections')")
+
+
+def _migration_count_marks(con, cur):
+    # 待盘点 Count next time (owner, 2026-11-22: "mark the eevee as need to be counted next time we count"): a manager
+    # marks a product at one place of a store; it shows first at that store's next count and closes by itself when a
+    # saved count there covers it (count_marks.py). One open mark per product and place; closed marks are kept.
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_marks (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id     INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        location_id  INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+        product_id   INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        reason       TEXT    NOT NULL,
+        source_type  TEXT    CHECK (source_type IN ('report_stock_issue')),
+        source_id    INTEGER,
+        marked_by    TEXT    NOT NULL,
+        marked_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        status       TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'counted', 'removed')),
+        closed_by    TEXT,
+        closed_at    TEXT,
+        count_id     INTEGER REFERENCES inventory_counts(id) ON DELETE SET NULL
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_count_marks_open
+                   ON count_marks(location_id, product_id) WHERE status='open'""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_count_marks_store ON count_marks(store_id, status)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_count_marks_source ON count_marks(source_type, source_id)')
+    # A section count that starts takes the store's open marks into its lines, from any section.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(section_count_lines)')}
+    if 'mark_id' not in columns:
+        cur.execute('ALTER TABLE section_count_lines ADD COLUMN mark_id INTEGER REFERENCES count_marks(id) ON DELETE SET NULL')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('count_marks')")
 
 
 def _migration_display_in_new_goods(con, cur):

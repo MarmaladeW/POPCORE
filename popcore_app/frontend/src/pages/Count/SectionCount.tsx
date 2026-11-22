@@ -10,7 +10,9 @@ import {
   type SectionCountSummary, type SectionCountView, type SummaryRow,
 } from '../../api/countSections'
 import { CountCardPanel } from './index'
-import { linesText, nextCard, placeName, shortDay } from './sectionsView'
+import { linesText, marksLine, nextCard, orderedCards, placeName, shortDay } from './sectionsView'
+import { MarkFlag } from './CountMarks'
+import type { SectionCountCard, SectionCountPlace } from '../../api/countSections'
 import '../Stock/seriesInventory.css'
 import './count.css'
 
@@ -62,6 +64,9 @@ export default function SectionCountPage() {
   }
 
   const title = view?.section.name ?? '分区盘点'
+  const marked = view ? orderedCards(view).filter(entry => entry.card.marks?.length) : []
+  const openCard = (place: SectionCountPlace, card: SectionCountCard) =>
+    setOpen({ placeId: place.id, place: place.code, productId: card.product_id, roles: card.roles })
   return <div className="pc-count pc-sections">
     <PageHeader title={title} sub={view ? `${view.counter} counting · ${shortDay(view.business_date)}` : 'Section count'}
       back={open ? undefined : { label: '分区', to: '/count/sections' }} />
@@ -78,17 +83,32 @@ export default function SectionCountPage() {
         <p className="pc-sections-progress" aria-live="polite">
           <strong>已点 {view.counted} / {view.lines}</strong> lines · {view.counter} counts, you enter
         </p>
-        {view.places.map(place => <Panel key={place.id} zh={placeName(place.code, place.name)}
-          count={`${place.cards.reduce((sum, card) => sum + card.counted, 0)}/${place.cards.reduce((sum, card) => sum + card.lines, 0)}`}
+        {marked.length > 0 && <Panel zh="待盘点" en="Count next time" label="Count next time"
+          count={`${marked.filter(entry => entry.card.marks.every(mark => mark.counted)).length}/${marked.length}`}
+          tone={marked.every(entry => entry.card.marks.every(mark => mark.counted)) ? 'ok' : 'warn'}>
+          <p className="pc-count-quiet">经理标记要点的，不分分区 · Marked by a manager to count, from any section.</p>
+          <ul className="pc-count-results">
+            {marked.map(({ place, card }) => <li key={`${place.id}:${card.product_id}`}>
+              <button type="button" onClick={() => openCard(place, card)}>
+                <InventoryPhoto filename={card.image} name={card.title} />
+                <span className="pc-count-result-text"><strong>{card.title}</strong>
+                  <small><MarkFlag>{placeName(place.code, place.name)}</MarkFlag></small><small>{marksLine(card)}</small></span>
+                <CardDone card={card} />
+              </button>
+            </li>)}
+          </ul>
+        </Panel>}
+        {view.places.map(place => ({ place, cards: place.cards.filter(card => !card.marks?.length) }))
+          .filter(({ cards }) => cards.length).map(({ place, cards }) => <Panel key={place.id} zh={placeName(place.code, place.name)}
+          count={`${cards.reduce((sum, card) => sum + card.counted, 0)}/${cards.reduce((sum, card) => sum + card.lines, 0)}`}
           tone="ok" label={placeName(place.code, place.name)}>
           <ul className="pc-count-results">
-            {place.cards.map(card => <li key={card.product_id}>
-              <button type="button" onClick={() => setOpen({ placeId: place.id, place: place.code, productId: card.product_id, roles: card.roles })}>
+            {cards.map(card => <li key={card.product_id}>
+              <button type="button" onClick={() => openCard(place, card)}>
                 <InventoryPhoto filename={card.image} name={card.title} />
                 <span className="pc-count-result-text"><strong>{card.title}</strong>
                   <small>{[card.sku, card.added ? '架上找到 Found on the shelf' : null].filter(Boolean).join(' · ')}</small></span>
-                <span className={`pc-count-done${card.counted >= card.lines ? ' is-done' : ''}`}>
-                  {card.counted >= card.lines ? '已点 Done' : card.counted ? `${card.counted}/${card.lines}` : '未点'}</span>
+                <CardDone card={card} />
               </button>
             </li>)}
           </ul>
@@ -99,6 +119,11 @@ export default function SectionCountPage() {
         </div>
       </>}
   </div>
+}
+
+function CardDone({ card }: { card: SectionCountCard }) {
+  return <span className={`pc-count-done${card.counted >= card.lines ? ' is-done' : ''}`}>
+    {card.counted >= card.lines ? '已点 Done' : card.counted ? `${card.counted}/${card.lines}` : '未点'}</span>
 }
 
 // Something on the shelf the list does not have (POPCORE shows none there): search it and count it here.
@@ -168,7 +193,8 @@ function SummaryRows({ zh, en, rows, empty }: { zh: string; en: string; rows: Su
   return <Panel zh={zh} en={en} count={rows.length} tone={zh === '差异' && rows.length ? 'warn' : 'ok'} label={en}>
     {!rows.length ? <p className="pc-count-quiet">{empty}</p> : <ul className="pc-sections-rows">
       {rows.map(row => <li key={`${row.place}:${row.product_id}`}>
-        <span><strong>{row.name}</strong><small>{[row.sku, placeName(row.place, row.place_name), row.added ? 'found on the shelf' : null,
+        <span><strong>{row.name}</strong><small>{[row.sku, placeName(row.place, row.place_name), row.marked ? '待盘点 marked' : null,
+          row.added ? 'found on the shelf' : null,
           row.entered_by ? `entered by ${row.entered_by}` : null].filter(Boolean).join(' · ')}</small></span>
         <span className="pc-sections-figure">{row.counted == null ? `POPCORE ${row.expected}` : `${row.expected} → ${row.counted}`}
           {row.difference ? <em className={row.difference > 0 ? 'is-more' : 'is-less'}>{row.difference > 0 ? '+' : ''}{row.difference}</em> : null}

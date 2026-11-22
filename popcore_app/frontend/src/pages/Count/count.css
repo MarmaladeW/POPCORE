@@ -4,6 +4,15 @@
 .pc-count-places button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; font: inherit; color: var(--text-primary); background: var(--surface-default); border: 1px solid var(--line-hair, #eceef1); border-radius: 8px; cursor: pointer; }
 .pc-count-places button.is-on { color: var(--text-on-ink); background: var(--surface-ink); border-color: var(--surface-ink); }
 .pc-count-places small { color: inherit; opacity: .75; font-variant-numeric: tabular-nums; }
+/* 待盘点 marks at a place: the amber dot and how many, on the place button. */
+.pc-count-place-marks { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pc-count-place-marks::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--status-restock-dot); }
+.pc-count-marked { display: grid; gap: 8px; }
+.pc-count-marked h2 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 1rem; }
+.pc-count-marked h2::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--status-restock-dot); }
+.pc-count-marked h2 small { font-size: 13px; font-weight: 400; color: var(--text-secondary); }
+.pc-count-field label small.pc-count-field-mark { color: var(--status-restock-ink); overflow-wrap: anywhere; }
+.pc-count-field-mark .pc-mark-flag { vertical-align: baseline; }
 .pc-count-mode { margin: 0; font-size: 13px; color: var(--text-secondary); }
 .pc-count-mode.is-live { color: var(--status-restock-ink); }
 .pc-count-search.ant-input-affix-wrapper { min-height: 48px; font-size: 16px; }

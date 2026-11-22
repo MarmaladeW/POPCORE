@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CountSection, SectionCountView } from '../../api/countSections'
 import {
-  draftFrom, draftFromProposal, dueLabel, groupsLine, lastCounted, moveGroup, nextCard, onlyRoles, orderSections,
-  sectionOfGroup, setTakesNew, takesNew,
+  draftFrom, draftFromProposal, dueLabel, groupsLine, lastCounted, marksLine, moveGroup, nextCard, onlyRoles, orderedCards,
+  orderSections, sectionOfGroup, setTakesNew, takesNew,
 } from './sectionsView.ts'
 
 const section = (id: number, extra: Partial<CountSection> = {}): CountSection => ({
@@ -43,6 +43,23 @@ test('next goes to the next card not yet counted, then back to the ones before',
   assert.deepEqual([nextCard(view, 1, 12)?.place.id, nextCard(view, 1, 12)?.card.product_id], [2, 10])
   assert.deepEqual([nextCard(view, 2, 10)?.place.id, nextCard(view, 2, 10)?.card.product_id], [1, 10])
   assert.equal(nextCard(view, null, null)?.card.product_id, 10)
+})
+
+test('待盘点 marked cards come first, from any place, and Next goes through them before the rest', () => {
+  const mark = (name: string, reason: string) => ({ product_id: 99, name, reason, counted: false })
+  const card = (id: number, marks: ReturnType<typeof mark>[] = []) =>
+    ({ product_id: id, title: `Card ${id}`, sku: null, image: null, lines: 1, counted: 0, added: false, roles: null, marks })
+  const view = { places: [
+    { id: 1, code: 'floor', name: 'Floor', cards: [card(10), card(11, [mark('Eevee', '日报 11/20 楼下不够 × 1')])] },
+    { id: 2, code: 'upstairs', name: 'Upstairs', cards: [card(20, [mark('Card 20', 'Shelf looked short')]), card(21)] },
+  ] } as unknown as SectionCountView
+  assert.deepEqual(orderedCards(view).map(entry => [entry.place.id, entry.card.product_id]), [[1, 11], [2, 20], [1, 10], [2, 21]])
+  assert.equal(nextCard(view, null, null)?.card.product_id, 11)
+  assert.equal(nextCard(view, 1, 11)?.card.product_id, 20)
+  assert.equal(nextCard(view, 2, 20)?.card.product_id, 10)
+  // The marked item is named when it is not the card itself (a design of a blind box).
+  assert.equal(marksLine(view.places[0].cards[1]), 'Eevee: 日报 11/20 楼下不够 × 1')
+  assert.equal(marksLine(view.places[1].cards[0]), 'Shelf looked short')
 })
 
 test('a card shows only the items its section enters', () => {

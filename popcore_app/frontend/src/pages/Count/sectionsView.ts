@@ -1,6 +1,6 @@
 // 分区盘点 Section count: what the screens show, kept apart so it can be tested without a browser.
 import type {
-  CountSection, NextUp, SectionCountView, SectionKind, SectionPart, SectionsProposal,
+  CountSection, NextUp, SectionCountCard, SectionCountView, SectionKind, SectionPart, SectionsProposal,
 } from '../../api/countSections'
 import type { CountRole } from '../../api/counting'
 
@@ -44,9 +44,21 @@ export function groupsLine(section: CountSection, shown = 4) {
   return unique.slice(0, shown).join(' · ') + (unique.length > shown ? ` +${unique.length - shown}` : '')
 }
 
+// The cards in the order the screen lists them: the 待盘点 marked ones first, then place by place.
+export function orderedCards(view: SectionCountView) {
+  const cards = view.places.flatMap(place => place.cards.map(card => ({ place, card })))
+  return [...cards.filter(entry => entry.card.marks?.length), ...cards.filter(entry => !entry.card.marks?.length)]
+}
+
+// A marked card's line: which item and why (the card's own title is not repeated).
+export function marksLine(card: SectionCountCard) {
+  return (card.marks ?? []).map(mark => mark.name && mark.name !== card.title ? `${mark.name}: ${mark.reason}` : mark.reason)
+    .join(' · ')
+}
+
 // The next card still to count after the one just counted, in list order; then any before it.
 export function nextCard(view: SectionCountView, placeId: number | null, productId: number | null) {
-  const cards = view.places.flatMap(place => place.cards.map(card => ({ place, card })))
+  const cards = orderedCards(view)
   const at = cards.findIndex(entry => entry.place.id === placeId && entry.card.product_id === productId)
   const after = [...cards.slice(at + 1), ...cards.slice(0, Math.max(at, 0))]
   return after.find(entry => entry.card.counted < entry.card.lines && !(entry.place.id === placeId && entry.card.product_id === productId)) ?? null

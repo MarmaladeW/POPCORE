@@ -12,6 +12,8 @@ import {
   type CountScope, type SavedCard,
 } from '../../api/counting'
 import { onlyRoles } from './sectionsView'
+import { getCountMarks, type CountMark } from '../../api/countMarks'
+import { MarkFlag, markNote } from './CountMarks'
 import '../Stock/seriesInventory.css'
 import './count.css'
 
@@ -120,6 +122,8 @@ export default function CountPage() {
           {scope.locations.map(item => <button key={item.code} type="button" aria-pressed={item.code === location}
             className={item.code === location ? 'is-on' : ''} onClick={() => { setQuery(''); go({ location: item.code }) }}>
             {placeName(item.code, item.name)}{!scope.live && <small>{item.counted}</small>}
+            {item.marked > 0 && <span className="pc-count-place-marks" title="待盘点 Count next time"
+              aria-label={`${item.marked} 待盘点 to count next time`}>{item.marked}</span>}
           </button>)}
         </nav>
         <p className={`pc-count-mode${scope.live ? ' is-live' : ''}`}>
@@ -134,6 +138,8 @@ export default function CountPage() {
           ? <CountCardPanel key={`${location}:${productId}`} storeCode={storeCode} location={location} productId={productId}
               live={scope.live} refreshScope={() => setScopeVersion(n => n + 1)} onNext={next} />
           : location && <>
+            {here && here.marked > 0 && <MarkedHere storeCode={storeCode} location={location} placeLabel={placeName(here.code, here.name)}
+              onOpen={product => { setQuery(''); go({ product }) }} />}
             <Input ref={searchBox} autoFocus allowClear value={query} className="pc-count-search"
               aria-label="Search or scan a product" placeholder="搜索名称 / 记账名 / SKU，或扫码 Search or scan"
               onChange={event => setQuery(event.target.value)}
@@ -162,6 +168,35 @@ export default function CountPage() {
           </>}
       </>}
   </div>
+}
+
+// 待盘点 Count next time (owner, 2026-11-22): what a manager marked to count at this place, first, above the search.
+function MarkedHere({ storeCode, location, placeLabel, onOpen }: {
+  storeCode: string; location: string; placeLabel: string; onOpen: (product: number) => void
+}) {
+  const [marks, setMarks] = useState<CountMark[] | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    const controller = new AbortController()
+    getCountMarks(storeCode, undefined, controller.signal).then(found => setMarks(found.filter(mark => mark.place === location)))
+      .catch(cause => { if (!controller.signal.aborted) setError(messageOf(cause, 'Unable to load what is marked to count.')) })
+    return () => controller.abort()
+  }, [storeCode, location])
+  if (error) return <Alert type="error" showIcon message={error} />
+  if (!marks) return <Skeleton active title={false} paragraph={{ rows: 1 }} />
+  if (!marks.length) return null
+  return <section className="pc-count-marked" aria-labelledby="pc-count-marked-head">
+    <h2 id="pc-count-marked-head">待盘点 <small>Count next time · {placeLabel}</small></h2>
+    <ul className="pc-count-results">
+      {marks.map(mark => <li key={mark.id}>
+        <button type="button" onClick={() => onOpen(mark.product_id)}>
+          <InventoryPhoto filename={mark.image} name={mark.name} />
+          <span className="pc-count-result-text"><strong>{mark.name}</strong>
+            <small>{[mark.sku, markNote(mark)].filter(Boolean).join(' · ')}</small></span>
+        </button>
+      </li>)}
+    </ul>
+  </section>
 }
 
 function ProgressPanel({ storeCode, location, counted, onOpen }: { storeCode: string; location: string; counted: number; onOpen: (product: number) => void }) {
@@ -484,6 +519,7 @@ function CountField({ item, label, unit, note, value, onChange, disabled, action
     <label htmlFor={`count-${item.product_id}`}>
       <span>{label}</span>
       {note && <small>{note}</small>}
+      {item.mark && <small className="pc-count-field-mark"><MarkFlag /> {item.mark.reason}</small>}
       {item.count && <small>已点 {item.count.quantity} · {item.count.counted_by} {localTime(item.count.counted_at)}</small>}
       {item.other_stock && <small>另有 {item.other_stock.map(other => `${SET_ASIDE[other.disposition] || other.disposition} ${other.quantity}`).join(' · ')}: not part of this count</small>}
     </label>
