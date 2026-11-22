@@ -125,6 +125,9 @@ def website_actor():
 
 # ── Settings and the WooCommerce REST API ───────────────────────────────────
 
+STAGING_WEBSITE_HOST = 'staging.popcore.ca'  # the only website POPCORE staging may talk to
+
+
 def config():
     """Website settings from the environment, or None when no website key is set."""
     url = os.environ.get('WEBSITE_URL', '').strip().rstrip('/')
@@ -137,6 +140,10 @@ def config():
     if (parts.scheme not in ('https', 'http') or (parts.scheme == 'http' and not loopback)
             or parts.username or parts.password or parts.query or parts.fragment):
         raise ValueError('WEBSITE_URL must be the https address of the website')
+    # Staging runs on a copy of live data with the sync switched on, so it may only ever write to the
+    # test copy of the website (popcore-work#50).
+    if os.environ.get('APP_ENV', '').strip() == 'staging' and (parts.scheme, parts.hostname) != ('https', STAGING_WEBSITE_HOST):
+        raise ValueError(f'On staging, WEBSITE_URL must be https://{STAGING_WEBSITE_HOST}')
     keep_back = os.environ.get('WEBSITE_KEEP_BACK', '0').strip() or '0'
     if not keep_back.isdigit():
         raise ValueError('WEBSITE_KEEP_BACK must be a whole number')

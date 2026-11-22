@@ -802,6 +802,19 @@ class WebsiteSyncTests(WebsiteCase):
             with self.assertRaises(ValueError):
                 website_sync.config()
 
+    def test_staging_talks_only_to_the_test_copy_of_the_website(self):
+        """POPCORE staging runs on live data with the sync on: it must never write to popcore.ca."""
+        base = {'WEBSITE_KEY': 'ck_test', 'WEBSITE_SECRET': 'cs_test', 'APP_ENV': 'staging'}
+        for url in ('https://popcore.ca', 'https://www.popcore.ca', 'http://staging.popcore.ca',
+                    'https://staging.popcore.ca.example.test', 'https://shop.test'):
+            with patch.dict('os.environ', {**base, 'WEBSITE_URL': url}):
+                with self.assertRaises(ValueError, msg=url):
+                    website_sync.config()
+        with patch.dict('os.environ', {**base, 'WEBSITE_URL': 'https://staging.popcore.ca/'}):
+            self.assertEqual(website_sync.config()['url'], 'https://staging.popcore.ca')
+        with patch.dict('os.environ', {**base, 'APP_ENV': 'production', 'WEBSITE_URL': 'https://popcore.ca'}):
+            self.assertEqual(website_sync.config()['url'], 'https://popcore.ca')
+
     def test_a_refused_key_is_reported(self):
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.woo.refuse = True
