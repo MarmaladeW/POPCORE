@@ -245,7 +245,7 @@ export default function CoveragePanel({
                       aria-label={`${presentation.statusLabel}: ${name}`}
                     />
                     <span className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{name}</span>
-                    {isRegularOn(p.regular_since, dayjs().format('YYYY-MM-DD')) && <RegularMark since={p.regular_since} />}
+                    {isRegularOn(p.regular_since, dayjs().format('YYYY-MM-DD')) && <RegularMark since={p.regular_since} rank={p.rank} />}
                     {!!p.is_training && <TrainingMark />}
                   </label>
                 </li>

@@ -201,6 +201,14 @@ async def monthly_hours(browser, case, width):
 
 
 async def calendar_marks(browser, case):
+    # 转正 shows the rank (owner, 2026-11-22): Xiao Nan is 店长, working the same hours as Jessi on Oct 28.
+    with closing(case.connect()) as con:
+        nan = con.execute("""INSERT INTO employees(auth0_id,name,color,regular_since,is_training,rank)
+                             VALUES ('auth0|xiaonan','Xiao Nan','#2DBC9C','2026-09-01',0,'store_manager')""").lastrowid
+        con.execute('INSERT INTO employee_stores(employee_id,store_id) VALUES (?,?)', (nan, case.store_id))
+        con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id,position)
+                       VALUES (?,'2026-10-28','12:00','20:00','fixture',?,'')""", (nan, case.store_id))
+        con.commit()
     context, page = await open_as(browser, case, 'manager', 1440, store='DT')
     try:
         await page.goto(BASE + '/schedule')
@@ -211,12 +219,20 @@ async def calendar_marks(browser, case):
         await expect(before).to_have_count(1)
         await expect(before.locator('.pc-regular-mark')).to_have_count(0)
         await expect(after.locator('.pc-regular-mark')).to_have_count(1)
-        await expect(after).to_have_attribute('aria-label', re.compile('转正 Regular'))
+        await expect(after.locator('.pc-regular-mark')).to_have_text('正')
+        await expect(after).to_have_attribute('aria-label', re.compile('正式员工 Regular staff'))
+        # The 店长 shows 长 and comes first among shifts with the same hours, before Jessi; Amy's shorter shift is last.
+        oct28 = calendar.locator('td[data-date="2026-10-28"] .pc-shift-bar')
+        await expect(oct28.locator('.pc-shift-name')).to_have_text(['Xiao Nan', 'Jessi', 'Amy'])
+        nan = oct28.filter(has_text='Xiao Nan')
+        await expect(nan.locator('.pc-regular-mark-store_manager')).to_have_text('长')
+        await expect(nan).to_have_attribute('aria-label', re.compile('店长 Store manager'))
+        await expect(page.locator('button', has=page.locator('.pc-regular-mark-store_manager')).filter(has_text='Xiao Nan')).to_have_count(1)
         amy = calendar.locator('td[data-date="2026-10-28"] .pc-shift-bar').filter(has_text='Amy')
         await expect(amy.locator('.pc-regular-mark')).to_have_count(0)
         await expect(amy.locator('.pc-training-mark')).to_have_count(1)
         await expect(amy).to_have_attribute('aria-label', re.compile('培训中 Training'))
-        await expect(page.get_by_text('转正 Regular (from their 转正 date)')).to_be_attached()
+        await expect(page.get_by_text('店长 · 副店长 · 资深员工 · 正式员工 (from their 转正 date)')).to_be_attached()
         await expect(page.locator('span.flex', has=page.locator('.pc-training-mark')).filter(has_text='培训中 In training')).to_be_attached()
         await expect(page.get_by_role('tab', name='实习生 Trainees')).to_have_count(0)
         await page.screenshot(path=OUT / 'calendar-1440.png', full_page=True, animations='disabled')
@@ -349,6 +365,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: 正 follows the 转正 date and 训 the 培训中 status in the calendar and monthly report; the report '
+    print('PASS: the rank (长 副 资 正) follows the 转正 date and 训 the 培训中 status in the calendar, 店长 first among shifts with the same hours, and monthly report; the report '
           'lists only people with hours; each name opens hours by shift and week that add up to it; a removed '
           "person's shift names them; 员工 is a list plus detail with one status, at 1440 and 390.")
