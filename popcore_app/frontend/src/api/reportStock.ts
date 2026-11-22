@@ -1,4 +1,5 @@
 import client from './client'
+import type { CountMark } from './countMarks'
 
 // A live store's daily report takes its sales off the floor; what it could not, or may have taken
 // twice, waits here for a manager or admin (owner, 2026-10-29).
@@ -9,6 +10,8 @@ export interface ReportStockNotice {
   counted_at: string | null; floor: number; upstairs: number; updated_at: string
   // move_short: where the line was short ('not_counted' when the product was never counted), and stock there now.
   where?: string[]; stock?: Record<string, number>
+  // 待盘点: the product's open count-next-time marks at this store, and this notice's marks a count has closed.
+  marks?: CountMark[]; counted_marks?: CountMark[]
 }
 // One stock line of a report (出库入店, 入店, 出店, 卖display, 拆display, 入display, 娃娃机; owner, 2026-11-03;
 // 入库, 出库, 出店入库, 出display入店 since 2026-11-13): what it moves now (negative: put back after a

@@ -12,6 +12,7 @@ import {
   KIND_NAMES, KINDS, draftFrom, draftFromProposal, dueLabel, groupsLine, lastCounted, linesText, moveGroup, orderSections,
   sectionOfGroup, setTakesNew, shortDay, takesNew, type DraftSection,
 } from './sectionsView'
+import { MarkFlag } from './CountMarks'
 import './count.css'
 
 // 分区盘点 Section count (owner, 2026-11-20): one section every two weeks, round the whole store; an
@@ -69,6 +70,8 @@ export default function SectionsPage() {
             ? <Link className="pc-btn pc-btn-ink" to={`/count/sections/${nextSection.open_count.id}`}>继续 Continue</Link>
             : <Button type="primary" onClick={() => setStarting(nextSection)}>开始 Start</Button>}
         </section>}
+        {overview.marks > 0 && <p className="pc-count-quiet"><MarkFlag>{overview.marks}</MarkFlag>{' '}
+          下一次分区盘点会先点 · The next section count you start lists {overview.marks === 1 ? 'it' : 'them'} first, from any section.</p>}
         <Panel zh="分区" en={`Sections · ${overview.lines} lines`} count={overview.sections.length} tone="ok" label="Sections"
           action={<Button size="small" onClick={() => setDraft(draftFrom(overview.sections))}>编辑分区 Edit</Button>}>
           {overview.outside > 0 && <Alert type="warning" showIcon

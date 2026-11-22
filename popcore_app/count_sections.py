@@ -14,7 +14,8 @@ default (owner, 2026-11-20).
 
 Counting itself is 盘点's card (stock_counting.py): a save that names a section count is linked to
 it, and the section count's list of lines is taken when it starts, so it stays put while the count
-corrects stock."""
+corrects stock. A count that starts also takes every open 待盘点 count-next-time mark of its store
+(count_marks.py), whatever section the product is in, and lists those cards first."""
 import re
 from collections import Counter, defaultdict
 from datetime import date, timedelta
@@ -325,8 +326,12 @@ def sections_overview(con, actor, store_code):
         lines, catalog = _lines(con, store_id)
         described, total, loose = _describe(con, store_id, lines, sections, parts, catalog)
         groups = Counter((line['kind'], line['group'], line['group_name']) for line in lines)
+        marks = con.execute("SELECT COUNT(*) FROM count_marks WHERE store_id=? AND status='open'",
+                            (store_id,)).fetchone()[0]
         return {'store': scope['store'], 'version': version, 'sections': described, 'lines': total + loose,
                 'outside': loose, 'next_up': _due(described, business_date()), 'cycle_days': CYCLE_DAYS,
+                # 待盘点 count-next-time marks: the next section count that starts takes them all.
+                'marks': marks,
                 # Every (kind, group) with lines now, biggest first: what the editor places in sections.
                 'groups': [{'kind': kind, 'group_key': key, 'name': name, 'lines': count}
                            for (kind, key, name), count in sorted(
@@ -467,6 +472,7 @@ def start_count(con, actor, store_code, data):
         _, parts, _ = _layout(con, store_id)
         lines, catalog = _lines(con, store_id)
         mine = [line for line in lines if section_of(parts, line['kind'], line['group']) == section_id]
+        _add_marks(con, store_id, lines, mine, catalog)
         count_id = con.execute(
             """INSERT INTO section_counts(store_id, section_id, section_name, counter_employee_id, counter_name,
                                           business_date, started_by) VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -474,15 +480,43 @@ def start_count(con, actor, store_code, data):
              actor['sub'])).lastrowid
         con.executemany(
             """INSERT INTO section_count_lines(section_count_id, location_id, product_id, card_product_id, kind,
-                                               book_quantity) VALUES (?, ?, ?, ?, ?, ?)""",
+                                               book_quantity, mark_id) VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [(count_id, line['location_id'], line['product_id'], catalog.opens(line['card']), line['kind'],
-              line['quantity']) for line in mine])
+              line['quantity'], line.get('mark_id')) for line in mine])
         con.commit()
     except Exception:
         if con.in_transaction:
             con.rollback()
         raise
     return count_view(con, actor, count_id)
+
+
+def _add_marks(con, store_id, lines, mine, catalog):
+    """待盘点: the store's open marks join the section count's lines, also from another section, and also where
+    POPCORE shows nothing (the count is how that gets checked)."""
+    every = {(line['location_id'], line['product_id']): line for line in lines}
+    held = {(line['location_id'], line['product_id']): line for line in mine}
+    for row in con.execute(
+            """SELECT m.id, m.location_id, m.product_id, l.code, l.name FROM count_marks m
+               JOIN inventory_locations l ON l.id=m.location_id
+               WHERE m.store_id=? AND m.status='open' AND l.is_active=1 ORDER BY m.id""", (store_id,)).fetchall():
+        key = (row['location_id'], row['product_id'])
+        if key in held:
+            held[key]['mark_id'] = row['id']
+            continue
+        product = catalog.products.get(row['product_id'])
+        if product is None:
+            continue
+        line = dict(every[key]) if key in every else None
+        if line is None:
+            balance = con.execute("""SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?
+                                     AND disposition='saleable'""", key[::-1]).fetchone()
+            line = {'product_id': row['product_id'], 'quantity': balance[0] if balance else 0,
+                    'location_id': row['location_id'], 'place': row['code'], 'place_name': row['name'],
+                    'kind': kind_of(row['code'], product), 'card': catalog.card_of(row['product_id'])}
+        line['mark_id'] = row['id']
+        mine.append(line)
+        held[key] = line
 
 
 def _counted(con, section_count_id):
@@ -511,18 +545,27 @@ def count_view(con, actor, section_count_id):
         counted = _counted(con, record['id'])
         cards = {}
         for row in con.execute(
-                f"""SELECT line.*, {LABEL_SQL} AS label, p.sku
+                f"""SELECT line.*, {LABEL_SQL} AS label, p.sku, m.reason AS mark_reason,
+                           (SELECT COALESCE(NULLIF(mp.design_name, ''), NULLIF(mp.jizhanming, ''),
+                                            NULLIF(mp.name_cn_en, ''), mp.sku)
+                            FROM products mp WHERE mp.id=line.product_id) AS marked_name
                     FROM section_count_lines line JOIN products p ON p.id=line.card_product_id
+                    LEFT JOIN count_marks m ON m.id=line.mark_id
                     WHERE line.section_count_id=? ORDER BY line.location_id, label COLLATE NOCASE""",
                 (record['id'],)):
             key = (row['location_id'], row['card_product_id'])
             card = cards.setdefault(key, {'product_id': row['card_product_id'], 'title': row['label'],
                                           'sku': row['sku'], 'lines': 0, 'counted': 0, 'kinds': set(), 'added': False,
-                                          'image': None})
+                                          'image': None, 'marks': []})
             card['lines'] += 1
             card['kinds'].add(row['kind'])
             card['added'] = card['added'] or bool(row['added'])
             card['counted'] += (row['location_id'], row['product_id']) in counted
+            if row['mark_id']:
+                # 待盘点: which item of the card was marked, and why; the card is listed first.
+                card['marks'].append({'product_id': row['product_id'], 'name': row['marked_name'],
+                                      'reason': row['mark_reason'],
+                                      'counted': (row['location_id'], row['product_id']) in counted})
         by_place = defaultdict(list)
         for (location_id, _), card in cards.items():
             place = places.get(location_id) or {'id': location_id, 'code': '', 'name': ''}
@@ -600,7 +643,7 @@ def _summary(con, record, scope):
         place = places.get(line['location_id']) or {'code': '', 'name': ''}
         row = {'product_id': line['product_id'], 'card_product_id': line['card_product_id'], 'sku': line['sku'],
                'name': line['label'], 'place': place['code'], 'place_name': place['name'],
-               'added': bool(line['added']), 'price': line['price']}
+               'added': bool(line['added']), 'marked': bool(line['mark_id']), 'price': line['price']}
         if found:
             difference = found['observed_quantity'] - found['expected_quantity']
             row.update({'expected': found['expected_quantity'], 'counted': found['observed_quantity'],

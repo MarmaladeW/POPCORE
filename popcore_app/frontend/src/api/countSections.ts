@@ -36,6 +36,8 @@ export interface SectionsOverview {
   // Every (kind, group) with stock now, biggest first.
   groups: Array<{ kind: SectionKind; group_key: string; name: string; lines: number }>
   today: string
+  // Open 待盘点 count-next-time marks of the store: the next section count that starts lists them first.
+  marks: number
 }
 
 export interface ProposedSection { name: string; parts: SectionPart[]; lines: number; groups: string[] }
@@ -51,7 +53,10 @@ export interface SectionCountCard {
   added: boolean
   // The card items this section enters here; null: all of them (on display).
   roles: CountRole[] | null
+  // 待盘点: items of this card a manager marked to count here, also from another section (listed first).
+  marks: SectionCardMark[]
 }
+export interface SectionCardMark { product_id: number; name: string; reason: string; counted: boolean }
 export interface SectionCountPlace { id: number; code: string; name: string; cards: SectionCountCard[] }
 
 export interface SectionCountView {
@@ -77,6 +82,8 @@ export interface SummaryRow {
   place: string
   place_name: string
   added: boolean
+  // A 待盘点 count-next-time line.
+  marked: boolean
   price: number | null
   expected: number
   counted: number | null

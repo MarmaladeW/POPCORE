@@ -9,6 +9,7 @@ counts exactly like count sheets, so going live stays one deliberate, reviewed s
 (owner, 2026-10-27). Each such count is kept as an approved inventory count, so a manager
 can look over the differences afterwards.
 """
+import count_marks
 from catalog_identity import (
     FORMS_TO_UNITS, normalize_design_name, product_alias_text_sql, update_product_identity,
 )
@@ -195,8 +196,13 @@ def count_scope(con, actor, store_code):
         counted = {} if scope['live'] else {row[0]: row[1] for row in con.execute(
             'SELECT location_id, COUNT(*) FROM opening_counts oc JOIN inventory_locations l ON l.id=oc.location_id '
             'WHERE l.store_id=? GROUP BY location_id', (scope['store']['id'],))}
+        # 待盘点: open count-next-time marks per place (count_marks.py).
+        marked = {row[0]: row[1] for row in con.execute(
+            "SELECT location_id, COUNT(*) FROM count_marks WHERE store_id=? AND status='open' GROUP BY location_id",
+            (scope['store']['id'],))}
         return {'store': scope['store'], 'live': scope['live'],
-                'locations': [{**location, 'counted': counted.get(location['id'], 0)}
+                'locations': [{**location, 'counted': counted.get(location['id'], 0),
+                               'marked': marked.get(location['id'], 0)}
                               for location in scope['locations']]}
     return _read(con, work)
 
@@ -303,6 +309,7 @@ def count_card(con, actor, store_code, location_code, product_id):
                              (series_id,)).fetchone() if series_id is not None else None
         names = _names(con, [count['counted_by'] for count in saved.values()]
                        + [series['designs_checked_by'] if series else None])
+        marked = {row['product_id']: row for row in count_marks.open_marks(con, scope['store']['id'], location['id'])}
         items = []
         for role, product, boxes_per_set in members:
             item = {
@@ -313,6 +320,10 @@ def count_card(con, actor, store_code, location_code, product_id):
             }
             if boxes_per_set is not None:
                 item['boxes_per_set'] = boxes_per_set
+            if product['id'] in marked:
+                found = marked[product['id']]
+                item['mark'] = {'id': found['id'], 'reason': found['reason'], 'marked_by': found['marked_by'],
+                                'marked_at': found['marked_at']}
             if role == 'box' and members is not everything and _set_size(everything):
                 item['set_size'] = _set_size(everything)
             if product['identity_status'] != 'verified':
@@ -483,6 +494,7 @@ def _record_opening(con, actor, store_id, location, members, entries):
         results.append({'product_id': product['id'], 'quantity': entry['quantity'],
                         'previous_count': previous['quantity'] if previous else None,
                         'popcore_quantity': (legacy[0] if legacy else 0) if compared else None})
+    count_marks.close_counted(con, actor, location['id'], [entry['product_id'] for entry in entries])
     outcome = {'results': results}
     head = next((product for role, product, _ in members.values() if role == 'box'), None)
     if column and boxed and head is not None:
@@ -558,6 +570,8 @@ def _correct_stock(con, actor, store_id, location, members, entries, request_key
     if section_count_id is not None:
         from count_sections import link_save  # count_sections reads this module's helpers
         link_save(con, section_count_id, location['id'], count_id, [entry['product_id'] for entry in entries])
+    # A saved count covers what it counted here: those are no longer 待盘点 (count_marks.py).
+    count_marks.close_counted(con, actor, location['id'], [entry['product_id'] for entry in entries], count_id)
     if lines:
         # Anyone who may count at a live store corrects it at once; managers look over the
         # differences afterwards instead of approving each count first (owner, 2026-10-27).

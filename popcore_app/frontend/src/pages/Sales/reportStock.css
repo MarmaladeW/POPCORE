@@ -1,7 +1,13 @@
 /* 日报库存核对: panels stack with the page gap; row actions wrap under the text on a phone. */
 .pc-report-stock { display: grid; gap: 16px; }
 .pc-report-stock .pc-row-actions { display: flex; flex: none; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+/* 待盘点 under a notice: the marks, what a count closed, the mark form; lined up with the notice's text. */
+.pc-report-stock .pc-stock-notice + .pc-stock-notice { border-top: 1px solid var(--line-hair); }
+.pc-stock-notice-marks { display: grid; gap: 6px; padding: 0 16px 12px 78px; }
+.pc-stock-notice-counted { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; margin: 0; min-height: 36px; }
+.pc-stock-notice-counted small { color: var(--text-secondary); font-size: 12px; }
 @media (max-width: 600px) {
+  .pc-stock-notice-marks { padding-left: 16px; }
   .pc-report-stock .pc-row { flex-wrap: wrap; }
   .pc-report-stock .pc-row-actions { width: 100%; justify-content: flex-start; }
 }

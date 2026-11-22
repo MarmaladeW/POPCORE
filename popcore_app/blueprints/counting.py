@@ -2,6 +2,7 @@
 how much of a location is counted. See stock_counting.py."""
 from flask import Blueprint, jsonify, request
 
+import count_marks
 import count_sections
 from auth import role_required
 from db import get_db
@@ -126,3 +127,27 @@ def section_count_summary(section_count_id):
 @role_required('manager')
 def finish_section_count(section_count_id):
     return _answer(lambda con: count_sections.finish_count(con, request.jwt_payload, section_count_id))
+
+
+# 待盘点 Count next time (owner, 2026-11-22): a manager marks a product at a place to count next time; the
+# next count there shows it first and closes it. See count_marks.py.
+
+@bp.get('/api/counting/marks')
+@role_required('staff')
+def marks():
+    args = request.args
+    return _answer(lambda con: count_marks.list_marks(con, request.jwt_payload, args.get('store_code'),
+                                                      args.get('product_id')))
+
+
+@bp.post('/api/counting/marks')
+@role_required('manager')
+def add_mark():
+    body = _body()
+    return _answer(lambda con: count_marks.mark(con, request.jwt_payload, body))
+
+
+@bp.post('/api/counting/marks/<int:mark_id>/remove')
+@role_required('manager')
+def remove_mark(mark_id):
+    return _answer(lambda con: count_marks.remove(con, request.jwt_payload, mark_id))
