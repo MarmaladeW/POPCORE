@@ -1,7 +1,8 @@
 """popcore.ca takes its stock from POPCORE (owner, 2026-10-25 and 2026-11-01): website items are
 linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07), the live stores'
 shelves set the website number, paid web orders take their items
-out of the filling store's floor first (owner, 2026-11-19), then upstairs, and stay out of its closing, a cancel puts them back,
+out of the pickup store (owner, 2026-11-22) or, for a delivery, DT first (owner, 2026-11-19), the floor
+first, then upstairs, and stay out of its closing, a cancel puts them back,
 and nothing is written to the website before an admin turns the sync on. Since 2026-11-10 POPCORE
 also writes the regular prices of linked boxes, Whole Sets and items, never sale prices; big or doubtful
 changes wait for a manager's OK, and Daily Shop products wait for the reset. A design gets only a price a
@@ -508,44 +509,65 @@ class WebsiteSyncTests(WebsiteCase):
         self.run_sync()
         self.assertEqual((self.order_row(503)['state'], self.order_row(503)['store_id']), ('recorded', self.dt))
 
-    def test_dt_is_taken_from_first_then_the_other_live_stores(self):
-        """Owner, 2026-11-19: "the first place to deduct from should always be dt, as we ship our product from
-        downtown." With MK live, an MK pickup still comes off DT first; only what DT lacks comes from MK."""
+    def test_a_pickup_comes_off_its_own_store_first_and_a_delivery_off_dt(self):
+        """Owner, 2026-11-22: "for markham pickup they come off markham floor." A pickup comes off its pickup store
+        (floor, then upstairs or the warehouse), then DT. A delivery still comes off DT first (owner, 2026-11-19:
+        "we ship our product from downtown"), then the other live stores."""
         mk, mk_locations = self.open_mk(5)
+        self.post('receipt', self.box, mk_locations['warehouse'], 2, 'box')
         self.turn_on()
 
-        def mk_floor():
+        def mk_balance(code):
             with closing(self.connect()) as con:
-                return con.execute("""SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?
-                                      AND disposition='saleable'""", (self.box, mk_locations['floor'])).fetchone()[0]
+                row = con.execute("""SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?
+                                     AND disposition='saleable'""", (self.box, mk_locations[code])).fetchone()
+                return row[0] if row else 0
 
         def dt_and_mk():
-            return self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'), mk_floor()
+            return ((self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs')),
+                    (mk_balance('floor'), mk_balance('warehouse')))
 
-        self.woo.order(509, [(11, 3)], pickup='mk')
+        self.assertEqual(dt_and_mk(), ((10, 4), (5, 2)))
+        # A delivery: DT's floor (10), then DT's upstairs (2), though MK has boxes.
+        self.woo.order(509, [(11, 12)])
         self.run_sync()
         self.assertEqual((self.order_row(509)['state'], self.order_row(509)['store_id']), ('recorded', self.dt))
-        self.assertEqual(dt_and_mk(), (7, 4, 5))
-        # 13 boxes: DT's floor (7), then DT's upstairs (4), then 2 from MK's floor.
-        self.woo.order(510, [(11, 13)])
+        self.assertEqual(dt_and_mk(), ((0, 2), (5, 2)))
+        # What DT lacks comes from MK's floor.
+        self.woo.order(510, [(11, 3)])
         self.run_sync()
         self.assertEqual((self.order_row(510)['state'], self.order_row(510)['store_id']), ('recorded', self.dt))
-        self.assertEqual(dt_and_mk(), (0, 0, 3))
-        # DT has none left: an MK pickup comes from MK, and the order's store is MK.
-        self.woo.order(511, [(11, 1)], pickup='mk')
+        self.assertEqual(dt_and_mk(), ((0, 0), (4, 2)))
+        # An MK pickup comes off MK's floor, though DT has boxes again.
+        self.post('receipt', self.box, self.locations['floor'], 2, 'box')
+        self.woo.order(511, [(11, 3)], pickup='mk')
         self.run_sync()
         self.assertEqual((self.order_row(511)['state'], self.order_row(511)['store_id']), ('recorded', mk))
-        self.assertEqual(dt_and_mk(), (0, 0, 2))
+        self.assertEqual(dt_and_mk(), ((2, 0), (1, 2)))
+        # MK's floor (1), then MK's warehouse (2), then what MK lacks from DT's floor (1).
+        self.woo.order(512, [(11, 4)], pickup='mk')
+        self.run_sync()
+        self.assertEqual((self.order_row(512)['state'], self.order_row(512)['store_id']), ('recorded', mk))
+        self.assertEqual(dt_and_mk(), ((1, 0), (0, 0)))
         orders = {row['wc_order_id']: row for row in
                   self.client.get('/api/website/orders', headers=self.headers('manager')).get_json()['orders']}
-        self.assertEqual({number: orders[number]['store_codes'] for number in (509, 510, 511)},
-                         {509: ['DT'], 510: ['DT', 'MK'], 511: ['MK']})
+        self.assertEqual({number: orders[number]['store_codes'] for number in (509, 510, 511, 512)},
+                         {509: ['DT'], 510: ['DT', 'MK'], 511: ['MK'], 512: ['MK', 'DT']})
         # A cancel puts every box back where it came from, in both stores.
-        self.woo.orders[510].update(status='cancelled', date_modified_gmt=_ago(0))
+        self.woo.orders[512].update(status='cancelled', date_modified_gmt=_ago(0))
         self.run_sync()
         self.assertIsNone(self.state('last_error'))
-        self.assertEqual(self.order_row(510)['state'], 'cancelled')
-        self.assertEqual(dt_and_mk(), (7, 4, 4))
+        self.assertEqual(self.order_row(512)['state'], 'cancelled')
+        self.assertEqual(dt_and_mk(), ((2, 0), (1, 2)))
+
+    def test_a_pickup_at_a_store_with_none_of_it_waits_at_that_store(self):
+        """An MK pickup that no live store can fill waits for a manager as MK's order."""
+        mk, _ = self.open_mk(1)
+        self.turn_on()
+        self.woo.order(513, [(11, 20)], pickup='mk')
+        self.run_sync()
+        order = self.order_row(513)
+        self.assertEqual((order['state'], order['problem'], order['store_id']), ('needs_review', 'not_enough_stock', mk))
 
     def test_order_lines_show_the_name_staff_know(self):
         """Owner, 2026-11-19: show the 记账名, or the official name when there is none, not just the POPCORE ID."""
