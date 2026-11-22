@@ -10,7 +10,7 @@ from report_stock import LINE_SECTIONS, PACKED_SECTIONS, _set_for_box, _stock_pr
 
 SECTION_LABELS = {
     'pos': '卡机', 'cash': '随手记', 'refill': '出库入店', 'stock_in': '入店', 'stock_out': '出店',
-    'display_sold': '卖display', 'break_display': '拆display', 'display_stock_in': '入display',
+    'display_sold': '卖display', 'break_display': '拆display', 'display_stock_in': '出库入display',
     'claw_prize': '娃娃机', 'store_transfer': '出库', 'claw_stock_in': '入娃娃机',
     'back_in': '入库', 'transfer_out': '出库', 'floor_to_back': '出店入库', 'display_to_floor': '出display入店',
 }
@@ -123,17 +123,32 @@ def text_checks(boundaries, items, unknown_items, handled=()):
     return out
 
 
-def repeated_display_checks(blocks, items):
-    """A 卖display section left out because every line in it repeats a sale already marked (display) (MK Nov 6,
-    DT and MK Nov 8): saying it explicitly, by its lines, so it is never a silent change."""
+def repeated_display_checks(items):
+    """卖display lines left out because each repeats a sale already marked (display) (MK Nov 6, DT and MK Nov 8,
+    DT Nov 20–21), one check per 卖display heading naming the left-out lines and the sales they repeat, so it is
+    never a silent change. `items` are the left-out rows, each with `repeats`: the lines of those sales."""
+    blocks = defaultdict(list)
+    for item in items:
+        blocks[item['display_block']].append(item)
     out = []
-    for block in blocks:
-        lines = [item['line'] for item in items if item.get('display_block') == block]
-        out.append(_check('check', [block, *lines], f'这段 卖display 的 {len(lines)} 行，销售里都已标（display）：已不算，'
-                                                    '陈列只减一次。如果确实是另外从 display 卖的，先在销售里补上那笔销售。'
-                                                    'Every line repeats a (display) sale: left out, so display is '
-                                                    'taken once.', 'display_sold'))
+    for block, rows in blocks.items():
+        lines = sorted({row['line'] for row in rows})
+        sales = {line for row in rows for line in row.get('repeats', [])}
+        out.append(_check('check', [block, *lines, *sales],
+                          f'卖display 这 {len(lines)} 行，销售里已经标了（display）：已不算，陈列只减一次。'
+                          '如果确实另外又从 display 卖了一个，在销售里把那一笔也标上（display）。'
+                          f'{len(lines)} 卖display line(s) repeat a sale marked (display): left out, so display is '
+                          'taken once.', 'display_sold'))
     return out
+
+
+def old_display_in_check(lines):
+    """A day saved while 入display still meant upstairs → display (before 2026-11-22): read again, it keeps that
+    reading, so what it moved is not put back and added a second time as new goods."""
+    return _check('check', lines, '这天保存的时候，入display 还是按 楼上 → display 读的：再贴也照旧读，不会移两次。'
+                                  '新到的货直接放上 display，写成「入店：X*1（display）」。This day was saved when 入display '
+                                  'meant upstairs → display, so it keeps that reading. Write new pieces onto display as '
+                                  '入店 X*1 (display).', 'display_stock_in')
 
 
 def old_reading_check(lines, since):

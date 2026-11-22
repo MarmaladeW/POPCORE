@@ -61,7 +61,8 @@ async def flow(browser, viewport):
         await page.screenshot(path=OUT / f'review-{viewport["width"]}.png')
         await page.get_by_role('tab', name='Review', exact=False).click()
         await page.get_by_role('tabpanel', name='Review', exact=False).get_by_role('combobox').last.fill('Other')
-        await page.get_by_text('Other Product (TEST-2)', exact=True).click()
+        # A searched product shows its SKU first and its whole name below (owner, 2026-11-22).
+        await page.locator('.ant-select-item-option').filter(has_text='Other Product').filter(has_text='TEST-2').click()
         assert not any(r['path'] == '/api/products/aliases' for r in state['requests'])
         await expect(submit).to_be_enabled()
         await submit.click()
@@ -456,6 +457,61 @@ async def repeat_and_opened_set_flow(browser, viewport):
         await context.close()
 
 
+LILY = {'id': 11, 'sku': 'SA0123-05', 'jizhanming': 'SA复活节2018 Easter Lily', 'price': 1599,
+        'name_cn_en': 'Sonny Angel Easter Series 2018 Blind Box Figures Easter Lily', 'design_name': 'Easter Lily'}
+BUNNY = {**LILY, 'id': 12, 'sku': 'SA0123-02', 'jizhanming': 'SA复活节2018 Easter Bunny',
+         'name_cn_en': 'Sonny Angel Easter Series 2018 Blind Box Figures Easter Bunny', 'design_name': 'Easter Bunny'}
+
+
+async def pick_box_flow(browser, viewport):
+    """The pick box leads with the design and SKU, and its list shows every name in full (owner, 2026-11-22: a box
+    cut "Sonny Angel Easter Series 20…" short and the wrong Easter design was picked)."""
+    row = {**ITEM, 'raw_name': 'SA Easter Series 2018-Easter Rabbit', 'score': 99, 'line': 3, 'product': LILY,
+           'candidates': [{**LILY, 'score': 99}, {**BUNNY, 'score': 90}]}
+
+    def payload(path, query, request):
+        if path == '/api/sales/parse_report':
+            return {**api_payload(path, query, request), 'confirmed': [], 'review': [row], 'cash_total_reported': None,
+                    'cash_expected_reported': None, 'employee_discounts': [], 'display_sales': [], 'claw_prizes': []}
+        return api_payload(path, query, request)
+
+    state = {'api_payload': payload}
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    try:
+        await page.goto(BASE + '/sales')
+        await page.locator('textarea').fill('2026.11.21 DT\n卡机汇总：\nSA Easter Series 2018-Easter Rabbit*1')
+        await page.get_by_role('button', name='Parse Report', exact=True).click()
+        await page.get_by_role('tab', name='Review', exact=False).click()
+        panel = page.get_by_role('tabpanel', name='Review', exact=False)
+        shown = panel.locator('.ant-select-selection-item').first
+        await expect(shown).to_have_text(re.compile(r'^Easter Lily · SA0123-05 · '))
+        # The design and SKU fit in the box itself, before anything is cut off.
+        assert await shown.evaluate("""el => {
+            const range = document.createRange(); range.setStart(el.firstChild, 0);
+            range.setEnd(el.firstChild, 'Easter Lily · SA0123-05'.length);
+            return range.getBoundingClientRect().right <= el.getBoundingClientRect().right + 1 }""")
+        await panel.locator('.ant-select').filter(has=page.get_by_role('combobox', name='SA Easter Series 2018-Easter Rabbit 候选匹配')).click()
+        options = page.locator('.ant-select-dropdown:visible .ant-select-item-option')
+        await expect(options).to_have_count(2)
+        for product in (LILY, BUNNY):
+            option = options.filter(has_text=product['sku'])
+            await expect(option).to_contain_text(product['design_name'])
+            await expect(option).to_contain_text(product['name_cn_en'])
+            # Wrapped, never cut off.
+            assert await option.evaluate('el => el.scrollWidth <= el.clientWidth + 1'), product['sku']
+        await page.wait_for_timeout(300)
+        await page.screenshot(path=OUT / f'pick-box-{viewport["width"]}.png')
+        await options.filter(has_text='SA0123-02').click()
+        await expect(shown).to_have_text(re.compile(r'^Easter Bunny · SA0123-02 · '))
+        assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 2')
+    except Exception:
+        await page.screenshot(path=OUT / 'pick-box-failure.png', full_page=True)
+        raise
+    finally:
+        await context.close()
+
+
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / 'vite.log').open('w') as log:
@@ -477,6 +533,7 @@ async def main():
                         await live_stock_lines_flow(browser, size)
                         await sent_and_left_out_flow(browser, size)
                         await repeat_and_opened_set_flow(browser, size)
+                        await pick_box_flow(browser, size)
                 finally:
                     await browser.close()
         finally:

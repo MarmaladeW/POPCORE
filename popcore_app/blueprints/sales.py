@@ -23,8 +23,8 @@ from matcher import (match_jzm, load_matching_aliases, normalize as _norm_jzm, _
 from inventory_commands import InventoryError, InventoryConflict, post_inventory, require_inventory_access
 from goods_operations import _begin, _hash, _replay, _remember
 import report_checks
-from report_stock import (LINE_SECTIONS, PACKED_SECTIONS, ReportLineError, check_notice, lines_from, live_since,
-                          open_notices, other_store, plan_report_lines, save_report_lines, sync_report_stock)
+from report_stock import (LINE_SECTIONS, PACKED_SECTIONS, ReportLineError, check_notice, display_in_old_way, lines_from,
+                          live_since, open_notices, other_store, plan_report_lines, save_report_lines, sync_report_stock)
 from inventory_visibility import inventory_hidden
 from report_names import all_picks, log_names, place_of, report_days, report_names, save_pick, status as name_status
 from blueprints.stock import _inventory_error, _inventory_location, _is_authoritative
@@ -1741,7 +1741,9 @@ _SECTION_MAP = [
     ('卡机汇总', 'pos'), ('随手记汇总', 'cash'), ('随手机汇总', 'cash'),
     ('随手记', 'cash'), ('卡机', 'pos'),
     ('入店display', 'display_stock_in'), ('出店display', 'display_stock_out'),
-    ('入display', 'display_stock_in'), ('出display', 'display_stock_out'),
+    # Owner, 2026-11-22: 入display is new pieces put onto display (usually that day's delivery), as 入店（display）;
+    # only 出库入display is upstairs → display. A day saved the old way keeps the old reading (display_in_old_way).
+    ('入display', 'display_new'), ('出display', 'display_stock_out'),
     ('入娃娃机', 'claw_stock_in'), ('娃娃机入', 'claw_stock_in'),
     ('娃娃机出', 'claw'), ('出娃娃机', 'claw'),
     ('入店', 'stock_in'), ('出店', 'stock_out'), ('出库', 'store_transfer'),
@@ -1760,11 +1762,13 @@ _REPORT_ANNOTATIONS = {
     'employee_discount': 'employee_discounts', 'sell_display': 'display_sales',
     'claw': 'claw_prizes', 'claw_stock_in': 'claw_stock_in',
     'display_stock_in': 'display_stock_in', 'display_stock_out': 'display_stock_out',
-    'store_transfer': 'store_transfers',
+    'store_transfer': 'store_transfers', 'display_new': 'display_stock_in',
 }
 # At a live store these sections are stock lines rather than notes (owner, 2026-11-03), under the
 # names report_stock moves them by. 入娃娃机 stays a note: staff record it on the claw screen.
-_LIVE_LINE_SECTIONS = {'sell_display': 'display_sold', 'claw': 'claw_prize', 'display_stock_in': 'display_stock_in'}
+# 入display (display_new) is read as 入店 to display from 2026-11-22; a day saved before that keeps upstairs → display.
+_LIVE_LINE_SECTIONS = {'sell_display': 'display_sold', 'claw': 'claw_prize', 'display_stock_in': 'display_stock_in',
+                       'display_new': 'display_stock_in'}
 # More headings move by the report from the day that went live (owner, 2026-11-13): 出店display is 出店 from
 # display, and 出库 is a stock line once the other store is live. Earlier days keep them as notes.
 _LATER_LINE_SECTIONS = {'display_stock_out': 'stock_out', 'store_transfer': 'transfer_out'}
@@ -1817,29 +1821,40 @@ def _item_key(item: dict) -> str:
     return re.sub(r'[\W_]+', '', (item.get('raw_name', '') + ''.join(notes)).casefold())
 
 
-def _repeated_display_blocks(items: list[dict]) -> list[int]:
-    """卖display sections that only repeat sales already marked (display) among the sales (MK Nov 6, DT and
-    MK Nov 8): each of their lines has a (display) sale of the same item, and keeping the section would take
-    more of that item off display than the day sold of it. Every 卖display sale is also a sale, so such a
-    section would take display twice. Returns their heading lines."""
-    sales, inline, blocks = Counter(), Counter(), defaultdict(list)
-    for item in items:
-        if item.get('unknown_header'):
-            continue
-        if item['section'] in ('pos', 'cash'):
-            sales[_item_key(item)] += item['qty']
-        elif item['section'] == 'display_sold' and item.get('inline_display'):
-            inline[_item_key(item)] += item['qty']
-        elif item['section'] == 'display_sold' and item.get('display_block'):
-            blocks[item['display_block']].append(item)
+def _repeated_display_lines(items: list[dict], lead_of) -> list[dict]:
+    """卖display lines that only repeat a sale already marked (display) among the sales (MK Nov 6, DT and MK Nov 8,
+    DT Nov 20–21). Every (display) sale already takes its piece off display, so a 卖display line it covers would
+    take that piece twice. Each line is judged on its own (owner, 2026-11-22; DT Nov 21: 萌粒 咖啡 sold 4, one
+    marked (display), and that one line kept the whole six-line section): it repeats when the day's (display) sales
+    of the same product, less what earlier 卖display lines already used, hold its quantity. The same product is
+    the one the paste picks for both (`lead_of`: a remembered pick or a sure match, so "The Monsters Fruits -
+    Grape" and "The Monsters Fruit - Grape" are one), or the same name as written. Returns the repeating rows,
+    each with `repeats`: the lines of the (display) sales it repeats."""
+    def keys(item):
+        product_id = lead_of(item)
+        return {('name', _item_key(item))} | ({('product', product_id)} if product_id else set())
+
+    lines = [item for item in items if not item.get('unknown_header') and item['section'] == 'display_sold'
+             and item.get('display_block') and item['qty'] and not item.get('flagged')]
+    if not lines:
+        return []
+    marked = [[keys(item), item['qty'], item.get('line')] for item in items
+              if not item.get('unknown_header') and item['section'] == 'display_sold' and item.get('inline_display')]
     repeated = []
-    for block, rows in blocks.items():
-        wanted = Counter()
-        for row in rows:
-            wanted[_item_key(row)] += row['qty']
-        if all(row['qty'] and not row.get('flagged') for row in rows) and all(
-                inline[key] >= qty and inline[key] + qty > sales[key] for key, qty in wanted.items()):
-            repeated.append(block)
+    for item in lines:
+        written = keys(item)
+        same = [entry for entry in marked if entry[0] & written and entry[1] > 0]
+        if sum(entry[1] for entry in same) < item['qty']:
+            continue
+        need, sales = item['qty'], []
+        for entry in same:
+            used = min(need, entry[1])
+            entry[1] -= used
+            need -= used
+            if used:
+                sales.append(entry[2])
+        item['repeats'] = sales
+        repeated.append(item)
     return repeated
 
 # Fuzzy matches are suggestions only; unique exact identities can confirm.
@@ -2090,8 +2105,9 @@ def parse_daily_report():
     report_picks = load_report_picks(con)
     cur.execute('SELECT alias_norm, section_type FROM section_aliases')
     section_aliases = {r['alias_norm']: r['section_type'] for r in cur.fetchall()}
+    # design_name: the pick box shows a design's own name first (owner, 2026-11-22); matching never reads it.
     cur.execute('''
-        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type, design_name
         FROM products
     ''')
     all_products = [dict(r) for r in cur.fetchall()]
@@ -2144,6 +2160,11 @@ def parse_daily_report():
     moves_from = lines_from(con) if live else None
     full = live and (moves_from is None or (detected_date or page_date or business_date()) >= moves_from)
     live_sections = dict(_LIVE_LINE_SECTIONS)
+    # 入display is new goods onto display (owner, 2026-11-22), unless this day was saved when it meant upstairs →
+    # display: read again, that day keeps the old reading, so nothing moves twice.
+    display_in_old = live and display_in_old_way(con, store_code, detected_date or page_date or business_date())
+    if live and not display_in_old:
+        live_sections['display_new'] = 'stock_in'
     if full:
         live_sections['display_stock_out'] = _LATER_LINE_SECTIONS['display_stock_out']
         if other_store(con, resolved_store[0]):
@@ -2256,6 +2277,8 @@ def parse_daily_report():
             report_notes[annotations[sec]].append(content)
             return
         display_block = marks['block'] if live and sec == 'sell_display' else None
+        # 入display: new pieces straight onto display, the same as "入店：X*1（display）".
+        new_on_display = live and sec == 'display_new' and live_sections.get(sec) == 'stock_in'
         # 出店display: off display and out of the store, as "出店：X*1（display）" is.
         off_display = live and sec == 'display_stock_out'
         if live:
@@ -2372,6 +2395,8 @@ def parse_daily_report():
                     item['unknown_header'] = hdr
                 if off_display:
                     item['from_display'] = True
+                if new_on_display:
+                    item['to_display'] = True
                 if display_block:
                     item['display_block'] = display_block
                 raw_items.append(item)
@@ -2460,11 +2485,17 @@ def parse_daily_report():
         # Quoted as written when the whole line is the one left out.
         if _preprocess_text(line_text.get(entry['line'], '')).strip() == entry['text']:
             entry['text'] = line_text[entry['line']]
-    # A 卖display section that repeats the sales' (display) marks would take display twice: it is left out,
-    # and the format check says which lines.
-    repeated = _repeated_display_blocks(raw_items) if live else []
-    display_repeats = [item for item in raw_items if item.get('display_block') in repeated]
-    raw_items = [item for item in raw_items if item.get('display_block') not in repeated]
+    # A 卖display line that repeats a sale's (display) mark would take display twice: it is left out, and the
+    # format check says which lines. Products are compared as the paste will pick them.
+    products_by_id = {product['id']: product for product in all_products}
+    reviewed_names = {key[0] for key in report_picks}
+
+    def lead_of(item):
+        return _lead_product(item, all_products, aliases, designs, products_by_id, report_picks, reviewed_names)
+
+    display_repeats = _repeated_display_lines(raw_items, lead_of) if live else []
+    dropped = {id(item) for item in display_repeats}
+    raw_items = [item for item in raw_items if id(item) not in dropped]
 
     # A stock section that repeats itself word for word (owner, 2026-11-15: DT's Nov 14 入库 block written twice):
     # each repeat is pointed out with a choice, and its rows come marked so the paste screen leaves them out
@@ -2495,7 +2526,7 @@ def parse_daily_report():
     format_checks = report_checks.header_checks(header_at, detected_date, detected_store, page_date, page_store,
                                                 first_line=first_line)
     # 出库 and 出店display are named by the stock lines they are read as, so a heading written twice is seen.
-    moved_as = {key: live_sections[key] for key in ('store_transfer', 'display_stock_out')
+    moved_as = {key: live_sections[key] for key in ('store_transfer', 'display_stock_out', 'display_new')
                 if live and key in live_sections}
     format_checks += report_checks.text_checks(
         [(line_numbers[bi], moved_as.get(bsec, bsec), bhdr) for bi, bsec, bhdr, _ in boundaries
@@ -2507,13 +2538,17 @@ def parse_daily_report():
     format_checks += [report_checks.repeat_check(repeat) for repeat in repeats]
     if pasted_twice:
         format_checks.append(report_checks.report_twice_check(*pasted_twice))
-    format_checks += report_checks.repeated_display_checks(repeated, display_repeats)
+    format_checks += report_checks.repeated_display_checks(display_repeats)
     if live and not full:
         # Said once, by the headings it is about, so an old day's 入库 or 出库 not moving is no surprise.
         later = _LIVE_ONLY_HEADINGS | set(_LATER_LINE_SECTIONS)
         old_way = [number for number, ln in numbered if (_detect_section_type(ln, {}, True) or ('',))[0] in later]
         if old_way:
             format_checks.append(report_checks.old_reading_check(old_way, moves_from))
+    if display_in_old:
+        old_display = [number for number, ln in numbered if (_detect_section_type(ln, {}, full) or ('',))[0] == 'display_new']
+        if old_display:
+            format_checks.append(report_checks.old_display_in_check(old_display))
 
     if llm_result:
         parser_engine       = 'llm'
@@ -2637,6 +2672,45 @@ def _secret_design(raw_name: str, designs: list, all_products: list, aliases: di
     return secrets[0] if len(secrets) == 1 else None
 
 
+def _report_hits(item, all_products, aliases, designs, products_by_id, reviewed_names):
+    """(the name-pick key, the ranked (score, product) hits) of one report item, before any remembered pick."""
+    raw_name = item.get('raw_name', '')
+    # Secret/hidden variants in notes are part of product identity.
+    qualifier = item.get('note', '')
+    query = report_match_query(raw_name, qualifier)
+    key = report_match_key(raw_name, qualifier)
+    hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
+    if key[0] in reviewed_names or query != raw_name:
+        # A name reviewed with another note, or a changed note, must be reviewed again.
+        hits = [(min(score, 99), product) for score, product in hits]
+    design = (_dash_design(raw_name, designs or [])
+              or _secret_design(raw_name, designs or [], all_products, aliases)
+              or _note_design(raw_name, qualifier, designs or []))
+    if design in products_by_id and (not hits or hits[0][1]['id'] != design):
+        # Suggested first, never confirmed by itself.
+        hits = [(99, products_by_id[design])] + [hit for hit in hits if hit[1]['id'] != design]
+    return key, hits
+
+
+# A match this sure names the product a line means, for comparing two lines (a different number or generation caps
+# a score at 75, so "SA animal ver2" and "ver4" never meet here).
+_SURE_MATCH = 90
+
+
+def _lead_product(item, all_products, aliases, designs, products_by_id, picks, reviewed_names):
+    """The product the paste picks for `item` when it is sure of it: the one remembered pick for its name, else a
+    match of at least _SURE_MATCH that no other product ties. None when it is not sure."""
+    if not item.get('raw_name') or item.get('unknown_header'):
+        return None
+    key, hits = _report_hits(item, all_products, aliases, designs, products_by_id, reviewed_names)
+    chosen = [pid for pid in (picks.get(key) or {}).get('product_ids', []) if pid in products_by_id]
+    if chosen:
+        return chosen[0] if len(chosen) == 1 else None
+    if hits and hits[0][0] >= _SURE_MATCH and (len(hits) == 1 or hits[1][0] < hits[0][0]):
+        return hits[0][1]['id']
+    return None
+
+
 def _valid_day(value) -> bool:
     try:
         return read_date(value) == value
@@ -2700,20 +2774,7 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
             failed.append({**item, 'reason': 'empty_name', 'score': 0, 'candidates': []})
             continue
 
-        # Secret/hidden variants in notes are part of product identity.
-        qualifier = item.get('note', '')
-        query = report_match_query(raw_name, qualifier)
-        key = report_match_key(raw_name, qualifier)
-        hits = match_jzm(query, all_products, aliases, threshold=_SCORE_REVIEW, limit=5)
-        if key[0] in reviewed_names or query != raw_name:
-            # A name reviewed with another note, or a changed note, must be reviewed again.
-            hits = [(min(score, 99), product) for score, product in hits]
-        design = (_dash_design(raw_name, designs or [])
-                  or _secret_design(raw_name, designs or [], all_products, aliases)
-                  or _note_design(raw_name, qualifier, designs or []))
-        if design in products_by_id and (not hits or hits[0][1]['id'] != design):
-            # Suggested first, never confirmed by itself.
-            hits = [(99, products_by_id[design])] + [hit for hit in hits if hit[1]['id'] != design]
+        key, hits = _report_hits(item, all_products, aliases, designs, products_by_id, reviewed_names)
         pick = picks.get(key)
         chosen = [pid for pid in (pick or {}).get('product_ids', []) if pid in products_by_id]
         if chosen:

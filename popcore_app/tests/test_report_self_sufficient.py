@@ -383,8 +383,8 @@ class ReportSelfSufficientTests(IsolatedApiCase):
 
         # ── DT, Nov 12 ───────────────────────────────────────────────────────
         parsed = self.parse(report_text('DT', '2026-11-12'), 'DT')
-        self.assertEqual(self.sections(parsed), {'stock_in': 4, 'display_to_floor': 1, 'refill': 9,
-                                                 'display_stock_in': 1, 'transfer_out': 3})
+        # 入display "诡乐园*1" is a new piece onto display (owner, 2026-11-22), read as 入店 to display.
+        self.assertEqual(self.sections(parsed), {'stock_in': 5, 'display_to_floor': 1, 'refill': 9, 'transfer_out': 3})
         self.assertEqual({item['raw_name'] for item in parsed['failed']}, set(TYPOS) & {'hellokitty苹果趴趴'} | UNMATCHED)
         # "labubu喵喵毛绒*1（midnight kitty）" offers the design first, the series' box second.
         (noted,) = [item for item in parsed['review'] if item.get('note') == 'midnight kitty']
@@ -407,9 +407,9 @@ class ReportSelfSufficientTests(IsolatedApiCase):
                           self.balance(self.product('labubu喵喵毛绒', whole=True), 'DT', 'upstairs')), (3, 7 - 3))
         # The Midnight Kitty sale took the piece 出库入店 brought down on Nov 11.
         self.assertEqual((self.balance(kitty, 'DT', 'floor'), self.balance(kitty, 'DT', 'upstairs')), (0, 1))
-        # 入display "诡乐园*1" was MK's display piece: DT's upstairs has none, so it waits as a notice.
-        self.assertEqual([(line['section'], line['short']) for line in stock['lines'] if line['short']],
-                         [('display_stock_in', 1)])
+        # 入display "诡乐园*1" puts a new piece on DT's display (it once looked for it upstairs, which had none).
+        self.assertEqual([(line['section'], line['short']) for line in stock['lines'] if line['short']], [])
+        self.assertEqual(self.moved(self.line(stock, 'stock_in', '诡乐园 1（display）')), (None, None, 0, None, 'display', 1))
         self.assertEqual(stock['short'], [])
 
         # ── MK, Nov 12 ───────────────────────────────────────────────────────

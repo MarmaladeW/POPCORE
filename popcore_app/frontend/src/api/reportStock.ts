@@ -22,6 +22,8 @@ export interface ReportStockLine {
   line_key: string; section: string; label: string; raw: string; kind: string; ratio: number
   wanted: number; moved_before: number; checked: number; moving: number; short: number
   problem: 'not_enough' | 'not_counted' | null; document_id: number | null
+  // New goods of a product never counted: this line is its first count, verified as this form (owner, 2026-11-22).
+  first_count?: 'random_box' | 'ordinary'
   from?: ReportStockSide; to?: ReportStockSide
 }
 export interface ReportStockResult {
