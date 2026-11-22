@@ -113,13 +113,14 @@ class ReportPasteFixTests(IsolatedApiCase):
 
     # ── 2. 出库入display ─────────────────────────────────────────────────────
 
-    def test_出库入display_is_入display(self):
+    def test_出库入display_is_upstairs_to_display(self):
         self.assertEqual(_detect_section_type('出库入display：', {}), ('display_stock_in', ''))
         parsed = self.parse('2026.11.7 DT\n出库入display：\nsp image*1（the imagination）\n小野Mime-Patience*1\n'
                             '入display：\nSA animal ver3 - Zebra*1', date='2026-11-07')
         self.assertEqual(parsed['unknown_sections'], [])
-        self.assertEqual({row['section'] for row in parsed['failed']}, {'display_stock_in'})
-        self.assertEqual(len(parsed['failed']), 3)
+        # 入display is new pieces onto display since 2026-11-22 (owner), as 入店（display） is.
+        self.assertEqual(sorted((row['line'], row['section'], bool(row.get('to_display'))) for row in parsed['failed']),
+                         [(3, 'display_stock_in', False), (4, 'display_stock_in', False), (6, 'stock_in', True)])
         # Two headings staff wrote apart are not "the same heading twice".
         self.assertEqual(parsed['format_checks'], [])
 
@@ -165,20 +166,22 @@ class ReportPasteFixTests(IsolatedApiCase):
         self.assertEqual(self.rows(parsed), [
             (3, 'display_sold', 'shelter', 1), (3, 'pos', 'shelter', 1),
             (4, 'display_sold', '萌粒度假', 1), (4, 'pos', '萌粒度假', 1)])
-        self.assertEqual(self.checks(parsed), [('check', [5, 6, 7])])
+        # The check names the left-out lines and the (display) sales they repeat.
+        self.assertEqual(self.checks(parsed), [('check', [3, 4, 5, 6, 7])])
         self.assertIn('已不算', parsed['format_checks'][0]['problem'])
 
-    def test_a_卖display_section_is_kept_where_it_may_be_another_sale(self):
-        # Two Circus sold, one marked (display): the section's Circus may be the other one.
+    def test_each_卖display_line_is_judged_on_its_own(self):
+        # Two Circus sold, one marked (display): the 卖display Circus repeats that mark (owner, 2026-11-22; before,
+        # a second sale that day kept it as possibly another piece from display).
         covered = self.parse('2026.11.8 MK\n卡机汇总：\nshelter*1（Circus）（display）\nshelter*1（Circus）\n'
                              '卖display：\nshelter*1（Circus）', store='MK', date='2026-11-08')
-        self.assertEqual([row[0] for row in self.rows(covered) if row[1] == 'display_sold'], [3, 6])
-        # Kept as written, with the check that it takes display twice.
-        self.assertEqual(self.checks(covered), [('check', [3, 6])])
-        # One line in the section repeats nothing: the whole section stays, as written.
+        self.assertEqual([row[0] for row in self.rows(covered) if row[1] == 'display_sold'], [3])
+        self.assertEqual(self.checks(covered), [('check', [3, 5, 6])])
+        # A line in the section that repeats nothing stays, as written; the line that repeats is still left out.
         mixed = self.parse('2026.11.8 MK\n卡机汇总：\nshelter*1（Circus）（display）\nsa dream*1\n'
                            '卖display：\nshelter*1（Circus）\nsa dream*1', store='MK', date='2026-11-08')
-        self.assertEqual([row[0] for row in self.rows(mixed) if row[1] == 'display_sold'], [3, 6, 7])
+        self.assertEqual([row[0] for row in self.rows(mixed) if row[1] == 'display_sold'], [3, 7])
+        self.assertIn(('check', [3, 5, 6]), self.checks(mixed))
 
     # ── the raw Nov 7–8 texts ─────────────────────────────────────────────────
 
@@ -207,12 +210,13 @@ class ReportPasteFixTests(IsolatedApiCase):
         parsed = self.parse(report_text('DT-2026-11-08'), date='2026-11-08')
         self.assertFalse([check for check in parsed['format_checks'] if '销售里只有 0 个' in check['problem']])
         # Its 卖display section repeats the (display) marks among the sales, so it is left out.
-        self.assertIn(('check', list(range(125, 135))), self.checks(parsed))
+        (left_out,) = [check for check in parsed['format_checks'] if '已不算' in check['problem']]
+        self.assertLessEqual(set(range(125, 135)), set(left_out['lines']))
         self.assertFalse([row for row in parsed['confirmed'] + parsed['review'] + parsed['failed']
                           if 125 <= row['line'] <= 134])
         # Even with the section kept, "海贼王船 - Polar Tang" on 卖display is counted with the series' sales
         # (lines 88 and 114), so it no longer says "sales 0".
-        with patch.object(sales, '_repeated_display_blocks', return_value=[]):
+        with patch.object(sales, '_repeated_display_lines', return_value=[]):
             kept = self.parse(report_text('DT-2026-11-08'), date='2026-11-08')
         self.assertFalse([check for check in kept['format_checks'] if 129 in check['lines']
                           and check['section'] == '卖display' and '销售里只有' in check['problem']])

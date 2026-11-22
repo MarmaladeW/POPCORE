@@ -57,7 +57,8 @@ Each card shows:
 - the order number and how long ago it was paid;
 - each line by 记账名 (else the official name, else the website's name), its quantity and POPCORE ID, and where it
   was taken from (store and place), from the order's consume document;
-- pickup: the pickup store, and "Taken from DT: bring it to MK" when the stock came from another store;
+- pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
+  A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
 - delivery: the window, Normal or door to door, and the zone the customer chose; once FleetNow is booked, its
   number, status, pickup window and delivery window.

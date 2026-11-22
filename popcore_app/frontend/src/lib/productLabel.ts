@@ -8,6 +8,19 @@ export function productNames(product:ProductIdentity) {
   return shop || name || product.sku || `Product #${product.id}`
 }
 
+/** A pick's parts, the most telling first (owner, 2026-11-22: a box cut "Sonny Angel Easter Series 20…" short, so
+ * Easter Lily and Easter Bunny looked the same and the wrong one was picked): the design's own name, the SKU, then
+ * the shop and product names. */
+export function pickParts(product:ProductIdentity) {
+  return {design:product.design_name?.trim() || '', sku:product.sku?.trim() || '', names:productNames(product)}
+}
+
+/** One line for a pick box: what gets cut off at its end is the long series name, never the design or the SKU. */
+export function pickText(product:ProductIdentity) {
+  const {design, sku, names} = pickParts(product)
+  return [design, sku, names].filter((part, index, parts) => part && parts.indexOf(part) === index).join(' · ')
+}
+
 export function productLabel(product:ProductIdentity|undefined) {
   if (!product) return 'Unknown product'
   const name = product.stock_form === 'confirmed_design' && product.design_name

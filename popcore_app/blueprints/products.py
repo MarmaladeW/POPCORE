@@ -14,6 +14,7 @@ from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
+from brands import canonical_brand
 from validation import read_int
 from matcher import match_jzm, batch_match_jzm, load_matching_aliases, match_name, identity_conflicts, normalize_sku, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
 from catalog_identity import (
@@ -623,6 +624,8 @@ def update_product(pid):
         'series_id', 'stock_form', 'stock_unit', 'design_name', 'identity_status'
     }
     updates = {k: v for k, v in data.items() if k in allowed}
+    if 'brand' in updates:
+        updates['brand'] = canonical_brand(updates['brand'])
     identity_updates = {k: v for k, v in data.items() if k in identity_fields}
     if not updates and not identity_updates:
         return jsonify({'error': 'Nothing to update'}), 400
@@ -726,7 +729,7 @@ def create_product():
     price_raw    = data.get('price')
     ip_series    = (data.get('ip_series') or '').strip()
     product_type = (data.get('product_type') or '').strip()
-    brand        = (data.get('brand') or '').strip()
+    brand        = canonical_brand(data.get('brand'))
     release_date = (data.get('release_date') or '').strip()
     edition_size = (data.get('edition_size') or '').strip()
     channel      = (data.get('channel') or '').strip()
@@ -1118,6 +1121,8 @@ def _catalog_import_values(values):
                     raise ValueError('price must be a finite number >= 0')
         elif not isinstance(value, str):
             raise ValueError(f'{field} must be text')
+        elif field == 'brand':
+            value = canonical_brand(value)
         result[field] = value
     return result
 

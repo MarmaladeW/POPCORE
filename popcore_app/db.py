@@ -2127,6 +2127,7 @@ def _get_migrations():
         ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
         ('watch_list',                                 _migration_watch_list),
         ('staff_discounts',                            _migration_staff_discounts),
+        ('display_in_new_goods',                       _migration_display_in_new_goods),
         ('count_sections',                             _migration_count_sections),
     ]
 
@@ -2697,6 +2698,25 @@ def _migration_count_sections(con, cur):
         PRIMARY KEY (section_count_id, inventory_count_id)
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('count_sections')")
+
+
+def _migration_display_in_new_goods(con, cur):
+    # 入display is new pieces put onto display (owner, 2026-11-22: usually from that day's delivery), the same as an
+    # 入店 line marked （display）; only 出库入display is upstairs → display. A day already saved while 入display meant
+    # upstairs → display must keep that reading when pasted again: its saved line is keyed by what it moves, so the
+    # new reading would put that move back and add the pieces as new goods. Those days are the ones with a saved
+    # display_stock_in line that wants, moved or checked anything; app_settings display_in_old_days lists them by
+    # store code ({"DT": ["2026-11-15", ...]}). Every other day, including the days not pasted yet, reads the new way.
+    import json
+    days = {}
+    for code, day in cur.execute("""SELECT DISTINCT s.code, m.business_date FROM report_stock_moves m
+                                    JOIN stores s ON s.id=m.store_id
+                                    WHERE m.section='display_stock_in' AND (m.wanted>0 OR m.moved>0 OR m.checked>0)
+                                    ORDER BY s.code, m.business_date""").fetchall():
+        days.setdefault(code, []).append(day)
+    cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('display_in_old_days', ?)",
+                (json.dumps(days),))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('display_in_new_goods')")
 
 
 def _migration_inventory_viewers(con, cur):
