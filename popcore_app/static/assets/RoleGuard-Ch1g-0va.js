@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-8G1Ezxuj.js";import{l as t}from"./index-Q2EMKnzC.js";var n=e();function r({minRole:e,children:r,fallback:i=null}){return t(e)?(0,n.jsx)(n.Fragment,{children:r}):(0,n.jsx)(n.Fragment,{children:i})}export{r as t};
