@@ -37,7 +37,7 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
     const person = employees.find(employee => employee.id === id)
     return <>
       <strong className="pc-employee-name" style={{ background: color, color: textColorOn(color) }}>{label}</strong>
-      {isRegularOn(person?.regular_since, date) && <RegularMark since={person?.regular_since} />}
+      {isRegularOn(person?.regular_since, date) && <RegularMark since={person?.regular_since} rank={person?.rank} />}
       {!!person?.is_training && <TrainingMark />}
     </>
   }

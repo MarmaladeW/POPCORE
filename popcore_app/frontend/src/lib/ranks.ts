@@ -13,6 +13,13 @@ export const RANKS: ReadonlyArray<{ value: Rank; zh: string; en: string; glyph: 
 
 export const rankInfo = (rank: string | null | undefined) => RANKS.find(entry => entry.value === rank)
 
+/** What the schedule marks someone 转正 with (owner, 2026-11-22): their rank, 长 副 资 or 正. Someone 转正 without one
+ *  of those ranks (an older account) keeps 正. 培训员工 is never 转正, so it shows 训 instead. */
+export function regularRankInfo(rank: string | null | undefined) {
+  const info = rankInfo(rank)
+  return info && info.value !== 'trainee' ? info : RANKS[3]
+}
+
 /** Sort key: 店长 first, people without a rank after everyone ranked. */
 export const rankIndex = (rank: string | null | undefined) => {
   const index = RANKS.findIndex(entry => entry.value === rank)

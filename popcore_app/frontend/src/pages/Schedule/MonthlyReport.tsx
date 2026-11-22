@@ -93,7 +93,7 @@ export default function MonthlyReport() {
         <button type="button" className="pc-report-person" aria-label={`${v || row.email || `ID ${row.id}`}: 每班工时 Hours by shift`}
           onClick={event => { event.stopPropagation(); openEmployee(row.id) }}>
           <span className="pc-report-person-name">{v || row.email || `ID ${row.id}`}</span>
-          {report && isRegularOn(row.regular_since, report.period_end) && <RegularMark since={row.regular_since} />}
+          {report && isRegularOn(row.regular_since, report.period_end) && <RegularMark since={row.regular_since} rank={row.rank} />}
           {report && row.regular_since && row.regular_since > report.period_start && row.regular_since <= report.period_end
             && <small className="pc-report-person-since">{monthDay(row.regular_since)} 起</small>}
           {!!row.is_training && <TrainingMark />}

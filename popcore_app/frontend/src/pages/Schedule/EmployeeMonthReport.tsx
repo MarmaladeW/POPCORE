@@ -78,7 +78,7 @@ export default function EmployeeMonthReport({ employeeId, year, month, storeCode
           <h2>
             <span className="pc-slip-dot" style={{ background: employee.color }} aria-hidden="true" />
             {name}
-            {regularByEnd && <RegularMark since={employee.regular_since} />}
+            {regularByEnd && <RegularMark since={employee.regular_since} rank={employee.rank} />}
             {!!employee.is_training && <TrainingMark />}
           </h2>
           <p>{anchor.format('YYYY年M月')}工时 · {anchor.format('MMMM YYYY')} hours</p>
@@ -93,7 +93,7 @@ export default function EmployeeMonthReport({ employeeId, year, month, storeCode
         <TrainingMark />培训中 · In training
       </p>}
       {employee.regular_since && regularByEnd && <p className="pc-slip-regular">
-        <RegularMark since={employee.regular_since} />
+        <RegularMark since={employee.regular_since} rank={employee.rank} />
         {split
           ? <>{monthDay(employee.regular_since)} 转正 · 转正前 Before <b>{formatHours(split.before)} h</b> · 转正后 After <b>{formatHours(split.after)} h</b></>
           : <>{employee.regular_since} 起转正 · Regular since {employee.regular_since}</>}
@@ -116,7 +116,7 @@ export default function EmployeeMonthReport({ employeeId, year, month, storeCode
             const late = !!shift.actual_end_time && shift.actual_end_time !== shift.end_time
             return <Fragment key={shift.id}>
               {shift === boundaryShift && <tr className="pc-slip-boundary"><td colSpan={columns}>
-                <span><RegularMark since={employee.regular_since} />{monthDay(employee.regular_since!)} 起转正 · Regular from here</span>
+                <span><RegularMark since={employee.regular_since} rank={employee.rank} />{monthDay(employee.regular_since!)} 起转正 · Regular from here</span>
               </td></tr>}
               <tr>
                 <td>{shortDay(shift.date)}</td>

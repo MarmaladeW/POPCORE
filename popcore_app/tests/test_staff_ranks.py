@@ -93,6 +93,17 @@ class StaffRankTests(IsolatedApiCase):
         expected = ['Xiao Na', 'Kitty', 'Zimo', 'Celia', 'YC', 'Amy']
         employees = self.client.get('/api/schedule/employees', headers=self.headers('manager')).get_json()
         self.assertEqual([row['name'] for row in employees if row['name'] in expected], expected)
+        # Shifts carry the person's rank, so the schedule marks them 长 副 资 正 (owner, 2026-11-22).
+        with closing(self.connect()) as con:
+            for name in ('Zimo', 'Xiao Na'):
+                con.execute("""INSERT INTO shifts(employee_id, date, start_time, end_time, assigned_by, store_id)
+                               SELECT id, '2026-11-23', '12:00', '22:00', 'test', ? FROM employees WHERE name=?""",
+                            (self.store_id, name))
+            con.commit()
+        shifts = self.client.get('/api/schedule/shifts?store_code=DT&start=2026-11-23&end=2026-11-23',
+                                 headers=self.headers('manager')).get_json()
+        self.assertEqual([(row['employee_name'], row['rank']) for row in shifts],
+                         [('Xiao Na', 'store_manager'), ('Zimo', 'senior')])
         stores = self.client.get('/api/employees/stores', headers=self.headers('manager')).get_json()
         self.assertEqual([row['name'] for row in stores if row['name'] in expected], expected)
         self.assertEqual(stores[0]['rank'], 'store_manager')
