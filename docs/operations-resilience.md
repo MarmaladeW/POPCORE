@@ -141,7 +141,9 @@ popcore-staging-refresh --source nightly                    # last night's data 
 systemctl stop popcore-staging                              # when you are done
 ```
 
-Then open `https://staging.popcore.store`. Staging uses production's Auth0 login and a copy of real data, so treat it as private as production. The user-management page does not work there, product-match ranking does not learn from corrections, and older product images kept outside the app's upload folder are missing.
+Then open `https://staging.popcore.store`. Staging uses production's Auth0 login and a copy of real data, so treat it as private as production.
+
+**Website sync on staging (popcore-work#50).** Staging can read web orders from, and write stock and prices to, the test copy of the website, `staging.popcore.ca` (its own droplet; popcore_plugins `docs/runbook/hosting.md`, "Run the test copy"), never popcore.ca: with `APP_ENV=staging` POPCORE refuses any other `WEBSITE_URL`. Staging's copy of live data has the sync switched on, so it writes within 30 seconds of starting. In `/etc/popcore/staging.env` set `WEBSITE_URL=https://staging.popcore.ca`, staging's own `WEBSITE_KEY` and `WEBSITE_SECRET` (on the staging.popcore.ca droplet in `/etc/popcore-ca-staging/popcore-wc-key.env`; copy them across without printing them, e.g. `ssh popcore-ca-staging cat /etc/popcore-ca-staging/popcore-wc-key.env | ssh <this droplet> 'cat >> /etc/popcore/staging.env'`) and `WEBSITE_BACKGROUND_SYNC=1`, which runs the website sync although the scheduler is off. Cloudflare Access on staging.popcore.ca lets this droplet's address (138.197.150.41) reach `/wp-json/wc/` only. Leave `WEBSITE_BACKGROUND_SYNC` empty to keep staging away from the website. The user-management page does not work there, product-match ranking does not learn from corrections, and older product images kept outside the app's upload folder are missing.
 
 ## Uptime alerts
 

@@ -290,6 +290,10 @@ This order matters: the first write reaches real customers and staff email.
    - Press **Turn on**. The first write follows within 30 seconds.
    - **Turn off** stops every write and order reading. The website keeps its last numbers and prices.
 
+### On staging
+
+POPCORE staging (`staging.popcore.store`) talks to the test copy `staging.popcore.ca` only: with `APP_ENV=staging`, `config()` refuses any other `WEBSITE_URL` (`STAGING_WEBSITE_HOST`), so every website call there fails rather than reach popcore.ca. Its scheduler is off, so the 30-second job starts only with `WEBSITE_BACKGROUND_SYNC=1`. Setup: [operations-resilience.md](operations-resilience.md), Staging.
+
 ## Limits
 
 - **In-store sales at DT reach POPCORE only when the day's report is pasted,** until Clover is connected. The hold above covers each item's best day, not every day. Paste each day's report after closing: a report pasted during the day stops the hold for the rest of that day. Reading Clover alone would not close the gap, because 47% of DT's units are sold off the card machine (随手记: cash, transfer, WeChat, Alipay). POPCORE's Clover checkout, where every sale is rung through POPCORE, removes it.

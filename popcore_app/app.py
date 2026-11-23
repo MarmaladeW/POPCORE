@@ -163,8 +163,9 @@ if not os.environ.get('DISABLE_SCHEDULER') or os.environ.get('CLOVER_BACKGROUND_
 
 # ─── Website stock and price sync (popcore.ca) ───────────────────────────────
 # Reads web orders and pushes stock and prices every 30 seconds once WEBSITE_* is set; it writes to
-# the website only after an admin turns the sync on (docs/website-sync.md).
-if not os.environ.get('DISABLE_SCHEDULER'):
+# the website only after an admin turns the sync on (docs/website-sync.md). Runs with the scheduler, or
+# alone with WEBSITE_BACKGROUND_SYNC=1: staging, whose scheduler is off, talks only to staging.popcore.ca.
+if not os.environ.get('DISABLE_SCHEDULER') or os.environ.get('WEBSITE_BACKGROUND_SYNC') == '1':
     import atexit
     from apscheduler.schedulers.background import BackgroundScheduler
     import website_sync
