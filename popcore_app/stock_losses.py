@@ -17,6 +17,7 @@ from inventory_commands import (InventoryConflict, InventoryError, InventoryVali
                                 _post_inventory_in_transaction, require_inventory_access, store_is_live)
 from inventory_visibility import require_inventory_visible
 from operational_reports import _inventory_identity_valid, _product_name
+from product_search import respellings
 from validation import read_int
 
 REASONS = {'broken': '破损 Broken', 'stolen': '被偷 Stolen', 'missing': '丢失 Missing', 'other': '其他 Other'}
@@ -145,7 +146,8 @@ def _records(con, where, params):
 
 def search_products(con, actor, store_code, query):
     """Products in stock at this store matching a name, 记账名, SKU, design name, alias or an exact
-    barcode, each with what a loss can take at each location."""
+    barcode, each with what a loss can take at each location. When nothing matches, the text is
+    tried once more with its misspelt words replaced (product_search.py)."""
     text = (query or '').strip()
 
     def work():
@@ -159,23 +161,32 @@ def search_products(con, actor, store_code, query):
                     WHERE disposition='saleable' AND quantity>0
                       AND location_id IN ({','.join('?' * len(by_id))})''', list(by_id)):
             here[row['product_id']][row['location_id']] = row['quantity']
-        needle = normalize_design_name(text)
-        scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
-        hits = []
-        for row in con.execute(PRODUCT_SQL.replace(
-                'ps.name AS series_name', f"ps.name AS series_name, {product_alias_text_sql('p')} AS alias_text")):
-            if row['id'] not in here or not _inventory_identity_valid(row):
-                continue
-            exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
-            haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
-                'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
-            if exact or needle in haystack:
-                hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, _product_name(row), row))
+        products = [row for row in con.execute(PRODUCT_SQL.replace(
+            'ps.name AS series_name', f"ps.name AS series_name, {product_alias_text_sql('p')} AS alias_text"))
+            if row['id'] in here and _inventory_identity_valid(row)]
+
+        def matching(typed):
+            needle = normalize_design_name(typed)
+            scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (typed,))}
+            hits = []
+            for row in products:
+                exact = row['id'] in scanned or (row['sku'] or '').casefold() == typed.casefold()
+                haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
+                    'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
+                if exact or needle in haystack:
+                    hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, _product_name(row), row))
+            return hits
+
+        hits = matching(text) or [hit for other in respellings(con, text) for hit in matching(other)]
         results = []
+        listed = set()
         # Products whose stock here is all kept for opened sets offer nothing, so they take no place in the list.
         for _, name, product in sorted(hits, key=lambda hit: (hit[0], hit[1])):
             if len(results) >= SEARCH_LIMIT:
                 break
+            if product['id'] in listed:  # found by two replacements of a misspelt word
+                continue
+            listed.add(product['id'])
             places = []
             for location in locations:
                 if location['id'] not in here[product['id']]:

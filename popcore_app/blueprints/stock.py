@@ -12,6 +12,7 @@ from store_access import legacy_store_denied
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
 from blueprints.stores import _resolve_store
 from catalog_identity import product_search_text_sql
+from product_search import like_any, token_alternatives
 from inventory_commands import (
     InventoryError, inventory_mode_for, live_store_ids, post_inventory,
     require_inventory_access, store_is_live,
@@ -370,9 +371,11 @@ def get_all_stock():
         filters.append("p.ip_series = ?")
         params.append(series)
     if q:
-        for token in q.split():
-            filters.append(f"{product_search_text_sql('p')} LIKE ?")
-            params.append(f'%{token}%')
+        # A misspelt word is searched as the closest words products carry (product_search.py).
+        for spellings in token_alternatives(con, q.split()):
+            clause, values = like_any(product_search_text_sql('p'), spellings)
+            filters.append(clause)
+            params.extend(values)
 
     where = ('AND ' + ' AND '.join(filters)) if filters else ''
 
@@ -984,9 +987,11 @@ def export_stock():
         filters.append("p.ip_series = ?")
         params.append(series)
     if q:
-        for token in q.split():
-            filters.append(f"{product_search_text_sql('p')} LIKE ?")
-            params.append(f'%{token}%')
+        # A misspelt word is searched as the closest words products carry (product_search.py).
+        for spellings in token_alternatives(con, q.split()):
+            clause, values = like_any(product_search_text_sql('p'), spellings)
+            filters.append(clause)
+            params.extend(values)
 
     where = ('AND ' + ' AND '.join(filters)) if filters else ''
 

@@ -23,6 +23,7 @@ from inventory_commands import (
 )
 from inventory_opening import COUNT_VERIFIABLE_FORMS, legacy_column, trusts_legacy
 from inventory_visibility import require_inventory_visible
+from product_search import respellings
 from sealed_sets import SET_SUFFIX
 from store_access import can_write_legacy_store
 from validation import read_int
@@ -207,11 +208,10 @@ def count_scope(con, actor, store_code):
     return _read(con, work)
 
 
-def family_anchors(con, text):
+def family_anchors(con, *texts):
     """One product per card matching a name, 记账名, SKU, design name, alias or an exact barcode,
-    best match first (a design or sealed set finds its blind box). 补货 finds series the same way."""
-    needle = normalize_design_name(text)
-    scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
+    best match first (a design or sealed set finds its blind box). 补货 finds series the same way.
+    Several texts (the respellings of a misspelt one) are matched as one search."""
     owners = {row['id']: row['product_id'] for row in con.execute('SELECT id, product_id FROM product_series')}
     set_box = {row[0]: row[1] for row in con.execute(
         """SELECT c.source_product_id, c.target_product_id FROM product_conversions c
@@ -224,11 +224,15 @@ def family_anchors(con, text):
                        {product_alias_text_sql('p')} AS alias_text, ps.name AS series_name
                 FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id"""):
         products[row['id']] = row
-        exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
-        haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
-            'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
-        if exact or needle in haystack:
-            hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, row['id']))
+    for text in texts:
+        needle = normalize_design_name(text)
+        scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
+        for row in products.values():
+            exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
+            haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
+                'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
+            if exact or needle in haystack:
+                hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, row['id']))
 
     def card_of(product_id):
         # As _family: a sealed set finds its blind box and a confirmed design its series' owner.
@@ -261,15 +265,20 @@ def family_members(con, product_id):
 
 def search_targets(con, actor, store_code, location_code, query):
     """Products to count matching a name, 记账名, SKU, design name, alias or an exact barcode,
-    one result per card (a design or sealed set finds its blind box)."""
+    one result per card (a design or sealed set finds its blind box). When nothing matches, the
+    text is tried once more with its misspelt words replaced (product_search.py)."""
     text = (query or '').strip()
 
     def work():
         scope = _scope(con, actor, store_code, location_code)
         if not text:
             return {'results': []}
+        anchors = family_anchors(con, text)
+        if not anchors:
+            other = respellings(con, text)
+            anchors = family_anchors(con, *other) if other else []
         results = []
-        for anchor in family_anchors(con, text):
+        for anchor in anchors:
             head, series_id = _family(con, anchor)
             members = _here(_members(con, head, series_id), scope['location'])
             if not members:
