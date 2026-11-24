@@ -1783,7 +1783,7 @@ def _is_pre_order(text: str, note: str) -> bool:
 
 
 # "（diaplay）" is how staff mistype it (DT, 2026-11-07).
-_DISPLAY_WORD = r'(?:display|diaplay|dispaly|展示)'
+_DISPLAY_WORD = r'(?:display|diaplay|dispaly|disply|dispay|dsiplay|disaply|diplay|展示)'
 _DISPLAY_NOTE = re.compile(rf'\s*{_DISPLAY_WORD}\s*', re.I)
 # A sale's place written after it (DT, 2026-11-07): "X*1-display", "X*1出库-入店", "X*1 -出库入店",
 # "小王子-Rose- 出库入店", or "-display" alone on the next line. The mark says where the piece sold from.
@@ -1884,10 +1884,15 @@ def _preprocess_text(text: str) -> str:
 
 
 
+# How staff mistype "display" (DT 2026-11-07 "diaplay", MK 2026-11-20 heading "卖dispaly").
+_DISPLAY_TYPOS = re.compile(r'(?:diaplay|dispaly|disply|dispay|dsiplay|disaply|diplay|dispaliy)', re.I)
+
+
 def _detect_section_type(line: str, section_aliases: dict, live: bool = False) -> tuple[str, str] | None:
     """Headers need a delimiter or end-of-line; product quantities are not headers. `live` reads the
-    headings only a live store's report can move (入库, 出店入库, 出display入店)."""
-    s = line.strip()
+    headings only a live store's report can move (入库, 出店入库, 出display入店). A mistyped "display" in a
+    heading reads as display (MK 2026-11-20: "卖dispaly" was read as a product line)."""
+    s = _DISPLAY_TYPOS.sub('display', line.strip())
     for keyword, section in _SECTION_MAP:
         if section in _LIVE_ONLY_HEADINGS and not live:
             continue
@@ -2826,14 +2831,23 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
                 if pid_c in instore and (it.get('qty') or 0) > instore[pid_c]:
                     it['warn_stock'] = {'instore': instore[pid_c]}
 
+    # What a line's matched product settles (2026-11-24): no quantity on a sale or display line is one piece, and
+    # a number that is the product's set size is whole sets. The text check it replaces is dropped.
+    settled, read_as = report_checks.settle_by_product(get_db(), confirmed + review)
+    format_checks = [check for check in format_checks or []
+                     if not (check.get('kind') in ('no_quantity', 'name_number') and set(check['lines']) <= settled)]
+    format_checks += read_as
     # A live store's stock lines, by the products this paste matched.
     known = report_checks.product_checks(get_db(), confirmed + review, failed) if live else []
     # Where a product check points at the same lines as a text check, it says it better.
     same = {tuple(check['lines']) for check in known}
-    checks = [check for check in format_checks or [] if tuple(check['lines']) not in same] + known
+    checks = [check for check in format_checks if tuple(check['lines']) not in same] + known
     if live and store_id is not None:
-        # What the other store's 出库 already put here must not be added again by this report.
+        # What the other store's 出库 already put here is read as those goods, not added again (2026-11-24),
+        # and a 出库 of goods the other store's report already added is pointed out.
         checks += report_checks.sent_here_checks(get_db(), confirmed + review, store_id, detected_date)
+        checks += report_checks.received_there_checks(get_db(), confirmed + review, store_id, detected_date,
+                                                       other_store(get_db(), store_id))
     for check in checks:
         check['text'] = [(line_text or {}).get(number, '') for number in check['lines']]
     checks.sort(key=lambda check: (check['lines'] or [0])[0])
