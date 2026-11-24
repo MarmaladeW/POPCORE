@@ -5,3 +5,6 @@
 .pc-settings-tabs.ant-tabs-left > .ant-tabs-content-holder { border-left: 0; }
 .pc-settings-tabs.ant-tabs-left > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane { padding-left: 0 !important; }
 .pc-settings .ant-card { border-color: var(--line-hair); border-radius: 0; }
+
+/* 异常提醒 Alerts tab: a switch with its label. */
+.pc-settings-switch { display: flex; align-items: center; gap: 10px; cursor: pointer; }

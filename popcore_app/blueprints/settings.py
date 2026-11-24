@@ -8,6 +8,7 @@ from decimal import Decimal
 from flask import Blueprint, request, jsonify
 from db import get_db
 from auth import role_required
+import watcher
 
 bp = Blueprint('settings', __name__)
 
@@ -44,6 +45,8 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # positions are Cashier and Sales).
     'schedule_positions': '{"DT": ["Front", "Cashier", "Back"], "MK": ["Cashier", "Sales"]}',
     'checkout_cny_per_cad': '',
+    # 异常提醒 Watcher (watcher.py): its switch, the Claude review's switch and daily cap, and the review time.
+    **watcher.SETTINGS,
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -182,6 +185,11 @@ def put_settings():
         if rate and (not re.fullmatch(r'\d{1,3}(?:\.\d{1,4})?', rate) or not 0 < Decimal(rate) <= 100):
             return jsonify(error='Enter a CNY rate above 0 and at most 100, with up to 4 decimal places'), 400
         data['checkout_cny_per_cad'] = rate
+    for key in [key for key in data if key in watcher.SETTINGS]:
+        value, err = watcher.check_setting(key, data[key])
+        if err:
+            return jsonify({'error': err}), 400
+        data[key] = value
     if 'schedule_required_staff' in data:
         err = _validate_required_staff(str(data['schedule_required_staff']))
         if err:

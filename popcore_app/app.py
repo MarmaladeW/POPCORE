@@ -83,6 +83,7 @@ from blueprints.losses    import bp as losses_bp
 from blueprints.dex       import bp as dex_bp
 from blueprints.watch_list import bp as watch_list_bp
 from blueprints.staff_discounts import bp as staff_discounts_bp
+from blueprints.watch     import bp as watch_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 app.register_blueprint(users_bp)
@@ -113,6 +114,7 @@ app.register_blueprint(losses_bp)
 app.register_blueprint(dex_bp)
 app.register_blueprint(watch_list_bp)
 app.register_blueprint(staff_discounts_bp)
+app.register_blueprint(watch_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.
@@ -207,6 +209,25 @@ if not os.environ.get('DISABLE_SCHEDULER'):
     _dex_scheduler.add_job(_dex_sync_job, 'interval', seconds=30, id='dex_sync', max_instances=1, coalesce=True)
     _dex_scheduler.start()
     atexit.register(lambda: _dex_scheduler.shutdown(wait=False))
+
+# ─── 异常提醒 Watcher ─────────────────────────────────────────────────────────
+# Every 10 minutes, never two at once: the rules once an hour and the Claude review once a day (watcher.py). It
+# returns at once while the watcher's switch in 设置 is off; a failure is logged and never reaches the other jobs.
+if not os.environ.get('DISABLE_SCHEDULER'):
+    import atexit
+    from apscheduler.schedulers.background import BackgroundScheduler
+    import watcher
+
+    def _watch_job():
+        try:
+            watcher.run_due()
+        except Exception as exc:  # only the error's kind: a watcher failure must not carry data into the logs
+            app.logger.error('Watcher run failed: %s', type(exc).__name__)
+
+    _watch_scheduler = BackgroundScheduler(daemon=True)
+    _watch_scheduler.add_job(_watch_job, 'interval', minutes=10, id='watcher', max_instances=1, coalesce=True)
+    _watch_scheduler.start()
+    atexit.register(lambda: _watch_scheduler.shutdown(wait=False))
 
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
 @app.errorhandler(404)
