@@ -10,5 +10,6 @@ xlrd==2.0.2
 sentry-sdk[flask]==2.54.0
 gunicorn==23.0.0
 APScheduler>=3.10.0
+anthropic==2.13.0
 scikit-learn>=1.4.0
 google-auth>=2.0.0

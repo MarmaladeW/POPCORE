@@ -2130,6 +2130,7 @@ def _get_migrations():
         ('display_in_new_goods',                       _migration_display_in_new_goods),
         ('count_sections',                             _migration_count_sections),
         ('count_marks',                                _migration_count_marks),
+        ('watch_alerts',                               _migration_watch_alerts),
     ]
 
 
@@ -2729,6 +2730,54 @@ def _migration_count_marks(con, cur):
     if 'mark_id' not in columns:
         cur.execute('ALTER TABLE section_count_lines ADD COLUMN mark_id INTEGER REFERENCES count_marks(id) ON DELETE SET NULL')
     cur.execute("INSERT INTO _migrations(name) VALUES ('count_marks')")
+
+
+def _migration_watch_alerts(con, cur):
+    # 异常提醒 Watcher (owner, 2026-11-24: "monitor any abnormal behavior within the app and notify the admin and the
+    # manager"; watcher.py). The rules raise one alert per thing they find; a nightly Claude review may add a note or
+    # mark a borderline one 'low'. A store's alert is for admins and that store's managers; one with no store is for
+    # admins. watch_runs keeps every run, its cost (the daily cap) and exactly what was sent to Anthropic.
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_alerts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind           TEXT    NOT NULL CHECK (kind IN ('stock_loss', 'count_gap', 'cash_gap', 'floor_short',
+                                                        'sync_stuck')),
+        subject_key    TEXT    NOT NULL,
+        store_id       INTEGER REFERENCES stores(id) ON DELETE CASCADE,
+        product_id     INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        business_date  TEXT,
+        facts          TEXT    NOT NULL,
+        severity       TEXT    NOT NULL CHECK (severity IN ('high', 'normal')),
+        status         TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('pending', 'open', 'checked', 'resolved')),
+        verdict        TEXT    CHECK (verdict IS NULL OR verdict IN ('keep', 'low')),
+        note_zh        TEXT,
+        note_en        TEXT,
+        reviewed_at    TEXT,
+        pushed_at      TEXT,
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        checked_by     TEXT,
+        checked_at     TEXT,
+        UNIQUE (kind, subject_key)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_alerts_status ON watch_alerts(status, store_id)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_runs (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind           TEXT    NOT NULL CHECK (kind IN ('rules', 'review')),
+        business_date  TEXT    NOT NULL,
+        started_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        outcome        TEXT    NOT NULL,
+        found          INTEGER NOT NULL DEFAULT 0,
+        model          TEXT,
+        input_tokens   INTEGER,
+        output_tokens  INTEGER,
+        cost_usd       REAL    NOT NULL DEFAULT 0,
+        sent           TEXT,
+        summary_zh     TEXT,
+        summary_en     TEXT,
+        error          TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_runs_day ON watch_runs(kind, business_date)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('watch_alerts')")
 
 
 def _migration_display_in_new_goods(con, cur):
