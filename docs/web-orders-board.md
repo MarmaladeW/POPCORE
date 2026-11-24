@@ -16,21 +16,28 @@ replaced its pickup-code brief of 2026-11-16. Code: `website_board.py`, routes i
 ### The store computer's account
 
 Owner, 2026-11-19: "they can also check the products and stocks for names, stocks, and check the dex for prices, but
-they wont be able to edit anything from there." An admin makes it in 员工 Users:
+they wont be able to edit anything from there." Owner, 2026-11-24: the 查看者 Viewer role is now this account: "specific
+for the store computer, where it is able to see the order we need to prepare in store, see the stock, dex, no need for
+shift, able to view products". An admin makes it in 员工 Users:
 
-1. A new account, for example `dt-counter` named DT 柜台, with the role **查看者 Viewer**.
-2. **门店操作权限 Store operations access: DT.** This opens 网站订单 for DT, Ready and Handed over included.
-3. **库存查看 Inventory view: DT.** This opens 库存 (the overview, the series lists and All products) to look at.
-4. Optionally turn off its schedule listing, so it does not appear among the staff to schedule.
+1. A new account, for example `dt-counter` named DT 柜台, with the position **查看者 Viewer · 店铺电脑**.
+2. Tick **店铺电脑 Store computer: DT**. One tick saves both grants underneath: 门店操作权限 (opens 网站订单 for DT,
+   Ready and Handed over included) and 库存查看 (opens 库存 to look at). A viewer with only one of the two shows the
+   tick half filled; a click saves both.
 
-What it can do: 网站订单 with its two buttons and notifications, 库存 to look at, 产品 Products and 图鉴 Dex (prices
-included) to look at, and 排班 Schedule to look at, as any viewer. What it cannot do: anything else. Every other change
-in POPCORE needs Staff or above on the server, store operations access included: a viewer posting a stock move is
-refused. The 库存 pages show their 入库, 调拨, 晚盘, 娃娃机, count and move buttons to staff only, and the menus give it no
-买单 Checkout, 入店, 补货, 汇总 or 晚盘.
+A viewer is never offered for shifts: making one, or changing someone to viewer, turns its schedule listing off, and
+opening Users turns it off for a viewer made before this change. Changing a viewer to a staff position turns it back on.
 
-A viewer without store operations access gets an empty board and no 网站订单 in the menu. Notes on the website name the
-account ("Ready in popcore.store by DT 柜台"), so personal sign-ins remain the way to record who pressed.
+What it can do: it opens on 网站订单 (its two buttons and notifications), 库存 to look at, 可疑人员 Watch list, 产品
+Products and 图鉴 Dex (prices included) to look at. Its menus are 网站订单 · 库存 · 可疑人员 and 产品 · 图鉴; on a phone
+网站订单 · 库存 · 产品 · 更多. What it cannot do: anything else, 排班 Schedule included. Every other change in POPCORE needs
+Staff or above on the server, store operations access included: a viewer posting a stock move is refused. The 库存 pages
+show their 入库, 调拨, 晚盘, 娃娃机, count and move buttons to staff only, and the menus give it no 买单 Checkout, 入店,
+补货, 汇总 or 晚盘.
+
+A viewer with no 店铺电脑 store ticked opens on a 店铺电脑 page that says so, with links to Products, the Dex and the
+watch list; its board names the tick it needs. Notes on the website name the account ("Ready in popcore.store by DT
+柜台"), so personal sign-ins remain the way to record who pressed.
 
 ## The board
 

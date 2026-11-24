@@ -88,6 +88,8 @@ def list_users():
             return jsonify({'error': f'Failed to fetch {role_name} role members from Auth0'}), 502
         for member_id in member_ids:
             role_by_user[member_id] = role_name
+    # Accounts Auth0 really gives the viewer role (an account with no role only shows as one).
+    viewers = {uid for uid, name in role_by_user.items() if name == 'viewer'}
 
     # Ranks (owner, 2026-11-19) live on the employees row; people are listed 店长 first (ranks.py).
     con = get_db()
@@ -111,6 +113,12 @@ def list_users():
     rankless = [user['id'] for user in result if user['role'] in ('admin', 'viewer') and rank_by_user.get(user['id'])]
     if rankless:
         con.execute(f"UPDATE employees SET rank=NULL WHERE auth0_id IN ({','.join('?' * len(rankless))})", rankless)
+        con.commit()
+    # A viewer made before the store computer change (owner, 2026-11-24) may still be offered for shifts.
+    on_schedule = [user['id'] for user in result if user['id'] in viewers]
+    if on_schedule:
+        con.execute(f'''UPDATE employees SET is_schedulable=0
+                        WHERE is_schedulable=1 AND auth0_id IN ({','.join('?' * len(on_schedule))})''', on_schedule)
         con.commit()
     order = {rank: index for index, rank in enumerate(ranks.RANKS)}
     role_order = {'admin': -1, 'viewer': len(ranks.RANKS) + 1}
@@ -175,6 +183,7 @@ def create_user():
     con = get_db()
     if trainee_id is None:
         _get_or_create_employee(con, user_id, name=username, email=f'{username}@popcore.internal')
+        _schedulable_for_role(con, user_id, role)
     else:
         updated = con.execute('''UPDATE employees SET auth0_id = ?, email = ?, is_trainee = 0
             WHERE id = ? AND is_active = 1 AND is_trainee = 1''',
@@ -213,6 +222,18 @@ def create_user():
         warning = (f'用户已创建，但角色 {role} 分配失败，请在"编辑"中重新设置角色 / '
                    f'User created, but assigning the {role} role failed — set it again via Edit.')
     return jsonify({'ok': True, 'id': user_id, 'warning': warning}), 201
+
+
+def _schedulable_for_role(con, auth0_id, role, was_viewer=False):
+    """A 查看者 Viewer is the store computer's account (owner, 2026-11-24: "no need for shift"): it is never offered for
+    shifts. An account that stops being a viewer can be scheduled again."""
+    if role == 'viewer':
+        con.execute('UPDATE employees SET is_schedulable=0 WHERE auth0_id=?', (auth0_id,))
+    elif was_viewer:
+        con.execute('UPDATE employees SET is_schedulable=1 WHERE auth0_id=?', (auth0_id,))
+    else:
+        return
+    con.commit()
 
 
 def _save_rank(auth0_id, rank):
@@ -268,6 +289,7 @@ def update_user(uid):
             if not cur_resp.ok:
                 return jsonify({'error': '读取当前角色失败，请重试 / Failed to read current roles'}), 502
             cur_ids  = [r['id'] for r in cur_resp.json()]
+            was_viewer = role_map.get('viewer') in cur_ids
             add_resp = _mgmt_post(f'users/{uid_enc}/roles', json={'roles': [new_role_id]})
             if not add_resp.ok:
                 return jsonify({'error': '角色更新失败，请重试 / Role update failed'}), 502
@@ -279,6 +301,7 @@ def update_user(uid):
                                              'New role added but removing the old one failed — save again'}), 502
         except Exception as exc:
             return jsonify({'error': f'Auth0 request failed: {exc}'}), 502
+        _schedulable_for_role(get_db(), uid, new_role, was_viewer)
 
     if 'rank' in data:
         _save_rank(uid, data['rank'])

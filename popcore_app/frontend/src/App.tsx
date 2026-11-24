@@ -222,7 +222,8 @@ function AppInner() {
           <Route path="/dex/:id" element={<RoleRoute minRole="viewer" element={<DexEntryPage />} />} />
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
           <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />
-          <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
+          {/* The store computer's 查看者 Viewer account has no shifts (owner, 2026-11-24). */}
+          <Route path="/schedule"       element={<RoleRoute minRole="staff"   element={<SchedulePage />} />} />
           <Route path="/more"           element={<MoreMenu />} />
           <Route path="*"               element={<NotFound />} />
         </Routes></Suspense>

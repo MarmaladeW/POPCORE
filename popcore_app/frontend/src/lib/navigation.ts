@@ -2,13 +2,16 @@
 // Pages that left the menus keep their routes: /trades, /today.
 
 // inventory: 库存查看 at the selected store (always true for managers and admins).
-// operations: 门店操作权限 Store operations access at some store. A 查看者 Viewer with it is a counter account (owner,
-// 2026-11-19): 网站订单, and with 库存查看 the 库存 pages to look at, beside Products and the Dex; it changes nothing else.
+// operations: 门店操作权限 Store operations access at some store.
+// A 查看者 Viewer is the store computer's account (owner, 2026-11-24: "specific for the store computer, where it is able to
+// see the order we need to prepare in store, see the stock, dex, no need for shift, able to view products"): 网站订单 and
+// 库存 at the stores an admin ticked as 店铺电脑 in Users, the watch list, Products and the Dex. No 排班, nothing to edit.
 export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inventory: boolean; operations?: boolean }
 
-// What a viewer counter account looks at besides Products and the Dex.
+// What the store computer looks at besides Products and the Dex. Its home is 网站订单, so 首页 shows only until a store
+// is ticked for it.
 const counterItems = (access: NavAccess): NavItem[] =>
-  [...(access.operations ? [item.webOrders] : []), ...(access.inventory ? [item.stock] : [])]
+  [...(access.operations ? [item.webOrders] : [item.home]), ...(access.inventory ? [item.stock] : [])]
 export type NavIcon = 'home' | 'pay' | 'in' | 'box' | 'swap' | 'doc' | 'chart' | 'cal' | 'grid' | 'user' | 'gear' | 'gift' | 'count' | 'web' | 'eye'
 export type NavItem = { key: string; zh: string; en: string; icon: NavIcon; note?: string }
 export type NavGroup = { label: string; items: NavItem[] }
@@ -45,11 +48,14 @@ const item = {
 export const removedFromMenus = ['/trades', '/today']
 
 export function railGroups(access: NavAccess): NavGroup[] {
+  if (!access.staff) return [
+    { label: '日常', items: [...counterItems(access), item.watchList] },
+    { label: '查看', items: [item.products, item.dex] },
+  ]
   const daily: NavItem[] = [item.home]
-  if (access.staff && access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock, item.webOrders)
-  else if (access.staff && access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock, item.webOrders, item.staffDiscounts)
-  else if (access.staff) daily.push(item.checkout, item.summary, item.eveningCount, item.restock, item.webOrders, item.staffDiscounts)
-  else daily.push(...counterItems(access))
+  if (access.manager) daily.push(item.checkout, item.incoming, item.stock, item.restock, item.webOrders)
+  else if (access.inventory) daily.push(item.checkout, item.incoming, item.summary, item.stock, item.restock, item.webOrders, item.staffDiscounts)
+  else daily.push(item.checkout, item.summary, item.eveningCount, item.restock, item.webOrders, item.staffDiscounts)
   daily.push(item.watchList)
   const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
@@ -62,7 +68,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
 export function moreItems(access: NavAccess): NavItem[] {
   return [
     ...(access.staff ? [access.inventory ? item.stock : item.eveningCount, item.restock, item.webOrders, ...(access.manager ? [] : [item.staffDiscounts])]
-      : counterItems(access)),
+      : counterItems(access).filter(entry => entry !== item.home)),
     item.watchList,
     item.products,
     item.dex,
@@ -72,10 +78,15 @@ export function moreItems(access: NavAccess): NavItem[] {
 }
 
 // Phone bottom bar: 首页 · 买单 · 排班 · 更多. When the open page lives under 更多, it shows as
-// its own tab before 排班 (Figma "Phone bottom bar · 5 tabs (库存)").
+// its own tab before 排班 (Figma "Phone bottom bar · 5 tabs (库存)"). The store computer: 网站订单 · 库存 · 产品 · 更多.
 export function bottomItems(access: NavAccess, active: string): NavItem[] {
+  if (!access.staff) {
+    const tabs = [...counterItems(access), item.products]
+    const promoted = moreItems(access).find(entry => entry.key === active && !tabs.includes(entry))
+    return [...tabs.slice(0, -1), ...(promoted ? [promoted] : []), item.products]
+  }
   const promoted = moreItems(access).find(entry => entry.key === active)
-  return [item.home, ...(access.staff ? [item.checkout] : []), ...(promoted ? [promoted] : []), item.schedule]
+  return [item.home, item.checkout, ...(promoted ? [promoted] : []), item.schedule]
 }
 
 // Pages reached from inside Inventory: 晚盘 and the claw machine location.

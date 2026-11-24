@@ -201,10 +201,13 @@ async def viewer_flow(browser):
     state['api_payload'] = fixture(state)
     context, page = await context_with_api(browser, state, auth={'role': 'viewer'})
     try:
-        for path in ('/', '/schedule'):
-            await page.goto(BASE + path)
-            await expect(page.get_by_role('heading', name='排班' if path == '/schedule' else 'Today / 今日', exact=True)).to_be_visible()
-            await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
+        # The viewer is the store computer's account (owner, 2026-11-24): its home has no clock and 排班 is closed to it.
+        await page.goto(BASE + '/')
+        await expect(page.get_by_role('heading', name='店铺电脑', exact=True)).to_be_visible()
+        await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
+        await page.goto(BASE + '/schedule')
+        await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+        await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         assert not any(r['path'] == ENDPOINT for r in state.get('requests', []))
     finally:
         await context.close()
