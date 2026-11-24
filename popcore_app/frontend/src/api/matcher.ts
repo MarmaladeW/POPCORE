@@ -56,6 +56,11 @@ export interface BackendBaseItem {
   // The paste line this row was read from, and the repeat it belongs to when that line repeats an earlier block.
   line?: number
   repeat_id?: string
+  // Goods the other store's 出库 already put here (2026-11-24): read as them by default, 入店 as 出库入店
+  // ('refill', its own section kept in section_was) or left out ('drop'); the manager can make them new goods.
+  sent_id?: string
+  sent_fix?: SentFix
+  section_was?: string
 }
 
 // 'remembered' confirmed the line (same store and section); 'confirm' asks once here; 'stale' the product
@@ -132,7 +137,12 @@ export interface FormatCheck {
   // A stock block written again word for word (owner, 2026-11-15): the manager drops the repeat or counts both.
   repeat_id?: string
   repeat_lines?: number[]
+  // The row read as goods the other store's 出库 already sent here, and how (2026-11-24).
+  sent_id?: string
+  sent_fix?: SentFix
 }
+
+export type SentFix = 'refill' | 'drop'
 
 export interface ReportMetadata extends ReportAnnotations {
   cash_actual: number | null

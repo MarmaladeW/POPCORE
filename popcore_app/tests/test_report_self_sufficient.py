@@ -544,24 +544,107 @@ class ReportSelfSufficientTests(IsolatedApiCase):
         self.confirm_and_save(self.body(self.parse('2026.11.12 DT\n出库：\nlabubu喵喵毛绒 9*3\netb-pe*2', 'DT')))
         arrived = '2026.11.13 太古\n入库：\nlabubu喵喵毛绒 9*3\n小王子 12*1\n入店：\netb-pe*2\n出库入店：\netb-pe*1'
         parsed = self.parse(arrived, 'MK')
-        told = {tuple(check['lines']): check for check in parsed['format_checks'] if '不然会加两次' in check['problem']}
+        # Since 2026-11-24 the lines the sent goods still cover are read as them by default (DT and MK, Nov 22–23):
+        # 入库 is left out, 入店 becomes 出库入店, and the check says so with a way back to new goods.
+        told = {tuple(check['lines']): check for check in parsed['format_checks'] if check.get('sent_id')}
         self.assertEqual(sorted(told), [(3,), (6,)])
-        self.assertEqual((told[3,]['level'], told[3,]['section'], told[3,]['text']), ('check', '入库', ['labubu喵喵毛绒 9*3']))
+        self.assertEqual((told[3,]['level'], told[3,]['section'], told[3,]['text'], told[3,]['sent_fix']),
+                         ('check', '入库', ['labubu喵喵毛绒 9*3'], 'drop'))
         self.assertIn('dt 2026-11-12 的 出库 已经把 3 set「labubu喵喵毛绒 整端」加到这家店的仓库', told[3,]['problem'].lower())
-        self.assertIn('移除这一行', told[3,]['problem'])
-        # Written as new goods onto the floor: they are in the warehouse already, so it is a 出库入店.
-        self.assertIn('改成 出库入店', told[6,]['problem'])
+        self.assertIn('这一行先去掉', told[3,]['problem'])
+        # Written as new goods onto the floor: they are in the warehouse already, so it is read as a 出库入店.
+        self.assertEqual((told[6,]['section'], told[6,]['sent_fix']), ('入店', 'refill'))
+        self.assertIn('先读成 出库入店', told[6,]['problem'])
+        rows = {row['line']: row for row in parsed['review']}
+        self.assertEqual((rows[3]['section'], rows[3]['sent_fix'], rows[3]['sent_id']), ('back_in', 'drop', told[3,]['sent_id']))
+        self.assertEqual((rows[6]['section'], rows[6]['section_was'], rows[6]['sent_fix']), ('refill', 'stock_in', 'refill'))
+        # The second 小王子 set was not sent: it stays new goods, with nothing said.
+        self.assertNotIn('sent_id', rows[4])
         # Goods that went onto MK's floor and are then written 入店 are simply left out.
         self.confirm_and_save(self.body(self.parse('2026.11.12 DT\n出库：\netb-pe*2', 'DT'), to_floor={'etb-pe'}))
         again = self.parse(arrived, 'MK')
-        (floor,) = [check for check in again['format_checks'] if check['lines'] == [6] and '不然会加两次' in check['problem']]
+        (floor,) = [check for check in again['format_checks'] if check['lines'] == [6] and check.get('sent_id')]
         self.assertIn('楼下', floor['problem'])
-        self.assertIn('移除这一行', floor['problem'])
+        self.assertEqual(floor['sent_fix'], 'drop')
+        # More than was sent is more likely other goods (MK's SA shu, Nov 12): only pointed out, not changed.
+        bigger = self.parse(arrived.replace('入店：\netb-pe*2', '入店：\netb-pe*5'), 'MK')
+        (check,) = [check for check in bigger['format_checks'] if check['lines'] == [6]]
+        self.assertIn('不然会加两次', check['problem'])
+        self.assertNotIn('sent_id', check)
+        self.assertEqual([row['section'] for row in bigger['review'] if row['line'] == 6], ['stock_in'])
         # Days later it is other goods: nothing is said. The sender's own report is never told either.
         later = self.parse(arrived.replace('2026.11.13', '2026.11.16'), 'MK')
-        self.assertFalse([check for check in later['format_checks'] if '不然会加两次' in check['problem']])
+        self.assertFalse([check for check in later['format_checks'] if '出库 已经把' in check['problem']])
         own = self.parse('2026.11.13 DT\n入库：\nlabubu喵喵毛绒 9*3', 'DT')
-        self.assertFalse([check for check in own['format_checks'] if '不然会加两次' in check['problem']])
+        self.assertFalse([check for check in own['format_checks'] if '出库 已经把' in check['problem']])
+
+    def test_what_was_fixed_by_hand_in_the_nov_19_23_reports_is_read_by_itself(self):
+        # 2026-11-24: every hand edit made to DT and MK's Nov 19–23 reports before pasting, now read by the paste.
+        self.build_catalogue()
+        kitty, kitty_set = self.product('labubu喵喵毛绒'), self.product('labubu喵喵毛绒', whole=True)
+        _, _, per = self.whole_set_of('labubu喵喵毛绒')
+        self.assertEqual(per, 9)
+        parsed = self.parse('2026.11.20 太古\n随手记汇总：\n诡乐园\n诡乐园*1\n卖dispaly\n诡乐园*1\n入display：诡乐园\n'
+                            f'出店：\nlabubu喵喵毛绒 9*2\n出库入店：\nlabubu喵喵毛绒*9\nlabubu喵喵毛绒*18', 'MK')
+        rows = {(row['line'], row['section']): row for row in self.rows(parsed)}
+        problems = {tuple(check['lines']): check['problem'] for check in parsed['format_checks']}
+        # A sale with no *N names one product for sure: one piece, reviewed, said (MK "sp image", DT "Dimoo梦里梦外 中娃").
+        sale = rows[3, 'cash']
+        self.assertEqual((sale['qty'], sale['flagged'], sale.get('qty_assumed')), (1, False, True))
+        self.assertIn(sale, parsed['review'])
+        self.assertIn('按 1 个读', problems[3,])
+        # "卖dispaly" is the 卖display heading (MK Nov 20), not a product line.
+        self.assertEqual(rows[6, 'display_sold']['qty'], 1)
+        self.assertNotIn('卖dispaly', [row['raw_name'] for row in self.rows(parsed)])
+        # 入display with no *N is one piece onto display (DT Nov 22 "… - Frankie-The Forger").
+        shown = rows[7, 'stock_in']
+        self.assertEqual((shown['qty'], shown['box_size'], shown['to_display'], shown['flagged']), (1, 1, True, False))
+        # 出店 "labubu喵喵毛绒 9*2": 9 is its set size, so 2 sets = 18 boxes (MK Nov 21 "sa marine 12*2").
+        out = rows[9, 'stock_out']
+        self.assertEqual((out['qty'], out['product']['id']), (18, kitty))
+        self.assertIn('读成 2 端 = 18 个', problems[9,])
+        self.assertNotIn('读成名字的一部分', problems[9,])
+        # 出库入店 "*9" is exactly one set brought down (DT Nov 23 "smiski球s3*24"); "*18" stays 18 loose boxes, as
+        # DT's 出库 "SA shu*30" on Nov 11 really was loose boxes.
+        self.assertEqual((rows[11, 'refill']['box_size'], rows[11, 'refill']['qty']), (9, 1))
+        self.assertIn('按整端读', problems[11,])
+        self.assertEqual((rows[12, 'refill']['box_size'], rows[12, 'refill']['qty']), (1, 18))
+        # A quantity written wrongly still stops the save.
+        bad = self.parse('2026.11.20 太古\n随手记汇总：\n诡乐园*oops\n诡乐园 x2', 'MK')
+        self.assertTrue(all(row['flagged'] and not row['qty'] for row in self.rows(bad)))
+        self.receive(kitty_set, 'MK', 'warehouse', 2, 'set')
+        before = (self.balance(kitty_set, 'MK', 'warehouse'), self.balance(kitty, 'MK', 'floor'))
+        self.assertEqual(before[0], 2)
+        preview, saved = self.confirm_and_save(self.body(self.parse(
+            '2026.11.20 太古\n出店：\nlabubu喵喵毛绒 9*2\n出库入店：\nlabubu喵喵毛绒*9', 'MK')))
+        self.assertEqual((self.balance(kitty_set, 'MK', 'warehouse'), self.balance(kitty, 'MK', 'floor')),
+                         (before[0] - 1, before[1] - 18 + 9))
+
+        # The other store pasted first (DT Nov 21 wrote MK's goods as 入店): MK's 出库 of them is pointed out.
+        self.confirm_and_save(self.body(self.parse('2026.11.21 DT\n入店：\nlabubu喵喵毛绒 9*1', 'DT')))
+        sent = self.parse('2026.11.21 太古\n出库：\nlabubu喵喵毛绒 9*1', 'MK')
+        (check,) = [check for check in sent['format_checks'] if '写成 入店 加上了' in check['problem']]
+        self.assertIn('改成 出店', check['problem'])
+        # Goods never arrive before they are sent: a 出库 two days after DT's arrival is not that arrival.
+        later = self.parse('2026.11.23 太古\n出库：\nlabubu喵喵毛绒 9*1', 'MK')
+        self.assertFalse([check for check in later['format_checks'] if '写成 入店 加上了' in check['problem']])
+
+        # What the sent goods still cover: MK's 出库 put 3 sets in DT's upstairs on Nov 22; DT's 出库入店 of Nov 23
+        # brought 2 down, so on Nov 24 one set is left to read an 入店 as; two sets are more likely new goods.
+        self.receive(kitty_set, 'MK', 'warehouse', 3, 'set')
+        _, saved = self.confirm_and_save(self.body(self.parse('2026.11.22 太古\n出库：\nlabubu喵喵毛绒 9*3', 'MK')))
+        self.assertEqual([(line['moving'], line['short']) for line in saved['stock']['lines']], [(3, 0)])
+        self.confirm_and_save(self.body(self.parse('2026.11.23 DT\n出库入店：\nlabubu喵喵毛绒 9*2', 'DT')))
+        one = self.parse('2026.11.24 DT\n入店：\nlabubu喵喵毛绒 9*1', 'DT')
+        self.assertEqual([(row['section'], row.get('sent_fix')) for row in self.rows(one)], [('refill', 'refill')])
+        two = self.parse('2026.11.24 DT\n入店：\nlabubu喵喵毛绒 9*2', 'DT')
+        self.assertEqual([(row['section'], row.get('sent_fix')) for row in self.rows(two)], [('stock_in', None)])
+        self.assertTrue([check for check in two['format_checks'] if '不然会加两次' in check['problem']])
+        # DT's own Nov 23 pasted again does not count its own 出库入店 against itself.
+        again = self.parse('2026.11.23 DT\n入店：\nlabubu喵喵毛绒 9*3', 'DT')
+        self.assertEqual([row['section'] for row in self.rows(again)], ['refill'])
+        with closing(self.connect()) as con:
+            self.assertTrue(reconcile_inventory(con)['ok'])
 
     def test_出库_stays_a_note_while_no_other_store_is_live(self):
         with closing(self.connect()) as con:

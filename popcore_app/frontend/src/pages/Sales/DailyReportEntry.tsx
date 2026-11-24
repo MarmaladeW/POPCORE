@@ -23,7 +23,7 @@ import {
 import {
   cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
   reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, validReportQuantity,
-  applyRepeatChoice, dropRepeats, type RepeatChoice,
+  applyRepeatChoice, dropRepeats, type RepeatChoice, applySentChoice, dropSent, type SentChoice,
 } from './dailyReportReview'
 import { placeText } from './namePicksView'
 
@@ -244,6 +244,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [multiDay,      setMultiDay]      = useState(false)
   // A stock block written twice word for word (owner, 2026-11-15): dropped unless the manager counts both.
   const [repeatChoices, setRepeatChoices] = useState<Record<string, RepeatChoice>>({})
+  // Goods the other store's 出库 already sent here (2026-11-24): read as them unless the manager says new goods.
+  const [sentChoices, setSentChoices] = useState<Record<string, SentChoice>>({})
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
   const [stockResult,   setStockResult]   = useState<ReportStockResult | null>(null)
   // At a live store the stock lines move stock too; the manager confirms them first (owner, 2026-11-03).
@@ -269,7 +271,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
       // Rows of a repeated block start left out: 去掉重复 Drop the repeat is the default.
       setRepeatChoices({})
-      setConfirmed(dropRepeats(res.confirmed.map((it, i) => ({
+      setSentChoices({})
+      setConfirmed(dropSent(dropRepeats(res.confirmed.map((it, i) => ({
         ...it,
         _key:     mk('c', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -277,9 +280,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
-      }))))
+      })))))
 
-      setReview(dropRepeats(res.review.map((it, i) => ({
+      setReview(dropSent(dropRepeats(res.review.map((it, i) => ({
         ...it,
         _key:     mk('r', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -289,9 +292,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         notes:    it.note ?? '',
         originalTopId: it.candidates[0]?.id ?? it.product.id,
         accepted: false,
-      }))))
+      })))))
 
-      setFailed(dropRepeats(res.failed.map((it, i) => ({
+      setFailed(dropSent(dropRepeats(res.failed.map((it, i) => ({
         ...it,
         _key:     mk('f', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -300,7 +303,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
         section:  it.section ?? 'unknown',
-      }))))
+      })))))
 
       setCashTotalReported(res.cash_total_reported ?? null)
       setCashExpected(res.cash_expected_reported ?? null)
@@ -353,6 +356,13 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     setConfirmed(prev => applyRepeatChoice(prev, repeatId, choice))
     setReview(prev => applyRepeatChoice(prev, repeatId, choice))
     setFailed(prev => applyRepeatChoice(prev, repeatId, choice))
+  }
+
+  function chooseSent(sentId: string, choice: SentChoice) {
+    setSentChoices(prev => ({ ...prev, [sentId]: choice }))
+    setConfirmed(prev => applySentChoice(prev, sentId, choice))
+    setReview(prev => applySentChoice(prev, sentId, choice))
+    setFailed(prev => applySentChoice(prev, sentId, choice))
   }
 
   function patchConfirmed(key: string, patch: Partial<ConfirmedRow>) {
@@ -961,6 +971,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                       onChange={e => chooseRepeat(check.repeat_id!, e.target.value)}>
                       <Radio value="drop">去掉重复 Drop the repeat</Radio>
                       <Radio value="both">两次都算 Count both</Radio>
+                    </Radio.Group>
+                  )}
+                  {check.sent_id && (
+                    <Radio.Group size="small" style={{ marginTop: 4 }} aria-label={`Sent ${check.sent_id}`}
+                      value={sentChoices[check.sent_id] ?? 'sent'}
+                      onChange={e => chooseSent(check.sent_id!, e.target.value)}>
+                      <Radio value="sent">{check.sent_fix === 'drop' ? '已经到了，去掉 Already here: leave out' : '从楼上拿下来 出库入店 Taken down'}</Radio>
+                      <Radio value="new">另一批新货 Other new goods</Radio>
                     </Radio.Group>
                   )}
                 </li>
