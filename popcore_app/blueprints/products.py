@@ -22,6 +22,7 @@ from catalog_identity import (
     product_search_text_sql, resolve_barcode, update_product_identity,
 )
 from goods_operations import _remember, _replay
+from product_search import like_any, respelled, token_alternatives
 from inventory_commands import InventoryConflict, require_inventory_access
 from inventory_visibility import can_see_inventory, hide_quantities
 from inventory_opening import (
@@ -221,9 +222,12 @@ def search_products():
         return jsonify(rows)
 
     tokens = q.split()
+    # A word no product carries is searched as its closest words (product_search.py); a known word is untouched.
+    spellings = token_alternatives(con, tokens)
 
-    and_conditions = " AND ".join("inventory_search_blob LIKE ?" for _ in tokens)
-    and_params = [f'%{t}%' for t in tokens] + filter_params
+    and_clauses = [like_any('inventory_search_blob', words) for words in spellings]
+    and_conditions = " AND ".join(clause for clause, _ in and_clauses)
+    and_params = [value for _, values in and_clauses for value in values] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
@@ -279,15 +283,29 @@ def search_products():
         ''', bi_params)
         bi_rows = [dict(r) for r in cur.fetchall()]
 
+    # A typed SKU or a scanned barcode is that product: always among the results, and first.
+    cur.execute(f'''
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
+               brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+               parent_product_id, sub_item_count, created_at
+        FROM {search_source}
+        WHERE (LOWER(sku) = ? OR id IN (SELECT product_id FROM product_barcodes WHERE code = ?)) {filter_sql}
+    ''', [q, request.args.get('q', '').strip()] + filter_params)
+    exact_rows = [dict(r) for r in cur.fetchall()]
+    exact_ids = {r['id'] for r in exact_rows}
+
     seen = {}
-    for r in and_rows + or_rows + char_rows + bi_rows:
+    for r in and_rows + or_rows + char_rows + bi_rows + exact_rows:
         if r['id'] not in seen:
             seen[r['id']] = r
 
+    # A text with a misspelt word scores as the best of what was typed and its respellings.
+    texts = [(tokens, q)] + [(words, ' '.join(words)) for words in respelled(tokens, spellings)]
     candidates = list(seen.values())
     for c in candidates:
-        c['_score'] = _score_product(c, tokens, q)
-    candidates.sort(key=lambda x: -x['_score'])
+        c['_score'] = max(_score_product(c, words, text) for words, text in texts)
+    candidates.sort(key=lambda x: (x['id'] not in exact_ids, -x['_score']))
 
     final = candidates[:limit] if limit else candidates
     for c in final:
