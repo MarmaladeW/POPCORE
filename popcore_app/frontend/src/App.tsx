@@ -48,6 +48,7 @@ const NamePicksPage=lazyPage(()=>import('./pages/Sales/NamePicks'))
 const WebsitePage=lazyPage(()=>import('./pages/Website'))
 const WebOrdersPage=lazyPage(()=>import('./pages/WebOrders'))
 const WatchListPage=lazyPage(()=>import('./pages/WatchList'))
+const WatchPage=lazyPage(()=>import('./pages/Watch'))
 const StaffDiscountsPage=lazyPage(()=>import('./pages/StaffDiscounts'))
 const DexHome=lazyPage(()=>import('./pages/Dex'))
 const DexEntryPage=lazyPage(()=>import('./pages/Dex/DexEntry'))
@@ -213,6 +214,7 @@ function AppInner() {
           <Route path="/website" element={<RoleRoute minRole="manager" element={<WebsitePage />} />} />
           <Route path="/web-orders" element={<RoleRoute minRole="viewer" element={<WebOrdersPage />} />} />
           <Route path="/watch-list" element={<RoleRoute minRole="viewer" element={<WatchListPage />} />} />
+          <Route path="/watch" element={<RoleRoute minRole="manager" element={<WatchPage />} />} />
           <Route path="/staff-discounts" element={<RoleRoute minRole="staff" element={<StaffDiscountsPage />} />} />
           <Route path="/dex" element={<RoleRoute minRole="viewer" element={<DexHome />} />} />
           <Route path="/dex/unlinked" element={<RoleRoute minRole="viewer" element={<DexUnlinkedPage />} />} />
