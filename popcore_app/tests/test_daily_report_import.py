@@ -393,12 +393,17 @@ Test Product：2
             self.assertEqual(sum(i['qty'] for b in ('confirmed', 'review', 'failed') for i in parsed[b]), 3)
             self.assertEqual(parsed['parser_engine'], 'rules')
 
-    def test_unknown_quantity_has_no_default_and_display_note_is_opened_stock(self):
+    def test_unknown_quantity_is_one_reviewed_piece_and_display_note_is_opened_stock(self):
+        # A sale with no *N that names one product for sure is one piece (2026-11-24), never confirmed by itself.
         parsed = self.parse('2026.9.15 DT\n随手记汇总：\nTest Product\n出店：\nTest Product*1（display）\n入店：Test Product*1 (display)')
         items = parsed['confirmed'] + parsed['review'] + parsed['failed']
         self.assertEqual(len(items), 1)
-        self.assertTrue(items[0]['flagged'])
-        self.assertEqual(items[0]['qty'], 0)
+        self.assertEqual(items, parsed['review'])
+        self.assertEqual((items[0]['flagged'], items[0]['qty'], items[0]['qty_cash'], items[0]['qty_assumed']),
+                         (False, 1, 1, True))
+        # A name no product is sure of keeps no quantity.
+        unsure = self.parse('2026.9.15 DT\n随手记汇总：\nTest Prod')
+        self.assertTrue(all(row['flagged'] and not row['qty'] for row in unsure['review'] + unsure['failed']))
         self.assertEqual(parsed['display_stock_out'], ['Test Product*1(display)'])
         self.assertEqual(parsed['display_stock_in'], ['Test Product*1 (display)'])
 

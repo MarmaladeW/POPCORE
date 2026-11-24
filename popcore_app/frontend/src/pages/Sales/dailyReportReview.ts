@@ -118,3 +118,22 @@ export function applyRepeatChoice<T extends { repeat_id?: string; removed?: bool
 export function dropRepeats<T extends { repeat_id?: string; removed?: boolean }>(rows: T[]): T[] {
   return rows.map(row => row.repeat_id ? { ...row, removed: true } : row)
 }
+
+// Goods the other store's 出库 already sent here (2026-11-24): 'sent' reads the row as them (the default),
+// 'new' as other new goods, as written.
+export type SentChoice = 'sent' | 'new'
+type SentRow = { sent_id?: string; sent_fix?: 'refill' | 'drop'; section_was?: string; section?: string; removed?: boolean }
+
+/** A row read as sent goods: an 入店 taken down from upstairs (出库入店), or left out. 'new' puts it back as written. */
+export function applySentChoice<T extends SentRow>(rows: T[], sentId: string, choice: SentChoice): T[] {
+  return rows.map(row => {
+    if (row.sent_id !== sentId) return row
+    if (row.sent_fix === 'drop') return { ...row, removed: choice === 'sent' }
+    return { ...row, section: choice === 'sent' ? 'refill' : (row.section_was ?? row.section) }
+  })
+}
+
+/** The rows as first read: what the other store already sent is left out (the server already made 入店 a 出库入店). */
+export function dropSent<T extends SentRow>(rows: T[]): T[] {
+  return rows.map(row => row.sent_id && row.sent_fix === 'drop' ? { ...row, removed: true } : row)
+}
