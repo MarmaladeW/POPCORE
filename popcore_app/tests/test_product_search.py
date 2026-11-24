@@ -58,6 +58,9 @@ class TypoRuleTests(unittest.TestCase):
     def test_only_plain_words_are_replaced_or_offered(self):
         self.assertEqual(typo_words('骷髅熊猫猫', {'骷髅熊猫': 3, 'skullpanda': 3}), [])
         self.assertEqual(typo_words('sk-ull', {'skull': 3}), [])
+        # A code is exact or wrong: a mistyped POPCORE ID never offers its neighbours.
+        self.assertEqual(typo_words('cl00537', {'cl00536': 1, 'cl00538': 1}), [])
+        self.assertEqual(typo_words('mega40', {'mega400': 9}), [])
         self.assertEqual(typo_words('skul', {'sku': 3, 'skül': 2}), [])
 
 

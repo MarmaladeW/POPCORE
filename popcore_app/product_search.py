@@ -47,10 +47,14 @@ def typo_words(word, vocabulary):
     letter or a swap ("park" is not "pack"); 5 to 7 letters one slip; 8 and more two slips, the
     word found at most one letter shorter ("creature" is not "create"). From 5 letters on the
     start of a longer word with the same first letter counts too, within one slip, because staff
-    are still typing ("sjull" on the way to "skullpanda")."""
+    are still typing ("sjull" on the way to "skullpanda"). A word with a digit in it is never
+    replaced: a mistyped POPCORE ID ("CL00536") must not offer the IDs next to it."""
     length = len(word)
     allowed = 0 if length <= 3 else 1 if length <= 7 else 2
     if not allowed or not _PLAIN.fullmatch(word):
+        return []
+    if any(letter.isdigit() for letter in word):
+        # A code is exact or it is wrong: a mistyped POPCORE ID must not offer its neighbours.
         return []
     found = []
     for candidate, carried in vocabulary.items():

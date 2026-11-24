@@ -63,8 +63,8 @@ on purpose: in `/api/products/search` an exact SKU or barcode now always comes f
 
 - A typed word that is part of some other product's text is known, so it is never corrected, even
   if another word was meant ("angle" stays "angle" as long as one product is spelt that way).
-- A SKU is a word like any other: a SKU typed wrong that no product has is replaced by the nearest
-  SKUs (three at most). Check the name before picking.
+- A word with a digit in it is never replaced. A POPCORE ID is exact or it is wrong: a mistyped
+  "CL00536" is searched as typed and never turned into the IDs next to it.
 - Words stored with an accent or an apostrophe are only found typed the same way, as before.
 - Other names (keychain = pendant), plurals and extra words, which the website search also handles,
   are not part of this change.
