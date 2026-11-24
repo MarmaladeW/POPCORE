@@ -30,7 +30,7 @@ export const rankIndex = (rank: string | null | undefined) => {
 export const POSITION_OPTIONS = [
   { value: 'admin', label: '管理员 Admin' },
   ...RANKS.map(entry => ({ value: entry.value as string, label: `${entry.zh} ${entry.en}` })),
-  { value: 'viewer', label: '查看者 Viewer' },
+  { value: 'viewer', label: '查看者 Viewer · 店铺电脑' },
 ]
 
 /** The picker's value for an account: its rank, or admin / viewer. Staff or a manager without a rank yet has none. */

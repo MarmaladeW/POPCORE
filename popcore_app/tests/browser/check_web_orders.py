@@ -130,7 +130,9 @@ async def run(browser, width):
             con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (fixture.dt,))
             con.execute("INSERT INTO inventory_viewers(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (fixture.dt,))
         page = await open_as('viewer', 'viewer:counter')
-        await page.goto(BASE + '/web-orders')
+        # It opens on the orders to prepare (owner, 2026-11-24).
+        await page.goto(BASE + '/')
+        await expect(page).to_have_url(BASE + '/web-orders')
         await expect(page.get_by_role('region', name='Pickup · to pick').get_by_text('#720')).to_be_visible()
         await expect(page.get_by_role('button', name='拣好了 Ready')).to_have_count(1)
         if width > 600:  # the rail: 网站订单 and 库存, nothing that changes anything
@@ -138,18 +140,32 @@ async def run(browser, width):
             await expect(rail.get_by_role('link', name='网站订单 Web orders')).to_be_visible()
             await expect(rail.get_by_role('link', name='库存 Inventory')).to_be_visible()
             await expect(rail.get_by_role('link', name='买单 Checkout')).to_have_count(0)
+            for gone in ('首页 Home', '排班 Schedule'):
+                await expect(rail.get_by_role('link', name=gone)).to_have_count(0)
+            for there in ('产品 Products', '图鉴 Dex', '可疑人员 Watch list'):
+                await expect(rail.get_by_role('link', name=there)).to_be_visible()
             await rail.get_by_role('link', name='库存 Inventory').click()
         else:
+            bar = page.get_by_role('navigation', name='Primary navigation')
+            await expect(bar.get_by_role('link', name='排班 Schedule')).to_have_count(0)
+            await expect(bar.get_by_role('link', name='产品 Products')).to_be_visible()
             await page.goto(BASE + '/stock')
         await expect(page.get_by_role('heading', name='库存', exact=False).first).to_be_visible()
         await expect(page.get_by_role('navigation', name='Inventory sections')).to_have_count(0)
         await expect(page.get_by_text("You don't have permission", exact=False)).to_have_count(0)
         await fits(page, f'counter-stock-{width}.png')
+        # No shifts for the store computer.
+        await page.goto(BASE + '/schedule')
+        await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
 
-        # A viewer without store operations access gets the board's notice and nothing else.
+        # A viewer with no 店铺电脑 store ticked: home says so, and the board names the tick it needs.
         page = await open_as('viewer')
+        await page.goto(BASE + '/')
+        await expect(page.get_by_role('heading', name='店铺电脑', exact=True)).to_be_visible()
+        await expect(page.get_by_text('Once an admin ticks 店铺电脑 Store computer', exact=False)).to_be_visible()
+        await fits(page, f'counter-no-store-{width}.png')
         await page.goto(BASE + '/web-orders')
-        await expect(page.get_by_text('You have no 门店操作权限 Store operations access', exact=False)).to_be_visible()
+        await expect(page.get_by_text('DT 没有勾选 店铺电脑', exact=False)).to_be_visible()
     finally:
         for context in contexts:
             await context.close()

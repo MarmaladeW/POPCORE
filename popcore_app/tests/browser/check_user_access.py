@@ -33,7 +33,8 @@ async def check(browser, case):
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     async def users(route):
         await route.fulfill(json=[{'id': 'fixture|admin', 'username': 'Admin', 'role': 'admin', 'is_active': 1},
-                                 {'id': 'fixture|staff', 'username': 'Staff', 'role': 'staff', 'is_active': 1}])
+                                 {'id': 'fixture|staff', 'username': 'Staff', 'role': 'staff', 'is_active': 1},
+                                 {'id': 'fixture|counter', 'username': 'Counter', 'role': 'viewer', 'is_active': 1}])
     async def api(route):
         parsed = urlparse(route.request.url)
         method = route.request.method
@@ -100,6 +101,7 @@ async def check(browser, case):
         await page.screenshot(path=OUT/f'users-{width}.png', full_page=True, animations='disabled')
     with closing(case.connect()) as con:
         assert con.execute('SELECT COUNT(*) FROM inventory_access').fetchone()[0] == 0
+    await store_computer(page, case)
     await page.goto(BASE + '/today')
     # Without store access Today shows only what is not tied to a store: no work lists, no access error.
     await expect(page.get_by_role('region', name='Store tasks')).to_have_count(0)
@@ -112,6 +114,50 @@ async def check(browser, case):
         await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
         await expect(page.get_by_role('checkbox')).to_have_count(0)
         await context.close()
+
+
+async def store_computer(page, case):
+    """The 查看者 Viewer is the store computer (owner, 2026-11-24): one 店铺电脑 tick per store gives its web orders and
+    its stock to look at together, and it has no schedule settings."""
+    def grants():
+        with closing(case.connect()) as con:
+            return [con.execute(f"SELECT COUNT(*) FROM {table} WHERE auth0_sub='fixture|counter' AND store_id=?",
+                                (case.store_id,)).fetchone()[0] for table in ('inventory_access', 'inventory_viewers')]
+    for width in (1440, 390):
+        await page.set_viewport_size({'width': width, 'height': 980})
+        await page.goto(BASE + '/users')
+        await pick(page, 'Counter')
+        tick = page.get_by_role('checkbox', name='Counter: DT store computer', exact=True)
+        await expect(tick).not_to_be_checked()
+        await expect(page.get_by_role('columnheader', name='店铺电脑 Store computer')).to_be_visible()
+        for gone in ('Counter: DT operations access', 'Counter: DT inventory view', 'Counter: DT scheduling',
+                     '参与排班 Can be scheduled'):
+            await expect(page.get_by_label(gone, exact=True)).to_have_count(0)
+        await expect(page.get_by_text('排班设置在首次登录后出现', exact=False)).to_have_count(0)
+        await tick.click()
+        await expect(page.get_by_text('DT 店铺电脑 已勾选 · ticked', exact=True)).to_be_visible()
+        await expect(tick).to_be_checked()
+        assert grants() == [1, 1], grants()
+        assert await page.evaluate('document.body.scrollWidth') <= width + 2
+        await page.screenshot(path=OUT/f'store-computer-{width}.png', full_page=True, animations='disabled')
+        await tick.click()
+        await expect(tick).not_to_be_checked()
+        assert grants() == [0, 0], grants()
+    # Half saved (only one of the two): shown half ticked, and one click gives both.
+    with closing(case.connect()) as con:
+        con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('fixture|counter', ?)", (case.store_id,))
+        con.commit()
+    await page.set_viewport_size({'width': 1440, 'height': 980})
+    await page.goto(BASE + '/users')
+    await pick(page, 'Counter')
+    tick = page.get_by_role('checkbox', name='Counter: DT store computer', exact=True)
+    await expect(page.locator('.ant-checkbox-indeterminate')).to_have_count(1)
+    await tick.click()
+    await expect(tick).to_be_checked()
+    assert grants() == [1, 1], grants()
+    await tick.click()
+    await expect(tick).not_to_be_checked()
+    assert grants() == [0, 0], grants()
 
 
 async def delete_confirmation(page, case, api):

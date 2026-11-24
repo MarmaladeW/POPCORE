@@ -5,6 +5,7 @@ import {
   findWebOrderCode, getWebOrdersBoard, handWebOrderOver, markWebOrderReady,
   type WebOrderCard, type WebOrderCodeResult, type WebOrdersBoard, type WebOrderStep,
 } from '../../api/webOrders'
+import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
@@ -134,6 +135,8 @@ function CodeBox({ store, onChange }: { store?: string; onChange: () => void }) 
 // Handed over; everything else is for looking. Nothing personal is on it, and never the pickup code.
 export default function WebOrdersPage() {
   const selected = useAppStore(state => state.selectedStore)
+  // The 查看者 Viewer here is the store computer, whose stores are its 店铺电脑 ticks in Users.
+  const staff = useHasRole('staff')
   const store = selected && selected.code !== ALL_STORES.code ? selected.code : undefined
   const [board, setBoard] = useState<WebOrdersBoard>()
   const [error, setError] = useState('')
@@ -196,7 +199,8 @@ export default function WebOrdersPage() {
     {!board.configured ? <Alert type="warning" showIcon message="No website key is set on the server, so no web orders reach POPCORE." />
       : !board.enabled && <Alert type="warning" showIcon message="网站同步已关闭 · The website sync is off: new orders and changes do not reach this board." />}
     {board.stores.length === 0 && <Alert type="info" showIcon
-      message={store ? `You have no 门店操作权限 Store operations access for ${store}.` : 'You have no 门店操作权限 Store operations access. An admin grants it under Users.'} />}
+      message={!staff ? `${store ? `${store} 没有勾选 店铺电脑` : '还没有勾选 店铺电脑 的门店'} · An admin ticks 店铺电脑 Store computer for ${store || 'a store'} in Users.`
+        : store ? `You have no 门店操作权限 Store operations access for ${store}.` : 'You have no 门店操作权限 Store operations access. An admin grants it under Users.'} />}
     <p className="pc-web-fresh">
       {board.stores.join(' + ') || '—'} · <span>更新 Updated {clock(now)}</span> · <span>网站同步 Website read {clock(syncedAt)}</span> · <span>每 30 秒 every 30 s</span>
     </p>

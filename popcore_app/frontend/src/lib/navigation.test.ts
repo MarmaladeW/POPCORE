@@ -13,8 +13,9 @@ const unpicked: NavAccess = { ...roles.staff, inventory: false }
 
 // Every page each role could open from the menus before the redesign.
 const before: Record<string, string[]> = {
-  // 可疑人员 Watch list came after the redesign, for every role (owner, 2026-11-19).
-  viewer: ['/', '/schedule', '/products', '/dex', '/watch-list'],
+  // 可疑人员 Watch list came after the redesign, for every role (owner, 2026-11-19). The viewer, the store computer's
+  // account, lost 排班 (owner, 2026-11-24: "no need for shift").
+  viewer: ['/', '/products', '/dex', '/watch-list'],
   staff: ['/', '/checkout', '/incoming', '/claw', '/summary', '/stock', '/restock', '/special-orders', '/today', '/trades', '/schedule', '/products', '/dex',
     // 网站订单 Web orders, 可疑人员 Watch list and 员工折扣 Staff discounts came after the redesign (owner, 2026-11-19).
     '/web-orders', '/watch-list', '/staff-discounts'],
@@ -75,7 +76,7 @@ test('rails follow the Figma groups', () => {
 test('the bottom bar promotes the open 更多 section before 排班', () => {
   assert.deepEqual(bottomItems(roles.staff, '/').map(entry => entry.zh), ['首页', '买单', '排班'])
   assert.deepEqual(bottomItems(roles.staff, '/stock').map(entry => entry.zh), ['首页', '买单', '库存', '排班'])
-  assert.deepEqual(bottomItems(roles.viewer, '/').map(entry => entry.zh), ['首页', '排班'])
+  assert.deepEqual(bottomItems(roles.viewer, '/').map(entry => entry.zh), ['首页', '产品'])
   assert.deepEqual(bottomItems(roles.manager, '/summary').map(entry => entry.zh), ['首页', '买单', '销售', '排班'])
   assert.deepEqual(bottomItems(roles.staff, '/summary').map(entry => entry.zh), ['首页', '买单', '排班'])
 })
@@ -125,15 +126,22 @@ test('without 库存查看, 库存 becomes 晚盘 and 入店 leaves the menus', 
   assert.deepEqual(bottomItems(unpicked, '/stock/count').map(entry => entry.zh), ['首页', '买单', '晚盘', '排班'])
 })
 
-test('a viewer counter account gets 网站订单 and 库存 to look at, beside Products and the Dex', () => {
-  // Owner, 2026-11-19: the store computer's account. 查看者 Viewer, with store operations access (and 库存查看).
+test('the viewer is the store computer: 网站订单, 库存, 可疑人员, 产品, 图鉴 and no 排班', () => {
+  // Owner, 2026-11-24: "specific for the store computer, where it is able to see the order we need to prepare in store,
+  // see the stock, dex, no need for shift, able to view products". 店铺电脑 ticked in Users = operations + 库存查看.
   const counter: NavAccess = { ...roles.viewer, operations: true, inventory: true }
-  assert.deepEqual(railGroups(counter)[0].items.map(entry => entry.zh), ['首页', '网站订单', '库存', '可疑人员'])
+  // Its home is 网站订单, so there is no separate 首页.
+  assert.deepEqual(railGroups(counter).map(group => group.items.map(entry => entry.zh)), [['网站订单', '库存', '可疑人员'], ['产品', '图鉴']])
   assert.deepEqual(moreItems(counter).map(entry => entry.key), ['/web-orders', '/stock', '/watch-list', '/products', '/dex'])
-  assert.deepEqual(railGroups({ ...counter, inventory: false })[0].items.map(entry => entry.key), ['/', '/web-orders', '/watch-list'])
-  for (const key of ['/checkout', '/incoming', '/restock', '/summary', '/stock/count']) assert.ok(!rail(counter).includes(key), key)
-  // A viewer without store operations access sees neither.
+  assert.deepEqual(bottomItems(counter, '/web-orders').map(entry => entry.zh), ['网站订单', '库存', '产品'])
+  assert.deepEqual(bottomItems(counter, '/dex').map(entry => entry.zh), ['网站订单', '库存', '图鉴', '产品'])
+  for (const key of ['/', '/schedule', '/checkout', '/incoming', '/restock', '/summary', '/stock/count', '/staff-discounts']) {
+    assert.ok(!rail(counter).includes(key), key)
+    assert.ok(!phone(counter).includes(key), key)
+  }
+  // Until a store is ticked it keeps 首页, which says so.
   assert.deepEqual(railGroups(roles.viewer)[0].items.map(entry => entry.key), ['/', '/watch-list'])
+  assert.ok(!rail(roles.viewer).includes('/schedule') && !phone(roles.viewer).includes('/schedule'))
 })
 
 test('every role finds 可疑人员 Watch list in the rail and in 更多, the counter account included', () => {
@@ -145,5 +153,5 @@ test('every role finds 可疑人员 Watch list in the rail and in 更多, the co
     assert.ok(moreItems(access).some(entry => entry.key === '/watch-list'))
   }
   assert.equal(activeSection('/watch-list', false), '/watch-list')
-  assert.deepEqual(bottomItems(roles.viewer, '/watch-list').map(entry => entry.zh), ['首页', '可疑人员', '排班'])
+  assert.deepEqual(bottomItems(roles.viewer, '/watch-list').map(entry => entry.zh), ['首页', '可疑人员', '产品'])
 })

@@ -228,13 +228,9 @@ async def schedule_checks(browser):
     context, page = await context_with_api(browser, {'mode': 'data'}, auth={'role': 'viewer'})
     await page.goto(BASE + '/sales')
     await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    # The viewer is the store computer's account, with no shifts (owner, 2026-11-24).
     await page.goto(BASE + '/schedule')
-    await expect(page.get_by_text('Schedule', exact=True).first).to_be_visible()
-    selector = page.locator('select').first
-    await selector.select_option('DT')
-    await selector.select_option('MK')
-    await expect(selector).to_have_value('MK')
-    await expect(page.get_by_text('Schedule', exact=True).first).to_be_visible()
+    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
     await context.close()
 
 
