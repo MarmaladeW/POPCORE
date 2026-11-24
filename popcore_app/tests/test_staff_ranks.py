@@ -77,6 +77,34 @@ class StaffRankTests(IsolatedApiCase):
         response = self.client.patch('/api/users/auth0|celia', headers=self.headers('manager'), json={'rank': 'store_manager'})
         self.assertEqual(response.status_code, 403)
 
+    def test_a_new_account_keeps_the_position_picked_for_it(self):
+        # popcore-work#88: adding someone with a position failed after Auth0 made the account, and the rank was lost.
+        def create(username, body):
+            sub = f'auth0|{username}'
+            with patch.object(users, 'AUTH0_MGMT_CLIENT_ID', 'id'), patch.object(users, 'AUTH0_MGMT_CLIENT_SECRET', 'secret'), \
+                    patch.object(users, '_get_role_map', return_value=ROLE_IDS), \
+                    patch.object(users, '_mgmt_post', side_effect=lambda path, json=None, **kw:
+                                 Mock(ok=True, json=lambda: {'user_id': sub}) if path == 'users' else self.mgmt_post(path, json)):
+                return self.client.post('/api/users', headers=self.headers('admin'),
+                                        json={'username': username, 'password': 'new-pass-123', **body}), sub
+        today = checkout_access.business_date()
+        response, sub = create('jessi', {'rank': 'regular'})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertIsNone(response.get_json()['warning'])
+        self.assertEqual((self.roles[sub], self.employee(sub)),
+                         (['rol_staff'], {'rank': 'regular', 'is_training': 0, 'regular_since': today}))
+        response, sub = create('nan', {'rank': 'store_manager'})
+        self.assertEqual((response.status_code, self.roles[sub], self.employee(sub)['rank']),
+                         (201, ['rol_manager'], 'store_manager'))
+        # Promoting a trainee row (no sign-in yet) into an account keeps the picked position too.
+        with closing(self.connect()) as con:
+            trainee = con.execute("INSERT INTO employees(auth0_id, name, is_trainee) VALUES ('trainee|bo', 'Bo', 1)").lastrowid
+            con.commit()
+        response, sub = create('bo', {'rank': 'trainee', 'trainee_id': trainee})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertEqual((self.roles[sub], self.employee(sub)),
+                         (['rol_staff'], {'rank': 'trainee', 'is_training': 1, 'regular_since': None}))
+
     def test_the_status_keeps_the_rank_in_step(self):
         with closing(self.connect()) as con:
             ids = {row[0]: row[1] for row in con.execute('SELECT auth0_id, id FROM employees')}

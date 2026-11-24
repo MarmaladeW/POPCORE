@@ -183,7 +183,8 @@ def create_user():
         if updated.rowcount != 1:
             con.close()
             return jsonify({'error': 'Account created in Auth0, but trainee promotion was not saved. Contact an administrator before retrying.'}), 409
-    con.close()
+    # The connection stays open: it is this request's one connection (get_db), and _save_rank below uses it again.
+    # Closing it here made every account added with a position fail after Auth0 had made it (popcore-work#88).
 
     # Assign the requested role, verifying the Auth0 response — a swallowed
     # failure here used to leave the account silently created as viewer.
