@@ -37,6 +37,8 @@ export interface ProductDetailData {
   stock_unit?: string | null
   design_name?: string | null
   identity_status?: 'unverified' | 'verified'
+  // 0 = 不计库存: sold at the counter, never counted (owner, 2026-11-21).
+  stock_counted?: number
   barcodes?: { id: number; code: string; code_kind: string; input_unit: string; quantity_per_scan: number }[]
   conversions?: { id: number; target_sku: string; output_per_input: number; version: number }[]
   series_id?: number | null
@@ -44,6 +46,34 @@ export interface ProductDetailData {
   sub_items?: { id: number; sku: string; jizhanming: string | null; name_cn_en: string | null
     stock_form: string | null; design_name: string | null; price: number | null
     aliases?: { id: number; alias: string }[] }[]
+}
+
+/** 不计库存 (owner, 2026-11-21: "we are not going to count their stock. and yes we do sell them"): an accessory such as
+ *  娃衣 or 购物袋 that sells at the counter but is never counted. A manager marks it here; an unreviewed product with no
+ *  stock form is reviewed as an ordinary piece at the same time. Its sales and the 日报 then move no stock. */
+function StockCounted({ product, onSaved }: { product: ProductDetailData; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const uncounted = product.stock_counted === 0
+  const canMark = !uncounted && (product.stock_form === 'ordinary' || (!product.stock_form && product.identity_status !== 'verified'))
+  async function save(counted: boolean) {
+    setBusy(true); setError('')
+    try {
+      const review = !counted && !product.stock_form ? { identity_status: 'verified', stock_form: 'ordinary', stock_unit: 'piece' } : {}
+      await client.patch(`/products/${product.id}`, { ...review, stock_counted: counted })
+      onSaved()
+    } catch (cause) {
+      setError((cause as { _serverMessage?: string })?._serverMessage || '没存上，请再试。')
+    } finally { setBusy(false) }
+  }
+  if (!uncounted && !canMark) return null
+  return <RoleGuard minRole="manager">
+    <div className="pc-prod-alias-add pc-prod-counted">
+      {uncounted
+        ? <Button loading={busy} onClick={() => save(true)}>改回计库存 Count its stock</Button>
+        : <Button loading={busy} onClick={() => save(false)}>设为不计库存 Sell without counting</Button>}
+      {error && <Alert type="error" showIcon message={error} />}
+    </div>
+  </RoleGuard>
 }
 
 // One product's facts and aliases; the drawer (phone) and the pane beside the table (desktop) share it.
@@ -137,8 +167,9 @@ function SubItems({ product, onOpen, onSaved }: { product: ProductDetailData; on
   </>
 }
 
-export function ProductDetailBody({ detail, stockTotal, onOpen }: {
+export function ProductDetailBody({ detail, stockTotal, onOpen, onChanged }: {
   detail: ReturnType<typeof useProductDetail>; stockTotal: StockFigureValue; onOpen?: (id: number) => void
+  onChanged?: () => void
 }) {
   const { product, loading, error, aliases, aliasInput, setAliasInput, addAlias, removeAlias, reload } = detail
   const hasSecrets = product && product.hidden_count && product.hidden_count !== '0'
@@ -147,7 +178,7 @@ export function ProductDetailBody({ detail, stockTotal, onOpen }: {
     {product && <div className="pc-prod-detail-body">
       <div className="pc-prod-facts">
         <div><span>价格 Price (CA$)</span><strong>{product.price != null ? `$${product.price.toFixed(2)}` : '—'}</strong></div>
-        <div><span>库存 Stock</span><strong><StockFigure value={stockTotal} /></strong></div>
+        <div><span>库存 Stock</span><strong>{product.stock_counted === 0 ? '不计' : <StockFigure value={stockTotal} />}</strong></div>
       </div>
       <SubItems product={product} onOpen={onOpen} onSaved={reload} />
       <dl className="pc-prod-dl">
@@ -160,9 +191,11 @@ export function ProductDetailBody({ detail, stockTotal, onOpen }: {
         <Fact label="状态" value={product.identity_status === 'verified' ? <>已核对 <span>Verified</span></> : <>未核对 <span>Unverified</span></>} />
         <Fact label="形态 · 单位" value={[product.stock_form ? forms[product.stock_form] || product.stock_form.replaceAll('_', ' ') : '', product.stock_unit ? `Unit: ${product.stock_unit}` : ''].filter(Boolean).join(' · ')} />
         <Fact label="确认款 Design" value={product.design_name} />
+        {product.stock_counted === 0 && <Fact label="库存 Stock" value={<>不计库存 <span>Sold, not counted</span></>} />}
         {(product.conversions ?? []).map(c => <Fact key={`c${c.id}`} label="换算" value={`Conversion v${c.version}: 1 ${product.stock_unit} → ${c.output_per_input} boxes (${c.target_sku})`} />)}
         {(product.barcodes ?? []).map(b => <Fact key={`b${b.id}`} label="条码" value={`${b.code} · ${b.code_kind} · ${b.quantity_per_scan} ${b.input_unit}`} />)}
       </dl>
+      <StockCounted product={product} onSaved={() => { reload(); onChanged?.() }} />
       <h3 className="pc-prod-section">详情 <small>Details</small></h3>
       <dl className="pc-prod-dl">
         <Fact label="发售日期" value={product.release_date} />
@@ -195,9 +228,10 @@ export function ProductDetailBody({ detail, stockTotal, onOpen }: {
 }
 
 // Desktop: the detail beside the catalog table (Figma Products · Catalog).
-export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages, onOpen }: {
+export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onImages, onOpen, onChanged }: {
   productId: number; stockTotal: StockFigureValue; onClose: () => void
   onEdit: (p: ProductDetailData) => void; onImages: (p: ProductDetailData) => void; onOpen?: (id: number) => void
+  onChanged?: () => void
 }) {
   const detail = useProductDetail(productId)
   const product = detail.product
@@ -208,6 +242,6 @@ export function ProductDetailPane({ productId, stockTotal, onClose, onEdit, onIm
       {product && <RoleGuard minRole="manager"><Button type="primary" onClick={() => onEdit(product)}>编辑 Edit</Button></RoleGuard>}
       <Button type="text" aria-label="Close product detail" onClick={onClose}>×</Button>
     </header>
-    <ProductDetailBody detail={detail} stockTotal={stockTotal} onOpen={onOpen} />
+    <ProductDetailBody detail={detail} stockTotal={stockTotal} onOpen={onOpen} onChanged={onChanged} />
   </aside>
 }

@@ -7,7 +7,6 @@ from contextlib import closing
 
 from support import IsolatedApiCase
 
-from blueprints import staff_discounts as staff_discounts_bp
 from staff_discounts import month_bounds, parse_line
 
 CELIA_LINE = 'Celia使用员工折扣购入Angry Molly 迪士尼公主毛绒*2,emt 54,本月剩余0次'  # DT, 2026-11-13
@@ -22,7 +21,6 @@ class StaffDiscountCase(IsolatedApiCase):
 
     def setUp(self):
         super().setUp()
-        self.app.register_blueprint(staff_discounts_bp.bp)
         with closing(self.connect()) as con:
             self.people = {}
             for sub, name, rank, active in (

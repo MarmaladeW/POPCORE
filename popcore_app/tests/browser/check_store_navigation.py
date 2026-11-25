@@ -18,7 +18,7 @@ async def checks(browser):
         await expect(page.get_by_role('heading', name='门店概览')).to_be_visible()
         await expect(page.get_by_role('link', name='Review sale #41', exact=True)).to_have_attribute('href', '/sales/documents/41')
         actions = page.get_by_role('navigation', name='Store actions')
-        for path in ('/checkout', '/incoming', '/stock', '/summary'):
+        for path in ('/sales/quick', '/move', '/stock', '/summary'):
             await expect(actions.locator(f'a[href="{path}"]')).to_be_visible()
         await expect(page.get_by_text('我的班次', exact=True)).to_be_visible()
         await page.screenshot(path=OUT / f'manager-home-{width}.png', full_page=True)
@@ -31,7 +31,7 @@ async def checks(browser):
         await expect(page).to_have_url(BASE + '/today')
         await page.goto(BASE + '/stock')
         tools = page.get_by_role('navigation', name='Inventory tools')
-        for label, path in [('Restock', '/restock'), ('Trades', '/trades'), ('Products', '/products')]:
+        for label, path in [('Trades', '/trades'), ('Products', '/products')]:
             await expect(tools.get_by_role('link', name=label, exact=True)).to_have_attribute('href', path)
         await page.goto(BASE + '/summary')
         # 收工 opens from the summary's Closing panel.

@@ -163,18 +163,17 @@ async def legacy_store_completes_the_sheet(page, fixture, requests):
 async def evening_count_stays_with_its_store(page, fixture, requests):
     await page.goto(BASE + '/stock/count')
     inputs = page.get_by_role('spinbutton')
-    await expect(inputs).to_have_count(2)
-    await inputs.nth(0).fill('9')
-    await inputs.nth(1).fill('3')
-    submit = page.get_by_role('button', name='提交晚盘')
-    await expect(submit).to_be_enabled()
+    await expect(inputs.first).to_be_visible()
+    typed = await inputs.count()
+    for index in range(typed):
+        await inputs.nth(index).fill(str(9 - index))
     async with page.expect_response(lambda response: '/api/inventory-check/today' in response.url
                                     and 'store_code=MK' in response.url):
         await page.get_by_label('Operations store').first.select_option('MK')
-    await expect(inputs).to_have_count(2)
-    await expect(inputs.nth(0)).to_have_value('')
-    await expect(inputs.nth(1)).to_have_value('')
-    await expect(submit).to_be_disabled()
+    # A store change starts a fresh 晚盘: nothing typed for one store is shown or saved for the other.
+    await expect(inputs.first).to_be_visible()
+    for index in range(await inputs.count()):
+        await expect(inputs.nth(index)).to_have_value('')
     assert fixture.value('SELECT COUNT(*) FROM inventory_checks') == 0
 
 

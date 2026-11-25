@@ -9,6 +9,15 @@ export function canSeeInventory(stores: ViewStore[], selected: { code: string } 
   return !!stores.find(store => store.code === selected.code)?.inventory_visible
 }
 
+// 买单 Checkout and 补录 (owner, 2026-11-20): until a store's Clover is connected its sales come from the 日报, so
+// staff do not see 买单 there; managers and admins always do. A store the server says nothing about stays open.
+export function canCheckout(stores: { code: string; checkout?: boolean }[], selected: { code: string } | null, manager: boolean): boolean {
+  if (manager) return true
+  const open = (store?: { checkout?: boolean }) => !!store && store.checkout !== false
+  if (!selected || selected.code === 'ALL') return stores.length === 0 || stores.some(open)
+  return open(stores.find(store => store.code === selected.code))
+}
+
 // What a stock figure shows: a number, or for a hidden store only whether it is out of stock.
 export type StockFigureValue = number | 'in' | 'out' | null
 

@@ -78,12 +78,13 @@ async def checks(browser, width, role):
     await folded.click()
     await expect(folded).to_have_attribute('aria-expanded','true')
     await expect(page.get_by_text('0 pieces',exact=True)).to_be_visible()
-    # Receiving or counting one design starts from its stock details.
-    await expect(page.get_by_role('link',name='Receive Sun',exact=True)).to_have_count(0)
+    # Moving or counting one design starts from its stock details (移货, owner 2026-11-24, in place of 入库).
+    await expect(page.get_by_role('link',name='Move Sun',exact=True)).to_have_count(0)
     await page.get_by_label('Stock details for Sun',exact=True).click()
-    await expect(page.get_by_role('link',name='Receive Sun',exact=True)).to_have_attribute('href','/goods/receiving?product_id=14')
+    await expect(page.get_by_role('link',name='Move Sun',exact=True)).to_have_attribute('href','/move?product=14')
     await expect(page.get_by_role('link',name='Count Sun',exact=True)).to_have_attribute('href','/goods/counts?product_id=14')
-    await page.get_by_role('link',name='Receive Sun',exact=True).click()
+    # The 入库 screen keeps its address.
+    await page.goto(BASE+'/goods/receiving?product_id=14')
     await expect(page.get_by_text('Night Garden · Sun · Confirmed',exact=True)).to_be_visible()
     assert all(r['method']=='GET' for r in state['requests'])
     await page.goto(BASE+'/stock?series_id=7')
@@ -174,7 +175,7 @@ async def checks(browser, width, role):
     await close_drawer(page)
     await page.get_by_label('Operations store',exact=True).select_option('ALL')
     await expect(page.get_by_role('button',name='识别盲盒 Identify boxes',exact=True)).to_have_count(0)
-    await expect(page.get_by_role('link',name='Receive Sun',exact=True)).to_have_count(0)
+    await expect(page.get_by_role('link',name='Move Sun',exact=True)).to_have_count(0)
     await context.close()
 
 
@@ -203,7 +204,7 @@ async def twelve_design_checks(browser,width):
     await page.get_by_label('Stock details for Design 12',exact=True).click()
     await expect(page.get_by_role('dialog',name='Stock details',exact=True)).to_be_visible()
     await expect(page.get_by_text('GARDEN-12 · Reviewed identity',exact=True)).to_be_visible()
-    await expect(page.get_by_role('link',name='Receive Design 12',exact=True)).to_be_visible()
+    await expect(page.get_by_role('link',name='Move Design 12',exact=True)).to_be_visible()
     await no_overflow(page)
     await page.screenshot(animations='disabled',path=OUT/f'twelve-designs-details-{width}.png')
     await close_drawer(page)
@@ -228,7 +229,7 @@ async def prelive_checks(browser,width):
     await expect(page.get_by_role('link',name='盘点 Count',exact=True)).to_have_attribute('href','/count?product=11')
     await page.get_by_label('Stock details for Moon',exact=True).click()
     await expect(page.get_by_role('link',name='盘点 Count Moon',exact=True)).to_have_attribute('href','/count?product=13')
-    for name in ('Receive Sun','Count Sun'):
+    for name in ('Move Sun','Count Sun'):
         await expect(page.get_by_role('link',name=name,exact=True)).to_have_count(0)
     for name in ('按系列晚盘 Count series','整系列入库 Receive series'):
         await expect(page.get_by_role('button',name=name,exact=True)).to_have_count(0)

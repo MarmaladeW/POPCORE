@@ -57,6 +57,9 @@ migrate_db()
 from blueprints.users     import bp as users_bp
 from blueprints.products  import bp as products_bp
 from blueprints.stores    import bp as stores_bp
+import activity
+import pins
+import stock_moves
 from blueprints.stock     import bp as stock_bp
 from blueprints.sales     import bp as sales_bp
 from blueprints.restock   import bp as restock_bp
@@ -85,6 +88,10 @@ from blueprints.watch_list import bp as watch_list_bp
 from blueprints.staff_discounts import bp as staff_discounts_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
+# 动态 Activity: every change leaves a line with who did it (owner, 2026-11-20).
+activity.init_app(app)
+# Name + PIN on the shared store computer: who did a change made there.
+pins.init_app(app)
 app.register_blueprint(users_bp)
 app.register_blueprint(products_bp)
 app.register_blueprint(stores_bp)
@@ -112,6 +119,7 @@ app.register_blueprint(design_prices_bp)
 app.register_blueprint(losses_bp)
 app.register_blueprint(dex_bp)
 app.register_blueprint(watch_list_bp)
+app.register_blueprint(stock_moves.bp)
 app.register_blueprint(staff_discounts_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────

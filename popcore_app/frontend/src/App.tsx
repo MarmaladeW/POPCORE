@@ -16,11 +16,14 @@ import type { Store } from './store'
 import client from './api/client'
 import { operationsTheme } from './theme/operations'
 import './styles/operations.css'
+import { hereState } from './lib/returnTo'
 
 const SchedulePage=lazyPage(()=>import('./pages/Schedule'))
 const HomePage=lazyPage(()=>import('./pages/Home'))
 const DashboardPage=lazyPage(()=>import('./pages/Dashboard'))
 const CheckoutPage=lazyPage(()=>import('./pages/Sales/Checkout'))
+const QuickSalePage=lazyPage(()=>import('./pages/Sales/QuickSale'))
+const MoveStockPage=lazyPage(()=>import('./pages/Stock/Move'))
 const SpecialOrdersPage=lazyPage(()=>import('./pages/SpecialOrders'))
 const IncomingPage=lazyPage(()=>import('./pages/Home/Incoming'))
 const EventEntry=lazyPage(()=>import('./pages/Home/EventEntry'))
@@ -46,6 +49,7 @@ const NamePicksPage=lazyPage(()=>import('./pages/Sales/NamePicks'))
 const WebsitePage=lazyPage(()=>import('./pages/Website'))
 const WebOrdersPage=lazyPage(()=>import('./pages/WebOrders'))
 const WatchListPage=lazyPage(()=>import('./pages/WatchList'))
+const ActivityPage=lazyPage(()=>import('./pages/Activity'))
 const StaffDiscountsPage=lazyPage(()=>import('./pages/StaffDiscounts'))
 const DexHome=lazyPage(()=>import('./pages/Dex'))
 const DexEntryPage=lazyPage(()=>import('./pages/Dex/DexEntry'))
@@ -99,7 +103,7 @@ function AppInner() {
       getAccessTokenSilently({ authorizationParams: { audience: import.meta.env.VITE_AUTH0_AUDIENCE as string } })
     )
     const reauthenticate = () => {
-      loginWithRedirect().catch(() => {
+      loginWithRedirect({ appState: hereState() }).catch(() => {
         Modal.error({
           title: 'Unable to start sign-in',
           content: 'Check the Auth0 configuration or connection, then retry.',
@@ -194,6 +198,8 @@ function AppInner() {
           <Route path="/goods/transfers" element={<InventoryRoute element={<GoodsPage initialTab="transfers" />} />} />
           <Route path="/goods/counts"    element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="counts" />} />} />
           <Route path="/restock"        element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
+          <Route path="/sales/quick"    element={<RoleRoute minRole="staff"   element={<QuickSalePage />} />} />
+          <Route path="/move"           element={<RoleRoute minRole="staff"   element={<MoveStockPage />} />} />
           <Route path="/sales/entry"    element={<RoleRoute minRole="staff"   element={<SaleEntryPage />} />} />
           <Route path="/sales/documents/:id" element={<RoleRoute minRole="staff" element={<SaleDocumentPage />} />} />
           <Route path="/sales/payments/:id/evidence" element={<RoleRoute minRole="staff" element={<PaymentEvidencePage />} />} />
@@ -209,6 +215,7 @@ function AppInner() {
           <Route path="/website" element={<RoleRoute minRole="manager" element={<WebsitePage />} />} />
           <Route path="/web-orders" element={<RoleRoute minRole="viewer" element={<WebOrdersPage />} />} />
           <Route path="/watch-list" element={<RoleRoute minRole="viewer" element={<WatchListPage />} />} />
+          <Route path="/activity" element={<RoleRoute minRole="viewer" element={<ActivityPage />} />} />
           <Route path="/staff-discounts" element={<RoleRoute minRole="staff" element={<StaffDiscountsPage />} />} />
           <Route path="/dex" element={<RoleRoute minRole="viewer" element={<DexHome />} />} />
           <Route path="/dex/unlinked" element={<RoleRoute minRole="viewer" element={<DexUnlinkedPage />} />} />

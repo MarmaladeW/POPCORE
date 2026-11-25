@@ -7,6 +7,8 @@ import { AuditOutlined, WarningOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
+import LiveEveningCount, { type LiveEveningData } from './LiveEveningCount'
+import './restock.css'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -30,6 +32,7 @@ interface CheckItem {
 interface TodayData {
   date:  string
   items: CheckItem[]
+  live?: false
 }
 
 export default function EveningCheckStep() {
@@ -45,6 +48,8 @@ function StoreEveningCheck() {
   const { selectedStore } = useAppStore()
 
   const [data,      setData]      = useState<TodayData | null>(null)
+  // A live store counts as WeChat writes it (LiveEveningCount.tsx); the table below is the old way.
+  const [live,      setLive]      = useState<LiveEveningData | null>(null)
   const [loading,   setLoading]   = useState(true)
   const [actualQty, setActualQty] = useState<Record<number, number>>({})
   const [saving,    setSaving]    = useState(false)
@@ -56,7 +61,10 @@ function StoreEveningCheck() {
     setLoading(true)
     setLoadError('')
     try {
-      const { data: d } = await client.get<TodayData>('/inventory-check/today', { params: { store_code: sc } })
+      const { data: reply } = await client.get<TodayData | LiveEveningData>('/inventory-check/today', { params: { store_code: sc } })
+      if (reply.live) { setLive(reply); setData(null); return }
+      const d = reply
+      setLive(null)
       setData(d)
       // Pre-fill saved actual_qty (don't override user's in-progress edits)
       setActualQty(prev => {
@@ -201,6 +209,8 @@ function StoreEveningCheck() {
   if (loading) {
     return <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
   }
+
+  if (live) return <LiveEveningCount data={live} onSaved={setLive} />
 
   if (loadError) {
     return <Alert type="warning" showIcon style={{ marginTop: 16 }} message={selectedStore?.code === 'ALL' ? '晚盘按门店进行 · Select one store for the evening check' : loadError}

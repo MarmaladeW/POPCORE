@@ -22,10 +22,11 @@ export function useHasClaw() {
 
 const links: Array<{ to: string; zh: string; en: string; icon: IconName; claw?: boolean; manager?: boolean }> = [
   { to: '/count', zh: '盘点', en: 'Stocktake', icon: 'check' },
-  { to: '/goods/receiving', zh: '入库', en: 'Receive', icon: 'in' },
-  { to: '/goods/transfers', zh: '调拨', en: 'Transfer', icon: 'swap' },
+  // 移货 (owner, 2026-11-24) is the one way to move goods: 入库, 调拨 and the claw buttons left this row; their pages
+  // keep their routes and records.
+  { to: '/move', zh: '移货', en: 'Move stock', icon: 'swap' },
   { to: '/stock/count', zh: '晚盘', en: 'Count', icon: 'count' },
-  { to: '/stock/claw', zh: '娃娃机', en: 'Claw machine', icon: 'gift', claw: true },
+  // Managers keep 损耗: the month's losses (移货 → 不在了 lands there too) and the damaged pile to deal with.
   { to: '/stock/loss', zh: '损耗', en: 'Loss', icon: 'loss', manager: true },
 ]
 

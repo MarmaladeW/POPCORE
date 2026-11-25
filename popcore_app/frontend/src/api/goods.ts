@@ -33,9 +33,11 @@ export interface WorkflowResult {
 }
 
 export interface ReceiptLine {line_no:number;product_id:number;native_unit:NativeUnit;expected_quantity:number|null;saleable_quantity:number;damaged_quantity:number;hold_quantity:number;discrepancy_note:string|null}
-export interface ReceiptDetail extends WorkflowResult {store_id:number;destination_location_id:number;business_date:string;shipment_reference:string|null;supplier:string|null;lines:ReceiptLine[]}
+// created_by_name and the delivery events' actor names: who did it, by name (owner, 2026-11-20).
+export interface ReceiptDetail extends WorkflowResult {created_by?:string;created_by_name?:string|null;created_at?:string;store_id:number;destination_location_id:number;business_date:string;shipment_reference:string|null;supplier:string|null;lines:ReceiptLine[]}
 export interface TransferLine {line_no:number;product_id:number;native_unit:NativeUnit;requested_quantity:number;dispatched_quantity:number;received_quantity:number;returned_quantity:number;loss_quantity:number;short_quantity:number;outstanding_transit:number;boxes_per_set?:number|null;landed_boxes?:number}
-export interface TransferDetail extends WorkflowResult {kind:'transfer'|'restock';source_location_id:number;destination_location_id:number;business_date:string;restock_session_id:number|null;lines:TransferLine[]}
+export interface DeliveryEvent {action:'dispatch'|'receive'|'return'|'resolve_loss'|'short_close';actor_sub:string;actor_sub_name:string|null;created_at:string}
+export interface TransferDetail extends WorkflowResult {created_by_name?:string|null;created_at?:string;events?:DeliveryEvent[];kind:'transfer'|'restock';source_location_id:number;destination_location_id:number;business_date:string;restock_session_id:number|null;lines:TransferLine[]}
 export interface IncomingTransfer {
   id: number
   status: 'planned' | 'active'
@@ -48,7 +50,7 @@ export interface IncomingTransfer {
 export const getIncomingTransfers=(storeId:number,signal?:AbortSignal)=>client.get<IncomingTransfer[]>('/goods/transfers',{params:{store_id:storeId},signal}).then(response=>response.data)
 
 export interface CountLine {line_no:number;product_id:number;native_unit:NativeUnit;expected_quantity:number;observed_quantity:number;captured_balance_version:number}
-export interface CountDetail extends WorkflowResult {recount_id?:number;store_id:number;location_id:number;disposition:string;business_date:string;lines:CountLine[]}
+export interface CountDetail extends WorkflowResult {created_by_name?:string|null;reviewed_by_name?:string|null;created_at?:string;recount_id?:number;store_id:number;location_id:number;disposition:string;business_date:string;lines:CountLine[]}
 export interface CountResult extends WorkflowResult {recount_id?:number}
 
 export const getReceipt=(id:number,signal?:AbortSignal)=>client.get<ReceiptDetail>(`/goods/receipts/${id}`,{signal}).then(response=>response.data)

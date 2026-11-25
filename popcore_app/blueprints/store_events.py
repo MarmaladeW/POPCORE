@@ -242,7 +242,7 @@ def summary():
         a.tender,a.amount_cents
         FROM checkout_orders o JOIN checkout_attempts a ON a.checkout_id=o.id
         LEFT JOIN employees emp ON emp.auth0_id=o.created_by
-        WHERE o.store_id=? AND o.business_date=? AND o.status='completed'
+        WHERE o.store_id=? AND o.business_date=? AND o.status='completed' AND o.undone_at IS NULL
         AND a.status='completed' AND (?=0 OR o.created_by=?) ORDER BY o.id,a.id''',
         (REGISTER_SUB,REGISTER_NAME,store_id,date,int(personal),subject)).fetchall()
     by_order = {}

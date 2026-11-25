@@ -1,6 +1,7 @@
 """
 blueprints/stock.py — stock queries, movements, adjustments, export.
 """
+import people
 from datetime import date
 import json
 from flask import Blueprint, request, jsonify, Response
@@ -299,7 +300,7 @@ def get_inventory_document(document_id):
                WHERE correction_of=? AND status='posted' ORDER BY id""",
             (document_id,),
         )]
-        return jsonify({**dict(document), 'lines': lines,
+        return jsonify({**dict(document), 'actor_name': people.name(con, document['actor_sub']), 'lines': lines,
                         'movements': movements, 'corrections': corrections})
     finally:
         con.close()

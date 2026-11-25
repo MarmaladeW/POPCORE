@@ -602,6 +602,7 @@ export default function ProductsPage() {
           onOpen={setDetailId}
           onEdit={(p) => openEdit(p as unknown as Product)}
           onImages={(p) => setImagesProduct(p as unknown as Product)}
+          onChanged={load}
         />}
       </div>
 
@@ -641,6 +642,7 @@ export default function ProductsPage() {
         onOpen={setDetailId}
         onEdit={(p) => { setDetailId(null); openEdit(p as Product) }}
         onImages={(p) => { setDetailId(null); setImagesProduct(p as Product) }}
+        onChanged={load}
       />
 
       {/* Sheet Sync Modal */}

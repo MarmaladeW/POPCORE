@@ -3,7 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
-from inventory_commands import require_inventory_access
+from inventory_commands import InventoryError, require_inventory_access
 
 # Owner of Clover orders nobody has picked up yet, and of sales paid entirely on Clover.
 # It never comes from a login: Auth0 subjects always contain '|'.
@@ -19,6 +19,31 @@ def business_date():
     return datetime.now(ZoneInfo('America/Toronto')).date().isoformat()
 
 
+# Until Clover is connected at a store, its sales leave stock through the pasted 日报, so a staff checkout or
+# 补录 there would take the same sale off twice (owner, 2026-11-20). app_settings staff_checkout: 'clover' (staff
+# take checkouts only where Clover is connected; set on a live database) or 'all' (every store, the default).
+CLOSED_MESSAGE = ('买单要等这家店接上 Clover 才开，今天的销售照常写日报。'
+                  'Checkout opens here once Clover is connected; keep writing sales in the daily report.')
+
+
+def staff_checkout_mode(con):
+    row = con.execute("SELECT value FROM app_settings WHERE key='staff_checkout'").fetchone()
+    return 'clover' if row and row[0] == 'clover' else 'all'
+
+
+def checkout_open(con, role, store_id):
+    """Whether this role may take checkouts and record sales (补录) at this store. Managers and admins always may."""
+    if role != 'staff' or staff_checkout_mode(con) == 'all':
+        return True
+    import clover_checkout  # it imports this module
+    return clover_checkout.store_config(store_id) is not None
+
+
+def require_checkout_open(con, actor, store_id):
+    if not checkout_open(con, actor.get(ROLE_CLAIM, 'viewer'), store_id):
+        raise InventoryError(CLOSED_MESSAGE, 'checkout_needs_clover', 403)
+
+
 def checkout_access(con, actor):
     role = actor.get(ROLE_CLAIM, 'viewer')
     employee = con.execute('SELECT id FROM employees WHERE auth0_id=? AND is_active=1', (actor.get('sub'),)).fetchone()
@@ -31,7 +56,9 @@ def checkout_access(con, actor):
     own = {r[0] for r in con.execute('SELECT DISTINCT store_id FROM checkout_orders WHERE created_by=?', (actor['sub'],))}
     history = [s for s in stores if s['id'] in own] if role == 'staff' else live
     rate = con.execute("SELECT value FROM app_settings WHERE key='checkout_cny_per_cad'").fetchone()
-    return dict(business_date=today, role=role, live_stores=live, history_stores=history,
+    # live_stores also lets staff record claw and display events, so checkout keeps its own list.
+    checkout = [s for s in live if checkout_open(con, role, s['id'])]
+    return dict(business_date=today, role=role, live_stores=live, checkout_stores=checkout, history_stores=history,
                 cny_per_cad=rate['value'] if rate else '')
 
 
@@ -51,6 +78,7 @@ def require_checkout(con, row, actor, *, write=False):
     if write:
         if row['store_id'] not in {s['id'] for s in access['live_stores']}:
             raise PermissionError('Checkout shift access denied')
+        require_checkout_open(con, actor, row['store_id'])
         require_inventory_access(con, actor, (row['store_id'],), 'staff')
     elif not can_read(row, actor, access):
         raise PermissionError('Checkout history access denied')

@@ -239,10 +239,16 @@ class CounterAccountTests(BoardCase):
     def test_a_viewer_counter_account_works_the_board_and_reads_stock_but_changes_nothing(self):
         board = self.board(self.COUNTER)
         self.assertEqual((board['stores'], self.numbers(board['columns']['pick'])), (['DT'], ['701']))
-        self.assertEqual(self.step(701, 'ready', headers=self.COUNTER).get_json(), {'result': 'done', 'noted': True})
-        self.assertEqual(self.woo.notes[-1][1]['note'], 'Ready in popcore.store by auth0|counter')
+        # Its buttons ask who is at the computer (owner, 2026-11-20): a name + PIN, and the note names that person.
+        self.assertEqual(self.step(701, 'ready', headers=self.COUNTER).get_json()['code'], 'person_needed')
+        self.assertEqual(self.client.post('/api/me/pin', json={'pin': '2580'}, headers=STAFF).status_code, 200)
+        with closing(self.connect()) as con:
+            amy = con.execute("SELECT id FROM employees WHERE auth0_id='auth0|staff'").fetchone()[0]
+        person = {**self.COUNTER, 'X-Popcore-Person': f'{amy}:2580'}
+        self.assertEqual(self.step(701, 'ready', headers=person).get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.notes[-1][1]['note'], 'Ready in popcore.store by Amy')
         self.assertEqual(self.code('K7R4MX', headers=self.COUNTER).get_json()['first_name'], 'Private')
-        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX', headers=self.COUNTER).get_json()['result'], 'done')
+        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX', headers=person).get_json()['result'], 'done')
         # The menus learn where it has store operations access.
         stores = {row['code']: row for row in self.client.get('/api/stores', headers=self.COUNTER).get_json()}
         self.assertEqual((stores['DT']['operations'], stores['DT']['inventory_visible'], stores['MK']['operations']),
@@ -250,11 +256,11 @@ class CounterAccountTests(BoardCase):
         # It reads DT's stock ...
         self.assertEqual(self.client.get('/api/inventory/series?store_code=DT', headers=self.COUNTER).status_code, 200)
         self.assertEqual(self.client.get('/api/inventory/overview?store_code=DT', headers=self.COUNTER).status_code, 200)
-        # ... and changes none of it, whatever its store access.
+        # ... and changes none of it, whatever its store access; a name + PIN says who, never adds a permission.
         with closing(self.connect()) as con:
             version = con.execute("""SELECT version FROM inventory_balances WHERE product_id=? AND location_id=?
                                      AND disposition='saleable'""", (self.item, self.locations['upstairs'])).fetchone()[0]
-        move = self.client.post('/api/inventory/commands', headers={**self.COUNTER, 'Idempotency-Key': 'counter-move'}, json={
+        move = self.client.post('/api/inventory/commands', headers={**person, 'Idempotency-Key': 'counter-move'}, json={
             'kind': 'move', 'business_date': '2026-11-01', 'lines': [{
                 'product_id': self.item, 'unit': 'piece', 'quantity': 1, 'from_location_id': self.locations['upstairs'],
                 'from_disposition': 'saleable', 'to_location_id': self.locations['floor'], 'to_disposition': 'saleable',

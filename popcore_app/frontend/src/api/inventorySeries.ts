@@ -40,7 +40,7 @@ export interface SeriesMovement {
   id:number; document_id:number; kind:string; product_id:number; product_name:string
   location_id:number; location_name:string; disposition:string; quantity:number
   business_date:string; posted_at:string; reason:string|null; open_set_id?:number|null
-  actor_sub?:string; store_code?:string; source_type?:string|null; source_id?:string|null; native_unit?:string|null
+  actor_sub?:string; actor_sub_name?:string|null; store_code?:string; source_type?:string|null; source_id?:string|null; native_unit?:string|null
 }
 export const getInventorySeries = (storeCode:string, query:string, seriesId:number|undefined, signal:AbortSignal, productId?:number) =>
   client.get<SeriesInventoryResult>('/inventory/series', {params:{store_code:storeCode,q:query||undefined,series_id:seriesId,product_id:productId},signal}).then(response=>response.data)
@@ -49,7 +49,7 @@ export interface SeriesHistoryFilters {
 }
 export interface SeriesHistoryPage {items:SeriesMovement[]; has_more:boolean; next_before_id:number|null}
 export interface InventoryDocument {
-  id:number; kind:string; actor_sub:string; business_date:string; posted_at:string
+  id:number; kind:string; actor_sub:string; actor_name?:string|null; business_date:string; posted_at:string
   source_type:string|null; source_id:string|null; reason:string|null; correction_of:number|null
   corrections:number[]
   lines:Array<{line_no:number; product_id:number; native_unit:string; quantity:number

@@ -11,6 +11,7 @@ import { ListRow, Panel } from '../../components/pc/Panel'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import HomeTiles from '../Home/HomeTiles'
 import MyShifts from './MyShifts'
+import StoreActivityPanel from '../Activity/StoreActivityPanel'
 import PunchIn from '../Schedule/PunchIn'
 import { sectionLabels, TodayRows } from './TodayRows'
 import { mergeWork, torontoDate } from './todayPresentation'
@@ -115,7 +116,7 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
           <Link to="/sales/matching">核对旧销售名称 Review past sales names</Link>
         </nav>}
       </div>
-      {staff && <aside className="pc-hm-side"><MyShifts key={`${user?.sub}:${role}`} outside={phone} /></aside>}
+      {staff && <aside className="pc-hm-side"><MyShifts key={`${user?.sub}:${role}`} outside={phone} />{home && <StoreActivityPanel />}</aside>}
     </div>
   </div>
 }

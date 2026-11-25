@@ -215,7 +215,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
         <footer className="pc-series-footer">
           {selected?.product_id&&manager&&<Link to={`/products?product_id=${selected.product_id}`}>添加确认款或整端 Add designs or a sealed set</Link>}
           {selected?.product_id&&manager&&!standalone&&<RemoveDesigns productId={selected.product_id} designCount={designs.length} onDone={()=>setParams({product_id:String(selected.product_id)})}/>}
-          <nav aria-label="Inventory tools" className="pc-inventory-tools"><Link to="/products">Products</Link>{staffRole&&<><Link to="/restock">Restock</Link><Link to="/trades">Trades</Link></>}<Link to="/stock/products">All products</Link></nav>
+          <nav aria-label="Inventory tools" className="pc-inventory-tools"><Link to="/products">Products</Link>{staffRole&&<Link to="/trades">Trades</Link>}<Link to="/stock/products">All products</Link></nav>
         </footer>
       </>}
     <Drawer rootClassName="pc-inventory-drawer" title="Identify boxes" width="min(100%, 560px)" open={panel==='identify'} onClose={()=>{if(!locked)setPanel(undefined)}} keyboard={!locked} maskClosable={!locked} closable={!locked} destroyOnClose
@@ -241,8 +241,8 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
     <Drawer rootClassName="pc-inventory-drawer" title="Stock details" width="min(100%, 480px)" open={!!detail} onClose={()=>setDetailId(undefined)} destroyOnClose>
       {detail&&data&&<div className="pc-series-stock-details"><InventoryPhoto key={detail.image_filename} filename={detail.image_filename} name={detail.design_name||detail.name} large/><h2>{detail.design_name||detail.name}</h2><p>{detail.name_cn_en&&detail.name_cn_en!==(detail.design_name||detail.name)&&<>{detail.name_cn_en} · </>}{detail.sku} · {detail.identity_status==='verified'?'Reviewed identity':'Identity needs review'}</p>
         {canWork&&!locked&&(data.mode!=='authoritative'?(detail.stock_form!==null||isBox(detail))&&<Space wrap><Link className="pc-btn" aria-label={`盘点 Count ${detailName}`} to={`/count?product=${detail.id}`}>盘点 Count</Link></Space>
-          :detail.identity_status==='verified'&&<Space wrap>{detail.stock_unit&&<><Link className="pc-btn" aria-label={`Receive ${detailName}`} to={`/goods/receiving?product_id=${detail.id}`}>入库 Receive</Link><Link className="pc-btn" aria-label={`Count ${detailName}`} to={`/goods/counts?product_id=${detail.id}`}>盘点 Count</Link></>}
-            <Button onClick={()=>openStockAction('move',detail.id)}>Move stock</Button>{detail.stock_form==='sealed_set'&&<Button type="primary" onClick={()=>openStockAction('open_set',detail.id)}>Open sealed set</Button>}</Space>)}
+          :detail.identity_status==='verified'&&<Space wrap>{detail.stock_unit&&<><Link className="pc-btn" aria-label={`Move ${detailName}`} to={`/move?product=${detail.id}`}>移货 Move stock</Link><Link className="pc-btn" aria-label={`Count ${detailName}`} to={`/goods/counts?product_id=${detail.id}`}>盘点 Count</Link></>}
+            {detail.stock_form==='sealed_set'&&<Button type="primary" onClick={()=>openStockAction('open_set',detail.id)}>Open sealed set</Button>}</Space>)}
         {data.locations.map(location=><section key={location.id}><h3>{location.store_code} · {location.name}</h3>{!location.opening_verified&&<p className="pc-series-warning">Opening count needs review</p>}<dl>{detail.balances.filter(balance=>balance.location_id===location.id).map(balance=><div key={balance.disposition}><dt>{dispositionName(balance.disposition)}:</dt> <dd>{balance.quantity===null?'Unknown':units(balance.quantity,detail.stock_unit)}</dd></div>)}</dl></section>)}
       </div>}
     </Drawer>

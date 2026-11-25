@@ -122,6 +122,8 @@ export interface LeftOutLine {
 
 /** fix: most likely a mistake; check: may be meant. `lines` are line numbers in the paste, `text` those lines as written. */
 export interface FormatCheck {
+  // extra_line: an app screen already recorded these goods that day; the manager may mark the line another batch.
+  extra_line?: number
   level: 'fix' | 'check'
   lines: number[]
   text: string[]

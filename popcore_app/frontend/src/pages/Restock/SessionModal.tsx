@@ -9,6 +9,7 @@ import PickingStep from './PickingStep'
 import ReceivingStep from './ReceivingStep'
 import Icon from '../../components/pc/Icon'
 import { useIsPhone } from '../../components/pc/useIsPhone'
+import { torontoStamp } from '../../lib/marks'
 
 interface Props {
   sessionId: number | null
@@ -85,7 +86,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
       key:      'request',
       disabled: receivingBusy,
       label:    <span className="pc-step-tab"><b>录入</b> <small>Request</small></span>,
-      children: session && !error ? <Spin spinning={loading}><RequestStep session={session} onRefresh={loadSession} /></Spin> : null,
+      children: session && !error ? <Spin spinning={loading}><RequestStep session={session} live={live} onRefresh={loadSession} /></Spin> : null,
     },
     {
       key:      'picking',
@@ -104,7 +105,7 @@ export default function SessionModal({ sessionId, onClose }: Props) {
   const heading = session
     ? <>
         补货单 #{session.id}
-        <span className="pc-restock-time">{dayjs(session.created_at).format('HH:mm')}</span>
+        <span className="pc-restock-time">{torontoStamp(session.created_at).split(' ')[1]}</span>
         <span className="pc-hm-status pc-restock-status"><i className={`pc-dot pc-dot-${status === 'completed' ? 'ok' : 'warn'}`} aria-hidden="true" />{STATUS_LABELS[status]}</span>
       </>
     : '补货单'

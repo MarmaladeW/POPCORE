@@ -3,10 +3,13 @@ stock wrongly is pointed out by its line in the paste, quoting that line, with w
 it. `fix` is most likely a mistake; `check` may be meant. A check never stops the save by itself: the rows
 it points at are still accepted, corrected or removed on the paste screen as before."""
 import re
+
+from inventory_commands import InventoryError
 from collections import defaultdict
 from datetime import date, timedelta
 
-from report_stock import LINE_SECTIONS, PACKED_SECTIONS, _set_for_box, _stock_product, can_have_set
+from report_stock import (LINE_SECTIONS, PACKED_SECTIONS, ReportLineError, _line_moves, _locations, _move_key,
+                          _set_for_box, _stock_product, app_moves, can_have_set, other_store)
 
 SECTION_LABELS = {
     'pos': '卡机', 'cash': '随手记', 'refill': '出库入店', 'stock_in': '入店', 'stock_out': '出店',
@@ -211,6 +214,43 @@ def sent_here_checks(con, rows, store_id, day):
                               f'如果这一行就是那批货，{fix}，不然会加两次。'
                               f"{move['sender']}'s 出库 on {move['business_date']} already put these here: if this "
                               'line is the same goods, it would count them twice.', row['section']))
+    return out
+
+
+def app_checks(con, rows, store_id, day):
+    """A line whose goods an app screen already recorded that day (owner, 2026-11-20: 补货, 调拨, 收货, display,
+    娃娃机) moves only what goes beyond that record, so staff can write the 日报 as always. Each such line says
+    who recorded what, and the manager can mark it "这是另外的 It's extra" to move it in full."""
+    recorded = app_moves(con, store_id, day)
+    if not recorded:
+        return []
+    at = _locations(con, store_id)
+    back, here, other = at.get('upstairs') or at.get('warehouse'), set(at.values()), other_store(con, store_id)
+    out = []
+    for row in rows:
+        if not row.get('line') or row.get('section') not in LINE_SECTIONS or not (row.get('product') or {}).get('id'):
+            continue
+        product = con.execute('SELECT * FROM products WHERE id=?', (row['product']['id'],)).fetchone()
+        item = {'section': row['section'], 'box_size': row.get('box_size') or 1, 'num_boxes': row.get('qty') or 0,
+                'loose_qty': row.get('loose_qty') or 0, 'qty': row.get('qty') or 0, 'to_display': row.get('to_display'),
+                'from_display': row.get('from_display'), 'to_floor': row.get('to_floor')}
+        try:
+            moves = _line_moves(con, row['line'], item, product, at, back, other) if product else []
+        except (ReportLineError, InventoryError):
+            continue
+        found = [recorded[key] for key in (_move_key(kind, source, source_at, target, target_at, here)[0]
+                                           for kind, source, source_at, target, target_at, _, _ in moves)
+                 if key in recorded]
+        if not found:
+            continue
+        units = sum(entry[0] for entry in found)
+        who = '、'.join(sorted({label for entry in found for label in entry[1]}))
+        check = _check('check', [row['line']],
+                       f'app 里已经记了 {who}（{units} 个「{_name(product)}」）：这一行只移超出的部分，不会加两次；'
+                       f'如果是另外一批，选「这是另外的」。Already recorded in the app ({who}): this line moves only what goes '
+                       "beyond that. If it is another batch, choose It's extra.", row['section'])
+        check['extra_line'] = row['line']
+        out.append(check)
     return out
 
 

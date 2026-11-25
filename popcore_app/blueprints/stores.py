@@ -5,7 +5,8 @@ import re
 from flask import Blueprint, request, jsonify
 
 from db import get_db
-from auth import login_required, role_required
+from auth import ROLE_CLAIM, login_required, role_required
+from checkout_access import checkout_open
 from inventory_commands import require_inventory_access
 from inventory_visibility import visible_store_ids
 
@@ -40,9 +41,12 @@ def list_stores():
     visible = visible_store_ids(con, request.jwt_payload)
     operations = {row[0] for row in con.execute('SELECT store_id FROM inventory_access WHERE auth0_sub=?',
                                                 (request.jwt_payload.get('sub'),))}
+    # And whether it takes checkouts there: staff wait for the store's Clover (owner, 2026-11-20), so 买单 hides.
+    role = request.jwt_payload.get(ROLE_CLAIM, 'viewer')
+    checkout = {r['id'] for r in rows if checkout_open(con, role, r['id'])}
     con.close()
-    return jsonify([{**dict(r), 'inventory_visible': r['id'] in visible, 'operations': r['id'] in operations}
-                    for r in rows])
+    return jsonify([{**dict(r), 'inventory_visible': r['id'] in visible, 'operations': r['id'] in operations,
+                     'checkout': r['id'] in checkout} for r in rows])
 
 
 @bp.route('/api/stores/<int:store_id>/color', methods=['PATCH'])

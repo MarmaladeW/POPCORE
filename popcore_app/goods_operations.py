@@ -1,4 +1,5 @@
 """Receiving, delivery, and count workflows backed by the inventory ledger."""
+import people
 import hashlib
 import json
 import sqlite3
@@ -564,8 +565,13 @@ def delivery_detail(con, delivery_id, *, actor):
         raise PermissionError('Inventory access denied')
     result = {key: row[key] for key in (
         'id', 'kind', 'source_location_id', 'destination_location_id',
-        'business_date', 'status', 'version', 'restock_session_id',
+        'business_date', 'status', 'version', 'restock_session_id', 'created_by', 'created_at',
     )}
+    # Who started it and who sent, received or returned it, by name (owner, 2026-11-20).
+    result['created_by_name'] = people.name(con, row['created_by'])
+    result['events'] = people.with_names(con, [dict(event) for event in con.execute(
+        'SELECT action, actor_sub, created_at FROM inventory_delivery_events WHERE delivery_id=? ORDER BY id',
+        (delivery_id,))], 'actor_sub')
     result['lines'] = []
     to_floor = con.execute('SELECT code FROM inventory_locations WHERE id=?',
                            (row['destination_location_id'],)).fetchone()['code'] == 'floor'
@@ -848,9 +854,10 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
             con.execute(
                 """UPDATE restock_sessions
                    SET status=?, completed_at=CASE WHEN ?='completed'
-                       THEN datetime('now') ELSE completed_at END
+                       THEN datetime('now') ELSE completed_at END,
+                       completed_by=CASE WHEN ?='completed' THEN ? ELSE completed_by END
                    WHERE id=? AND status IN ('submitted','picking')""",
-                ('completed' if status == 'completed' else 'picking', status,
+                ('completed' if status == 'completed' else 'picking', status, status, actor.get('sub'),
                  current['restock_session_id']),
             )
         response = {

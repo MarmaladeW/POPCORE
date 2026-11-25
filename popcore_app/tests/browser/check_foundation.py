@@ -248,7 +248,7 @@ async def navigation_checks(browser):
         )
         await page.goto(BASE + '/goods/receiving')
         if viewport['width'] != 390:
-            await expect(page.get_by_role('link', name='入店 Receive goods', exact=True)).to_have_attribute('aria-current', 'page')
+            await expect(page.get_by_role('link', name='移货 Move stock', exact=True)).to_have_attribute('aria-current', 'page')
         if viewport['width'] == 390:
             # 更多 is a page on phones (Figma Menus); it opens from the keyboard too.
             more = page.get_by_role('link', name='更多 More', exact=True)

@@ -59,7 +59,7 @@ function HistoryFeed({series,storeCode,filters,onDocument,onMovements}:{series:I
       <div className="pc-history-movement-title"><strong>{item.product_name}</strong><strong>{item.quantity>0?'+':''}{quantity(item.quantity,item.native_unit===undefined?series.products.find(product=>product.id===item.product_id)?.stock_unit:item.native_unit)}</strong></div>
       <span>{item.store_code||storeCode} · {item.location_name} · {label(item.disposition)}</span>
       <span>{item.business_date} · {label(item.kind)} · <button type="button" className="pc-history-link" onClick={()=>onDocument(item.document_id)}>Document #{item.document_id}</button></span>
-      <span>Recorded by {item.actor_sub||'Not recorded'}</span>
+      <span>记录人 Recorded by {item.actor_sub_name||(item.actor_sub?'没有员工资料 No staff profile':'Not recorded')}</span>
       {item.open_set_id!=null&&<span>Opened set #{item.open_set_id}</span>}
       {item.reason&&<span>{item.reason}</span>}
     </li>)}</ol>}
@@ -89,7 +89,7 @@ function DocumentDetail({id,series,movements,onDocument,onBack}:{id:number;serie
         <dt>Action</dt><dd>{label(document.kind)}</dd>
         <dt>Business date</dt><dd>{document.business_date}</dd>
         <dt>Posted at</dt><dd>{document.posted_at}</dd>
-        <dt>Recorded by</dt><dd>{document.actor_sub}</dd>
+        <dt>记录人 Recorded by</dt><dd>{document.actor_name||'没有员工资料 No staff profile'}</dd>
         <dt>Reason</dt><dd>{document.reason||'Not recorded'}</dd>
         <dt>Source</dt><dd>{document.source_type?`${label(document.source_type)}${document.source_id ? ' · '+document.source_id : ''}`:'Not recorded'}</dd>
       </dl>

@@ -10,7 +10,9 @@ import type { BoxChoice, BoxOptions } from './boxChoice'
 
 // Shared by manual checkouts and Clover orders.
 export type Store = { id:number; code:string; name:string }
-export type Access = { business_date:string; role:string; live_stores:Store[]; history_stores:Store[]; cny_per_cad:string; cny_rate_source?:string|null; clover_store_id?:number|null; clover_environment?:string|null }
+// checkout_stores: the live stores where this person takes checkouts today. Staff wait for a store's Clover
+// (owner, 2026-11-20), so it can be shorter than live_stores, which also covers claw and display events.
+export type Access = { business_date:string; role:string; live_stores:Store[]; checkout_stores?:Store[]; history_stores:Store[]; cny_per_cad:string; cny_rate_source?:string|null; clover_store_id?:number|null; clover_environment?:string|null }
 /** `cash_rest_cents`: what cash collects for the rest, rounded to 5¢; every other tender collects `rest_cents`. */
 export type Collect = { due_cents:number; mode?:string|null; label?:string|null; rest_cents:number; cash_rest_cents?:number }
 /** A blind box over half a set on an order, and where the cashier said the boxes came from. */
@@ -133,3 +135,6 @@ export function RefundTools({order,updated,onBusy,disabled}:{order:Order;updated
     </Form>}
   </details>
 }
+
+/** The live stores where this person takes checkouts today (older servers send live_stores only). */
+export const checkoutStores=(access:Pick<Access,'live_stores'|'checkout_stores'>)=>access.checkout_stores??access.live_stores

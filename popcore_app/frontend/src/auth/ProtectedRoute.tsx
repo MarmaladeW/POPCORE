@@ -4,6 +4,7 @@ import { Result } from 'antd'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '../components/Spinner'
 import { hasRole } from './useRole'
+import { hereState } from '../lib/returnTo'
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isLoading, isAuthenticated, loginWithRedirect, logout, error, user } = useAuth0()
@@ -13,7 +14,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   useEffect(() => {
     if (!isLoading && !isAuthenticated && !error && !redirectStarted.current) {
       redirectStarted.current = true
-      loginWithRedirect().catch(err => {
+      loginWithRedirect({ appState: hereState() }).catch(err => {
         setRedirectError(err instanceof Error ? err.message : 'Unable to start sign-in')
       })
     }
@@ -36,7 +37,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
         extra={<Button onClick={() => {
           redirectStarted.current = false
           setRedirectError(null)
-          loginWithRedirect().catch(err => {
+          loginWithRedirect({ appState: hereState() }).catch(err => {
             setRedirectError(err instanceof Error ? err.message : 'Unable to start sign-in')
           })
         }}>Retry sign-in</Button>}
