@@ -1,0 +1,29 @@
+/* 待盘点 Count next time: an amber dot and its words (as the section flags), the marked places, the mark form. */
+.pc-mark-flag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; color: var(--status-restock-ink); }
+.pc-mark-flag::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--status-restock-dot); }
+/* Counted: the same flag in green. */
+.pc-mark-flag.is-done { color: var(--status-ok-ink); }
+.pc-mark-flag.is-done::before { background: var(--status-ok-dot); }
+.pc-marked { display: grid; gap: 6px; }
+.pc-marked ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.pc-marked li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 36px; }
+.pc-marked li small { flex: 1 1 12em; min-width: 0; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+/* One place of a mark: its name, and for a manager the button that takes it off. */
+.pc-marked-place { display: inline-flex; align-items: center; min-height: 28px; padding: 0 8px; font-size: 12px; white-space: nowrap; color: var(--status-restock-ink); border: 1px solid var(--status-restock-line); border-radius: 4px; }
+.pc-marked-place.can-remove { padding-right: 0; }
+.pc-marked-place .ant-btn { width: 28px; min-width: 28px; height: 28px; color: var(--status-restock-ink); }
+.pc-mark-form { display: grid; gap: 8px; padding: 12px; background: var(--surface-soft); border-radius: 8px; }
+.pc-mark-form fieldset { margin: 0; padding: 0; border: 0; }
+.pc-mark-form legend, .pc-mark-form > label { margin-bottom: 2px; font-size: 13px; color: var(--text-secondary); }
+.pc-mark-form .ant-checkbox-group { display: flex; flex-wrap: wrap; gap: 0 14px; }
+.pc-mark-form .ant-checkbox-wrapper { min-height: 40px; align-items: center; }
+.pc-mark-form .ant-input { min-height: 44px; font-size: 16px; }
+.pc-mark-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.pc-mark-form-actions .ant-btn { min-height: 44px; }
+.pc-product-marks { display: grid; gap: 8px; justify-items: start; }
+.pc-product-marks > .pc-marked, .pc-product-marks > .pc-mark-form { justify-self: stretch; }
+.pc-product-marks > .ant-btn { min-height: 40px; }
+@media (pointer: coarse) {
+  .pc-marked-place .ant-btn { width: 40px; min-width: 40px; height: 40px; }
+  .pc-mark-form .ant-checkbox-wrapper { min-height: 44px; }
+}

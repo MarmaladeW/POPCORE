@@ -8,6 +8,7 @@ from decimal import Decimal
 from flask import Blueprint, request, jsonify
 from db import get_db
 from auth import role_required
+import watcher
 
 bp = Blueprint('settings', __name__)
 
@@ -47,6 +48,8 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # Where staff take checkouts and 补录 (owner, 2026-11-20): 'clover' only at a store whose Clover is connected,
     # since until then the 日报 records its sales; 'all' at every store. A live database starts at 'clover'.
     'staff_checkout': 'all',
+    # 异常提醒 Watcher (watcher.py): its switch, the Claude review's switch and daily cap, and the review time.
+    **watcher.SETTINGS,
 }
 
 SETTINGS_WHITELIST = frozenset(SETTINGS_DEFAULTS.keys())
@@ -187,6 +190,11 @@ def put_settings():
         data['checkout_cny_per_cad'] = rate
     if 'staff_checkout' in data and data['staff_checkout'] not in ('clover', 'all'):
         return jsonify(error='staff_checkout must be clover or all'), 400
+    for key in [key for key in data if key in watcher.SETTINGS]:
+        value, err = watcher.check_setting(key, data[key])
+        if err:
+            return jsonify({'error': err}), 400
+        data[key] = value
     if 'schedule_required_staff' in data:
         err = _validate_required_staff(str(data['schedule_required_staff']))
         if err:

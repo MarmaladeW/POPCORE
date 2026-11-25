@@ -14,6 +14,7 @@ from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from db import get_db, esc_csv, HIDDEN_IMG_DIR
 from auth import login_required, role_required
+from brands import canonical_brand
 from validation import read_int
 from matcher import match_jzm, batch_match_jzm, load_matching_aliases, match_name, identity_conflicts, normalize_sku, normalize as norm_jzm, clean_name as _clean_jzm, _score_pair_jzm
 from catalog_identity import (
@@ -21,6 +22,7 @@ from catalog_identity import (
     product_search_text_sql, resolve_barcode, update_product_identity,
 )
 from goods_operations import _remember, _replay
+from product_search import like_any, respelled, token_alternatives
 from inventory_commands import InventoryConflict, require_inventory_access
 from inventory_visibility import can_see_inventory, hide_quantities
 from inventory_opening import (
@@ -220,9 +222,12 @@ def search_products():
         return jsonify(rows)
 
     tokens = q.split()
+    # A word no product carries is searched as its closest words (product_search.py); a known word is untouched.
+    spellings = token_alternatives(con, tokens)
 
-    and_conditions = " AND ".join("inventory_search_blob LIKE ?" for _ in tokens)
-    and_params = [f'%{t}%' for t in tokens] + filter_params
+    and_clauses = [like_any('inventory_search_blob', words) for words in spellings]
+    and_conditions = " AND ".join(clause for clause, _ in and_clauses)
+    and_params = [value for _, values in and_clauses for value in values] + filter_params
     cur.execute(f'''
         SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
                brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
@@ -278,15 +283,29 @@ def search_products():
         ''', bi_params)
         bi_rows = [dict(r) for r in cur.fetchall()]
 
+    # A typed SKU or a scanned barcode is that product: always among the results, and first.
+    cur.execute(f'''
+        SELECT id, sku, name_cn_en, jizhanming, price, ip_series, product_type,
+               brand, notes, release_date, inventory_search_blob AS search_blob, is_bestseller,
+               stock_form, stock_unit, design_name, identity_status, series_id, series_name, alias_text,
+               parent_product_id, sub_item_count, created_at
+        FROM {search_source}
+        WHERE (LOWER(sku) = ? OR id IN (SELECT product_id FROM product_barcodes WHERE code = ?)) {filter_sql}
+    ''', [q, request.args.get('q', '').strip()] + filter_params)
+    exact_rows = [dict(r) for r in cur.fetchall()]
+    exact_ids = {r['id'] for r in exact_rows}
+
     seen = {}
-    for r in and_rows + or_rows + char_rows + bi_rows:
+    for r in and_rows + or_rows + char_rows + bi_rows + exact_rows:
         if r['id'] not in seen:
             seen[r['id']] = r
 
+    # A text with a misspelt word scores as the best of what was typed and its respellings.
+    texts = [(tokens, q)] + [(words, ' '.join(words)) for words in respelled(tokens, spellings)]
     candidates = list(seen.values())
     for c in candidates:
-        c['_score'] = _score_product(c, tokens, q)
-    candidates.sort(key=lambda x: -x['_score'])
+        c['_score'] = max(_score_product(c, words, text) for words, text in texts)
+    candidates.sort(key=lambda x: (x['id'] not in exact_ids, -x['_score']))
 
     final = candidates[:limit] if limit else candidates
     for c in final:
@@ -623,6 +642,8 @@ def update_product(pid):
         'series_id', 'stock_form', 'stock_unit', 'design_name', 'identity_status'
     }
     updates = {k: v for k, v in data.items() if k in allowed}
+    if 'brand' in updates:
+        updates['brand'] = canonical_brand(updates['brand'])
     identity_updates = {k: v for k, v in data.items() if k in identity_fields}
     if not updates and not identity_updates:
         return jsonify({'error': 'Nothing to update'}), 400
@@ -739,7 +760,7 @@ def create_product():
     price_raw    = data.get('price')
     ip_series    = (data.get('ip_series') or '').strip()
     product_type = (data.get('product_type') or '').strip()
-    brand        = (data.get('brand') or '').strip()
+    brand        = canonical_brand(data.get('brand'))
     release_date = (data.get('release_date') or '').strip()
     edition_size = (data.get('edition_size') or '').strip()
     channel      = (data.get('channel') or '').strip()
@@ -1131,6 +1152,8 @@ def _catalog_import_values(values):
                     raise ValueError('price must be a finite number >= 0')
         elif not isinstance(value, str):
             raise ValueError(f'{field} must be text')
+        elif field == 'brand':
+            value = canonical_brand(value)
         result[field] = value
     return result
 

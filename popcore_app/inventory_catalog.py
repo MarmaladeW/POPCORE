@@ -9,8 +9,10 @@ import sqlite3
 import uuid
 
 import design_prices
+from brands import canonical_brand
 from catalog_identity import (
-    FORMS_TO_UNITS, CatalogConflict, normalize_design_name, product_alias_text_sql, update_product_identity,
+    FORMS_TO_UNITS, CatalogConflict, normalize_design_name, official_design_label, product_alias_text_sql,
+    update_product_identity,
 )
 from goods_operations import _begin, _replay, _remember
 from sealed_sets import create_sealed_set, sealed_set_item
@@ -311,18 +313,20 @@ def add_designs(con, product_id, data, *, actor, request_key):
                 if (match := pattern.match(other or ''))]
         number = max(used, default=0)
         parent_name, full_name = _display_name(product), (product['name_cn_en'] or _display_name(product)).strip()
+        brand = canonical_brand(product['brand'])
         product_ids = []
         for design in names:
             number += 1
-            design_sku, jizhanming, name = f'{sku}-{number:02d}', f'{parent_name} {design}', f'{full_name} · {design}'
-            search = ' '.join(value for value in (design_sku, jizhanming, name, product['brand'], product['ip_series'])
+            design_sku, jizhanming = f'{sku}-{number:02d}', f'{parent_name} {design}'
+            name = f'{full_name} · {official_design_label(design)}'
+            search = ' '.join(value for value in (design_sku, jizhanming, name, brand, product['ip_series'])
                               if value).lower()
             product_ids.append(con.execute(
                 '''INSERT INTO products(sku,jizhanming,name_cn_en,price,ip_series,product_type,brand,series_id,
                                         stock_form,stock_unit,design_name,identity_status,search_blob)
                    VALUES (?,?,?,?,?,?,?,?,'confirmed_design','piece',?,'verified',?)''',
                 (design_sku, jizhanming, name, product['price'], product['ip_series'], product['product_type'],
-                 product['brand'], series_id, design, search)).lastrowid)
+                 brand, series_id, design, search)).lastrowid)
         result = {'product_id': product_id, 'series_id': series_id, 'product_ids': product_ids}
         _remember(con, key, 'product_designs', product_id, actor, digest, result)
         con.commit()
@@ -442,7 +446,8 @@ def edit_design(con, design_id, data, *, actor):
             parent_name = _display_name(head) if head else ''
             full_name = ((head['name_cn_en'] or _display_name(head)).strip() if head else '')
             updates.update(design_name=name, jizhanming=f'{parent_name} {name}'.strip(),
-                           name_cn_en=f'{full_name} · {name}' if full_name else name)
+                           name_cn_en=f'{full_name} · {official_design_label(name)}' if full_name
+                           else official_design_label(name))
             updates['search_blob'] = ' '.join(value for value in (
                 design['sku'], updates['jizhanming'], updates['name_cn_en'], design['brand'], design['ip_series'])
                 if value).lower()

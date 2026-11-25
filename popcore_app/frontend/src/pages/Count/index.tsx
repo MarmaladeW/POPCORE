@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Alert, Button, Checkbox, Input, InputNumber, Radio, Skeleton, type InputRef } from 'antd'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
@@ -8,9 +8,12 @@ import { useAppStore } from '../../store'
 import InventoryPhoto from '../Stock/InventoryPhoto'
 import {
   addDesigns, countRequestKey, getCountCard, getCountProgress, getCountScope, removeDesign, saveCount, searchCount,
-  type CountCard, type CountEntry, type CountForm, type CountItem, type CountProgress, type CountResult,
+  type CountCard, type CountEntry, type CountForm, type CountItem, type CountProgress, type CountResult, type CountRole,
   type CountScope, type SavedCard,
 } from '../../api/counting'
+import { onlyRoles } from './sectionsView'
+import { getCountMarks, type CountMark } from '../../api/countMarks'
+import { MarkFlag, markNote } from './CountMarks'
 import '../Stock/seriesInventory.css'
 import './count.css'
 
@@ -44,6 +47,7 @@ function kindOf(result: CountResult) {
 
 export default function CountPage() {
   const phone = useIsPhone()
+  const manager = useHasRole('manager')
   const store = useAppStore(state => state.selectedStore)
   const storeCode = store && store.code !== 'ALL' ? store.code : ''
   const [params, setParams] = useSearchParams()
@@ -118,16 +122,24 @@ export default function CountPage() {
           {scope.locations.map(item => <button key={item.code} type="button" aria-pressed={item.code === location}
             className={item.code === location ? 'is-on' : ''} onClick={() => { setQuery(''); go({ location: item.code }) }}>
             {placeName(item.code, item.name)}{!scope.live && <small>{item.counted}</small>}
+            {item.marked > 0 && <span className="pc-count-place-marks" title="待盘点 Count next time"
+              aria-label={`${item.marked} 待盘点 to count next time`}>{item.marked}</span>}
           </button>)}
         </nav>
         <p className={`pc-count-mode${scope.live ? ' is-live' : ''}`}>
           {scope.live ? '这家店已上线 · Saving a count changes this store’s stock now.'
             : '盘点中 · Counts are saved; stock changes when the store goes live.'}
         </p>
+        {scope.live && manager && !productId && <Link className="pc-count-sections-link" to="/count/sections">
+          <span><strong>分区盘点 Section count</strong><small>One section every two weeks: enter what the counter found</small></span>
+          <span aria-hidden="true">›</span>
+        </Link>}
         {productId && location
           ? <CountCardPanel key={`${location}:${productId}`} storeCode={storeCode} location={location} productId={productId}
               live={scope.live} refreshScope={() => setScopeVersion(n => n + 1)} onNext={next} />
           : location && <>
+            {here && here.marked > 0 && <MarkedHere storeCode={storeCode} location={location} placeLabel={placeName(here.code, here.name)}
+              onOpen={product => { setQuery(''); go({ product }) }} />}
             <Input ref={searchBox} autoFocus allowClear value={query} className="pc-count-search"
               aria-label="Search or scan a product" placeholder="搜索名称 / 记账名 / SKU，或扫码 Search or scan"
               onChange={event => setQuery(event.target.value)}
@@ -156,6 +168,35 @@ export default function CountPage() {
           </>}
       </>}
   </div>
+}
+
+// 待盘点 Count next time (owner, 2026-11-22): what a manager marked to count at this place, first, above the search.
+function MarkedHere({ storeCode, location, placeLabel, onOpen }: {
+  storeCode: string; location: string; placeLabel: string; onOpen: (product: number) => void
+}) {
+  const [marks, setMarks] = useState<CountMark[] | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    const controller = new AbortController()
+    getCountMarks(storeCode, undefined, controller.signal).then(found => setMarks(found.filter(mark => mark.place === location)))
+      .catch(cause => { if (!controller.signal.aborted) setError(messageOf(cause, 'Unable to load what is marked to count.')) })
+    return () => controller.abort()
+  }, [storeCode, location])
+  if (error) return <Alert type="error" showIcon message={error} />
+  if (!marks) return <Skeleton active title={false} paragraph={{ rows: 1 }} />
+  if (!marks.length) return null
+  return <section className="pc-count-marked" aria-labelledby="pc-count-marked-head">
+    <h2 id="pc-count-marked-head">待盘点 <small>Count next time · {placeLabel}</small></h2>
+    <ul className="pc-count-results">
+      {marks.map(mark => <li key={mark.id}>
+        <button type="button" onClick={() => onOpen(mark.product_id)}>
+          <InventoryPhoto filename={mark.image} name={mark.name} />
+          <span className="pc-count-result-text"><strong>{mark.name}</strong>
+            <small>{[mark.sku, markNote(mark)].filter(Boolean).join(' · ')}</small></span>
+        </button>
+      </li>)}
+    </ul>
+  </section>
 }
 
 function ProgressPanel({ storeCode, location, counted, onOpen }: { storeCode: string; location: string; counted: number; onOpen: (product: number) => void }) {
@@ -192,8 +233,11 @@ function ProgressPanel({ storeCode, location, counted, onOpen }: { storeCode: st
   </section>
 }
 
-function CountCardPanel({ storeCode, location, productId, live, refreshScope, onNext }: {
+// roles: a 分区盘点 section enters only its own items of the card (盲盒 boxes and whole sets, 确认款 designs);
+// sectionCountId links the save to that section count.
+export function CountCardPanel({ storeCode, location, productId, live, refreshScope, onNext, roles, sectionCountId, nextLabel }: {
   storeCode: string; location: string; productId: number; live: boolean; refreshScope: () => void; onNext: () => void
+  roles?: CountRole[] | null; sectionCountId?: number; nextLabel?: string
 }) {
   const manager = useHasRole('manager')
   const [card, setCard] = useState<CountCard | null>(null)
@@ -254,9 +298,11 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   if (!card) return error ? <Alert type="error" showIcon message={error} action={<Button onClick={() => setReload(n => n + 1)}>Retry</Button>} />
     : <Skeleton active paragraph={{ rows: 4 }} />
 
-  const head = card.items.find(item => item.role === 'box' || item.role === 'item')
-  const sets = card.items.filter(item => item.role === 'set')
-  const designs = card.items.filter(item => item.role === 'design')
+  const items = onlyRoles(card.items, roles)
+  const head = items.find(item => item.role === 'box' || item.role === 'item')
+  const sets = items.filter(item => item.role === 'set')
+  const designs = items.filter(item => item.role === 'design')
+  const designsHere = !roles || roles.includes('design')
   const changed = () => { key.current = ''; setSaved(null); setInfo('') }
   const touch = (item: CountItem) => setTyped(current => ({ ...current, [item.product_id]: true }))
   const setValue = (item: CountItem, value: number | null) => {
@@ -278,7 +324,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
   const wantsNewSet = offerSet && ((newSets ?? 0) > 0 || sizeTyped)
   const wholeSets = sets.reduce((sum, item) => sum + amount(item), 0) + (offerSet ? newSets || 0 : 0)
   const boxesInWholeSets = boxesInSets + (offerSet ? (newSets || 0) * (boxesPerSet || 0) : 0)
-  const entries: CountEntry[] = card.items.filter(item => typed[item.product_id] && values[item.product_id] != null).map(item => ({
+  const entries: CountEntry[] = items.filter(item => typed[item.product_id] && values[item.product_id] != null).map(item => ({
     product_id: item.product_id, quantity: values[item.product_id] as number,
     ...(item.identity_status !== 'verified' && forms[item.product_id] ? { stock_form: forms[item.product_id] } : {}),
     // The version this card showed: the save is refused if stock moved or someone else counted since.
@@ -318,6 +364,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
         store_code: storeCode, location, product_id: card.product_id, entries,
         ...(card.series_id && designsOk && !card.designs_checked ? { designs_checked: true } : {}),
         ...(wantsNewSet ? { new_sealed_set: { quantity: newSets ?? 0, boxes_per_set: boxesPerSet as number } } : {}),
+        ...(sectionCountId ? { section_count_id: sectionCountId } : {}),
       }, key.current)
       key.current = ''
       setSaved(response)
@@ -408,7 +455,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       unit={headUnit ? UNITS[headUnit] : ''}
       note={floorBoxes && head.set_size ? `每端 ${head.set_size} 盒 · ≈ ${Math.floor(amount(head) / head.set_size)} 端` : undefined} />}
 
-    {(designs.length > 0 || (manager && head && headUnit === 'box')) && <div className="pc-count-designs">
+    {designsHere && (designs.length > 0 || (manager && head && headUnit === 'box')) && <div className="pc-count-designs">
       <div className="pc-count-designs-head">
         <h3>确认款 Designs</h3>
         {designs.length > 0 && <Checkbox checked={designsOk} disabled={Boolean(card.designs_checked)}
@@ -449,7 +496,7 @@ function CountCardPanel({ storeCode, location, productId, live, refreshScope, on
       </li>}</ul>
     </div>}
     <div className="pc-count-actions">
-      <Button onClick={onNext}>{saved ? '下一个 Next' : '返回 Back'}</Button>
+      <Button onClick={onNext}>{saved ? nextLabel || '下一个 Next' : '返回 Back'}</Button>
       <Button type="primary" loading={saving} onClick={() => void save()}>保存 Save</Button>
     </div>
   </section>
@@ -472,6 +519,7 @@ function CountField({ item, label, unit, note, value, onChange, disabled, action
     <label htmlFor={`count-${item.product_id}`}>
       <span>{label}</span>
       {note && <small>{note}</small>}
+      {item.mark && <small className="pc-count-field-mark"><MarkFlag /> {item.mark.reason}</small>}
       {item.count && <small>已点 {item.count.quantity} · {item.count.counted_by} {localTime(item.count.counted_at)}</small>}
       {item.other_stock && <small>另有 {item.other_stock.map(other => `${SET_ASIDE[other.disposition] || other.disposition} ${other.quantity}`).join(' · ')}: not part of this count</small>}
     </label>

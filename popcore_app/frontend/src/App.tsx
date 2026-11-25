@@ -38,6 +38,8 @@ const GoodsPage=lazyPage(()=>import('./pages/Stock/Goods'))
 const RestockPage=lazyPage(()=>import('./pages/Restock'))
 const CountHub=lazyPage(()=>import('./pages/Stock/CountHub'))
 const CountPage=lazyPage(()=>import('./pages/Count'))
+const SectionsPage=lazyPage(()=>import('./pages/Count/Sections'))
+const SectionCountPage=lazyPage(()=>import('./pages/Count/SectionCount'))
 const ClawPage=lazyPage(()=>import('./pages/Stock/ClawPage'))
 const LossPage=lazyPage(()=>import('./pages/Stock/LossPage'))
 const ValuePage=lazyPage(()=>import('./pages/Stock/ValuePage'))
@@ -50,6 +52,7 @@ const WebsitePage=lazyPage(()=>import('./pages/Website'))
 const WebOrdersPage=lazyPage(()=>import('./pages/WebOrders'))
 const WatchListPage=lazyPage(()=>import('./pages/WatchList'))
 const ActivityPage=lazyPage(()=>import('./pages/Activity'))
+const WatchPage=lazyPage(()=>import('./pages/Watch'))
 const StaffDiscountsPage=lazyPage(()=>import('./pages/StaffDiscounts'))
 const DexHome=lazyPage(()=>import('./pages/Dex'))
 const DexEntryPage=lazyPage(()=>import('./pages/Dex/DexEntry'))
@@ -187,6 +190,8 @@ function AppInner() {
           <Route path="/stock/value" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<ValuePage />} />} />} />
           <Route path="/stock/count" element={<RoleRoute minRole="staff" element={<CountHub />} />} />
           <Route path="/count" element={<InventoryRoute element={<CountPage />} />} />
+          <Route path="/count/sections" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<SectionsPage />} />} />} />
+          <Route path="/count/sections/:id" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<SectionCountPage />} />} />} />
           <Route path="/summary" element={<RoleRoute minRole="staff" element={<StoreSummary />} />} />
           <Route path="/products"       element={<ProductsPage />} />
           <Route path="/products/series" element={<SeriesCatalogPage />} />
@@ -216,6 +221,7 @@ function AppInner() {
           <Route path="/web-orders" element={<RoleRoute minRole="viewer" element={<WebOrdersPage />} />} />
           <Route path="/watch-list" element={<RoleRoute minRole="viewer" element={<WatchListPage />} />} />
           <Route path="/activity" element={<RoleRoute minRole="viewer" element={<ActivityPage />} />} />
+          <Route path="/watch" element={<RoleRoute minRole="manager" element={<WatchPage />} />} />
           <Route path="/staff-discounts" element={<RoleRoute minRole="staff" element={<StaffDiscountsPage />} />} />
           <Route path="/dex" element={<RoleRoute minRole="viewer" element={<DexHome />} />} />
           <Route path="/dex/unlinked" element={<RoleRoute minRole="viewer" element={<DexUnlinkedPage />} />} />
@@ -223,7 +229,8 @@ function AppInner() {
           <Route path="/dex/:id" element={<RoleRoute minRole="viewer" element={<DexEntryPage />} />} />
           <Route path="/users"          element={<RoleRoute minRole="admin"   element={<UsersPage />} />} />
           <Route path="/settings"       element={<RoleRoute minRole="admin"   element={<SettingsPage />} />} />
-          <Route path="/schedule"       element={<RoleRoute minRole="viewer"  element={<SchedulePage />} />} />
+          {/* The store computer's 查看者 Viewer account has no shifts (owner, 2026-11-24). */}
+          <Route path="/schedule"       element={<RoleRoute minRole="staff"   element={<SchedulePage />} />} />
           <Route path="/more"           element={<MoreMenu />} />
           <Route path="*"               element={<NotFound />} />
         </Routes></Suspense>

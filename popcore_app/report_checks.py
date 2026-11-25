@@ -13,7 +13,7 @@ from report_stock import (LINE_SECTIONS, PACKED_SECTIONS, ReportLineError, _line
 
 SECTION_LABELS = {
     'pos': '卡机', 'cash': '随手记', 'refill': '出库入店', 'stock_in': '入店', 'stock_out': '出店',
-    'display_sold': '卖display', 'break_display': '拆display', 'display_stock_in': '入display',
+    'display_sold': '卖display', 'break_display': '拆display', 'display_stock_in': '出库入display',
     'claw_prize': '娃娃机', 'store_transfer': '出库', 'claw_stock_in': '入娃娃机',
     'back_in': '入库', 'transfer_out': '出库', 'floor_to_back': '出店入库', 'display_to_floor': '出display入店',
 }
@@ -27,6 +27,8 @@ _LOOSE_READING = {
 }
 # One sales line this big is worth a second look (owner, 2026-11-06: "萌粒快乐开涮*20").
 BIG_SALE = 10
+# A match this sure names the product a line means (as the paste's own _SURE_MATCH).
+SURE_MATCH = 90
 _TIMES = re.compile(r'(?:^|[^A-Za-z])[x×X]\s*\d+\s*$')
 _NO_SAVE = '改好数量或移除这一行才能保存；移除就不移库存。Fix the quantity or remove the row to save.'
 
@@ -106,15 +108,16 @@ def text_checks(boundaries, items, unknown_items, handled=()):
                        'or the lines below it are read as the section above.')
             else:
                 why = f'「{name}」没有数量（*N）：读成 0。No quantity: read as 0.'
-            out.append(_check('fix', [line], f'{why} {_NO_SAVE}', section))
+            # A line its product settles (settle_by_product) has this check replaced by what it was read as.
+            out.append({**_check('fix', [line], f'{why} {_NO_SAVE}', section), 'kind': 'no_quantity'})
         elif section in SALES and item['qty'] >= BIG_SALE:
             out.append(_check('check', [line], f'一行卖了 {item["qty"]} 个「{name}」：确认不是打错。'
                                                f'One line sells {item["qty"]}: check it is not a typo.', section))
         if item.get('name_number'):
             number = item['name_number']
-            out.append(_check('check', [line], f'「{name}*{item["qty"]}」：{number} 读成名字的一部分，出店 {item["qty"]} 个。'
-                                               f'如果是 {item["qty"]} 端每端 {number} 个，写成 *{number * item["qty"]}。'
-                                               f'{number} is read as part of the name.', section))
+            out.append({**_check('check', [line], f'「{name}*{item["qty"]}」：{number} 读成名字的一部分，出店 {item["qty"]} 个。'
+                                                  f'如果是 {item["qty"]} 端每端 {number} 个，写成 *{number * item["qty"]}。'
+                                                  f'{number} is read as part of the name.', section), 'kind': 'name_number'})
         if section in SALES and item.get('qty_assumed'):
             # "小王子-Rose- 出库入店" (DT, 2026-11-07): a place mark but no *N.
             out.append(_check('check', [line], f'「{name}」没写数量（*N）：按 1 个读。No quantity written: read as 1.', section))
@@ -126,17 +129,32 @@ def text_checks(boundaries, items, unknown_items, handled=()):
     return out
 
 
-def repeated_display_checks(blocks, items):
-    """A 卖display section left out because every line in it repeats a sale already marked (display) (MK Nov 6,
-    DT and MK Nov 8): saying it explicitly, by its lines, so it is never a silent change."""
+def repeated_display_checks(items):
+    """卖display lines left out because each repeats a sale already marked (display) (MK Nov 6, DT and MK Nov 8,
+    DT Nov 20–21), one check per 卖display heading naming the left-out lines and the sales they repeat, so it is
+    never a silent change. `items` are the left-out rows, each with `repeats`: the lines of those sales."""
+    blocks = defaultdict(list)
+    for item in items:
+        blocks[item['display_block']].append(item)
     out = []
-    for block in blocks:
-        lines = [item['line'] for item in items if item.get('display_block') == block]
-        out.append(_check('check', [block, *lines], f'这段 卖display 的 {len(lines)} 行，销售里都已标（display）：已不算，'
-                                                    '陈列只减一次。如果确实是另外从 display 卖的，先在销售里补上那笔销售。'
-                                                    'Every line repeats a (display) sale: left out, so display is '
-                                                    'taken once.', 'display_sold'))
+    for block, rows in blocks.items():
+        lines = sorted({row['line'] for row in rows})
+        sales = {line for row in rows for line in row.get('repeats', [])}
+        out.append(_check('check', [block, *lines, *sales],
+                          f'卖display 这 {len(lines)} 行，销售里已经标了（display）：已不算，陈列只减一次。'
+                          '如果确实另外又从 display 卖了一个，在销售里把那一笔也标上（display）。'
+                          f'{len(lines)} 卖display line(s) repeat a sale marked (display): left out, so display is '
+                          'taken once.', 'display_sold'))
     return out
+
+
+def old_display_in_check(lines):
+    """A day saved while 入display still meant upstairs → display (before 2026-11-22): read again, it keeps that
+    reading, so what it moved is not put back and added a second time as new goods."""
+    return _check('check', lines, '这天保存的时候，入display 还是按 楼上 → display 读的：再贴也照旧读，不会移两次。'
+                                  '新到的货直接放上 display，写成「入店：X*1（display）」。This day was saved when 入display '
+                                  'meant upstairs → display, so it keeps that reading. Write new pieces onto display as '
+                                  '入店 X*1 (display).', 'display_stock_in')
 
 
 def old_reading_check(lines, since):
@@ -179,39 +197,104 @@ SENT_DAYS = 3
 _PLACES = {'floor': '楼下 floor', 'upstairs': '楼上 upstairs', 'warehouse': '仓库 warehouse'}
 
 
+def _boxes(con, product, quantity):
+    """`quantity` of `product` as boxes or pieces: a whole set counts as its recorded boxes (None if unknown)."""
+    if product['stock_form'] != 'sealed_set':
+        return quantity
+    per = _stock_product(con, product)[1]
+    return quantity * per if per else None
+
+
+def _box_of(con, product):
+    """The box or piece a product's stock is counted in: a whole set's own box, else the product itself."""
+    return _stock_product(con, product)[0]['id'] if product['stock_form'] == 'sealed_set' else product['id']
+
+
+def _since(day):
+    try:
+        return (date.fromisoformat(day or '') - timedelta(days=SENT_DAYS)).isoformat()
+    except ValueError:
+        return None
+
+
 def sent_here_checks(con, rows, store_id, day):
     """出库 puts goods onto the other store at once (owner, 2026-11-13), so the receiving store's own report
     must not add them a second time: an 入库 or 入店 line of something the other store's 出库 put here in the
-    last days is pointed out, with what to do if it is the same goods."""
-    try:
-        since = (date.fromisoformat(day or '') - timedelta(days=SENT_DAYS)).isoformat()
-    except ValueError:
+    last days is pointed out.
+
+    Since 2026-11-24 (DT and MK, Nov 22–23: one store wrote sets as 出库, the other wrote the same sets as 入店
+    and 入库) such a line is read as those goods by default when they still cover it: 入店 becomes 出库入店 (they
+    are upstairs or in the warehouse already), and 入库, or an 入店 of goods the 出库 put on the floor, is left
+    out. The row and its check carry `sent_id` and `sent_fix` ('refill' or 'drop') so the paste screen can turn
+    it back into new goods. A line bigger than what is left of the sent goods (what was sent, less what this
+    store's 出库入店 on the days since brought down) keeps the check alone: it is more likely other goods, as
+    MK's SA shu were on Nov 12 (owner, 2026-11-13)."""
+    since = _since(day)
+    if since is None:
         return []
-
-    def box_of(product):
-        return _stock_product(con, product)[0]['id'] if product['stock_form'] == 'sealed_set' else product['id']
-
-    sent = defaultdict(list)
+    sent, left, first = defaultdict(list), defaultdict(int), {}
     for move in con.execute(
-            """SELECT m.business_date, m.moved * m.ratio AS quantity, s.code AS sender, l.code AS place, p.*
+            """SELECT m.business_date, m.moved * m.ratio AS quantity, m.to_location_id AS place_id, s.code AS sender,
+                      l.code AS place, p.*
                FROM report_stock_moves m JOIN stores s ON s.id=m.store_id
                JOIN inventory_locations l ON l.id=m.to_location_id JOIN products p ON p.id=m.to_product_id
                WHERE m.section='transfer_out' AND m.moved>0 AND l.store_id=? AND m.business_date BETWEEN ? AND ?
                ORDER BY m.business_date, m.rowid""", (store_id, since, day)):
-        sent[box_of(move)].append(move)
+        box = _box_of(con, move)
+        sent[box].append(move)
+        boxes = _boxes(con, move, move['quantity'])
+        if boxes:
+            left[box, move['place_id']] += boxes
+            first[box, move['place_id']] = min(first.get((box, move['place_id']), move['business_date']),
+                                                move['business_date'])
+    if not sent:
+        return []
+    # This store's own 出库入店 on the days since already took some of them down (a re-paste of today is not counted).
+    for taken in con.execute(
+            """SELECT m.business_date, m.moved * m.ratio AS boxes, m.from_location_id AS place_id, p.*
+               FROM report_stock_moves m JOIN products p ON p.id=m.from_product_id
+               WHERE m.store_id=? AND m.section='refill' AND m.moved>0 AND m.business_date BETWEEN ? AND ?
+                 AND m.business_date<?""", (store_id, since, day, day)):
+        key = (_box_of(con, taken), taken['place_id'])
+        if key in left and taken['business_date'] >= first[key]:
+            left[key] -= taken['boxes']
     out = []
-    for row in rows:
-        if not row.get('line') or row.get('section') not in ('back_in', 'stock_in') or not (row.get('product') or {}).get('id'):
+    for row in sorted(rows, key=lambda row: row.get('line') or 0):
+        if (not row.get('line') or row.get('section') not in ('back_in', 'stock_in') or row.get('to_display')
+                or not (row.get('product') or {}).get('id')):
             continue
         product = con.execute('SELECT * FROM products WHERE id=?', (row['product']['id'],)).fetchone()
-        for move in sent.get(box_of(product), []) if product else []:
+        if product is None:
+            continue
+        box = _box_of(con, product)
+        for move in sent.get(box, []):
             on_floor = move['place'] == 'floor'
+            key = (box, move['place_id'])
+            units = (row.get('box_size') or 1) * (row.get('qty') or 0) + (row.get('loose_qty') or 0)
+            where = _PLACES.get(move['place'], move['place'])
+            told = (f"{move['sender']} {move['business_date']} 的 出库 已经把 {move['quantity']} "
+                    f"{move['stock_unit']}「{_name(move)}」加到这家店的{where}。")
+            if 0 < units <= left.get(key, 0) and 'sent_id' not in row:
+                left[key] -= units
+                fix = 'drop' if row['section'] == 'back_in' or on_floor else 'refill'
+                sent_id = f"sent-{row['line']}-{row['section']}-{row['raw_name']}"
+                if fix == 'refill':
+                    row['section_was'], row['section'] = row['section'], 'refill'
+                    did = ('这一行先读成 出库入店：从这家店的楼上/仓库拿下来，不再加新货。'
+                           'Read as 出库入店: taken down from upstairs, not added again.')
+                else:
+                    did = '这一行先去掉，不再加一次。Left out, so they are not added twice.'
+                row.update(sent_id=sent_id, sent_fix=fix)
+                out.append({**_check('check', [row['line']], f"{told}{did} {move['sender']}'s 出库 on "
+                                                             f"{move['business_date']} already put these here. "
+                                                             '如果是另一批新货，选「另一批新货」。If they are other new '
+                                                             'goods, choose Other new goods.', row.get('section_was') or row['section']),
+                            'sent_id': sent_id, 'sent_fix': fix})
+                break
             fix = ('移除这一行' if row['section'] == 'back_in' or on_floor
                    else '把这一行的分区改成 出库入店（货已经在这家店的楼上/仓库）')
             out.append(_check('check', [row['line']],
-                              f"{move['sender']} {move['business_date']} 的 出库 已经把 {move['quantity']} "
-                              f"{move['stock_unit']}「{_name(move)}」加到这家店的{_PLACES.get(move['place'], move['place'])}。"
-                              f'如果这一行就是那批货，{fix}，不然会加两次。'
+                              f'{told}如果这一行就是那批货，{fix}，不然会加两次。'
                               f"{move['sender']}'s 出库 on {move['business_date']} already put these here: if this "
                               'line is the same goods, it would count them twice.', row['section']))
     return out
@@ -252,6 +335,115 @@ def app_checks(con, rows, store_id, day):
         check['extra_line'] = row['line']
         out.append(check)
     return out
+
+
+def received_there_checks(con, rows, store_id, day, other):
+    """The other way round (2026-11-24): the receiving store pasted first and wrote the goods arriving as 入店 or
+    入库, so this store's 出库 of the same goods would add them there a second time. Said, never changed: only the
+    manager knows whether it is the same goods."""
+    # Goods arrive on the day they are sent or the days after, never before.
+    try:
+        since, until = day, (date.fromisoformat(day or '') + timedelta(days=SENT_DAYS)).isoformat()
+    except ValueError:
+        return []
+    if not other:
+        return []
+    other_id = other.get('id') or (con.execute('SELECT id FROM stores WHERE code=?', (other.get('code'),)).fetchone() or [None])[0]
+    if other_id is None:
+        return []
+    added = defaultdict(list)
+    for move in con.execute(
+            """SELECT m.business_date, m.section, m.moved * m.ratio AS quantity, p.*
+               FROM report_stock_moves m JOIN products p ON p.id=m.to_product_id
+               WHERE m.store_id=? AND m.section IN ('stock_in', 'back_in') AND m.kind='receipt' AND m.moved>0
+                 AND m.business_date BETWEEN ? AND ? ORDER BY m.business_date, m.rowid""", (other_id, since, until)):
+        added[_box_of(con, move)].append(move)
+    out = []
+    for row in rows:
+        if not row.get('line') or row.get('section') != 'transfer_out' or not (row.get('product') or {}).get('id'):
+            continue
+        product = con.execute('SELECT * FROM products WHERE id=?', (row['product']['id'],)).fetchone()
+        for move in added.get(_box_of(con, product), []) if product else []:
+            heading = '入库' if move['section'] == 'back_in' else '入店'
+            out.append(_check('check', [row['line']],
+                              f"{other['code']} {move['business_date']} 的日报已经把 {move['quantity']} {move['stock_unit']}"
+                              f"「{_name(move)}」写成 {heading} 加上了。如果这一行就是那批货，把这一行改成 出店"
+                              f"（只从这家店扣），不然 {other['code']} 会加两次。{other['code']}'s report of "
+                              f"{move['business_date']} already added these as {heading}: if this is the same goods, "
+                              f"make this line 出店, or {other['code']} counts them twice.", row['section']))
+            break
+    return out
+
+
+def settle_by_product(con, rows):
+    """What a line's matched product settles (2026-11-24, from DT and MK's Nov 19–23 reports, each fixed by hand
+    before they were pasted). Returns (the lines changed, the checks saying how each was read):
+
+    - No quantity written ("Dimoo梦里梦外 中娃", "sp image", 入display "… - Frankie-The Forger"): a sale or a display
+      line that names one product for sure is one piece, as a place mark with no *N already is.
+    - 出店 "sa marine 12*2": 12 is the product's whole-set size, so it is 2 sets, 24 boxes, not 2 of a product
+      named "sa marine 12".
+    - 出库入店 "smiski球s3*24" with no set size written, exactly one set's worth: one whole set brought down, not
+      24 loose boxes upstairs does not keep. Only one set and only 出库入店: DT's 出库 "SA shu*30" (Nov 11) really
+      was 30 loose boxes, so bigger numbers and the other headings keep reading loose boxes."""
+    ids = sorted({row['product']['id'] for row in rows if (row.get('product') or {}).get('id')})
+    if not ids:
+        return set(), []
+    products = {row['id']: row for row in con.execute(
+        f'SELECT * FROM products WHERE id IN ({",".join("?" * len(ids))})', ids)}
+
+    def set_size(product):
+        if product['stock_form'] != 'random_box':
+            return None
+        whole = _set_for_box(con, product['id'])
+        return whole['boxes_per_set'] if whole is not None and (whole['boxes_per_set'] or 0) > 1 else None
+
+    settled, out = set(), []
+    for row in rows:
+        product = products.get((row.get('product') or {}).get('id'))
+        line, section = row.get('line'), row.get('section')
+        if product is None or not line:
+            continue
+        name, source = row['raw_name'], _source(row)
+        one_piece = (section in SALES or section in ('display_sold', 'break_display')
+                     or row.get('to_display') or row.get('from_display'))
+        candidates = row.get('candidates') or []
+        sure = (row.get('score') or 0) >= SURE_MATCH and not (
+            len(candidates) > 1 and candidates[1].get('score', 0) >= candidates[0].get('score', 0))
+        if (row.get('flagged') and not row.get('qty') and one_piece and sure
+                and not re.search(r'[*×]|(?<![A-Za-z])[xX]\s*\d|\d\s*$', source) and _extract_balanced(source)):
+            row.update(qty=1, flagged=False, qty_assumed=True,
+                       qty_pos=0 if section == 'cash' else 1, qty_cash=1 if section == 'cash' else 0)
+            if section in PACKED_SECTIONS:
+                row.update(box_size=1, loose_qty=0)
+            settled.add(line)
+            out.append(_check('check', [line], f'「{name}」没写数量（*N）：按 1 个读。No quantity written: read as 1.',
+                              section))
+            continue
+        per = set_size(product)
+        if not per:
+            continue
+        if section == 'stock_out' and row.get('name_number') == per and not row.get('from_display'):
+            sets = row['qty']
+            row.update(qty=sets * per, qty_pos=sets * per,
+                       note='；'.join(filter(None, [row.get('note'), f'原文: {name}*{sets}'])))
+            row.pop('name_number', None)
+            settled.add(line)
+            out.append(_check('check', [line], f'「{name}*{sets}」：{per} 是「{_name(product)}」每端的数量，读成 {sets} 端 = '
+                                               f'{sets * per} 个。Read as {sets} sets of {per}.', section))
+        elif (section == 'refill' and (row.get('box_size') or 1) == 1 and not row.get('loose_qty')
+                and not row.get('to_display') and not row.get('sale_mark') and row.get('qty') == per):
+            sets = 1
+            row.update(box_size=per, qty=sets, note='；'.join(filter(None, [row.get('note'), f'原文: {name}*{sets * per}'])))
+            settled.add(line)
+            out.append(_check('check', [line], f'「{name}*{sets * per}」：正好 {sets} 端（每端 {per} 个），按整端读。'
+                                               f'如果是散盒，把这一行改成 1 × {sets * per}。Read as {sets} whole '
+                                               f'set(s) of {per}.', section))
+    return settled, out
+
+
+def _extract_balanced(text):
+    return text.count('(') == text.count(')') and text.count('（') == text.count('）')
 
 
 def product_checks(con, rows, unmatched=()):

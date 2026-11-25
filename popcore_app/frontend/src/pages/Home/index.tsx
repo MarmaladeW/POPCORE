@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Skeleton } from 'antd'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, Navigate, useLocation } from 'react-router-dom'
 import { getToday, type TodayPayload } from '../../api/today'
 import { useHasRole } from '../../auth/useRole'
 import PageHeader from '../../components/pc/PageHeader'
 import { ListRow, Panel, SectionHeading } from '../../components/pc/Panel'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { formatCents } from '../../lib/money'
+import { useAppStore } from '../../store'
 import Dashboard from '../Dashboard'
 import MyShifts from '../Dashboard/MyShifts'
 import { TodayRows } from '../Dashboard/TodayRows'
@@ -25,7 +26,27 @@ const eventLabel: Record<string, string> = { claw_prize: '出奖', claw_refill: 
 export default function HomePage() {
   const staff = useHasRole('staff')
   const manager = useHasRole('manager')
-  return manager ? <Dashboard key="manager" home /> : staff ? <StaffHome /> : <Dashboard key="viewer" />
+  return manager ? <Dashboard key="manager" home /> : staff ? <StaffHome /> : <StoreComputerHome />
+}
+
+// The 查看者 Viewer is the store computer's account (owner, 2026-11-24): it opens on the orders to prepare. Until an admin
+// ticks 店铺电脑 for a store in Users, it says so and offers what it can already look at.
+function StoreComputerHome() {
+  const stores = useAppStore(state => state.stores)
+  if (!stores.length) return <div role="status" aria-live="polite">Loading page…</div>
+  if (stores.some(store => store.operations)) return <Navigate to="/web-orders" replace />
+  return <div className="pc-hm">
+    <PageHeader roomy title="店铺电脑" sub="Store computer" />
+    <Panel zh="还没有门店" en="No store yet" label="No store yet">
+      <p className="pc-quiet">管理员在 员工 Users 里为这个账户勾选 店铺电脑 的门店后，这里会显示要准备的网站订单和库存。<br />
+        Once an admin ticks 店铺电脑 Store computer for a store in Users, this account opens on that store's web orders and stock.</p>
+    </Panel>
+    <nav className="pc-hm-links" aria-label="Look up">
+      <Link to="/products">产品 Products</Link>
+      <Link to="/dex">图鉴 Dex</Link>
+      <Link to="/watch-list">可疑人员 Watch list</Link>
+    </nav>
+  </div>
 }
 
 function zhDate(day: string) {

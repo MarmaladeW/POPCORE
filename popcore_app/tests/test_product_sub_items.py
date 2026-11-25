@@ -55,6 +55,31 @@ class ProductSubItemTests(IsolatedApiCase):
         again = self.post(f'/api/products/{self.box}/designs', {'design_names': [' sisi ']}, 'd-3')
         self.assertEqual((again.status_code, again.get_json()['code']), (409, 'design_conflict'))
 
+    def test_official_names_carry_english_for_the_chinese_tags_staff_write(self):
+        """Owner, 2026-11-09: the 记账名 can stay Chinese, the official name cannot."""
+        names = ['隐藏 Sisi', '隐藏 SECRET "Zimomo"', '旧版 Tycoco', '特别色 Pato', 'Yaya异色', 'Mokoko（Super Secret）']
+        ids = self.post(f'/api/products/{self.box}/designs', {'design_names': names}, 'd-1').get_json()['product_ids']
+        with closing(self.connect()) as con:
+            rows = [tuple(con.execute('SELECT design_name, jizhanming, name_cn_en FROM products WHERE id=?',
+                                      (pid,)).fetchone()) for pid in ids]
+        full = 'THE MONSTERS Have a Seat Vinyl Plush Blind Box · '
+        self.assertEqual(rows, [
+            ('隐藏 Sisi', '坐坐 隐藏 Sisi', full + 'Sisi (Secret)'),
+            ('隐藏 SECRET "Zimomo"', '坐坐 隐藏 SECRET "Zimomo"', full + 'SECRET "Zimomo"'),
+            ('旧版 Tycoco', '坐坐 旧版 Tycoco', full + 'Tycoco (Original)'),
+            ('特别色 Pato', '坐坐 特别色 Pato', full + 'Pato (Special Color)'),
+            ('Yaya异色', '坐坐 Yaya异色', full + 'Yaya (Different Colour)'),
+            ('Mokoko（Super Secret）', '坐坐 Mokoko（Super Secret）', full + 'Mokoko (Super Secret)'),
+        ])
+        renamed = self.client.post(f'/api/products/{ids[0]}/design/edit', json={'design_name': '隐藏 Labubu'},
+                                   headers=self.headers('manager')).get_json()
+        self.assertEqual((renamed['jizhanming'], renamed['name_cn_en']), ('坐坐 隐藏 Labubu', full + 'Labubu (Secret)'))
+        sealed = self.post(f'/api/products/{self.box}/sealed-set', {'boxes_per_set': 6}, 's-1').get_json()
+        with closing(self.connect()) as con:
+            self.assertEqual(tuple(con.execute('SELECT jizhanming, name_cn_en FROM products WHERE id=?',
+                                               (sealed['set_product_id'],)).fetchone()),
+                             ('坐坐 整端', 'THE MONSTERS Have a Seat Vinyl Plush Blind Box · Whole Set'))
+
     def test_product_detail_lists_sub_items_and_each_sub_item_names_its_product(self):
         designs = self.post(f'/api/products/{self.box}/designs', {'design_names': ['Sisi']}, 'd-1').get_json()
         sealed = self.post(f'/api/products/{self.box}/sealed-set', {'boxes_per_set': 6}, 's-1')

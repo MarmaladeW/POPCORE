@@ -549,7 +549,7 @@ def schedule_avail_all():
         con.close()
         return err
     query = '''
-        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
+        SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                COALESCE(st.code, '') AS store_code
         FROM availability a
         JOIN employees e ON e.id = a.employee_id
@@ -638,7 +638,7 @@ def schedule_shifts_get():
     if store_code == 'ALL':
         if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -650,7 +650,7 @@ def schedule_shifts_get():
         else:
             emp = _get_or_create_employee(con, auth0_id)
             query  = '''
-                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
+                SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                        COALESCE(st.code, '') AS store_code
                 FROM shifts s
                 JOIN employees e ON e.id = s.employee_id
@@ -664,7 +664,7 @@ def schedule_shifts_get():
             query += ' AND s.date <= ?'; params.append(end)
     elif ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -681,7 +681,7 @@ def schedule_shifts_get():
     else:
         emp = _get_or_create_employee(con, auth0_id)
         query  = '''
-            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
+            SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                    COALESCE(st.code, '') AS store_code
             FROM shifts s
             JOIN employees e ON e.id = s.employee_id
@@ -713,7 +713,7 @@ def schedule_shifts_me():
         return err
     emp    = _get_or_create_employee(con, auth0_id)
     query  = '''
-        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank AS employee_rank,
+        SELECT s.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                COALESCE(st.code, '') AS store_code
         FROM shifts s
         JOIN employees e ON e.id = s.employee_id

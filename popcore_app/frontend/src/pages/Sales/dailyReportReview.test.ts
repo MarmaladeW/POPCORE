@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, REPORT_NOTE_SECTIONS,
-  reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, applyRepeatChoice, dropRepeats,
+  reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, applyRepeatChoice, dropRepeats, applySentChoice, dropSent,
 } from './dailyReportReview.ts'
 import { whereText } from '../../lib/stockPlaces.ts'
 import { quantityText, SECTION_TEXT } from './namePicksView.ts'
@@ -116,4 +116,19 @@ test('a repeated stock block is left out until the manager counts both', () => {
   const both = applyRepeatChoice(first, 'block:8-9', 'both')
   assert.deepEqual(both.map(row => !!row.removed), [false, false, false, true])
   assert.deepEqual(applyRepeatChoice(both, 'block:8-9', 'drop').map(row => !!row.removed), [false, true, true, true])
+})
+
+test('goods the other store already sent are read as them until the manager says they are new goods', () => {
+  // DT Nov 23: MK's 出库 put 4 Smiski hipper sets upstairs; DT wrote 入店 12*2 and 入库 12*2 for them.
+  const rows: { raw_name: string; section: string; sent_id?: string; sent_fix?: 'refill' | 'drop';
+                section_was?: string; removed?: boolean }[] = [
+    { raw_name: 'Smiski hipper', section: 'refill', section_was: 'stock_in', sent_id: 's113', sent_fix: 'refill' },
+    { raw_name: 'Smiski hipper', section: 'back_in', sent_id: 's121', sent_fix: 'drop' },
+    { raw_name: '宝可梦邂逅', section: 'stock_in' }]
+  const first = dropSent(rows)
+  assert.deepEqual(first.map(row => [row.section, !!row.removed]), [['refill', false], ['back_in', true], ['stock_in', false]])
+  const fresh = applySentChoice(applySentChoice(first, 's113', 'new'), 's121', 'new')
+  assert.deepEqual(fresh.map(row => [row.section, !!row.removed]), [['stock_in', false], ['back_in', false], ['stock_in', false]])
+  const back = applySentChoice(applySentChoice(fresh, 's113', 'sent'), 's121', 'sent')
+  assert.deepEqual(back.map(row => [row.section, !!row.removed]), [['refill', false], ['back_in', true], ['stock_in', false]])
 })

@@ -30,6 +30,7 @@ import {
 } from './scheduleApi'
 import { isRegularOn } from './monthlyDetail'
 import RegularMark from './RegularMark'
+import { rankIndex, regularRankInfo } from '@/lib/ranks'
 import TrainingMark from './TrainingMark'
 import {
   DEFAULT_STAFF_REQUIREMENTS,
@@ -253,7 +254,7 @@ export default function ManagerCalendar() {
         const isTraining = !!s.is_training
         const isRegular = isRegularOn(s.regular_since, s.date)
         // Every shift keeps the employee's solid color. Time, AM/PM, position,
-        // 训 and 正 markers carry the details without weakening that color.
+        // 训 and the rank (长 副 资 正) carry the details without weakening that color.
         const shiftColors = shiftColorPresentation(empColor, kind)
         byStore[code].push({
           id:              `shift-${s.id}`,
@@ -267,7 +268,9 @@ export default function ManagerCalendar() {
           classNames:      ['pc-ev', `pc-ev-${kind}`],
           extendedProps:   {
             type: 'shift', shift_id: s.id, employee_id: s.employee_id,
-            kind, is_training: isTraining, is_regular: isRegular, position: s.position || '',
+            kind, is_training: isTraining, is_regular: isRegular, rank: s.rank ?? null, position: s.position || '',
+            // Shifts starting together list 店长 first (owner, 2026-11-22): eventOrder below.
+            rank_order: rankIndex(s.rank),
             emp_name: s.employee_name ?? 'Employee', emp_color: empColor,
             start_time: s.start_time, end_time: s.end_time,
             actual_end_time: s.actual_end_time ?? null,
@@ -438,7 +441,7 @@ export default function ManagerCalendar() {
   // one bold name plus a compact, readable time chip (and position if set).
   const renderEvent = (arg: EventContentArg) => {
     const p = arg.event.extendedProps as {
-      type?: string; kind?: ShiftKind; is_training?: boolean; is_regular?: boolean; position?: string
+      type?: string; kind?: ShiftKind; is_training?: boolean; is_regular?: boolean; rank?: string | null; position?: string
       emp_name?: string; emp_color?: string; start_time?: string; end_time?: string
       actual_end_time?: string | null
       span?: { left: number; width: number }
@@ -449,13 +452,17 @@ export default function ManagerCalendar() {
     const range   = compactRange(p.start_time ?? '', p.end_time ?? '')
     // A recorded actual finish stays visible on the block, not only in the tooltip.
     const finished = p.type === 'shift' ? actualFinishChip(p.start_time ?? '', p.actual_end_time) : ''
+    // 转正 shows as their rank: 长 副 资 or 正 (owner, 2026-11-22).
+    const regular = p.is_regular ? regularRankInfo(p.rank) : null
+    const regularMark = regular
+      && <span className={cn('pc-regular-mark', `pc-regular-mark-${regular.value}`)} aria-hidden="true">{regular.glyph}</span>
     const tip = [
       p.emp_name,
       shiftTimeRange(p.start_time ?? '', p.end_time ?? '', p.actual_end_time),
       kind === 'full' ? 'Full day' : kind === 'custom' ? 'Custom slot' : `Half day (${halfTag})`,
       p.position && `Position: ${p.position}`,
       p.is_training && '培训中 Training',
-      p.is_regular && '转正 Regular',
+      regular && `${regular.zh} ${regular.en}`,
     ].filter(Boolean).join(' · ')
 
     if (arg.view.type === 'dayGridMonth' || arg.view.type === 'dayGridFortnight') {
@@ -469,7 +476,7 @@ export default function ManagerCalendar() {
           actualEndTime: p.type === 'shift' ? p.actual_end_time : null,
           position: p.position ?? '',
           isTraining: !!p.is_training,
-          isRegular: !!p.is_regular,
+          regularLabel: regular ? `${regular.zh} ${regular.en}` : null,
           shiftType: p.type === 'shift' ? shiftKindLabel(kind) : 'Available',
         })
         return (
@@ -479,7 +486,7 @@ export default function ManagerCalendar() {
             title={accessibleLabel}
             style={{ '--emp': employeeColor } as CSSProperties}
           >
-            <span>{compactEmployeeLabel(employeeName)} {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}{p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}{finished && ' ✓'}</span>
+            <span>{compactEmployeeLabel(employeeName)} {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}{regularMark}{finished && ' ✓'}</span>
             {p.position && <span className="pc-mobile-shift-pos" aria-hidden="true">{positionEmoji(p.position)}</span>}
             <span className="pc-mobile-shift-kind">{p.type === 'shift' ? shiftKindLabel(kind) : 'Available'}</span>
           </div>
@@ -492,7 +499,7 @@ export default function ManagerCalendar() {
           style={{ marginLeft: `${span.left * 100}%`, width: `${span.width * 100}%`, '--emp': p.emp_color } as CSSProperties}>
           <div className="pc-shift-heading">
             {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}
-            {p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}
+            {regularMark}
             <span className="pc-shift-name">{p.emp_name}</span>
             {finished && <span className="pc-shift-finished">{finished}</span>}
           </div>
@@ -511,7 +518,7 @@ export default function ManagerCalendar() {
           {p.start_time}–{p.end_time}
           {halfTag && <span className="pc-shift-half">{halfTag}</span>}
           {p.is_training && <span className="pc-training-mark" aria-hidden="true">训</span>}
-          {p.is_regular && <span className="pc-regular-mark" aria-hidden="true">正</span>}
+          {regularMark}
         </div>
         <div className="pc-shift-name">{p.emp_name}</div>
         {finished && <div><span className="pc-shift-finished">{finished}</span></div>}
@@ -580,7 +587,7 @@ export default function ManagerCalendar() {
               <SelectItem value="__all__">All employees</SelectItem>
               {schedulableEmployees.map((e) => (
                 <SelectItem key={e.id} value={String(e.id)}>
-                  {(e.name || e.email || e.auth0_id) + (e.is_training ? ' · 训' : '') + (isRegularOn(e.regular_since, today) ? ' · 正' : '')}
+                  {(e.name || e.email || e.auth0_id) + (e.is_training ? ' · 训' : '') + (isRegularOn(e.regular_since, today) ? ` · ${regularRankInfo(e.rank).glyph}` : '')}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -702,7 +709,7 @@ export default function ManagerCalendar() {
                   }}
                 >
                   {name.trim().slice(0, 2).toUpperCase()}
-                  {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} className="absolute -top-1 -right-1" />}
+                  {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} rank={e.rank} className="absolute -top-1 -right-1" />}
                   {!!e.is_training && <TrainingMark className="absolute -top-1 -right-1" />}
                   <span className="absolute -bottom-0.5 -right-1 flex gap-0.5">
                     {(empStores[e.id] ?? []).map(code => (
@@ -752,7 +759,7 @@ export default function ManagerCalendar() {
                   style={{ background: empColor }}
                 />
                 {e.name || e.email || `Employee ${e.id}`}
-                {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} />}
+                {isRegularOn(e.regular_since, today) && <RegularMark since={e.regular_since} rank={e.rank} />}
                 {!!e.is_training && <TrainingMark />}
                 {(empStores[e.id] ?? []).map(code => (
                   <span
@@ -835,8 +842,11 @@ export default function ManagerCalendar() {
           培训中 In training
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="pc-regular-mark" aria-hidden="true">正</span>
-          转正 Regular (from their 转正 date)
+          <span className="pc-regular-mark pc-regular-mark-store_manager" aria-hidden="true">长</span>
+          <span className="pc-regular-mark pc-regular-mark-assistant_manager" aria-hidden="true">副</span>
+          <span className="pc-regular-mark pc-regular-mark-senior" aria-hidden="true">资</span>
+          <span className="pc-regular-mark pc-regular-mark-regular" aria-hidden="true">正</span>
+          店长 · 副店长 · 资深员工 · 正式员工 (from their 转正 date)
         </span>
       </div>
 
@@ -887,6 +897,7 @@ export default function ManagerCalendar() {
               }}>{dayjs(arg.date).format('D')}</button>}
               eventClick={handleEventClick}
               eventContent={renderEvent}
+              eventOrder="start,-duration,allDay,rank_order,title"
               eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
               businessHours={businessHoursFrom(hoursForStore(st.code, storeHours))}
               dayMaxEvents={false}

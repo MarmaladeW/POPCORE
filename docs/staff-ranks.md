@@ -21,6 +21,9 @@ staff, **培训员工** Trainee (`popcore_app/ranks.py`, `frontend/src/lib/ranks
   ranked loses its rank again.
 - Every list of people shows them in rank order, 店长 first, then by name: Users, the schedule's people, coverage and the
   monthly hours. Each person shows a badge: 长 副 资 正 训.
+- In 排班 Schedule (owner, 2026-11-22), shifts on or after someone's 转正 date show their rank: 长, 副, 资 or 正 (正 for
+  anyone 转正 without a higher rank). 培训员工 shows 训. The same mark is on the people chips, the day panel, coverage,
+  the shift dialog and 月工时. Shifts with the same start and length list 店长 first; otherwise they keep time order.
 
 ## Shift positions
 

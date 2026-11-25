@@ -18,10 +18,11 @@ means the floor count already reflects those sales, so they are never taken off 
 The report's stock lines move too (owner, 2026-11-03): 出库入店 upstairs (or the warehouse) to the
 floor, a written set size opening whole sets as boxes; 入店 new goods onto the floor; 出店 off the
 floor; 卖display a sale from display, which the floor then does not take; 拆display floor to display;
-入display upstairs to display; 娃娃机 a prize off the claw. A `(display)` line goes to display instead
-of the floor. Each line is kept per day in `report_stock_moves` with what it should move and what it
-moved, so a re-pasted day moves only the difference, as sales do, and what a source does not have
-waits as a `move_short` notice.
+出库入display upstairs to display; 娃娃机 a prize off the claw. A `(display)` line goes to display instead
+of the floor, and so does 入display: new pieces onto display (owner, 2026-11-22). Each line is kept per day
+in `report_stock_moves` with what it should move and what it moved, so a re-pasted day moves only the
+difference, as sales do, and what a source does not have waits as a `move_short` notice. New goods of a
+product nobody counted count it (owner, 2026-11-22), the way a 盘点 count does.
 
 More of the report moves by itself (owner, 2026-11-13), so a raw paste needs no hand steps: 入库 new goods
 into upstairs (or the warehouse), a written set size as whole sets, and a blind box's first whole sets give it
@@ -52,10 +53,12 @@ import hashlib
 import json
 import uuid
 
-from catalog_identity import CatalogConflict
+import count_marks
+from catalog_identity import FORMS_TO_UNITS, CatalogConflict, update_product_identity
 from goods_operations import _balance
 from identity_sheet import SUGGESTED_IDENTITY
 from inventory_catalog import sealed_set_for
+from inventory_opening import COUNT_VERIFIABLE_FORMS
 from inventory_commands import (InventoryConflict, InventoryError, _post_inventory_in_transaction, live_store_ids,
                                 require_inventory_access, store_is_live)
 
@@ -66,7 +69,8 @@ SHORT_REASONS = ('not_counted', 'not_enough_on_floor', 'set_size_unknown')
 # A report's stock lines, by the section they came from (owner, 2026-11-03).
 LINE_SECTIONS = {
     'refill': '出库入店', 'stock_in': '入店', 'stock_out': '出店', 'display_sold': '卖display',
-    'break_display': '拆display', 'display_stock_in': '入display', 'claw_prize': '娃娃机',
+    # Upstairs → display; 入display is new goods (stock_in to display) since 2026-11-22.
+    'break_display': '拆display', 'display_stock_in': '出库入display', 'claw_prize': '娃娃机',
     # Owner, 2026-11-13: these move by the report too.
     'back_in': '入库', 'transfer_out': '出库', 'floor_to_back': '出店入库', 'display_to_floor': '出display入店',
 }
@@ -182,6 +186,19 @@ def lines_from(con):
     them recorded by hand."""
     row = con.execute("SELECT value FROM app_settings WHERE key='report_lines_from'").fetchone()
     return (row[0] or '').strip() or None if row else None
+
+
+def display_in_old_way(con, store_code, day):
+    """Whether this day's 入display keeps its old reading, upstairs → display. Since 2026-11-22 入display is new
+    goods onto display, as 入店（display） is (owner: only 出库入display comes from upstairs). A day saved the old
+    way is listed in app_settings display_in_old_days (by store code, written by the migration that made the
+    change), so pasted again its 入display moves nothing a second time."""
+    row = con.execute("SELECT value FROM app_settings WHERE key='display_in_old_days'").fetchone()
+    try:
+        days = json.loads(row[0]) if row and row[0] else {}
+    except ValueError:
+        return False
+    return isinstance(days, dict) and day in (days.get(store_code) or [])
 
 
 def other_store(con, store_id):
@@ -709,6 +726,23 @@ def _close_sets(con, actor, store_id, store_code, day, box, freed):
     return closed
 
 
+def _first_count(con, product):
+    """New goods of a product nobody has counted (owner, 2026-11-22: "if it wasn't counted it was simply not
+    counted, but now there is 入店 so it should be added"): the arrival is its first count, on top of nothing. It is
+    verified as the form it is set up as or its type names (盲盒 a blind box; 吊卡, 大娃, 周边 … an item), the way a
+    盘点 count verifies it. Returns the product as it now is, or None when its form cannot be told (no type), which
+    keeps the 还没盘点 notice until it is counted or set up in Products."""
+    form = product['stock_form'] or (SUGGESTED_IDENTITY.get((product['product_type'] or '').strip()) or (None, None))[0]
+    if form not in COUNT_VERIFIABLE_FORMS:
+        return None
+    try:
+        update_product_identity(con, product['id'], {
+            'stock_form': form, 'stock_unit': FORMS_TO_UNITS[form], 'identity_status': 'verified'})
+    except (ValueError, CatalogConflict):
+        return None
+    return con.execute('SELECT * FROM products WHERE id=?', (product['id'],)).fetchone()
+
+
 def _places(con, store_id):
     """Every active location as (code, the store's code when it is another store's): a line may reach the
     other store's upstairs, warehouse or floor."""
@@ -783,6 +817,12 @@ def _sync_lines(con, actor, store_id, store_code, day, counted):
                 source = product(row['from_product_id']) if row['from_product_id'] else None
                 target = product(row['to_product_id']) if row['to_product_id'] else None
                 out = row['wanted'] - row['moved'] - row['checked'] - row['settled']
+                first_count = None
+                if out > 0 and row['kind'] == 'receipt' and target['identity_status'] != 'verified':
+                    # New goods (入店, 入库, 入店（display）, 入display) of a product never counted: they count it.
+                    counted_now = _first_count(con, target)
+                    if counted_now is not None:
+                        target, first_count = counted_now, counted_now['stock_form']
                 sides = [(side, item, location_id, 1 if side == 'from' else row['ratio'])
                          for side, item, location_id in (('from', source, row['from_location_id']),
                                                          ('to', target, row['to_location_id'])) if item is not None]
@@ -874,6 +914,9 @@ def _sync_lines(con, actor, store_id, store_code, day, counted):
                     'moved_before': row['moved'], 'checked': row['checked'], 'moving': 0, 'document_id': None,
                     'sides': sides, 'before': before})
                 result['moving'] += (1 if out > 0 else -1) * moving
+                if first_count:
+                    # Said in the preview: this line is the product's first count (owner, 2026-11-22).
+                    result['first_count'] = first_count
                 # Each side as this line left it, before the day's later lines touch the same stock.
                 result.update(short=missing, problem=problem, short_at=taking[0] if taking else sides[0],
                               document_id=documents[-1] if moving else result['document_id'],
@@ -1136,6 +1179,10 @@ def _settled_by_count(con, row):
     what the notice was about (owner, 2026-11-20), so it no longer waits for a manager."""
     if row['reason'] == 'set_size_unknown':
         return None
+    if con.execute("""SELECT 1 FROM count_marks WHERE source_type='report_stock_issue' AND source_id=?
+                      AND status IN ('open', 'counted')""", (row['id'],)).fetchone():
+        # A manager marked it 待盘点 (owner, 2026-11-22): it stays until they check it, showing what was counted.
+        return None
     places = row['detail'].split(',') if row['reason'] == 'move_short' and row['detail'] else ['floor']
     found = []
     for place in places:
@@ -1177,6 +1224,10 @@ def open_notices(con, store_ids):
                         'floor': stock['floor'], 'upstairs': stock['upstairs'], 'stock': stock,
                         'where': row['detail'].split(',') if row['reason'] == 'move_short' and row['detail'] else [],
                         'updated_at': row['updated_at']})
+    # 待盘点: the product's open count-next-time marks here, and this notice's marks a count has closed.
+    marks = count_marks.notice_marks(con, notices)
+    for notice in notices:
+        notice.update(marks[notice['id']])
     return notices
 
 

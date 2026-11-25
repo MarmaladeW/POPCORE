@@ -182,11 +182,16 @@ class ReportMatchChoiceTests(IsolatedApiCase):
         line = 'Variant nickname*1 (secret)'
         self.assertEqual(self.submit([self.choose(self.parse(line))]).status_code, 200)
         self.assert_chosen(line)
-        for malformed in ('Variant nickname*0 (secret)', 'Variant nickname*oops (secret)',
-                          'Variant nickname (secret)'):
+        for malformed in ('Variant nickname*0 (secret)', 'Variant nickname*oops (secret)'):
             parsed = self.parse(malformed)
             self.assertFalse(parsed['confirmed'])
             self.assertTrue(any(r['flagged'] for r in parsed['review'] + parsed['failed']))
+        # No quantity at all on a sure match is one piece (2026-11-24), still reviewed and said, never confirmed.
+        parsed = self.parse('Variant nickname (secret)')
+        self.assertFalse(parsed['confirmed'])
+        (row,) = parsed['review']
+        self.assertEqual((row['qty'], row['flagged'], row['qty_assumed']), (1, False, True))
+        self.assertIn('按 1 个读', ' '.join(check['problem'] for check in parsed['format_checks']))
         unknown = self.parse(line, '待确认：')
         self.assertFalse(unknown['confirmed'])
         self.assertTrue(unknown['failed'][0]['unknown_header'])

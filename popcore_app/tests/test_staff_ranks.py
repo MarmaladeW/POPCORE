@@ -77,6 +77,74 @@ class StaffRankTests(IsolatedApiCase):
         response = self.client.patch('/api/users/auth0|celia', headers=self.headers('manager'), json={'rank': 'store_manager'})
         self.assertEqual(response.status_code, 403)
 
+    def test_the_store_computer_viewer_is_never_on_the_schedule(self):
+        # Owner, 2026-11-24: the viewer is the store computer's account, "no need for shift".
+        def schedulable(sub):
+            with closing(self.connect()) as con:
+                return con.execute('SELECT is_schedulable FROM employees WHERE auth0_id=?', (sub,)).fetchone()[0]
+        self.roles['auth0|celia'] = ['rol_staff']
+        self.assertEqual(self.save('auth0|celia', {'role': 'viewer'}).status_code, 200)
+        self.assertEqual(schedulable('auth0|celia'), 0)
+        # Picking a staff position again puts them back on the schedule; a staff change never does.
+        self.save('auth0|celia', {'rank': 'regular'})
+        self.assertEqual(schedulable('auth0|celia'), 1)
+        with closing(self.connect()) as con:
+            con.execute("UPDATE employees SET is_schedulable=0 WHERE auth0_id='auth0|zimo'")
+            con.commit()
+        self.roles['auth0|zimo'] = ['rol_staff']
+        self.save('auth0|zimo', {'rank': 'regular'})
+        self.assertEqual(schedulable('auth0|zimo'), 0)
+        # A new viewer account starts off the schedule.
+        with patch.object(users, 'AUTH0_MGMT_CLIENT_ID', 'id'), patch.object(users, 'AUTH0_MGMT_CLIENT_SECRET', 'secret'), \
+                patch.object(users, '_get_role_map', return_value=ROLE_IDS), \
+                patch.object(users, '_mgmt_post', side_effect=lambda path, json=None, **kw:
+                             Mock(ok=True, json=lambda: {'user_id': 'auth0|dtpc'}) if path == 'users' else self.mgmt_post(path, json)):
+            created = self.client.post('/api/users', headers=self.headers('admin'),
+                                       json={'username': 'dtpc', 'password': 'counter-pass-1', 'role': 'viewer'})
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual((self.roles['auth0|dtpc'], schedulable('auth0|dtpc')), (['rol_viewer'], 0))
+        # One made before this change comes off the schedule when Users is next read; an account with no role stays.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE employees SET is_schedulable=1 WHERE auth0_id IN ('auth0|amy', 'auth0|yc')")
+            con.commit()
+        auth0_users = [{'user_id': sub, 'username': sub.split('|')[1]} for sub in ('auth0|amy', 'auth0|yc', 'auth0|kitty')]
+        members = {'rol_admin': [], 'rol_manager': ['auth0|kitty'], 'rol_staff': [], 'rol_viewer': ['auth0|amy']}
+        with patch.object(users, 'AUTH0_MGMT_CLIENT_ID', 'id'), patch.object(users, 'AUTH0_MGMT_CLIENT_SECRET', 'secret'), \
+                patch.object(users, '_mgmt_get', return_value=Mock(ok=True, json=lambda: auth0_users)), \
+                patch.object(users, '_get_role_map', return_value=ROLE_IDS), \
+                patch.object(users, '_fetch_role_member_ids', side_effect=lambda role: members[role]):
+            listed = self.client.get('/api/users', headers=self.headers('admin')).get_json()
+        self.assertEqual({row['username']: row['role'] for row in listed}, {'amy': 'viewer', 'yc': 'viewer', 'kitty': 'manager'})
+        self.assertEqual((schedulable('auth0|amy'), schedulable('auth0|yc'), schedulable('auth0|kitty')), (0, 1, 1))
+
+    def test_a_new_account_keeps_the_position_picked_for_it(self):
+        # popcore-work#88: adding someone with a position failed after Auth0 made the account, and the rank was lost.
+        def create(username, body):
+            sub = f'auth0|{username}'
+            with patch.object(users, 'AUTH0_MGMT_CLIENT_ID', 'id'), patch.object(users, 'AUTH0_MGMT_CLIENT_SECRET', 'secret'), \
+                    patch.object(users, '_get_role_map', return_value=ROLE_IDS), \
+                    patch.object(users, '_mgmt_post', side_effect=lambda path, json=None, **kw:
+                                 Mock(ok=True, json=lambda: {'user_id': sub}) if path == 'users' else self.mgmt_post(path, json)):
+                return self.client.post('/api/users', headers=self.headers('admin'),
+                                        json={'username': username, 'password': 'new-pass-123', **body}), sub
+        today = checkout_access.business_date()
+        response, sub = create('jessi', {'rank': 'regular'})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertIsNone(response.get_json()['warning'])
+        self.assertEqual((self.roles[sub], self.employee(sub)),
+                         (['rol_staff'], {'rank': 'regular', 'is_training': 0, 'regular_since': today}))
+        response, sub = create('nan', {'rank': 'store_manager'})
+        self.assertEqual((response.status_code, self.roles[sub], self.employee(sub)['rank']),
+                         (201, ['rol_manager'], 'store_manager'))
+        # Promoting a trainee row (no sign-in yet) into an account keeps the picked position too.
+        with closing(self.connect()) as con:
+            trainee = con.execute("INSERT INTO employees(auth0_id, name, is_trainee) VALUES ('trainee|bo', 'Bo', 1)").lastrowid
+            con.commit()
+        response, sub = create('bo', {'rank': 'trainee', 'trainee_id': trainee})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertEqual((self.roles[sub], self.employee(sub)),
+                         (['rol_staff'], {'rank': 'trainee', 'is_training': 1, 'regular_since': None}))
+
     def test_the_status_keeps_the_rank_in_step(self):
         with closing(self.connect()) as con:
             ids = {row[0]: row[1] for row in con.execute('SELECT auth0_id, id FROM employees')}
@@ -93,6 +161,17 @@ class StaffRankTests(IsolatedApiCase):
         expected = ['Xiao Na', 'Kitty', 'Zimo', 'Celia', 'YC', 'Amy']
         employees = self.client.get('/api/schedule/employees', headers=self.headers('manager')).get_json()
         self.assertEqual([row['name'] for row in employees if row['name'] in expected], expected)
+        # Shifts carry the person's rank, so the schedule marks them 长 副 资 正 (owner, 2026-11-22).
+        with closing(self.connect()) as con:
+            for name in ('Zimo', 'Xiao Na'):
+                con.execute("""INSERT INTO shifts(employee_id, date, start_time, end_time, assigned_by, store_id)
+                               SELECT id, '2026-11-23', '12:00', '22:00', 'test', ? FROM employees WHERE name=?""",
+                            (self.store_id, name))
+            con.commit()
+        shifts = self.client.get('/api/schedule/shifts?store_code=DT&start=2026-11-23&end=2026-11-23',
+                                 headers=self.headers('manager')).get_json()
+        self.assertEqual([(row['employee_name'], row['rank']) for row in shifts],
+                         [('Xiao Na', 'store_manager'), ('Zimo', 'senior')])
         stores = self.client.get('/api/employees/stores', headers=self.headers('manager')).get_json()
         self.assertEqual([row['name'] for row in stores if row['name'] in expected], expected)
         self.assertEqual(stores[0]['rank'], 'store_manager')

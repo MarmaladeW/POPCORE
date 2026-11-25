@@ -9,6 +9,7 @@ counts exactly like count sheets, so going live stays one deliberate, reviewed s
 (owner, 2026-10-27). Each such count is kept as an approved inventory count, so a manager
 can look over the differences afterwards.
 """
+import count_marks
 from catalog_identity import (
     FORMS_TO_UNITS, normalize_design_name, product_alias_text_sql, update_product_identity,
 )
@@ -22,6 +23,7 @@ from inventory_commands import (
 )
 from inventory_opening import COUNT_VERIFIABLE_FORMS, legacy_column, trusts_legacy
 from inventory_visibility import require_inventory_visible
+from product_search import respellings
 from sealed_sets import SET_SUFFIX
 from store_access import can_write_legacy_store
 from validation import read_int
@@ -195,17 +197,21 @@ def count_scope(con, actor, store_code):
         counted = {} if scope['live'] else {row[0]: row[1] for row in con.execute(
             'SELECT location_id, COUNT(*) FROM opening_counts oc JOIN inventory_locations l ON l.id=oc.location_id '
             'WHERE l.store_id=? GROUP BY location_id', (scope['store']['id'],))}
+        # 待盘点: open count-next-time marks per place (count_marks.py).
+        marked = {row[0]: row[1] for row in con.execute(
+            "SELECT location_id, COUNT(*) FROM count_marks WHERE store_id=? AND status='open' GROUP BY location_id",
+            (scope['store']['id'],))}
         return {'store': scope['store'], 'live': scope['live'],
-                'locations': [{**location, 'counted': counted.get(location['id'], 0)}
+                'locations': [{**location, 'counted': counted.get(location['id'], 0),
+                               'marked': marked.get(location['id'], 0)}
                               for location in scope['locations']]}
     return _read(con, work)
 
 
-def family_anchors(con, text):
+def family_anchors(con, *texts):
     """One product per card matching a name, 记账名, SKU, design name, alias or an exact barcode,
-    best match first (a design or sealed set finds its blind box). 补货 finds series the same way."""
-    needle = normalize_design_name(text)
-    scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
+    best match first (a design or sealed set finds its blind box). 补货 finds series the same way.
+    Several texts (the respellings of a misspelt one) are matched as one search."""
     owners = {row['id']: row['product_id'] for row in con.execute('SELECT id, product_id FROM product_series')}
     set_box = {row[0]: row[1] for row in con.execute(
         """SELECT c.source_product_id, c.target_product_id FROM product_conversions c
@@ -218,11 +224,15 @@ def family_anchors(con, text):
                        {product_alias_text_sql('p')} AS alias_text, ps.name AS series_name
                 FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id"""):
         products[row['id']] = row
-        exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
-        haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
-            'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
-        if exact or needle in haystack:
-            hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, row['id']))
+    for text in texts:
+        needle = normalize_design_name(text)
+        scanned = {row[0] for row in con.execute('SELECT product_id FROM product_barcodes WHERE code=?', (text,))}
+        for row in products.values():
+            exact = row['id'] in scanned or (row['sku'] or '').casefold() == text.casefold()
+            haystack = normalize_design_name(' '.join(str(row[field] or '') for field in (
+                'sku', 'jizhanming', 'name_cn_en', 'design_name', 'alias_text', 'series_name')))
+            if exact or needle in haystack:
+                hits.append((0 if exact else 1 if haystack.startswith(needle) else 2, row['id']))
 
     def card_of(product_id):
         # As _family: a sealed set finds its blind box and a confirmed design its series' owner.
@@ -255,15 +265,20 @@ def family_members(con, product_id):
 
 def search_targets(con, actor, store_code, location_code, query):
     """Products to count matching a name, 记账名, SKU, design name, alias or an exact barcode,
-    one result per card (a design or sealed set finds its blind box)."""
+    one result per card (a design or sealed set finds its blind box). When nothing matches, the
+    text is tried once more with its misspelt words replaced (product_search.py)."""
     text = (query or '').strip()
 
     def work():
         scope = _scope(con, actor, store_code, location_code)
         if not text:
             return {'results': []}
+        anchors = family_anchors(con, text)
+        if not anchors:
+            other = respellings(con, text)
+            anchors = family_anchors(con, *other) if other else []
         results = []
-        for anchor in family_anchors(con, text):
+        for anchor in anchors:
             head, series_id = _family(con, anchor)
             members = _here(_members(con, head, series_id), scope['location'])
             if not members:
@@ -303,6 +318,7 @@ def count_card(con, actor, store_code, location_code, product_id):
                              (series_id,)).fetchone() if series_id is not None else None
         names = _names(con, [count['counted_by'] for count in saved.values()]
                        + [series['designs_checked_by'] if series else None])
+        marked = {row['product_id']: row for row in count_marks.open_marks(con, scope['store']['id'], location['id'])}
         items = []
         for role, product, boxes_per_set in members:
             item = {
@@ -313,6 +329,10 @@ def count_card(con, actor, store_code, location_code, product_id):
             }
             if boxes_per_set is not None:
                 item['boxes_per_set'] = boxes_per_set
+            if product['id'] in marked:
+                found = marked[product['id']]
+                item['mark'] = {'id': found['id'], 'reason': found['reason'], 'marked_by': found['marked_by'],
+                                'marked_at': found['marked_at']}
             if role == 'box' and members is not everything and _set_size(everything):
                 item['set_size'] = _set_size(everything)
             if product['identity_status'] != 'verified':
@@ -483,6 +503,7 @@ def _record_opening(con, actor, store_id, location, members, entries):
         results.append({'product_id': product['id'], 'quantity': entry['quantity'],
                         'previous_count': previous['quantity'] if previous else None,
                         'popcore_quantity': (legacy[0] if legacy else 0) if compared else None})
+    count_marks.close_counted(con, actor, location['id'], [entry['product_id'] for entry in entries])
     outcome = {'results': results}
     head = next((product for role, product, _ in members.values() if role == 'box'), None)
     if column and boxed and head is not None:
@@ -502,8 +523,9 @@ def _record_opening(con, actor, store_id, location, members, entries):
     return outcome
 
 
-def _correct_stock(con, actor, store_id, location, members, entries, request_key):
-    """A live store: post the differences as one correction, kept as an approved count."""
+def _correct_stock(con, actor, store_id, location, members, entries, request_key, section_count_id=None):
+    """A live store: post the differences as one correction, kept as an approved count (and with the
+    分区盘点 section count it was entered for, if any)."""
     balances = {entry['product_id']: _balance(con, entry['product_id'], location['id'], 'saleable')
                 for entry in entries}
     if any(entry['balance_version'] is None for entry in entries):
@@ -554,6 +576,11 @@ def _correct_stock(con, actor, store_id, location, members, entries, request_key
              entry['quantity'], current['version']))
         results.append({'product_id': product['id'], 'quantity': entry['quantity'],
                         'previous_count': None, 'popcore_quantity': current['quantity']})
+    if section_count_id is not None:
+        from count_sections import link_save  # count_sections reads this module's helpers
+        link_save(con, section_count_id, location['id'], count_id, [entry['product_id'] for entry in entries])
+    # A saved count covers what it counted here: those are no longer 待盘点 (count_marks.py).
+    count_marks.close_counted(con, actor, location['id'], [entry['product_id'] for entry in entries], count_id)
     if lines:
         # Anyone who may count at a live store corrects it at once; managers look over the
         # differences afterwards instead of approving each count first (owner, 2026-10-27).
@@ -577,9 +604,13 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
     designs_checked = data.get('designs_checked')
     if designs_checked not in (None, True, False):
         raise InventoryValidationError('designs_checked must be true or false')
+    section_count_id = data.get('section_count_id')
+    if section_count_id is not None:
+        section_count_id = read_int(section_count_id, 'section_count_id', minimum=1)
     intent = {'store_code': (store_code or '').strip().upper(), 'location': (location_code or '').strip().lower(),
               'product_id': product_id, 'entries': entries, 'designs_checked': designs_checked,
-              **({'new_sealed_set': new_set} if new_set else {})}
+              **({'new_sealed_set': new_set} if new_set else {}),
+              **({'section_count_id': section_count_id} if section_count_id else {})}
     _begin(con)
     try:
         key, digest, prior = _replay(con, request_key, 'count_save', actor, intent)
@@ -588,6 +619,11 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
             return prior
         scope = _scope(con, actor, store_code, location_code)
         location = scope['location']
+        if section_count_id is not None:
+            if not scope['live']:
+                raise InventoryValidationError('Section counts are for a live store', 'store_not_live')
+            from count_sections import open_count_for_save
+            open_count_for_save(con, section_count_id, scope['store']['id'])
         head, series_id = _family(con, product_id)
         if location['code'] in BOXES_ONLY and (new_set or any(
                 role == 'set' and product['id'] in {entry['product_id'] for entry in entries}
@@ -649,7 +685,7 @@ def save_counts(con, actor, store_code, location_code, data, *, request_key):
                 'SELECT designs_checked_at FROM product_series WHERE id=?', (series_id,)).fetchone()[0]:
             raise InventoryValidationError('Check the designs are right before counting them', 'designs_unchecked')
         record = _correct_stock if scope['live'] else _record_opening
-        kwargs = {'request_key': key} if scope['live'] else {}
+        kwargs = {'request_key': key, 'section_count_id': section_count_id} if scope['live'] else {}
         # Only boxes per set was saved: no count to record, nor an empty one to keep at a live store.
         outcome = (record(con, actor, scope['store']['id'], location, members, entries, **kwargs)
                    if entries else {'results': []})

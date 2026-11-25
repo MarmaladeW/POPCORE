@@ -12,7 +12,7 @@ import client from '../../api/client'
 import {
   reasonText, whereText, type ReportSetOpened, type ReportStockLine, type ReportStockResult, type ReportStockSide,
 } from '../../api/reportStock'
-import { productNames } from '../../lib/productLabel'
+import { pickParts, pickText } from '../../lib/productLabel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
@@ -23,7 +23,7 @@ import {
 import {
   cashDifference, formatCheckWhere, hasReportNotes, isReportRowReady, matchFeedback, PACKED_SECTIONS, positiveInteger, REPORT_NOTE_SECTIONS,
   reportPayloadQuantities, STOCK_LINE_SECTIONS, stockLineEffect, validReportQuantity,
-  applyRepeatChoice, dropRepeats, type RepeatChoice,
+  applyRepeatChoice, dropRepeats, type RepeatChoice, applySentChoice, dropSent, type SentChoice,
 } from './dailyReportReview'
 import { placeText } from './namePicksView'
 
@@ -37,7 +37,7 @@ const SECTION_META: Record<string, { label: string; color: string; live?: boolea
   stock_out:         { label: '出店',      color: 'orange'  },
   display_sold:      { label: '卖Display', color: 'magenta', live: true },
   break_display:     { label: '拆Display', color: 'red'     },
-  display_stock_in:  { label: '入Display', color: 'cyan', live: true },
+  display_stock_in:  { label: '出库入Display', color: 'cyan', live: true },
   claw_prize:        { label: '娃娃机出奖', color: 'gold', live: true },
   back_in:           { label: '入库',      color: 'lime', live: true },
   transfer_out:      { label: '出库',      color: 'volcano', live: true },
@@ -87,6 +87,9 @@ function StockLinesList({ lines }: { lines: ReportStockLine[] }) {
             </Tag>}
             {!!l.settled && <Tag color="green" style={{ margin: 0 }}>
               之后盘点过 Counted later ({Object.values(l.counted_later ?? {}).join(', ')}){l.one_sided ? ` · 只改另一边 only the other side ${l.one_sided > 0 ? '' : '−'}${Math.abs(l.one_sided)}` : ' · 不移 nothing moves'}
+            </Tag>}
+            {l.first_count && <Tag color="cyan" style={{ margin: 0 }}>
+              第一次盘点 First count · {l.first_count === 'random_box' ? '盲盒 Blind box' : '单品 Item'}
             </Tag>}
             {l.moved_before > 0 && <span style={{ color: '#6b7280' }}>之前已移 Moved before {l.moved_before}</span>}
           </Space>
@@ -190,6 +193,21 @@ interface UnknownSectionState {
 
 // ─── Product picker ───────────────────────────────────────────────────────────
 
+/** A product in a pick list: its design and SKU first, the whole name wrapped below, never cut off (owner,
+ * 2026-11-22: "Sonny Angel Easter Series 20…" hid which Easter design was picked). */
+function PickOption({ product, score }: { product: BackendProduct; score?: number }) {
+  const { design, sku, names } = pickParts(product)
+  const head = [design, sku].filter(Boolean).join(' · ') || names
+  return (
+    <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.35, padding: '2px 0' }}>
+      <div style={{ fontWeight: 600 }}>
+        {head}{score != null && <span style={{ color: '#6b7280', fontWeight: 400 }}> ({score}%)</span>}
+      </div>
+      {head !== names && <div style={{ fontSize: 12, color: '#4b5563' }}>{names}</div>}
+    </div>
+  )
+}
+
 function ProductPicker({ onSelect, placeholder }: { onSelect: (p: BackendProduct) => void; placeholder?: string }) {
   const [opts, setOpts] = useState<any[]>([])
   async function search(q: string) {
@@ -197,14 +215,15 @@ function ProductPicker({ onSelect, placeholder }: { onSelect: (p: BackendProduct
     const r = await client.get('/products/search', { params: { q, limit: 8 } })
     setOpts(r.data.map((p: any) => ({
       value: String(p.id),
-      label: `${productNames(p)} (${p.sku})`,
+      label: <PickOption product={p} />,
       product: p,
     })))
   }
   return (
     <AutoComplete
       size="small"
-      style={{ width: 200 }}
+      style={{ width: 220 }}
+      popupMatchSelectWidth={320}
       placeholder={placeholder ?? '搜索产品...'}
       options={opts}
       onSearch={search}
@@ -252,6 +271,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [repeatChoices, setRepeatChoices] = useState<Record<string, RepeatChoice>>({})
   // Lines the manager marked "这是另外的 It's extra": another batch than what an app screen recorded that day.
   const [extraLines, setExtraLines] = useState<number[]>([])
+  // Goods the other store's 出库 already sent here (2026-11-24): read as them unless the manager says new goods.
+  const [sentChoices, setSentChoices] = useState<Record<string, SentChoice>>({})
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
   const [stockResult,   setStockResult]   = useState<ReportStockResult | null>(null)
   // At a live store the stock lines move stock too; the manager confirms them first (owner, 2026-11-03).
@@ -277,7 +298,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
 
       // Rows of a repeated block start left out: 去掉重复 Drop the repeat is the default.
       setRepeatChoices({})
-      setConfirmed(dropRepeats(res.confirmed.map((it, i) => ({
+      setSentChoices({})
+      setConfirmed(dropSent(dropRepeats(res.confirmed.map((it, i) => ({
         ...it,
         _key:     mk('c', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -285,9 +307,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty_pos:  it.qty_pos,
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
-      }))))
+      })))))
 
-      setReview(dropRepeats(res.review.map((it, i) => ({
+      setReview(dropSent(dropRepeats(res.review.map((it, i) => ({
         ...it,
         _key:     mk('r', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -297,9 +319,9 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         notes:    it.note ?? '',
         originalTopId: it.candidates[0]?.id ?? it.product.id,
         accepted: false,
-      }))))
+      })))))
 
-      setFailed(dropRepeats(res.failed.map((it, i) => ({
+      setFailed(dropSent(dropRepeats(res.failed.map((it, i) => ({
         ...it,
         _key:     mk('f', i, it.raw_name),
         qty:      it.flagged ? 0 : it.qty,
@@ -308,7 +330,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         qty_cash: it.qty_cash,
         notes:    it.note ?? '',
         section:  it.section ?? 'unknown',
-      }))))
+      })))))
 
       setCashTotalReported(res.cash_total_reported ?? null)
       setCashExpected(res.cash_expected_reported ?? null)
@@ -362,6 +384,13 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
     setConfirmed(prev => applyRepeatChoice(prev, repeatId, choice))
     setReview(prev => applyRepeatChoice(prev, repeatId, choice))
     setFailed(prev => applyRepeatChoice(prev, repeatId, choice))
+  }
+
+  function chooseSent(sentId: string, choice: SentChoice) {
+    setSentChoices(prev => ({ ...prev, [sentId]: choice }))
+    setConfirmed(prev => applySentChoice(prev, sentId, choice))
+    setReview(prev => applySentChoice(prev, sentId, choice))
+    setFailed(prev => applySentChoice(prev, sentId, choice))
   }
 
   function patchConfirmed(key: string, patch: Partial<ConfirmedRow>) {
@@ -652,15 +681,23 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
         return (
           <Space size={4} direction="vertical" style={{ width: '100%' }}>
             {noteLine}
+            {/* The box leads with the design and SKU; the list shows every name in full (owner, 2026-11-22). */}
             <Select
-              size="small" value={r.product?.id} style={{ width: 220 }}
+              size="small" value={r.product?.id} style={{ width: '100%', minWidth: 220 }}
+              popupMatchSelectWidth={320}
+              aria-label={`${r.raw_name} 候选匹配`}
+              title={r.product ? pickText(r.product) : undefined}
               onChange={v => {
                 const c = r.candidates?.find((x: BackendCandidate) => x.id === v)
                 if (c) patchReview(r._key, { product: c as BackendProduct })
               }}
+              labelRender={({ value }) => {
+                const c = r.candidates?.find((x: BackendCandidate) => x.id === value) ?? r.product
+                return c ? pickText(c) : value
+              }}
               options={(r.candidates || []).map((c: BackendCandidate) => ({
                 value: c.id,
-                label: `${productNames(c)} · ${c.sku} (${c.score}%)`,
+                label: <PickOption product={c} score={c.score} />,
               }))}
             />
             <ProductPicker placeholder="或搜索其他产品..."
@@ -986,6 +1023,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                       onChange={e => chooseRepeat(check.repeat_id!, e.target.value)}>
                       <Radio value="drop">去掉重复 Drop the repeat</Radio>
                       <Radio value="both">两次都算 Count both</Radio>
+                    </Radio.Group>
+                  )}
+                  {check.sent_id && (
+                    <Radio.Group size="small" style={{ marginTop: 4 }} aria-label={`Sent ${check.sent_id}`}
+                      value={sentChoices[check.sent_id] ?? 'sent'}
+                      onChange={e => chooseSent(check.sent_id!, e.target.value)}>
+                      <Radio value="sent">{check.sent_fix === 'drop' ? '已经到了，去掉 Already here: leave out' : '从楼上拿下来 出库入店 Taken down'}</Radio>
+                      <Radio value="new">另一批新货 Other new goods</Radio>
                     </Radio.Group>
                   )}
                 </li>

@@ -266,6 +266,17 @@
 .pc-training-mark {
   background: var(--status-restock-ink);
 }
+/* 转正 shows the rank (owner, 2026-11-22): 长 副 资 in the colours of the 员工 page's rank badges, solid like 正. */
+.pc-regular-mark-store_manager {
+  background: #232a3a;
+  color: #e9c46a;
+}
+.pc-regular-mark-assistant_manager {
+  background: #5b3d98;
+}
+.pc-regular-mark-senior {
+  background: #33548c;
+}
 .pc-shift :is(.pc-regular-mark, .pc-training-mark),
 .pc-mobile-shift :is(.pc-regular-mark, .pc-training-mark) {
   outline: 1px solid rgba(255, 255, 255, 0.9);

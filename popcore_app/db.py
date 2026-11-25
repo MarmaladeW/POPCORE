@@ -2127,6 +2127,10 @@ def _get_migrations():
         ('shift_positions_back_and_markham',           _migration_shift_positions_back_and_markham),
         ('watch_list',                                 _migration_watch_list),
         ('staff_discounts',                            _migration_staff_discounts),
+        ('display_in_new_goods',                       _migration_display_in_new_goods),
+        ('count_sections',                             _migration_count_sections),
+        ('count_marks',                                _migration_count_marks),
+        ('watch_alerts',                               _migration_watch_alerts),
         ('staff_checkout_until_clover',                _migration_staff_checkout_until_clover),
         ('app_lines_from',                             _migration_app_lines_from),
         ('report_settled_by_counts',                   _migration_report_settled_by_counts),
@@ -2765,6 +2769,167 @@ def _migration_staff_discounts(con, cur):
         created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     )""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('staff_discounts')")
+
+
+def _migration_count_sections(con, cur):
+    # 分区盘点 Section count (owner, 2026-11-20): a live store is counted one section every two weeks.
+    # count_section_parts puts each (kind, group) of lines in a section, and each kind's '*' part takes
+    # whatever no part names (a new IP), so every line lands in one section (count_sections.py). Sections
+    # left out of a saved layout are retired, not deleted, so their counts keep their name.
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_sections (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        name        TEXT    NOT NULL,
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        retired_at  TEXT,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_by  TEXT,
+        updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_section_parts (
+        store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        kind        TEXT    NOT NULL CHECK (kind IN ('display', 'blind_box', 'design', 'other')),
+        group_key   TEXT    NOT NULL,
+        section_id  INTEGER NOT NULL REFERENCES count_sections(id) ON DELETE CASCADE,
+        PRIMARY KEY (store_id, kind, group_key)
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_section_layouts (
+        store_id    INTEGER PRIMARY KEY REFERENCES stores(id) ON DELETE RESTRICT,
+        version     INTEGER NOT NULL DEFAULT 0,
+        updated_by  TEXT,
+        updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""")
+    # One count of one section: who counted (the manager enters), and the lines it covers, taken when it
+    # starts so the list stays put while the count corrects stock; lines found on the shelf are added.
+    cur.execute("""CREATE TABLE IF NOT EXISTS section_counts (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id            INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        section_id          INTEGER NOT NULL REFERENCES count_sections(id) ON DELETE RESTRICT,
+        section_name        TEXT    NOT NULL,
+        counter_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+        counter_name        TEXT    NOT NULL,
+        business_date       TEXT    NOT NULL,
+        started_by          TEXT    NOT NULL,
+        started_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+        finished_by         TEXT,
+        finished_at         TEXT
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_section_counts_open
+                   ON section_counts(section_id) WHERE finished_at IS NULL""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_section_counts_store ON section_counts(store_id, id)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS section_count_lines (
+        section_count_id INTEGER NOT NULL REFERENCES section_counts(id) ON DELETE CASCADE,
+        location_id      INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+        product_id       INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        card_product_id  INTEGER NOT NULL,
+        kind             TEXT    NOT NULL,
+        book_quantity    INTEGER NOT NULL,
+        added            INTEGER NOT NULL DEFAULT 0 CHECK (added IN (0, 1)),
+        PRIMARY KEY (section_count_id, location_id, product_id)
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS section_count_saves (
+        section_count_id   INTEGER NOT NULL REFERENCES section_counts(id) ON DELETE CASCADE,
+        inventory_count_id INTEGER NOT NULL UNIQUE REFERENCES inventory_counts(id) ON DELETE CASCADE,
+        PRIMARY KEY (section_count_id, inventory_count_id)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('count_sections')")
+
+
+def _migration_count_marks(con, cur):
+    # 待盘点 Count next time (owner, 2026-11-22: "mark the eevee as need to be counted next time we count"): a manager
+    # marks a product at one place of a store; it shows first at that store's next count and closes by itself when a
+    # saved count there covers it (count_marks.py). One open mark per product and place; closed marks are kept.
+    cur.execute("""CREATE TABLE IF NOT EXISTS count_marks (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id     INTEGER NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
+        location_id  INTEGER NOT NULL REFERENCES inventory_locations(id) ON DELETE RESTRICT,
+        product_id   INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        reason       TEXT    NOT NULL,
+        source_type  TEXT    CHECK (source_type IN ('report_stock_issue')),
+        source_id    INTEGER,
+        marked_by    TEXT    NOT NULL,
+        marked_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        status       TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'counted', 'removed')),
+        closed_by    TEXT,
+        closed_at    TEXT,
+        count_id     INTEGER REFERENCES inventory_counts(id) ON DELETE SET NULL
+    )""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_count_marks_open
+                   ON count_marks(location_id, product_id) WHERE status='open'""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_count_marks_store ON count_marks(store_id, status)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_count_marks_source ON count_marks(source_type, source_id)')
+    # A section count that starts takes the store's open marks into its lines, from any section.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(section_count_lines)')}
+    if 'mark_id' not in columns:
+        cur.execute('ALTER TABLE section_count_lines ADD COLUMN mark_id INTEGER REFERENCES count_marks(id) ON DELETE SET NULL')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('count_marks')")
+
+
+def _migration_watch_alerts(con, cur):
+    # 异常提醒 Watcher (owner, 2026-11-24: "monitor any abnormal behavior within the app and notify the admin and the
+    # manager"; watcher.py). The rules raise one alert per thing they find; a nightly Claude review may add a note or
+    # mark a borderline one 'low'. A store's alert is for admins and that store's managers; one with no store is for
+    # admins. watch_runs keeps every run, its cost (the daily cap) and exactly what was sent to Anthropic.
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_alerts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind           TEXT    NOT NULL CHECK (kind IN ('stock_loss', 'count_gap', 'cash_gap', 'floor_short',
+                                                        'sync_stuck')),
+        subject_key    TEXT    NOT NULL,
+        store_id       INTEGER REFERENCES stores(id) ON DELETE CASCADE,
+        product_id     INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        business_date  TEXT,
+        facts          TEXT    NOT NULL,
+        severity       TEXT    NOT NULL CHECK (severity IN ('high', 'normal')),
+        status         TEXT    NOT NULL DEFAULT 'open' CHECK (status IN ('pending', 'open', 'checked', 'resolved')),
+        verdict        TEXT    CHECK (verdict IS NULL OR verdict IN ('keep', 'low')),
+        note_zh        TEXT,
+        note_en        TEXT,
+        reviewed_at    TEXT,
+        pushed_at      TEXT,
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        checked_by     TEXT,
+        checked_at     TEXT,
+        UNIQUE (kind, subject_key)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_alerts_status ON watch_alerts(status, store_id)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS watch_runs (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind           TEXT    NOT NULL CHECK (kind IN ('rules', 'review')),
+        business_date  TEXT    NOT NULL,
+        started_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        outcome        TEXT    NOT NULL,
+        found          INTEGER NOT NULL DEFAULT 0,
+        model          TEXT,
+        input_tokens   INTEGER,
+        output_tokens  INTEGER,
+        cost_usd       REAL    NOT NULL DEFAULT 0,
+        sent           TEXT,
+        summary_zh     TEXT,
+        summary_en     TEXT,
+        error          TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_watch_runs_day ON watch_runs(kind, business_date)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('watch_alerts')")
+
+
+def _migration_display_in_new_goods(con, cur):
+    # 入display is new pieces put onto display (owner, 2026-11-22: usually from that day's delivery), the same as an
+    # 入店 line marked （display）; only 出库入display is upstairs → display. A day already saved while 入display meant
+    # upstairs → display must keep that reading when pasted again: its saved line is keyed by what it moves, so the
+    # new reading would put that move back and add the pieces as new goods. Those days are the ones with a saved
+    # display_stock_in line that wants, moved or checked anything; app_settings display_in_old_days lists them by
+    # store code ({"DT": ["2026-11-15", ...]}). Every other day, including the days not pasted yet, reads the new way.
+    import json
+    days = {}
+    for code, day in cur.execute("""SELECT DISTINCT s.code, m.business_date FROM report_stock_moves m
+                                    JOIN stores s ON s.id=m.store_id
+                                    WHERE m.section='display_stock_in' AND (m.wanted>0 OR m.moved>0 OR m.checked>0)
+                                    ORDER BY s.code, m.business_date""").fetchall():
+        days.setdefault(code, []).append(day)
+    cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('display_in_old_days', ?)",
+                (json.dumps(days),))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('display_in_new_goods')")
 
 
 def _migration_inventory_viewers(con, cur):

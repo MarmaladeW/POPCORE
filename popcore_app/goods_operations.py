@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 
+import count_marks
 from inventory_commands import (
     INVENTORY_BUSY_TIMEOUT_MS,
     InventoryBusy,
@@ -1057,6 +1058,10 @@ def transition_count(con, count_id, action, data, *, actor, request_key):
                     'source_type': 'inventory_count', 'source_id': str(count_id),
                     'reason': reason, 'lines': correction_lines,
                 }, actor=actor, request_key=f'inventory:{key}')
+            if row['disposition'] == 'saleable':
+                # An approved count covers what it counted here: no longer 待盘点 (count_marks.py).
+                count_marks.close_counted(con, actor, row['location_id'], [line['product_id'] for line in con.execute(
+                    'SELECT product_id FROM inventory_count_lines WHERE count_id=?', (count_id,))], count_id)
         new_status = {'submit': 'submitted', 'approve': 'approved', 'return': 'returned'}[action]
         con.execute(
             """UPDATE inventory_counts SET status=?, version=version+1,

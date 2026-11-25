@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 
+from brands import canonical_brand
 from catalog_identity import add_conversion
 
 
@@ -34,7 +35,8 @@ def sealed_set_item(box, boxes):
         'box_product_id': box['id'], 'box_sku': box['sku'], 'name': name,
         'boxes_per_set': boxes, 'set_sku': f"{box['sku']}{SET_SUFFIX}" if box['sku'] else None,
         'set_jizhanming': f'{name} 整端',
-        'set_name': f"{(box['name_cn_en'] or name).strip()} · 整端 Sealed set",
+        # The official name is English (owner, 2026-11-09); popcore.ca sells a sealed set as a Whole Set.
+        'set_name': f"{(box['name_cn_en'] or name).strip()} · Whole Set",
         'set_price': round(box['price'] * boxes, 2) if box['price'] is not None else None,
     }
 
@@ -122,15 +124,16 @@ def create_sealed_set(con, item):
     series: only confirmed designs do (owner, 2026-10-26). The conversion is what links the set to its box."""
     box = con.execute('SELECT * FROM products WHERE id=?', (item['box_product_id'],)).fetchone()
     series_id = None
+    brand = canonical_brand(box['brand'])
     search = ' '.join(value for value in (item['set_sku'], item['set_jizhanming'], item['set_name'],
-                                          box['brand'], box['ip_series'], '整端 sealed set') if value).lower()
+                                          brand, box['ip_series'], '整端 sealed set') if value).lower()
     set_id = con.execute(
         """INSERT INTO products (sku, name_cn_en, jizhanming, price, ip_series, product_type, brand,
                                  boxes_per_dan, search_blob, series_id, stock_form, stock_unit,
                                  identity_status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sealed_set', 'set', 'unverified')""",
         (item['set_sku'], item['set_name'], item['set_jizhanming'], item['set_price'], box['ip_series'],
-         box['product_type'], box['brand'], item['boxes_per_set'], search, series_id),
+         box['product_type'], brand, item['boxes_per_set'], search, series_id),
     ).lastrowid
     add_conversion(con, set_id, box['id'], item['boxes_per_set'])
     con.execute("UPDATE products SET identity_status='verified' WHERE id=?", (set_id,))

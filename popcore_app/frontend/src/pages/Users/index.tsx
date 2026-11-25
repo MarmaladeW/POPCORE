@@ -82,8 +82,9 @@ function useStoreGrants(path: string, enabled: boolean, viewer: string | undefin
     return () => { ++request.current }
   }, [enabled, viewer]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function change(subject: string, storeId: number, granted: boolean) {
-    if (!enabled || !data || busy.current) return
+  /** Saves one tick; true once the server took it. */
+  async function change(subject: string, storeId: number, granted: boolean, quiet = false): Promise<boolean> {
+    if (!enabled || !data || busy.current) return false
     busy.current = true
     setSaving(true)
     const current = ++request.current
@@ -91,16 +92,18 @@ function useStoreGrants(path: string, enabled: boolean, viewer: string | undefin
     try {
       if (granted) await client.post(path, body)
       else await client.delete(path, { data: body })
-      if (current !== request.current) return
+      if (current !== request.current) return false
       setData(previous => previous && ({ ...previous, grants: [
         ...previous.grants.filter(grant => grant.auth0_sub !== subject || grant.store_id !== storeId),
         ...(granted ? [body] : []),
       ] }))
-      message.success(`${name} ${granted ? 'granted' : 'revoked'}`)
+      if (!quiet) message.success(`${name} ${granted ? 'granted' : 'revoked'}`)
+      return true
     } catch (err: any) {
-      if (current !== request.current) return
+      if (current !== request.current) return false
       message.error(err?.response?.data?.error ?? 'Could not confirm the access change. Reloading saved permissions.')
       await load()
+      return false
     } finally {
       busy.current = false
       setSaving(false)
@@ -256,11 +259,13 @@ function PersonRow({ user, entry, isSelf, selected, chevron, today, onSelect }: 
   onSelect: () => void
 }) {
   const name = entry?.name || user.username
+  // A 查看者 Viewer is the store computer's account (owner, 2026-11-24): it is never on the schedule.
+  const viewer = user.role === 'viewer'
   const meta = [
     name !== user.username ? user.username : null,
-    !entry ? '首次登录后排班' : entry.stores.length ? `排班 ${entry.stores.join(' ')}` : '未分配门店',
+    viewer ? '店铺电脑' : !entry ? '首次登录后排班' : entry.stores.length ? `排班 ${entry.stores.join(' ')}` : '未分配门店',
     user.is_active !== 1 ? '已停用' : null,
-    user.is_active === 1 && entry?.isSchedulable === 0 ? '不排班' : null,
+    !viewer && user.is_active === 1 && entry?.isSchedulable === 0 ? '不排班' : null,
     !user.last_login ? '从未登录' : null,
   ].filter(Boolean).join(' · ')
   return <li>
@@ -361,6 +366,26 @@ function UserDetail({
       checked={grants.data.grants.some(grant => grant.auth0_sub === user.id && grant.store_id === store.id)}
       onChange={event => void grants.change(user.id, store.id, event.target.checked)} />
   }
+  // The store computer (查看者 Viewer, owner 2026-11-24): one tick per store gives its web orders (门店操作权限) and its
+  // stock to look at (库存查看) together. Half ticked when only one of the two is saved.
+  const storeComputerCell = (code: string) => {
+    if (!operations.data || !view.data) {
+      const failed = operations.error || view.error
+      return <span className="pc-ud-na" title={failed ? 'Access unavailable' : 'Loading access…'}>{failed ? '—' : '…'}</span>
+    }
+    const opsStore = operations.data.stores.find(s => s.code === code), viewStore = view.data.stores.find(s => s.code === code)
+    if (!opsStore || !viewStore) return <span className="pc-ud-na" title="Not configured for this store">—</span>
+    const ops = operations.data.grants.some(grant => grant.auth0_sub === user.id && grant.store_id === opsStore.id)
+    const sees = view.data.grants.some(grant => grant.auth0_sub === user.id && grant.store_id === viewStore.id)
+    async function tick(on: boolean) {
+      if (ops !== on && !await operations.change(user.id, opsStore!.id, on, true)) return
+      if (sees !== on && !await view.change(user.id, viewStore!.id, on, true)) return
+      message.success(`${code} 店铺电脑 ${on ? '已勾选 · ticked' : '已取消 · cleared'}`)
+    }
+    return <Checkbox aria-label={`${user.username}: ${code} store computer`} title={opsStore.name} disabled={accessSaving}
+      checked={ops && sees} indeterminate={ops !== sees} onChange={event => void tick(event.target.checked)} />
+  }
+  const viewer = user.role === 'viewer'
   // Managers and admins always see stock, so only other roles are picked.
   const alwaysSeesStock = user.role === 'manager' || user.role === 'admin'
   const regularNow = isRegularOn(entry?.regularSince, today)
@@ -377,7 +402,8 @@ function UserDetail({
     </header>
 
     <Group zh="资料" en="Profile">
-      <Field label="显示名" en="Display name" hint={entry ? '排班日历里显示的名字 · Shown on the schedule' : undefined}>
+      <Field label="显示名" en="Display name" hint={!entry ? undefined : viewer ? '网站订单备注里写的名字 · Written in web order notes'
+        : '排班日历里显示的名字 · Shown on the schedule'}>
         {entry
           ? <div className="pc-ud-inline">
             <Input aria-label="显示名 Display name" value={nameDraft} maxLength={120} placeholder="e.g. Jessi"
@@ -387,13 +413,13 @@ function UserDetail({
           : <span className="pc-ud-muted">首次登录后可设置 · After their first sign-in</span>}
       </Field>
       <Field label="职位" en="Position" hint={isSelf ? '不能修改自己的角色（防止失去管理员权限）'
-        : '店长和副店长有经理权限，其他职位有店员权限；查看者只能看 · 店长 and 副店长 have manager rights, the others staff rights; a viewer only looks'}>
+        : '店长和副店长有经理权限，其他职位有店员权限；查看者是店铺电脑的账户，只能看 · 店长 and 副店长 have manager rights, the others staff rights; a viewer is the store computer and only looks'}>
         <Select aria-label="职位 Position" size={isMobile ? 'large' : 'middle'} value={positionOf(user)}
           placeholder={user.role === 'manager' ? '经理 · 选职位 Pick a position' : '店员 · 选职位 Pick a position'}
           disabled={isSelf || roleSaving} options={POSITION_OPTIONS} style={{ width: '100%', maxWidth: 280 }}
           getPopupContainer={trigger => trigger.parentElement!} onChange={value => void saveRole(String(value))} />
       </Field>
-      {entry && <Field label="颜色" en="Colour">
+      {entry && !viewer && <Field label="颜色" en="Colour">
         <EmployeeColorPicker value={entry.color || '#6366f1'} disabled={savingColor} onChange={onColor} />
       </Field>}
       {entry && rank && rank.value !== 'trainee' && <Field label="转正日期" en="Regular since"
@@ -410,7 +436,21 @@ function UserDetail({
       </Field>}
     </Group>
 
-    <Group zh="门店" en="Stores" hint={<>
+    {viewer ? <Group zh="门店" en="Stores" hint={<>
+      店铺电脑：这个账户看这家店要准备的网站订单和库存，还有产品、图鉴和可疑人员；只能看，不排班。勾选马上保存。<br />
+      Store computer: this account sees the store's web orders to prepare and its stock, plus Products, the Dex and the watch list. It only looks and is never on the schedule. Ticks save immediately.
+    </>}>
+      <table className="pc-ud-stores">
+        <thead><tr>
+          <th scope="col">门店</th>
+          <th scope="col">店铺电脑<small>Store computer</small></th>
+        </tr></thead>
+        <tbody>{stores.map(store => <tr key={store.code}>
+          <th scope="row"><b>{store.code}</b><small>{store.name !== store.code ? store.name : ''}</small></th>
+          <td>{storeComputerCell(store.code)}</td>
+        </tr>)}</tbody>
+      </table>
+    </Group> : <Group zh="门店" en="Stores" hint={<>
       排班：可以排这家店的班。门店操作：今日、库存等门店功能（在角色范围内）。库存查看：能看这家店的库存（库存、盘点、入店、产品和补货里的数字）。勾选马上保存。<br />
       Schedule: can be put on this store's shifts. Operations: Today, inventory and other store workflows within their role. Inventory view: sees this store's stock (库存, 盘点, 入店, stock numbers in Products and 补货). Ticks save immediately.
     </>}>
@@ -442,7 +482,7 @@ function UserDetail({
           <td>{alwaysSeesStock ? <span className="pc-ud-na">总是可见 Always</span> : grantCell(view, store.code, 'inventory view')}</td>
         </tr>)}</tbody>
       </table>
-    </Group>
+    </Group>}
 
     <Group zh="账户" en="Account">
       <Field label="账户" en="Sign-in" hint={isSelf ? '不能停用自己的账户' : undefined}>

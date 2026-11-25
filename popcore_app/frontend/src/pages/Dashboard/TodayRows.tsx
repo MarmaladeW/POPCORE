@@ -8,19 +8,21 @@ export const sectionLabels: Record<string, { zh: string; en: string }> = {
   financial: { zh: '销售与收款核对', en: 'Sales and tender checks' },
   catalog: { zh: '产品资料', en: 'Catalog' }, inventory: { zh: '库存提醒', en: 'Inventory notices' },
   report_stock: { zh: '日报库存核对', en: 'Report stock checks' },
+  watch: { zh: '异常提醒', en: 'Alerts' },
 }
 const typeLabels: Record<string, string> = {
   sale: 'Sale', checkout: 'Checkout', financial_sale: 'Sale', allocation_exception: 'Sale',
   payment_evidence: 'Payment evidence', payment_exception: 'Payment', receipt: 'Receipt',
   count: 'Count', closing: 'Closing', cash_variance: 'Closing', delivery: 'Transfer',
   restock: 'Restock', condition_case: 'Condition case', catalog_identity: 'Product',
-  inventory_notice: 'Product', report_stock: 'Report stock',
+  inventory_notice: 'Product', report_stock: 'Report stock', watch_alert: 'Alert',
 }
 const typeZh: Record<string, string> = {
   sale: '销售', checkout: '订单', financial_sale: '销售', allocation_exception: '销售',
   payment_evidence: '收款凭证', payment_exception: '收款', receipt: '收货',
   count: '盘点', closing: '收工', cash_variance: '收工', delivery: '调拨',
   restock: '补货', condition_case: '品相', catalog_identity: '产品', inventory_notice: '产品', report_stock: '日报',
+  watch_alert: '提醒',
 }
 const statusLabels: Record<string, string> = {
   open: 'In progress', draft: 'Draft', posted: 'Recorded', pending: 'Pending', submitted: 'Awaiting review',
@@ -30,7 +32,7 @@ const statusLabels: Record<string, string> = {
   allocated: 'Stock allocated', verified: 'Verified', recorded: 'Awaiting verification',
   not_counted: 'Never counted here', not_enough_on_floor: 'Not enough on the floor',
   set_size_unknown: 'Set size not recorded', counted_same_day: 'Floor counted the same day',
-  move_short: 'Stock line not moved in full',
+  move_short: 'Stock line not moved in full', high: 'Urgent', normal: 'To check',
 }
 const statusZh: Record<string, string> = {
   open: '未完成', draft: '草稿', posted: '已记录', pending: '待处理', submitted: '待审核',
@@ -38,7 +40,7 @@ const statusZh: Record<string, string> = {
   unresolved: '待审核', out_of_stock: '缺货', variance: '差异待审核',
   allocated: '已分配库存', verified: '已核实', recorded: '待核对',
   not_counted: '还没盘点', not_enough_on_floor: '楼下不够', set_size_unknown: '不知道每端几盒', counted_same_day: '当天盘点过',
-  move_short: '库存没移完',
+  move_short: '库存没移完', high: '要紧', normal: '待查看',
 }
 
 function rowTitle(row: TodayRow) {
@@ -59,6 +61,7 @@ function action(row: TodayRow) {
     count: row.status === 'submitted' ? 'Review' : 'Resume', closing: 'Continue',
     cash_variance: 'Review', delivery: 'Continue', restock: 'Continue',
     condition_case: 'Review', catalog_identity: 'Review', inventory_notice: 'View', report_stock: 'Review',
+    watch_alert: 'View',
   }
   const verb = byType[row.type] || 'Open'
   const [zh, en] = verbs[verb]

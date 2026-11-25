@@ -19,6 +19,7 @@ import { useIsPhone } from '../../components/pc/useIsPhone'
 import InventoryNav, { useHasClaw } from './InventoryNav'
 import RemoveDesigns from '../Products/RemoveDesigns'
 import InventoryOverview from './InventoryOverview'
+import { ProductCountMarks } from '../Count/CountMarks'
 
 const failure = (cause:unknown) => (cause as {_serverMessage?:string})?._serverMessage || 'Unable to load inventory. Please retry.'
 const units = (amount:number, unit:string|null) => `${amount} ${unit === 'box' ? (amount===1?'box':'boxes') : `${unit||'unit'}${amount===1?'':'s'}`}`
@@ -243,6 +244,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
         {canWork&&!locked&&(data.mode!=='authoritative'?(detail.stock_form!==null||isBox(detail))&&<Space wrap><Link className="pc-btn" aria-label={`盘点 Count ${detailName}`} to={`/count?product=${detail.id}`}>盘点 Count</Link></Space>
           :detail.identity_status==='verified'&&<Space wrap>{detail.stock_unit&&<><Link className="pc-btn" aria-label={`Move ${detailName}`} to={`/move?product=${detail.id}`}>移货 Move stock</Link><Link className="pc-btn" aria-label={`Count ${detailName}`} to={`/goods/counts?product_id=${detail.id}`}>盘点 Count</Link></>}
             {detail.stock_form==='sealed_set'&&<Button type="primary" onClick={()=>openStockAction('open_set',detail.id)}>Open sealed set</Button>}</Space>)}
+        {manager&&<ProductCountMarks key={detail.id} storeCode={storeCode} productId={detail.id} productName={detailName||detail.sku} sealedSet={detail.stock_form==='sealed_set'}/>}
         {data.locations.map(location=><section key={location.id}><h3>{location.store_code} · {location.name}</h3>{!location.opening_verified&&<p className="pc-series-warning">Opening count needs review</p>}<dl>{detail.balances.filter(balance=>balance.location_id===location.id).map(balance=><div key={balance.disposition}><dt>{dispositionName(balance.disposition)}:</dt> <dd>{balance.quantity===null?'Unknown':units(balance.quantity,detail.stock_unit)}</dd></div>)}</dl></section>)}
       </div>}
     </Drawer>

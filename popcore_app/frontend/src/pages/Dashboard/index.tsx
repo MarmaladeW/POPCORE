@@ -26,6 +26,7 @@ const summaries: Record<string, { title: (total: string | number) => string; met
   catalog: { title: total => `${total} 个产品还没确认`, meta: 'Counting a product confirms what it is', action: '去盘点 Count', to: '/count' },
   inventory: { title: total => `${total} 条缺货提醒`, meta: 'Out-of-stock notices (product and location)', action: '查看 View', to: '/stock' },
   report_stock: { title: total => `${total} 条日报库存差异`, meta: 'Daily report sales and stock lines that did not move as written', action: '核对 Review', to: '/sales/report-stock' },
+  watch: { title: total => `${total} 条异常提醒`, meta: 'Losses, count and cash gaps, report notices or a stuck sync that look unusual', action: '查看 View', to: '/watch' },
 }
 
 const strip: Array<{ key: string; zh: string; en: string; tone: 'warn' | 'out' }> = [
@@ -73,7 +74,7 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
   }, [attempt, role, store?.code, user?.sub])
 
   const phone = useIsPhone()
-  const order = home ? ['report_stock', 'financial', 'tasks', 'catalog', 'inventory'] : ['tasks', 'report_stock', 'financial', 'catalog', 'inventory']
+  const order = home ? ['watch', 'report_stock', 'financial', 'tasks', 'catalog', 'inventory'] : ['tasks', 'watch', 'report_stock', 'financial', 'catalog', 'inventory']
   const insights = home && manager ? <Link className="pc-btn" to="/reports">报表 Insights &amp; reports</Link> : null
   const sections = data ? Object.entries(mergeWork(data.sections))
     .filter(([, section]) => !home || section.total > 0)

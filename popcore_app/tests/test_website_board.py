@@ -76,7 +76,7 @@ class WebOrdersBoardTests(BoardCase):
         self.assertEqual(board['stores'], ['DT'])
         self.assertEqual({name: self.numbers(cards) for name, cards in board['columns'].items()},
                          {'pick': ['701'], 'ready': ['702'], 'pack': ['703'], 'booked': ['704'], 'out': ['705']})
-        # The MK pickup is on MK's board only, though DT's stock filled it (DT first, owner 2026-11-19).
+        # The MK pickup is on MK's board only, though DT's stock filled it (MK is not live here).
         self.assertEqual([(card['number'], card['reason']) for card in board['needs_manager']],
                          [('706', 'status'), ('707', 'not_enough_stock')])
         self.assertEqual(self.numbers(board['done_today']), ['708'])
@@ -111,6 +111,24 @@ class WebOrdersBoardTests(BoardCase):
         self.assertEqual([(card['number'], card['taken_elsewhere']) for card in board['columns']['pick']],
                          [('709', ['DT'])])
         self.assertEqual(self.numbers(self.board()['columns']['pick']), ['701', '709'])
+
+    def test_a_pickup_its_own_store_filled_says_nothing_extra(self):
+        """Owner, 2026-11-22: an MK pickup comes off MK's floor, so the card says nothing about bringing it over;
+        only what MK lacked and DT filled says "Taken from DT"."""
+        self.open_mk(3)
+        with closing(self.connect()) as con:
+            mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (mk,))
+            con.commit()
+        self.woo.order(710, [(11, 2)], pickup='mk', paid=_ago(4))
+        self.woo.order(711, [(11, 3)], pickup='mk', paid=_ago(3))  # MK has 1 left: 2 come from DT
+        self.run_sync()
+        cards = {card['number']: card for card in self.board(store='MK')['columns']['pick']}
+        self.assertEqual({number: cards[number]['taken_elsewhere'] for number in ('709', '710', '711')},
+                         {'709': ['DT'], '710': [], '711': ['DT']})
+        self.assertEqual(cards['710']['lines'][0]['picks'], [{'store': 'MK', 'place': 'floor', 'quantity': 2}])
+        self.assertEqual(cards['711']['lines'][0]['picks'], [{'store': 'MK', 'place': 'floor', 'quantity': 1},
+                                                             {'store': 'DT', 'place': 'floor', 'quantity': 2}])
 
     def test_ready_moves_a_pickup_on_the_website_and_says_who(self):
         response = self.step(701, 'ready')

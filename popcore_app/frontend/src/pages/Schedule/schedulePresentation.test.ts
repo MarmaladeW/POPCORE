@@ -35,8 +35,8 @@ test('calendar blocks mark a recorded actual finish', () => {
     'Celia · 12:00–22:00 · finished 21:25',
   )
   assert.equal(
-    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', position: '', isRegular: true }),
-    'Celia · 12:00–22:00 · 转正 Regular',
+    mobileShiftAccessibleLabel({ employeeName: 'Celia', startTime: '12:00', endTime: '22:00', position: '', regularLabel: '店长 Store manager' }),
+    'Celia · 12:00–22:00 · 店长 Store manager',
   )
 })
 

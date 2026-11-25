@@ -26,9 +26,10 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   its best day of the last 30 reports, once for every shop day not reported; a shop day starts at
   WEBSITE_SHOP_OPENS (owner, 2026-11-02). Once the report is in, nothing is held until the shop opens.
 - Pickup: a product's `_popcore_pickup_stores` lists the live stores that have it.
-- Orders: a paid web order takes its items out of the live stores' stock, WEBSITE_DELIVERY_STORE (DT)
-  first, then the pickup store, then any other live store (owner, 2026-11-19: "the first place to deduct
-  from should always be dt, as we ship our product from downtown"); in each store the floor first, then
+- Orders: a paid web order takes its items out of the live stores' stock. A pickup comes off its pickup
+  store first (owner, 2026-11-22: "for markham pickup they come off markham floor"), then
+  WEBSITE_DELIVERY_STORE (DT), then any other live store; a delivery comes off DT first, then any other
+  live store (owner, 2026-11-19: "we ship our product from downtown"). In each store the floor first, then
   upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). It
   is a separate Website order outside the stores' sales and closing (owner, 2026-11-01). A cancelled
   order puts them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
@@ -124,6 +125,9 @@ def website_actor():
 
 # ── Settings and the WooCommerce REST API ───────────────────────────────────
 
+STAGING_WEBSITE_HOST = 'staging.popcore.ca'  # the only website POPCORE staging may talk to
+
+
 def config():
     """Website settings from the environment, or None when no website key is set."""
     url = os.environ.get('WEBSITE_URL', '').strip().rstrip('/')
@@ -136,6 +140,10 @@ def config():
     if (parts.scheme not in ('https', 'http') or (parts.scheme == 'http' and not loopback)
             or parts.username or parts.password or parts.query or parts.fragment):
         raise ValueError('WEBSITE_URL must be the https address of the website')
+    # Staging runs on a copy of live data with the sync switched on, so it may only ever write to the
+    # test copy of the website (popcore-work#50).
+    if os.environ.get('APP_ENV', '').strip() == 'staging' and (parts.scheme, parts.hostname) != ('https', STAGING_WEBSITE_HOST):
+        raise ValueError(f'On staging, WEBSITE_URL must be https://{STAGING_WEBSITE_HOST}')
     keep_back = os.environ.get('WEBSITE_KEEP_BACK', '0').strip() or '0'
     if not keep_back.isdigit():
         raise ValueError('WEBSITE_KEEP_BACK must be a whole number')
@@ -1007,13 +1015,15 @@ def _read_ids(con, cfg, lines):
 
 
 def _filling_stores(con, cfg, order_row):
-    """The live stores a web order is taken from, in order: WEBSITE_DELIVERY_STORE (DT) first, whatever the pickup
-    store (owner, 2026-11-19: "the first place to deduct from should always be dt, as we ship our product from
-    downtown"), then the pickup store, then any other live store."""
+    """The live stores a web order is taken from, in order. A pickup: its pickup store first (owner, 2026-11-22:
+    "for markham pickup they come off markham floor"), then WEBSITE_DELIVERY_STORE (DT), then any other live store.
+    A delivery: DT first (owner, 2026-11-19: "we ship our product from downtown"), then any other live store.
+    A pickup store that is not live is skipped."""
     live = live_store_ids(con)
     codes = {row[1]: row[0] for row in con.execute('SELECT id, code FROM stores ORDER BY code')}
+    pickup = order_row['pickup_store'] if order_row['fulfilment'] == 'pickup' else None
     stores = []
-    for store_id in (codes.get(cfg['delivery_store']), codes.get(order_row['pickup_store'] or ''), *codes.values()):
+    for store_id in (codes.get(pickup or ''), codes.get(cfg['delivery_store']), *codes.values()):
         if store_id in live and store_id not in stores:
             stores.append(store_id)
     return stores
@@ -1085,7 +1095,8 @@ def record(con, cfg, wc_order_id):
         con.execute('UPDATE website_orders SET lines=? WHERE wc_order_id=?', (json.dumps(lines), wc_order_id))
         problem = None
         stores = _filling_stores(con, cfg, row)
-        # The order's store is the first it takes from (DT unless DT had none of it), or DT while it waits.
+        # The order's store is the first it takes from (the pickup store for a pickup, DT for a delivery, unless that
+        # store had none of it), or that first store while it waits.
         store_id = stores[0] if stores else None
         if not lines:
             problem = 'no_items'

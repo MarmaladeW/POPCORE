@@ -214,5 +214,6 @@ class CatalogImportTests(IsolatedApiCase):
                                  + 'Complete SKU-S,' + ','.join(values) + ',17.25,12')
         self.assertEqual(self.confirm(rows).status_code, 200)
         product = self.product('Complete SKU-S')
-        self.assertEqual({field: product[field] for field in fields}, dict(zip(fields, values)))
+        expected = dict(zip(fields, values), brand='FULL BRAND VALUE')  # a brand is saved in its one spelling
+        self.assertEqual({field: product[field] for field in fields}, expected)
         self.assertEqual((product['price'], product['boxes_per_dan']), (17.25, 12))

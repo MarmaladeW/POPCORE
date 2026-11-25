@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from auth import ROLE_CLAIM
 from inventory_commands import InventoryValidationError
 from report_stock import open_notices
+import watcher
 
 
 # 记一笔 quick sales (owner, 2026-11-21: in place of 随手记) are checked as a day, in 记一笔's 今天 list and its 审核,
@@ -120,6 +121,8 @@ def get_today(con, *, actor, store_code=None, business_date=None):
             {'source_id': n['id'], 'type': 'report_stock', 'link': '/sales/report-stock', 'store_id': n['store_id'],
              'status': n['reason'], 'version': None, 'updated_at': n['business_date'],
              'label': f"{n['name']} × {n['quantity']}"} for n in open_notices(con, ids))
+        # 异常提醒 Watcher alerts (owner, 2026-11-24): these stores' open ones, and for admins the store-less ones.
+        sections['watch'] = _section(watcher.today_rows(con, role, ids))
     def visible(row):
         try:
             kind, source = row['type'], row['source_id']

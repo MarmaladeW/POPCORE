@@ -152,7 +152,8 @@ class ReportStockLineTests(IsolatedApiCase):
         days = ('2026-10-29', '2026-10-30', '2026-10-31')
         self.build_catalogue(days)
         expected_sections = {
-            '2026-10-29': {'stock_in': 11, 'display_sold': 5, 'display_stock_in': 2, 'break_display': 2, 'claw_prize': 1},
+            # 入display "小王子*1（小王子）", "小王子*1（玫瑰）": new pieces onto display (owner, 2026-11-22).
+            '2026-10-29': {'stock_in': 13, 'display_sold': 5, 'break_display': 2, 'claw_prize': 1},
             '2026-10-30': {'display_sold': 1, 'break_display': 2, 'stock_in': 14},
             '2026-10-31': {'refill': 22, 'stock_out': 2, 'stock_in': 7, 'display_sold': 8},
         }
