@@ -4,7 +4,8 @@ information and not be able to change too many stuff"). Built from the popcore.c
 
 - The board shows the paid web orders of the stores a user has 门店操作权限 Store operations access for, in five
   columns by kind and website status, with the orders that need a manager and those done today under them. Deliveries
-  all go out of WEBSITE_DELIVERY_STORE (DT). Its data holds nothing personal and never the pickup code.
+  all go out of WEBSITE_DELIVERY_STORE (DT). It never holds the pickup code, and the only personal thing in it is the
+  name each delivery goes to (owner, 2026-11-25), read live from the website on every refresh and never stored.
 - Two buttons, both pickup only: Ready (processing → ready-pickup; the website emails the customer the code) and
   Handed over (ready-pickup or processing → completed), which needs the code the customer gives at the counter. Each
   reads the order's status live first, waits for the website's 200 before anything shows as done, and leaves a
@@ -17,7 +18,7 @@ information and not be able to change too many stuff"). Built from the popcore.c
 import json
 from datetime import datetime, time, timezone
 
-from website_sync import (CODE_META, TORONTO, WebsiteError, _meta, call, clean_code)
+from website_sync import (BATCH, CODE_META, TORONTO, WebsiteError, _meta, call, clean_code)
 
 # (column, kind, website status), left to right (brief, 2026-11-19).
 COLUMNS = (('pick', 'pickup', 'processing'), ('ready', 'pickup', 'ready-pickup'),
@@ -30,6 +31,9 @@ WAITING = ('needs_review', 'cancel_failed')
 STEPS = {'ready': ('ready-pickup', ('processing',), 'Ready'),
          'handed_over': ('completed', ('ready-pickup', 'processing'), 'Handed over')}
 COLLECTOR_META = '_pcc_collector_name'
+# Owner, 2026-11-25: "we should be able to see the name for the delivery orders, as well as searching up the name."
+# Only these four fields are asked for; nothing else of the customer's details leaves the website.
+NAME_FIELDS = 'id,shipping.first_name,shipping.last_name,billing.first_name,billing.last_name'
 
 
 class BoardError(Exception):
@@ -75,7 +79,8 @@ def _picks(con, document_id):
 
 
 def card(con, row, cfg):
-    """What the board shows of one order: nothing personal, never the pickup code."""
+    """What the board shows of one order: nothing personal, never the pickup code. A push notification is made from
+    it too; the delivery name is added by board() only."""
     picks = _picks(con, row['inventory_document_id'])
     lines, shown = [], set()
     for line in json.loads(row['lines'] or '[]'):
@@ -101,8 +106,30 @@ def card(con, row, cfg):
     return result
 
 
+def _full_name(part):
+    part = part if isinstance(part, dict) else {}
+    return ' '.join(filter(None, (str(part.get(key) or '').strip() for key in ('first_name', 'last_name'))))
+
+
+def delivery_names(cfg, ids):
+    """{order id: the name the parcel goes to} as the website has it now: the shipping first and last name, else the
+    billing name. One request per 100 orders, asking for the names only; POPCORE never stores or logs them."""
+    ids, names = sorted(set(ids)), {}
+    for start in range(0, len(ids), BATCH):
+        part = ids[start:start + BATCH]
+        # A short wait: the board shows without names rather than hang on a slow website.
+        data, _ = call(cfg, 'GET', '/orders', params={'include': ','.join(map(str, part)), 'status': 'any',
+                                                      '_fields': NAME_FIELDS, 'per_page': BATCH}, timeout=(5, 10))
+        for order in data if isinstance(data, list) else ():
+            name = isinstance(order, dict) and (_full_name(order.get('shipping')) or _full_name(order.get('billing')))
+            if name and order.get('id') in part:
+                names[order['id']] = name[:120]
+    return names
+
+
 def board(con, cfg, sub, store=None):
-    """The board for the stores the user may see (`store`: one of them only)."""
+    """The board for the stores the user may see (`store`: one of them only). Each delivery card carries the name it
+    goes to, read live (`names_read` is False when the website did not answer, and the cards have none)."""
     allowed = user_stores(con, sub)
     if store:
         allowed &= {store.upper()}
@@ -130,7 +157,18 @@ def board(con, cfg, sub, store=None):
             else:
                 needs_manager.append({**item, 'reason': 'status'})
     done_today.sort(key=lambda item: item['done_at'] or '', reverse=True)
-    return {'stores': sorted(allowed), 'columns': columns, 'needs_manager': needs_manager, 'done_today': done_today}
+    deliveries = [item for cards in (*columns.values(), needs_manager, done_today) for item in cards
+                  if item['kind'] == 'delivery']
+    names, names_read = {}, True
+    if deliveries and cfg.get('url'):
+        try:
+            names = delivery_names(cfg, [item['id'] for item in deliveries])
+        except WebsiteError:
+            names_read = False
+    for item in deliveries:
+        item['name'] = names.get(item['id'])
+    return {'stores': sorted(allowed), 'deliveries': cfg['delivery_store'] in allowed, 'names_read': names_read,
+            'columns': columns, 'needs_manager': needs_manager, 'done_today': done_today}
 
 
 def _row(con, wc_order_id):

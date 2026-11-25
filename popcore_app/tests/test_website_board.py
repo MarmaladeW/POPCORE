@@ -1,19 +1,22 @@
 """网站订单 Web orders board (owner, 2026-11-19; the popcore.ca website session's brief of the same day): staff with
 store operations access see their stores' paid web orders in five columns, the orders that need a manager and those
 done today; Ready and Handed over move a pickup order on the website and leave a note; the code box finds a pickup
-order by its code and reads the customer's first name live. Nothing personal and no pickup code reaches the board's
-data, and nothing personal is stored."""
+order by its code and reads the customer's first name live. No pickup code reaches the board's data; the only
+personal thing in it is the name each delivery goes to (owner, 2026-11-25), read live and never stored."""
 import json
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from test_website_sync import WebsiteCase, _ago
 
+import website_board as board_module
 import website_sync
 
 STAFF = {'Authorization': 'Bearer staff'}            # auth0|staff, DT store operations access, named Amy
 OTHER = {'Authorization': 'Bearer staff:other'}      # auth0|other, no store operations access
 PRIVATE = ('Private', 'Person', '416-555', 'Secret St', 'someone@example.com')
+# What never reaches the board, names aside: the customer's phone, email and addresses.
+CONTACT = ('416-555', 'Secret St', 'someone@example.com', '647-555', 'Hidden Ave')
 
 
 def _days_ago(days):
@@ -41,8 +44,10 @@ class BoardCase(WebsiteCase):
                   meta=[('_popcore_pickup_code', 'ACD346'), ('_pcc_collector_name', 'Sammy')])
         woo.order(703, [(11, 1)], paid=_ago(40), meta=[('_pcc_delivery_window', 'Fri Nov 21, 2–6 pm'),
                                                        ('_pcc_delivery_service', 'normal'),
-                                                       ('_pcc_delivery_zone', 'Downtown')])
-        woo.order(704, [(20, 1)], status='dispatched', paid=_ago(300), meta=[
+                                                       ('_pcc_delivery_zone', 'Downtown')],
+                  shipping={'first_name': 'Zoë', 'last_name': 'Ng'})
+        woo.order(704, [(20, 1)], status='dispatched', paid=_ago(300), shipping={'first_name': 'Ana', 'last_name': 'Lima'},
+                  meta=[
             ('_pcc_delivery_window', 'Thu Nov 20, 2–6 pm'), ('_pcc_delivery_service', 'door'),
             ('fleetnow_order_no', 'DO202611190000000001'), ('fleetnow_pickup_window', '13:00–14:00'),
             ('fleetnow_delivery_window', '14:00–18:00'), ('fleetnow_status', 'CONFIRMED')])
@@ -70,7 +75,7 @@ class BoardCase(WebsiteCase):
 
 
 class WebOrdersBoardTests(BoardCase):
-    def test_orders_sit_in_their_columns_oldest_first_with_nothing_personal(self):
+    def test_orders_sit_in_their_columns_oldest_first_with_nothing_personal_but_delivery_names(self):
         response = self.client.get('/api/website/board', headers=STAFF)
         board = response.get_json()
         self.assertEqual(board['stores'], ['DT'])
@@ -92,15 +97,57 @@ class WebOrdersBoardTests(BoardCase):
             'window': 'Thu Nov 20, 2–6 pm', 'service': 'door', 'fleetnow_no': 'DO202611190000000001',
             'fleetnow_pickup': '13:00–14:00', 'fleetnow_delivery': '14:00–18:00', 'fleetnow_status': 'CONFIRMED'})
         self.assertNotIn('delivery', pick)
-        # Nothing personal and no pickup code, on the board or in the managers' order list.
+        # A pickup carries no name; its name stays behind the code.
+        self.assertFalse([card for cards in board['columns'].values() for card in cards
+                          if card['kind'] == 'pickup' and 'name' in card])
+        # No phone, email, address or pickup code on the board; nothing personal in the managers' order list.
         manager_orders = self.client.get('/api/website/orders', headers=self.headers('manager')).get_data(as_text=True)
-        for text in (response.get_data(as_text=True), manager_orders):
-            for value in (*PRIVATE, 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
-                self.assertNotIn(value, text)
+        for value in (*CONTACT, 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
+            self.assertNotIn(value, response.get_data(as_text=True))
+        for value in (*PRIVATE, 'Zoë', 'Lima', 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
+            self.assertNotIn(value, manager_orders)
         # One store only, and none without store operations access; an account with no role cannot open it.
         self.assertEqual(self.board(store='MK')['stores'], [])
         self.assertEqual(self.board(OTHER)['columns']['pick'], [])
         self.assertEqual(self.client.get('/api/website/board', headers=self.headers('norole')).status_code, 403)
+
+    def test_delivery_cards_carry_the_name_read_live_in_one_request(self):
+        """Owner, 2026-11-25: "we should be able to see the name for the delivery orders, as well as searching up the
+        name." The shipping name, else the billing name, read live for all of the board's deliveries at once."""
+        self.woo.order(712, [(11, 1)], status='awaiting-stock', paid=_ago(15), modified=_ago(0),
+                       shipping={'first_name': ' Émile ', 'last_name': 'Roy'})
+        self.woo.order(713, [(11, 1)], status='completed', paid=_ago(12), modified=_ago(0),
+                       shipping={'first_name': 'Done', 'last_name': 'Today'})
+        self.run_sync()
+        self.woo.reads.clear()
+        response = self.client.get('/api/website/board', headers=STAFF)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        board = response.get_json()
+        self.assertEqual((board['deliveries'], board['names_read']), (True, True))
+        named = {card['number']: card.get('name') for cards in (*board['columns'].values(), board['needs_manager'],
+                                                                 board['done_today']) for card in cards}
+        self.assertEqual({number: named[number] for number in ('703', '704', '705', '712', '713')},
+                         {'703': 'Zoë Ng', '704': 'Ana Lima', '705': 'Private Person', '712': 'Émile Roy',
+                          '713': 'Done Today'})
+        self.assertEqual(named['701'], None)  # a pickup: no name
+        # One read, for the deliveries only, asking for the four name fields only.
+        self.assertEqual(self.woo.reads, [('/orders', {'include': '703,704,705,712,713', 'status': 'any',
+                                                       '_fields': board_module.NAME_FIELDS, 'per_page': 100})])
+        for value in CONTACT:
+            self.assertNotIn(value, response.get_data(as_text=True))
+        # Never kept: no name is in the database.
+        with closing(self.connect()) as con:
+            dump = '\n'.join(con.iterdump())
+        for value in ('Zoë', 'Lima', 'Émile', 'Private'):
+            self.assertNotIn(value, dump)
+        # The website does not answer: the board still shows, without names, and says so.
+        self.woo.refuse_order_list = True
+        board = self.board()
+        self.assertEqual((board['names_read'], board['columns']['pack'][0]['name']), (False, None))
+        # A board without the delivery store has no deliveries to name, and reads nothing.
+        self.woo.refuse_order_list = False
+        self.woo.reads.clear()
+        self.assertEqual((self.board(store='MK')['deliveries'], self.woo.reads), (False, []))
 
     def test_a_pickup_taken_from_another_store_says_so(self):
         with closing(self.connect()) as con:

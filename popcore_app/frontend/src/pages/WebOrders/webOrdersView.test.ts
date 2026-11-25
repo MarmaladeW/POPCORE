@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { WebOrderCard, WebOrdersBoard } from '../../api/webOrders.ts'
-import { ageText, announceText, codeMissText, deliveryFacts, keyBytes, keyText, longWait, newCards, picksText, reasonText } from './webOrdersView.ts'
+import { ageText, announceText, codeMissText, deliveryFacts, keyBytes, keyText, longWait, nameMatches, newCards, picksText, plainName, reasonText } from './webOrdersView.ts'
 
 const now = Date.parse('2026-11-19T18:00:00Z')
 const card = (fields: Partial<WebOrderCard>): WebOrderCard =>
@@ -46,7 +46,7 @@ test('reasons and code misses are in staff words', () => {
 
 test('the board announces only open orders it did not have before', () => {
   const board = (ids: number[], waiting: number[] = []): WebOrdersBoard => ({
-    configured: true, enabled: true, last_run: null, stores: ['DT'], done_today: [card({ id: 99 })],
+    configured: true, enabled: true, last_run: null, stores: ['DT'], deliveries: true, names_read: true, done_today: [card({ id: 99 })],
     columns: { pick: ids.map(id => card({ id })), ready: [], pack: [], booked: [], out: [] },
     needs_manager: waiting.map(id => card({ id, reason: 'not_enough_stock' })),
   })
@@ -54,6 +54,28 @@ test('the board announces only open orders it did not have before', () => {
   assert.deepEqual(newCards(board([1]), new Set([1, 2])), [])
   assert.equal(announceText(card({ lines: [{ name: 'Echo', quantity: 2, popcore_id: 'PM0100', picks: [] }] })), '自取 DT pickup · Echo × 2')
   assert.equal(announceText(card({ kind: 'delivery', lines: [] })), '配送 Delivery · ')
+})
+
+test('the name box finds deliveries by part of a name, whatever the case and accents (owner, 2026-11-25)', () => {
+  assert.equal(plainName('  Zoë   NG '), 'zoe ng')
+  assert.equal(plainName('Søren Łukasz Strauß'), 'soren lukasz strauss')
+  const delivery = (id: number, name: string | null) => card({ id, number: String(id), kind: 'delivery', name })
+  const board: WebOrdersBoard = {
+    configured: true, enabled: true, last_run: null, stores: ['DT'], deliveries: true, names_read: true,
+    columns: { pick: [card({ id: 1 })], ready: [], pack: [delivery(2, 'Zoë Ng')], booked: [delivery(3, 'Ana Lima'), delivery(4, null)],
+      out: [] },
+    needs_manager: [delivery(5, 'Émile Roy')], done_today: [delivery(6, 'Zoe Ngo')],
+  }
+  const found = (typed: string) => nameMatches(board, typed).map(match => `${match.card.id} ${match.where}`)
+  assert.deepEqual(found('zoe'), ['2 配送 · 待打包 · Delivery · to pack', '6 今天完成 · Done today'])
+  assert.deepEqual(found('ZO NG'), ['2 配送 · 待打包 · Delivery · to pack', '6 今天完成 · Done today'])
+  assert.deepEqual(found('ngo'), ['6 今天完成 · Done today'])
+  assert.deepEqual(found('lim'), ['3 配送 · 等快递 · Delivery · booked, waiting for the courier'])
+  assert.deepEqual(found('emile'), ['5 需要经理 · Needs a manager'])
+  assert.deepEqual(found('   '), [])
+  assert.deepEqual(found('Ana Roy'), [])
+  // Pickups are found by their code only; the board gives them no name.
+  assert.deepEqual(nameMatches({ ...board, columns: { ...board.columns, pick: [{ ...card({ id: 1 }), name: 'Zoë' }] } }, 'zoe').map(match => match.card.id), [2, 6])
 })
 
 test('POPCORE’s push key goes to the browser as bytes and back', () => {

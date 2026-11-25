@@ -1,8 +1,8 @@
 import client from './client'
 
 // 网站订单 Web orders: the shop computer's order fulfilment screen (owner, 2026-11-19), built from the popcore.ca
-// website session's brief of the same day. Nothing personal is in the board's data, and never the pickup code.
-// See docs/web-orders-board.md.
+// website session's brief of the same day. The board's data never holds the pickup code; the only personal thing in
+// it is the name each delivery goes to (owner, 2026-11-25), read live from the website. See docs/web-orders-board.md.
 export type WebOrderPick = { store: string; place: string; quantity: number }
 export interface WebOrderLine {
   // The 记账名, else the official name, else the website's name.
@@ -20,6 +20,8 @@ export interface WebOrderCard {
   // Pickup: the other stores its stock came from, to be brought over.
   taken_elsewhere?: string[]
   delivery?: WebOrderDelivery
+  // Delivery: who the parcel goes to (shipping name, else billing), read live; null when the website did not answer.
+  name?: string | null
   // Needs a manager: a POPCORE problem code, 'cancel_failed', or 'status' (a website status the columns lack).
   reason?: string | null
   done_at?: string | null
@@ -29,6 +31,10 @@ export interface WebOrdersBoard {
   configured: boolean; enabled: boolean; last_run: string | null
   // The stores this board shows: those the user has store operations access for.
   stores: string[]
+  // Whether the delivery store is one of them: only then are there deliveries to look up by name.
+  deliveries: boolean
+  // False when the website did not answer the names read: the delivery cards then have no names.
+  names_read: boolean
   columns: Record<WebOrderColumn, WebOrderCard[]>
   needs_manager: WebOrderCard[]
   done_today: WebOrderCard[]

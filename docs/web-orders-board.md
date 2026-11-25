@@ -41,7 +41,8 @@ watch list; its board names the tick it needs. Notes on the website name the acc
 
 ## The board
 
-The code box sits at the top. Under it are five columns, each with the oldest paid order first:
+The code box sits at the top, with the name box beside it (under it on a narrower screen). Under them are five
+columns, each with the oldest paid order first:
 
 | Column | Orders |
 | --- | --- |
@@ -67,11 +68,30 @@ Each card shows:
 - pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
   A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
-- delivery: the window, Normal or door to door, and the zone the customer chose; once FleetNow is booked, its
-  number, status, pickup window and delivery window.
+- delivery: "收件人 Ship to" and the name the parcel goes to (see below); the window, Normal or door to door, and the
+  zone the customer chose; once FleetNow is booked, its number, status, pickup window and delivery window.
 
-Nothing personal is on the board or in its data, and never the pickup code: the code proves the person at the
-counter is the customer. The managers' Website page never receives the code either.
+The pickup code is never on the board or in its data: the code proves the person at the counter is the customer. The
+managers' Website page never receives the code either. The only personal thing on the board is each delivery's name;
+a pickup's name stays behind its code.
+
+## Names on deliveries
+
+Owner, 2026-11-25: "for the popcore.store 网站订单 tab, we should be able to see the name for the delivery orders, as
+well as searching up the name." Pickups were left as they are: their names show only after the code is typed.
+
+- Every delivery card, in the three delivery columns, Needs a manager and Done today, shows the shipping first and
+  last name, else the billing name.
+- POPCORE reads them live from the website on each board refresh, in one request for all the board's deliveries
+  (`GET /orders?include=<ids>&status=any&_fields=id,shipping.first_name,shipping.last_name,billing.first_name,billing.last_name`,
+  100 orders a request), so only those four fields leave the website. It waits 15 seconds at most: if the website does
+  not answer, the board shows without names and the name box says so.
+- Names are never written to POPCORE's database, logs, activity, push notifications or the service worker. The board's
+  answer is sent `Cache-Control: no-store`, and an error report (Sentry) drops the local variables of the board's code.
+- **收件人 Delivery name**, the box beside the pickup code, looks through the deliveries on the board as staff type:
+  part of a first or last name, any case, with or without accents ("zoe", "NG" and "zo n" all find Zoë Ng). Each match
+  shows as a card with where it is on the board. It searches in the browser, so a typed name is never sent or put in
+  a link. It is there only on a board that shows the delivery store (`WEBSITE_DELIVERY_STORE`).
 
 ## The website's fields
 
