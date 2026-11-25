@@ -51,6 +51,20 @@ def _meta(popcore_id):
     return [{'id': 1, 'key': '_popcore_id', 'value': popcore_id}] if popcore_id else []
 
 
+def _fields(row, fields):
+    """WordPress's _fields: only the fields named, a dot reaching inside one (`shipping.first_name`)."""
+    if not fields:
+        return dict(row)
+    kept = {}
+    for field in fields.split(','):
+        top, _, inner = field.partition('.')
+        if top in row and not inner:
+            kept[top] = row[top]
+        elif isinstance(row.get(top), dict) and inner in row[top]:
+            kept.setdefault(top, {})[inner] = row[top][inner]
+    return kept
+
+
 class FakeWoo:
     """Just enough of the WooCommerce REST API: products, variations, batch updates and orders. As on
     popcore.ca, an item's POPCORE ID is in meta_data and its SKU is a barcode or empty."""
@@ -68,6 +82,7 @@ class FakeWoo:
         self.notes = []  # (order id, note body)
         self.refuse_orders = False  # order PUTs answer 500
         self.refuse_notes = False  # notes answer 500
+        self.refuse_order_list = False  # GET /orders answers 500
 
     def product(self, wc_id, popcore_id='', *, sku='', kind='simple', in_stock=True, pickup=None, name=None,
                 status='publish', price='', sale='', meta=()):
@@ -101,10 +116,11 @@ class FakeWoo:
     def parent_of(self, wc_id):
         return next((parent for parent, variations in self.variations.items() if wc_id in variations), None)
 
-    def order(self, order_id, lines, *, status='processing', paid=None, modified=None, pickup=None, meta=()):
+    def order(self, order_id, lines, *, status='processing', paid=None, modified=None, pickup=None, meta=(),
+              shipping=None):
         """lines: (website item id, quantity). A line names its product and variation, and carries the
         item's SKU (a barcode), as WooCommerce's line_items do. meta: more (key, value) order fields, such as
-        the pickup code or the delivery window."""
+        the pickup code or the delivery window. shipping: the name a parcel goes to (empty: the billing name)."""
         paid = paid or _ago(1)
         meta = [{'key': '_pcc_fulfillment_type', 'value': 'pickup' if pickup else 'delivery'},
                 *({'key': key, 'value': value} for key, value in meta)]
@@ -121,7 +137,9 @@ class FakeWoo:
             'date_modified_gmt': modified or paid, 'total': '45.20', 'total_tax': '5.20',
             'payment_method': 'stripe', 'payment_method_title': 'Credit Card (Stripe)', 'transaction_id': 'pi_123',
             'billing': {'email': 'someone@example.com', 'first_name': 'Private', 'last_name': 'Person',
-                        'phone': '416-555-0199', 'address_1': '1 Secret St'}, 'meta_data': meta,
+                        'phone': '416-555-0199', 'address_1': '1 Secret St'},
+            'shipping': {'first_name': '', 'last_name': '', 'phone': '647-555-0123', 'address_1': '2 Hidden Ave',
+                         **(shipping or {})}, 'meta_data': meta,
             'line_items': line_items}
 
     def item(self, wc_id):
@@ -153,6 +171,8 @@ class FakeWoo:
             elif path.startswith('/products/') and path.endswith('/variations'):
                 rows = list(self.variations[int(path.split('/')[2])].values())
             elif path == '/orders':
+                if self.refuse_order_list:
+                    return Response(500, {'message': 'Something went wrong.'})
                 after = params.get('modified_after', '')
                 rows = sorted((order for order in self.orders.values() if order['date_modified_gmt'] > after),
                               key=lambda order: order['date_modified_gmt'])
@@ -163,7 +183,7 @@ class FakeWoo:
                 rows = [row for row in rows if row['id'] in wanted]
             size, page = params.get('per_page', 10), params.get('page', 1)
             pages = max(1, -(-len(rows) // size))
-            return Response(200, [dict(row) for row in rows[(page - 1) * size:page * size]],
+            return Response(200, [_fields(row, params.get('_fields')) for row in rows[(page - 1) * size:page * size]],
                             {'X-WP-TotalPages': str(pages)})
         if method == 'POST' and path.endswith('/batch'):
             results = []

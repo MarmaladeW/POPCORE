@@ -11,7 +11,8 @@ import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
 import Notifications, { chime, soundOn } from './Notifications'
 import {
-  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, longWait, newCards, openCards, picksText, reasonText, websiteTime,
+  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, longWait, nameMatches, newCards, openCards, picksText, reasonText,
+  websiteTime,
 } from './webOrdersView'
 import './webOrders.css'
 
@@ -40,6 +41,7 @@ function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: numb
       <span>{card.kind === 'pickup' ? `自取 ${card.store}` : '配送 Delivery'}</span>
       <time>{ageText(card.paid_at, now)}</time>
     </header>
+    {card.kind === 'delivery' && card.name && <p className="pc-web-to">收件人 Ship to <strong>{card.name}</strong></p>}
     {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
     {elsewhere.length > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
       从 {elsewhere.join(' + ')} 拿 · Taken from {elsewhere.join(' + ')}: bring it to {card.store}</p>}
@@ -131,8 +133,34 @@ function CodeBox({ store, onChange }: { store?: string; onChange: () => void }) 
   </section>
 }
 
+// Owner, 2026-11-25: "we should be able to see the name for the delivery orders, as well as searching up the name."
+// It looks through the delivery cards the board already has, as staff type: nothing is sent anywhere. Pickups stay
+// behind their code.
+function NameBox({ board, now }: { board: WebOrdersBoard; now: number }) {
+  const [typed, setTyped] = useState('')
+  const found = typed.trim() ? nameMatches(board, typed) : []
+  return <section className="pc-panel pc-web-code pc-web-name" aria-label="Delivery name">
+    <form onSubmit={event => event.preventDefault()}>
+      <label htmlFor="web-order-name"><strong>收件人</strong> <small>Delivery name</small></label>
+      <Input id="web-order-name" value={typed} onChange={event => setTyped(event.target.value)} autoComplete="off"
+        spellCheck={false} maxLength={60} placeholder="例 e.g. Chen" onKeyDown={event => { if (event.key === 'Escape') setTyped('') }} />
+      {typed && <Button onClick={() => setTyped('')}>清除 Clear</Button>}
+    </form>
+    {!board.names_read && <p className="pc-web-flag pc-web-note"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
+      网站没有回答 · The website did not send the names. They come back at the next refresh.</p>}
+    {typed.trim() && (found.length === 0
+      ? <Alert role="status" type="info" showIcon message="没有这个名字的配送订单 · No delivery order on the board has this name. Pickup orders are found by their code." />
+      : <div className="pc-web-found" role="list" aria-label="Deliveries found">
+        {found.map(({ card, where }) => <div role="listitem" key={card.id}>
+          <OrderCard card={card} now={now} extra={<p className="pc-web-reason">{where}</p>} />
+        </div>)}
+      </div>)}
+  </section>
+}
+
 // 网站订单 Web orders: the shop computer's order fulfilment screen (owner, 2026-11-19). Two buttons only, Ready and
-// Handed over; everything else is for looking. Nothing personal is on it, and never the pickup code.
+// Handed over; everything else is for looking. Never the pickup code; of the customer, only each delivery's name
+// (owner, 2026-11-25), read live.
 export default function WebOrdersPage() {
   const selected = useAppStore(state => state.selectedStore)
   // The 查看者 Viewer here is the store computer, whose stores are its 店铺电脑 ticks in Users.
@@ -207,7 +235,10 @@ export default function WebOrdersPage() {
 
     <Notifications />
 
-    <CodeBox store={store} onChange={reload} />
+    <div className="pc-web-lookups">
+      <CodeBox store={store} onChange={reload} />
+      {board.deliveries && <NameBox board={board} now={now} />}
+    </div>
 
     <div className="pc-web-columns">
       {COLUMNS.map(column => {

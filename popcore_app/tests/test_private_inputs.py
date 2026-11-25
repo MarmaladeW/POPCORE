@@ -123,6 +123,11 @@ class TelemetryPrivacyTests(unittest.TestCase):
                     'data': {'url': f'https://example.invalid/?key={canary}'},
                 }],
             },
+            # A web orders board error never carries the delivery names it held (owner, 2026-11-25).
+            'exception': {'values': [{'stacktrace': {'frames': [
+                {'module': 'website_board', 'vars': {'names': {703: canary}}},
+                {'module': 'blueprints.website', 'vars': {'result': canary}},
+                {'module': 'db', 'vars': {'path': 'popcore.db'}}]}}]},
         }
 
         scrubbed = scrub_event(event, {})
@@ -131,6 +136,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertEqual(
             scrubbed['request']['headers'], {'Accept': 'application/json'}
         )
+        self.assertEqual(scrubbed['exception']['values'][0]['stacktrace']['frames'][2]['vars'], {'path': 'popcore.db'})
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,8 +5,8 @@ could not fill, and OK the price changes that wait for them. Only admins reread 
 turn the sync on and off.
 
 网站订单 Web orders (website_board.py): anyone with store operations access for a store, staff or a 查看者 Viewer
-counter account (owner, 2026-11-19), sees its orders, finds a pickup order by its code and marks pickup orders Ready and
-Handed over. Viewers can do nothing else anywhere: every other write needs staff or above.
+counter account (owner, 2026-11-19), sees its orders and the name each delivery goes to (owner, 2026-11-25), finds a
+pickup order by its code and marks pickup orders Ready and Handed over. Viewers can do nothing else anywhere: every other write needs staff or above.
 """
 import os
 
@@ -162,7 +162,8 @@ def _board_error(exc):
 
 
 def _private(response):
-    """The code box's answer carries the customer's first name: no cache may keep it."""
+    """The board (each delivery's name, owner 2026-11-25) and the code box's answer (the customer's first name) carry
+    names read live from the website: no cache may keep them."""
     response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -178,8 +179,8 @@ def web_orders_board():
     delivery = os.environ.get('WEBSITE_DELIVERY_STORE', 'DT').strip().upper() or 'DT'
     result = board.board(con, cfg or {'delivery_store': delivery}, request.jwt_payload['sub'],
                          request.args.get('store') or None)
-    return jsonify(configured=cfg is not None, enabled=sync.enabled(con), last_run=sync.state(con, 'last_run'),
-                   **result)
+    return _private(jsonify(configured=cfg is not None, enabled=sync.enabled(con), last_run=sync.state(con, 'last_run'),
+                            **result))
 
 
 @bp.post('/api/website/board/code')

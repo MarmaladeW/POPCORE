@@ -105,6 +105,30 @@ export const openCards = (board: WebOrdersBoard): WebOrderCard[] =>
 export const newCards = (board: WebOrdersBoard, seen: Set<number>): WebOrderCard[] =>
   openCards(board).filter(card => !seen.has(card.id))
 
+// Letters NFD does not take apart.
+const BASE_LETTERS: Record<string, string> = { ø: 'o', ł: 'l', đ: 'd', ð: 'd', þ: 'th', ß: 'ss', æ: 'ae', œ: 'oe', ı: 'i' }
+
+/** A name as the name box compares it: no accents, no case, single spaces ("  Zoë  NG" → "zoe ng"). */
+export const plainName = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  .replace(/[øłđðþßæœı]/g, letter => BASE_LETTERS[letter]).replace(/\s+/g, ' ').trim()
+
+export type NameMatch = { card: WebOrderCard; where: string }
+
+/** The delivery orders on the board whose name holds every word typed, anywhere in the first or last name
+ * ("zoe", "ng", "zo n" all find Zoë Ng), with where each one is on the board. Owner, 2026-11-25. */
+export function nameMatches(board: WebOrdersBoard, typed: string): NameMatch[] {
+  const words = plainName(typed).split(' ').filter(Boolean)
+  if (!words.length) return []
+  const places: Array<[WebOrderCard[], string]> = [
+    ...COLUMNS.map(column => [board.columns[column.key], `${column.zh} · ${column.en}`] as [WebOrderCard[], string]),
+    [board.needs_manager, '需要经理 · Needs a manager'],
+    [board.done_today, '今天完成 · Done today'],
+  ]
+  return places.flatMap(([cards, where]) => cards
+    .filter(card => card.kind === 'delivery' && card.name && words.every(word => plainName(card.name!).includes(word)))
+    .map(card => ({ card, where })))
+}
+
 /** A new order as the board's pop-up says it. */
 export const announceText = (card: WebOrderCard) =>
   `${card.kind === 'pickup' ? `自取 ${card.store} pickup` : '配送 Delivery'} · ${card.lines.map(line => `${line.name} × ${line.quantity}`).join(', ')}`
