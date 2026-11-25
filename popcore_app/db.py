@@ -2131,6 +2131,17 @@ def _get_migrations():
         ('count_sections',                             _migration_count_sections),
         ('count_marks',                                _migration_count_marks),
         ('watch_alerts',                               _migration_watch_alerts),
+        ('staff_checkout_until_clover',                _migration_staff_checkout_until_clover),
+        ('app_lines_from',                             _migration_app_lines_from),
+        ('report_settled_by_counts',                   _migration_report_settled_by_counts),
+        ('restock_session_people',                     _migration_restock_session_people),
+        ('activity_log',                               _migration_activity_log),
+        ('employee_pins',                              _migration_employee_pins),
+        ('evening_count_sets',                         _migration_evening_count_sets),
+        ('product_stock_counted',                      _migration_product_stock_counted),
+        ('quick_sale_stock_by_report',                 _migration_quick_sale_stock_by_report),
+        ('stock_moves',                                _migration_stock_moves),
+        ('quick_sale_staff_discount_cash',             _migration_quick_sale_staff_discount_cash),
     ]
 
 
@@ -2458,6 +2469,128 @@ def _migration_report_lines_from(con, cur):
     cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('report_lines_from', ?)",
                 (datetime.now(ZoneInfo('America/Toronto')).date().isoformat(),))
     cur.execute("INSERT INTO _migrations(name) VALUES ('report_lines_from')")
+
+
+def _migration_staff_checkout_until_clover(con, cur):
+    # Everyone uses the app now, but a live store's sales still leave stock through the pasted 日报 until its
+    # Clover is connected (owner, 2026-11-20), so staff checkout and 补录 wait for Clover there. A database with a
+    # live store starts at 'clover'; a new one keeps 'all'. Admins change it in 设置 Settings → 买单 Checkout.
+    if cur.execute('SELECT 1 FROM inventory_scope_state WHERE opening_verified=1 LIMIT 1').fetchone():
+        cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('staff_checkout', 'clover')")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('staff_checkout_until_clover')")
+
+
+def _migration_app_lines_from(con, cur):
+    # A 日报 line moves only what the app's own screens (补货, 调拨, 收货, display, 娃娃机) did not already record
+    # that day (owner, 2026-11-20). Days already saved had those lines left out by hand, so a re-paste of one
+    # must not take them off again: this starts on the day after the latest saved report (today on a new
+    # database). One row of app_settings (app_lines_from, YYYY-MM-DD).
+    from datetime import date, datetime, timedelta
+    from zoneinfo import ZoneInfo
+    latest = cur.execute('SELECT MAX(date) FROM daily_report_metadata').fetchone()[0]
+    start = ((date.fromisoformat(latest) + timedelta(days=1)).isoformat() if latest
+             else datetime.now(ZoneInfo('America/Toronto')).date().isoformat())
+    cur.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('app_lines_from', ?)", (start,))
+    cur.execute("INSERT INTO _migrations(name) VALUES ('app_lines_from')")
+
+
+def _migration_evening_count_sets(con, cur):
+    # 晚盘 at a live store is counted as WeChat writes it (owner, 2026-11-20): whole sets and loose boxes per
+    # bestseller for the whole store, display left out; it may be saved again the same night.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(inventory_checks)')}
+    for column in ('actual_sets', 'actual_loose', 'updated_at'):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE inventory_checks ADD COLUMN {column} {"TEXT" if column == "updated_at" else "INTEGER"}')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('evening_count_sets')")
+
+
+def _migration_product_stock_counted(con, cur):
+    # 不计库存 (owner, 2026-11-21: "mark these one as reviewed, we are not going to count their stock. and yes we do sell
+    # them"): accessories such as 娃衣, 购物袋 and keychains sell at the counter but have no stock count. A sale, a
+    # return or the 日报 moves no stock for them and leaves no shortfall notice.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(products)')}
+    if 'stock_counted' not in columns:
+        cur.execute('ALTER TABLE products ADD COLUMN stock_counted INTEGER NOT NULL DEFAULT 1 CHECK (stock_counted IN (0, 1))')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('product_stock_counted')")
+
+
+def _migration_quick_sale_stock_by_report(con, cur):
+    # 记一笔 Quick sale (owner, 2026-11-21: "the stock change only at the end of the day at once after the report has
+    # been reviewed"): a quick sale moves no stock, the reviewed 日报 does; and 撤销 marks a sale recorded by mistake.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(checkout_orders)')}
+    if 'stock_by_report' not in columns:
+        cur.execute('ALTER TABLE checkout_orders ADD COLUMN stock_by_report INTEGER NOT NULL DEFAULT 0 CHECK (stock_by_report IN (0, 1))')
+    for column in ('undone_at', 'undone_by', 'undo_reason'):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE checkout_orders ADD COLUMN {column} TEXT')
+    # 审核 (owner, 2026-11-24: "once the 记一笔 is fully built, we dont need the 日报 pasting anymore"): which days'
+    # quick sales a manager reviewed in the app; that review saved the day's sales and took them off stock.
+    cur.execute("""CREATE TABLE IF NOT EXISTS quick_sale_reviews (
+        store_id      INTEGER NOT NULL REFERENCES stores(id),
+        business_date TEXT    NOT NULL,
+        reviewed_by   TEXT    NOT NULL,
+        reviewed_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        digest        TEXT    NOT NULL,
+        units         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (store_id, business_date)
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('quick_sale_stock_by_report')")
+
+
+def _migration_stock_moves(con, cur):
+    # 移货 Move stock: one way to record any stock move (owner, 2026-11-24); see stock_moves.py.
+    import stock_moves
+    stock_moves.migrate(cur)
+    cur.execute("INSERT INTO _migrations(name) VALUES ('stock_moves')")
+
+
+def _migration_quick_sale_staff_discount_cash(con, cur):
+    # Owner, 2026-11-24 (no 日报 pasting): what the 日报 carried besides sales moves into the app. A quick sale ticked
+    # 员工折扣 names the staff member who bought (their monthly uses are counted from it, staff_discounts.py); the
+    # manager's 审核 may record the cash counted that day.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(checkout_orders)')}
+    if 'staff_discount_employee_id' not in columns:
+        cur.execute('ALTER TABLE checkout_orders ADD COLUMN staff_discount_employee_id INTEGER REFERENCES employees(id)')
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(quick_sale_reviews)')}
+    if 'cash_counted_cents' not in columns:
+        cur.execute('ALTER TABLE quick_sale_reviews ADD COLUMN cash_counted_cents INTEGER'
+                    ' CHECK (cash_counted_cents IS NULL OR cash_counted_cents >= 0)')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('quick_sale_staff_discount_cash')")
+
+
+def _migration_employee_pins(con, cur):
+    # Name + PIN on the shared store computer (owner, 2026-11-20); see pins.py.
+    import pins
+    pins.migrate(cur)
+    cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins')")
+
+
+def _migration_activity_log(con, cur):
+    # 动态 Activity: one line per change anyone makes (owner, 2026-11-20); see activity.py.
+    import activity
+    activity.migrate(cur)
+    cur.execute("INSERT INTO _migrations(name) VALUES ('activity_log')")
+
+
+def _migration_restock_session_people(con, cur):
+    # Who started, submitted and finished each 补货 sheet (owner, 2026-11-20: every action leaves a mark).
+    # Sheets from before have no names; their picks and receipts keep theirs in the delivery events.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(restock_sessions)')}
+    for column in ('created_by', 'submitted_by', 'completed_by'):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE restock_sessions ADD COLUMN {column} TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('restock_session_people')")
+
+
+def _migration_report_settled_by_counts(con, cur):
+    # A count taken after a report's day already shows that day (owner, 2026-11-20), so the day's sales and stock
+    # lines move nothing more at a place counted later. What such a count absorbed is kept apart from what a
+    # manager checked: `settled` can go either way, as a re-paste may add or take away sales.
+    for table in ('report_stock_takes', 'report_stock_moves'):
+        columns = {row[1] for row in cur.execute(f'PRAGMA table_info({table})')}
+        if 'settled' not in columns:
+            cur.execute(f'ALTER TABLE {table} ADD COLUMN settled INTEGER NOT NULL DEFAULT 0')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('report_settled_by_counts')")
 
 
 def _migration_report_sets_opened(con, cur):

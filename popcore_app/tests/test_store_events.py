@@ -224,7 +224,8 @@ class StoreEventsTests(ReceivingFixture):
         response = self.client.get('/api/inventory-check/today?store_code=DT',headers=self.headers('staff'))
         self.assertEqual(response.status_code,200,response.get_json())
         item = next(row for row in response.get_json()['items'] if row['product_id']==self.product_id)
-        self.assertEqual((item['theoretical_qty'],item['current_instore_qty']),(6,6))
+        # 晚盘 at a live store counts the floor only (owner, 2026-11-21): 10 less the 4 into the claw.
+        self.assertEqual((item['per_set'], item['expected_loose']), (None, 6))
 
     def test_product_snapshot_uses_catalog_fallbacks(self):
         body = dict(store_id=self.store_id,kind='display_in',product_id=self.product_id,quantity=1)

@@ -24,17 +24,26 @@ export interface ReportStockSide {
 export interface ReportStockLine {
   line_key: string; section: string; label: string; raw: string; kind: string; ratio: number
   wanted: number; moved_before: number; checked: number; moving: number; short: number
-  problem: 'not_enough' | 'not_counted' | null; document_id: number | null
+  problem: 'not_enough' | 'not_counted' | 'settled_short' | null; document_id: number | null
   // New goods of a product never counted: this line is its first count, verified as this form (owner, 2026-11-22).
   first_count?: 'random_box' | 'ordinary'
   from?: ReportStockSide; to?: ReportStockSide
+  // A place counted after the report's day already shows the line (owner, 2026-11-20): `settled` is what that count
+  // absorbed, `counted_later` the count day per side, `one_sided` what moved on the side nobody counted later.
+  settled?: number; counted_later?: Partial<Record<'from' | 'to', string>>; one_sided?: number
+  // What another app screen already recorded that day (补货, 收货, 调拨, display, 娃娃机), so the line moves less.
+  covered?: number; covered_by?: string[]
 }
 export interface ReportStockResult {
   business_date: string; documents: number[]; taken: number; returned: number
   short: Array<{ product_id: number; sku: string | null; name: string; quantity: number; reason: ReportStockReason }>
   counted_same_day: Array<{ product_id: number; sku: string | null; name: string; quantity: number; counted_at: string }>
+  // Sales a later count of the floor already shows: nothing came off for them.
+  counted_later?: Array<{ product_id: number; sku: string | null; name: string; quantity: number; counted_on: string }>
   lines?: ReportStockLine[]
   from_display?: Array<{ product_id: number; sku: string | null; name: string; quantity: number }>
+  // Sales already recorded in the app that day (记一笔, 买单): they took their own stock, so the report did not.
+  in_app?: Array<{ product_id: number; sku: string | null; name: string; quantity: number }>
   moves_short?: Array<{ product_id: number; sku: string | null; name: string; quantity: number; where: string[] }>
   // Sealed sets the paste opened by itself because the floor ran out (negative: counted whole again).
   sets_opened?: ReportSetOpened[]

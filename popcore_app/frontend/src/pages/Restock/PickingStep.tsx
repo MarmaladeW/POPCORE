@@ -13,6 +13,7 @@ import Icon from '../../components/pc/Icon'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import QtyStepper from './QtyStepper'
 import { familyGroups, partLabel } from './series'
+import { torontoStamp } from '../../lib/marks'
 
 const { Text } = Typography
 const { useBreakpoint } = Grid
@@ -321,7 +322,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
       )}
       {pickList}
       {isCompleted && <Alert type="success" showIcon
-        message={`补货完成！${session.completed_at ? `完成时间：${session.completed_at.slice(0, 16)}` : ''}`} />}
+        message={`补货完成！${session.completed_at ? `完成时间：${torontoStamp(session.completed_at)}` : ''}`} />}
       {!locked && <footer className="pc-rq-bar">
         <span className="pc-rq-bar-text">
           <strong>{allDone ? '全部处理完' : `还有 ${pendingCount} 项`}</strong>
@@ -422,7 +423,7 @@ export default function PickingStep({ session, live, onRefresh, onReceive }: Pro
       {isCompleted && (
         <Alert
           type="success"
-          message={`补货完成！${session.completed_at ? `完成时间：${session.completed_at.slice(0, 16)}` : ''}`}
+          message={`补货完成！${session.completed_at ? `完成时间：${torontoStamp(session.completed_at)}` : ''}`}
           style={{ marginTop: 16 }}
           showIcon
         />

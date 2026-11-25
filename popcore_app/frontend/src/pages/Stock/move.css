@@ -1,0 +1,26 @@
+/* 移货 Move stock: three answers and Save. Shares 记一笔's quiet parts (qs-*): hairlines, sharp corners, ink for the
+   chosen answer, status as a dot plus text. The two ends outside the stock (新到货, 不在了) are dashed. */
+.mv-form { padding-top: 4px; }
+.mv-form > * { margin-left: 16px; margin-right: 16px; }
+.qs-day li.mv-move { display: flex; align-items: center; gap: 12px; }
+.mv-move .qs-day-main { flex: 1; }
+.qs-undone.mv-move .qs-flag-undone { text-decoration: none; }
+.mv-form .qs-search { margin-top: 14px; }
+.mv-form > .ant-input { min-height: 44px; margin-top: 8px; border-radius: 0; font-size: 16px; }
+.mv-chips { display: grid; gap: 6px; margin-top: 12px; }
+.mv-chips > span { color: var(--text-secondary); font-size: 12.5px; }
+.mv-chips > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+@media (min-width: 560px) { .mv-chips > div { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+.mv-chips button { min-height: 44px; padding: 0 6px; border: 1px solid var(--line-control); background: var(--surface-default); color: var(--text-primary); font: inherit; font-size: 13px; cursor: pointer; }
+.mv-chips button.mv-outside { border-style: dashed; }
+.mv-chips button[aria-checked='true'] { border-style: solid; border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.mv-chips button:focus-visible { outline: 2px solid var(--surface-ink); outline-offset: 2px; }
+.mv-form > .mv-lines { display: grid; margin-top: 4px; margin-bottom: 0; padding: 0; list-style: none; }
+.mv-lines li { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line-hair); }
+.mv-line-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mv-line-head strong { min-width: 0; overflow-wrap: anywhere; font-size: 15px; font-weight: 500; line-height: 21px; }
+.mv-amounts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--text-secondary); font-size: 13px; }
+.mv-amounts label { display: inline-flex; align-items: center; gap: 6px; }
+.mv-amounts .ant-input { width: 68px; min-height: 44px; border-radius: 0; font-size: 16px; font-variant-numeric: tabular-nums; text-align: center; }
+.mv-landing { margin-left: auto; font-variant-numeric: tabular-nums; }
+.mv-short { margin: 0; color: var(--status-restock-ink); }

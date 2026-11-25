@@ -7,6 +7,7 @@ import dayjs from 'dayjs'
 
 import { useHasRole, useRole } from '../auth/useRole'
 import { useInventoryVisible } from '../auth/useInventoryVisible'
+import { useCheckoutOpen } from '../auth/useCheckoutOpen'
 import { activeSection, bottomItems, navItem, railGroups, type NavItem } from '../lib/navigation'
 import { useAppStore } from '../store'
 import Icon from './pc/Icon'
@@ -14,6 +15,8 @@ import { PageHeaderSlots, PhoneTopBar } from './pc/PageHeader'
 import StoreChip from './pc/StoreChip'
 import { CheckoutBusy, useCheckoutBusyListener } from './pc/useCheckoutBusy'
 import { useIsPhone } from './pc/useIsPhone'
+import PersonPicker, { ActingPersonBar } from './people/PersonPicker'
+import MyPinModal from './people/MyPin'
 import './AppLayout.css'
 import './pc/pc.css'
 
@@ -43,7 +46,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const staff = useHasRole('staff')
   const inventory = useInventoryVisible()
   const operations = useAppStore(state => state.stores.some(store => store.operations))
-  const access = useMemo(() => ({ staff, manager, admin, inventory, operations }), [staff, manager, admin, inventory, operations])
+  const checkout = useCheckoutOpen()
+  const access = useMemo(() => ({ staff, manager, admin, inventory, operations, checkout }), [staff, manager, admin, inventory, operations, checkout])
   const active = activeSection(location.pathname, manager, inventory)
   const onMore = location.pathname === '/more'
   // Schedule opens with the rail collapsed to give the calendar room (existing behaviour).
@@ -62,7 +66,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const slots = useMemo(() => ({ phone: phoneSlot, desktop: desktopSlot, mobile, register }), [phoneSlot, desktopSlot, mobile, register])
 
   const signOut = () => logout({ logoutParams: { returnTo: window.location.origin } })
-  const accountItems: MenuProps['items'] = [{ key: 'logout', label: '退出登录 Sign out', danger: true, onClick: signOut }]
+  const [pinOpen, setPinOpen] = useState(false)
+  const accountItems: MenuProps['items'] = [
+    { key: 'pin', label: '我的 PIN My PIN', onClick: () => setPinOpen(true) },
+    { key: 'logout', label: '退出登录 Sign out', danger: true, onClick: signOut },
+  ]
   const userName = user?.nickname ?? user?.name ?? 'User'
   const fallback = navItem(active)
 
@@ -112,5 +120,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </Link>
       </nav>}
     </div>
-  </PageHeaderSlots.Provider></CheckoutBusy.Provider>
+  <PersonPicker /><ActingPersonBar /><MyPinModal open={pinOpen} onClose={() => setPinOpen(false)} />
+    </PageHeaderSlots.Provider></CheckoutBusy.Provider>
 }

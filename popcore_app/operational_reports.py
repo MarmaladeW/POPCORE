@@ -9,6 +9,9 @@ from inventory_visibility import InventoryHidden, HIDDEN_MESSAGE, visible_store_
 
 from catalog_identity import FORMS_TO_UNITS
 
+# A 记一笔 sale taken back with 撤销 (recorded by mistake) was never sold; its payments are corrected to zero.
+NOT_UNDONE = "NOT EXISTS (SELECT 1 FROM checkout_orders u WHERE u.sale_id=s.id AND u.undone_at IS NOT NULL)"
+
 
 def _inventory_identity_valid(product):
     return (product['identity_status']=='verified' and product['stock_unit'] is not None
@@ -92,10 +95,10 @@ def query_report(con,name,*,actor,filters):
               l.product_id,l.native_unit,SUM(l.quantity) quantity,COUNT(*) line_count,
               CASE WHEN p.identity_status='verified' THEN 1 ELSE 0 END identity_complete
               FROM sale_documents s JOIN sale_lines l ON l.sale_id=s.id LEFT JOIN products p ON p.id=l.product_id LEFT JOIN product_series ps ON ps.id=p.series_id
-              WHERE s.store_id IN ({marks}) AND s.status='posted' AND s.business_date BETWEEN ? AND ?
+              WHERE s.store_id IN ({marks}) AND s.status='posted' AND s.business_date BETWEEN ? AND ? AND {NOT_UNDONE}
               GROUP BY s.store_id,series,design,unverified_product,l.product_id,l.native_unit,identity_complete
               ORDER BY s.store_id,series,design,unverified_product,l.product_id,l.native_unit""",(*ids,start,end))]
-            money=[dict(r) for r in con.execute(f"SELECT gross_cents FROM sale_documents WHERE store_id IN ({marks}) AND status='posted' AND business_date BETWEEN ? AND ?",(*ids,start,end))]
+            money=[dict(r) for r in con.execute(f"SELECT gross_cents FROM sale_documents s WHERE store_id IN ({marks}) AND status='posted' AND business_date BETWEEN ? AND ? AND {NOT_UNDONE}",(*ids,start,end))]
             known=[r['gross_cents'] for r in money if r['gross_cents'] is not None];totals={'known_gross_cents':sum(known),'incomplete_count':sum(r['gross_cents'] is None for r in money),'gross_complete':len(known)==len(money)}
         elif name=='tenders':
             # Recorded money includes manager corrections, as on the sale page and in closing. A rejected

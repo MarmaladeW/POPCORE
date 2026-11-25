@@ -1,0 +1,137 @@
+/* 记一笔 Quick sale: phone first, one column; on a wide screen today's sales sit beside the sale being written.
+   Same language as Checkout: hairlines, sharp corners, ink for the chosen answer, status as a dot plus text.
+   Owner, 2026-11-21: show what's needed, reduce noise. Small text uses --text-secondary (5.8:1), not tertiary. */
+.qs-page { color: var(--text-primary); }
+.qs-columns { display: grid; gap: 16px; align-items: start; }
+@media (min-width: 1024px) { .qs-columns { grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); } }
+.qs-main, .qs-side { display: grid; gap: 12px; min-width: 0; }
+
+/* Shared quiet controls: every tappable thing is at least 44px tall. */
+.qs-stores button, .qs-tenders button, .qs-chip, .qs-qty button {
+  border: 1px solid var(--line-control); background: var(--surface-default); color: var(--text-primary); font: inherit; cursor: pointer; }
+.qs-stores button[aria-pressed='true'], .qs-tenders button[aria-checked='true'], .qs-chip[aria-pressed='true'] {
+  border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.qs-stores button:focus-visible, .qs-tenders button:focus-visible, .qs-chip:focus-visible,
+.qs-qty button:focus-visible, .qs-link:focus-visible, .qs-results button:focus-visible { outline: 2px solid var(--surface-ink); outline-offset: 2px; }
+.qs-tenders button:disabled, .qs-link:disabled { opacity: .45; cursor: not-allowed; }
+.qs-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px; border: 0; background: none; color: var(--text-secondary); font: inherit; font-size: 13px; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 4px; cursor: pointer; }
+.qs-link:hover:not(:disabled) { color: var(--text-primary); }
+.qs-quiet { margin: 6px 0 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.qs-quiet .pc-dot, .qs-problem .pc-dot, .qs-flag .pc-dot { margin-right: 6px; vertical-align: 2px; }
+.qs-problem { margin: 8px 0 0; color: var(--status-out-ink); font-size: 12.5px; line-height: 1.5; }
+
+.qs-stores { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.qs-stores button { min-height: 44px; padding: 0 16px; font-size: 13px; }
+
+.qs-search { display: grid; gap: 8px; }
+.qs-search .ant-input-affix-wrapper { min-height: 48px; border-radius: 0; }
+.qs-search input { font-size: 16px; } /* 16px: phones do not zoom the page on focus */
+.qs-search .qs-quiet { margin: 0; }
+.qs-results { display: grid; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.qs-results li + li { border-top: 1px solid var(--line-hair); }
+.qs-results button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px; border: 0; background: none; color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
+.qs-results button:hover:not(:disabled) { background: var(--surface-subtle); }
+.qs-results button:disabled { color: var(--text-secondary); cursor: not-allowed; }
+.qs-results button > span { display: grid; flex: 1; min-width: 0; }
+.qs-results strong { overflow-wrap: anywhere; font-size: 14px; font-weight: 500; line-height: 20px; }
+.qs-results small { overflow: hidden; color: var(--text-secondary); font-size: 12px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.qs-results em { color: var(--text-secondary); font-size: 13px; font-style: normal; font-variant-numeric: tabular-nums; }
+
+.qs-cart > :not(.pc-panel-head) { margin-left: 16px; margin-right: 16px; }
+.qs-cart .pc-panel-head { padding-top: 4px; padding-bottom: 4px; }
+.qs-lines { display: grid; margin: 0; padding: 0; list-style: none; }
+.qs-line { display: grid; gap: 4px; padding: 12px 0; border-bottom: 1px solid var(--line-hair); }
+.qs-line-head, .qs-line-foot { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.qs-line-foot { flex-wrap: wrap; }
+.qs-line-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; font-weight: 500; line-height: 21px; }
+.qs-line-total { margin-left: auto; font-size: 14px; font-variant-numeric: tabular-nums; font-weight: 500; }
+.qs-qty { display: inline-flex; align-items: center; }
+.qs-qty button { display: grid; width: 44px; height: 44px; place-items: center; }
+.qs-qty output { min-width: 36px; font-size: 16px; font-variant-numeric: tabular-nums; font-weight: 600; text-align: center; }
+/* Display is a quiet mark on a line, not an action: hairline until it is on. */
+.qs-chip { min-height: 44px; padding: 0 12px; border-color: var(--line-hair); color: var(--text-secondary); font-size: 12.5px; }
+.qs-price-edit { display: inline-flex; align-items: center; gap: 8px; }
+.qs-price-edit .ant-input { width: 96px; min-height: 44px; border-radius: 0; font-size: 16px; }
+
+
+.qs-discount { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.qs-discount label { display: inline-flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
+.qs-discount .ant-input { width: 96px; min-height: 44px; border-radius: 0; font-size: 16px; }
+/* 员工折扣: who bought, as names to tap; how many uses each has left this month. */
+.qs-staff { display: grid; gap: 4px; padding-bottom: 8px; }
+.qs-staff > p:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; color: var(--text-secondary); font-size: 13px; }
+.qs-staff-people { display: flex; flex-wrap: wrap; gap: 8px; }
+.qs-staff-people .qs-chip { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+.qs-staff-people .qs-chip[aria-pressed='false'] { border-color: var(--line-control); color: var(--text-primary); }
+.qs-staff-people .qs-chip small { font-size: 12px; font-variant-numeric: tabular-nums; opacity: .7; }
+
+/* How they paid: each tile shows the one amount that tender collects. */
+.qs-tenders { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.qs-tenders button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+@media (min-width: 560px) {
+  .qs-tenders { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .qs-tenders button:last-child:nth-child(odd) { grid-column: auto; }
+}
+.qs-tenders button { display: grid; align-content: start; gap: 2px; min-height: 68px; padding: 10px 12px; text-align: left; }
+.qs-tenders button span { font-size: 13px; font-weight: 500; line-height: 18px; }
+.qs-tenders button strong { font-size: 17px; font-variant-numeric: tabular-nums; font-weight: 600; line-height: 22px; }
+.qs-tenders button small { font-size: 12px; line-height: 16px; }
+.qs-tenders .qs-cny { font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 500; }
+.qs-tenders button[aria-checked='false'] small { color: var(--text-secondary); }
+
+/* Save stays in reach while the cart scrolls, above the phone tab bar. */
+.qs-paybar { position: sticky; bottom: 0; z-index: 2; margin-top: 12px; padding: 8px 0 16px; background: var(--surface-default); }
+.pc-shell-phone .qs-paybar { bottom: calc(62px + env(safe-area-inset-bottom)); }
+.qs-paybar .qs-problem { margin: 0 0 8px; }
+.qs-save.ant-btn { min-height: 56px; height: auto; border-radius: 0; font-size: 16px; font-weight: 600; white-space: normal; }
+.qs-save-label { display: grid; justify-items: center; }
+.qs-save-label small { font-size: 12px; font-weight: 400; opacity: .85; }
+
+.qs-saved { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.qs-saved-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0; font-size: 15px; }
+.qs-saved-head .pc-dot { margin: 0; }
+.qs-saved-head span { font-variant-numeric: tabular-nums; }
+.qs-saved .qs-quiet { margin: 0; }
+.qs-saved .qs-link { justify-self: start; }
+.qs-photo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.qs-photo .ant-btn { min-height: 44px; border-radius: 0; }
+.qs-photo-big { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.qs-photo-big .ant-btn { min-height: 52px; font-size: 15px; }
+.qs-photo-big .qs-problem { grid-column: 1 / -1; margin: 0; }
+
+.qs-day { display: grid; margin: 0; padding: 0; list-style: none; }
+.qs-day li { display: grid; gap: 6px; padding: 12px 16px; border-top: 1px solid var(--line-hair); }
+.qs-day li:first-child { border-top: 0; }
+.qs-day-main { display: grid; min-width: 0; }
+.qs-day-main strong { overflow-wrap: anywhere; font-size: 14px; font-weight: 500; line-height: 20px; }
+.qs-day-main small { color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; line-height: 17px; }
+.qs-day-pay { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--text-secondary); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.qs-flag { display: inline-flex; align-items: center; color: var(--status-out-ink); font-weight: 500; }
+.qs-flag-undone { color: var(--text-secondary); font-size: 12px; }
+.qs-undone .qs-day-main strong, .qs-undone .qs-day-pay { color: var(--text-secondary); text-decoration: line-through; text-decoration-color: var(--line-strong); }
+.qs-day-pay { align-items: center; }
+.qs-row-actions { display: inline-flex; margin-left: auto; }
+.qs-saved-actions { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.qs-empty { margin: 0; padding: 16px; }
+.qs-copy { display: grid; gap: 8px; padding: 12px 16px 8px; border-top: 1px solid var(--line-hair); }
+.qs-copy .ant-btn { min-height: 48px; border-radius: 0; }
+.qs-copy .qs-quiet { margin: 0; }
+.qs-copy-link { display: flex; align-items: center; gap: 12px; margin: 0; color: var(--text-secondary); font-size: 12.5px; }
+/* 审核: one status line, then what a review would move, then the one button that does it. */
+.qs-review { display: grid; gap: 8px; }
+.qs-review-status { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 500; }
+.qs-differs, .qs-preview ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.qs-differs li { display: flex; justify-content: space-between; gap: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.qs-differs li span:first-child { min-width: 0; overflow-wrap: anywhere; color: var(--text-primary); }
+.qs-preview { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line-soft); background: var(--surface-subtle); font-size: 13px; }
+.qs-preview p { margin: 0; overflow-wrap: anywhere; }
+.qs-preview-short { display: grid; gap: 4px; color: var(--status-out-ink); }
+.qs-preview-short .pc-dot { margin-right: 6px; vertical-align: 2px; }
+.qs-cash { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; color: var(--text-secondary); font-size: 13px; }
+.qs-cash .ant-input { width: 120px; min-height: 44px; border-radius: 0; font-size: 16px; }
+.qs-cash small { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.qs-preview-actions { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; margin-top: 6px; }
+.qs-earlier { display: flex; flex-wrap: wrap; align-items: center; gap: 0 12px; margin: 0; padding: 4px 16px; border-bottom: 1px solid var(--line-hair); font-size: 12.5px; }
+.qs-earlier .pc-dot { margin-right: 6px; vertical-align: 2px; }
+.qs-summary { margin: 0; padding: 12px; border: 1px solid var(--line-hair); background: var(--surface-subtle); font: 12.5px/1.6 var(--font-ui); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.qs-summary::selection, .qs-day strong::selection { background: var(--surface-ink); color: var(--text-on-ink); }

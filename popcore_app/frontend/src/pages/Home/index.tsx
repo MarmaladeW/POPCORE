@@ -14,6 +14,8 @@ import { TodayRows } from '../Dashboard/TodayRows'
 import { mergeWork } from '../Dashboard/todayPresentation'
 import PunchIn from '../Schedule/PunchIn'
 import HomeTiles from './HomeTiles'
+import StoreActivityPanel from '../Activity/StoreActivityPanel'
+import { PinPrompt } from '../../components/people/MyPin'
 import { eventNames, useStoreDay, type StoreEvent } from './storeDay'
 import './Home.css'
 
@@ -97,6 +99,7 @@ function StaffHome() {
     {phone && <PunchIn home />}
     {saved?.saved && saved.storeId === store?.id && <p className="pc-hm-saved" role="status">已记录 Record saved</p>}
     <HomeTiles details />
+    <PinPrompt />
     {phone && <Link className="pc-hm-tasks" to="/today">
       <span><strong>待处理 Store tasks</strong><small>{nothing ? '没有未完成的事 · Nothing to finish' : '未完成的订单、收货和盘点'}</small></span>
       {tasks.total !== undefined && <span className="pc-hm-tasks-count"><i className={`pc-dot pc-dot-${nothing ? 'ok' : 'warn'}`} aria-hidden="true" />{tasks.total}</span>}
@@ -113,7 +116,7 @@ function StaffHome() {
         </section>
           : <Panel zh="今日记录" en="Recent records" label="Recent records" action={viewAll}>{records}</Panel>}
       </div>
-      <aside className="pc-hm-side"><MyShifts outside={phone} /></aside>
+      <aside className="pc-hm-side"><MyShifts outside={phone} /><StoreActivityPanel /></aside>
     </div>
   </div>
 }

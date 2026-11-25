@@ -85,6 +85,9 @@ function StockLinesList({ lines }: { lines: ReportStockLine[] }) {
             {l.short > 0 && <Tag color="orange" style={{ margin: 0 }}>
               {l.problem === 'not_counted' ? '还没盘点 Not counted' : '不够 Short'} {l.short}
             </Tag>}
+            {!!l.settled && <Tag color="green" style={{ margin: 0 }}>
+              之后盘点过 Counted later ({Object.values(l.counted_later ?? {}).join(', ')}){l.one_sided ? ` · 只改另一边 only the other side ${l.one_sided > 0 ? '' : '−'}${Math.abs(l.one_sided)}` : ' · 不移 nothing moves'}
+            </Tag>}
             {l.first_count && <Tag color="cyan" style={{ margin: 0 }}>
               第一次盘点 First count · {l.first_count === 'random_box' ? '盲盒 Blind box' : '单品 Item'}
             </Tag>}
@@ -93,6 +96,28 @@ function StockLinesList({ lines }: { lines: ReportStockLine[] }) {
         </div>
       ))}
     </div>
+  )
+}
+
+/** Sales a count of the floor after the report's day already shows (owner, 2026-11-20). */
+function CountedLaterList({ rows }: { rows: NonNullable<ReportStockResult['counted_later']> }) {
+  return (
+    <ul aria-label="Counted later" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+      {rows.map(row => <li key={row.product_id} style={{ overflowWrap: 'anywhere' }}>
+        {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity} · 盘点 Counted {row.counted_on}
+      </li>)}
+    </ul>
+  )
+}
+
+/** Sales already recorded in the app that day (记一笔, 买单; owner, 2026-11-21): they took their own stock. */
+function InAppList({ rows }: { rows: NonNullable<ReportStockResult['in_app']> }) {
+  return (
+    <ul aria-label="Recorded in the app" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+      {rows.map(row => <li key={row.product_id} style={{ overflowWrap: 'anywhere' }}>
+        {row.sku ? `${row.sku} · ` : ''}{row.name}: {row.quantity}
+      </li>)}
+    </ul>
   )
 }
 
@@ -244,6 +269,8 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const [multiDay,      setMultiDay]      = useState(false)
   // A stock block written twice word for word (owner, 2026-11-15): dropped unless the manager counts both.
   const [repeatChoices, setRepeatChoices] = useState<Record<string, RepeatChoice>>({})
+  // Lines the manager marked "这是另外的 It's extra": another batch than what an app screen recorded that day.
+  const [extraLines, setExtraLines] = useState<number[]>([])
   // Goods the other store's 出库 already sent here (2026-11-24): read as them unless the manager says new goods.
   const [sentChoices, setSentChoices] = useState<Record<string, SentChoice>>({})
   // A live store's report takes its sales off the floor (owner, 2026-10-29): what moved, what could not.
@@ -310,6 +337,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       setReportNotes(Object.fromEntries(REPORT_NOTE_SECTIONS.map(({ key }) => [key, res[key] ?? []])))
       setMetadataErrors(res.metadata_errors ?? [])
       setFormatChecks(res.format_checks ?? [])
+      setExtraLines([])
       setLeftOut(res.left_out ?? [])
       setMultiDay(res.multi_day ?? false)
 
@@ -459,7 +487,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   }
 
   function buildPayloadItem(
-    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string; to_display?: boolean; from_display?: boolean; to_floor?: boolean },
+    row: { section: string; qty_pos: number; qty_cash: number; qty: number; notes: string; box_size?: number | null; loose_qty?: number; raw_name?: string; to_display?: boolean; from_display?: boolean; to_floor?: boolean; line?: number },
     product: BackendProduct,
     source_bucket: string,
   ) {
@@ -467,6 +495,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
       product_id: product.id, section: row.section, notes: row.notes,
       raw_name: row.raw_name ?? '', source_bucket,
       ...reportPayloadQuantities(row),
+      ...(row.line != null && extraLines.includes(row.line) ? { extra: true } : {}),
     }
   }
 
@@ -836,6 +865,14 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                 </li>)}
               </ul>
             </>}
+            {!!stockResult.in_app?.length && <>
+              <div style={{ marginTop: 6 }}>买单已经扣过 Already taken off by a checkout, not again:</div>
+              <InAppList rows={stockResult.in_app} />
+            </>}
+            {!!stockResult.counted_later?.length && <>
+              <div style={{ marginTop: 6 }}>之后盘点过 Already in a later count, nothing taken off:</div>
+              <CountedLaterList rows={stockResult.counted_later} />
+            </>}
             {stockResult.counted_same_day.length > 0 && <>
               <div style={{ marginTop: 6 }}>当天盘点过 Taken off after the floor was counted today. If the count was after these sales, count again:</div>
               <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
@@ -866,7 +903,7 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
   const visibleFailed    = failed.filter(r => !r.removed)
 
   const previewLines = stockPreview?.stock?.lines ?? []
-  const previewChanges = previewLines.filter(l => l.moving || l.short)
+  const previewChanges = previewLines.filter(l => l.moving || l.short || l.settled || l.one_sided)
   const repasted = previewLines.some(l => l.moved_before > 0 || l.moving < 0)
 
   return (
@@ -889,6 +926,12 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
             <div>销售（或从楼下拿走的行）比楼下的散盒多，同一家店有这个盲盒的整端：保存时开整端放到楼下再扣，不需要写 出库入店。如果其实没开，返回改日报。The sale needs more boxes than the floor has loose: a sealed set of it opens onto the floor. Go back if no set was opened.</div>
             <SetsOpenedList rows={stockPreview.stock.sets_opened} />
           </>} />}
+        {!!stockPreview?.stock?.in_app?.length && <Alert type="info" showIcon style={{ marginBottom: 8 }}
+          message="买单、补录已经扣过库存的销售，这次不再扣 Sales a checkout already took off stock are not taken off again"
+          description={<InAppList rows={stockPreview.stock.in_app} />} />}
+        {!!stockPreview?.stock?.counted_later?.length && <Alert type="info" showIcon style={{ marginBottom: 8 }}
+          message="之后盘点过：这些销售已经在后来的盘点里，不再扣 Already in a later count, so these sales don't come off again"
+          description={<CountedLaterList rows={stockPreview.stock.counted_later} />} />}
         <StockLinesList lines={previewChanges} />
         {stockPreview?.stock && <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
           销售 Sales: {stockPreview.stock.taken} 从楼下扣 off the floor
@@ -965,6 +1008,15 @@ export default function DailyReportEntry({ date, onComplete }: Props) {
                     <code key={i} style={{ display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{text}</code>
                   ))}
                   <div style={{ overflowWrap: 'anywhere' }}>{check.problem}</div>
+                  {check.extra_line != null && (
+                    <Radio.Group size="small" style={{ marginTop: 4 }} aria-label={`Already recorded, line ${check.extra_line}`}
+                      value={extraLines.includes(check.extra_line) ? 'extra' : 'same'}
+                      onChange={e => setExtraLines(lines => e.target.value === 'extra'
+                        ? [...lines, check.extra_line!] : lines.filter(line => line !== check.extra_line))}>
+                      <Radio value="same">同一批，只移超出的 Same goods</Radio>
+                      <Radio value="extra">这是另外的 It's extra</Radio>
+                    </Radio.Group>
+                  )}
                   {check.repeat_id && (
                     <Radio.Group size="small" style={{ marginTop: 4 }} aria-label={`Repeat ${check.repeat_id}`}
                       value={repeatChoices[check.repeat_id] ?? 'drop'}

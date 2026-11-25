@@ -185,3 +185,12 @@ button.pc-rq-group { cursor: pointer; }
   .pc-recv-actions .ant-btn, .pc-recv .ant-btn { width: 100%; min-height: 48px; }
 }
 .pc-rq-kraft.is-empty { background: var(--status-out-tint); color: var(--status-out-ink); }
+.pc-evening-list { display: grid; border: 1px solid var(--line-hair); background: var(--surface-default); }
+.pc-evening-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 10px 14px; border-top: 1px solid var(--line-hair); }
+.pc-evening-row:first-child { border-top: 0; }
+.pc-evening-name { display: grid; gap: 2px; min-width: 0; flex: 1 1 200px; }
+.pc-evening-name strong { overflow-wrap: anywhere; }
+.pc-evening-name small { color: var(--text-tertiary); font-size: 12px; overflow-wrap: anywhere; }
+.pc-evening-inputs { display: flex; gap: 10px; }
+.pc-evening-inputs label { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+.pc-evening-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }

@@ -1,6 +1,7 @@
 """
 blueprints/restock.py — restock session workflow (pending → submitted → picking → completed).
 """
+import people
 import json
 from flask import Blueprint, request, jsonify
 
@@ -326,8 +327,8 @@ def create_restock_session():
         return denied
     cur = con.cursor()
     cur.execute(
-        "INSERT INTO restock_sessions (date, status, store_id) VALUES (?, 'pending', ?)",
-        (today, store_id),
+        "INSERT INTO restock_sessions (date, status, store_id, created_by) VALUES (?, 'pending', ?, ?)",
+        (today, store_id, request.jwt_payload.get('sub')),
     )
     con.commit()
     sid = cur.lastrowid
@@ -431,7 +432,8 @@ def get_restock_session(sid):
     if not row:
         con.close()
         return jsonify({'error': 'Session not found'}), 404
-    session  = dict(row)
+    # Who started, submitted and finished the sheet, by name (owner, 2026-11-20).
+    session  = people.with_names(con, [dict(row)], 'created_by', 'submitted_by', 'completed_by')[0]
     store_id = session['store_id']
     denied = _restock_access_denied(con, store_id, 'viewer')
     if denied is not None:
@@ -641,8 +643,8 @@ def submit_restock_session(sid):
         WHERE session_id = ?
     ''', (store_id, sid))
     cur.execute(
-        "UPDATE restock_sessions SET status='submitted', submitted_at=datetime('now') WHERE id=?",
-        (sid,),
+        "UPDATE restock_sessions SET status='submitted', submitted_at=datetime('now'), submitted_by=? WHERE id=?",
+        (request.jwt_payload.get('sub'), sid),
     )
     con.commit()
     con.close()
@@ -823,8 +825,8 @@ def complete_restock_session(sid):
             con.execute('BEGIN IMMEDIATE')
             updated = con.execute(
                 """UPDATE restock_sessions
-                   SET status='completed', completed_at=datetime('now')
-                   WHERE id=? AND status IN ('submitted','picking')""", (sid,)
+                   SET status='completed', completed_at=datetime('now'), completed_by=?
+                   WHERE id=? AND status IN ('submitted','picking')""", (request.jwt_payload.get('sub'), sid)
             )
             if updated.rowcount != 1:
                 con.rollback()
@@ -965,8 +967,8 @@ def complete_restock_session(sid):
                                'found': requested_found, 'effective': effective_qty})
 
     cur.execute(
-        "UPDATE restock_sessions SET status='completed', completed_at=datetime('now') WHERE id=?",
-        (sid,),
+        "UPDATE restock_sessions SET status='completed', completed_at=datetime('now'), completed_by=? WHERE id=?",
+        (request.jwt_payload.get('sub'), sid),
     )
     con.commit()
     con.close()

@@ -3,8 +3,10 @@ import time
 
 from flask import Blueprint, jsonify, request, send_file
 
+import activity
 import clover_checkout
 import exchange_rates
+import quick_sale
 from auth import role_required
 from checkout_access import REGISTER_SUB, checkout_access, require_checkout
 from checkout_operations import (attach_photo, change_checkout, checkout_detail, choose_boxes, receive_manual,
@@ -158,6 +160,47 @@ def create():
     return jsonify(create_checkout(get_db(),body(),request.jwt_payload,request.headers.get('Idempotency-Key'))),201
 
 
+# ── 记一笔 Quick sale (in place of 随手记) ─────────────────────────────────────
+
+@bp.post('/api/quick-sales/quote')
+@role_required('staff')
+def quick_sale_quote():
+    return jsonify(quick_sale.quote(get_db(), body(), request.jwt_payload))
+
+
+@bp.post('/api/quick-sales')
+@role_required('staff')
+def quick_sale_save():
+    sale = quick_sale.save(get_db(), body(), request.jwt_payload, request.headers.get('Idempotency-Key'))
+    paid = '，'.join(f"{quick_sale.TENDER_NAMES[payment['tender']]} ${payment['amount_cents'] / 100:.2f}"
+                     for payment in sale['payments'])
+    items = '，'.join(f"{line['name']}*{line['quantity']}" + ('（display）' if line['from_display'] else '')
+                     for line in sale['lines'][:6]) + ('…' if len(sale['lines']) > 6 else '')
+    activity.note(store_id=sale['store_id'], summary=f"记一笔 Recorded a sale · {sale['reference']}",
+                  detail=' · '.join(filter(None, [paid, items, '没有照片 No photo' if sale['needs_photo'] else ''])),
+                  link='/sales/quick')
+    return jsonify(sale), 201
+
+
+@bp.post('/api/quick-sales/<int:checkout_id>/undo')
+@role_required('staff')
+def quick_sale_undo(checkout_id):
+    sale = quick_sale.undo(get_db(), checkout_id, body(), request.jwt_payload, request.headers.get('Idempotency-Key'))
+    items = '，'.join(f"{line['name']}*{line['quantity']}" for line in sale['lines'][:6]) + ('…' if len(sale['lines']) > 6 else '')
+    paid = '，'.join(f"{quick_sale.TENDER_NAMES[payment['tender']]} ${payment['amount_cents'] / 100:.2f}"
+                     for payment in sale['payments'])
+    activity.note(store_id=sale['store_id'], summary=f"撤销 Undid a sale · {sale['reference']}",
+                  detail=' · '.join(filter(None, [paid, items, (sale['undone'] or {}).get('reason')])), link='/sales/quick')
+    return jsonify(sale)
+
+
+@bp.get('/api/quick-sales')
+@role_required('staff')
+def quick_sale_day():
+    return jsonify(quick_sale.day(get_db(), request.args.get('store_id'), request.args.get('date'),
+                                  request.jwt_payload))
+
+
 @bp.get('/api/checkouts/<int:checkout_id>')
 @role_required('staff')
 def detail(checkout_id):
@@ -254,6 +297,8 @@ def upload(checkout_id,attempt_id):
         result = {'id':photo_id,'attempt_id':attempt_id}
         _remember(con,key,'checkout_photo',photo_id,actor,digest,result)
         con.commit()
+        activity.note(store_id=order['store_id'], summary=f"加照片 Added a payment photo · {order['reference']}",
+                      link='/sales/quick')
         return jsonify(result),201
     except Exception:
         con.rollback()

@@ -1,4 +1,5 @@
 """Scoped goods receiving, delivery, and physical count APIs."""
+import people
 import json
 
 from flask import Blueprint, jsonify, request
@@ -117,7 +118,7 @@ def receipt_detail(receipt_id):
     hidden = _hidden(con, {row['store_id']})
     if hidden:
         return hidden
-    result = dict(row)
+    result = people.with_names(con, [dict(row)], 'created_by')[0]
     result['lines'] = [dict(line) for line in con.execute(
         'SELECT * FROM goods_receipt_lines WHERE receipt_id=? ORDER BY line_no',
         (receipt_id,),
@@ -291,7 +292,7 @@ def count_detail(count_id):
     ).fetchone()
     if row is None:
         return jsonify({'error': 'Count not found'}), 404
-    result = dict(row)
+    result = people.with_names(con, [dict(row)], 'created_by', 'reviewed_by')[0]
     if row['status'] == 'returned':
         returned = con.execute(
             "SELECT stored_result FROM operation_requests WHERE operation='count_return' AND resource_id=?",

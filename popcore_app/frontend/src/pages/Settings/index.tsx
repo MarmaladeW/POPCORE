@@ -49,6 +49,7 @@ interface RawSettings {
   schedule_shift_presets?:      string
   schedule_positions?:          string
   checkout_cny_per_cad?:        string
+  staff_checkout?:              'clover' | 'all'
 }
 
 interface StoreRow {
@@ -97,6 +98,8 @@ export default function SettingsPage() {
   const [saving3,       setSaving3]       = useState(false)
   const [cnyPerCad,     setCnyPerCad]     = useState('')
   const [savingCheckout,setSavingCheckout] = useState(false)
+  const [staffCheckout, setStaffCheckout] = useState<'clover' | 'all'>('all')
+  const [savingStaffCheckout, setSavingStaffCheckout] = useState(false)
 
   // ── Stores tab ────────────────────────────────────────────────────────────
   const [stores,        setStores]        = useState<StoreRow[]>([])
@@ -133,6 +136,7 @@ export default function SettingsPage() {
         setShiftPresets(parseShiftPresets(s.schedule_shift_presets))
         setPositions(parsePositions(s.schedule_positions))
         setCnyPerCad(s.checkout_cny_per_cad || '')
+        setStaffCheckout(s.staff_checkout === 'clover' ? 'clover' : 'all')
         setSettingsLoaded(true)
       })
       .catch(() => { setSettingsLoaded(false); message.error('加载设置失败 / Failed to load settings') })
@@ -209,6 +213,20 @@ export default function SettingsPage() {
       message.error('保存失败 / Save failed')
     } finally {
       setSaving2(false)
+    }
+  }
+
+  // 员工买单 (owner, 2026-11-20): staff checkout and 补录 wait for each store's Clover while the 日报 records sales.
+  async function saveStaffCheckout(value: 'clover' | 'all') {
+    setSavingStaffCheckout(true)
+    try {
+      await client.put('/settings', { staff_checkout: value })
+      setStaffCheckout(value)
+      message.success('已保存 Saved · 员工重新打开 app 后生效 staff see it after reopening the app')
+    } catch (err: any) {
+      message.error(err?._serverMessage ?? '保存失败 Save failed')
+    } finally {
+      setSavingStaffCheckout(false)
     }
   }
 
@@ -717,6 +735,18 @@ export default function SettingsPage() {
 
   const checkoutTab = (
     <div style={INNER}>
+      <Card loading={settingsLoading} style={{ marginBottom: 16 }}>
+        <label htmlFor="staff-checkout" style={{ display: 'block', fontWeight: 600, marginBottom: 8 }}>员工买单 Staff checkout</label>
+        <Select id="staff-checkout" value={staffCheckout} onChange={saveStaffCheckout} loading={savingStaffCheckout}
+          disabled={!settingsLoaded || savingStaffCheckout} style={{ width: '100%', maxWidth: 360 }} options={[
+            { value: 'clover', label: '只在接上 Clover 的店 Only where Clover is connected' },
+            { value: 'all', label: '所有店 Every store' },
+          ]} />
+        <p style={{ color: '#596273', fontSize: 13, margin: '8px 0 0' }}>
+          接上 Clover 之前，销售照常写日报：员工看不到 买单 和 补录，不会把同一笔销售减两次。经理和管理员一直可以用。
+          Until a store's Clover is connected its sales come from the daily report, so staff don't see Checkout or Record sale there. Managers and admins always can.
+        </p>
+      </Card>
       <Card loading={settingsLoading}>
         <label htmlFor="checkout-cny-rate" style={{ display: 'block', fontWeight: 600, marginBottom: 8 }}>CNY per 1 CAD</label>
         <Input id="checkout-cny-rate" value={cnyPerCad} onChange={e => setCnyPerCad(e.target.value)}

@@ -8,10 +8,13 @@ import type { RestockSession } from './index'
 import { withUnit } from './units'
 import SeriesCard from './SeriesCard'
 import { familyGroups, partLabel, searchSeries, type SeriesResult } from './series'
+import { bringDownAll } from './oneGo'
 
 interface Props {
   session:   RestockSession
   onRefresh: () => void
+  /** The store is on the ledger: the sheet can also be done in one go (搬下来了 Done). */
+  live?:     boolean
 }
 
 const UNITS: Record<string, string> = { set: '端', box: '盒', piece: '个' }
@@ -32,12 +35,13 @@ function backOf(result: SeriesResult) {
 
 // 录入 (owner, 2026-11-03): search a product, its series opens, choose how many whole sets, single
 // boxes and confirmed designs; the sheet lists what was asked for, series by series.
-export default function RequestStep({ session, onRefresh }: Props) {
+export default function RequestStep({ session, onRefresh, live = false }: Props) {
   const [query,      setQuery]      = useState('')
   const [results,    setResults]    = useState<SeriesResult[] | null>(null)
   const [searchError, setSearchError] = useState('')
   const [openId,     setOpenId]     = useState<number | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [oneGo, setOneGo] = useState('')
 
   const isReadOnly = session.status !== 'pending'
   const groups = familyGroups(session.items)
@@ -92,6 +96,27 @@ export default function RequestStep({ session, onRefresh }: Props) {
     setSubmitting(false)
     message.success('补货申请已提交，仓库快照已锁定，进入拣货阶段')
     onRefresh()
+  }
+
+  // 搬下来了 Done: one person brought everything down themselves (owner, 2026-11-20).
+  function handleOneGoClick() {
+    if (session.items.length === 0) { message.warning('请至少添加一个补货产品'); return }
+    Modal.confirm({
+      title: '都搬下来了？Brought it all down?',
+      content: `按申请的数量一次完成：提交、拣货、搬下去、上架（共 ${session.items.length} 行）。数量不一样就用下面的步骤。Submits, picks, sends and receives every line as asked. If an amount differs, use the usual steps instead.`,
+      okText: '搬下来了 Done', cancelText: '取消 Cancel',
+      onOk: async () => {
+        try {
+          await bringDownAll(session.id, setOneGo)
+          message.success('补货完成，已上架 Restock done and on the floor')
+        } catch (err: any) {
+          message.error(`没有一次完成，接着用下面的步骤 Not finished in one go; continue with the steps: ${err?._serverMessage ?? err?.message ?? ''}`)
+        } finally {
+          setOneGo('')
+          onRefresh()
+        }
+      },
+    })
   }
 
   // ── Read-only banner ──────────────────────────────────────────────────────
@@ -172,7 +197,8 @@ export default function RequestStep({ session, onRefresh }: Props) {
             <strong>{groups.length} 个系列 · {session.items.length} 行</strong>
             <small>提交后清单锁定，仓库开始拣货</small>
           </span>
-          <Button type="primary" size="large" loading={submitting} onClick={handleSubmitClick}>提交 Submit</Button>
+          {live && <Button size="large" loading={!!oneGo} disabled={submitting} onClick={handleOneGoClick}>{oneGo || '搬下来了 Done'}</Button>}
+          <Button type="primary" size="large" loading={submitting} disabled={!!oneGo} onClick={handleSubmitClick}>提交 Submit</Button>
         </footer>}
       </div>
     </div>

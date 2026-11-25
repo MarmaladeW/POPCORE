@@ -419,6 +419,8 @@ def _replay_sale_input(con, request_key, operation, actor, intent):
 
 def create_sale(con, data, *, actor, request_key):
     intent = _sale_input(con, data, actor)
+    # 补录 Record sale waits for Clover like checkout does (owner, 2026-11-20).
+    checkout_access.require_checkout_open(con, actor, intent['store_id'])
     _reject_checkout_source(intent['source']['system'])
     _begin(con)
     try:
@@ -615,12 +617,14 @@ def _allocation_payload(con, sale, *, current_versions=False, non_stock=()):
             unresolved.append('product_mapping_required')
             continue
         product = con.execute(
-            'SELECT stock_form, stock_unit FROM products WHERE id=?', (row['product_id'],),
+            'SELECT stock_form, stock_unit, stock_counted FROM products WHERE id=?', (row['product_id'],),
         ).fetchone()
         if (product is None or product['stock_unit'] != row['native_unit']
                 or product['stock_form'] != row['stock_form_snapshot']):
             unresolved.append('product_mapping_required')
             continue
+        if not product['stock_counted']:
+            continue  # 不计库存: sold, never counted, so nothing moves (owner, 2026-11-21)
         if row['fresh_set_product_id'] is not None and row['open_set_id'] is None:
             source = con.execute(
                 'SELECT stock_form, stock_unit FROM products WHERE id=?',
@@ -708,31 +712,35 @@ def _open_selected_fresh_sets(con, sale, actor, request_key, *, current_versions
 
 
 def _post_sale_in_transaction(con, sale, expected_version, actor, key,
-                              *, allocation_lines=None, allow_trade=False):
-    """Post a reviewed sale inside an existing transaction."""
+                              *, allocation_lines=None, allow_trade=False, stock=True):
+    """Post a reviewed sale inside an existing transaction. `stock=False`: a 记一笔 quick sale, whose stock comes off
+    with the day's reviewed 日报 (owner, 2026-11-21); it is allocated with no inventory document."""
     _require_sale_owner(sale, actor)
     if sale['status'] != 'draft' or sale['version'] != expected_version:
         raise InventoryConflict('Sale changed before posting', 'sale_state_conflict')
-    if allocation_lines is None:
+    if not stock:
+        lines, unresolved = [], []
+    elif allocation_lines is None:
         lines, unresolved = _allocation_payload(con, sale)
         if unresolved and sale['entry_mode'] == 'planned_entry':
             raise InventoryConflict('Sale product mapping is unresolved', unresolved[0])
     else:
         lines, unresolved = allocation_lines, []
     inventory_result = None
-    if not unresolved:
+    if not unresolved and stock:
         con.execute('SAVEPOINT sale_allocation')
         try:
             if allocation_lines is None:
                 _open_selected_fresh_sets(con, sale, actor, key,
                                           current_versions=sale['entry_mode'] == 'already_paid')
                 lines, unresolved = _allocation_payload(con, sale, current_versions=True)
+            # A sale of 不计库存 products only takes no stock and needs no document.
             inventory_result = _post_inventory_in_transaction(con, {
                 'kind': 'consume', 'business_date': sale['business_date'],
                 'source_type': 'sale_document', 'source_id': str(sale['id']),
                 'reason': 'Posted sale', 'lines': lines,
             }, actor=actor, request_key=f'inventory:{key}:consume',
-                allow_trade=allow_trade)
+                allow_trade=allow_trade) if lines else None
             con.execute('RELEASE sale_allocation')
         except InventoryConflict as exc:
             con.execute('ROLLBACK TO sale_allocation')
@@ -741,7 +749,9 @@ def _post_sale_in_transaction(con, sale, expected_version, actor, key,
                     or exc.code not in PENDING_ALLOCATION_CODES):
                 raise
             unresolved = [exc.code]
-    allocation_status = 'allocated' if inventory_result else 'pending'
+    allocation_status = 'pending' if unresolved else 'allocated'
+    # Why no stock moved: what still blocks it, or a quick sale whose stock comes off with the day's 日报.
+    allocation_reason = unresolved[0] if unresolved else None if stock else 'daily_report'
     for row in con.execute(
         'SELECT line_no FROM sale_lines WHERE sale_id=? ORDER BY line_no',
         (sale['id'],),
@@ -751,7 +761,7 @@ def _post_sale_in_transaction(con, sale, expected_version, actor, key,
                (sale_id, line_no, status, reason, inventory_document_id)
                VALUES (?, ?, ?, ?, ?)""",
             (sale['id'], row['line_no'], allocation_status,
-             unresolved[0] if unresolved else None,
+             allocation_reason,
              inventory_result['document_id'] if inventory_result else None),
         )
     posted_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -760,7 +770,7 @@ def _post_sale_in_transaction(con, sale, expected_version, actor, key,
                   financial_status='recorded', allocation_status=?,
                   allocation_reason=?, inventory_document_id=?, posted_at=?
            WHERE id=? AND status='draft' AND version=?""",
-        (allocation_status, unresolved[0] if unresolved else None,
+        (allocation_status, allocation_reason,
          inventory_result['document_id'] if inventory_result else None,
          posted_at, sale['id'], expected_version),
     )
@@ -1228,21 +1238,24 @@ def record_sale_return(con, sale_id, data, *, actor, request_key):
                VALUES (?, ?, ?, ?, ?, ?)""",
             (sale_id, line_no, quantity, disposition, reason, actor['sub']),
         ).lastrowid
-        current = _balance(con, line['product_id'], line['location_id'], disposition)
-        inventory = _post_inventory_in_transaction(con, {
-            'kind': 'receipt', 'business_date': return_date,
-            'source_type': 'sale_return', 'source_id': str(return_id),
-            'reason': reason, 'lines': [{
-                'product_id': line['product_id'], 'unit': line['native_unit'],
-                'quantity': quantity, 'to_location_id': line['location_id'],
-                'to_disposition': disposition,
-                'expected_versions': {'to': current['version']},
-            }],
-        }, actor=actor, request_key=f'inventory:{key}:return')
-        con.execute(
-            'UPDATE sale_returns SET inventory_document_id=? WHERE id=?',
-            (inventory['document_id'], return_id),
-        )
+        counted = con.execute('SELECT stock_counted FROM products WHERE id=?', (line['product_id'],)).fetchone()
+        if counted is None or counted['stock_counted']:
+            current = _balance(con, line['product_id'], line['location_id'], disposition)
+            inventory = _post_inventory_in_transaction(con, {
+                'kind': 'receipt', 'business_date': return_date,
+                'source_type': 'sale_return', 'source_id': str(return_id),
+                'reason': reason, 'lines': [{
+                    'product_id': line['product_id'], 'unit': line['native_unit'],
+                    'quantity': quantity, 'to_location_id': line['location_id'],
+                    'to_disposition': disposition,
+                    'expected_versions': {'to': current['version']},
+                }],
+            }, actor=actor, request_key=f'inventory:{key}:return')
+            con.execute(
+                'UPDATE sale_returns SET inventory_document_id=? WHERE id=?',
+                (inventory['document_id'], return_id),
+            )
+        # A 不计库存 product comes back without a stock count, as it left.
         con.execute('UPDATE sale_documents SET version=version+1 WHERE id=?', (sale_id,))
         # The sale changed and the return day's stock moved: a closed day gets a late adjustment.
         for day in {sale['business_date'], return_date}:

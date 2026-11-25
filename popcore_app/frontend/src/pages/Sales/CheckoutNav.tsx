@@ -17,6 +17,8 @@ export function useOpenSpecialOrders(enabled = true) {
 }
 
 const tabs = [
+  // 记一笔 Quick sale, in place of 随手记 (owner, 2026-11-21).
+  { to: '/sales/quick', zh: '记一笔', en: 'Quick sale' },
   { to: '/checkout', zh: '订单', en: 'Orders' },
   { to: '/special-orders', zh: '特殊订单', en: 'Special orders' },
   { to: '/checkout/cash-exchange', zh: '换现金', en: 'Cash exchange' },
@@ -24,6 +26,7 @@ const tabs = [
 ]
 
 function activeTab(path: string, history: boolean) {
+  if (path === '/sales/quick') return '/sales/quick'
   if (path.startsWith('/special-orders')) return '/special-orders'
   if (path === '/checkout/cash-exchange') return '/checkout/cash-exchange'
   return history ? '/checkout/history' : '/checkout'
@@ -43,6 +46,10 @@ export function CheckoutTabs({ history = false, specialCount }: { history?: bool
 export function CheckoutShortcuts({ specialCount, disabled }: { specialCount?: number; disabled?: boolean }) {
   const guard = (event: React.MouseEvent) => { if (disabled) event.preventDefault() }
   return <nav className="co-shortcuts" aria-label="Checkout tools">
+    <Link to="/sales/quick" onClick={guard} aria-disabled={disabled}>
+      <Icon name="pay" size={18} /><span><strong>记一笔 Quick sale</strong><small>现金 · E-transfer · 微信 · 支付宝 · 刷卡</small></span>
+      <Icon name="right" size={16} />
+    </Link>
     <Link to="/special-orders" onClick={guard} aria-disabled={disabled}>
       <Icon name="gift" size={18} /><span><strong>特殊订单 Special orders</strong><small>不在产品列表里的预订</small></span>
       {specialCount ? <span className="co-shortcut-count"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{specialCount} 单</span> : null}

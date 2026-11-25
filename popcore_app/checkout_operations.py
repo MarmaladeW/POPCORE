@@ -258,7 +258,9 @@ def manual_reference(con, store_id, business_date):
     return f'{prefix}{number:03d}'
 
 
-def create_checkout(con, data, actor, request_key):
+def create_checkout(con, data, actor, request_key, *, stock_by_report=False, staff_discount_for=None):
+    """`stock_by_report`: a 记一笔 quick sale, whose stock comes off with the day's reviewed 日报, not now.
+    `staff_discount_for`: the employee who bought it with their 员工折扣."""
     store_id = read_int(data.get('store_id'), 'store_id', minimum=1)
     require_checkout(con, {'store_id':store_id}, actor, write=True)
     _begin(con)
@@ -284,8 +286,8 @@ def create_checkout(con, data, actor, request_key):
         if any(line['unit_price_cents'] is None for line in intent['lines']) or sum(line['unit_price_cents'] * line['quantity'] for line in intent['lines']) != intent['subtotal_cents']:
             raise InventoryValidationError('Subtotal must match the item prices and quantities')
         try:
-            checkout_id = con.execute('''INSERT INTO checkout_orders(store_id,business_date,reference,payload,created_by)
-                VALUES (?,?,?,?,?)''', (store_id,intent['business_date'],reference,json.dumps(intent),actor['sub'])).lastrowid
+            checkout_id = con.execute('''INSERT INTO checkout_orders(store_id,business_date,reference,payload,created_by,stock_by_report,staff_discount_employee_id)
+                VALUES (?,?,?,?,?,?,?)''', (store_id,intent['business_date'],reference,json.dumps(intent),actor['sub'],int(stock_by_report),staff_discount_for)).lastrowid
         except sqlite3.IntegrityError as exc:
             raise InventoryConflict('Checkout reference already exists', 'source_conflict') from exc
         _remember(con,key,'checkout_create',checkout_id,actor,digest,{'id':checkout_id})
@@ -311,7 +313,8 @@ def finalize_sale(con, row, intent, *, actor, key):
     intent = {**intent, 'entry_mode': 'already_paid'}
     owner = {**actor, 'sub': row['created_by']}
     sale_id = _create_sale_in_transaction(con, intent, owner)
-    _post_sale_in_transaction(con, _sale_row(con, sale_id), 1, actor, key)
+    # A 记一笔 quick sale's stock comes off with the day's reviewed 日报 (owner, 2026-11-21), not here.
+    _post_sale_in_transaction(con, _sale_row(con, sale_id), 1, actor, key, stock=not row.get('stock_by_report'))
     attempts = con.execute("SELECT * FROM checkout_attempts WHERE checkout_id=? AND status='completed' ORDER BY id",
                            (row['id'],)).fetchall()
     for attempt in attempts:
@@ -412,7 +415,8 @@ def receive_manual(con, checkout_id, data, actor, request_key):
         if row['abandoned_reason']:
             raise InventoryConflict('Abandoned checkouts can only be refunded', 'checkout_abandoned')
         intent = json.loads(row['payload'])
-        require_box_choice(con, intent)
+        if not row.get('stock_by_report'):  # a quick sale takes no stock now, so where boxes came from waits for the 日报
+            require_box_choice(con, intent)
         summary = manual_summary(intent)
         card, other, cash = _manual_money(con, row['id'])
         due, _ = manual_due(summary, card_cents=card + (amount if tender == 'card' else 0),

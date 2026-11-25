@@ -18,6 +18,8 @@ export interface Store {
   inventory_visible?: boolean
   /** 门店操作权限 Store operations access here (from /api/stores): a 查看者 Viewer counter account gets 网站订单. */
   operations?: boolean
+  /** Whether this account takes checkouts here (from /api/stores): staff wait for the store's Clover (owner, 2026-11-20). */
+  checkout?: boolean
 }
 
 /** Sentinel representing "all stores combined" — read-only, never written to. */

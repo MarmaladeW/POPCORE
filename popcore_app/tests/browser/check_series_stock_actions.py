@@ -198,23 +198,11 @@ async def mounted_flask_checks(browser):
             await route.fulfill(status=response.status_code,content_type=response.content_type,body=response.get_data())
         await page.route('**/*',route_real_api)
         await page.goto(BASE+f'/stock?series_id={fixture.series_id}')
+        # Moving one product is 移货 now (owner, 2026-11-24): its stock details link there with the product picked.
         await page.get_by_label('Stock details for B',exact=True).click()
-        await page.get_by_role('button',name='Move stock',exact=True).click()
-        await expect(page.get_by_role('dialog',name='Stock details',exact=True)).not_to_be_visible()
-        await expect(page.get_by_role('dialog',name='Move stock',exact=True)).to_be_visible()
-        await page.get_by_label('From location',exact=True).select_option(str(fixture.floor))
-        await page.get_by_label('To location',exact=True).select_option(str(upstairs))
-        await page.get_by_label('Quantity to move',exact=True).fill('2')
-        await page.get_by_label('Reason',exact=True).fill('Move two confirmed B pieces upstairs')
-        await page.get_by_role('button',name='Confirm move',exact=True).click()
-        await expect(page.get_by_role('button',name='Retry',exact=True)).to_be_visible()
-        with closing(fixture.connect()) as con:
-            assert con.execute("SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=? AND disposition='saleable'",(fixture.design_ids[1],upstairs)).fetchone()[0]==2
-        await page.get_by_role('button',name='Retry',exact=True).click()
-        await expect(page.get_by_role('dialog')).not_to_be_visible()
-        assert len(calls)==2 and calls[0]==calls[1] and calls[0][1]
-        assert calls[0][0]['lines'][0]['expected_versions']=={'from':1,'to':0}
-        assert calls[0][0]['lines'][0]['unit']=='piece'
+        await expect(page.get_by_role('link',name='Move B',exact=True)).to_have_attribute('href',f'/move?product={fixture.design_ids[1]}')
+        await expect(page.get_by_role('button',name='Move stock',exact=True)).to_have_count(0)
+        await page.keyboard.press('Escape')
         await page.set_viewport_size({'width':1440,'height':1000})
         await page.get_by_label('Stock details for Reviewed set',exact=True).click()
         await page.get_by_role('button',name='Open sealed set',exact=True).click()
@@ -225,33 +213,22 @@ async def mounted_flask_checks(browser):
         await page.get_by_label('Reason',exact=True).fill('Open a reviewed six-box customer tray')
         await expect(page.get_by_text('−1 set → +6 boxes',exact=True)).to_be_visible()
         await page.get_by_role('button',name='Confirm opening',exact=True).click()
+        # The first save gets no answer: Retry sends the same request with the same key, and the set opens once.
+        await expect(page.get_by_role('button',name='Retry',exact=True)).to_be_visible()
+        await page.get_by_role('button',name='Retry',exact=True).click()
         await expect(page.get_by_role('dialog')).not_to_be_visible()
+        assert len(calls)==2 and calls[0]==calls[1] and calls[0][1]
         assert calls[-1][0]['lines'][0]['conversion_id']==conversion
         assert calls[-1][0]['lines'][0]['conversion_factor']==6
         assert calls[-1][0]['lines'][0]['expected_versions']=={'from':1,'to':1}
-        await page.get_by_label('Stock details for Test Product',exact=True).click()
-        await page.get_by_role('button',name='Move stock',exact=True).click()
-        await expect(page.get_by_role('dialog',name='Stock details',exact=True)).not_to_be_visible()
-        await page.get_by_label('From location',exact=True).select_option(str(fixture.floor))
-        await page.get_by_label('To location',exact=True).select_option(str(upstairs))
-        await page.get_by_label('Reason',exact=True).fill('Move three loose boxes, keep the tray')
-        await page.get_by_label('Quantity to move',exact=True).fill('6')
-        await expect(page.get_by_role('button',name='Confirm move',exact=True)).to_be_disabled()
-        await page.get_by_label('Quantity to move',exact=True).fill('3')
-        await layout(page)
         await page.screenshot(animations='disabled',path=OUT/'mounted-real-provenance-1440.png')
-        await page.get_by_role('button',name='Confirm move',exact=True).click()
-        await expect(page.get_by_role('dialog')).not_to_be_visible()
-        assert calls[-1][0]['lines'][0]['expected_versions']=={'from':2,'to':0}
-        assert calls[-1][0]['lines'][0]['unit']=='box'
         with closing(fixture.connect()) as con:
             balances={(row['product_id'],row['location_id']):row['quantity'] for row in con.execute("SELECT * FROM inventory_balances WHERE disposition='saleable'")}
-            assert balances[fixture.design_ids[1],fixture.floor]==5 and balances[fixture.design_ids[1],upstairs]==2
             assert balances[set_id,fixture.floor]==1
-            assert balances[fixture.product_id,fixture.floor]==8 and balances[fixture.product_id,upstairs]==3
+            assert balances[fixture.product_id,fixture.floor]==11 and (fixture.product_id,upstairs) not in balances
             opened=con.execute('SELECT remaining_qty,purpose FROM inventory_open_sets').fetchone()
             assert tuple(opened)==(6,'customer_tray')
-            assert con.execute('SELECT COUNT(*) FROM inventory_documents').fetchone()[0]==3
+            assert con.execute('SELECT COUNT(*) FROM inventory_documents').fetchone()[0]==1
             assert con.execute('SELECT COUNT(*) FROM trade_units').fetchone()[0]==0
             assert con.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
             assert con.execute('PRAGMA foreign_key_check').fetchall()==[]

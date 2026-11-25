@@ -3,6 +3,7 @@
 A series normally belongs to one product (product_series.product_id), e.g. a blind box: its sealed set
 and confirmed designs are that product's sub-items, added with add_designs / add_sealed_set.
 """
+import people
 import re
 import sqlite3
 import uuid
@@ -187,7 +188,7 @@ def series_history(con, actor, store_code, series_id, *, product_id=None,
             JOIN inventory_locations l ON l.id=m.location_id JOIN stores s ON s.id=l.store_id
             WHERE {' AND '.join(filters)} ORDER BY m.id DESC LIMIT ?''', (*params, limit + 1))]
     has_more = len(items) > limit
-    items = items[:limit]
+    items = people.with_names(con, items[:limit], 'actor_sub')
     return {'items': items, 'has_more': has_more,
             'next_before_id': items[-1]['id'] if has_more else None}
 

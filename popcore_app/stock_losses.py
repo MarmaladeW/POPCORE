@@ -336,6 +336,10 @@ def undo_loss(con, actor, loss_id, *, request_key):
         _scope(con, actor, loss['store_code'])
         if loss['undo_document_id'] is not None:
             raise InventoryConflict('This loss was already undone', 'already_undone')
+        if con.execute("SELECT 1 FROM inventory_documents WHERE id=? AND source_type='stock_move'", (loss['document_id'],)).fetchone():
+            # Recorded on 移货 (不在了): its 撤销 there puts the whole move back.
+            raise InventoryConflict('这条是在 移货 里记的，请到 移货 的 今天 里撤销。This loss was recorded on 移货 Move stock; undo it there.',
+                                    'recorded_on_move')
         product = _product(con, loss['product_id'])
         saleable = _balance(con, product['id'], loss['location_id'], 'saleable')
         line = {'product_id': product['id'], 'unit': loss['unit'], 'quantity': loss['quantity'],

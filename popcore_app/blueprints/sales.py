@@ -903,6 +903,17 @@ def submit_daily_report():
     data  = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
+    # 审核 (owner, 2026-11-24: no 日报 pasting once 记一笔 is built): the day's quick sales, built on the server by
+    # product id, are saved and taken off stock by this same code. Nothing the screen sends but the day is used.
+    quick = data.get('source') == 'quick_sale'
+    if quick:
+        import quick_sale
+        try:
+            data = quick_sale.report_body(get_db(), data, request.jwt_payload)
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        except (PermissionError, ValueError) as exc:
+            return jsonify(invalid_input(exc)), 400
     raw_date = data.get('date')
     items = data.get('items')
     mode  = (data.get('mode') or 'replace').strip().lower()
@@ -998,7 +1009,8 @@ def submit_daily_report():
                     'total_units',
                     minimum=1,
                 )
-            for flag in ('to_display', 'from_display', 'to_floor'):
+            # extra: "这是另外的 It's extra", the line is another batch than what the app recorded (owner, 2026-11-20).
+            for flag in ('to_display', 'from_display', 'to_floor', 'extra'):
                 if item.get(flag) is not None and not isinstance(item[flag], bool):
                     raise ValueError(f'{flag} must be true or false')
                 normalized[flag] = item.get(flag) is True
@@ -1021,6 +1033,14 @@ def submit_daily_report():
         return denied
 
     live = _is_authoritative(con, store_id)
+    if not quick:
+        import quick_sale
+        if quick_sale.reviewed_in_app(con, store_id, d):
+            # A day is reviewed from 记一笔 or pasted, never both: a paste would take its sales off a second time.
+            con.close()
+            return jsonify({'error': f'{store_code} {d} 已经在 记一笔 审核过，库存已经扣了，不能再贴日报。'
+                                     'This day was already reviewed in 记一笔; its stock came off then.',
+                            'code': 'day_reviewed_in_app'}), 409
     stock_items = [(line, item) for line, item in enumerate(validated_items, 1) if item['section'] in LINE_SECTIONS]
     store_mode = 'live' if live else 'legacy'
     if stock_items and ((data.get('stock_mode') or store_mode) != store_mode or not live and any(
@@ -1327,11 +1347,12 @@ def submit_daily_report():
                             'code': 'report_moves_recorded'}), 409
         if since is not None and d >= since and mode == 'replace':
             # This report is now the day's stock lines too (owner, 2026-11-03); a line no longer on it is put back.
-            save_report_lines(con, store_id, d, plan_report_lines(con, store_id, stock_items))
+            save_report_lines(con, store_id, d, plan_report_lines(con, store_id, stock_items, d))
         # A live store's floor follows the day's sales (owner, 2026-10-29) and its stock lines.
         stock = sync_report_stock(con, request.jwt_payload, store_id, store_code, d)
-        changes = [(line['line_key'], line['moving'], line['short'])
-                   for line in (stock or {}).get('lines', []) if line['moving'] or line['short']]
+        changes = [(line['line_key'], line['moving'], line['short'], line.get('settled', 0), line.get('one_sided', 0))
+                   for line in (stock or {}).get('lines', [])
+                   if line['moving'] or line['short'] or line.get('settled') or line.get('one_sided')]
         # A sealed set the paste opens by itself (owner, 2026-11-15) is confirmed like a line.
         changes += [(f"{opened['set_product_id']}:{opened['location']}", opened['sets'], 0)
                     for opened in (stock or {}).get('sets_opened', [])]
@@ -1345,6 +1366,9 @@ def submit_daily_report():
                 return jsonify({'ok': True, 'dry_run': True, **body})
             return jsonify({'error': 'Confirm what this report moves in stock before saving it',
                             'code': 'stock_confirmation_required', **body}), 409
+        if quick:
+            quick_sale.mark_reviewed(con, store_id, d, items, request.jwt_payload,
+                                     cash_actual if metadata is not None else None)
         con.commit()
     except ReportLineError as exc:
         con.rollback()
@@ -1371,6 +1395,13 @@ def submit_daily_report():
             pass
 
     con.close()
+    if quick:
+        import activity
+        units = sum(item.get('qty_pos') or item.get('qty_cash') or 0 for item in items)
+        activity.note(store_id=store_id, kind='sale', audience='store', link='/sales/quick',
+                      summary=f'审核 Reviewed the day · {store_code} {d}',
+                      detail=' · '.join(filter(None, [f'{units} 件 sold', f"扣 {stock.get('taken', 0)} off floor" if stock else '',
+                                                      f"{len(stock['short'])} 不够 short" if stock and stock.get('short') else ''])))
     return jsonify({
         'ok':                  True,
         'mode':                mode,
@@ -2846,6 +2877,8 @@ def _finish_parse(detected_date, store_code, raw_items, unknown_sections,
         # What the other store's 出库 already put here is read as those goods, not added again (2026-11-24),
         # and a 出库 of goods the other store's report already added is pointed out.
         checks += report_checks.sent_here_checks(get_db(), confirmed + review, store_id, detected_date)
+        # What an app screen already recorded that day is not moved again by this report.
+        checks += report_checks.app_checks(get_db(), confirmed + review, store_id, detected_date)
         checks += report_checks.received_there_checks(get_db(), confirmed + review, store_id, detected_date,
                                                        other_store(get_db(), store_id))
     for check in checks:

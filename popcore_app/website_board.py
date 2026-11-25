@@ -207,7 +207,7 @@ def _actor_name(con, sub):
     return row[0] if row else sub
 
 
-def step(con, cfg, wc_order_id, action, sub, code=None):
+def step(con, cfg, wc_order_id, action, sub, code=None, by=None):
     """Ready or Handed over on one pickup order: 'done', or 'already' when the website was there first. Returns
     (result, whether the note naming who did it was added)."""
     target, starts, label = STEPS[action]
@@ -233,7 +233,7 @@ def step(con, cfg, wc_order_id, action, sub, code=None):
     _keep_status(con, wc_order_id, target, changed=True)
     try:
         call(cfg, 'POST', f'/orders/{wc_order_id}/notes',
-             body={'note': f'{label} in popcore.store by {_actor_name(con, sub)}', 'customer_note': False})
+             body={'note': f'{label} in popcore.store by {_actor_name(con, by or sub)}', 'customer_note': False})
         noted = True
     except WebsiteError:
         noted = False

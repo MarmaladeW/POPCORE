@@ -128,19 +128,23 @@ async def flow(browser, width):
         await page.goto(BASE + '/')
         actions = page.get_by_role('navigation', name='Store actions')
         await expect(actions.get_by_role('link')).to_have_count(4)
-        for name in ['买单', '入店', '库存', '汇总']:
+        for name in ['记一笔', '移货', '库存', '汇总']:
             await expect(actions.get_by_role('link', name=name, exact=False)).to_be_visible()
+        # The big tile is 记一笔 now (owner, 2026-11-21: it replaces 随手记); 买单 stays in the menu.
+        await expect(actions.get_by_role('link', name='记一笔', exact=False)).to_have_attribute('href', '/sales/quick')
         await expect(page.get_by_role('button', name='Punch in', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Punch in', exact=True).click()
         await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         await page.screenshot(path=OUT / f'home-{width}.png', full_page=True)
-        await actions.get_by_role('link', name='买单', exact=False).click()
+        await page.goto(BASE + '/checkout')
         await expect(page.get_by_role('heading', name='买单', exact=True)).to_be_visible()
         await page.get_by_role('button', name='Register 1', exact=False).click()
         # The order opens with its payment panel: every tender already priced by the server.
         await expect(page.get_by_role('group', name='How is the customer paying?')).to_be_visible()
         await page.get_by_role('link', name='首页 Home', exact=True).click()
-        await actions.get_by_role('link', name='入店', exact=False).click()
+        # 移货 (owner, 2026-11-24) took 入店's tile; the older screens keep their addresses and records.
+        await expect(actions.get_by_role('link', name='移货', exact=False)).to_have_attribute('href', '/move')
+        await page.goto(BASE + '/incoming')
         await expect(page.get_by_role('link', name='收货 Receive shipment', exact=False)).to_be_visible()
         await expect(page.get_by_role('navigation', name='Receiving options').get_by_role('link', name='调入 Receive transfer', exact=False)).to_have_attribute('href', '/goods/transfers')
         await page.get_by_role('link', name='首页 Home', exact=True).click()
@@ -200,7 +204,7 @@ async def flow(browser, width):
         await expect(page).to_have_url(BASE + '/')
         last = [r for r in state['requests'] if r['path'] == '/api/store-events' and r['method'] == 'POST'][-1]['post_data']
         assert (last['kind'], last['quantity'], last['source_location_id']) == ('claw_refill', 3, 2), last
-        await actions.get_by_role('link', name='入店', exact=False).click()
+        await page.goto(BASE + '/incoming')
         await page.get_by_role('link', name='入 display Display arrival', exact=False).click()
         await expect(page.get_by_text('This adds a record to the daily summary. Once inventory counts are live, it also puts the piece on display: taken from store stock, or added as an opened arrival.', exact=True)).to_be_visible()
         await page.get_by_role('button', name='保存记录 Save record', exact=True).click()
@@ -243,6 +247,45 @@ async def flow(browser, width):
         await context.close()
 
 
+async def waiting_for_clover(browser, width):
+    """Until DT's Clover is connected its sales come from the 日报, so staff see no 买单 anywhere (owner, 2026-11-20)."""
+    state = {'day': '2026-09-16', 'events': []}
+    original = fixture(state)
+
+    def api(path, query, request):
+        if path == '/api/stores':
+            return [dict(id=1, code='DT', name='Downtown', color='#6366f1', inventory_visible=False, operations=True, checkout=False)]
+        if path == '/api/checkouts/access':
+            return dict(business_date=state['day'], role='staff', live_stores=[dict(id=1, code='DT', name='Downtown')],
+                        checkout_stores=[], history_stores=[], cny_per_cad='')
+        return original(path, query, request)
+
+    state['api_payload'] = api
+    context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 844}, auth={'role': 'staff'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    try:
+        await page.goto(BASE + '/')
+        actions = page.get_by_role('navigation', name='Store actions')
+        await expect(actions.get_by_role('link')).to_have_count(3)
+        for name in ['移货', '晚盘', '汇总']:
+            await expect(actions.get_by_role('link', name=name, exact=False)).to_be_visible()
+        await expect(page.get_by_role('link', name=re.compile('^买单'))).to_have_count(0)
+        await page.screenshot(path=OUT / f'waiting-for-clover-home-{width}.png', full_page=True)
+        # Opened by an old bookmark, 买单 says why it is closed.
+        await page.goto(BASE + '/checkout')
+        await expect(page.get_by_role('heading', name='买单要等这家店接上 Clover 才开')).to_be_visible()
+        await expect(page.get_by_role('button', name=re.compile('手动开单'))).to_have_count(0)
+        await expect(page.get_by_role('link', name=re.compile('补录'))).to_have_count(0)
+        overflow = await page.evaluate('document.documentElement.scrollWidth - document.documentElement.clientWidth')
+        assert overflow <= 1, overflow
+        await page.screenshot(path=OUT / f'waiting-for-clover-checkout-{width}.png', full_page=True)
+        assert not errors, errors
+    finally:
+        await context.close()
+
+
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(['node', 'node_modules/vite/bin/vite.js', '--config', str(HERE/'vite.config.mjs')], cwd=FRONTEND, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -252,6 +295,7 @@ async def main():
             browser = await p.chromium.launch()
             for width in [390, 1280]:
                 await flow(browser, width)
+                await waiting_for_clover(browser, width)
             context, page = await context_with_api(browser, {'mode':'data'}, auth={'role':'viewer'})
             await page.goto(BASE + '/')
             await expect(page.get_by_role('navigation', name='Store actions')).to_have_count(0)
@@ -260,7 +304,7 @@ async def main():
             await context.close()
             await actual_event_api(browser)
             await browser.close()
-        print('PASS: staff home, checkout navigation, punch-in, event retries, summary privacy and mobile layout.')
+        print('PASS: staff home, 买单 waiting for Clover, checkout navigation, punch-in, event retries, summary privacy and mobile layout.')
     finally:
         process.terminate()
         process.wait(timeout=10)

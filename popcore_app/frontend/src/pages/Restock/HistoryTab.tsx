@@ -9,6 +9,7 @@ import dayjs from 'dayjs'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import HiddenStock from './HiddenStock'
+import { DELIVERY_ACTIONS, markText, torontoStamp } from '../../lib/marks'
 
 const { RangePicker } = DatePicker
 const { Text } = Typography
@@ -22,6 +23,11 @@ interface RestockSessionRow {
   created_at: string
   submitted_at: string | null
   completed_at: string | null
+  // Who started, submitted and finished it (owner, 2026-11-20), from the sheet's detail.
+  created_by_name?: string | null
+  submitted_by_name?: string | null
+  completed_by_name?: string | null
+  delivery?: { events?: Array<{ action: string; actor_sub_name: string | null; created_at: string }> }
   item_count: number
   total_requested: number
   total_found: number
@@ -124,6 +130,8 @@ export function RestockHistory() {
     try {
       const { data } = await client.get(`/restock/session/${row.id}`)
       setItems(data.items ?? [])
+      setDetail(current => current && current.id === row.id ? { ...current, created_by_name: data.created_by_name,
+        submitted_by_name: data.submitted_by_name, completed_by_name: data.completed_by_name, delivery: data.delivery } : current)
     } finally {
       setDetailLoading(false)
     }
@@ -150,7 +158,7 @@ export function RestockHistory() {
     },
     {
       title: '完成时间', dataIndex: 'completed_at', width: 160,
-      render: v => v ? dayjs(v).format('MM-DD HH:mm') : <Text type="secondary">—</Text>,
+      render: v => v ? torontoStamp(v) : <Text type="secondary">—</Text>,
     },
     {
       title: '操作', width: 80, align: 'center',
@@ -226,11 +234,19 @@ export function RestockHistory() {
                 {detail.total_found}
               </span>
             </Descriptions.Item>
-            <Descriptions.Item label="提交时间" span={3}>
-              {detail.submitted_at ? dayjs(detail.submitted_at).format('YYYY-MM-DD HH:mm') : '—'}
+            <Descriptions.Item label="开单 Started" span={3}>
+              {detail.created_by_name ? markText(detail.created_by_name, detail.created_at) : torontoStamp(detail.created_at) || '—'}
             </Descriptions.Item>
-            <Descriptions.Item label="完成时间" span={3}>
-              {detail.completed_at ? dayjs(detail.completed_at).format('YYYY-MM-DD HH:mm') : '—'}
+            <Descriptions.Item label="提交 Submitted" span={3}>
+              {detail.submitted_at ? (detail.submitted_by_name ? markText(detail.submitted_by_name, detail.submitted_at) : torontoStamp(detail.submitted_at)) : '—'}
+            </Descriptions.Item>
+            {(detail.delivery?.events ?? []).map((event, index) => (
+              <Descriptions.Item key={index} label={DELIVERY_ACTIONS[event.action] ?? event.action} span={3}>
+                {markText(event.actor_sub_name, event.created_at)}
+              </Descriptions.Item>
+            ))}
+            <Descriptions.Item label="完成 Finished" span={3}>
+              {detail.completed_at ? (detail.completed_by_name ? markText(detail.completed_by_name, detail.completed_at) : torontoStamp(detail.completed_at)) : '—'}
             </Descriptions.Item>
           </Descriptions>
         )}

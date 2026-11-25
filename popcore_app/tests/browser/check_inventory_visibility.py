@@ -1,5 +1,5 @@
 """库存查看 Inventory view in a real browser against the real Flask app and a disposable database
-(owner, 2026-11-01): a staff member nobody picked keeps 晚盘, 补货 and the catalog but sees no stock
+(owner, 2026-11-01): a staff member nobody picked keeps 晚盘, 移货 and the catalog but sees no stock
 numbers and no 库存 tab; an admin ticks them for DT in Users and the numbers and 库存 appear; managers
 are always shown as seeing stock."""
 import asyncio
@@ -63,7 +63,7 @@ async def unpicked(browser, fixture, width, session):
         await page.goto(BASE + '/')
         actions = page.get_by_role('navigation', name='Store actions')
         await expect(actions.locator('a[href="/stock/count"]')).to_be_visible()
-        await expect(actions.locator('a[href="/restock"]')).to_be_visible()
+        await expect(actions.locator('a[href="/move"]')).to_be_visible()
         await expect(actions.locator('a[href="/stock"], a[href="/incoming"]')).to_have_count(0)
         if not phone:
             rail = page.locator('.pc-sidebar-menu')
@@ -76,7 +76,7 @@ async def unpicked(browser, fixture, width, session):
             await expect(page.get_by_text('库存查看未开启 · Inventory view is off', exact=True)).to_be_visible()
         notice = page.get_by_role('main')
         await expect(notice.get_by_role('link', name='晚盘 Evening count', exact=True)).to_have_attribute('href', '/stock/count')
-        await expect(notice.get_by_role('link', name='补货 Restock', exact=True)).to_have_attribute('href', '/restock')
+        await expect(notice.get_by_role('link', name='移货 Move stock', exact=True)).to_have_attribute('href', '/move')
         await fits(page, f'unpicked-hidden-{width}.png')
 
         await page.goto(BASE + '/stock/count')
@@ -133,7 +133,7 @@ async def picked(browser, fixture, width):
         await page.goto(BASE + '/')
         actions = page.get_by_role('navigation', name='Store actions')
         await expect(actions.locator('a[href="/stock"]')).to_be_visible()
-        await expect(actions.locator('a[href="/incoming"]')).to_be_visible()
+        await expect(actions.locator('a[href="/move"]')).to_be_visible()
         await page.goto(BASE + '/stock')
         await expect(page.get_by_text('库存查看未开启 · Inventory view is off', exact=True)).to_have_count(0)
         await expect(page.get_by_role('navigation', name='Inventory tools')).to_be_visible()
@@ -199,5 +199,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: unpicked staff keep 晚盘, 补货 and the catalog without stock numbers; an admin picks them '
+    print('PASS: unpicked staff keep 晚盘, 移货 and the catalog without stock numbers; an admin picks them '
           'per store in Users and 库存 and the numbers appear; managers always see stock; at 390 and 1440.')

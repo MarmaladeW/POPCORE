@@ -61,7 +61,8 @@ class IdentitySheetTests(IsolatedApiCase):
     def all_tables(self, exclude=()):
         with closing(self.connect()) as con:
             tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                      if not r[0].startswith('sqlite_') and r[0] not in exclude]
+                      # 动态 activity_log is the record of who did it, not data a change may touch.
+                      if not r[0].startswith('sqlite_') and r[0] not in exclude and r[0] != 'activity_log']
         return self.snapshot(tables)
 
     def identity(self, product_id):

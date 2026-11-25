@@ -10,7 +10,7 @@ Handed over. Viewers can do nothing else anywhere: every other write needs staff
 """
 import os
 
-from flask import Blueprint, jsonify, request
+from flask import g, Blueprint, jsonify, request
 
 import push_notifications as push
 import website_board as board
@@ -211,8 +211,10 @@ def web_orders_step(wc_order_id, action):
     if cfg is None:
         return _not_configured()
     try:
+        # On the store computer the note names the person who typed their PIN (pins.py), not the shared account.
         result, noted = board.step(get_db(), cfg, wc_order_id, action, request.jwt_payload['sub'],
-                                   data.get('code') if isinstance(data.get('code'), str) else None)
+                                   data.get('code') if isinstance(data.get('code'), str) else None,
+                                   by=(g.get('acting_person') or {}).get('sub'))
     except (board.BoardError, sync.WebsiteError) as exc:
         return _board_error(exc)
     return jsonify(result=result, noted=noted)

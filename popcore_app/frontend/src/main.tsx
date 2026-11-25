@@ -8,6 +8,7 @@ import 'antd/dist/reset.css'
 import '@fontsource-variable/noto-sans-sc'
 import './styles/tokens.css'
 import './index.css'
+import { safeReturn } from './lib/returnTo'
 
 const AUTH0_DOMAIN    = import.meta.env.VITE_AUTH0_DOMAIN    as string
 const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID as string
@@ -33,8 +34,16 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         redirect_uri: window.location.origin,
         audience: AUTH0_AUDIENCE,
       }}
-      onRedirectCallback={() => {
-        window.history.replaceState({}, '', '/')
+      // Stay signed in on phones (owner, 2026-11-20): the sign-in is kept on the device and renewed with a refresh
+      // token, so reopening POPCORE does not bounce through the sign-in page. Until refresh tokens are turned on
+      // for the app in Auth0, the kept sign-in lasts as long as its access token and then renews as before.
+      cacheLocation="localstorage"
+      useRefreshTokens
+      useRefreshTokensFallback
+      onRedirectCallback={(appState) => {
+        // Back to the page the sign-in started from; React Router follows the history change.
+        window.history.replaceState({}, '', safeReturn(appState?.returnTo))
+        window.dispatchEvent(new PopStateEvent('popstate'))
       }}
     >
       <BrowserRouter>

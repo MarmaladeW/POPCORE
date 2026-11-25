@@ -22,6 +22,7 @@ import { SectionHeading } from '../../components/pc/Panel'
 import Icon from '../../components/pc/Icon'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import './restock.css'
+import { torontoStamp } from '../../lib/marks'
 
 const { Title } = Typography
 const { useBreakpoint } = Grid
@@ -179,7 +180,7 @@ function TodaySessions() {
   const columns: ColumnsType<SessionSummary> = [
     {
       title: '创建时间', dataIndex: 'created_at', width: 80,
-      render: v => dayjs(v).format('HH:mm'),
+      render: v => torontoStamp(v).split(' ')[1],
     },
     {
       title: '状态', dataIndex: 'status', width: 90,
@@ -229,7 +230,7 @@ function TodaySessions() {
 
   const rows = sessions.map(s => <div key={s.id} className="pc-restock-row">
     <button type="button" className="pc-restock-open" onClick={() => setOpenId(s.id)} aria-label={`打开 补货单 #${s.id}`}>
-      <strong>{dayjs(s.created_at).format('HH:mm')} · {s.item_count} 种 · 申请 {s.total_requested} 箱</strong>
+      <strong>{torontoStamp(s.created_at).split(' ')[1]} · {s.item_count} 种 · 申请 {s.total_requested} 箱</strong>
       <small>已找到 {s.status === 'completed' ? <b className={s.total_found < s.total_requested ? 'pc-restock-short' : 'pc-restock-full'}>{s.total_found}</b> : '—'}</small>
     </button>
     <span className="pc-hm-status"><i className={`pc-dot pc-dot-${s.status === 'completed' ? 'ok' : 'warn'}`} aria-hidden="true" />{STATUS_LABELS[s.status]}</span>

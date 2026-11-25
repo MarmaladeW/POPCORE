@@ -15,7 +15,7 @@ import CloverFailures from './CloverFailures'
 import useCheckoutMutation from './useCheckoutMutation'
 import { autoOpenCandidate, groupLines } from './cloverOrderView'
 import { cnyCharged, historyQuery, missingPhotos, paymentSummary, TENDER_FILTERS } from './checkoutHistory'
-import { electronic, errorMessage, label, OrderNotes, PhotoCapture, RefundTools, TakeBack, type Access, type Draft, type DraftUpdate, type Order, type Queue, type Store } from './checkoutParts'
+import { electronic, errorMessage, label, OrderNotes, PhotoCapture, RefundTools, TakeBack, checkoutStores, type Access, type Draft, type DraftUpdate, type Order, type Queue, type Store } from './checkoutParts'
 import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
@@ -136,7 +136,7 @@ export default function CheckoutPage() {
         day.current=scope.business_date
         setAccess(scope)
         if(manual){setError('');return}
-        const stores=history?scope.history_stores:scope.live_stores
+        const stores=history?scope.history_stores:checkoutStores(scope)
         let store=stores.find(s=>s.id===selectedStore?.id)
         if(!store&&stores.length===1){chooseStore(stores[0]);return}
         if(!store){setQueue(undefined);setOrder(undefined);setError('');return}
@@ -174,7 +174,7 @@ export default function CheckoutPage() {
     window.addEventListener('focus',load);document.addEventListener('visibilitychange',load)
     return()=>{controller.abort();clearTimeout(timer);window.removeEventListener('focus',load);document.removeEventListener('visibilitychange',load)}
   },[id,history,date,cursor,tender,query,selectedStore?.id,refresh,user?.sub,role,busy])
-  const stores=history?access?.history_stores:access?.live_stores
+  const stores=history?access?.history_stores:access&&checkoutStores(access)
   const scoped=stores?.some(s=>s.id===selectedStore?.id)
   function select(next:Order){if(busy)return;navigate(checkoutLink(`/checkout/${next.id}`,history))}
   function updated(value?:Order){if(value)setOrder(value);setRefresh(n=>n+1)}
@@ -201,7 +201,7 @@ export default function CheckoutPage() {
     sub={orderId?undefined:`${history?'Order history':'Checkout'}${storeName?` · ${storeName}`:''}`}
     back={phone&&orderId?{label:history?'订单记录':'当前订单',to:back}:undefined}
     actions={<>{refreshButton}{canStart&&<>{recordSale}{startManual}</>}</>}/>
-  if(manual&&access?.live_stores.length)return <div className="co-workspace">{header}{!phone&&<CheckoutTabs specialCount={specialCount}/>}<ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={access.live_stores.map(store=>store.id)} cloverStoreId={access.clover_store_id}/></div>
+  if(manual&&access&&checkoutStores(access).length)return <div className="co-workspace">{header}{!phone&&<CheckoutTabs specialCount={specialCount}/>}<ManualCheckout key={`${user?.sub}|${role}`} allowedStoreIds={checkoutStores(access).map(store=>store.id)} cloverStoreId={access.clover_store_id}/></div>
   const locationPicker=!!stores?.length&&(!orderId||!scoped)&&(stores.length>1||history)&&<div className="co-location"><label htmlFor="checkout-store">Location</label><select id="checkout-store" className="co-select" value={scoped?selectedStore?.id:''} disabled={busy} onChange={e=>{const store=stores.find(s=>s.id===Number(e.target.value));if(store){chooseStore(store);if(!orderId)navigate(checkoutLink(history?'/checkout/history':'/checkout'))}}}><option value="" disabled>Choose location</option>{stores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>{history&&!orderId&&<label className="co-date-filter">Order date<input type="date" disabled={busy} value={date} onChange={e=>{setDate(e.target.value);setCursor(null)}}/></label>}</div>
   const ready=!!stores?.length&&scoped&&!!queue&&queueScope===scopeKey
   const listColumn=(!orderId||!phone)&&!!stores?.length&&scoped
@@ -238,7 +238,7 @@ export default function CheckoutPage() {
       <div className="co-detail">
         {orderId&&<Link className="co-back" to={back}>← Back to {history?'order history':'current orders'}</Link>}
         {orderId&&locationPicker}
-        {!stores?.length?<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>
+        {!stores?.length?(!history&&!!access.live_stores?.length?<div className="co-empty"><CameraOutlined/><h2>买单要等这家店接上 Clover 才开</h2><p>Checkout opens here once Clover is connected. 今天的销售照常写日报。Keep writing today’s sales in the daily report.</p><Link to="/">回首页 Home</Link></div>:<div className="co-empty"><CameraOutlined/><h2>{history?'No order history available':'No checkout shift today'}</h2><p>{history?'Your accessible orders will appear here.':'Live orders are available at the location where you have an assigned shift today.'}</p><Link to={checkoutLink(history?'/checkout':'/checkout/history')}>{history?'Go to checkout':'View your order history'}</Link><Link to="/schedule">Open Schedule</Link></div>)
           :!scoped?<>{!orderId&&locationPicker}<p className="co-muted">Choose a location to see its orders.</p></>
           :!ready?(orderId?<Skeleton active paragraph={{rows:5}}/>:null):<>
           {current?(current.clover?<CloverOrder key={`clover|${current.id}`} order={current} draft={drafts[current.id]} cnyPerCad={access.cny_per_cad||''} cnyRateSource={access.cny_rate_source} setDraft={setDraft(current.id)} updated={updated} refresh={()=>setRefresh(n=>n+1)} onBusy={setBusy}/>

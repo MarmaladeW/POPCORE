@@ -55,7 +55,7 @@ async def check(browser,width):
     reference=page.get_by_role('img',name='Reference photo for Moon',exact=True)
     await expect(reference).to_be_visible()
     assert (await reference.get_attribute('src')).startswith('blob:')
-    await expect(page.get_by_role('button',name='Move stock',exact=True)).to_be_visible()
+    await expect(page.get_by_role('link',name='Move Moon',exact=True)).to_be_visible()
     await page.keyboard.press('Escape')
     await expect(page.get_by_role('dialog',name='Stock details',exact=True)).not_to_be_visible()
     status=page.get_by_label('Inventory status',exact=True)

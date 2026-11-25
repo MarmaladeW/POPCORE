@@ -33,7 +33,9 @@ async def check(browser, width):
     await page.goto(BASE+'/stock?series_id=7')
     await page.get_by_role('button',name='Show movement history',exact=True).click()
     drawer = page.get_by_role('dialog',name='Movement history',exact=True)
-    await expect(drawer.get_by_text('Recorded by auth0|staff-recorded',exact=True)).to_be_visible()
+    # Who recorded it by name, never the raw login id; this account has no staff profile (owner, 2026-11-20).
+    await expect(drawer.get_by_text('记录人 Recorded by 没有员工资料 No staff profile',exact=True)).to_be_visible()
+    await expect(drawer.get_by_text('auth0|staff-recorded')).to_have_count(0)
     await drawer.get_by_role('button',name='Load older',exact=True).click()
     await expect(drawer.get_by_text('Earlier delivery',exact=True)).to_be_visible()
     await expect(drawer.get_by_role('button',name='Load older',exact=True)).to_have_count(0)

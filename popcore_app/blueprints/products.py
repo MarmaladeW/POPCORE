@@ -637,7 +637,7 @@ def update_product(pid):
                'brand', 'release_date', 'edition_size', 'channel', 'hidden',
                'style_notes', 'boxes_per_dan', 'ip_series',
                'hidden_count', 'hidden_has_small', 'hidden_has_large',
-               'hidden_prob_small', 'hidden_prob_large', 'is_bestseller'}
+               'hidden_prob_small', 'hidden_prob_large', 'is_bestseller', 'stock_counted'}
     identity_fields = {
         'series_id', 'stock_form', 'stock_unit', 'design_name', 'identity_status'
     }
@@ -658,6 +658,19 @@ def update_product(pid):
             return jsonify({'error': 'Product not found'}), 404
         if identity_updates:
             update_product_identity(con, pid, identity_updates)
+        if 'stock_counted' in updates:
+            # 不计库存 (owner, 2026-11-21): an ordinary product sold at the counter whose stock nobody counts.
+            if not isinstance(updates['stock_counted'], bool):
+                raise ValueError('stock_counted must be true or false')
+            updates['stock_counted'] = int(updates['stock_counted'])
+            now = cur.execute('SELECT stock_form FROM products WHERE id=?', (pid,)).fetchone()
+            if not updates['stock_counted'] and now['stock_form'] != 'ordinary':
+                raise ValueError('只有普通产品可以不计库存（盲盒、整端、确认款要计）。'
+                                 'Only an ordinary product can go without a stock count.')
+            if not updates['stock_counted'] and cur.execute(
+                    'SELECT 1 FROM inventory_balances WHERE product_id=? AND quantity<>0', (pid,)).fetchone():
+                raise CatalogConflict('这个产品还有库存记录，先盘点成 0 再设不计库存。'
+                                      'It still has stock on record: count it to 0 first.', 'stock_on_record')
         if updates:
             product = dict(row)
             product.update(updates)

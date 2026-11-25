@@ -45,6 +45,9 @@ SETTINGS_DEFAULTS: dict[str, str] = {
     # positions are Cashier and Sales).
     'schedule_positions': '{"DT": ["Front", "Cashier", "Back"], "MK": ["Cashier", "Sales"]}',
     'checkout_cny_per_cad': '',
+    # Where staff take checkouts and 补录 (owner, 2026-11-20): 'clover' only at a store whose Clover is connected,
+    # since until then the 日报 records its sales; 'all' at every store. A live database starts at 'clover'.
+    'staff_checkout': 'all',
     # 异常提醒 Watcher (watcher.py): its switch, the Claude review's switch and daily cap, and the review time.
     **watcher.SETTINGS,
 }
@@ -185,6 +188,8 @@ def put_settings():
         if rate and (not re.fullmatch(r'\d{1,3}(?:\.\d{1,4})?', rate) or not 0 < Decimal(rate) <= 100):
             return jsonify(error='Enter a CNY rate above 0 and at most 100, with up to 4 decimal places'), 400
         data['checkout_cny_per_cad'] = rate
+    if 'staff_checkout' in data and data['staff_checkout'] not in ('clover', 'all'):
+        return jsonify(error='staff_checkout must be clover or all'), 400
     for key in [key for key in data if key in watcher.SETTINGS]:
         value, err = watcher.check_setting(key, data[key])
         if err:

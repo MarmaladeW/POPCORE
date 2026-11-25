@@ -418,7 +418,6 @@ export default function StockPage() {
         <Link to="/stock">Series inventory</Link>
         <Link to="/products">Products</Link>
         <RoleGuard minRole="staff">
-          <Link to="/restock">Restock</Link>
           <Link to="/trades">Trades</Link>
         </RoleGuard>
       </nav>

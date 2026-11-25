@@ -90,6 +90,77 @@ def _calc_theoretical_qty(cur, product_id: int, today: str,
 
 # ─── Inventory Check API ──────────────────────────────────────────────────────
 
+# ─── 晚盘 at a live store (owner, 2026-11-20/21) ───────────────────────────────
+# Staff count each bestseller on the floor every night, the way they write it in WeChat: whole sets (端) and loose
+# boxes (散) on the floor only ("because it is everyday so it only counts the stock on the floor"). POPCORE compares
+# the boxes with what its floor holds; nothing moves (a 盘点 is what corrects stock). It may be saved again the same
+# night; the latest count and who saved it are kept.
+
+def _evening_places(con, store_id):
+    return [row[0] for row in con.execute(
+        "SELECT id FROM inventory_locations WHERE store_id=? AND is_active=1 AND code='floor'",
+        (store_id,))]
+
+
+def _evening_expected(con, store_id, product, day=None):
+    """(boxes per set or None, sets, loose boxes) POPCORE holds of this bestseller on the store's floor, less what
+    the day's 记一笔 sales sold from the floor while no 日报 for the day is saved yet: their stock comes off only when
+    the manager reviews the 日报 (owner, 2026-11-21), but they already left the floor before the 晚盘."""
+    per, sets, loose = _evening_held(con, store_id, product)
+    if day:
+        import quick_sale
+        from report_stock import _set_for_box, _stock_product
+        box = _stock_product(con, product)[0] if product['stock_form'] == 'sealed_set' else product
+        whole = product if product['stock_form'] == 'sealed_set' else _set_for_box(con, product['id'])
+        sold = quick_sale.unreviewed_units(con, store_id, day, {box['id'], *( [whole['id']] if whole is not None else [])})
+        boxes = sold.get(box['id'], 0) + (sold.get(whole['id'], 0) * per if whole is not None and per else 0)
+        if boxes:
+            # Boxes leave loose boxes first, then whole sets opened for them.
+            left = max(0, sets * (per or 0) + loose - boxes)
+            sets, loose = (min(sets, left // per), left - min(sets, left // per) * per) if per else (0, left)
+    return per, sets, loose
+
+
+def _evening_held(con, store_id, product):
+    """(boxes per set or None, sets, loose boxes) POPCORE holds of this bestseller on the store's floor."""
+    from report_stock import _set_for_box, _stock_product
+    if product['stock_form'] == 'sealed_set':
+        whole, (box, per) = product, _stock_product(con, product)
+    else:
+        box, whole = product, _set_for_box(con, product['id'])
+        per = whole['boxes_per_set'] if whole else None
+    places = _evening_places(con, store_id)
+    marks = ','.join('?' * len(places)) or 'NULL'
+    held = lambda product_id: con.execute(  # noqa: E731
+        f"""SELECT COALESCE(SUM(quantity), 0) FROM inventory_balances
+             WHERE product_id=? AND disposition='saleable' AND location_id IN ({marks})""", (product_id, *places)).fetchone()[0]
+    sets = held(whole['id']) if whole is not None and per else 0
+    return per, sets, held(box['id']) if box['id'] != (whole['id'] if whole is not None else None) else 0
+
+
+def _evening_today(con, store_id, today):
+    from inventory_visibility import can_see_inventory
+    visible = can_see_inventory(con, request.jwt_payload, (store_id,))
+    items = []
+    for product in con.execute('SELECT * FROM products WHERE is_bestseller=1 ORDER BY ip_series, sku DESC').fetchall():
+        per, sets, loose = _evening_expected(con, store_id, product, today)
+        saved = con.execute("""SELECT ic.actual_sets, ic.actual_loose, ic.actual_qty, ic.discrepancy, ic.created_by,
+                                        COALESCE(ic.updated_at, ic.created_at) AS at, e.name
+                                 FROM inventory_checks ic LEFT JOIN employees e ON e.auth0_id=ic.created_by
+                                 WHERE ic.product_id=? AND ic.date=? AND ic.store_id=?""",
+                            (product['id'], today, store_id)).fetchone()
+        items.append({
+            'product_id': product['id'], 'sku': product['sku'], 'jizhanming': product['jizhanming'],
+            'name_cn_en': product['name_cn_en'], 'ip_series': product['ip_series'], 'per_set': per,
+            # What POPCORE holds, only for those who may see the store's stock (库存查看).
+            'expected_sets': sets if visible else None, 'expected_loose': loose if visible else None,
+            'saved': None if saved is None else {
+                'sets': saved['actual_sets'], 'loose': saved['actual_loose'], 'matches': saved['discrepancy'] == 0,
+                'difference': saved['discrepancy'] if visible else None, 'by': saved['name'], 'at': saved['at']},
+        })
+    return items
+
+
 @bp.route('/api/inventory-check/today')
 @login_required
 def inventory_check_today():
@@ -104,6 +175,10 @@ def inventory_check_today():
         con.close()
         return jsonify({'error': 'Invalid store code'}), 400
     store_id, store_code = resolved
+    if store_is_live(con, store_id):
+        items = _evening_today(con, store_id, today)
+        con.close()
+        return jsonify({'date': today, 'store_code': store_code, 'live': True, 'items': items})
     cur = con.cursor()
 
     cur.execute('''
@@ -169,6 +244,34 @@ def submit_inventory_check():
     today      = business_date()
     created_by = request.jwt_payload.get('sub')
     cur = con.cursor()
+
+    if store_is_live(con, store_id):
+        results = []
+        for chk in checks:
+            product = con.execute('SELECT * FROM products WHERE id=? AND is_bestseller=1',
+                                  (chk.get('product_id'),)).fetchone() if isinstance(chk, dict) else None
+            sets, loose = (chk.get('sets') or 0, chk.get('loose') or 0) if product else (None, None)
+            if product is None or not all(isinstance(n, int) and 0 <= n <= 100000 for n in (sets, loose)):
+                continue
+            per, held_sets, held_loose = _evening_expected(con, store_id, product, today)
+            actual, expected = sets * (per or 0) + loose, held_sets * (per or 0) + held_loose
+            con.execute("""INSERT INTO inventory_checks(date, product_id, theoretical_qty, actual_qty, discrepancy,
+                               base_check_date, created_by, store_id, actual_sets, actual_loose, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                           ON CONFLICT(date, product_id, store_id) DO UPDATE SET theoretical_qty=excluded.theoretical_qty,
+                               actual_qty=excluded.actual_qty, discrepancy=excluded.discrepancy,
+                               created_by=excluded.created_by, actual_sets=excluded.actual_sets,
+                               actual_loose=excluded.actual_loose, updated_at=excluded.updated_at""",
+                        (today, product['id'], expected, actual, actual - expected, today, created_by, store_id,
+                         sets, loose))
+            results.append({'product_id': product['id'], 'matches': actual == expected})
+        con.commit()
+        items = _evening_today(con, store_id, today)
+        con.close()
+        if not results:
+            return jsonify({'error': '没有要保存的晚盘 Nothing to save'}), 400
+        return jsonify({'ok': True, 'saved': len(results), 'live': True, 'items': items,
+                        'differ': sum(1 for row in results if not row['matches'])}), 201
 
     saved     = 0
     results   = []

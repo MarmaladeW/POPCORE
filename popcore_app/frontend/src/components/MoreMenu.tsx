@@ -1,14 +1,17 @@
+import { useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { useAuth0 } from '@auth0/auth0-react'
 
 import { useHasRole, useRole } from '../auth/useRole'
 import { useInventoryVisible } from '../auth/useInventoryVisible'
+import { useCheckoutOpen } from '../auth/useCheckoutOpen'
 import { moreItems } from '../lib/navigation'
 import { useAppStore } from '../store'
 import { ROLE_LABELS } from './AppLayout'
 import Icon from './pc/Icon'
 import PageHeader from './pc/PageHeader'
 import { useIsPhone } from './pc/useIsPhone'
+import MyPinModal from './people/MyPin'
 
 // Phone 更多 page (Figma Menus · Phone · More). Desktop has everything in the rail.
 export default function MoreMenu() {
@@ -16,7 +19,8 @@ export default function MoreMenu() {
   const { user, logout } = useAuth0()
   const role = useRole()
   const access = { staff: useHasRole('staff'), manager: useHasRole('manager'), admin: useHasRole('admin'), inventory: useInventoryVisible(),
-    operations: useAppStore(state => state.stores.some(store => store.operations)) }
+    operations: useAppStore(state => state.stores.some(store => store.operations)), checkout: useCheckoutOpen() }
+  const [pinOpen, setPinOpen] = useState(false)
   if (!phone) return <Navigate to="/" replace />
   return <div className="pc-more">
     <PageHeader title="更多" sub="More" />
@@ -29,6 +33,8 @@ export default function MoreMenu() {
     </nav>
     <div className="pc-more-account">
       <span className="pc-nav-text"><strong>{user?.nickname ?? user?.name ?? 'User'}</strong><small>{ROLE_LABELS[role] || role}</small></span>
+      <button type="button" onClick={() => setPinOpen(true)}>我的 PIN My PIN</button>
+      <MyPinModal open={pinOpen} onClose={() => setPinOpen(false)} />
       <button type="button" onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}>退出登录 Sign out</button>
     </div>
   </div>

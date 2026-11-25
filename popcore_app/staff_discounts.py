@@ -2,7 +2,8 @@
 4 discount per month, we wanna keep track of that, and sometimes in 汇总 there are 员工折扣, it is easier for us to track
 the revenue too."
 
-A record is a 日报 员工折扣 line or one a manager adds by hand. One use is one product (owner, 2026-11-19: "purchasing
+A record is a 记一笔 sale ticked 员工折扣 (owner, 2026-11-24: no 日报 pasting), a 日报 员工折扣 line from before that, or one
+a manager adds by hand. One use is one product (owner, 2026-11-19: "purchasing
 ten smiski hipper is still one employee discount"), so a record counts the different products it bought. The 4 uses
 come back on the 1st of every calendar month. The "本月剩余N次" a line ends with is the staff's own count and is not read.
 
@@ -184,8 +185,45 @@ def sync_month(con, month):
         elif row['employee_id'] is None and (person := match(row['written_name'])):
             con.execute('UPDATE staff_discount_uses SET employee_id=? WHERE id=?', (person, row['id']))
             changed = True
+    changed = _sync_quick_sales(con, first, after) or changed
     if changed:
         con.commit()
+
+
+QUICK_TENDERS = {'e_transfer': 'emt', 'card': 'card', 'cash': 'cash', 'wechat': 'wechat', 'alipay': 'alipay'}
+UNDONE_REASON = '这一笔已撤销 Sale undone'
+
+
+def _sync_quick_sales(con, first, after):
+    """记一笔 sales ticked 员工折扣 (owner, 2026-11-24: in the app, not the 日报): each is one record, kept under the
+    sale's own key, so it is counted once however often the page is read. An undone sale's record stops counting
+    unless a manager already fixed it."""
+    import quick_sale
+    changed = False
+    for row in con.execute(
+            """SELECT o.id, o.business_date, o.staff_discount_employee_id AS employee_id, o.undone_at, o.created_by,
+                      s.code, u.id AS use_id, u.ignored_reason, u.edited_at
+               FROM checkout_orders o JOIN stores s ON s.id=o.store_id
+               LEFT JOIN staff_discount_uses u ON u.request_key='quick-sale:' || o.id
+               WHERE o.staff_discount_employee_id IS NOT NULL AND o.status='completed'
+                 AND o.business_date >= ? AND o.business_date < ? ORDER BY o.id""", (first, after)).fetchall():
+        if row['use_id'] is None and not row['undone_at']:
+            sale = quick_sale.sale_row(con, row['id'])
+            items = _items([{'name': line['name'], 'qty': line['quantity']} for line in sale['lines']][:MAX_ITEMS])
+            tenders = list(dict.fromkeys(QUICK_TENDERS[payment['tender']] for payment in sale['payments']
+                                         if payment['tender'] in QUICK_TENDERS))
+            con.execute("""INSERT OR IGNORE INTO staff_discount_uses
+                           (date, store, source, employee_id, items, uses, amount_cents, payment, readable, request_key,
+                            created_by)
+                           VALUES (?, ?, 'manual', ?, ?, ?, ?, ?, 1, ?, ?)""",
+                        (row['business_date'], row['code'], row['employee_id'], json.dumps(items, ensure_ascii=False),
+                         len(items), sum(payment['amount_cents'] or 0 for payment in sale['payments']),
+                         '+'.join(tenders) or None, f"quick-sale:{row['id']}", row['created_by']))
+            changed = True
+        elif row['use_id'] and row['undone_at'] and row['ignored_reason'] is None and row['edited_at'] is None:
+            con.execute('UPDATE staff_discount_uses SET ignored_reason=? WHERE id=?', (UNDONE_REASON, row['use_id']))
+            changed = True
+    return changed
 
 
 _ENTRY_SQL = '''SELECT u.*, e.name AS person_name, e.rank AS person_rank, s.name AS store_name,

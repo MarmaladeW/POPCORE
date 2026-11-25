@@ -8,6 +8,11 @@ from report_stock import open_notices
 import watcher
 
 
+# 记一笔 quick sales (owner, 2026-11-21: in place of 随手记) are checked as a day, in 记一笔's 今天 list and its 审核,
+# not payment by payment: at 50 to 100 sales a day they would bury every other task. A sale without its payment photo
+# says so there.
+NOT_QUICK = "NOT EXISTS (SELECT 1 FROM checkout_orders q WHERE q.sale_id=s.id AND q.stock_by_report=1)"
+
 def _section(rows, limit=50):
     rows = list(rows)
     return {'total': len(rows), 'rows': rows[:limit]}
@@ -77,7 +82,8 @@ def get_today(con, *, actor, store_code=None, business_date=None):
         mine.extend({'source_id':r['payment_id'],'type':'payment_evidence','link':f"/sales/payments/{r['payment_id']}/evidence",'store_id':r['store_id'],'status':'evidence_pending','version':r['sale_version'],'updated_at':r['created_at']} for r in con.execute(
             f"""SELECT e.payment_id,s.store_id,s.version sale_version,e.created_at FROM payment_evidence e
                 JOIN sale_payments p ON p.id=e.payment_id JOIN sale_documents s ON s.id=p.sale_id
-                WHERE s.store_id IN ({marks}) AND e.uploader_sub=? AND e.status='pending' ORDER BY e.created_at,e.id""", (*ids,subject)))
+                WHERE s.store_id IN ({marks}) AND e.uploader_sub=? AND e.status='pending' AND {NOT_QUICK}
+                ORDER BY e.created_at,e.id""", (*ids,subject)))
         if role in {'viewer', 'manager', 'admin'}:
             notices = [{'source_id':r['product_id'],'type':'inventory_notice','link':'/products','store_id':r['store_id'],'status':'out_of_stock','version':r['version'],'updated_at':None} for r in con.execute(
                 f"""SELECT b.product_id,l.store_id,b.version FROM inventory_balances b JOIN inventory_locations l ON l.id=b.location_id
@@ -102,7 +108,8 @@ def get_today(con, *, actor, store_code=None, business_date=None):
                 f"SELECT id,store_id,allocation_status,version,posted_at FROM sale_documents WHERE store_id IN ({marks}) AND allocation_status!='allocated' ORDER BY business_date,id", ids))
             financial.extend({'source_id':r['id'],'type':'payment_exception','link':f"/sales/documents/{r['sale_id']}",'store_id':r['store_id'],'status':r['state'],'version':r['version'],'updated_at':r['created_at']} for r in con.execute(
                 f"""SELECT p.id,p.sale_id,s.store_id,p.state,s.version,p.created_at FROM sale_payments p JOIN sale_documents s ON s.id=p.sale_id
-                    WHERE s.store_id IN ({marks}) AND (p.amount_cents IS NULL OR p.state!='verified') ORDER BY p.created_at,p.id""", ids))
+                    WHERE s.store_id IN ({marks}) AND (p.amount_cents IS NULL OR p.state!='verified') AND {NOT_QUICK}
+                    ORDER BY p.created_at,p.id""", ids))
             financial.extend({'source_id':r['closing_id'],'type':'cash_variance','link':f"/closing?closing_id={r['closing_id']}",'store_id':r['store_id'],'status':'variance','version':r['version'],'updated_at':r['created_at'],'cash_variance_cents':r['variance_cents']} for r in con.execute(
                 f"""SELECT c.id closing_id,c.store_id,c.version,x.variance_cents,x.created_at FROM closing_sessions c
                     JOIN closing_cash_counts x ON x.closing_session_id=c.id
