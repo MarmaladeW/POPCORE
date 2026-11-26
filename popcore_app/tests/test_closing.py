@@ -1,5 +1,6 @@
 import json
 from contextlib import closing
+from unittest.mock import patch
 
 from test_payments import PaymentTests
 from auth import ROLE_CLAIM
@@ -15,7 +16,10 @@ class ClosingTests(PaymentTests):
 
     def setUp(self):
         super().setUp()
-        # Staff close a store day they had a shift on (owner, 2026-10-27).
+        # Staff close a store day they had a shift on (owner, 2026-10-27), and only today's (owner, 2026-11-26).
+        clock = patch('checkout_access.business_date', return_value='2026-09-08')
+        clock.start()
+        self.addCleanup(clock.stop)
         with closing(self.connect()) as con:
             for subject, name in (('staff', 'Staff Cashier'), ('other', 'Other Cashier')):
                 employee = con.execute('INSERT INTO employees(auth0_id,name) VALUES (?,?)',
@@ -141,12 +145,18 @@ class ClosingTests(PaymentTests):
                   'denomination_counts': self.COUNTS},
         )
         self.assertEqual(counted.status_code, 200, counted.get_json())
-        result = counted.get_json()['latest_cash_count']
+        # The staff member who counted gets back what they counted, not what the drawer should hold
+        # (owner, 2026-11-26); the manager sees both.
+        own = counted.get_json()['latest_cash_count']
+        self.assertEqual((own['counted_cents'], own['removal_cents']), (93850, 26850))
+        self.assertFalse({'expected_cents', 'variance_cents'} & set(own))
+        reviewed = self.client.get(f"/api/closing/{session['closing_id']}", headers=self.headers('manager')).get_json()
+        result = reviewed['latest_cash_count']
         self.assertEqual(result['expected_cents'], 94000)
         self.assertEqual(result['counted_cents'], 93850)
         self.assertEqual(result['variance_cents'], -150)
         self.assertEqual(result['removal_cents'], 26850)
-        self.assertEqual(counted.get_json()['cash']['verified_cash_receipts_cents'], 30000)
+        self.assertEqual(reviewed['cash']['verified_cash_receipts_cents'], 30000)
 
     def test_missing_coin_inputs_and_stale_cashier_save_are_rejected(self):
         session = self.cash_fixture()
@@ -232,25 +242,46 @@ class ClosingTests(PaymentTests):
                   'denomination_counts': zero_counts},
         ).get_json()['latest_cash_count']
         self.assertIsNone(counted['removal_cents'])
-        self.assertLess(counted['variance_cents'], 0)
+        reviewed = self.client.get(f"/api/closing/{session['closing_id']}", headers=self.headers('manager')).get_json()
+        self.assertLess(reviewed['latest_cash_count']['variance_cents'], 0)
         with closing(self.connect()) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM cash_events').fetchone()[0], 1)
 
-    def test_staff_projection_shows_day_totals_without_payment_references(self):
-        session = self.cash_fixture()
+    def test_staff_projection_shows_no_day_totals_and_no_payment_references(self):
+        session = self.ready_session()
         staff = self.client.get(
             f"/api/closing/{session['closing_id']}", headers=self.headers()
         )
         manager = self.client.get(
             f"/api/closing/{session['closing_id']}", headers=self.headers('manager')
         )
-        # Owner, 2026-10-27: staff see the day's tender totals, not the payments behind them.
-        self.assertEqual(staff.get_json()['tender_totals_cents'], manager.get_json()['tender_totals_cents'])
-        for key in ('unknown_payment_ids', 'checkout_funds', 'snapshot', 'late_adjustments'):
+        # Owner, 2026-11-26: the day's takings are not for staff: no totals per tender, no cash received or
+        # expected in the drawer, no expected amount or difference on the count. The manager reviews them.
+        for key in ('tender_totals_cents', 'unknown_payment_ids', 'checkout_funds', 'snapshot', 'late_adjustments'):
             self.assertNotIn(key, staff.get_json())
-        self.assertNotIn('unknown_cash_payment_ids', staff.get_json()['cash'])
+        for key in ('unknown_cash_payment_ids', 'verified_cash_receipts_cents', 'expected_drawer_cents'):
+            self.assertNotIn(key, staff.get_json()['cash'])
+        for key in ('expected_cents', 'variance_cents'):
+            self.assertNotIn(key, staff.get_json()['latest_cash_count'])
+        self.assertEqual(staff.get_json()['latest_cash_count']['counted_cents'], 93850)
+        self.assertEqual(manager.get_json()['tender_totals_cents']['card'], 60000)
+        self.assertEqual(manager.get_json()['cash']['expected_drawer_cents'], 94000)
+        self.assertEqual(manager.get_json()['latest_cash_count']['variance_cents'], -150)
         self.assertIn('unknown_payment_ids', manager.get_json())
         self.assertNotIn('payment_evidence', str(staff.get_json()))
+
+    def test_below_manager_closing_is_for_today_only(self):
+        """Owner, 2026-11-26: staff open, create and change only today's closing; an earlier day is a manager's."""
+        session = self.create_session().get_json()
+        path = f"/api/closing/{session['closing_id']}"
+        with patch('checkout_access.business_date', return_value='2026-09-09'):
+            self.assertEqual(self.create_session('next-day').status_code, 403)
+            self.assertEqual(self.client.get(path, headers=self.headers()).status_code, 403)
+            event = self.client.post(path + '/cash-events', headers={**self.headers(), 'Idempotency-Key': 'late-payout'},
+                                     json={'expected_version': session['version'], 'event_type': 'payout',
+                                           'amount_cents': 100, 'reason': 'Late'})
+            self.assertEqual(event.status_code, 403)
+            self.assertEqual(self.client.get(path, headers=self.headers('manager')).status_code, 200)
 
     def test_close_is_single_snapshot_and_single_removal_on_retry(self):
         session = self.submitted_session()

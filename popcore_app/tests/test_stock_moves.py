@@ -22,7 +22,12 @@ class StockMoveTests(test_report_stock.ReportStockTests):
         self.addCleanup(clock.stop)
         with closing(self.connect()) as con:
             con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|staff', 'Zimo')")
+            # Wen has 门店操作权限 at DT but no 库存查看: 移货 is open to her, stock numbers are not.
+            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|wen', 'Wen')")
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|wen', ?)", (self.dt,))
             con.commit()
+        # Zimo may see DT's stock (库存查看), so her answers carry by how many POPCORE was short.
+        self.grant_inventory_view('auth0|staff')
 
     def at(self, product, code):
         with closing(self.connect()) as con:
@@ -81,6 +86,74 @@ class StockMoveTests(test_report_stock.ReportStockTests):
         self.move('floor', 'gone', [{'product_id': self.item, 'units': 1}], 'm-4', reason='other', expect=400)
         broken = self.move('floor', 'gone', [{'product_id': self.item, 'units': 5}], 'm-5', reason='broken')
         self.assertEqual((self.at(self.item, 'floor'), broken['lines'][0]['missing']), (0, 2))
+
+    def test_a_claw_prize_only_leaves_the_claw_machine(self):
+        """Owner, 2026-11-26: a claw prize leaves no loss record, so it cannot be how goods leave any other place."""
+        for place in ('floor', 'upstairs'):
+            refused = self.move(place, 'gone', [{'product_id': self.item if place == 'floor' else self.box, 'units': 1}],
+                                f'c-{place}', reason='claw_prize', expect=400)
+            self.assertEqual(refused['code'], 'claw_prize_source')
+            self.assertIn('娃娃机', refused['error'])
+        check = self.client.post('/api/stock-moves/check', json={'store_id': self.dt, 'from': 'floor', 'to': 'gone', 'reason': 'claw_prize',
+                                                                  'lines': [{'product_id': self.item, 'units': 1}]}, headers=self.headers())
+        self.assertEqual((check.status_code, check.get_json()['code']), (400, 'claw_prize_source'))
+        with closing(self.connect()) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM stock_moves').fetchone()[0], 0)
+        self.assertEqual((self.at(self.item, 'floor'), self.at(self.set, 'upstairs')), (3, 2))
+
+    def test_without_inventory_view_a_move_says_short_but_not_by_how_many(self):
+        """移货 stays open to everyone with 门店操作权限 (owner, 2026-11-24); how many POPCORE holds is for 库存查看
+        (owner, 2026-11-26), so without it a line is only `short`."""
+        body = {'store_id': self.dt, 'from': 'upstairs', 'to': 'floor', 'lines': [{'product_id': self.box, 'sets': 3},
+                                                                                 {'product_id': self.item, 'units': 1}]}
+        wen = {'Authorization': 'Bearer staff:wen'}
+        check = self.client.post('/api/stock-moves/check', json=body, headers=wen)
+        self.assertEqual(check.status_code, 200, check.get_json())
+        self.assertEqual([(line['short'], line['missing']) for line in check.get_json()['lines']], [(True, None), (True, None)])
+        # Asking for far more than there is tells her nothing more.
+        many = self.client.post('/api/stock-moves/check', json={**body, 'from': 'floor', 'to': 'display',
+                                                                 'lines': [{'product_id': self.box, 'units': 100000}]}, headers=wen)
+        self.assertEqual([(line['short'], line['missing']) for line in many.get_json()['lines']], [(True, None)])
+        exact = self.client.post('/api/stock-moves/check', json={**body, 'lines': [{'product_id': self.box, 'sets': 2}]}, headers=wen)
+        self.assertEqual([(line['short'], line['missing']) for line in exact.get_json()['lines']], [(False, None)])
+        # With 库存查看 the same check says by how many.
+        seen = self.client.post('/api/stock-moves/check', json=body, headers=self.headers())
+        self.assertEqual([(line['short'], line['missing']) for line in seen.get_json()['lines']], [(True, 12), (True, 1)])
+        saved = self.client.post('/api/stock-moves', json=body, headers={**wen, 'Idempotency-Key': 'w-1'})
+        self.assertEqual(saved.status_code, 201, saved.get_json())
+        self.assertEqual([(line['short'], line['missing']) for line in saved.get_json()['lines']], [(True, None), (True, None)])
+        self.assertEqual((self.at(self.set, 'upstairs'), self.at(self.box, 'floor'), self.at(self.item, 'floor')), (0, 66, 4))
+        with closing(self.connect()) as con:
+            detail = con.execute("SELECT detail FROM activity_log WHERE endpoint='stock_moves.stock_move_create'").fetchone()[0]
+        self.assertIn('2 项电脑里不够', detail)
+        # Her own list hides the numbers too; a manager's shows them.
+        mine = self.client.get(f'/api/stock-moves?store_id={self.dt}', headers=wen).get_json()['moves'][0]
+        self.assertEqual([(line['short'], line['missing']) for line in mine['lines']], [(True, None), (True, None)])
+        managers = self.client.get(f'/api/stock-moves?store_id={self.dt}', headers=self.headers('manager')).get_json()['moves'][0]
+        self.assertEqual([(line['short'], line['missing']) for line in managers['lines']], [(True, 12), (True, 1)])
+
+    def test_below_manager_the_list_is_todays_without_other_peoples_gone_moves(self):
+        """What went 不在了 is a loss record, kept for managers (owner, 2026-11-26): staff see their own, today."""
+        wen = {'Authorization': 'Bearer staff:wen'}
+        self.move('upstairs', 'floor', [{'product_id': self.box, 'sets': 1}], 'd-1')
+        self.move('floor', 'gone', [{'product_id': self.item, 'units': 1}], 'd-2', reason='lost')
+        hers = self.client.post('/api/stock-moves', headers={**wen, 'Idempotency-Key': 'd-3'}, json={
+            'store_id': self.dt, 'from': 'floor', 'to': 'gone', 'reason': 'broken', 'lines': [{'product_id': self.item, 'units': 1}]})
+        self.assertEqual(hers.status_code, 201, hers.get_json())
+
+        def listed(headers, date=''):
+            response = self.client.get(f'/api/stock-moves?store_id={self.dt}{date}', headers=headers)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            return [(move['to_name'], move['by']) for move in response.get_json()['moves']]
+        self.assertEqual(listed(wen), [('不在了', 'Wen'), ('楼下', 'Zimo')])
+        self.assertEqual(listed(self.headers()), [('不在了', 'Zimo'), ('楼下', 'Zimo')])
+        self.assertEqual(listed(self.headers('manager')), [('不在了', 'Wen'), ('不在了', 'Zimo'), ('楼下', 'Zimo')])
+        # Another day is the manager's to open.
+        for headers in (wen, self.headers()):
+            other = self.client.get(f'/api/stock-moves?store_id={self.dt}&date=2026-11-23', headers=headers)
+            self.assertEqual((other.status_code, other.get_json()['code']), (403, 'stock_moves_today_only'))
+        self.assertEqual(listed(wen, f'&date={DAY}'), [('不在了', 'Wen'), ('楼下', 'Zimo')])
+        self.assertEqual(listed(self.headers('manager'), '&date=2026-11-23'), [])
 
     def test_gone_is_a_loss_on_the_managers_page_and_broken_goods_wait_on_the_damaged_pile(self):
         """Losses stay where they always were (owner, 2026-11-03: broken goods are kept aside; managers see the
@@ -205,6 +278,24 @@ class StockMoveTests(test_report_stock.ReportStockTests):
         # 撤销 brings it back while it is still in MK's back room.
         self.undo(move, 'u-1')
         self.assertEqual((self.at(self.set, 'upstairs'), at_mk(self.set)), (2, 0))
+        # More than POPCORE holds still arrives, as the check says: the rest is added at the sender's place first,
+        # so the sender still needs no access at the other store.
+        body = {'store_id': self.dt, 'from': 'floor', 'to': 'store:MK', 'lines': [{'product_id': self.box, 'units': 30}]}
+        check = self.client.post('/api/stock-moves/check', json=body, headers=self.headers())
+        self.assertEqual((check.status_code, check.get_json()['lines'][0]['missing']), (200, 4))
+        short = self.move('floor', 'store:MK', [{'product_id': self.box, 'units': 30}], 'm-3')
+        self.assertEqual((short['lines'][0]['missing'], self.at(self.box, 'floor'), at_mk(self.box)), (4, 0, 34))
+        sets = self.move('upstairs', 'store:MK', [{'product_id': self.box, 'sets': 3}], 'm-4')
+        self.assertEqual((sets['lines'][0]['missing'], self.at(self.set, 'upstairs'), at_mk(self.set)), (12, 0, 3))
+        with closing(self.connect()) as con:  # every document that touches MK also takes from DT: none is MK's alone
+            alone = con.execute("""SELECT COUNT(*) FROM inventory_documents d WHERE d.source_type='stock_move'
+                AND NOT EXISTS (SELECT 1 FROM inventory_movements m JOIN inventory_locations l ON l.id=m.location_id
+                                WHERE m.document_id=d.id AND l.store_id=?)""", (self.dt,)).fetchone()[0]
+        self.assertEqual(alone, 0)
+        # 撤销 puts both back as they were: the boxes return and what POPCORE never held comes off again.
+        self.undo(sets, 'u-4')
+        self.undo(short, 'u-3')
+        self.assertEqual((self.at(self.box, 'floor'), at_mk(self.box), self.at(self.set, 'upstairs'), at_mk(self.set)), (26, 4, 2, 0))
 
     def test_a_pasted_report_does_not_move_again_what_a_move_recorded(self):
         """While any 日报 is still pasted: its stock lines move only what goes beyond the day's 移货 moves."""

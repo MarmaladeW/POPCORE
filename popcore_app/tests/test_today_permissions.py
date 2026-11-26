@@ -34,11 +34,13 @@ class TodayPermissionTests(IsolatedApiCase):
             self.assertNotIn('tender_totals_cents', raw)
             self.assertNotIn('cash_variance_cents', raw)
             self.assertNotIn('evidence_id', raw)
-        self.assertIn('financial', manager['sections'])
         self.assertIn('catalog', admin['sections'])
-        # Managers and admins see everything; staff see only their own and store work.
-        for payload in (manager, admin):
-            self.assertTrue({'catalog', 'inventory', 'my_work', 'operations', 'financial'} <= set(payload['sections']))
+        # Owner, 2026-11-26: sales, takings and daily-report figures are the admin's only; a manager keeps the
+        # store's work and the 异常提醒 alerts. Staff see only their own and store work.
+        self.assertTrue({'catalog', 'inventory', 'my_work', 'operations', 'financial', 'report_stock', 'watch'}
+                        <= set(admin['sections']))
+        self.assertEqual(set(manager['sections']), {'catalog', 'inventory', 'my_work', 'operations', 'watch'})
+        self.assertNotIn('tender_totals_cents', str(manager))
         self.assertEqual(set(staff['sections']), {'my_work', 'operations'})
         self.assertNotIn('inventory', viewer['sections'])  # no store access, so no store notices
 

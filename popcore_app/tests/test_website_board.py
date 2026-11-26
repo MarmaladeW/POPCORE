@@ -100,8 +100,10 @@ class WebOrdersBoardTests(BoardCase):
         # A pickup carries no name; its name stays behind the code.
         self.assertFalse([card for cards in board['columns'].values() for card in cards
                           if card['kind'] == 'pickup' and 'name' in card])
-        # No phone, email, address or pickup code on the board; nothing personal in the managers' order list.
-        manager_orders = self.client.get('/api/website/orders', headers=self.headers('manager')).get_data(as_text=True)
+        # No phone, email, address or pickup code on the board; nothing personal in the admin's order list (admin
+        # only since 2026-11-26).
+        manager_orders = self.client.get('/api/website/orders', headers=self.headers('admin')).get_data(as_text=True)
+        self.assertIn('wc_order_id', manager_orders)
         for value in (*CONTACT, 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
             self.assertNotIn(value, response.get_data(as_text=True))
         for value in (*PRIVATE, 'Zoë', 'Lima', 'K7R4MX', 'ACD346', 'HJK777', 'MKP999', 'pickup_code'):
@@ -332,7 +334,7 @@ class CounterAccountTests(BoardCase):
                 'expected_versions': {'from': version, 'to': 0}}]})
         self.assertEqual(move.status_code, 403, move.get_json())
         self.assertEqual(self.balance(self.item, 'upstairs'), 1)
-        # Website settings stay with managers.
+        # Website settings stay with admins.
         self.assertEqual(self.client.get('/api/website/orders', headers=self.COUNTER).status_code, 403)
 
     def test_a_viewer_without_store_operations_access_gets_nothing_from_the_board(self):

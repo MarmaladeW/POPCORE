@@ -120,7 +120,7 @@ class CheckoutAccessTests(ReceivingFixture):
                      '/api/reports/evidence-exceptions?store_code=DT', f"/api/closing/{closing_response.get_json()['closing_id']}"]:
             self.assertEqual(self.get(path,'manager').status_code,403,path)
         today = self.get('/api/today?business_date=2026-09-08','manager').get_json()
-        self.assertEqual(today['sections']['financial']['rows'],[])
+        self.assertNotIn('financial',today['sections'])  # the admin's only (owner, 2026-11-26)
         helper_today = self.get('/api/today','staff:helper').get_json()
         self.assertEqual(helper_today['sections']['my_work']['rows'],[])
 
@@ -161,7 +161,7 @@ class CheckoutAccessTests(ReceivingFixture):
         self.assertEqual(self.get(f"/api/checkouts/{order['id']}", 'manager').status_code,403)
         self.assertEqual(self.get('/api/checkouts/access','manager').get_json()['history_stores'][0]['id'],second)
         # A date range without checkout records retains its existing report access.
-        self.assertEqual(self.get('/api/reports/sales?store_code=DT&from=2026-08-01&to=2026-08-31','manager').status_code,200)
+        self.assertEqual(self.get('/api/reports/sales?store_code=DT&from=2026-08-01&to=2026-08-31','admin:manager').status_code,200)
 
     def test_demoted_payment_recorder_cannot_write_someone_elses_history(self):
         order, _ = self.completed_with_photo()

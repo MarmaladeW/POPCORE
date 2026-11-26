@@ -34,7 +34,9 @@ class CheckoutTests(ReceivingFixture):
                     subtotal_cents=4000, source_tax_cents=520, gross_cents=4520,
                     reduction_cents=0, rounding_cents=0, collected_cents=4520,
                     lines=[dict(product_id=self.product_id,unit='piece',quantity=2,unit_price_cents=2000,source_tax_cents=520)])
-        response = self.call('', body, 'create-' + reference)
+        # An order of an earlier day: below manager a checkout is always today's (owner, 2026-11-26), so the same
+        # account makes it with a manager's role.
+        response = self.call('', body, 'create-' + reference, 'manager:staff')
         self.assertEqual(response.status_code, 201, response.get_json())
         return response.get_json(), body
 
@@ -55,9 +57,12 @@ class CheckoutTests(ReceivingFixture):
             response = self.call('', order, key)
             self.assertEqual(response.status_code, 201, response.get_json())
             made.append(response.get_json()['reference'])
-        self.assertEqual(made, ['DT-20260908-001', 'DT-20260908-002', 'DT-20260908-003'])
+        # Below manager the order is today's (2026-09-14), whatever date the phone sends (owner, 2026-11-26).
+        self.assertEqual(made, ['DT-20260914-001', 'DT-20260914-002', 'DT-20260914-003'])
         replay = self.call('', {k: v for k, v in body.items() if k != 'reference'}, 'phone-1')
-        self.assertEqual(replay.get_json()['reference'], 'DT-20260908-001')
+        self.assertEqual((replay.get_json()['reference'], replay.get_json()['business_date']), ('DT-20260914-001', '2026-09-14'))
+        dated = self.call('', {k: v for k, v in body.items() if k != 'reference'}, 'phone-manager', 'manager')
+        self.assertEqual((dated.get_json()['reference'], dated.get_json()['business_date']), ('DT-20260908-001', '2026-09-08'))
         self.assertEqual(self.call('', {**body, 'reference': 'x' * 121}, 'too-long').status_code, 400)
 
     def receive(self, order, key, tender, amount, plan='pay', expect=200, **extra):
@@ -424,9 +429,10 @@ class CheckoutTests(ReceivingFixture):
         native={'system':'popcore_checkout','account':str(self.store_id),'reference':order['reference']}
         def post(path,payload,key,role='staff'):
             return self.client.post(path,json=payload,headers={**self.headers(role),'Idempotency-Key':key})
-        forged=post('/api/sale-documents',{**body,'entry_mode':'planned_entry','source':native},'forged-sale')
+        # 补录 is a manager's (owner, 2026-11-26): the same account, with a manager's role.
+        forged=post('/api/sale-documents',{**body,'entry_mode':'planned_entry','source':native},'forged-sale','manager:staff')
         self.assertEqual(forged.status_code,400,forged.get_json())
-        manual=post('/api/sale-documents',{**body,'entry_mode':'planned_entry','source':{**native,'system':'manual','reference':'manual-review'}},'manual-review').get_json()
+        manual=post('/api/sale-documents',{**body,'entry_mode':'planned_entry','source':{**native,'system':'manual','reference':'manual-review'}},'manual-review','manager:staff').get_json()
         modified=self.client.patch(f"/api/sale-documents/{manual['sale_id']}",json={**body,'entry_mode':'planned_entry','source':native,'expected_version':manual['version']},headers={**self.headers(),'Idempotency-Key':'forged-update'})
         self.assertEqual(modified.status_code,400,modified.get_json())
         source={'source_system':'popcore_checkout','source_account':str(self.store_id),'source_reference':order['reference']}
@@ -622,7 +628,7 @@ class CheckoutTests(ReceivingFixture):
             self.assertEqual(cash_summary(con,self.store_id,'2026-09-08',0)['expected_drawer_cents'],67000)
             self.assertEqual(cash_summary(con,self.store_id,'2026-09-09',0)['expected_drawer_cents'],63000)
         for day,recorded,refunded in [('2026-09-08',2000,0),('2026-09-09',0,2000)]:
-            response=self.client.get(f'/api/reports/tenders?store_code=DT&from={day}&to={day}',headers=self.headers('manager'))
+            response=self.client.get(f'/api/reports/tenders?store_code=DT&from={day}&to={day}',headers=self.headers('admin:manager'))
             self.assertEqual(response.status_code,200,response.get_json())
             self.assertEqual(response.get_json()['items'],[dict(tender='cash',recorded_cents=recorded,
                 verified_cents=recorded,rejected_cents=0,unknown_count=0,pending_count=0,refund_cents=refunded)])

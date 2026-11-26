@@ -45,10 +45,11 @@ class StoreDayIntegrationTests(test_closing.ClosingTests):
         after=self.client.get(f"/api/closing/{ready['closing_id']}",headers=self.headers('manager')).get_json()
         self.assertEqual(before,after['snapshot']);self.assertGreaterEqual(len(after['late_adjustments']),2)
 
-        tenders=self.client.get('/api/reports/tenders?store_code=DT&from=2026-09-08&to=2026-09-08',headers=self.headers('manager')).get_json()
+        tenders=self.client.get('/api/reports/tenders?store_code=DT&from=2026-09-08&to=2026-09-08',headers=self.headers('admin:manager')).get_json()
         values={row['tender']:row['recorded_cents'] for row in tenders['items']}
         self.assertEqual(values,{'alipay':5000,'card':60000,'cash':30000,'e_transfer':10000,'wechat':5000})
-        self.assertEqual(self.client.get('/api/reports/tenders?store_code=MK',headers=self.headers('manager')).status_code,403)
+        self.assertEqual(self.client.get('/api/reports/tenders?store_code=MK',headers=self.headers('admin:manager')).status_code,403)
+        self.assertEqual(self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('manager')).status_code,403)  # the admin's only
         staff_today=self.client.get('/api/today?store_code=DT&business_date=2026-09-08',headers=self.headers()).get_json()
         self.assertNotIn('financial',staff_today['sections'])
         with closing(self.connect()) as con:

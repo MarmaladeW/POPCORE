@@ -1,5 +1,8 @@
 """
 blueprints/sales.py — daily sales records, batch import, daily report, export.
+
+Owner, 2026-11-26: only an admin sees sales. Every route here is the admin's, except saving a day's report, which a
+manager's 审核 of the day's 记一笔 calls, and the staff stock route.
 """
 import os
 import hashlib
@@ -59,7 +62,7 @@ def _require_store_body(con, data):
 
 
 @bp.route('/api/sales')
-@role_required('manager')
+@role_required('admin')
 def get_sales():
     d = request.args.get('date', business_date())
     con = get_db()
@@ -137,7 +140,7 @@ def _history_stock_linked(con, day, store_id):
 
 
 @bp.get('/api/sales/history-matches')
-@role_required('manager')
+@role_required('admin')
 def history_matches():
     con = get_db()
     try:
@@ -207,7 +210,7 @@ def history_matches():
 
 
 @bp.post('/api/sales/record/<int:record_id>/remap')
-@role_required('manager')
+@role_required('admin')
 def remap_historical_sale(record_id):
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -271,7 +274,7 @@ def remap_historical_sale(record_id):
 
 
 @bp.route('/api/sales/upsert', methods=['POST'])
-@role_required('manager')
+@role_required('admin')
 def upsert_sale():
     data  = request.get_json()
     if not isinstance(data, dict) or 'product_id' not in data:
@@ -325,16 +328,19 @@ def upsert_sale():
 
 
 @bp.route('/api/sales/add_product', methods=['POST'])
-@role_required('staff')
+@role_required('admin')
 def add_product_to_sales():
     data = request.get_json()
-    if not data or 'product_id' not in data:
+    if not isinstance(data, dict) or 'product_id' not in data:
         return jsonify({'error': 'product_id is required'}), 400
     try:
         pid = int(data['product_id'])
     except (ValueError, TypeError):
         return jsonify({'error': 'product_id must be an integer'}), 400
-    d = data.get('date', business_date())
+    try:
+        d = read_date(data.get('date', business_date()))
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
 
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
@@ -346,6 +352,10 @@ def add_product_to_sales():
         con.close()
         return denied
     cur = con.cursor()
+    if cur.execute('SELECT 1 FROM products WHERE id = ?', (pid,)).fetchone() is None:
+        con.close()
+        return jsonify({'error': 'Product not found', 'code': 'not_found',
+                        'field': 'product_id'}), 404
     cur.execute('''
         INSERT OR IGNORE INTO daily_sales (product_id, date, store, qty_sold)
         VALUES (?, ?, ?, 0)
@@ -356,7 +366,7 @@ def add_product_to_sales():
 
 
 @bp.route('/api/sales/summary')
-@role_required('manager')
+@role_required('admin')
 def sales_summary():
     con = get_db()
     store_id, store_code, err = _require_store_param(con)
@@ -395,7 +405,7 @@ def sales_summary():
 
 
 @bp.route('/api/sales/record/<int:record_id>', methods=['DELETE'])
-@role_required('manager')
+@role_required('admin')
 def delete_sales_record(record_id):
     con = get_db()
     con.execute('BEGIN IMMEDIATE')
@@ -711,7 +721,7 @@ def batch_stock_operation():
 
 
 @bp.route('/api/sales/batch_upsert', methods=['POST'])
-@role_required('manager')
+@role_required('admin')
 def batch_upsert_sales():
     data = request.get_json()
     if not isinstance(data, dict):
@@ -853,7 +863,7 @@ def _report_money_cents(value, field):
 
 
 @bp.route('/api/sales/report-metadata')
-@role_required('manager')
+@role_required('admin')
 def report_metadata():
     try:
         d = read_date(request.args.get('date'))
@@ -1414,7 +1424,7 @@ def submit_daily_report():
 
 
 @bp.route('/api/sales/export')
-@role_required('manager')
+@role_required('admin')
 def export_sales():
     today     = business_date()
     from_date = request.args.get('from', '')
@@ -1460,7 +1470,7 @@ def export_sales():
 
 
 @bp.route('/api/sales/clear_day', methods=['DELETE'])
-@role_required('manager')
+@role_required('admin')
 def clear_sales_day():
     try:
         d = read_date(request.args.get('date', ''))
@@ -1519,7 +1529,7 @@ def _report_stock_stores(con):
 
 
 @bp.get('/api/sales/report-stock')
-@role_required('manager')
+@role_required('admin')
 def report_stock_notices():
     """Mismatches live stores' daily reports found, open until settled or checked (owner, 2026-10-29)."""
     con = get_db()
@@ -1530,7 +1540,7 @@ def report_stock_notices():
 
 
 @bp.post('/api/sales/report-stock/<int:notice_id>/check')
-@role_required('manager')
+@role_required('admin')
 def check_report_stock_notice(notice_id):
     con = get_db()
     try:
@@ -1546,7 +1556,7 @@ def check_report_stock_notice(notice_id):
 
 
 @bp.post('/api/sales/report-stock/retry')
-@role_required('manager')
+@role_required('admin')
 def retry_report_stock():
     """Take a day's report off the floor again, after stock that was missing has been recorded."""
     data = request.get_json(silent=True) or {}
@@ -1607,7 +1617,7 @@ def _pick_replaces(cur, data, key):
 
 
 @bp.get('/api/sales/name-picks')
-@role_required('manager')
+@role_required('admin')
 def name_picks():
     """Every remembered report name, and each store's pasted days with their names' statuses."""
     con = get_db()
@@ -1618,7 +1628,7 @@ def name_picks():
 
 
 @bp.get('/api/sales/name-picks/day')
-@role_required('manager')
+@role_required('admin')
 def name_picks_day():
     """One pasted day's names, in paste order."""
     con = get_db()
@@ -1636,7 +1646,7 @@ def name_picks_day():
 
 
 @bp.post('/api/sales/name-picks')
-@role_required('manager')
+@role_required('admin')
 def save_name_pick():
     """Pick, confirm or change the product a report name means. A different product replaces the old
     pick. With store_code and section (a pasted line), the pick also confirms that line's situation."""
@@ -1678,7 +1688,7 @@ def save_name_pick():
 
 
 @bp.delete('/api/sales/name-picks')
-@role_required('manager')
+@role_required('admin')
 def forget_name_pick():
     """Forget a pick: the next paste matches the name as if it had never been answered."""
     data = request.get_json(silent=True)
@@ -1704,7 +1714,7 @@ def forget_name_pick():
 
 
 @bp.post('/api/sales/name-picks/ignore')
-@role_required('manager')
+@role_required('admin')
 def ignore_name():
     """Set a name aside (an outfit, a one-off order) or bring it back. Pastes still ask about it."""
     data = request.get_json(silent=True)
@@ -1729,7 +1739,7 @@ def ignore_name():
 
 
 @bp.route('/api/sales/recorded-dates')
-@role_required('manager')
+@role_required('admin')
 def recorded_dates():
     """Return dates in a given month that have at least one daily_sales row."""
     month      = (request.args.get('month') or '').strip()      # YYYY-MM
@@ -2109,7 +2119,7 @@ def _parse_token(token: str, section: str) -> dict | None:
 
 
 @bp.route('/api/sales/parse_report', methods=['POST'])
-@role_required('manager')
+@role_required('admin')
 def parse_daily_report():
     """
     Full five-layer daily report import pipeline.

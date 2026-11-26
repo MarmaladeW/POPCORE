@@ -1,7 +1,7 @@
 """Staff close the store day (owner, 2026-10-27): "staff can def close, but give them as little information
 as possible". A staff member with a shift at the store that day opens the closing, counts the cash and submits
-it, whoever took the day's orders; a manager still signs off. The server sends staff the day's totals and the
-blockers and exceptions as labels, never another cashier's order, amount or reference."""
+it, whoever took the day's orders; a manager still signs off. The server sends staff the blockers and exceptions as
+labels, never another cashier's order, amount or reference, and (owner, 2026-11-26) none of the day's takings."""
 import json
 from contextlib import closing
 
@@ -52,7 +52,7 @@ class StaffClosingTests(StoreDayCase):
             {'code': code, 'reason': 'Matched the card terminal'} for code in manager['review_exceptions']]}, 'manager')
         self.assertEqual((closed.status_code, closed.get_json().get('status')), (200, 'closed'), closed.get_json())
 
-    def test_staff_see_totals_and_labels_but_not_another_cashiers_order(self):
+    def test_staff_see_labels_but_no_takings_and_not_another_cashiers_order(self):
         mine = self.order('staff', 'ORDER-MINE')
         theirs = self.order('staff:other', 'ORDER-THEIRS', quantity=20)  # too few on hand: waits for allocation
         manager = self.closing(TODAY, 'manager')
@@ -60,9 +60,11 @@ class StaffClosingTests(StoreDayCase):
         self.assertIn(f'pending_allocation:{theirs}', manager['hard_blockers'])
         self.assertEqual(manager['issue_targets'][f'pending_allocation:{theirs}']['href'], f'/sales/documents/{theirs}')
         self.assertIn('unknown_payment_ids', manager)
-        # Staff: the same day totals, every blocker and exception as a label, and only their own sale.
-        self.assertEqual(staff['tender_totals_cents'], manager['tender_totals_cents'])
-        self.assertEqual(staff['tender_totals_cents']['card'], 21000)
+        # Staff: every blocker and exception as a label and only their own sale; the day's takings are the manager's.
+        self.assertEqual(manager['tender_totals_cents']['card'], 21000)
+        self.assertNotIn('tender_totals_cents', staff)
+        self.assertFalse({'verified_cash_receipts_cents', 'expected_drawer_cents'} & set(staff['cash']))
+        self.assertNotIn('21000', json.dumps(staff))
         self.assertIn('pending_allocation', staff['hard_blockers'])
         self.assertEqual(staff['review_exceptions'], ['payment_unverified', 'payment_unverified'])
         self.assertEqual([sale['id'] for sale in staff['source_documents']['sales']], [mine])
@@ -91,6 +93,13 @@ class StaffClosingTests(StoreDayCase):
         self.assertEqual(self.open_closing(YESTERDAY, 'staff:other').status_code, 403)  # no longer employed
         self.assertEqual(self.open_closing(TODAY).status_code, 201)
         self.assertEqual(self.open_closing(YESTERDAY, 'manager').status_code, 201)
+
+    def test_staff_open_only_todays_closing_even_with_a_shift_on_the_other_day(self):
+        """Owner, 2026-11-26: below manager, closing is for today; an earlier day is a manager's."""
+        self.assertEqual(self.open_closing(YESTERDAY).status_code, 403)
+        earlier = self.closing(YESTERDAY, 'manager')
+        self.assertEqual(self.client.get(f"/api/closing/{earlier['closing_id']}", headers=self.headers()).status_code, 403)
+        self.assertEqual(self.open_closing(TODAY).status_code, 201)
 
 
 if __name__ == '__main__':

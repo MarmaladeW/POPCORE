@@ -1,9 +1,9 @@
 """库存价值 by IP line (owner, 2026-11-03): what each place's stock is worth, split into IP lines such as
 Smiski, Sonny Angel, Hirono and Labubu, and what makes up one line.
 
-Managers and admins only, read-only, from the same live ledger as the 库存 overview: saleable stock at
-reviewed locations, valued at each product's retail price. A product's IP line is its catalogue
-`ip_series`; a confirmed design or sealed set without one takes its series' (or its blind box's). The
+The admin only (owner, 2026-11-26; managers too before then), read-only, from the same live ledger as the
+库存 overview: saleable stock at reviewed locations, valued at each product's retail price. A product's
+IP line is its catalogue `ip_series`; a confirmed design or sealed set without one takes its series' (or its blind box's). The
 catalogue's combined "Smiski & SA" is split into Smiski and Sonny Angel by name. A product with no line
 at all is placed by its name (SA → Sonny Angel, SP → SkullPanda, 小野 → Hirono …) and marked as guessed,
 so the owner can check it and set the real line in Products; anything still unplaced is 未分类 Unsorted.
@@ -11,9 +11,9 @@ so the owner can check it and set the real line in Products; anything still unpl
 import re
 from collections import Counter, defaultdict
 
+from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_overview import ROLES, _role, sealed_set_of_box
 from inventory_catalog import _locations
-from inventory_visibility import sees_every_store
 from operational_reports import _inventory_identity_valid, _product_name
 from stock_losses import cents
 
@@ -99,8 +99,8 @@ def _add(total, quantity, price, unit, guessed=False):
 
 
 def inventory_value(con, actor, store_code, place=None, line=None):
-    if not sees_every_store(actor):
-        raise PermissionError('库存价值 Stock value is for managers and admins')
+    if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM), -1) < ROLE_HIERARCHY['admin']:
+        raise PermissionError('库存价值只有管理员能看。Stock value is for the admin only.')
     con.execute('BEGIN')
     try:
         locations = [location for location in _locations(con, actor, store_code) if location['opening_verified']]

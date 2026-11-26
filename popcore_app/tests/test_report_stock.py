@@ -64,18 +64,18 @@ class ReportStockTests(IsolatedApiCase):
                                  AND disposition='saleable'""", (product, self.locations['floor'])).fetchone()
             return row[0] if row else 0
 
-    def notices(self, role='manager'):
+    def notices(self, role='admin:manager'):  # sales routes are the admin's (owner, 2026-11-26)
         response = self.client.get('/api/sales/report-stock', headers=self.headers(role))
         self.assertEqual(response.status_code, 200, response.get_json())
         return {(row['product_id'], row['reason']): row for row in response.get_json()['notices']}
 
     def check(self, notice):
-        response = self.client.post(f"/api/sales/report-stock/{notice['id']}/check", headers=self.headers('manager'))
+        response = self.client.post(f"/api/sales/report-stock/{notice['id']}/check", headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200, response.get_json())
 
     def retry(self, day=LIVE_DATE):
         response = self.client.post('/api/sales/report-stock/retry', json={'date': day, 'store_code': 'DT'},
-                                    headers=self.headers('manager'))
+                                    headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()['stock']
 
@@ -126,7 +126,7 @@ class ReportStockTests(IsolatedApiCase):
         same = self.report([(self.box, 1)]).get_json()['stock']
         self.assertEqual((same['taken'], same['returned'], same['documents']), (0, 0, []))
         cleared = self.client.delete('/api/sales/clear_day', query_string={'date': LIVE_DATE, 'store_code': 'DT'},
-                                     headers=self.headers('manager'))
+                                     headers=self.headers('admin:manager'))
         self.assertEqual(cleared.status_code, 200, cleared.get_json())
         self.assertEqual((cleared.get_json()['stock']['returned'], self.floor(self.box)), (1, 30))
         self.assertEqual([kind for kind, _ in self.documents()], ['consume', 'correction', 'correction'])
@@ -140,7 +140,7 @@ class ReportStockTests(IsolatedApiCase):
         for quantity, left in ((2, 28), (5, 25), (0, 30)):
             response = self.client.post('/api/sales/upsert', json={
                 'product_id': self.box, 'qty_pos': quantity, 'date': LIVE_DATE, 'store_code': 'DT',
-            }, headers=self.headers('manager'))
+            }, headers=self.headers('admin:manager'))
             self.assertEqual(response.status_code, 200, response.get_json())
             self.assertEqual(self.floor(self.box), left)
 
@@ -151,7 +151,7 @@ class ReportStockTests(IsolatedApiCase):
         self.assertEqual((markham.status_code, markham.get_json()['stock']), (200, None))
         self.assertEqual((self.floor(self.box), self.documents()), (30, []))
 
-    def test_only_managers_and_admins_paste_reports(self):
+    def test_only_admins_paste_reports_and_a_manager_only_saves_one(self):
         day = {'date': LIVE_DATE, 'store_code': 'DT'}
         for path, body in (('/api/sales/parse_report', {'text': 'POS:\nEcho 1', 'store_code': 'DT'}),
                            ('/api/sales/submit_daily_report', {**day, 'classification': 'summary_only', 'items': []}),
@@ -162,6 +162,16 @@ class ReportStockTests(IsolatedApiCase):
             with self.subTest(path=path):
                 self.assertEqual(self.client.post(path, json=body, headers=self.headers('staff')).status_code, 403)
         self.assertEqual(self.client.get('/api/sales/report-stock', headers=self.headers('staff')).status_code, 403)
+        # Owner, 2026-11-26: only an admin sees sales; a manager keeps saving a day's report (the 审核 of 记一笔).
+        for path, body in (('/api/sales/parse_report', {'text': 'POS:\nEcho 1', 'store_code': 'DT'}),
+                           ('/api/sales/upsert', {**day, 'product_id': self.box, 'qty_pos': 1}),
+                           ('/api/sales/report-stock/retry', day)):
+            with self.subTest(path=path, role='manager'):
+                self.assertEqual(self.client.post(path, json=body, headers=self.headers('manager')).status_code, 403)
+        for path in ('/api/sales/report-stock', f'/api/sales?date={LIVE_DATE}&store_code=DT', '/api/sales/summary?store_code=DT',
+                     f'/api/sales/export?store_code=DT', f'/api/sales/report-metadata?date={LIVE_DATE}&store=DT'):
+            with self.subTest(path=path, role='manager'):
+                self.assertEqual(self.client.get(path, headers=self.headers('manager')).status_code, 403)
         self.assertEqual(self.report([(self.box, 1)], role='admin').status_code, 200)
         self.assertEqual(self.floor(self.box), 29)
 
@@ -191,10 +201,14 @@ class ReportStockTests(IsolatedApiCase):
             con.commit()
         self.assertEqual((self.retry()['taken'], self.floor(self.box), self.notices()), (10, 20, {}))
 
-    def test_mismatches_wait_on_the_manager_home_until_checked(self):
+    def test_mismatches_wait_on_the_admin_home_until_checked(self):
         self.report([(self.item, 5)])
+        # Owner, 2026-11-26: daily-report figures are the admin's only; a manager's home leaves them out.
+        manager = self.client.get('/api/today', query_string={'store_code': 'DT', 'business_date': LIVE_DATE},
+                                  headers=self.headers('manager')).get_json()['sections']
+        self.assertNotIn('report_stock', manager)
         sections = self.client.get('/api/today', query_string={'store_code': 'DT', 'business_date': LIVE_DATE},
-                                   headers=self.headers('manager')).get_json()['sections']
+                                   headers=self.headers('admin:manager')).get_json()['sections']
         self.assertEqual([(row['type'], row['status'], row['label']) for row in sections['report_stock']['rows']],
                          [('report_stock', 'not_enough_on_floor', 'Bear 吊卡 × 2')])
         staff = self.client.get('/api/today', query_string={'store_code': 'DT', 'business_date': LIVE_DATE},
@@ -202,7 +216,7 @@ class ReportStockTests(IsolatedApiCase):
         self.assertNotIn('report_stock', staff)
         notice = self.notices()[(self.item, 'not_enough_on_floor')]
         self.check(notice)
-        again = self.client.post(f"/api/sales/report-stock/{notice['id']}/check", headers=self.headers('manager'))
+        again = self.client.post(f"/api/sales/report-stock/{notice['id']}/check", headers=self.headers('admin:manager'))
         self.assertEqual((again.status_code, again.get_json()['code']), (409, 'notice_closed'))
         # Checked: the floor count already left those two out, so the same report never takes them.
         same = self.report([(self.item, 5)]).get_json()['stock']

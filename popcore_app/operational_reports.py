@@ -39,8 +39,9 @@ def _scope(con,actor,code):
 
 def query_report(con,name,*,actor,filters):
     if name not in REPORTS: raise KeyError(name)
-    if name in FINANCIAL and ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM,'viewer'),0)<ROLE_HIERARCHY['manager']:
-        raise PermissionError('Manager report access required')
+    # Owner, 2026-11-26: only an admin sees sales, takings and closing figures.
+    if name in FINANCIAL and ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM,'viewer'),0)<ROLE_HIERARCHY['admin']:
+        raise PermissionError('Admin report access required')
     page=int(filters.get('page') or 1);size=int(filters.get('page_size') or 100)
     if page<1 or size<1 or size>500: raise InventoryValidationError('page/page_size is out of range')
     start=filters.get('from') or '0001-01-01';end=filters.get('to') or '9999-12-31'

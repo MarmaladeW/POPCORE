@@ -71,14 +71,14 @@ class DesignInventoryFlowTests(ReceivingFixture):
         self.assertEqual(after_identify[self.product_id, 'saleable']['quantity'], 3)
         self.assertEqual(after_identify[blue, 'saleable'], before[blue, 'saleable'])
 
-        sale = post('/api/sale-documents', {
+        sale = post('/api/sale-documents', {  # 补录 is a manager's (owner, 2026-11-26)
             'store_id': self.store_id, 'business_date': '2026-09-30', 'entry_mode': 'planned_entry',
             'source': {'system': 'manual', 'account': 'DT', 'reference': 'FLOW-RED-SALE'},
             'subtotal_cents': 8000, 'source_tax_cents': 1040, 'gross_cents': 9040,
             'reduction_cents': 0, 'rounding_cents': 0, 'collected_cents': 9040,
             'lines': [{'product_id': red, 'unit': 'piece', 'quantity': 4,
                        'unit_price_cents': 2000, 'source_tax_cents': 1040}],
-        }, 'flow-sale-create', 201)
+        }, 'flow-sale-create', 201, 'manager:staff')
         sold = post(f"/api/sale-documents/{sale['sale_id']}/post", {
             'expected_version': sale['version'],
         }, 'flow-sale-post')

@@ -48,7 +48,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
         before = self.snapshot(('daily_sales', 'stock', 'stock_transactions'))
         response = self.client.post(
             '/api/sales/upsert',
-            headers=self.headers('manager'),
+            headers=self.headers('admin:manager'),
             json={
                 'product_id': self.product_id,
                 'store_code': 'DT',
@@ -67,7 +67,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
     def test_fractional_sale_is_not_truncated(self):
         response = self.client.post(
             '/api/sales/upsert',
-            headers=self.headers('manager'),
+            headers=self.headers('admin:manager'),
             json={
                 'product_id': self.product_id,
                 'store_code': 'DT',
@@ -84,7 +84,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
             with self.subTest(value=value):
                 response = self.client.post(
                     '/api/sales/upsert',
-                    headers=self.headers('manager'),
+                    headers=self.headers('admin:manager'),
                     json={
                         'product_id': self.product_id,
                         'store_code': 'DT',
@@ -99,7 +99,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
         before = self.snapshot(('daily_sales',))
         response = self.client.post(
             '/api/sales/batch_upsert',
-            headers=self.headers('manager'),
+            headers=self.headers('admin:manager'),
             json={
                 'store_code': 'DT',
                 'items': [
@@ -116,7 +116,7 @@ class SalesRouteValidationTests(IsolatedApiCase):
     def test_invalid_business_date_is_rejected(self):
         response = self.client.post(
             '/api/sales/upsert',
-            headers=self.headers('manager'),
+            headers=self.headers('admin:manager'),
             json={
                 'product_id': self.product_id,
                 'store_code': 'DT',
@@ -128,13 +128,34 @@ class SalesRouteValidationTests(IsolatedApiCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()['field'], 'date')
 
+    def test_adding_a_sale_line_is_the_admins_and_checks_its_date_and_product(self):
+        """Owner, 2026-11-26: sales records are the admin's. An empty line on a day would also make the day read
+        as pasted, so its date and product are checked (a product that does not exist used to be a server error)."""
+        before = self.snapshot(('daily_sales',))
+        body = {'product_id': self.product_id, 'store_code': 'DT', 'date': '2026-09-08'}
+
+        def add(role='admin', **changes):
+            return self.client.post('/api/sales/add_product', headers=self.headers(role), json={**body, **changes})
+        for role in ('staff', 'manager'):
+            self.assertEqual(add(role).status_code, 403)
+        for date in ('09/08/2026', 'soon', 20260908, None):
+            with self.subTest(date=date):
+                self.assertEqual(add(date=date).status_code, 400)
+        missing = add(product_id=999999)
+        self.assertEqual((missing.status_code, missing.get_json()['code']), (404, 'not_found'))
+        self.assertEqual(self.client.post('/api/sales/add_product', headers=self.headers('admin'), json=['product_id']).status_code, 400)
+        self.assertEqual(self.snapshot(('daily_sales',)), before)
+        self.assertEqual(add().status_code, 200)
+        with closing(self.connect()) as con:
+            self.assertEqual(tuple(con.execute('SELECT date, store, qty_sold FROM daily_sales').fetchone()), ('2026-09-08', 'DT', 0))
+
     def test_invalid_and_all_store_writes_change_nothing(self):
         before = self.snapshot(('daily_sales',))
         for store_code in ('MISSING', 'ALL'):
             with self.subTest(store_code=store_code):
                 response = self.client.post(
                     '/api/sales/upsert',
-                    headers=self.headers('manager'),
+                    headers=self.headers('admin:manager'),
                     json={
                         'product_id': self.product_id,
                         'store_code': store_code,

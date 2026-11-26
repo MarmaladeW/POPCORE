@@ -21,6 +21,26 @@ def _admin(actor):
     return ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM), 0) >= ROLE_HIERARCHY['admin']
 
 
+def _stores(con, actor):
+    """The stores whose special orders an account works with: None (every store) for managers and admins; below
+    manager only the stores it has 门店操作权限 for (owner, 2026-11-26)."""
+    if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM), 0) >= ROLE_HIERARCHY['manager']:
+        return None
+    return {row[0] for row in con.execute(
+        'SELECT store_id FROM inventory_access WHERE auth0_sub=?', (actor.get('sub'),))}
+
+
+def _mine(row, actor, stores):
+    return stores is None or row['pickup_store_id'] in stores or row['created_by'] == actor.get('sub')
+
+
+def _require_order(con, row, actor):
+    """Below manager: an order picked up at one of the account's stores, or one it created."""
+    if not _mine(row, actor, _stores(con, actor)):
+        raise PermissionError('这张特殊订单不在你的门店。This special order is not at one of your stores.')
+    return row
+
+
 def _timestamp(value, field):
     if not isinstance(value, str):
         raise InventoryValidationError(f'{field} must be an ISO timestamp')
@@ -112,7 +132,7 @@ def _order_detail(con, row, show_phone):
 
 
 def order_detail(con, order_id, actor):
-    return _order_detail(con, _order_row(con, order_id), can_see_phone(con, actor))
+    return _order_detail(con, _require_order(con, _order_row(con, order_id), actor), can_see_phone(con, actor))
 
 
 def list_orders(con, actor, status):
@@ -133,7 +153,8 @@ def list_orders(con, actor, status):
            WHERE o.status=? ORDER BY o.id DESC""",
         (status,),
     ).fetchall()
-    return [_order_detail(con, row, show_phone) for row in rows]
+    stores = _stores(con, actor)
+    return [_order_detail(con, row, show_phone) for row in rows if _mine(row, actor, stores)]
 
 
 def create_order(con, data, actor, request_key):
@@ -149,6 +170,10 @@ def create_order(con, data, actor, request_key):
             data.get('item_description'), 'item_description', 500
         )
         pickup_store_id = _pickup_store(con, data.get('pickup_store_id'))
+        stores = _stores(con, actor)
+        if stores is not None and pickup_store_id not in stores:
+            raise PermissionError('你还没有这家店的门店操作权限，不能在这里开特殊订单。'
+                                  'You do not have store access at this pickup store.')
         total_cents = read_int(data.get('total_cents'), 'total_cents', minimum=1)
         initial_paid = read_int(
             data.get('initial_paid_cents', 0), 'initial_paid_cents', minimum=0
@@ -186,7 +211,7 @@ def create_order(con, data, actor, request_key):
 def add_payment(con, order_id, data, actor, request_key):
     _begin(con)
     try:
-        row = _order_row(con, order_id)
+        row = _require_order(con, _order_row(con, order_id), actor)
         intent = {**data, 'order_id': row['id']}
         key, digest, prior = _replay(
             con, request_key, 'special_order_payment', actor, intent
@@ -235,7 +260,7 @@ def add_payment(con, order_id, data, actor, request_key):
 def complete_order(con, order_id, data, actor, request_key):
     _begin(con)
     try:
-        row = _order_row(con, order_id)
+        row = _require_order(con, _order_row(con, order_id), actor)
         intent = {**data, 'order_id': row['id']}
         key, digest, prior = _replay(
             con, request_key, 'special_order_complete', actor, intent
@@ -282,7 +307,7 @@ def complete_order(con, order_id, data, actor, request_key):
 def correct_order(con, order_id, data, actor, request_key):
     _begin(con)
     try:
-        row = _order_row(con, order_id)
+        row = _require_order(con, _order_row(con, order_id), actor)
         intent = {**data, 'order_id': row['id']}
         key, digest, prior = _replay(
             con, request_key, 'special_order_correct', actor, intent
@@ -314,6 +339,10 @@ def correct_order(con, order_id, data, actor, request_key):
         )}
         if 'pickup_store_id' in data:
             values['pickup_store_id'] = _pickup_store(con, data['pickup_store_id'])
+            stores = _stores(con, actor)
+            if stores is not None and values['pickup_store_id'] not in stores:
+                raise PermissionError('你还没有那家店的门店操作权限，换取货店要店长来改。'
+                                      'You do not have store access at that pickup store; ask a manager to move it.')
         if 'created_by' in data:
             values['created_by'] = _employee_subject(
                 con, data['created_by'], 'created_by'

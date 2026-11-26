@@ -7,6 +7,16 @@ SYSTEM_NAMES = {
 }
 
 
+# Never sent to a page (owner, 2026-11-26): a PIN's hash and lock state (pins.py; four digits are found from the
+# hash at once), and the private calendar address, which only GET /api/schedule/calendar-feed gives, to its owner.
+PRIVATE_FIELDS = ('pin_hash', 'pin_salt', 'pin_failures', 'pin_locked_until', 'pin_set_at', 'ical_token')
+
+
+def public(row):
+    """An employees row as a page may have it."""
+    return {key: value for key, value in dict(row).items() if key not in PRIVATE_FIELDS}
+
+
 def names(con, subjects):
     """{account: display name} for these accounts."""
     subjects = sorted({subject for subject in subjects if subject})

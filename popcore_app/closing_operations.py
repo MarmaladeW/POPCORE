@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import checkout_access
 from checkout_operations import checkout_funds
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from goods_operations import _begin, _remember, _replay
@@ -38,10 +39,13 @@ def _is_manager(actor):
 
 def _require_closing_access(con, store_id, business_date, actor, minimum='staff'):
     """Staff close a store day they had a shift on, whoever took its orders (owner, 2026-10-27); they
-    get the staff view of `closing_detail`. Managers and admins keep the checkout history scope."""
+    get the staff view of `closing_detail`, and only of today (owner, 2026-11-26: an earlier day is a manager's).
+    Managers and admins keep the checkout history scope."""
     require_inventory_access(con, actor, (store_id,), minimum)
     if _is_manager(actor):
         require_checkout_history_store(con, store_id, actor, business_date, business_date)
+    elif business_date != checkout_access.business_date():
+        raise PermissionError('Below manager, closing is for today only')
     elif not con.execute(
         """SELECT 1 FROM shifts s JOIN employees e ON e.id=s.employee_id
            WHERE e.auth0_id=? AND e.is_active=1 AND s.store_id=? AND s.date=?""",
@@ -437,15 +441,20 @@ def closing_detail(con, closing_id, *, actor):
     funds = checkout_funds(con,session['store_id'],session['business_date'])
     totals,unknown = _tender_summary(_payment_rows(con,session['store_id'],session['business_date']),funds,
                                      _refund_rows(con,session['store_id'],session['business_date']))
-    result['tender_totals_cents'] = totals  # the day's totals per tender; staff see these too
     if not is_manager:
         # Staff see what blocks the day and what a manager will review as labels: only what they can act
         # on and open keeps its id and link. No other cashier's order, amount or reference.
         result['hard_blockers'] = [code if code in targets else code.split(':')[0] for code in hard]
         result['review_exceptions'] = [code.split(':')[0] for code in exceptions]
-        for key in ('unknown_cash_payment_ids', 'unknown_checkout_cash_attempt_ids'):
+        # Owner, 2026-11-26: the day's takings are not for staff: no totals per tender, no cash received or
+        # expected in the drawer, and no expected amount or difference on the count they entered.
+        for key in ('unknown_cash_payment_ids', 'unknown_checkout_cash_attempt_ids',
+                    'verified_cash_receipts_cents', 'expected_drawer_cents'):
             result['cash'].pop(key)
+        for key in ('expected_cents', 'variance_cents'):
+            (result['latest_cash_count'] or {}).pop(key, None)
     else:
+        result['tender_totals_cents'] = totals  # the day's totals per tender
         result['checkout_funds'] = funds
         result['unknown_payment_ids'] = unknown
         result['hard_blockers'] = hard

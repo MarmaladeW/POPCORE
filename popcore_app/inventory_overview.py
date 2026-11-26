@@ -1,14 +1,18 @@
 """库存 overview (owner, 2026-11-01): what the floor needs, what is selling and what changed lately.
 
 Read-only, from the live ledger (reviewed locations only) and the pasted 日报 (daily_sales). Money appears
-only as the stock's value at retail price, and only for managers and admins (owner, 2026-11-03; the
-approved Figma strip's 库存价值 cell). It shares the series inventory's access check, so whoever may not
-see a store's stock gets nothing here either.
+only as the stock's value at retail price (the approved Figma strip's 库存价值 cell). It shares the series
+inventory's access check, so whoever may not see a store's stock gets nothing here either.
+
+Sales figures and the value of stock are the admin's alone (owner, 2026-11-26; value was managers' too since
+2026-11-03): below admin the refill, running-low and sold-out lists stay, without their sales numbers, and
+there are no best sellers. Losses among the recent changes are for managers and admins.
 """
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from inventory_catalog import _locations
 from inventory_visibility import sees_every_store
 from operational_reports import _inventory_identity_valid, _product_name
@@ -66,7 +70,8 @@ def inventory_overview(con, actor, store_code, today=None):
     # Saleable stock per store and product, by role: floor, back (upstairs or warehouse), display, claw.
     stock = defaultdict(Counter)
     figures = {}
-    priced = sees_every_store(actor)
+    admin = ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM), -1) >= ROLE_HIERARCHY['admin']
+    priced = admin
     value = {'value_cents': 0, 'unpriced_units': 0, 'unpriced_products': set()}
     for location in locations:
         cell = figures.setdefault(_role(location['code']), {'key': _role(location['code']), 'codes': [], 'units': 0,
@@ -153,6 +158,13 @@ def inventory_overview(con, actor, store_code, today=None):
     sold_out.sort(key=lambda row: (-row['sold_recent'], row['name']))
     best = [item(key) for key, _ in sorted(week.items(), key=lambda pair: (-pair[1], products[pair[0][1]]['sku'] or ''))
             if key[1] in products][:8]
+    refill_count = len(refill)
+    refill, low, sold_out = refill[:LIST_LIMIT], low[:LIST_LIMIT], sold_out[:LIST_LIMIT]
+    if not admin:
+        # The lists are sorted with the sales; only then do the numbers go.
+        for row in (*refill, *low, *sold_out):
+            row.update(sold_week=None, sold_recent=None, last_sold=None, pace=None, days_left=None)
+        best = []
 
     # Recent changes: posted ledger documents of the last PACE_DAYS business days, per day and kind.
     changes = {}
@@ -165,6 +177,8 @@ def inventory_overview(con, actor, store_code, today=None):
                 WHERE d.status='posted' AND d.business_date>=? AND m.location_id IN ({marks})
                 GROUP BY d.id,m.location_id''', (pace_from, *by_id)):
         kind = CHANGE_SOURCES.get(row['source_type']) or ('restock' if row['kind'] == 'restock_complete' else row['kind'])
+        if kind == 'loss' and not sees_every_store(actor):
+            continue
         store = by_id[row['location_id']]['store_code']
         change = changes.setdefault((row['business_date'], kind, store), {
             'business_date': row['business_date'], 'kind': kind, 'store_code': store,
@@ -183,13 +197,13 @@ def inventory_overview(con, actor, store_code, today=None):
                      'unpriced_units': cell['unpriced_units'] if priced else None}
                     for role in (*ROLES, *sorted(set(figures) - set(ROLES))) if (cell := figures.get(role))],
         'in_stock_products': len({product_id for (_, product_id), held in stock.items() if sum(held.values())}),
-        'report_days': len(set().union(*report_days.values())) if report_days else 0,
-        'last_report': max(last_sold.values(), default=None),
-        'refill': refill[:LIST_LIMIT], 'refill_count': len(refill),
-        'running_low': low[:LIST_LIMIT], 'sold_out': sold_out[:LIST_LIMIT], 'best_sellers': best,
+        'report_days': (len(set().union(*report_days.values())) if report_days else 0) if admin else None,
+        'last_report': max(last_sold.values(), default=None) if admin else None,
+        'refill': refill, 'refill_count': refill_count,
+        'running_low': low, 'sold_out': sold_out, 'best_sellers': best,
         'recent_changes': [{key: value for key, value in row.items() if key != 'latest'} | {'documents': len(row['documents'])}
                            for row in recent],
         'not_set_up': len(products) - len(valid),
-        # Retail value of the saleable stock above (and of each place in figures), for managers and admins only.
+        # Retail value of the saleable stock above (and of each place in figures), for the admin only.
         'value': {**value, 'unpriced_products': len(value['unpriced_products'])} if priced else None,
     }

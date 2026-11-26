@@ -92,7 +92,7 @@ def get_today(con, *, actor, store_code=None, business_date=None):
     if role in {'staff','manager','admin'}:
         sections['my_work'] = _section(mine)
         sections['operations'] = _section(sorted(operations, key=lambda r: (r.get('updated_at') or '', r['type'], r['source_id'])))
-    if role in {'manager','admin'}:
+    if role == 'admin':  # owner, 2026-11-26: sales, takings and daily-report figures are the admin's only
         financial = []
         if ids:
             marks = ','.join('?' for _ in ids)
@@ -121,6 +121,7 @@ def get_today(con, *, actor, store_code=None, business_date=None):
             {'source_id': n['id'], 'type': 'report_stock', 'link': '/sales/report-stock', 'store_id': n['store_id'],
              'status': n['reason'], 'version': None, 'updated_at': n['business_date'],
              'label': f"{n['name']} × {n['quantity']}"} for n in open_notices(con, ids))
+    if role in {'manager','admin'}:
         # 异常提醒 Watcher alerts (owner, 2026-11-24): these stores' open ones, and for admins the store-less ones.
         sections['watch'] = _section(watcher.today_rows(con, role, ids))
     def visible(row):
@@ -143,6 +144,6 @@ def get_today(con, *, actor, store_code=None, business_date=None):
     # Filter before truncation so hidden rows cannot leak through total counts.
     if role in {'staff','manager','admin'}:
         sections['my_work'] = _section(row for row in mine if visible(row))
-    if role in {'manager','admin'}:
+    if role == 'admin':
         sections['financial'] = _section(row for row in financial if visible(row))
     return {'business_date':business_date,'generated_at':datetime.now(ZoneInfo('UTC')).isoformat(),'role':role,'scope':requested,'authorized_stores':authorized,'store_ids':ids,'sections':sections}

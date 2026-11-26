@@ -8,7 +8,7 @@ from blueprints.sales import _detect_section_type
 
 class ReportFormatCheckTests(IsolatedApiCase):
     def parse(self, text, store='DT', date=None):
-        response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
+        response = self.client.post('/api/sales/parse_report', headers=self.headers('admin:manager'),
                                     json={'text': text, 'store_code': store, 'date': date})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()

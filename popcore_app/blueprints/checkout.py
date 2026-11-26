@@ -176,8 +176,12 @@ def quick_sale_save():
                      for payment in sale['payments'])
     items = '，'.join(f"{line['name']}*{line['quantity']}" + ('（display）' if line['from_display'] else '')
                      for line in sale['lines'][:6]) + ('…' if len(sale['lines']) > 6 else '')
+    # A price a manager typed over the list price says so on the line (owner, 2026-11-26).
+    typed = '，'.join(f"{line['name']} ${line['unit_price_cents'] / 100:.2f}（原价 ${line['list_price_cents'] / 100:.2f}）"
+                     for line in sale.pop('typed_prices', []))
     activity.note(store_id=sale['store_id'], summary=f"记一笔 Recorded a sale · {sale['reference']}",
-                  detail=' · '.join(filter(None, [paid, items, '没有照片 No photo' if sale['needs_photo'] else ''])),
+                  detail=' · '.join(filter(None, [paid, items, f'改价 Typed price: {typed}' if typed else '',
+                                                  '没有照片 No photo' if sale['needs_photo'] else ''])),
                   link='/sales/quick')
     return jsonify(sale), 201
 
