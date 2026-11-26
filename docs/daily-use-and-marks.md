@@ -29,7 +29,7 @@ Idempotency-Key from the same account is kept once; writing the row never fails 
 搬下来了 Done may ask to be quiet (`X-Popcore-Quiet: 1` on submit, item picks and the send); the arrival never is.
 
 - `GET /api/activity?store_code=&date=&person=&kind=&before_id=&limit=`: newest first, one day, with the people and
-  the kinds that day had. Managers and admins read every store and every line; staff and the store computer read the
+  the kinds that day had. Since 2026-11-26 only admins read every line and everyone else reads only the lines they made themselves (docs/access-rules.md). Before that, managers and admins read every store and every line; staff and the store computer read the
   stores they work at (schedule stores, shifts, 门店操作权限), without the lines marked `audience='manager'` (money,
   people, settings, others' availability and punches) unless they did them.
 - The app: 动态 in the menu for everyone who works at a store (staff and up, and the counter account), and 店里动态 on
@@ -46,7 +46,7 @@ Looking around, the pickup-code lookup and notification settings need none. The 
 
 - Staff set their own PIN from 我的 PIN (the account menu, 更多 on the phone, and a prompt on the staff home while they
   have none). Four digits, not all the same and not 1234/4321/0123; stored salted and hashed (PBKDF2).
-- Five wrong PINs in a row lock that PIN for five minutes. A manager clears a forgotten PIN in 员工 Users → 重设 PIN.
+- Five wrong PINs in a row lock that PIN for five minutes. Every wrong PIN after that locks it again at once, until the right one is typed. A forgotten PIN is set again from 我的 PIN on the person's own phone; an admin can clear one in 员工 Users → 重设 PIN.
 
 ## Daily shortcuts
 
