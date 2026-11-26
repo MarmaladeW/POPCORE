@@ -3,7 +3,7 @@ import { Alert } from 'antd'
 import dayjs from 'dayjs'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { getEmployeeMonthDetail, type EmployeeMonthDetail } from './scheduleApi'
+import { getEmployeeMonthDetail, getMyMonthDetail, type EmployeeMonthDetail } from './scheduleApi'
 import {
   countedRange, formatHours, isRegularOn, monthDay, regularSplit, shortDay, weeksOfPeriod,
 } from './monthlyDetail'
@@ -11,17 +11,20 @@ import RegularMark from './RegularMark'
 import TrainingMark from './TrainingMark'
 
 /** One employee's month, shift by shift and week by week, laid out to be screenshotted and sent
- *  to them. Same wage period and store scope as the monthly report row it was opened from. */
+ *  to them. Same wage period and store scope as the monthly report row it was opened from.
+ *  With employeeId "me" it is the signed-in person's own month at every store (the staff 月工时 tab): the two
+ *  buttons then step by month and there is no list to go back to. */
 export default function EmployeeMonthReport({ employeeId, year, month, storeCode, storeName, onBack, onPrevious, onNext }: {
-  employeeId: number
+  employeeId: number | 'me'
   year: number
   month: number
   storeCode: string
   storeName?: string
-  onBack: () => void
+  onBack?: () => void
   onPrevious?: () => void
   onNext?: () => void
 }) {
+  const mine = employeeId === 'me'
   const [detail, setDetail] = useState<EmployeeMonthDetail | null>(null)
   const [error, setError] = useState('')
 
@@ -29,23 +32,23 @@ export default function EmployeeMonthReport({ employeeId, year, month, storeCode
     let current = true
     setDetail(null)
     setError('')
-    getEmployeeMonthDetail(employeeId, year, month, storeCode)
-      .then(data => { if (current) setDetail(data) })
+    const request = employeeId === 'me' ? getMyMonthDetail(year, month) : getEmployeeMonthDetail(employeeId, year, month, storeCode)
+    request.then(data => { if (current) setDetail(data) })
       .catch((err: any) => { if (current) setError(err?.response?.data?.error ?? 'Could not load these hours') })
     return () => { current = false }
   }, [employeeId, year, month, storeCode])
   useEffect(() => load(), [load])
 
   const toolbar = <div className="pc-slip-toolbar">
-    <button type="button" className="pc-slip-back" onClick={onBack}>
+    {onBack && <button type="button" className="pc-slip-back" onClick={onBack}>
       <ChevronLeft className="h-4 w-4" aria-hidden="true" />月工时 Monthly report
-    </button>
+    </button>}
     <div className="pc-slip-step">
-      <Button variant="outline" disabled={!onPrevious} onClick={onPrevious} aria-label="上一位 Previous person">
-        <ChevronLeft className="h-4 w-4" aria-hidden="true" />上一位
+      <Button variant="outline" disabled={!onPrevious} onClick={onPrevious} aria-label={mine ? '上个月 Previous month' : '上一位 Previous person'}>
+        <ChevronLeft className="h-4 w-4" aria-hidden="true" />{mine ? '上个月' : '上一位'}
       </Button>
-      <Button variant="outline" disabled={!onNext} onClick={onNext} aria-label="下一位 Next person">
-        下一位<ChevronRight className="h-4 w-4" aria-hidden="true" />
+      <Button variant="outline" disabled={!onNext} onClick={onNext} aria-label={mine ? '下个月 Next month' : '下一位 Next person'}>
+        {mine ? '下个月' : '下一位'}<ChevronRight className="h-4 w-4" aria-hidden="true" />
       </Button>
     </div>
   </div>

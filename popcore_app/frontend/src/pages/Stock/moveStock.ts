@@ -8,8 +8,11 @@ export type MoveItem = {
   perSet: number | null; canHaveSet: boolean; sets: string; units: string; setSize: string
 }
 // `opened`: whole sets that open because loose boxes are taken out of them.
-export type CheckLine = { product_id: number; name: string; per_set: number | null; sets: number; units: number; missing: number; opened?: number }
-export type MoveLine = { product_id: number; name: string; text: string; sets: number; units: number; missing: number }
+// `short`: the computer has fewer at the place than the move takes. `missing` says by how many, and is null for an
+// account that does not see stock numbers there (库存查看): then only "不够 Not enough" shows.
+export type CheckLine = { product_id: number; name: string; per_set: number | null; sets: number; units: number; missing: number | null; short?: boolean; opened?: number }
+export type MoveLine = { product_id: number; name: string; text: string; sets: number; units: number; missing: number | null; short?: boolean }
+export const isShort = (line?: { missing: number | null; short?: boolean }) => !!line && (line.short ?? (line.missing ?? 0) > 0)
 export type Move = {
   id: number; store_id: number; business_date: string; created_at: string; from: string; to: string; from_name: string
   to_name: string; reason: string | null; note: string; by: string; lines: MoveLine[]

@@ -275,10 +275,12 @@ export default function ProductsPage() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
+    // The name-sheet sync is a manager's tool; nobody else asks for it.
+    if (!manager) return
     client.get('/products/sync-sheet/last-sync')
       .then(r => setLastSync(r.data))
-      .catch(() => {/* users below manager get 403 — silently ignore */})
-  }, [])
+      .catch(() => {})
+  }, [manager])
 
   async function handleSyncSheet() {
     setSyncLoading(true)

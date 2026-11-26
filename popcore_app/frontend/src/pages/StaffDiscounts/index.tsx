@@ -13,8 +13,9 @@ import { PAYMENTS, distinctProducts, itemsText, monthTitle, paymentLabel, shiftM
 import './staffDiscounts.css'
 
 // 员工折扣 Staff discounts (owner, 2026-11-19): "each 正式员工 and above have 4 discount per month, we wanna keep track
-// of that ... it is easier for us to track the revenue too." Everyone at work sees who has uses left; managers fix the
-// 日报 lines, pick the person a line names, mark a record 不算 and add a use by hand. Money shows to managers only.
+// of that ... it is easier for us to track the revenue too." Staff see their own uses and what they have left (owner,
+// 2026-11-26); managers see everyone, fix the 日报 lines, pick the person a line names, mark a record 不算 and add a
+// use by hand. Money shows to managers only.
 
 type Dialog = { kind:'add' } | { kind:'fix'; use:DiscountUse } | { kind:'ignore'; use:DiscountUse }
 const messageOf = (cause:unknown, fallback:string) => (cause as { _serverMessage?:string })?._serverMessage || fallback
@@ -86,8 +87,10 @@ function MonthTotal({ data }:{ data:DiscountPage }) {
 
 function People({ data }:{ data:DiscountPage }) {
   const monthly = data.monthly_uses
-  return <Panel zh="每人" en={`People · ${monthly} a month`} label="每人 People" className="pc-sd-people">
-    {!data.people.length ? <p className="pc-quiet"><strong>还没有正式员工</strong>People get 4 uses a month from 正式员工 up.</p>
+  // Staff get their own row only (the server sends no one else's).
+  const mine = !data.can_manage
+  return <Panel zh={mine ? '我的' : '每人'} en={`${mine ? 'Mine' : 'People'} · ${monthly} a month`} label={mine ? '我的 Mine' : '每人 People'} className="pc-sd-people">
+    {!data.people.length ? <p className="pc-quiet"><strong>{mine ? '你还没有员工折扣' : '还没有正式员工'}</strong>People get 4 uses a month from 正式员工 up.</p>
       : <ul className="pc-sd-rows">{data.people.map(person => <PersonRow key={person.employee_id} person={person} monthly={monthly} />)}</ul>}
   </Panel>
 }
@@ -111,7 +114,7 @@ function PersonRow({ person, monthly }:{ person:DiscountPerson; monthly:number }
 function Waiting({ data, onOpen }:{ data:DiscountPage; onOpen:(dialog:Dialog)=>void }) {
   return <Panel zh="待处理" en="Waiting for a manager" label="待处理 Waiting for a manager" className="pc-sd-waiting"
     count={data.waiting.length || undefined} tone="warn">
-    {!data.waiting.length ? <p className="pc-quiet"><strong>没有待处理</strong>Every 日报 line this month has its person and was read.</p>
+    {!data.waiting.length ? <p className="pc-quiet"><strong>没有待处理</strong>{data.can_manage ? 'Every 日报 line this month has its person and was read.' : 'None of your records waits for a manager.'}</p>
       : <ul className="pc-sd-rows">{data.waiting.map(use => <li key={use.id} className="pc-row pc-sd-wait">
         <span className="pc-row-label pc-sd-when"><span>{shortDate(use.date)}</span><span className="pc-tag">{use.store}</span></span>
         <span className="pc-row-main">
@@ -136,7 +139,7 @@ function Uses({ data, onOpen }:{ data:DiscountPage; onOpen:(dialog:Dialog)=>void
       {data.uses.length > 0 && <span className="pc-panel-count"><i className="pc-dot pc-dot-ok" aria-hidden="true" />{total} 次</span>}
       {data.can_manage && <Button className="pc-sd-add" aria-label="手动添加 Add by hand" icon={<Icon name="plus" size={14} />} onClick={() => onOpen({ kind:'add' })}>手动添加 <small>Add by hand</small></Button>}
     </span>}>
-    {!data.uses.length ? <p className="pc-quiet"><strong>{monthTitle(data.month)}还没有员工折扣</strong>Uses from the 日报 and those added by hand show here.</p>
+    {!data.uses.length ? <p className="pc-quiet"><strong>{monthTitle(data.month)}还没有员工折扣</strong>{data.can_manage ? 'Uses from the 日报 and those added by hand show here.' : 'Your own uses show here.'}</p>
       : <ul className="pc-sd-rows">{data.uses.map(use => <li key={use.id} className={`pc-sd-use${data.can_manage ? ' can-manage' : ''}`}>
         <span className="pc-sd-when"><span>{shortDate(use.date)}</span><span className="pc-tag">{use.store}</span></span>
         <span className="pc-sd-who"><strong>{use.name}</strong>{use.written_name && use.name && use.written_name.toLowerCase() !== use.name.toLowerCase() && <small>日报写「{use.written_name}」</small>}</span>

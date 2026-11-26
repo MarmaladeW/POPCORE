@@ -6,11 +6,12 @@ import { Panel } from '../../components/pc/Panel'
 import Icon from '../../components/pc/Icon'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useInventoryVisible } from '../../auth/useInventoryVisible'
+import { useHasRole } from '../../auth/useRole'
 import { formatWholeDollars } from '../../lib/money'
 
 // What the floor needs, what is selling and what changed, above the product list (owner, 2026-11-01).
 // Stock is the live ledger; sales are the pasted 日报, so the selling lists fill in as reports come in.
-// Managers and admins also see the stock's retail value (the approved Figma strip's 库存价值 cell).
+// Admins also see the stock's retail value (the approved Figma strip's 库存价值 cell).
 
 const MEASURE:Record<string,string> = {box:'盒', set:'端', piece:'个'}
 const PLACES:Record<string,[string,string]> = {floor:['楼面','Floor'], display:['陈列','Display'], claw:['娃娃机','Claw machine']}
@@ -62,8 +63,12 @@ function OverviewBody({data}:{data:Overview}) {
   const multi = (data.stores?.length ?? 0) > 1
   const where = (item:{store_code:string}) => multi ? `${item.store_code} · ` : ''
   const figures = data.figures ?? []
-  const value = data.value
-  const noSales = !data.report_days
+  // 库存价值 is the admin's (owner, 2026-11-26); the server sends null to anyone else.
+  const admin = useHasRole('admin')
+  const value = admin ? data.value : null
+  // Sales figures (what sold, how fast, best sellers) are the admin's (owner, 2026-11-26): the server sends null.
+  const salesHidden = data.report_days === null
+  const noSales = !salesHidden && !data.report_days
   const salesEmpty = noSales ? 'No 日报 in the last 7 days. Selling lists fill in once one is pasted in 销售 Sales.' : undefined
   return <section className="pc-inv-overview" aria-label="库存概况 Inventory overview">
     <h2 className="pc-inv-section-title">概况 <small>Dashboard</small></h2>
@@ -75,10 +80,10 @@ function OverviewBody({data}:{data:Overview}) {
           <span>{zh} <small>{en}</small></span>
           <strong>{number(figure.units)}</strong>
           <small>{split.length ? split.map(([unit,amount])=>measure(amount,unit)).join(' · ') : 'Empty'}</small>
-          {figure.value_cents!=null&&figure.units>0&&<small className="pc-inv-worth">价值 <b>{formatWholeDollars(figure.value_cents)}</b></small>}
+          {admin&&figure.value_cents!=null&&figure.units>0&&<small className="pc-inv-worth">价值 <b>{formatWholeDollars(figure.value_cents)}</b></small>}
         </>
         const className = figure.key==='back'?'pc-inv-back':undefined
-        // Managers open what this place is worth by IP line (owner, 2026-11-03).
+        // Admins open what this place is worth by IP line (owner, 2026-11-03; admins only since 2026-11-26).
         return value ? <Link key={figure.key} className={className ? `${className} pc-inv-tile` : 'pc-inv-tile'} to={`/stock/value?place=${figure.key}`}>{body}<Icon name="right" size={14} className="pc-inv-tile-go"/></Link>
           : <div key={figure.key} className={className}>{body}</div>
       })}
@@ -89,7 +94,7 @@ function OverviewBody({data}:{data:Overview}) {
         <Icon name="right" size={14} className="pc-inv-tile-go"/>
       </Link>}
     </div>
-    <p className="pc-inv-meta">{number(data.in_stock_products ?? 0)} products in stock · {data.last_report ? <>sales from 日报 through {shortDate(data.last_report)}</> : 'no 日报 pasted yet'}</p>
+    <p className="pc-inv-meta">{number(data.in_stock_products ?? 0)} products in stock{!salesHidden && <> · {data.last_report ? <>sales from 日报 through {shortDate(data.last_report)}</> : 'no 日报 pasted yet'}</>}</p>
     <div className="pc-inv-panels">
       <Panel zh="补货上架" en="Refill the floor" label="补货上架 Refill the floor" count={data.refill_count ?? 0} tone={data.refill_count ? 'warn' : 'ok'} className="pc-inv-panel">
         <Items items={data.refill ?? []} total={data.refill_count} limit={limit} empty="Everything kept upstairs is also on the floor."
@@ -98,25 +103,25 @@ function OverviewBody({data}:{data:Overview}) {
             trailing={<span className="pc-inv-num pc-inv-kraft"><small>楼上</small>{backText(item)}</span>}/>}/>
       </Panel>
       <Panel zh="快卖完" en="Running low" label="快卖完 Running low" count={data.running_low?.length ?? 0} tone={data.running_low?.length ? 'warn' : 'ok'} className="pc-inv-panel">
-        <Items items={data.running_low ?? []} limit={limit} empty={salesEmpty ?? 'No floor stock runs out within 3 days at the current pace.'}
+        <Items items={data.running_low ?? []} limit={limit} empty={salesEmpty ?? (salesHidden ? 'No floor stock is running low.' : 'No floor stock runs out within 3 days at the current pace.')}
           render={item=><Row key={`${item.store_code}|${item.product_id}`} item={item}
-            meta={<>{where(item)}Sells {pace(item.pace)} a day · {backText(item) ? <span className="pc-inv-kraft-text">楼上 {backText(item)}</span> : 'none upstairs'}</>}
+            meta={<>{where(item)}{item.pace != null && `Sells ${pace(item.pace)} a day · `}{backText(item) ? <span className="pc-inv-kraft-text">楼上 {backText(item)}</span> : 'none upstairs'}</>}
             trailing={<span className="pc-inv-num">{number(item.floor)}<small>{item.days_left!=null ? lasts(item.days_left) : 'left'}</small></span>}/>}/>
       </Panel>
       <Panel zh="刚卖完" en="Sold out" label="刚卖完 Sold out" count={data.sold_out?.length ?? 0} tone={data.sold_out?.length ? 'out' : 'ok'} className="pc-inv-panel">
-        <Items items={data.sold_out ?? []} limit={limit} empty={salesEmpty ?? 'Nothing sold in the last 2 weeks has run out.'}
+        <Items items={data.sold_out ?? []} limit={limit} empty={salesEmpty ?? (salesHidden ? 'Nothing has just run out.' : 'Nothing sold in the last 2 weeks has run out.')}
           render={item=><Row key={`${item.store_code}|${item.product_id}`} item={item}
             meta={<>{where(item)}{item.last_sold ? `Last sold ${shortDate(item.last_sold)}` : item.sku}</>}
-            trailing={<span className="pc-inv-num">{number(item.sold_recent)}<small>sold</small></span>}/>}/>
+            trailing={item.sold_recent != null && <span className="pc-inv-num">{number(item.sold_recent)}<small>sold</small></span>}/>}/>
       </Panel>
     </div>
     <div className="pc-inv-panels pc-inv-panels-2">
-      <Panel zh="本周热卖" en="Best sellers · last 7 days" label="本周热卖 Best sellers" className="pc-inv-panel">
+      {!salesHidden && <Panel zh="本周热卖" en="Best sellers · last 7 days" label="本周热卖 Best sellers" className="pc-inv-panel">
         <Items items={data.best_sellers ?? []} limit={phone ? 5 : 8} empty={salesEmpty ?? 'Nothing sold in the last 7 days.'}
           render={(item,index)=><Row key={`${item.store_code}|${item.product_id}`} item={item} label={index+1}
             meta={<>{where(item)}{item.counted ? <>楼面 {number(item.floor)}{backText(item)&&<span className="pc-inv-kraft-text"> · 楼上 {backText(item)}</span>}</> : 'Not counted yet'}</>}
-            trailing={<span className="pc-inv-num">{number(item.sold_week)}<small>sold</small></span>}/>}/>
-      </Panel>
+            trailing={<span className="pc-inv-num">{number(item.sold_week ?? 0)}<small>sold</small></span>}/>}/>
+      </Panel>}
       <Panel zh="最近变动" en="Recent changes" label="最近变动 Recent changes" className="pc-inv-panel">
         {data.recent_changes?.length ? <ul className="pc-inv-rows">{data.recent_changes.map(change=><Change key={`${change.business_date}|${change.kind}|${change.store_code}`} change={change} multi={multi}/>)}</ul>
           : <p className="pc-quiet">No stock changes in the last 7 days.</p>}

@@ -140,7 +140,7 @@ def api_for(state):
 
 
 async def open_page(browser, viewport, state, path='/sales/name-picks'):
-    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE + path)
     return context, page

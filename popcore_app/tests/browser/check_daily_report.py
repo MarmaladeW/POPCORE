@@ -96,7 +96,7 @@ async def section_choices_flow(browser):
             return {**result, 'review': [], 'unknown_sections': ['Register totals', 'Other notes']}
         return result
     state = {'api_payload': payload}
-    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')
@@ -122,7 +122,7 @@ async def access_denied_flow(browser):
         return {**result, 'review': []} if path == '/api/sales/parse_report' else result
     state = {'api_payload': payload, 'status_for_path': {'/api/sales/submit_daily_report': (
         403, {'error': 'Inventory access denied', 'code': 'inventory_forbidden'})}}
-    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')
@@ -291,7 +291,7 @@ async def live_stock_lines_flow(browser, viewport):
         return api_payload(path, query, request)
 
     state = {'api_payload': payload}
-    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')
@@ -356,7 +356,7 @@ async def sent_and_left_out_flow(browser, viewport):
         return api_payload(path, query, request)
 
     state = {'api_payload': payload}
-    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')
@@ -421,7 +421,7 @@ async def repeat_and_opened_set_flow(browser, viewport):
         return api_payload(path, query, request)
 
     state = {'api_payload': payload}
-    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')
@@ -476,7 +476,7 @@ async def pick_box_flow(browser, viewport):
         return api_payload(path, query, request)
 
     state = {'api_payload': payload}
-    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     try:
         await page.goto(BASE + '/sales')

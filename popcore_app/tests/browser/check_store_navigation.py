@@ -11,12 +11,21 @@ OUT = Path(__file__).resolve().parents[3] / '.local/store-navigation/browser'
 async def checks(browser):
     for width in (390, 1280):
         state = {'mode': 'data'}
-        state['api_payload'] = api_for('manager', state)
-        context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
+        # The admin's Today payload stays for every role below: payment checks must not show to a manager even if sent.
+        state['api_payload'] = api_for('admin', state)
+        context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'admin'})
         await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
         await page.goto(BASE + '/')
         await expect(page.get_by_role('heading', name='门店概览')).to_be_visible()
         await expect(page.get_by_role('link', name='Review sale #41', exact=True)).to_have_attribute('href', '/sales/documents/41')
+        await expect(page.get_by_role('link', name='报表 Insights & reports').first).to_be_visible()
+        # A manager keeps the store overview without payment checks, 报表 or past sales names (owner, 2026-11-26).
+        await page.evaluate("window.__FOUNDATION_AUTH={role:'manager'};window.dispatchEvent(new Event('foundation-auth'))")
+        await expect(page.get_by_role('heading', name='门店概览')).to_be_visible()
+        await expect(page.get_by_role('link', name='Review sale #41', exact=True)).to_have_count(0)
+        await expect(page.get_by_role('link', name='报表 Insights & reports')).to_have_count(0)
+        await expect(page.get_by_role('link', name='核对旧销售名称 Review past sales names')).to_have_count(0)
+        await expect(page.locator('a[href="/activity"]')).to_have_count(0)
         actions = page.get_by_role('navigation', name='Store actions')
         for path in ('/sales/quick', '/move', '/stock', '/summary'):
             await expect(actions.locator(f'a[href="{path}"]')).to_be_visible()
@@ -59,7 +68,7 @@ async def main():
                     await checks(browser)
                 finally:
                     await browser.close()
-            print('PASS: staff/manager homes, secondary task access, role change, and navigation at 390/1280.')
+            print('PASS: admin/manager/staff homes, secondary task access, role change, and navigation at 390/1280.')
         finally:
             process.terminate()
             process.wait(timeout=10)

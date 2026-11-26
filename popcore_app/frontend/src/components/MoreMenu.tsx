@@ -33,7 +33,7 @@ export default function MoreMenu() {
     </nav>
     <div className="pc-more-account">
       <span className="pc-nav-text"><strong>{user?.nickname ?? user?.name ?? 'User'}</strong><small>{ROLE_LABELS[role] || role}</small></span>
-      <button type="button" onClick={() => setPinOpen(true)}>我的 PIN My PIN</button>
+      {access.staff && <button type="button" onClick={() => setPinOpen(true)}>我的 PIN My PIN</button>}
       <MyPinModal open={pinOpen} onClose={() => setPinOpen(false)} />
       <button type="button" onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}>退出登录 Sign out</button>
     </div>

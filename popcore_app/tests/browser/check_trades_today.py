@@ -14,7 +14,8 @@ def api_for(role, state):
         if path=='/api/today':
             sections={'catalog':{'total':1,'rows':[{'source_id':7,'type':'catalog_identity','status':'unresolved','store_id':None,'version':None,'updated_at':None,'link':'/products','label':'Catalog identity'}]}}
             if role!='viewer': sections.update({'my_work':{'total':1,'rows':[{'source_id':41,'type':'sale','status':'draft','store_id':1,'version':1,'updated_at':today,'link':'/sales/documents/41'}]},'operations':{'total':0,'rows':[]}})
-            if role in ('manager','admin'): sections['financial']={'total':1,'rows':[{'source_id':41,'type':'financial_sale','status':'posted','store_id':1,'version':2,'updated_at':today,'link':'/sales/documents/41'}]}
+            # Payment checks are the admin's (owner, 2026-11-26): the server leaves the section out for anyone else.
+            if role=='admin': sections['financial']={'total':1,'rows':[{'source_id':41,'type':'financial_sale','status':'posted','store_id':1,'version':2,'updated_at':today,'link':'/sales/documents/41'}]}
             return {'business_date':today,'generated_at':today,'role':role,'scope':'DT','store_ids':[1] if role!='viewer' else [],'authorized_stores':[{'id':1,'code':'DT','name':'Downtown'}],'sections':sections}
         if path=='/api/schedule/shifts/me':
             state['shift_reads']=state.get('shift_reads',0)+1
@@ -42,7 +43,8 @@ async def checks(browser):
         if role!='viewer':
             await expect(page.get_by_role('link',name='Resume sale #41',exact=True)).to_have_attribute('href','/sales/documents/41')
             await expect(page.get_by_text('Store 1',exact=True)).to_have_count(0)
-        if role in ('manager','admin'): await expect(page.get_by_text('Sales and tender checks',exact=False)).to_be_visible()
+        if role=='admin': await expect(page.get_by_text('Sales and tender checks',exact=False)).to_be_visible()
+        else: await expect(page.get_by_text('Sales and tender checks',exact=False)).to_have_count(0)
         if role=='manager': await page.screenshot(path=evidence/'today-390.png',full_page=True)
         width=await page.evaluate('document.body.scrollWidth');assert width<=392
         await context.close()

@@ -3,7 +3,8 @@ import { Button, Input, Popconfirm, Skeleton } from 'antd'
 import { Link } from 'react-router-dom'
 import client from '../../api/client'
 import { searchGoodsProducts, type GoodsProduct } from '../../api/goods'
-import { getStaffDiscounts, type DiscountPerson } from '../../api/staffDiscounts'
+import { getDiscountBuyers, type DiscountBuyer } from '../../api/staffDiscounts'
+import { useHasRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
 import { formatCents, tryParseMoneyToCents } from '../../lib/money'
 import Icon from '../../components/pc/Icon'
@@ -47,13 +48,19 @@ export default function QuickSalePage() {
   const [viewDay, setViewDay] = useState<string>()
   // 员工折扣 (owner, 2026-11-24: in the app, not the 日报): a tick, then who bought.
   const [staffOpen, setStaffOpen] = useState(false), [buyer, setBuyer] = useState<number>()
-  const [people, setPeople] = useState<DiscountPerson[]>(), [peopleError, setPeopleError] = useState('')
+  const [people, setPeople] = useState<DiscountBuyer[]>(), [peopleError, setPeopleError] = useState('')
   const saveKey = useRef(new SaveKey())
   const stores = access ? checkoutStores(access) : []
   const store = stores.find(entry => entry.id === selected?.id)
-  const discountCents = showDiscount ? tryParseMoneyToCents(discount) : 0
+  // Below manager a discount goes only with a named 员工折扣 buyer (owner, 2026-11-26); the server refuses it otherwise.
+  const manager = useHasRole('manager')
+  const staffBuyer = staffOpen && buyer ? buyer : undefined
+  const canDiscount = manager || !!staffBuyer
+  const discountCents = showDiscount && canDiscount ? tryParseMoneyToCents(discount) : 0
   const lines = useMemo(() => requestLines(cart), [cart])
-  const quoteBody = JSON.stringify({ store_id: store?.id, lines, discount_cents: discountCents || 0 })
+  // The buyer goes with the quote, so "no uses left" is said before Save.
+  const quoteBody = JSON.stringify({ store_id: store?.id, lines, discount_cents: discountCents || 0,
+    ...(staffBuyer ? { staff_discount_employee_id: staffBuyer } : {}) })
 
   useEffect(() => {
     const controller = new AbortController()
@@ -95,13 +102,15 @@ export default function QuickSalePage() {
   useEffect(() => {
     if (!staffOpen || people) return
     const controller = new AbortController()
-    getStaffDiscounts((day?.today ?? new Date().toISOString()).slice(0, 7), controller.signal)
-      .then(page => { setPeople(page.people.filter(person => person.eligible && person.active)); setPeopleError('') })
+    // Names only: who has uses left is each person's own to see, so the server says so on save (owner, 2026-11-26).
+    getDiscountBuyers(controller.signal)
+      .then(buyers => { setPeople(buyers); setPeopleError('') })
       .catch(cause => { if (!controller.signal.aborted) setPeopleError(errorMessage(cause)) })
     return () => controller.abort()
   }, [staffOpen, people])
 
-  const current = !quoting && quote && JSON.stringify({ store_id: quote.store_id, lines, discount_cents: quote.discount_cents }) === quoteBody
+  const current = !quoting && quote && JSON.stringify({ store_id: quote.store_id, lines, discount_cents: quote.discount_cents,
+    ...(quote.staff_discount_employee_id ? { staff_discount_employee_id: quote.staff_discount_employee_id } : {}) }) === quoteBody
     ? quote : undefined
   const amount = current && tender && current.tenders ? current.tenders[tender] : undefined
   const cny = current?.cny && tender && CNY_TENDERS.includes(tender) ? current.cny : null
@@ -109,7 +118,7 @@ export default function QuickSalePage() {
   async function save() {
     if (!store || !current || !tender || amount === undefined || !canSave(current, tender) || (staffOpen && !buyer)) return
     const body = { store_id: store.id, lines, discount_cents: current.discount_cents, tender, expected_amount_cents: amount,
-      ...(cny ? { cny_fen: cny.fen } : {}), ...(staffOpen && buyer ? { staff_discount_employee_id: buyer } : {}) }
+      ...(cny ? { cny_fen: cny.fen } : {}), ...(staffBuyer ? { staff_discount_employee_id: staffBuyer } : {}) }
     const key = saveKey.current.for(JSON.stringify(body))
     setSaving(true); setSaveError('')
     try {
@@ -162,7 +171,7 @@ export default function QuickSalePage() {
               remove={() => setCart(old => removeItem(old, index))} />)}
           </ul>
           <div className="qs-discount">
-            {showDiscount ? <>
+            {!canDiscount ? null : showDiscount ? <>
               <label>优惠 $<Input inputMode="decimal" aria-label="Discount" value={discount} autoFocus
                 status={discountCents === null ? 'error' : undefined} onChange={event => setDiscount(event.target.value)} /></label>
               <button type="button" className="qs-link" onClick={() => { setShowDiscount(false); setDiscount('') }}>不要优惠</button>
@@ -176,7 +185,7 @@ export default function QuickSalePage() {
               : !people.length ? <p className="qs-quiet">还没有可以用员工折扣的员工，请店长在 员工 里设职级。</p>
               : <div className="qs-staff-people">{people.map(person => <button key={person.employee_id} type="button" className="qs-chip"
                 aria-pressed={buyer === person.employee_id} onClick={() => setBuyer(person.employee_id)}>
-                {person.name}<small>剩 {person.left ?? 0}</small></button>)}</div>}
+                {person.name}</button>)}</div>}
           </div>}
           {quoteError && <Problem>{quoteError}</Problem>}
           <div className="qs-tenders" role="radiogroup" aria-label="Paid by">
@@ -253,6 +262,9 @@ export function ProductSearch({ phone, onPick }: { phone: boolean; onPick: (prod
 
 function CartLine({ item, line, change, remove }: { item: CartItem; line?: QuoteLine; change: (value: Partial<CartItem>) => void; remove: () => void }) {
   const [editing, setEditing] = useState(false), [price, setPrice] = useState('')
+  // Staff type a price only for a product that has none; changing a listed price is a manager's (owner, 2026-11-26).
+  const manager = useHasRole('manager')
+  const canPrice = manager || !line || line.list_price_cents == null
   const missing = line && line.unit_price_cents === null
   const typed = tryParseMoneyToCents(price)
   const apply = () => { if (typed) { change({ priceCents: typed }); setEditing(false) } }
@@ -273,9 +285,9 @@ function CartLine({ item, line, change, remove }: { item: CartItem; line?: Quote
           status={price && typed === null ? 'error' : undefined} onChange={event => setPrice(event.target.value)} onPressEnter={apply} />
         <button type="button" className="qs-link" disabled={!typed} onClick={apply}>好</button>
         {item.priceCents && <button type="button" className="qs-link" onClick={() => { change({ priceCents: undefined }); setPrice(''); setEditing(false) }}>原价</button>}
-      </span> : <button type="button" className="qs-link" onClick={() => setEditing(true)}>
+      </span> : canPrice ? <button type="button" className="qs-link" onClick={() => setEditing(true)}>
         {line?.unit_price_cents != null ? `${formatCents(line.unit_price_cents)} 改价` : '…'}
-      </button>}
+      </button> : <span>{formatCents(line?.unit_price_cents)}</span>}
       <span className="qs-line-total">{line?.line_cents != null ? formatCents(line.line_cents) : ''}</span>
     </div>
   </li>
@@ -422,14 +434,15 @@ function Today({ day, error, storeCode, changed, open }: {
     try { await navigator.clipboard.writeText(day!.summary_text); setCopied('已复制') }
     catch { setCopied('复制不了，长按上面的文字复制') }
   }
-  return <Panel zh={isToday ? '今天' : shortDay(day.business_date)} en={day.count ? `${day.count} 笔 · ${formatCents(day.total_cents)}` : undefined} label="Today's sales"
+  // Staff see only what they recorded themselves; a manager reviews the store's day (owner, 2026-11-26).
+  return <Panel zh={!isToday ? shortDay(day.business_date) : day.can_review ? '今天' : '今天 · 我记的'} en={day.count ? `${day.count} 笔 · ${formatCents(day.total_cents)}` : undefined} label="Today's sales"
     count={day.needs_photo ? `${day.needs_photo} 没照片` : undefined} tone="out"
     action={isToday ? undefined : <button type="button" className="qs-link" onClick={() => open(undefined)}>回到今天</button>}>
     {day.can_review && day.unreviewed_days.length > 0 && <p className="qs-earlier">
       <span><i className="pc-dot pc-dot-warn" aria-hidden="true" />还没审核：</span>
       {day.unreviewed_days.map(earlier => <button key={earlier} type="button" className="qs-link" onClick={() => open(earlier)}>{shortDay(earlier)}</button>)}
     </p>}
-    {!day.sales.length ? <p className="qs-quiet qs-empty">{isToday ? '今天还没有记账。' : '这天没有记账。'}</p>
+    {!day.sales.length ? <p className="qs-quiet qs-empty">{!isToday ? '这天没有记账。' : day.can_review ? '今天还没有记账。' : '你今天还没有记账。'}</p>
       : <ol className="qs-day" aria-label="Sales today" reversed>
         {[...day.sales].reverse().map(sale => <li key={sale.id} className={sale.undone ? 'qs-undone' : undefined}>
           <span className="qs-day-main"><strong>{itemsText(sale.lines)}</strong><small>{clock(sale.created_at)} · {sale.cashier}{sale.staff_discount ? ` · 员工折扣 ${sale.staff_discount}` : ''}</small></span>

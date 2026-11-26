@@ -1,7 +1,7 @@
 import client from './client'
 import { newRequestKey } from './salesDocuments'
 
-export interface TradeProduct { product_id: number; name: string; search_text?: string; stock_form: string; stock_unit: string; quantity: number; balance_version: number }
+export interface TradeProduct { product_id: number; name: string; search_text?: string; stock_form: string; stock_unit: string; /** null without 库存查看 at the store: then only whether it is out of stock (stock_hidden, out_of_stock). */ quantity: number | null; stock_hidden?: boolean; out_of_stock?: boolean; balance_version: number }
 export interface TradeSlot { slot_id: number; store_id: number; series_id: number; location_id: number; occupant_unit_id: number | null; version: number; occupant?: { unit_id: number; design_product_id: number; design_name: string; condition_disclosure: string }; products?: TradeProduct[] }
 export const listTradeSlots = async (storeId: number) => (await client.get('/trade-slots', { params: { store_id: storeId } })).data as TradeSlot[]
 export const getTradeSlot = async (id: number) => (await client.get(`/trade-slots/${id}`)).data as TradeSlot

@@ -1,8 +1,8 @@
 """网站 Website sync in a real browser against the real Flask app, a disposable database and a fake
 WooCommerce (owner, 2026-11-01): an admin reads the website's products (linked by their POPCORE ID
-field, never by SKU), sees what turning on would change, turns it on; a web order POPCORE cannot fill waits for review and a manager settles it;
-a price goes to POPCORE's and one without a Clover item name waits until a manager OKs it (owner, 2026-11-10);
-managers cannot turn the sync on and staff cannot open the page."""
+field, never by SKU), sees what turning on would change, turns it on; a web order POPCORE cannot fill waits for review and the admin settles it;
+a price goes to POPCORE's and one without a Clover item name waits until it is OK'd (owner, 2026-11-10);
+the 网站 page is the admin's (owner, 2026-11-26): managers and staff cannot open it."""
 import asyncio
 import re
 import subprocess
@@ -108,10 +108,7 @@ async def run(browser, width):
         await expect(recorded.get_by_text('出库 DT', exact=False)).to_be_visible()
         await fits(page, f'orders-{width}.png')
 
-        # A manager settles the order but cannot turn the sync off.
-        page = await open_as('manager')
-        await page.goto(BASE + '/website')
-        await expect(page.get_by_role('button', name=re.compile('Turn (on|off)'))).to_have_count(0)
+        # The admin settles the order that waits.
         review = page.get_by_role('region', name='Web orders to review')
         await review.get_by_role('button', name='已处理 Settled').click()
         dialog = page.get_by_role('dialog')
@@ -120,7 +117,7 @@ async def run(browser, width):
         await dialog.get_by_role('button', name='Settle').click()
         await expect(review.get_by_text('Every paid web order came out of stock.', exact=False)).to_be_visible()
         assert fixture.order_row(601)['state'] == 'dismissed'
-        # The manager OKs the price that waits; it goes with the next write.
+        # The admin OKs the price that waits; it goes with the next write.
         held = page.get_by_role('region', name='Prices waiting for an OK')
         await held.get_by_role('button', name='确认 OK').click()
         await expect(page.get_by_text('$15.00', exact=True)).to_be_visible()
@@ -135,9 +132,12 @@ async def run(browser, width):
         await expect(prices.get_by_text('$14.00 → $15.00', exact=False)).to_be_visible()
         await fits(page, f'prices-{width}.png')
 
-        page = await open_as('staff')
-        await page.goto(BASE + '/website')
-        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        # Managers and staff cannot open the page.
+        for role in ('manager', 'staff'):
+            page = await open_as(role)
+            await page.goto(BASE + '/website')
+            await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+            await expect(page.get_by_role('region', name='Stock sync')).to_have_count(0)
     finally:
         for context in contexts:
             await context.close()
@@ -175,5 +175,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: website sync preview, turning on, a web order waiting and settled, a price sent and one OK\'d '
-          'by a manager, managers and staff kept to their part, at 390 and 1440 px')
+    print('PASS: website sync preview, turning on, a web order waiting and settled, a price sent and one OK\'d, '
+          'all by the admin; managers and staff cannot open the page, at 390 and 1440 px')

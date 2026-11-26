@@ -64,7 +64,7 @@ export function deliveryFacts(card: WebOrderCard): string[] {
 // Why an order needs a manager, in staff words.
 const PROBLEM: Record<string, string> = {
   not_enough_stock: '库存不够 · POPCORE’s count does not have enough of it. A manager counts or receives it.',
-  unknown_item: '产品未连接 · An item is not linked to POPCORE. A manager fixes the website item.',
+  unknown_item: '产品未连接 · An item is not linked to POPCORE. An admin fixes the website item.',
   no_live_store: '没有上线的门店 · No live store can fill it.',
   no_items: '没有产品 · The order has no items.',
   no_store_access: '没有门店权限 · The website has no stock access at this store.',

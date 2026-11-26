@@ -265,6 +265,7 @@ export default function WebOrdersPage() {
       {board.needs_manager.length === 0 ? <p className="pc-quiet">没有 · Nothing waits for a manager.</p>
         : <div className="pc-web-grid">{board.needs_manager.map(card => <OrderCard key={card.id} card={card} now={now}
           extra={<p className="pc-web-reason">{reasonText(card)}</p>} />)}</div>}
+      {board.needs_manager.length > 0 && <p className="pc-quiet">处理好后，由管理员在 网站 页重试或关闭 · Once it is sorted out, an admin retries or dismisses the order on the 网站 page.</p>}
     </Panel>
 
     <details className="pc-panel pc-web-done">

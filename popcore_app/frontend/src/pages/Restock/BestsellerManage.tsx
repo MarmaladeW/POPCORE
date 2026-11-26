@@ -19,7 +19,8 @@ interface Product {
   ip_series:     string
   product_type:  string
   is_bestseller: number
-  instore_qty?:  number
+  /** null where this account does not see the store's stock numbers (库存查看). */
+  instore_qty?:  number | null
   upstairs_qty?: number
 }
 
@@ -130,6 +131,7 @@ export default function BestsellerManage() {
       key: 'instore',
       width: 100,
       render: (_: unknown, r: Product) => {
+        if (r.instore_qty === null) return '—'
         const qty = r.instore_qty ?? 0
         return <Tag color={qty > 0 ? 'blue' : 'default'}>{qty}</Tag>
       },

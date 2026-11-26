@@ -1,8 +1,8 @@
 """动态 Activity in a real browser against the real Flask routes and a disposable database (owner, 2026-11-20: "in
 WeChat it is super easy to check who did what … account tracking/leaving mark is really important"): what staff and
-a manager do leaves one line each with their name; staff read their store's lines without the money ones, filter by
-person and kind, and open a line's record; a manager reads every line; the home page shows the newest lines; nothing
-scrolls sideways, at 390 and 1440 px."""
+a manager do leaves one line each with their name. Only the admin sees 动态 (owner, 2026-11-26): staff and managers
+have no menu entry and the page refuses them; the admin reads every line, filters by person and kind, and opens a
+line's record; nothing scrolls sideways, at 390 and 1440 px."""
 import asyncio
 import re
 import subprocess
@@ -73,24 +73,39 @@ async def run(browser, width):
         assert [line[0] for line in lines] == ['restock.create_restock_session', 'restock.add_restock_item',
                                                'checkout.create'], lines
 
-        page = await open_as('staff')
+        # Staff and managers: no 动态 in the menu, and the page itself refuses them.
+        for role in ('staff', 'manager'):
+            refused = await open_as(role)
+            await refused.goto(BASE + '/activity')
+            await expect(refused.get_by_text('Access Denied')).to_be_visible()
+            await expect(refused.locator('.pc-act-row')).to_have_count(0)
+            if width >= 768:
+                await expect(refused.locator('.pc-rail')).to_be_visible()
+                await expect(refused.locator('.pc-rail').get_by_role('link', name=re.compile('动态'))).to_have_count(0)
+            await fits(refused, f'{role}-{width}.png')
+
+        page = await open_as('admin')
         await page.goto(BASE + '/activity')
         feed = page.get_by_label('Activity', exact=True)
         rows = feed.locator('.pc-act-row')
-        await expect(rows).to_have_count(2)
-        await expect(rows.nth(0)).to_contain_text('Photo Helper')
-        await expect(rows.nth(0)).to_contain_text('补货加货 Added to a restock sheet')
-        await expect(rows.nth(1)).to_contain_text('Staff Cashier')
-        await expect(rows.nth(1)).to_contain_text('新建补货单 Started a restock sheet')
-        await expect(feed).not_to_contain_text('买单')
-        await fits(page, f'staff-{width}.png')
+        # Every line, the manager's money line first (newest).
+        await expect(rows).to_have_count(3)
+        await expect(rows.nth(0)).to_contain_text('买单 Checkout')
+        await expect(rows.nth(0)).to_contain_text('Manager')
+        await expect(rows.nth(1)).to_contain_text('Photo Helper')
+        await expect(rows.nth(1)).to_contain_text('补货加货 Added to a restock sheet')
+        await expect(rows.nth(2)).to_contain_text('Staff Cashier')
+        await expect(rows.nth(2)).to_contain_text('新建补货单 Started a restock sheet')
+        await fits(page, f'admin-{width}.png')
+        if width >= 768:
+            await expect(page.locator('.pc-rail').get_by_role('link', name=re.compile('动态'))).to_be_visible()
+        # Only the kinds that happened show.
+        chips = page.get_by_role('group', name='Kind')
+        await expect(chips.get_by_role('button')).to_have_text(['全部 All', '库存 Stock', '买单 Checkout'])
         # Filter by person, then by kind.
         await page.get_by_role('combobox', name='Person').click()
         await page.locator('.ant-select-item-option', has_text='Photo Helper').click()
         await expect(rows).to_have_count(1)
-        chips = page.get_by_role('group', name='Kind')
-        # Only the kinds that happened show, and staff get no chip for the manager's money line.
-        await expect(chips.get_by_role('button')).to_have_text(['全部 All', '库存 Stock'])
         await chips.get_by_role('button', name='库存 Stock').click()
         await expect(rows).to_have_count(1)
         await chips.get_by_role('button', name='全部 All').click()
@@ -98,17 +113,6 @@ async def run(browser, width):
         # A line opens what it was about.
         await rows.first.click()
         await expect(page).to_have_url(re.compile(r'/restock$'))
-
-        manager = await open_as('manager')
-        await manager.goto(BASE + '/activity')
-        manager_rows = manager.get_by_label('Activity', exact=True).locator('.pc-act-row')
-        await expect(manager_rows).to_have_count(3)
-        await expect(manager_rows.first).to_contain_text('买单 Checkout')
-        await expect(manager_rows.first).to_contain_text('Manager')
-        await fits(manager, f'manager-{width}.png')
-        # The menu has 动态 for everyone who works at the store.
-        if width >= 768:
-            await expect(manager.locator('.pc-rail').get_by_role('link', name=re.compile('动态'))).to_be_visible()
     finally:
         for context in contexts:
             await context.close()
@@ -146,5 +150,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: 动态 Activity: each change leaves a named line, staff read their store without money lines, filter by '
-          'person and kind and open a line; a manager reads every line; 动态 in the menu; at 390 and 1440 px')
+    print('PASS: 动态 Activity: each change leaves a named line; staff and managers have no 动态 (menu or page); the '
+          'admin reads every line, filters by person and kind and opens a line; at 390 and 1440 px')

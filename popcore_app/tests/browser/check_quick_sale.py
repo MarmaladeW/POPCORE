@@ -99,6 +99,12 @@ async def run(browser, width):
         await expect(page.get_by_role('radio', name='刷卡', exact=False)).to_contain_text('$56.48')
         cash = page.get_by_role('radio', name='现金', exact=False)
         await expect(cash).to_contain_text('$55.00')
+        # Staff do not change a listed price (owner, 2026-11-26): the line shows it, with no 改价.
+        await expect(cart.get_by_text('$14.99', exact=True)).to_be_visible()
+        await expect(cart.get_by_role('button', name=re.compile('改价'))).to_have_count(0)
+        # Nor give a discount without a named 员工折扣 buyer: the + 优惠 box waits for one.
+        await expect(page.get_by_role('button', name='+ 优惠', exact=True)).to_have_count(0)
+        await expect(page.get_by_role('button', name='+ 员工折扣', exact=True)).to_be_visible()
         await cash.click()
         await fits(page, f'cart-{width}.png')
         await page.get_by_role('button', name=re.compile(r'^保存 · 现金.*\$55\.00$')).click()
@@ -143,6 +149,8 @@ async def run(browser, width):
         await confirm.get_by_role('button', name='撤销').click()
         await expect(first).to_contain_text('已撤销 · Xiao Chen · 应该是刷卡')
         await expect(page.get_by_role('region', name="Today's sales")).to_contain_text('1 笔 · $21.00')
+        # The list is the cashier's own sales, and says so.
+        await expect(page.get_by_role('region', name="Today's sales")).to_contain_text('今天 · 我记的')
         await page.get_by_role('button', name='复制汇总').click()
         assert await page.evaluate('navigator.clipboard.readText()') == '2026.11.21 DT\n\n卡机汇总：\n\n随手记汇总：\n蒙奇奇*1\n'
         # Staff see where the day stands and have no review button.
@@ -162,8 +170,11 @@ async def run(browser, width):
         buyers = page.get_by_role('group', name='Staff discount')
         await page.get_by_role('radio', name='现金', exact=False).click()
         await expect(page.get_by_role('button', name='选哪位员工买的')).to_be_disabled()
-        await expect(buyers.get_by_role('button', name='Amy')).to_contain_text('剩 4')
+        # Names only: how many uses someone has left is theirs to see (owner, 2026-11-26).
+        await expect(buyers.get_by_role('button', name='Amy')).to_be_visible()
+        await expect(buyers).not_to_contain_text('剩')
         await buyers.get_by_role('button', name='Amy').click()
+        await expect(page.get_by_role('button', name='+ 优惠', exact=True)).to_be_visible()
         await fits(page, f'staff-discount-{width}.png')
         await page.get_by_role('button', name=re.compile(r'^保存 · 现金 \$21\.00$')).click()
         await expect(page.get_by_role('status', name='Saved')).to_contain_text('员工折扣 Amy')
@@ -174,6 +185,7 @@ async def run(browser, width):
         # 审核: the manager looks over the day and confirms; the two sales that stand come off the floor, once.
         boss = await open_as('manager')
         await boss.goto(BASE + '/sales/quick')
+        await expect(boss.get_by_role('region', name="Today's sales")).not_to_contain_text('我记的')
         review = boss.get_by_role('region', name='Review the day')
         await review.get_by_role('button', name='审核并扣库存').click()
         moves = review.get_by_role('group', name='What this review moves')

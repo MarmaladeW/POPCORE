@@ -187,7 +187,7 @@ function AppInner() {
           <Route path="/claw" element={<InventoryRoute element={<ClawPage />} />} />
           <Route path="/stock/claw" element={<InventoryRoute element={<ClawPage />} />} />
           <Route path="/stock/loss" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<LossPage />} />} />} />
-          <Route path="/stock/value" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<ValuePage />} />} />} />
+          <Route path="/stock/value" element={<RoleRoute minRole="admin" element={<InventoryRoute element={<ValuePage />} />} />} />
           <Route path="/stock/count" element={<RoleRoute minRole="staff" element={<CountHub />} />} />
           <Route path="/count" element={<InventoryRoute element={<CountPage />} />} />
           <Route path="/count/sections" element={<RoleRoute minRole="manager" element={<InventoryRoute element={<SectionsPage />} />} />} />
@@ -201,26 +201,28 @@ function AppInner() {
           <Route path="/stock/products" element={<InventoryRoute readOnly element={<StockPage />} />} />
           <Route path="/goods/receiving" element={<InventoryRoute element={<GoodsPage initialTab="receiving" />} />} />
           <Route path="/goods/transfers" element={<InventoryRoute element={<GoodsPage initialTab="transfers" />} />} />
-          <Route path="/goods/counts"    element={<RoleRoute minRole="staff" element={<GoodsPage initialTab="counts" />} />} />
+          <Route path="/goods/counts"    element={<InventoryRoute element={<GoodsPage initialTab="counts" />} />} />
           <Route path="/restock"        element={<RoleRoute minRole="staff"   element={<RestockPage />} />} />
           <Route path="/sales/quick"    element={<RoleRoute minRole="staff"   element={<QuickSalePage />} />} />
           <Route path="/move"           element={<RoleRoute minRole="staff"   element={<MoveStockPage />} />} />
-          <Route path="/sales/entry"    element={<RoleRoute minRole="staff"   element={<SaleEntryPage />} />} />
+          {/* 补录 takes the phone's own date and prices, so it is a manager's (owner, 2026-11-26); staff use 记一笔. */}
+          <Route path="/sales/entry"    element={<RoleRoute minRole="manager" element={<SaleEntryPage />} />} />
           <Route path="/sales/documents/:id" element={<RoleRoute minRole="staff" element={<SaleDocumentPage />} />} />
           <Route path="/sales/payments/:id/evidence" element={<RoleRoute minRole="staff" element={<PaymentEvidencePage />} />} />
           <Route path="/closing"        element={<RoleRoute minRole="staff" element={<ClosingPage />} />} />
           <Route path="/trades"         element={<RoleRoute minRole="staff" element={<TradesPage />} />} />
           <Route path="/trades/cases/:id" element={<RoleRoute minRole="staff" element={<TradeCasePage />} />} />
-          <Route path="/reports"        element={<RoleRoute minRole="manager" element={<ReportsPage />} />} />
-          <Route path="/sales"          element={<RoleRoute minRole="manager" element={<SalesPage />} />} />
-          <Route path="/sales/matching" element={<RoleRoute minRole="manager" element={<HistoricalMatchReview />} />} />
-          <Route path="/sales/day/:date" element={<RoleRoute minRole="manager" element={<DayDetailPage />} />} />
-          <Route path="/sales/report-stock" element={<RoleRoute minRole="manager" element={<ReportStockPage />} />} />
-          <Route path="/sales/name-picks" element={<RoleRoute minRole="manager" element={<NamePicksPage />} />} />
-          <Route path="/website" element={<RoleRoute minRole="manager" element={<WebsitePage />} />} />
+          {/* Sales, reports, stock value, 动态 and the 网站 page are the admin's (owner, 2026-11-26). */}
+          <Route path="/reports"        element={<RoleRoute minRole="admin" element={<ReportsPage />} />} />
+          <Route path="/sales"          element={<RoleRoute minRole="admin" element={<SalesPage />} />} />
+          <Route path="/sales/matching" element={<RoleRoute minRole="admin" element={<HistoricalMatchReview />} />} />
+          <Route path="/sales/day/:date" element={<RoleRoute minRole="admin" element={<DayDetailPage />} />} />
+          <Route path="/sales/report-stock" element={<RoleRoute minRole="admin" element={<ReportStockPage />} />} />
+          <Route path="/sales/name-picks" element={<RoleRoute minRole="admin" element={<NamePicksPage />} />} />
+          <Route path="/website" element={<RoleRoute minRole="admin" element={<WebsitePage />} />} />
           <Route path="/web-orders" element={<RoleRoute minRole="viewer" element={<WebOrdersPage />} />} />
           <Route path="/watch-list" element={<RoleRoute minRole="viewer" element={<WatchListPage />} />} />
-          <Route path="/activity" element={<RoleRoute minRole="viewer" element={<ActivityPage />} />} />
+          <Route path="/activity" element={<RoleRoute minRole="admin" element={<ActivityPage />} />} />
           <Route path="/watch" element={<RoleRoute minRole="manager" element={<WatchPage />} />} />
           <Route path="/staff-discounts" element={<RoleRoute minRole="staff" element={<StaffDiscountsPage />} />} />
           <Route path="/dex" element={<RoleRoute minRole="viewer" element={<DexHome />} />} />

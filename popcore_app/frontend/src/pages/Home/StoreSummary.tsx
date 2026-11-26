@@ -133,6 +133,8 @@ export default function StoreSummary() {
   const [date, setDate] = useState('')
   const { store, day, data, error, retry } = useStoreDay(date)
   const manager = useHasRole('manager')
+  // The whole store's day (销售 and its tabs) is the admin's (owner, 2026-11-26); everyone else has their own 汇总.
+  const admin = useHasRole('admin')
   const phone = useIsPhone()
   const [copied, setCopied] = useState('')
   const text = useRef<HTMLTextAreaElement>(null)
@@ -163,10 +165,10 @@ export default function StoreSummary() {
     : 'Only completed checkouts in POPCORE. Check for missing sales before closing; Clover sync isn’t connected yet.'}</p>
 
   return <div className={phone ? 'pc-sum pc-sum-phone' : 'pc-sum'}>
-    <PageHeader title={manager ? '销售' : '汇总'}
-      sub={phone ? 'Daily summary' : `${manager ? 'Sales' : 'Daily summary'}${store?.name ? ` · ${store.name}` : ''}${data ? ` · ${data.scope === 'personal' ? 'your records' : 'whole store'}` : ''}`}
+    <PageHeader title={admin ? '销售' : '汇总'}
+      sub={phone ? 'Daily summary' : `${admin ? 'Sales' : 'Daily summary'}${store?.name ? ` · ${store.name}` : ''}${data ? ` · ${data.scope === 'personal' ? 'your records' : 'whole store'}` : ''}`}
       actions={<>{stepper}{refresh}<Link className="pc-btn" to="/checkout/history">订单记录 Order history</Link></>} />
-    {manager && <SalesTabs />}
+    {admin && <SalesTabs />}
     {phone && stepper}
     {!store || store.code === 'ALL' ? <p className="pc-notice">Choose one store to review its summary.</p>
       : error ? <Alert role="alert" type="error" message={error} action={<Button onClick={retry}>Retry</Button>} />

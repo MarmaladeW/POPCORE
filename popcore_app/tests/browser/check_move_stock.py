@@ -95,6 +95,8 @@ async def run(browser, width):
         await page.get_by_role('list', name='Products found').get_by_role('button').first.click()
         await page.get_by_label('Bear 吊卡 pieces').fill('1')
         await expect(page.get_by_role('button', name='选原因')).to_be_disabled()
+        # 娃娃机出奖 is offered only out of the claw machine (the server refuses it from anywhere else): not from 楼下.
+        await expect(page.get_by_role('radiogroup', name='为什么').get_by_role('radio', name='娃娃机出奖')).to_have_count(0)
         await page.get_by_role('radiogroup', name='为什么').get_by_role('radio', name='坏了').click()
         await fits(page, f'gone-{width}.png')
         await page.get_by_role('button', name='保存 · 楼下 → 不在了').click()

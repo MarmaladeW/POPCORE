@@ -28,10 +28,17 @@ async def run(browser, width):
     from test_count_marks import CountMarkTests
     fixture = CountMarkTests()
     fixture.setUp()
-    state = {'role': 'manager'}
+    # 日报库存核对 is the admin's page (owner, 2026-11-26): the admin marks from the notice, with DT's stock access as
+    # an owner has; the count sections and the product drawer stay the manager's. The browser is signed in as the
+    # admin throughout; `state['role']` is whose token the API sees.
+    with closing(fixture.connect()) as con:
+        con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|admin', 'Olive Owner')")
+        con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|admin', ?)", (fixture.dt,))
+        con.commit()
+    state = {'role': 'admin'}
     context = await browser.new_context(viewport={'width': width, 'height': 900})
     await context.add_init_script(
-        "window.__FOUNDATION_AUTH={role:'manager',token:'manager'};"
+        "window.__FOUNDATION_AUTH={role:'admin',token:'admin'};"
         f"localStorage.setItem('popcore_selected_store',JSON.stringify({{id:{fixture.dt},code:'DT',name:'Downtown'}}));"
         "localStorage.setItem('pc-count-location-DT','floor')")
     page = await context.new_page()
@@ -72,7 +79,7 @@ async def run(browser, width):
         await expect(marked.get_by_role('listitem')).to_have_count(1)
         await expect(marked).to_contain_text('待盘点 楼下 Floor')
         await expect(marked).to_contain_text('楼上 Upstairs')
-        await expect(marked).to_contain_text(f'{REASON} · Mia Manager')
+        await expect(marked).to_contain_text(f'{REASON} · Olive Owner')
         await expect(page.get_by_role('button', name='下次盘点 Count next time')).to_be_visible()
         await fits(page, f'notice-marked-{width}.png')
         assert rows("SELECT l.code, m.source_id FROM count_marks m JOIN inventory_locations l ON l.id=m.location_id "
@@ -100,13 +107,14 @@ async def run(browser, width):
         assert rows("SELECT l.code, m.status FROM count_marks m JOIN inventory_locations l ON l.id=m.location_id "
                     "ORDER BY l.code") == [('floor', 'counted'), ('upstairs', 'open')]
 
-        # The notice says the floor was counted, so the manager can check it.
-        state['role'] = 'manager'
+        # The notice says the floor was counted, so the admin can check it.
+        state['role'] = 'admin'
         await page.goto(BASE + '/sales/report-stock')
         await expect(page.get_by_text('已点 Counted 楼下 Floor')).to_be_visible()
         await expect(page.get_by_text('Sam Staff', exact=False).first).to_be_visible()
         await expect(page.get_by_role('list', name='待盘点 Count next time').get_by_role('listitem')).to_have_count(1)
         await fits(page, f'notice-counted-{width}.png')
+        state['role'] = 'manager'
 
         # A section count lists the open marks first: Eevee upstairs is a design, not in 其他, and still comes.
         fixture.client.put('/api/counting/sections', headers=fixture.headers('manager'), json={

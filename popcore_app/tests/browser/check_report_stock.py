@@ -1,7 +1,7 @@
 """日报库存核对 Report stock checks in a real browser against the real Flask app and a disposable
 database (owner, 2026-10-29): a live store's pasted report that the floor could not cover, and a
-whole set with no set size, wait on the manager home; the manager opens them, checks one off, and
-staff never see them."""
+whole set with no set size, wait on the admin's home; the admin opens them, checks one off, and
+managers and staff never see them (owner, 2026-11-26: sales and the 日报 are the admin's)."""
 import asyncio
 import re
 import subprocess
@@ -64,7 +64,7 @@ async def run(browser, width):
             return {row[0]: row[1] for row in con.execute('SELECT reason, status FROM report_stock_issues')}
 
     try:
-        page = await open_as('manager')
+        page = await open_as('admin')
         await page.goto(BASE + '/')
         strip = page.locator('.pc-hm-strip')
         await expect(strip.get_by_text('日报差异 Report stock')).to_be_visible()
@@ -88,7 +88,16 @@ async def run(browser, width):
         await expect(day.get_by_text('Bare 整端 (BARE-SET) × 1')).to_be_visible()
         assert statuses() == {'not_enough_on_floor': 'checked', 'set_size_unknown': 'open'}, statuses()
 
-        # Staff never see the checks: not on their home, and the page is managers' only.
+        # A manager's home has no 日报 checks, and the page is the admin's.
+        page = await open_as('manager')
+        await page.goto(BASE + '/')
+        await expect(page.get_by_role('heading', name='门店概览')).to_be_visible()
+        await expect(page.get_by_text(re.compile('日报差异|日报库存'))).to_have_count(0)
+        await page.goto(BASE + '/sales/report-stock')
+        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        await expect(page.get_by_text('Bare 整端 (BARE-SET) × 1')).to_have_count(0)
+
+        # Staff never see the checks either: not on their home, and the page refuses them.
         page = await open_as('staff')
         await page.goto(BASE + '/')
         await expect(page.get_by_role('heading', name=re.compile('开始工作'))).to_be_visible()
@@ -132,5 +141,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: report stock checks on the manager home and their page, a check closing one, '
-          'staff kept out, at 390 and 1440 px')
+    print('PASS: report stock checks on the admin home and their page, a check closing one, '
+          'managers and staff kept out, at 390 and 1440 px')

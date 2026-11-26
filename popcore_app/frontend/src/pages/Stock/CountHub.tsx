@@ -1,6 +1,7 @@
 import { Tabs } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { useHasRole } from '../../auth/useRole'
+import { useInventoryVisible } from '../../auth/useInventoryVisible'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { useAppStore } from '../../store'
@@ -18,16 +19,18 @@ type Tab = typeof tabs[number]
 export default function CountHub() {
   const [params, setParams] = useSearchParams()
   const admin = useHasRole('admin')
+  // 其他盘点 shows the computer's numbers: only with 库存查看 at this store (the server refuses it otherwise).
+  const inventory = useInventoryVisible()
   const phone = useIsPhone()
   const store = useAppStore(state => state.selectedStore)
   const requested = params.get('tab') as Tab
-  const tab: Tab = tabs.includes(requested) && (requested !== 'settings' || admin) ? requested : 'tonight'
+  const tab: Tab = tabs.includes(requested) && (requested !== 'settings' || admin) && (requested !== 'other' || inventory) ? requested : 'tonight'
   const date = new Date().toLocaleDateString('zh-CN', { timeZone: 'America/Toronto', month: 'long', day: 'numeric' })
   return <div className="pc-count">
     <PageHeader title="晚盘" sub={`Evening count · ${phone ? date : store?.name || ''}`} back={phone ? { label: '库存', to: '/stock' } : undefined} />
     <Tabs className="pc-count-tabs" activeKey={tab} onChange={key => setParams(key === 'tonight' ? {} : { tab: key }, { replace: true })} destroyInactiveTabPane items={[
       { key: 'tonight', label: <>今晚清单 <small>Tonight</small></>, children: <EveningCheckStep /> },
-      { key: 'other', label: <>其他盘点 <small>Other</small></>, children: <GoodsPage initialTab="counts" embedded /> },
+      ...(inventory ? [{ key: 'other', label: <>其他盘点 <small>Other</small></>, children: <GoodsPage initialTab="counts" embedded /> }] : []),
       { key: 'history', label: <>记录 <small>History</small></>, children: <InventoryCheckHistory /> },
       ...(admin ? [{ key: 'settings', label: <>清单设置 <small>List settings</small></>, children: <BestsellerManage /> }] : []),
     ]} />

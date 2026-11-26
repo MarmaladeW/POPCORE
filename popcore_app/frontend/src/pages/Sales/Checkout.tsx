@@ -194,7 +194,8 @@ export default function CheckoutPage() {
   const storeName=stores?.find(s=>s.id===selectedStore?.id)?.name||selectedStore?.name||''
   const refreshButton=<Button icon={<Icon name="refresh" size={18}/>} aria-label="Refresh orders" disabled={busy} onClick={()=>setRefresh(n=>n+1)}>{phone?null:'刷新'}</Button>
   const startManual=<Button type="primary" icon={<Icon name="plus" size={18}/>} disabled={busy} onClick={()=>navigate('/checkout/new')}>{phone?<>手动开单<span className="pc-sr"> Manual checkout</span></>:'手动开单 Manual checkout'}</Button>
-  const recordSale=<Link className="pc-btn" to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>补录 Record sale</Link>
+  // 补录 is a manager's (owner, 2026-11-26): it takes the phone's own date and prices. Staff record today's sales in 记一笔.
+  const recordSale=role==='manager'||role==='admin'?<Link className="pc-btn" to="/sales/entry" aria-disabled={busy} onClick={event=>{if(busy)event.preventDefault()}}>补录 Record sale</Link>:null
   const canStart=!history&&!orderId&&!!scoped
   const header=<PageHeader
     title={orderId?(phone&&current?.status==='open'?'收款':'订单详情'):history?'订单记录':'买单'}
