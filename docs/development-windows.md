@@ -66,7 +66,7 @@ Flask startup runs migrations and can create an empty database at popcore_app/po
 
 This imports/upserts products. Do not run it casually against existing data: missing files print errors without reliably producing a failing exit code.
 
-For browser-backed scraping, in the repository root:
+For the browser checks (`popcore_app/tests/browser`), in the repository root:
 
 ```powershell
 $env:PLAYWRIGHT_BROWSERS_PATH = 'D:\dev\POPCORE\.local\ms-playwright'
@@ -75,7 +75,7 @@ $env:TMP = $env:TEMP
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
-Keep PLAYWRIGHT_BROWSERS_PATH set when using scraping. This avoids the default browser download folder under the C: user profile.
+Keep PLAYWRIGHT_BROWSERS_PATH set when running them. This avoids the default browser download folder under the C: user profile.
 
 ## Tests and production build
 

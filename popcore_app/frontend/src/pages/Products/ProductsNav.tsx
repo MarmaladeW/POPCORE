@@ -2,7 +2,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useHasRole } from '../../auth/useRole'
 
 // Products tabs (Figma Products desktop): 目录 Catalog · 整端·确认款 Sets & designs · Clover 对应 Matching and
-// 确认款价格 Design prices (managers; owner, 2026-11-12).
+// 确认款价格 Design prices (managers; owner, 2026-11-12) and POP MART 价格 POP MART prices (managers; owner, 2026-11-25).
 export function ProductsTabs() {
   const path = useLocation().pathname
   const manager = useHasRole('manager')
@@ -10,7 +10,8 @@ export function ProductsTabs() {
     { to: '/products', zh: '目录', en: 'Catalog' },
     { to: '/products/series', zh: '整端·确认款', en: 'Sets & designs' },
     ...(manager ? [{ to: '/products/clover-matching', zh: 'Clover 对应', en: 'Matching' },
-      { to: '/products/design-prices', zh: '确认款价格', en: 'Design prices' }] : []),
+      { to: '/products/design-prices', zh: '确认款价格', en: 'Design prices' },
+      { to: '/products/popmart-prices', zh: 'POP MART 价格', en: 'POP MART prices' }] : []),
   ]
   return <nav className="pc-page-tabs" aria-label="Products sections">
     {tabs.map(tab => <Link key={tab.to} to={tab.to} aria-current={path === tab.to ? 'page' : undefined}>{tab.zh} <span>{tab.en}</span></Link>)}

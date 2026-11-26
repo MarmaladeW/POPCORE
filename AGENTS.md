@@ -54,7 +54,7 @@ Frontend (second terminal, popcore_app/frontend): npm run dev -- --host localhos
 - Frontend local configuration is popcore_app/frontend/.env.development.local, copied from .env.example only when absent. All VITE_* values are public browser configuration; never put secrets there.
 - Preserve tracked frontend/.env.production: it contains public Auth0 identifiers. Development-only overrides avoid accidentally replacing production build settings. Existing .env.local files, if any, need review because they apply to production builds too.
 - Startup can create an empty local database. For actual inventory import, init_db.py requires root-level files named exactly 'copy of 11.xlsx' and 'POP_CORE_v3.xlsx'. Missing inputs print errors but can still return exit 0; check files before running. Imports upsert existing products, so back up existing databases before importing. Do not fetch production data without permission.
-- Chromium is used by the scraper. Install it only into the configured PLAYWRIGHT_BROWSERS_PATH; retain that environment variable whenever running the backend or scraper. See the runbook.
+- Chromium is used by the browser checks (popcore_app/tests/browser). Install it only into the configured PLAYWRIGHT_BROWSERS_PATH; retain that environment variable whenever running them. See the runbook. POP MART prices are read without a browser (docs/popmart-prices.md).
 
 ## Verification
 
