@@ -31,11 +31,14 @@ test('the schedule marks someone 转正 with their rank, 正 without a higher on
   assert.equal(regularRankInfo('trainee').glyph, '正')
 })
 
-test('each shift position has its emoji, End reads as Back', () => {
-  assert.equal(positionText('Back'), '📦 Back')
-  assert.equal(positionEmoji('End'), '📦')
-  assert.equal(positionText('Cashier'), '💰 Cashier')
+test('each shift position has its mark, End reads as Back (owner, 2026-11-25: 前⬅️ 后➡️ 收银💻)', () => {
+  assert.equal(positionText('Front'), '前⬅️')
+  assert.equal(positionText('Back'), '后➡️')
+  assert.equal(positionText('End'), '后➡️')
+  assert.equal(positionText('Cashier'), '收银💻')
+  assert.equal(positionEmoji('Front'), '⬅️')
+  assert.equal(positionEmoji('End'), '➡️')
+  assert.equal(positionEmoji('Cashier'), '💻')
   assert.equal(positionText('Sales'), '🛍️ Sales')
-  assert.equal(positionText('Front'), '👋 Front')
   assert.equal(positionText('Stock room'), '📍 Stock room')
 })
