@@ -38,7 +38,7 @@ class StoreOverviewTests(IsolatedApiCase):
             con.execute("INSERT INTO daily_report_metadata(date,store) VALUES ('2026-09-02','DT')")
             con.commit()
 
-    def get(self,query='store_code=DT&from=2026-09-01&to=2026-09-03',role='manager'):
+    def get(self,query='store_code=DT&from=2026-09-01&to=2026-09-03',role='admin:manager'):
         return self.client.get('/api/reports/overview?'+query,headers=self.headers(role))
 
     def test_sources_money_names_and_calendar_coverage_stay_separate(self):
@@ -118,7 +118,8 @@ class StoreOverviewTests(IsolatedApiCase):
 
     def test_manager_and_explicit_grant_scope_before_aggregation(self):
         self.assertEqual(self.get(role='staff').status_code,403)
-        self.assertEqual(self.get(role='manager:ungranted').status_code,403)
+        self.assertEqual(self.get(role='manager').status_code,403)  # the admin's only (owner, 2026-11-26)
+        self.assertEqual(self.get(role='admin:ungranted').status_code,403)
         self.assertEqual(self.get('store_code=MK&from=2026-09-01&to=2026-09-03').status_code,403)
         data=self.get('store_code=ALL&from=2026-09-01&to=2026-09-03').get_json()
         self.assertEqual(data['stores'],[{'id':self.store_id,'code':'DT'}])
@@ -157,10 +158,11 @@ class StoreOverviewTests(IsolatedApiCase):
         history=self.client.get(f'/api/inventory/series/{series}/history?store_code=DT',headers=self.headers('manager')).get_json()
         self.assertEqual({row['product_id']:row['native_unit'] for row in history['items']},{source:'set',target:'box'})
 
-    def test_overview_cannot_bypass_checkout_history_access(self):
+    def test_overview_is_the_admins_and_a_manager_on_shift_cannot_open_it(self):
+        self.assertEqual(self.get(role='manager').status_code,403)
         with closing(self.connect()) as con:
             con.execute('DELETE FROM shifts');con.commit()
-        self.assertEqual(self.get().status_code,403)
+        self.assertEqual(self.get().status_code,200)  # an admin needs no shift
 
 
 class LegacyInsightAccessTests(IsolatedApiCase):

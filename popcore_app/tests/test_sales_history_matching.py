@@ -20,7 +20,7 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
             con.commit()
 
     def preview(self, **params):
-        response = self.client.get('/api/sales/history-matches',headers=self.headers('manager'),query_string={
+        response = self.client.get('/api/sales/history-matches',headers=self.headers('admin:manager'),query_string={
             'store_code':'DT','date_from':'2026-09-01','date_to':'2026-09-30','target_product_id':self.target,**params})
         self.assertEqual(response.status_code,200,response.get_json())
         return response.get_json()
@@ -31,7 +31,7 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
         return {'store_code':'DT','product_id':self.target,'row_token':row['row_token'],
                 'target_identity_token':target['target_identity_token'],'reason':'Reviewed original receipt: all names on this row are this design'}
 
-    def remap(self, body=None, key='history-remap', role='manager'):
+    def remap(self, body=None, key='history-remap', role='admin:manager'):
         return self.client.post(f'/api/sales/record/{self.record}/remap',headers={**self.headers(role),'Idempotency-Key':key},json=body or self.intent())
 
     def row(self):
@@ -56,7 +56,7 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
         self.assertEqual(self.preview(record_id=self.record,q='does not exist')['total_rows'],0)
 
     def test_pagination_rejects_offset_beyond_sqlite_range(self):
-        response = self.client.get('/api/sales/history-matches', headers=self.headers('manager'),
+        response = self.client.get('/api/sales/history-matches', headers=self.headers('admin:manager'),
             query_string={'store_code': 'DT', 'page': str(2**63 - 1), 'page_size': '100'})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()['code'], 'invalid_input')
@@ -123,21 +123,21 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             con.execute('UPDATE daily_sales SET unit_price=NULL WHERE id=?',(self.record,));con.commit()
         path='/api/sales?store_code=DT&date=2026-09-01'
-        # GET /api/sales is manager-only.
-        self.assertIsNone(self.client.get(path,headers=self.headers('manager')).get_json()[0]['price'])
+        # GET /api/sales is admin-only.
+        self.assertIsNone(self.client.get(path,headers=self.headers('admin:manager')).get_json()[0]['price'])
         self.assertEqual(self.remap().status_code,200)
         with closing(self.connect()) as con:
             con.execute('UPDATE products SET price=999 WHERE id=?',(self.target,));con.commit()
-        row=self.client.get(path,headers=self.headers('manager')).get_json()[0]
+        row=self.client.get(path,headers=self.headers('admin:manager')).get_json()[0]
         self.assertIsNone(row['price']); self.assertIsNone(row['unit_price'])
-        export=self.client.get('/api/sales/export?store_code=DT&from=2026-09-01&to=2026-09-01',headers=self.headers('manager'))
+        export=self.client.get('/api/sales/export?store_code=DT&from=2026-09-01&to=2026-09-01',headers=self.headers('admin:manager'))
         self.assertEqual(list(csv.reader(io.StringIO(export.get_data(as_text=True))))[1][5],'')
 
     def test_explicit_type_variant_and_packaging_notes_require_review(self):
         for note in ('plush S3','sealed set','single box','100%','隐藏','Molly secret'):
-            response=self.client.post('/api/sales/parse_report',headers=self.headers('manager'),json={'store_code':'DT','engine':'rules','text':f'卡机汇总:\nTest Product*1 ({note})'})
+            response=self.client.post('/api/sales/parse_report',headers=self.headers('admin:manager'),json={'store_code':'DT','engine':'rules','text':f'卡机汇总:\nTest Product*1 ({note})'})
             self.assertFalse(response.get_json()['confirmed'],note)
-        paid=self.client.post('/api/sales/parse_report',headers=self.headers('manager'),json={'store_code':'DT','engine':'rules','text':'卡机汇总:\nTest Product*1 (cash30+card9)'})
+        paid=self.client.post('/api/sales/parse_report',headers=self.headers('admin:manager'),json={'store_code':'DT','engine':'rules','text':'卡机汇总:\nTest Product*1 (cash30+card9)'})
         self.assertEqual(len(paid.get_json()['confirmed']),1)
 
     def test_explicit_confirmed_design_notes_do_not_auto_confirm_bare_alias(self):
@@ -150,7 +150,7 @@ class SalesHistoryMatchingTests(IsolatedApiCase):
                                     ('',True),('cash30+card9',True)):
             with self.subTest(note=note):
                 suffix=f' ({note})' if note else ''
-                response=self.client.post('/api/sales/parse_report',headers=self.headers('manager'),json={
+                response=self.client.post('/api/sales/parse_report',headers=self.headers('admin:manager'),json={
                     'store_code':'DT','engine':'rules','text':f'卡机汇总:\nGarden*1{suffix}'})
                 self.assertEqual(response.status_code,200,response.get_json())
                 parsed=response.get_json()

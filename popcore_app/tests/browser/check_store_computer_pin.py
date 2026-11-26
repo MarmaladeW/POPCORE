@@ -98,6 +98,14 @@ async def run(browser, width):
         await fits(page, f'bar-{width}.png')
         await bar.get_by_role('button', name=re.compile('结束')).click()
         await expect(bar).to_have_count(0)
+        # A PIN is a person's: the store computer's account is not offered 我的 PIN (owner, 2026-11-26).
+        if width >= 768:
+            await page.get_by_role('button', name='Account menu').click()
+            await expect(page.get_by_role('menuitem', name='退出登录 Sign out')).to_be_visible()
+        else:
+            await page.goto(BASE + '/more')
+            await expect(page.get_by_role('button', name='退出登录 Sign out')).to_be_visible()
+        await expect(page.get_by_text('我的 PIN', exact=False)).to_have_count(0)
     finally:
         for context in contexts:
             await context.close()

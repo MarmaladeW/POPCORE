@@ -9,8 +9,8 @@
 // checkout: 买单 at the selected store; false for staff until its Clover is connected (owner, 2026-11-20).
 export type NavAccess = { staff: boolean; manager: boolean; admin: boolean; inventory: boolean; operations?: boolean; checkout?: boolean }
 
-// 买单 for staff who take checkouts at the selected store.
-const checkoutFor = (access: NavAccess): NavItem[] => access.checkout === false ? [] : [item.checkout]
+// 买单 for staff who take checkouts at the selected store; managers and admins always have it.
+const checkoutFor = (access: NavAccess): NavItem[] => access.checkout === false && !access.manager ? [] : [item.checkout]
 
 // What the store computer looks at besides Products and the Dex. Its home is 网站订单, so 首页 shows only until a store
 // is ticked for it.
@@ -35,15 +35,16 @@ const item = {
   // Photos and notes of people who stole from the stores (owner, 2026-11-19: "so everyone can recognize the people that
   // stole from the store ... also something showing in the store computer"): every role, the counter account included.
   watchList: { key: '/watch-list', zh: '可疑人员', en: 'Watch list', icon: 'eye' },
-  // Who did what at the store, like the group chat (owner, 2026-11-20): every role that works there.
+  // Who did what at the store, like the group chat (owner, 2026-11-20). Admins only (owner, 2026-11-26).
   activity: { key: '/activity', zh: '动态', en: 'Activity', icon: 'clock' },
-  // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs.
+  // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs. Admins only (owner,
+  // 2026-11-26): a manager has 汇总 (their own records) like staff, and reaches 收工 from it.
   sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
-  // 正式员工 and above have 4 员工折扣 a month (owner, 2026-11-19): staff see who has uses left, managers keep the record.
+  // 正式员工 and above have 4 员工折扣 a month (owner, 2026-11-19): staff see their own uses, managers keep the record.
   staffDiscounts: { key: '/staff-discounts', zh: '员工折扣', en: 'Staff discounts', icon: 'user' },
-  reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '经理' },
-  // popcore.ca stock sync and web orders (owner, 2026-11-01).
-  website: { key: '/website', zh: '网站', en: 'Website', icon: 'web', note: '经理' },
+  reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '管理员' },
+  // popcore.ca stock sync and web orders (owner, 2026-11-01). Admins only (owner, 2026-11-26).
+  website: { key: '/website', zh: '网站', en: 'Website', icon: 'web', note: '管理员' },
   schedule: { key: '/schedule', zh: '排班', en: 'Schedule', icon: 'cal' },
   products: { key: '/products', zh: '产品', en: 'Products', icon: 'grid', note: '系列与款式' },
   // The book of companies, IPs, series, products and designs (owner, 2026-11-12); any signed-in role reads it.
@@ -59,29 +60,28 @@ export function railGroups(access: NavAccess): NavGroup[] {
     { label: '日常', items: [...counterItems(access), item.watchList] },
     { label: '查看', items: [item.products, item.dex] },
   ]
+  // Only admins have 动态, 销售, 报表 and 网站 (owner, 2026-11-26); a manager's menu is the staff one.
   const daily: NavItem[] = [item.home]
-  if (access.manager) daily.push(item.checkout, item.move, item.stock, item.webOrders)
+  if (access.admin) daily.push(item.checkout, item.move, item.stock, item.webOrders, item.activity)
   else if (access.inventory) daily.push(...checkoutFor(access), item.move, item.summary, item.stock, item.webOrders, item.staffDiscounts)
   else daily.push(...checkoutFor(access), item.move, item.summary, item.eveningCount, item.webOrders, item.staffDiscounts)
-  // 动态: who did what at the store, for everyone who works there.
-  daily.push(item.activity, item.watchList)
+  daily.push(item.watchList)
   const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
-    ...(access.manager ? [{ label: '查看', items: [item.sales, item.staffDiscounts, item.reports, item.website] }] : []),
+    ...(access.admin ? [{ label: '查看', items: [item.sales, item.staffDiscounts, item.reports, item.website] }] : []),
     { label: access.manager ? '计划与管理' : '计划', items: planning },
   ]
 }
 
 export function moreItems(access: NavAccess): NavItem[] {
   return [
-    ...(access.staff ? [item.move, access.inventory ? item.stock : item.eveningCount, item.webOrders, ...(access.manager ? [] : [item.staffDiscounts]), item.activity]
+    ...(access.staff ? [item.move, access.inventory ? item.stock : item.eveningCount, item.webOrders, ...(access.admin ? [item.activity] : [item.staffDiscounts])]
       : counterItems(access).filter(entry => entry !== item.home)),
     item.watchList,
     item.products,
     item.dex,
-    ...(access.manager ? [item.sales, item.staffDiscounts, item.reports, item.website] : []),
-    ...(access.admin ? [item.users, item.settings] : []),
+    ...(access.admin ? [item.sales, item.staffDiscounts, item.reports, item.website, item.users, item.settings] : []),
   ]
 }
 

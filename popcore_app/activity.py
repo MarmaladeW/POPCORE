@@ -6,9 +6,10 @@ where no one wrote a sentence for it: a label from LABELS (or the endpoint's nam
 short detail and the store when one can be told. A route can add to its line with `note(...)`. A retried request
 (the same Idempotency-Key from the same account) is kept once. Writing the row never fails the request.
 
-Who sees what: managers and admins every line of their stores; staff and the store computer the lines of the
-stores they work at, except lines about money, people, settings and schedules of others (`audience='manager'`),
-which they see only when they did it themselves.
+Who sees what (owner, 2026-11-26: only the admin sees 动态): admins every line of every store. Everyone else,
+managers included, only the lines they did themselves (`actor_sub` is their own account, a change made on the store
+computer under their name + PIN included), at the stores they work at. The store computer's shared account did
+none of its lines, so it sees none. `audience` is still written on every row, but no longer decides who reads it.
 """
 import sqlite3
 from contextlib import closing
@@ -475,7 +476,7 @@ def _stores_seen(con, actor):
 def feed():
     """动态 Activity of one store (or every store the account reads), newest first, by day."""
     actor = request.jwt_payload
-    manager = ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['manager']
+    admin = ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['admin']
     con = db.get_db()
     stores = _stores_seen(con, actor)
     code = (request.args.get('store_code') or 'ALL').strip().upper()
@@ -485,9 +486,10 @@ def feed():
     day = request.args.get('date') or _business_date()
     where = ['a.business_date=?', f"(a.store_id IN ({','.join('?' * len(ids)) or 'NULL'}) OR a.store_id IS NULL)"]
     values = [day, *ids]
-    if not manager:
-        where.append("(a.audience='store' OR a.actor_sub=? OR a.via_sub=?)")
-        values += [actor.get('sub'), actor.get('sub')]
+    if not admin:
+        # Owner, 2026-11-26: only the admin reads everyone's lines; anyone else reads their own.
+        where.append('a.actor_sub=?')
+        values.append(actor.get('sub'))
     base, base_values = list(where), list(values)
     limit = min(PAGE, int(request.args['limit'])) if request.args.get('limit', '').isdigit() else PAGE
     for field, column in (('person', 'a.actor_sub'), ('kind', 'a.kind')):

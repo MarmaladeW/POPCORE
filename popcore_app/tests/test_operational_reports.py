@@ -18,19 +18,24 @@ class OperationalReportTests(IsolatedApiCase):
             con.execute("INSERT INTO payment_events(payment_id,event_type,direction,amount_cents,reason,actor_sub) VALUES (?,'refund','decrease',200,'Customer refund','auth0|manager')",(cash_payment,))
             con.execute("INSERT INTO sale_payments(sale_id,tender,amount_cents,state,recorded_by) VALUES (?,'card',2000,'recorded','auth0|staff')",(sale,))
             con.commit()
-    def test_financial_reports_require_manager_and_scope(self):
-        self.assertEqual(self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('staff')).status_code,403)
-        data=self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('manager')).get_json()
+    def test_financial_reports_require_admin_and_scope(self):
+        # Owner, 2026-11-26: only an admin sees sales, takings and closing figures; the stock reports stay as they were.
+        for name in ('sales','tenders','evidence-exceptions','cash-variance','closed-days'):
+            for role in ('staff','manager'):
+                self.assertEqual(self.client.get(f'/api/reports/{name}?store_code=DT',headers=self.headers(role)).status_code,403,(name,role))
+            self.assertEqual(self.client.get(f'/api/reports/{name}/export.csv?store_code=DT',headers=self.headers('manager')).status_code,403,name)
+        self.assertEqual(self.client.get('/api/reports/goods-exceptions?store_code=DT',headers=self.headers('manager')).status_code,200)
+        data=self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('admin:manager')).get_json()
         self.assertEqual({r['tender']:r['recorded_cents'] for r in data['items']},{'card':2000,'cash':1000})
         self.assertEqual({r['tender']:r['refund_cents'] for r in data['items']},{'card':0,'cash':200})
-        self.assertEqual(self.client.get('/api/reports/tenders?store_code=MK',headers=self.headers('manager')).status_code,403)
+        self.assertEqual(self.client.get('/api/reports/tenders?store_code=MK',headers=self.headers('admin:manager')).status_code,403)
     def test_tender_report_applies_manager_corrections_and_keeps_refunds_separate(self):
         with closing(self.connect()) as con:
             cash,card=[row[0] for row in con.execute('SELECT id FROM sale_payments ORDER BY id')]
             con.execute("INSERT INTO payment_events(payment_id,event_type,direction,amount_cents,reason,actor_sub) VALUES (?,'correction','increase',130,'Counted 11.30','auth0|manager')",(cash,))
             con.execute("INSERT INTO payment_events(payment_id,event_type,direction,amount_cents,reason,actor_sub) VALUES (?,'correction','decrease',500,'Terminal showed 15.00','auth0|manager')",(card,))
             con.commit()
-        data=self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('manager')).get_json()
+        data=self.client.get('/api/reports/tenders?store_code=DT',headers=self.headers('admin:manager')).get_json()
         self.assertEqual({r['tender']:(r['recorded_cents'],r['verified_cents'],r['refund_cents']) for r in data['items']},{'cash':(1130,1130,200),'card':(1500,0,0)})
     def test_inventory_report_keeps_native_units_separate(self):
         data=self.client.get('/api/reports/inventory?store_code=DT',headers=self.headers('staff')).get_json()
@@ -50,11 +55,11 @@ class OperationalReportTests(IsolatedApiCase):
         self.assertEqual({row['product_id']:row['native_unit'] for row in response.get_json()['items']},{set_product:'set',box_product:'box'})
         self.assertTrue(all(row['location_id']==location for row in response.get_json()['items']))
     def test_sales_report_groups_verified_product_quantities(self):
-        data=self.client.get('/api/reports/sales?store_code=DT&from=2026-09-08&to=2026-09-08',headers=self.headers('manager')).get_json()
+        data=self.client.get('/api/reports/sales?store_code=DT&from=2026-09-08&to=2026-09-08',headers=self.headers('admin:manager')).get_json()
         self.assertEqual(data['items'],[{'store_id':self.store_id,'series':'Pilot Series','design':'Pilot Design','unverified_product':None,'product_id':self.product_id,'native_unit':'box','quantity':2,'line_count':1,'identity_complete':1}])
         self.assertEqual(data['known_gross_cents'],3000)
     def test_unknown_report_and_unbounded_page_are_rejected(self):
         self.assertEqual(self.client.get('/api/reports/nope?store_code=DT',headers=self.headers('manager')).status_code,404)
-        self.assertEqual(self.client.get('/api/reports/sales?store_code=DT&page_size=1001',headers=self.headers('manager')).status_code,400)
-        self.assertEqual(self.client.get('/api/reports/sales?store_code=DT&from=bad',headers=self.headers('manager')).status_code,400)
-        self.assertEqual(self.client.get('/api/reports/sales?store_code=DT&from=2026-09-09&to=2026-09-08',headers=self.headers('manager')).status_code,400)
+        self.assertEqual(self.client.get('/api/reports/sales?store_code=DT&page_size=1001',headers=self.headers('admin:manager')).status_code,400)
+        self.assertEqual(self.client.get('/api/reports/sales?store_code=DT&from=bad',headers=self.headers('admin:manager')).status_code,400)
+        self.assertEqual(self.client.get('/api/reports/sales?store_code=DT&from=2026-09-09&to=2026-09-08',headers=self.headers('admin:manager')).status_code,400)

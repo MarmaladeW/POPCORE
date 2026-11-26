@@ -209,9 +209,6 @@ export const updateScheduleReminder = (content: string) =>
 export const getMe = () =>
   client.get<Employee>('/schedule/me').then((r) => r.data)
 
-export const patchMe = (data: { name?: string; email?: string }) =>
-  client.patch<Employee>('/schedule/me', data).then((r) => r.data)
-
 export const getEmployees = () =>
   client.get<Employee[]>('/schedule/employees').then((r) => r.data)
 
@@ -319,6 +316,10 @@ export const getEmployeeMonthDetail = (employeeId: number, year: number, month: 
   client
     .get<EmployeeMonthDetail>(`/schedule/reports/monthly/${employeeId}`, { params: { year, month, store_code: storeCode } })
     .then((r) => r.data)
+
+// One's own month, every store (owner, 2026-11-26: each employee sees their own monthly hours).
+export const getMyMonthDetail = (year: number, month: number) =>
+  client.get<EmployeeMonthDetail>('/schedule/reports/monthly/me', { params: { year, month } }).then((r) => r.data)
 
 export const getEmployeeHours = (employeeId: number, year?: number, month?: number) =>
   client

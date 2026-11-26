@@ -217,7 +217,12 @@ async def checks(browser):
     await expect(page.get_by_role('link',name='Today',exact=True)).to_have_count(0)
     await expect(page.get_by_role('heading',name='买单',exact=True)).to_be_visible()
     await expect(page.get_by_role('heading',name='Ready for your next customer',exact=True)).to_be_visible()
+    # 补录 is a manager's (owner, 2026-11-26): staff have no link to it; a manager does.
+    await expect(page.get_by_role('link',name='补录 Record sale',exact=True)).to_have_count(0)
+    await page.evaluate("window.__FOUNDATION_AUTH={role:'manager'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_role('link',name='补录 Record sale',exact=True)).to_have_attribute('href','/sales/entry')
+    await page.evaluate("window.__FOUNDATION_AUTH={role:'staff'};window.dispatchEvent(new Event('foundation-auth'))")
+    await expect(page.get_by_role('link',name='补录 Record sale',exact=True)).to_have_count(0)
     await page.get_by_role('button',name='手动开单 Manual checkout',exact=True).click()
     await expect(page).to_have_url(BASE+'/checkout/new')
     await expect(page.get_by_role('heading',name='New manual checkout · Downtown',exact=True)).to_be_visible()

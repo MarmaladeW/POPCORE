@@ -69,7 +69,7 @@ async def open_as(browser, case, role, width, store='ALL'):
     selected = {'id': 0, 'code': 'ALL', 'name': 'All Stores'} if store == 'ALL' \
         else {'id': case.store_id, 'code': 'DT', 'name': 'Downtown'}
     await context.add_init_script(
-        f"window.__FOUNDATION_AUTH={{role:'{role}',token:'{role}'}};"
+        f"window.__FOUNDATION_AUTH={{role:'{role.split(':')[0]}',token:'{role}'}};"
         f"localStorage.setItem('popcore_selected_store',{json.dumps(json.dumps(selected))})")
     page = await context.new_page()
     await page.clock.install(time=NOW)
@@ -196,6 +196,33 @@ async def monthly_hours(browser, case, width):
         await expect(slip).to_contain_text('10/04 – 11/03 · DT')
         await expect(slip.get_by_role('columnheader', name='门店 Store')).to_have_count(0)
         await expect(slip.get_by_role('row').filter(has_text='Wed 10/07')).to_have_count(0)
+    finally:
+        await context.close()
+
+
+async def my_hours(browser, case, width):
+    """月工时 My hours (owner, 2026-11-26): staff open their own month at every store, the same slip a manager opens,
+    and nobody else's; the two buttons step by month."""
+    context, page = await open_as(browser, case, 'staff:jessi', width)
+    asked = []
+    page.on('request', lambda request: asked.append(urlsplit(request.url).path))
+    try:
+        await page.goto(BASE + '/schedule')
+        await page.get_by_role('tab', name='月工时 My hours').click()
+        slip = page.get_by_role('article', name='Jessi 2026-10 hours')
+        await expect(slip).to_contain_text('10/04 – 11/03 · 全部门店 All stores')
+        await expect(slip.locator('.pc-slip-total')).to_contain_text('62.83 h')
+        await expect(slip.get_by_role('row').filter(has_text='Wed 10/07')).to_have_count(1)   # her MK shift counts too
+        await expect(page.get_by_text('Amy', exact=False)).to_have_count(0)
+        await expect(page.get_by_role('button', name='月工时 Monthly report')).to_have_count(0)   # no list to go back to
+        await fits(page, f'my-hours-{width}.png')
+        await page.get_by_role('button', name='上个月 Previous month').click()
+        await expect(page.get_by_role('article', name='Jessi 2026-09 hours')).to_be_visible()
+        await page.get_by_role('button', name='下个月 Next month').click()
+        await expect(slip).to_be_visible()
+        reports = [path for path in asked if path.startswith('/api/schedule/reports/')]
+        assert reports and set(reports) == {'/api/schedule/reports/monthly/me'}, reports
+        assert '/api/schedule/employees' not in asked, asked
     finally:
         await context.close()
 
@@ -349,6 +376,7 @@ async def main():
                 try:
                     for width in (1440, 390):
                         await monthly_hours(browser, case, width)
+                        await my_hours(browser, case, width)
                         await users_page(browser, case, width)
                     await calendar_marks(browser, case)
                 except Exception:
@@ -367,4 +395,5 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: the rank (长 副 资 正) follows the 转正 date and 训 the 培训中 status in the calendar, 店长 first among shifts with the same hours, and monthly report; the report '
           'lists only people with hours; each name opens hours by shift and week that add up to it; a removed '
-          "person's shift names them; 员工 is a list plus detail with one status, at 1440 and 390.")
+          "person's shift names them; staff open their own month under 月工时 My hours and nobody else's; "
+          "员工 is a list plus detail with one status, at 1440 and 390.")

@@ -202,7 +202,7 @@ class ReportSelfSufficientTests(IsolatedApiCase):
 
     # ── the manager's paste ──────────────────────────────────────────────────
 
-    def parse(self, text, store, role='manager'):
+    def parse(self, text, store, role='admin:manager'):  # sales routes are the admin's (owner, 2026-11-26)
         response = self.client.post('/api/sales/parse_report', json={'text': text, 'store_code': store},
                                     headers=self.headers(role))
         self.assertEqual(response.status_code, 200, response.get_json())
@@ -504,7 +504,7 @@ class ReportSelfSufficientTests(IsolatedApiCase):
         self.build_catalogue()
         shu, whole = self.product('SA shu'), self.product('SA shu', whole=True)
         text = '2026.11.12 DT\n出库：\nSA shu*30\nSA shu 6*2'
-        parsed = self.parse(text, 'DT', role='manager:dt-only')
+        parsed = self.parse(text, 'DT', role='admin:dt-only')
         self.assertEqual([(item['box_size'], item['qty']) for item in self.rows(parsed, 'transfer_out')], [(1, 30), (6, 2)])
         # A bare *N of a blind box with a whole set is read as boxes, and the check says so.
         (loose,) = [check for check in parsed['format_checks'] if check['lines'] == [3]]
@@ -531,7 +531,7 @@ class ReportSelfSufficientTests(IsolatedApiCase):
         # The SA shu lines are no longer on the day's report: all of it is back at DT.
         self.assertEqual((self.balance(shu, 'DT', 'upstairs'), self.balance(whole, 'DT', 'upstairs'),
                           self.balance(shu, 'MK', 'floor')), (153, 5, 100))
-        notices = self.client.get('/api/sales/report-stock', headers=self.headers('manager')).get_json()['notices']
+        notices = self.client.get('/api/sales/report-stock', headers=self.headers('admin:manager')).get_json()['notices']
         self.assertEqual([(notice['store_code'], notice['reason'], notice['quantity'], notice['where']) for notice in notices],
                          [('DT', 'move_short', 1, ['upstairs'])])
         with closing(self.connect()) as con:

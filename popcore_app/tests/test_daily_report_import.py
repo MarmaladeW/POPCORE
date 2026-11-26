@@ -17,7 +17,7 @@ class DailyReportImportTests(IsolatedApiCase):
             con.commit()
 
     def parse(self, text, **extra):
-        response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
+        response = self.client.post('/api/sales/parse_report', headers=self.headers('admin:manager'),
                                     json={'text': text, 'store_code': 'MK', **extra})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()
@@ -63,7 +63,7 @@ Test Product*1 （秘密）
             cash = con.execute('SELECT * FROM daily_report_metadata').fetchone()
             self.assertEqual((cash['cash_actual_cents'], cash['cash_expected_cents']), (59500, 60150))
         saved = self.client.get('/api/sales/report-metadata?date=2026-09-14&store=DT',
-                                headers=self.headers('manager')).get_json()
+                                headers=self.headers('admin:manager')).get_json()
         self.assertEqual(saved['cash_difference'], -6.5)
         self.assertEqual(saved['employee_discounts'], metadata['employee_discounts'])
 
@@ -118,7 +118,7 @@ Test Product*1 （秘密）
             self.assertEqual([tuple(r) for r in con.execute('SELECT txn_type,qty FROM stock_transactions')],
                              [('report_stock_in', 7)])
         saved = self.client.get('/api/sales/report-metadata?date=2026-09-14&store=DT',
-                                headers=self.headers('manager')).get_json()
+                                headers=self.headers('admin:manager')).get_json()
         self.assertEqual(saved['display_stock_in'], ['Test Product:7 + (DISPLAY)*2'])
 
     def test_trailing_display_receipts_and_stock_out_packs_from_dt_reports(self):
@@ -254,7 +254,7 @@ Test Product*1 （秘密）
         with closing(self.connect()) as con:
             con.execute('DELETE FROM stock_transactions')
             con.commit()
-        response = self.client.delete('/api/sales/clear_day?date=2026-09-14&store_code=DT', headers=self.headers('manager'))
+        response = self.client.delete('/api/sales/clear_day?date=2026-09-14&store_code=DT', headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.snapshot(('daily_report_metadata',))['daily_report_metadata'], [])
 
@@ -269,7 +269,7 @@ Test Product*1 （秘密）
         self.assertEqual(self.submit([], report_metadata=metadata).status_code, 200)
         for store in ('DT', 'ALL'):
             result = self.client.get('/api/sales/recorded-dates?month=2026-09&store=' + store,
-                                     headers=self.headers('manager'))  # sales reads are manager-only
+                                     headers=self.headers('admin:manager'))  # sales reads are manager-only
             self.assertEqual(result.get_json(), ['2026-09-14'])
         parsed = self.parse('2026.9.14 DT\nTest Product*1\n2026.9.14 MK\nTest Product*1')
         self.assertTrue(parsed['metadata_errors'])
@@ -353,7 +353,7 @@ Test Product：2
         before = self.snapshot(('stock', 'stock_transactions', 'daily_sales'))
         self.assertEqual(self.submit([], report_metadata=notes).status_code, 200)
         saved = self.client.get('/api/sales/report-metadata?date=2026-09-14&store=DT',
-                                headers=self.headers('manager')).get_json()
+                                headers=self.headers('admin:manager')).get_json()
         for key, value in notes.items():
             self.assertEqual(saved[key], value)
         self.assertEqual(self.snapshot(('stock', 'stock_transactions', 'daily_sales')), before)

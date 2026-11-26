@@ -275,6 +275,12 @@ def month_page(con, actor, month_value):
     rows = con.execute(f'{_ENTRY_SQL} WHERE u.date >= ? AND u.date < ? ORDER BY u.date DESC, u.store, u.id',
                        (first, after)).fetchall()
     entries = [_entry(row, manager) for row in rows]
+    me = None
+    if not manager:
+        # Owner, 2026-11-26: an employee sees only their own 员工折扣: their own row and their own records.
+        mine = con.execute('SELECT id FROM employees WHERE auth0_id=?', (actor.get('sub'),)).fetchone()
+        me = mine['id'] if mine else 0
+        entries = [entry for entry in entries if entry['employee_id'] == me]
     used = Counter()
     for entry in entries:
         if entry['state'] == 'counted':
@@ -286,6 +292,8 @@ def month_page(con, actor, month_value):
             f"""SELECT e.id, e.name, e.rank, e.is_active FROM employees e
                 WHERE (e.is_active=1 AND e.rank IN ({eligible})){f' OR e.id IN ({users})' if used else ''}
                 ORDER BY {ranks.order_by('e')}""", (*ranks.DISCOUNT_RANKS, *used)):
+        if me is not None and row['id'] != me:
+            continue
         allowed = row['rank'] in ranks.DISCOUNT_RANKS
         count = used[row['id']]
         people.append({'employee_id': row['id'], 'name': row['name'], 'rank': row['rank'],
@@ -324,6 +332,27 @@ def month_page(con, actor, month_value):
                         'rank_label': ranks.RANK_LABELS.get(row['rank'])} for row in con.execute(
                 f'SELECT e.id, e.name, e.rank FROM employees e WHERE e.is_active=1 ORDER BY {ranks.order_by("e")}')])
     return page
+
+
+def buyers(con):
+    """Who can be picked as the buyer of a 记一笔 员工折扣 sale: eligible active people, names only, in rank order."""
+    eligible = ','.join('?' for _ in ranks.DISCOUNT_RANKS)
+    return {'buyers': [{'employee_id': row['id'], 'name': row['name']} for row in con.execute(
+        f"""SELECT e.id, e.name FROM employees e WHERE e.is_active=1 AND e.rank IN ({eligible})
+            ORDER BY {ranks.order_by('e')}""", ranks.DISCOUNT_RANKS)]}
+
+
+def uses_left(con, employee_id, month=None):
+    """(eligible, uses left) for one person in a month (this month when none is given), counted as the page counts."""
+    month = read_month(month)
+    sync_month(con, month)
+    person = con.execute('SELECT rank, is_active FROM employees WHERE id=?', (employee_id,)).fetchone()
+    if person is None or not person['is_active'] or person['rank'] not in ranks.DISCOUNT_RANKS:
+        return False, 0
+    first, after = month_bounds(month)
+    used = con.execute("""SELECT COALESCE(SUM(uses), 0) FROM staff_discount_uses WHERE employee_id=? AND date >= ?
+                           AND date < ? AND ignored_reason IS NULL AND readable=1""", (employee_id, first, after)).fetchone()[0]
+    return True, max(0, MONTHLY_USES - used)
 
 
 def _one(con, use_id):

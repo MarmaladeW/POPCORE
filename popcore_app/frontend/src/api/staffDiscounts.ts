@@ -1,7 +1,7 @@
 import client from './client'
 
 // 员工折扣 Staff discounts (owner, 2026-11-19): 正式员工 and above have 4 uses a month; one use is one product.
-// Money is in cents and only reaches managers.
+// Money is in cents and only reaches managers. Staff get only their own row and records (owner, 2026-11-26).
 export type DiscountState = 'counted' | 'waiting' | 'ignored'
 export interface DiscountItem { name:string; qty:number }
 export interface DiscountUse {
@@ -26,3 +26,8 @@ export interface DiscountPage {
 
 export const getStaffDiscounts = (month:string, signal?:AbortSignal) =>
   client.get<DiscountPage>('/staff-discounts', { params:{ month }, signal }).then(response => response.data)
+
+// Who can buy with a staff discount, for the 记一笔 "谁买的" picker: names only, for everyone on shift.
+export interface DiscountBuyer { employee_id:number; name:string }
+export const getDiscountBuyers = (signal?:AbortSignal) =>
+  client.get<{ buyers:DiscountBuyer[] }>('/staff-discounts/buyers', { signal }).then(response => response.data.buyers ?? [])

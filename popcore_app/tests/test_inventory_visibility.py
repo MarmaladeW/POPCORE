@@ -258,10 +258,118 @@ class InventoryVisibilityTests(ReceivingFixture):
             with self.subTest(path=path):
                 response = self.call('GET', path, HIDDEN)
                 self.assertEqual(response.status_code, 200, response.get_json())
-        count = self.call('POST', '/api/goods/counts', HIDDEN, {
-            'location_id': self.floor, 'business_date': '2026-11-01',
-            'lines': [{'product_id': self.product_id, 'unit': 'piece', 'observed_quantity': 5}]}, 'visibility-count')
-        self.assertEqual(count.status_code, 201, count.get_json())
+
+    def test_evening_count_pages_keep_what_popcore_holds_for_picked_workers(self):
+        """Owner, 2026-11-26: the 晚盘 pages stay open, but what the floor holds is a stock number."""
+        with closing(self.connect()) as con:
+            con.execute('UPDATE products SET is_bestseller=1 WHERE id=?', (self.product_id,))
+            con.execute('INSERT INTO stock(product_id, store_id, upstairs_qty, instore_qty, claw_qty) VALUES (?, ?, 0, 7, 0)',
+                        (self.product_id, self.mk))
+            con.commit()
+        saved = self.call('POST', '/api/inventory-check/submit', PICKED,
+                          {'store_code': 'DT', 'checks': [{'product_id': self.product_id, 'sets': 0, 'loose': 3}]})
+        self.assertEqual(saved.status_code, 201, saved.get_json())
+        for role, held in ((HIDDEN, None), ('viewer:nobody', None), (PICKED, 5), ('manager', 5)):
+            with self.subTest(role=role):
+                best = self.call('GET', '/api/bestsellers?store_code=DT', role).get_json()
+                self.assertEqual([(row['id'], row['instore_qty']) for row in best], [(self.product_id, held)])
+                past = self.call('GET', '/api/history/inventory-check?store_code=DT', role).get_json()
+                self.assertEqual([(row['actual_qty'], row['theoretical_qty'], row['discrepancy']) for row in past],
+                                 [(3, held, held and -2)])
+        # MK is not live: its 晚盘 page hides the same numbers (nobody here is picked at MK).
+        for role, held in ((HIDDEN, None), (PICKED, None), ('manager', 7)):
+            with self.subTest(role=role, store='MK'):
+                today = self.call('GET', '/api/inventory-check/today?store_code=MK', role).get_json()['items']
+                self.assertEqual([(row['product_id'], row['current_instore_qty'], row['theoretical_qty']) for row in today],
+                                 [(self.product_id, held, held)])
+
+    def count_body(self, location=None):
+        return {'location_id': self.floor if location is None else location, 'business_date': '2026-11-01',
+                'lines': [{'product_id': self.product_id, 'unit': 'piece', 'observed_quantity': 0}]}
+
+    def test_stock_counts_are_for_picked_workers(self):
+        """A count keeps what POPCORE held beside what was counted, so it shows stock (owner, 2026-11-26)."""
+        before = self.snapshot(TABLES)
+        self.assertHidden(self.call('POST', '/api/goods/counts', HIDDEN, self.count_body(), 'count-hidden'))
+        self.assertEqual(self.snapshot(TABLES), before)
+        created = self.call('POST', '/api/goods/counts', PICKED, self.count_body(), 'count-picked')
+        self.assertEqual(created.status_code, 201, created.get_json())
+        count = created.get_json()
+        path = f"/api/goods/counts/{count['id']}"
+        with closing(self.connect()) as con:  # the store computer: a viewer with 门店操作权限, not picked
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (self.store_id,))
+            con.commit()
+        for role in (HIDDEN, 'viewer:counter'):
+            self.assertHidden(self.call('GET', path, role))
+        self.assertHidden(self.call('PATCH', path, HIDDEN, {'expected_version': count['version'],
+                                                            'lines': [{'line_no': 1, 'observed_quantity': 9}]}, 'count-patch'))
+        self.assertHidden(self.call('POST', path + '/submit', HIDDEN, {'expected_version': count['version']}, 'count-submit'))
+        shown = self.call('GET', path, PICKED)
+        self.assertEqual(shown.status_code, 200, shown.get_json())
+        self.assertEqual([(line['expected_quantity'], line['observed_quantity']) for line in shown.get_json()['lines']], [(5, 0)])
+        self.assertEqual(self.call('POST', path + '/submit', PICKED, {'expected_version': count['version']},
+                                   'count-submit-picked').status_code, 200)
+        self.assertEqual(self.call('GET', path, 'manager').status_code, 200)
+
+    def test_an_id_sent_as_text_is_checked_like_a_number(self):
+        """The ledger reads "12" as 12, so the 库存查看 check has to as well; an id it cannot read is refused,
+        never passed over."""
+        def command(source, target):
+            return {'kind': 'move', 'business_date': '2026-11-01', 'reason': 'text ids',
+                    'lines': [{'product_id': self.product_id, 'quantity': 1, 'unit': 'piece',
+                               'from_location_id': source, 'from_disposition': 'saleable',
+                               'to_location_id': target, 'to_disposition': 'saleable',
+                               'expected_versions': {'from': 1, 'to': 0}}]}
+        receipt = {'destination_location_id': self.floor, 'business_date': '2026-11-01',
+                   'lines': [{'product_id': self.product_id, 'unit': 'piece', 'saleable_quantity': 1}]}
+        identify = {'source_product_id': self.product_id, 'design_product_id': self.empty_id, 'quantity': 1,
+                    'source_version': 1, 'target_version': 0, 'business_date': '2026-11-01', 'reason': 'text ids'}
+        before = self.snapshot(TABLES)
+        hidden = [
+            ('/api/inventory/commands', command(str(self.floor), str(self.upstairs))),
+            ('/api/inventory/commands', command(str(self.floor), self.upstairs)),
+            ('/api/inventory/commands', command(f' {self.floor}'.strip(), None) | {'kind': 'consume'}),
+            ('/api/goods/identify', {**identify, 'location_id': str(self.floor)}),
+            ('/api/goods/receipts', {**receipt, 'store_id': str(self.store_id)}),
+            ('/api/goods/counts', self.count_body(str(self.floor))),
+        ]
+        for number, (path, body) in enumerate(hidden):
+            with self.subTest(path=path, number=number):
+                self.assertHidden(self.call('POST', path, HIDDEN, body, f'text-id-{number}'))
+        unreadable = [
+            ('/api/inventory/commands', command('floor', self.upstairs)),
+            ('/api/inventory/commands', command([self.floor], self.upstairs)),
+            ('/api/inventory/commands', command(True, self.upstairs)),
+            ('/api/inventory/commands', command(1.5, self.upstairs)),
+            ('/api/goods/identify', {**identify, 'location_id': 'floor'}),
+            ('/api/goods/identify', identify),
+            ('/api/goods/receipts', {**receipt, 'store_id': [self.store_id]}),
+            ('/api/goods/receipts', receipt),
+            ('/api/goods/counts', self.count_body('floor')),
+        ]
+        for role in (HIDDEN, PICKED):
+            for number, (path, body) in enumerate(unreadable):
+                with self.subTest(path=path, number=number, role=role):
+                    response = self.call('POST', path, role, body, f'unreadable-{role}-{number}')
+                    self.assertEqual((response.status_code, response.get_json()['code']), (400, 'invalid_input'), response.get_json())
+        self.assertEqual(self.snapshot(TABLES), before)
+        # A picked worker's text ids work as they always did.
+        moved = self.call('POST', '/api/inventory/commands', PICKED, command(str(self.floor), str(self.upstairs)), 'text-id-picked')
+        self.assertEqual(moved.status_code, 201, moved.get_json())
+        self.assertEqual(self.call('POST', '/api/goods/receipts', PICKED, {**receipt, 'store_id': str(self.store_id)},
+                                   'text-id-receipt').status_code, 201)
+
+    def test_lines_that_are_not_objects_are_refused(self):
+        bad = self.call('POST', '/api/goods/transfers', 'manager', {
+            'source_location_id': self.floor, 'destination_location_id': self.upstairs, 'business_date': '2026-11-01',
+            'lines': ['one']}, 'bad-transfer')
+        self.assertEqual((bad.status_code, bad.get_json()['code']), (400, 'invalid_input'))
+        transfer = self.transfer()
+        bad = self.call('POST', f"/api/goods/transfers/{transfer['id']}/dispatch", 'manager',
+                        {'expected_version': transfer['version'], 'lines': [1]}, 'bad-dispatch')
+        self.assertEqual((bad.status_code, bad.get_json()['code']), (400, 'invalid_input'))
+        for path in ('/api/goods/restock-suggestions', '/api/goods/restock-suggestions?location_id=floor'):
+            self.assertEqual(self.call('GET', path, PICKED).status_code, 400)
 
 
 class CheckoutBoxCountTests(BlindBoxFixture):

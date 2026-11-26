@@ -9,7 +9,9 @@ from db import get_db
 from auth import login_required, role_required
 from checkout_access import business_date
 from inventory_commands import store_is_live
+from inventory_visibility import can_see_inventory
 from store_access import legacy_store_denied
+from validation import invalid_input, read_int
 from blueprints.stores import _resolve_store
 
 bp = Blueprint('inventory', __name__)
@@ -195,6 +197,8 @@ def inventory_check_today():
         ORDER BY p.ip_series, p.sku DESC
     ''', (store_id, today, store_id))
     rows = [dict(r) for r in cur.fetchall()]
+    # As at a live store: what POPCORE holds, only for those who may see the store's stock (库存查看).
+    visible = can_see_inventory(con, request.jwt_payload, (store_id,))
 
     result = []
     for row in rows:
@@ -202,6 +206,8 @@ def inventory_check_today():
         theoretical_qty, base_check_date, is_base_abnormal = _calc_theoretical_qty(
             cur, pid, today, store_id, store_code
         )
+        if not visible:
+            row['current_instore_qty'] = row['discrepancy'] = theoretical_qty = None
         result.append({
             **row,
             'theoretical_qty':  theoretical_qty,
@@ -222,6 +228,8 @@ def submit_inventory_check():
     (date, product_id, store_id) conflict returns 409 — no overwrite.
     """
     data   = request.get_json() or {}
+    if not isinstance(data, dict) or not isinstance(data.get('checks', []), list):
+        return jsonify({'error': 'Expected an object with a list of checks', 'code': 'invalid_input'}), 400
     checks = data.get('checks', [])
     if not checks:
         return jsonify({'error': 'checks 不能为空'}), 400
@@ -276,15 +284,24 @@ def submit_inventory_check():
     saved     = 0
     results   = []
     conflicts = []
+    # Read every count before any is saved: a count that is not a whole number of 0 or more is refused.
+    counts = []
+    try:
+        for chk in checks:
+            if not isinstance(chk, dict):
+                raise ValueError('checks must be a list of objects')
+            if chk.get('product_id') is None or chk.get('actual_qty') is None:
+                continue
+            counts.append((read_int(chk['product_id'], 'product_id', minimum=1),
+                           read_int(chk['actual_qty'], 'actual_qty')))
+    except ValueError as exc:
+        con.close()
+        return jsonify(invalid_input(exc)), 400
+    visible = can_see_inventory(con, request.jwt_payload, (store_id,))
 
-    for chk in checks:
-        pid        = chk.get('product_id')
-        actual_qty = chk.get('actual_qty')
-        if pid is None or actual_qty is None:
-            continue
-
+    for pid, actual_qty in counts:
         theoretical_qty, base_check_date, _ = _calc_theoretical_qty(
-            cur, int(pid), today, store_id, store_code
+            cur, pid, today, store_id, store_code
         )
         if theoretical_qty is None:
             con.rollback()
@@ -293,7 +310,7 @@ def submit_inventory_check():
                 'error': 'Reviewed opening balance is required',
                 'code': 'reconciliation_required',
             }), 409
-        discrepancy = int(actual_qty) - theoretical_qty
+        discrepancy = actual_qty - theoretical_qty
 
         try:
             cur.execute('''
@@ -301,10 +318,11 @@ def submit_inventory_check():
                     (date, product_id, theoretical_qty, actual_qty, discrepancy,
                      base_check_date, created_by, store_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (today, int(pid), theoretical_qty, int(actual_qty),
+            ''', (today, pid, theoretical_qty, actual_qty,
                   discrepancy, base_check_date, created_by, store_id))
             saved += 1
-            results.append({'product_id': pid, 'discrepancy': discrepancy})
+            # The difference tells what POPCORE holds: only for those who may see the store's stock (库存查看).
+            results.append({'product_id': pid, 'discrepancy': discrepancy if visible else None})
         except sqlite3.IntegrityError:
             conflicts.append(pid)
 
@@ -344,6 +362,10 @@ def get_bestsellers():
         ORDER BY p.ip_series, p.sku DESC
     ''', (store_id,))
     rows = [dict(r) for r in cur.fetchall()]
+    if not can_see_inventory(con, request.jwt_payload, (store_id,)):
+        # The list of bestsellers is for everyone; what the floor holds is for 库存查看 (owner, 2026-11-26).
+        for row in rows:
+            row['instore_qty'] = None
     con.close()
     return jsonify(rows)
 
@@ -352,6 +374,8 @@ def get_bestsellers():
 @role_required('staff')
 def set_bestseller(pid):
     data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     if 'is_bestseller' not in data:
         return jsonify({'error': 'is_bestseller 必须填写'}), 400
     flag = 1 if data['is_bestseller'] else 0
@@ -464,5 +488,9 @@ def history_inventory_check():
         ORDER BY ic.date DESC, p.sku DESC
     ''', params)
     rows = [dict(r) for r in cur.fetchall()]
+    if not can_see_inventory(con, request.jwt_payload, (store_id,)):
+        # What POPCORE held each night, and so the difference, is for 库存查看 (owner, 2026-11-26).
+        for row in rows:
+            row['theoretical_qty'] = row['discrepancy'] = None
     con.close()
     return jsonify(rows)

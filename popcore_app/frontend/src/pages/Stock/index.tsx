@@ -13,6 +13,7 @@ import type { ColumnsType } from 'antd/es/table'
 import client from '../../api/client'
 import { useAppStore } from '../../store'
 import RoleGuard from '../../components/RoleGuard'
+import { useHasRole } from '../../auth/useRole'
 import RestockModal from './RestockModal'
 import BatchStockModal from './BatchStockModal'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -132,6 +133,7 @@ export default function StockPage() {
   const isMobile = useIsMobile()
   const { series, selectedStore } = useAppStore()
   const hasClaw = useHasClaw()
+  const admin = useHasRole('admin')
   const sc = selectedStore?.code
   const isAll = sc === 'ALL'
   const [stock,    setStock]   = useState<StockRow[]>([])
@@ -334,7 +336,8 @@ export default function StockPage() {
         )
       },
     },
-    {
+    // What the stock is worth is the admin's (owner, 2026-11-26).
+    ...(admin ? [{
       title: 'Stock Value',
       width: 110, align: 'right',
       render: (_, r) => {
@@ -345,7 +348,7 @@ export default function StockPage() {
           ? <Text style={{ color: '#6366F1', fontSize: 12 }}>CA${val.toFixed(2)}</Text>
           : <Text type="secondary">—</Text>
       },
-    },
+    }] satisfies ColumnsType<StockRow> : []),
     {
       title: 'Status',
       width: 120,
@@ -389,7 +392,7 @@ export default function StockPage() {
   const summaryCards = summary ? [
     { zh: '楼上', kraft: true, label: 'Upstairs / Back Stock', value: summary.mode === 'authoritative' ? byUnit('back_qty') : summary.total_upstairs_qty },
     { zh: '楼面', kraft: false, label: 'Floor Stock', value: summary.mode === 'authoritative' ? byUnit('floor_qty') : summary.total_instore_qty },
-    { zh: '库存价值', kraft: false, label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+    ...(!admin ? [] : [{ zh: '库存价值', kraft: false, label: 'Total Stock Value', value: summary.total_stock_value == null ? 'Unknown' : `CA$ ${summary.total_stock_value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }]),
     { zh: '需补货 / 缺货', kraft: false, label: 'Low/Out of Stock', value: summary.low_stock_count + summary.out_of_stock_count },
   ] : []
   const openingReady = locations.length > 0 && locations.every(location => location.opening_verified)
@@ -609,7 +612,7 @@ export default function StockPage() {
                               <div style={{ fontSize: 10, color: '#9ca3af' }}>Total</div>
                               <div style={{ fontSize: 12, fontWeight: 700, color: total === 0 ? '#ef4444' : total <= 3 ? '#d97706' : '#16a34a' }}>{formatQty(total, row)}</div>
                             </div>
-                            {stockVal != null && (
+                            {admin && stockVal != null && (
                               <div style={{ textAlign: 'center' }}>
                                 <div style={{ fontSize: 10, color: '#9ca3af' }}>Value</div>
                                 <div style={{ fontSize: 12, fontWeight: 600, color: '#6366F1' }}>CA${stockVal.toFixed(0)}</div>

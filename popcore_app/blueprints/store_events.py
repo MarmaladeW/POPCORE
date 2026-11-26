@@ -33,14 +33,15 @@ def _scope(con, actor, store_id, date, *, write=False):
     access = checkout_access(con, actor)
     live = {store['id'] for store in access['live_stores']}
     if store_id not in live:
-        if write or access['role'] != 'staff':
+        if write or access['role'] == 'admin':
             raise PermissionError('Store event access denied')
         owned = con.execute('''SELECT 1 FROM store_events WHERE store_id=? AND business_date=? AND actor_sub=?
             UNION SELECT 1 FROM checkout_orders WHERE store_id=? AND business_date=? AND created_by=?''',
             (store_id,date,actor['sub'],store_id,date,actor['sub'])).fetchone()
         if not owned:
             raise PermissionError('Store event access denied')
-    return 'personal' if access['role'] == 'staff' else 'store'
+    # Owner, 2026-11-26: only an admin sees the whole store's day; managers see their own records, like staff.
+    return 'store' if access['role'] == 'admin' else 'personal'
 
 
 def _post_claw(con, actor, key, store_id, kind, product_id, quantity, source_location_id, today):

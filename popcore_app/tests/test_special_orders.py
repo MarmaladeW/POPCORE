@@ -34,6 +34,9 @@ class SpecialOrderTests(IsolatedApiCase):
                         (employee_id, shift_date, '00:01', '00:02',
                          self.store_id, position),
                     )
+            # Below manager, special orders are worked with at the stores an account has 门店操作权限 for.
+            con.executemany('INSERT INTO inventory_access(auth0_sub,store_id) SELECT ?, id FROM stores',
+                            [('auth0|creator',), ('auth0|cashier',)])
             con.commit()
 
     def post(self, path, body, key, role='staff:creator'):
@@ -361,6 +364,49 @@ class SpecialOrderTests(IsolatedApiCase):
                 10000,
             )
             self.assertEqual(con.execute('PRAGMA foreign_key_check').fetchall(), [])
+
+    def test_below_manager_only_orders_of_their_stores_or_their_own(self):
+        """Owner, 2026-11-26: staff work with the special orders picked up at a store they have 门店操作权限 for, and
+        the ones they created; managers with every store's."""
+        with closing(self.connect()) as con:
+            market = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|cashier' AND store_id=?", (market,))
+            con.commit()
+        downtown = self.create_order()
+        elsewhere = self.create_order(pickup_store_id=market)
+        outsider, cashier = self.headers('staff:outsider'), self.headers('staff:cashier')
+
+        def listed(headers):
+            return [order['id'] for order in self.client.get('/api/special-orders?status=open', headers=headers).get_json()]
+        self.assertEqual(listed(outsider), [])
+        self.assertEqual(listed(cashier), [downtown['id']])
+        self.assertEqual(listed(self.headers('staff:creator')), [elsewhere['id'], downtown['id']])
+        self.assertEqual(listed(self.headers('manager')), [elsewhere['id'], downtown['id']])
+        self.assertEqual(self.client.get(f"/api/special-orders/{downtown['id']}", headers=outsider).status_code, 403)
+        self.assertEqual(self.client.get(f"/api/special-orders/{elsewhere['id']}", headers=cashier).status_code, 403)
+        payment = {'expected_version': elsewhere['version'], 'amount_cents': 8000, 'tender': 'cash'}
+        for path, body in ((f"/{elsewhere['id']}/payments", payment),
+                           (f"/{elsewhere['id']}/complete", {'expected_version': elsewhere['version']})):
+            with self.subTest(path=path):
+                self.assertEqual(self.post(path, body, 'not-mine' + path, 'staff:cashier').status_code, 403)
+        self.assertEqual(self.patch_order(elsewhere['id'], {
+            'expected_version': elsewhere['version'], 'pickup_store_id': self.store_id}, 'pull', 'staff:cashier').status_code, 403)
+        # Their own store's order may not be moved to a store they do not work with; a manager moves it.
+        move = {'expected_version': downtown['version'], 'pickup_store_id': market}
+        self.assertEqual(self.patch_order(downtown['id'], move, 'push', 'staff:cashier').status_code, 403)
+        self.assertEqual(self.patch_order(downtown['id'], move, 'push-manager', 'manager').status_code, 200)
+        # Creating needs the access at the pickup store.
+        refused = self.post('', {'customer_name': 'Maya', 'customer_phone': '416-555-0148',
+                                 'item_description': 'Requested figure', 'total_cents': 10000,
+                                 'pickup_store_id': market}, 'no-access', 'staff:cashier')
+        self.assertEqual(refused.status_code, 403, refused.get_json())
+        # The one who created an order keeps it after it moved to a store they lost access to.
+        with closing(self.connect()) as con:
+            con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|creator'")
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM special_orders').fetchone()[0], 2)
+            con.commit()
+        self.assertEqual(listed(self.headers('staff:creator')), [elsewhere['id'], downtown['id']])
+        self.assertEqual(self.add_payment(elsewhere, 8000, 'still-mine')['paid_cents'], 10000)
 
     def test_viewer_cannot_read_or_create_special_orders(self):
         self.assertEqual(

@@ -119,6 +119,18 @@ class InsightWriteLockTests(IsolatedApiCase):
    self.assertEqual(con.execute("SELECT status FROM insight_runs WHERE job='manual_insights'").fetchone()[0],'succeeded')
   self.assertEqual(self.client.post('/api/insights/generate',headers=self.headers('admin')).status_code,200)  # again later the same day
 
+ def test_threshold_changes_reject_a_list_body_and_values_that_are_not_numbers(self):
+  def put(body):return self.client.put('/api/insights/thresholds',headers=self.headers('manager'),json=body)
+  with closing(self.connect()) as con:before=con.execute('SELECT key,value FROM insight_thresholds ORDER BY key').fetchall()
+  for body in ([],['thresholds'],'thresholds',{'thresholds':[]},{'thresholds':{'dead_stock_days':'nan'}},{'thresholds':{'dead_stock_days':'inf'}},
+               {'thresholds':{'dead_stock_days':'-Infinity'}},{'thresholds':{'dead_stock_days':'many'}},{'thresholds':{'dead_stock_days':None}}):
+   with self.subTest(body=body):self.assertEqual(put(body).status_code,400)
+  bad=self.client.put('/api/insights/thresholds',headers={**self.headers('manager'),'Content-Type':'application/json'},data='{not json')
+  self.assertEqual(bad.status_code,400)
+  with closing(self.connect()) as con:self.assertEqual(con.execute('SELECT key,value FROM insight_thresholds ORDER BY key').fetchall(),before)
+  self.assertEqual(put({'thresholds':{'dead_stock_days':'21'}}).status_code,200)
+  with closing(self.connect()) as con:self.assertEqual(con.execute("SELECT value FROM insight_thresholds WHERE key='dead_stock_days'").fetchone()[0],21.0)
+
  def test_nightly_waits_while_admin_generation_runs(self):
   self.claim('manual_insights',self.NOW-timedelta(minutes=1))
   self.assertEqual(insights.run_due_daily_insights(self.NOW),0);self.assertIsNone(self.run_row())

@@ -1,4 +1,5 @@
 import json
+import math
 from flask import Blueprint, jsonify, request
 from auth import role_required
 from db import get_db
@@ -81,8 +82,8 @@ def get_thresholds():
 @bp.route('/api/insights/thresholds', methods=['PUT'])
 @role_required('manager')
 def update_thresholds():
-    body    = request.get_json(force=True) or {}
-    updates = body.get('thresholds', {})
+    body    = request.get_json(force=True, silent=True)
+    updates = body.get('thresholds', {}) if isinstance(body, dict) else None
     if not isinstance(updates, dict):
         return jsonify({'error': 'expected {"thresholds": {key: value}}'}), 400
 
@@ -91,6 +92,8 @@ def update_thresholds():
         try:
             value = float(value)
         except (TypeError, ValueError):
+            return jsonify({'error': f'invalid value for {key}'}), 400
+        if not math.isfinite(value):
             return jsonify({'error': f'invalid value for {key}'}), 400
         db.execute(
             "UPDATE insight_thresholds SET value = ?, updated_at = datetime('now') WHERE key = ?",

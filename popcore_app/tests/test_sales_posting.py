@@ -37,8 +37,9 @@ class SalePostingTests(ReceivingFixture):
         }
 
     def create(self, body, key):
+        # 补录 is a manager's (owner, 2026-11-26): the same account, with a manager's role.
         return self.client.post('/api/sale-documents', headers={
-            **self.headers(), 'Idempotency-Key': key,
+            **self.headers('manager:staff'), 'Idempotency-Key': key,
         }, json=body)
 
     def post(self, sale, key, role='staff'):

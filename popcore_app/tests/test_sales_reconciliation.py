@@ -103,7 +103,7 @@ class SaleReconciliationTests(SalePostingTests):
             ).lastrowid
             con.commit()
         deleted = self.client.delete(
-            f'/api/sales/record/{legacy_id}', headers=self.headers('manager')
+            f'/api/sales/record/{legacy_id}', headers=self.headers('admin:manager')
         )
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
         with closing(self.connect()) as con:

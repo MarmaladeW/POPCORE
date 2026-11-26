@@ -14,7 +14,6 @@ import { TodayRows } from '../Dashboard/TodayRows'
 import { mergeWork } from '../Dashboard/todayPresentation'
 import PunchIn from '../Schedule/PunchIn'
 import HomeTiles from './HomeTiles'
-import StoreActivityPanel from '../Activity/StoreActivityPanel'
 import { PinPrompt } from '../../components/people/MyPin'
 import { eventNames, useStoreDay, type StoreEvent } from './storeDay'
 import './Home.css'
@@ -116,7 +115,7 @@ function StaffHome() {
         </section>
           : <Panel zh="今日记录" en="Recent records" label="Recent records" action={viewAll}>{records}</Panel>}
       </div>
-      <aside className="pc-hm-side"><MyShifts outside={phone} /><StoreActivityPanel /></aside>
+      <aside className="pc-hm-side"><MyShifts outside={phone} /></aside>
     </div>
   </div>
 }

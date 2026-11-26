@@ -49,7 +49,8 @@ class StoreDayCase(ReceivingFixture):
                 'reduction_cents': 0, 'rounding_cents': 0, 'collected_cents': amount,
                 'lines': [{'product_id': self.product_id, 'unit': 'piece', 'quantity': 1,
                            'unit_price_cents': amount}]}
-        sale = self.send('/api/sale-documents', body, role).get_json()
+        # 补录 is a manager's (owner, 2026-11-26): the same account, with a manager's role.
+        sale = self.send('/api/sale-documents', body, f"manager:{role.rpartition(':')[2]}").get_json()
         posted = self.send(f"/api/sale-documents/{sale['sale_id']}/post", {'expected_version': sale['version']}, role)
         self.assertEqual(posted.status_code, 200, posted.get_json())
         paid = self.send(f"/api/sale-documents/{sale['sale_id']}/payments", {
@@ -95,7 +96,7 @@ class StoreDayCase(ReceivingFixture):
 
     def tenders(self, day):
         response = self.client.get(f'/api/reports/tenders?store_code=DT&from={day}&to={day}',
-                                   headers=self.headers('manager'))
+                                   headers=self.headers('admin:manager'))  # financial reports are the admin's
         self.assertEqual(response.status_code, 200, response.get_json())
         return {row['tender']: row for row in response.get_json()['items']}
 
@@ -167,7 +168,8 @@ class RefundAndReturnDateTests(StoreDayCase):
         noted = self.send(f"/api/closing/{session['closing_id']}/cash-events",
                           {**body, 'reason': 'Deposit taken before POPCORE, returned in cash'})
         self.assertEqual(noted.status_code, 200, noted.get_json())
-        self.assertEqual(noted.get_json()['cash']['expected_drawer_cents'], OPENING - 500)
+        self.assertNotIn('expected_drawer_cents', noted.get_json()['cash'])  # not for staff (owner, 2026-11-26)
+        self.assertEqual(self.closing(TODAY)['cash']['expected_drawer_cents'], OPENING - 500)
 
     def test_a_physical_return_is_dated_the_day_it_happens(self):
         sale_id, _ = self.paid_sale('C-1', YESTERDAY, 2000, 'card')

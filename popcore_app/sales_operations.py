@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from goods_operations import _balance, _begin, _location, _remember, _replay
 from inventory_commands import (
-    InventoryConflict, InventoryValidationError,
+    InventoryConflict, InventoryError, InventoryValidationError,
     _post_inventory_in_transaction, require_inventory_access,
 )
 from inventory_visibility import can_see_inventory, hide_box_options
@@ -418,6 +418,11 @@ def _replay_sale_input(con, request_key, operation, actor, intent):
 
 
 def create_sale(con, data, *, actor, request_key):
+    # Owner, 2026-11-26: 补录 takes the phone's own date and prices, so it is a manager's.
+    if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM, 'viewer'), 0) < ROLE_HIERARCHY['manager']:
+        raise InventoryError('补录要店长来记，今天的销售请用 记一笔。'
+                             'Recording a sale after the fact needs a manager; use 记一笔 for today\'s sales.',
+                             'sale_needs_manager', 403)
     intent = _sale_input(con, data, actor)
     # 补录 Record sale waits for Clover like checkout does (owner, 2026-11-20).
     checkout_access.require_checkout_open(con, actor, intent['store_id'])

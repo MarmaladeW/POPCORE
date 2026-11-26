@@ -285,7 +285,10 @@ class StoreEventsTests(ReceivingFixture):
         personal = self.get().get_json()
         self.assertEqual(personal['scope'],'personal')
         self.assertEqual(len(personal['events']),1)
-        self.assertEqual(len(self.get('manager').get_json()['events']),2)
+        # Owner, 2026-11-26: only an admin sees the whole store's day; a manager sees their own records, like staff.
+        self.assertEqual(len(self.get('admin').get_json()['events']),2)
+        manager = self.get('manager').get_json()
+        self.assertEqual((manager['scope'],manager['events']),('personal',[]))
         with closing(self.connect()) as con:
             con.execute("INSERT INTO closing_sessions(store_id,business_date,status,created_by) VALUES (?,?,'closed','test')",(self.store_id,self.today))
             con.commit()
@@ -332,8 +335,9 @@ class StoreEventsTests(ReceivingFixture):
         self.assertEqual(len(personal['receipts']),2)
         self.assertEqual([item['id'] for item in personal['transfers']],[incoming])
         self.assertNotIn('PRIVATE-1',personal['summary_text'])
-        self.assertEqual(len(self.get('manager').get_json()['checkouts']['pos']),2)
-        self.assertEqual(self.get('manager').get_json()['receipts'],[])
+        self.assertEqual(len(self.get('admin').get_json()['checkouts']['pos']),2)
+        self.assertEqual(self.get('admin').get_json()['receipts'],[])
+        self.assertEqual(self.get('manager').get_json()['checkouts'],{'pos':[],'non_pos':[],'split':[]})
         with closing(self.connect()) as con:
             con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|staff'")
             con.commit()
@@ -372,8 +376,8 @@ class StoreEventsTests(ReceivingFixture):
         self.assertNotIn('拆单',next(line for line in lines if 'CASH-1' in line))
         self.assertNotIn('HELPER-1','\n'.join(lines))
         self.assertEqual(self.get().get_json()['pending'],0)
-        manager = self.get('manager').get_json()['summary_text']
-        self.assertIn('刷卡: 3 笔，$69.59',manager)
+        whole = self.get('admin').get_json()['summary_text']
+        self.assertIn('刷卡: 3 笔，$69.59',whole)
         self.assertEqual([len(self.get().get_json()['checkouts'][group]) for group in ('pos','non_pos','split')],[2,2,1])
 
     def test_summary_text_uses_snapshots_actor_local_time_and_pending_count(self):

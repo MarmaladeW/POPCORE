@@ -149,9 +149,10 @@ def dex_sync_preview():
 
 
 @bp.get('/api/dex/sync/entries/<int:entry_id>')
-@login_required
+@role_required('manager')
 def dex_sync_entry(entry_id):
-    """One entry's sync state for its page: sent, waiting, refused (with the website's reason) or behind."""
+    """One entry's sync state for its page: sent, waiting, refused (with the website's reason) or behind. Managers
+    only, like the rest of the sync (owner, 2026-11-26: staff see nothing of the website sync)."""
     return _run(lambda con: dex_sync.entry_state(con, entry_id))
 
 

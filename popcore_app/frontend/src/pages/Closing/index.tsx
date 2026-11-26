@@ -54,6 +54,8 @@ function Issue({ code, target }: { code: string; target?: {href: string; label?:
 
 export default function ClosingPage() {
   const store = useAppStore(state => state.selectedStore), isManager = useHasRole('manager')
+  // 销售 and its tabs are the admin's (owner, 2026-11-26); a manager reaches 收工 from 汇总.
+  const isAdmin = useHasRole('admin')
   const setSelectedStore = useAppStore(state => state.setSelectedStore)
   const [session, setSession] = useState<ClosingSession | null>(null), [error, setError] = useState('')
   const [loading, setLoading] = useState(false), [working, setWorking] = useState(false), [refreshNeeded, setRefreshNeeded] = useState(false)
@@ -149,7 +151,7 @@ export default function ClosingPage() {
 
   const header = (title: string, sub?: ReactNode, actions?: ReactNode) => <PageHeader
     title={<>收工<span className="pc-sr"> {title}</span></>} sub={sub} actions={actions} />
-  if ((!store || store.code === 'ALL') && !params.has('closing_id')) return <div className="pc-close">{header('Store closing', phone ? undefined : 'Closing')}{isManager && <SalesTabs />}<p className="pc-notice">Select one store before closing a day.</p></div>
+  if ((!store || store.code === 'ALL') && !params.has('closing_id')) return <div className="pc-close">{header('Store closing', phone ? undefined : 'Closing')}{isAdmin && <SalesTabs />}<p className="pc-notice">Select one store before closing a day.</p></div>
   if (loading && !session) return <Spin />
   if (params.has('closing_id') && !session) return <Alert type="error" showIcon message={error || 'Unable to resume this closing session.'} />
   const mutableScope = Boolean(store && store.code !== 'ALL' && (!session || store.id === session.store_id))
@@ -172,7 +174,7 @@ export default function ClosingPage() {
 
   if (!session) return <div className="pc-close">
     {header('Store closing', phone ? 'Close the day' : <>Closing{store?.name ? ` · ${store.name}` : ''}</>)}
-    {isManager && <SalesTabs />}
+    {isAdmin && <SalesTabs />}
     {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={pendingMutation.current ? <Button onClick={() => mutate(pendingMutation.current!.name, pendingMutation.current!.run)}>Retry identical request</Button> : undefined} />}
     <section className="pc-panel pc-close-start" aria-label="Start closing">
       <header className="pc-panel-head"><h2><span>开始收工</span> <small>Start the closing for one business day</small></h2></header>
@@ -219,12 +221,12 @@ export default function ClosingPage() {
     <dl className="pc-close-rows">
       <Row label="钱箱底 Opening bills · 固定" value="$650.00 fixed float" />
       <Row label="开店现金 Opening cash" value={formatCents(session.cash.opening_cash_cents)} />
-      <Row label="现金收款 Verified cash receipts" value={formatCents(session.cash.verified_cash_receipts_cents)} />
+      {session.cash.verified_cash_receipts_cents != null && <Row label="现金收款 Verified cash receipts" value={formatCents(session.cash.verified_cash_receipts_cents)} />}
       {Object.entries(session.cash.event_totals_cents).map(([name, value]) => <Row key={name} label={eventNames[name] || name.replace('_', ' ')} value={formatCents(value)} />)}
-      <Row strong label="应有 Expected drawer" value={formatCents(session.cash.expected_drawer_cents)} />
+      {session.cash.expected_drawer_cents != null && <Row strong label="应有 Expected drawer" value={formatCents(session.cash.expected_drawer_cents)} />}
       {count && <>
         <Row label="点到 Counted" value={formatCents(count.counted_cents)} />
-        <Row label="差额 Variance" value={formatCents(count.variance_cents)} tone={count.variance_cents < 0 ? 'warn' : undefined} />
+        {count.variance_cents != null && <Row label="差额 Variance" value={formatCents(count.variance_cents)} tone={count.variance_cents < 0 ? 'warn' : undefined} />}
         <Row label="留底 Retained float" value={formatCents(count.retained_cents)} />
         <Row label="取走 Removal" value={count.removal_cents == null ? 'No removal: counted cash is below the retained float.' : formatCents(count.removal_cents)} />
       </>}
@@ -242,7 +244,8 @@ export default function ClosingPage() {
       </div>
     </div>}
   </section>
-  // Day totals per tender: staff see them too; only managers get the payment references behind them.
+  // Day totals per tender and the payment references behind them: managers only (owner, 2026-11-26); the server
+  // sends staff neither, so this panel is not there for them.
   const tenders = session.tender_totals_cents && <section className="pc-panel" aria-label="Tender review">
     <PanelHead zh="付款方式" en="Tender review" />
     <dl className="pc-close-rows">{tenderOrder(session.tender_totals_cents).map(([name, value]) => { const label = methodLabel(name); return <Row key={name} label={`${label.zh} ${label.en}`.trim()} value={formatCents(value)} /> })}</dl>
@@ -288,7 +291,7 @@ export default function ClosingPage() {
 
   return <div className={phone ? 'pc-close pc-close-phone' : 'pc-close'}>
     {header(closed ? 'Store day closed' : 'Store closing', phone ? <>Close the day · {session.business_date}</> : <>Closing · {sub}</>, !phone ? stepActions : undefined)}
-    {isManager && <SalesTabs />}
+    {isAdmin && <SalesTabs />}
     {phone && <p className="pc-close-meta">{sub}</p>}
     {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={pendingMutation.current ? <Button onClick={() => mutate(pendingMutation.current!.name, pendingMutation.current!.run)}>Retry identical request</Button> : refreshNeeded ? <Button onClick={refresh}>Retry refresh</Button> : undefined} />}
     {store && store.code !== 'ALL' && store.id !== session.store_id && <p className="pc-notice">Select the closing document's store to make changes.</p>}

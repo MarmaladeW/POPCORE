@@ -14,8 +14,9 @@ export interface ClosingSession {
   source_token: string
   cash: {
     opening_cash_cents: number
-    verified_cash_receipts_cents: number
-    expected_drawer_cents: number
+    /** Managers only (owner, 2026-11-26): staff count the drawer without the day's takings or what it should hold. */
+    verified_cash_receipts_cents?: number
+    expected_drawer_cents?: number
     /** Managers only: staff get the day's totals without payment references. */
     unknown_cash_payment_ids?: number[]
     /** Includes cash refunded on sales that day, whichever day the sale was. */
@@ -28,11 +29,13 @@ export interface ClosingSession {
     retained_coin_cents: number
     denomination_counts: Record<string,number>
     counted_cents: number
-    expected_cents: number
-    variance_cents: number
+    /** Managers only, like the expected drawer. */
+    expected_cents?: number
+    variance_cents?: number
     retained_cents: number
     removal_cents: number | null
   } | null
+  /** The day's totals per tender: managers only (owner, 2026-11-26). */
   tender_totals_cents?: Record<'cash'|'card'|'e_transfer'|'wechat'|'alipay',number>
   unknown_payment_ids?: number[]
   snapshot?: {

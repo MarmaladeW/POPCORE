@@ -68,7 +68,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const signOut = () => logout({ logoutParams: { returnTo: window.location.origin } })
   const [pinOpen, setPinOpen] = useState(false)
   const accountItems: MenuProps['items'] = [
-    { key: 'pin', label: '我的 PIN My PIN', onClick: () => setPinOpen(true) },
+    // A PIN is a person's: the store computer's 查看者 account has none.
+    ...(staff ? [{ key: 'pin', label: '我的 PIN My PIN', onClick: () => setPinOpen(true) }] : []),
     { key: 'logout', label: '退出登录 Sign out', danger: true, onClick: signOut },
   ]
   const userName = user?.nickname ?? user?.name ?? 'User'
@@ -120,6 +121,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </Link>
       </nav>}
     </div>
-  <PersonPicker /><ActingPersonBar /><MyPinModal open={pinOpen} onClose={() => setPinOpen(false)} />
+  {/* Name + PIN is the store computer's (the 查看者 account); a staff phone never asks who is at the computer. */}
+  {!staff && <PersonPicker />}<ActingPersonBar /><MyPinModal open={pinOpen} onClose={() => setPinOpen(false)} />
     </PageHeaderSlots.Provider></CheckoutBusy.Provider>
 }

@@ -34,19 +34,27 @@ def _body():
 
 # 入库 receiving, 调拨 transfers and identifying designs belong to the 库存 tab: only accounts that
 # may see the store's stock use them (owner, 2026-11-01). 晚盘 counts and 补货 suggestions stay open.
+# A stock count shows what POPCORE holds beside what was counted, so it needs 库存查看 too (owner, 2026-11-26).
 def _hidden(con, store_ids):
     store_ids = {store_id for store_id in store_ids if store_id is not None}
     return inventory_hidden(con, request.jwt_payload, store_ids) if store_ids else None
 
 
 def _location_store(con, location_id):
+    """The store of a location a request names, read the way the operation reads it (a number may arrive as
+    text): an id that is not a number raises ValueError, so the 库存查看 check is never passed over."""
     row = con.execute('SELECT store_id FROM inventory_locations WHERE id=?',
-                      (location_id if type(location_id) is int else None,)).fetchone()
+                      (read_int(location_id, 'location_id', minimum=1),)).fetchone()
     return row['store_id'] if row else None
 
 
 def _receipt_store(con, receipt_id):
     row = con.execute('SELECT store_id FROM goods_receipts WHERE id=?', (receipt_id,)).fetchone()
+    return row['store_id'] if row else None
+
+
+def _count_store(con, count_id):
+    row = con.execute('SELECT store_id FROM inventory_counts WHERE id=?', (count_id,)).fetchone()
     return row['store_id'] if row else None
 
 
@@ -74,7 +82,10 @@ def barcode_resolve():
 @role_required('staff')
 def design_identify():
     con = get_db()
-    hidden = _hidden(con, {_location_store(con, _body().get('location_id'))})
+    try:
+        hidden = _hidden(con, {_location_store(con, _body().get('location_id'))})
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     if hidden:
         return hidden
     try:
@@ -91,8 +102,11 @@ def design_identify():
 @role_required('staff')
 def receipt_create():
     con = get_db()
-    store_id = _body().get('store_id')
-    hidden = _hidden(con, {store_id if type(store_id) is int else None})
+    try:
+        # Read as create_receipt reads it, so a store id sent as text is checked like any other.
+        hidden = _hidden(con, {read_int(_body().get('store_id'), 'store_id', minimum=1)})
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     if hidden:
         return hidden
     try:
@@ -101,6 +115,8 @@ def receipt_create():
         return jsonify(result), 201
     except (InventoryError, PermissionError) as exc:
         return _error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
 
 
 @bp.get('/api/goods/receipts/<int:receipt_id>')
@@ -260,19 +276,32 @@ def transfer_action(delivery_id, action):
 @bp.post('/api/goods/counts')
 @role_required('staff')
 def count_create():
+    con = get_db()
     try:
-        result = create_count(get_db(), _body(), actor=request.jwt_payload,
+        hidden = _hidden(con, {_location_store(con, _body().get('location_id'))})
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
+    if hidden:
+        return hidden
+    try:
+        result = create_count(con, _body(), actor=request.jwt_payload,
                               request_key=request.headers.get('Idempotency-Key'))
         return jsonify(result), 201
     except (InventoryError, PermissionError) as exc:
         return _error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
 
 
 @bp.patch('/api/goods/counts/<int:count_id>')
 @role_required('staff')
 def count_update(count_id):
+    con = get_db()
+    hidden = _hidden(con, {_count_store(con, count_id)})
+    if hidden:
+        return hidden
     try:
-        return jsonify(update_count(get_db(), count_id, _body(), actor=request.jwt_payload,
+        return jsonify(update_count(con, count_id, _body(), actor=request.jwt_payload,
                                     request_key=request.headers.get('Idempotency-Key')))
     except (InventoryError, PermissionError) as exc:
         return _error(exc)
@@ -292,6 +321,9 @@ def count_detail(count_id):
     ).fetchone()
     if row is None:
         return jsonify({'error': 'Count not found'}), 404
+    hidden = _hidden(con, {row['store_id']})
+    if hidden:
+        return hidden
     result = people.with_names(con, [dict(row)], 'created_by', 'reviewed_by')[0]
     if row['status'] == 'returned':
         returned = con.execute(
@@ -312,12 +344,18 @@ def count_detail(count_id):
 def count_action(count_id, action):
     if action not in {'submit', 'approve', 'return'}:
         return jsonify({'error': 'Count action not found'}), 404
+    con = get_db()
+    hidden = _hidden(con, {_count_store(con, count_id)})
+    if hidden:
+        return hidden
     try:
         return jsonify(transition_count(
-            get_db(), count_id, action, _body(), actor=request.jwt_payload,
+            con, count_id, action, _body(), actor=request.jwt_payload,
             request_key=request.headers.get('Idempotency-Key')))
     except (InventoryError, PermissionError) as exc:
         return _error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
 
 
 @bp.put('/api/goods/targets')
@@ -339,6 +377,8 @@ def suggestion_list():
         result = restock_suggestions(con, request.args.get('location_id'), actor=request.jwt_payload)
     except (InventoryError, PermissionError) as exc:
         return _error(exc)
+    except ValueError as exc:
+        return jsonify(invalid_input(exc)), 400
     if not can_see_inventory(con, request.jwt_payload, (_location_store(con, result['location_id']),)):
         # Without 库存查看, 补货 says only whether upstairs is out of stock (owner, 2026-11-01).
         result['items'] = [hide_quantities({**item, 'floor_quantity': None, 'outstanding_inbound': None,

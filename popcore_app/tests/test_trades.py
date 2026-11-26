@@ -127,6 +127,24 @@ class TradeTests(IsolatedApiCase):
         forms = {item['stock_form'] for item in detail.get_json()['products']}
         self.assertEqual(forms, {'random_box', 'confirmed_design'})
 
+    def test_slot_quantities_are_for_those_who_may_see_stock(self):
+        """Owner, 2026-11-26: without 库存查看 a trade slot says only whether there is one to take."""
+        slot = self.create_slot()
+        self.open_slot(slot)
+
+        def products(role):
+            detail = self.client.get(f"/api/trade-slots/{slot['slot_id']}", headers=self.headers(role))
+            self.assertEqual(detail.status_code, 200, detail.get_json())
+            return {item['product_id']: item for item in detail.get_json()['products']}
+        hidden = products('staff')
+        self.assertEqual({key: hidden[self.random_id][key] for key in ('quantity', 'out_of_stock', 'stock_hidden', 'balance_version')},
+                         {'quantity': None, 'out_of_stock': False, 'stock_hidden': True, 'balance_version': 2})
+        self.assertIsNone(hidden[self.design_id]['quantity'])
+        self.assertEqual((products('manager')[self.random_id]['quantity'], products('manager')[self.design_id]['quantity']), (4, 1))
+        self.grant_inventory_view('auth0|staff')
+        self.assertEqual(products('staff')[self.random_id]['quantity'], 4)
+        self.assertNotIn('stock_hidden', products('staff')[self.random_id])
+
     def test_duplicate_slot_and_unscoped_store_are_rejected(self):
         self.create_slot()
         duplicate = self.client.post(
@@ -333,8 +351,8 @@ class TradeTests(IsolatedApiCase):
     def test_direct_sale_consumes_exact_slot_unit_and_leaves_replacement_pending(self):
         slot = self.open_slot(self.create_slot(), 'sale-open')
         sale = self.client.post(
-            '/api/sale-documents',
-            headers={**self.headers('staff'), 'Idempotency-Key': 'trade-sale-draft'},
+            '/api/sale-documents',  # 补录 is a manager's (owner, 2026-11-26)
+            headers={**self.headers('manager:staff'), 'Idempotency-Key': 'trade-sale-draft'},
             json={
                 'store_id': self.store_id, 'business_date': '2026-09-08',
                 'entry_mode': 'planned_entry',

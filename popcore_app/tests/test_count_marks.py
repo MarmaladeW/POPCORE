@@ -110,7 +110,7 @@ class CountMarkTests(IsolatedApiCase):
         self.assertEqual({item['product_id']: (item.get('mark') or {}).get('reason') for item in card['items']},
                          {self.box: None, self.eevee: REASON})
         # The notice shows the marks; it stays open until a manager checks it.
-        notice = next(row for row in self.get('/api/sales/report-stock', store_code='ALL').get_json()['notices']
+        notice = next(row for row in self.get('/api/sales/report-stock', role='admin:manager', store_code='ALL').get_json()['notices']
                       if row['id'] == self.notice)
         self.assertEqual([mark['place'] for mark in notice['marks']], ['floor', 'upstairs'])
         self.assertEqual(notice['counted_marks'], [])
@@ -130,7 +130,7 @@ class CountMarkTests(IsolatedApiCase):
         self.assertEqual([mark['place'] for mark in self.get('/api/counting/marks', role='staff').get_json()['marks']],
                          ['upstairs'])
         # The notice says its floor mark was counted, so the manager can check it.
-        notice = next(row for row in self.get('/api/sales/report-stock', store_code='DT').get_json()['notices']
+        notice = next(row for row in self.get('/api/sales/report-stock', role='admin:manager', store_code='DT').get_json()['notices']
                       if row['id'] == self.notice)
         self.assertEqual([(mark['place'], mark['closed_by']) for mark in notice['counted_marks']], [('floor', 'Sam Staff')])
         self.assertEqual([mark['place'] for mark in notice['marks']], ['upstairs'])

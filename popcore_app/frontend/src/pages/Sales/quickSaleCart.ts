@@ -35,6 +35,8 @@ export type QuoteLine = {
 export type Quote = {
   store_id: number; business_date: string; lines: QuoteLine[]; missing_prices: string[]
   discount_cents: number; tenders: Record<Tender, number> | null
+  /** Who buys with a staff discount, when the quote was asked with one: the server checks they have a use left. */
+  staff_discount_employee_id?: number | null
   subtotal_cents?: number; tax_cents?: number; total_cents?: number; price_label?: string | null
   other_due_cents?: number; cny?: { rate: string; source: string; fen: number } | null
 }

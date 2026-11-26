@@ -1,1 +1,0 @@
-import{t as e}from"./client-fDE6--Su.js";var t=(t,n)=>e.get(`/staff-discounts`,{params:{month:t},signal:n}).then(e=>e.data);export{t};

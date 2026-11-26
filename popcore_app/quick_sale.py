@@ -47,6 +47,7 @@ from inventory_commands import InventoryConflict, InventoryError, InventoryValid
 from sales_operations import record_late_adjustment
 from validation import read_date, read_int
 import people
+import staff_discounts
 
 TENDERS = ('cash', 'e_transfer', 'wechat', 'alipay', 'card')
 PHOTO_TENDERS = ('e_transfer', 'wechat', 'alipay')
@@ -116,12 +117,31 @@ def _require_store(con, actor, store_id):
         raise
 
 
+def _buyer(con, data, actor):
+    """员工折扣: the staff member who bought, or None. The buyer is eligible by the 员工折扣 page's rule, and below
+    manager must still have a use left this month (owner, 2026-11-26); a manager may record one over the limit."""
+    buyer = data.get('staff_discount_employee_id')
+    if buyer is None:
+        return None
+    buyer = read_int(buyer, 'staff_discount_employee_id', minimum=1)
+    eligible, left = staff_discounts.uses_left(con, buyer, access_rules.business_date()[:7])
+    if not eligible:
+        raise InventoryValidationError('员工折扣要选一位正式员工或以上的在职员工。'
+                                       'Choose an active staff member of 正式员工 rank or above for the staff discount.')
+    if not left and not manager(actor):
+        raise InventoryConflict('这位员工本月的员工折扣已经用完了，要店长来记。'
+                                'This person has no staff discount left this month; ask a manager to record it.',
+                                'staff_discount_none_left')
+    return buyer
+
+
 def quote(con, data, actor):
     """What a cart costs, paid each way, before anything is saved. The screen shows only these numbers."""
     if not isinstance(data, dict):
         raise InventoryValidationError('body must be an object')
     store_id = read_int(data.get('store_id'), 'store_id', minimum=1)
     access = _require_store(con, actor, store_id)
+    buyer = _buyer(con, data, actor)
     display = _location(con, store_id, 'display')
     raw_lines = data.get('lines')
     if not isinstance(raw_lines, list) or not raw_lines or len(raw_lines) > MAX_LINES:
@@ -154,6 +174,10 @@ def quote(con, data, actor):
             if typed > 10_000_00:
                 raise InventoryValidationError('Price must be at most $10,000')
         own, series = _cents(product['price']), _cents(product['series_price'])
+        if typed and (own or series) and not manager(actor):
+            # Owner, 2026-11-26: below manager a price is typed only for a product that has none.
+            raise InventoryConflict(f'「{name_of(product)}」已经有价格，改价要店长来记。'
+                                    'This item has a price; only a manager can change it.', 'price_needs_manager')
         price = typed or own or series
         lines.append({'product_id': product_id, 'sku': product['sku'], 'name': name_of(product),
                       'unit': product['stock_unit'], 'quantity': quantity, 'from_display': from_display,
@@ -162,8 +186,15 @@ def quote(con, data, actor):
                       'line_cents': price * quantity if price else None})
     missing = [line['name'] for line in lines if line['unit_price_cents'] is None]
     discount = read_int(data.get('discount_cents') or 0, 'discount_cents', minimum=0)
+    if discount and buyer is None and not manager(actor):
+        # Owner, 2026-11-26: the server works out no discount of its own, so below manager the only discount is a
+        # 员工折扣, which names who bought and counts against their uses.
+        raise InventoryConflict('优惠要店长来记；员工折扣请先选谁买的。'
+                                'A discount needs a manager; for a staff discount, pick who bought first.',
+                                'discount_needs_manager')
     result = {'store_id': store_id, 'business_date': access['business_date'], 'lines': lines,
-              'missing_prices': missing, 'discount_cents': discount, 'tenders': None}
+              'missing_prices': missing, 'discount_cents': discount, 'staff_discount_employee_id': buyer,
+              'tenders': None}
     if missing:
         return result
     subtotal = sum(line['line_cents'] for line in lines)
@@ -205,12 +236,8 @@ def save(con, data, actor, request_key):
             change_checkout(con, order['id'], 'cancel', {'expected_version': order['version']}, actor,
                             f'quick-sale:{key}:cancel')
         raise InventoryConflict('这笔没有存上，请再按一次保存。This sale was not saved; tap Save again.', 'quick_sale_retry')
-    buyer = data.get('staff_discount_employee_id')
-    if buyer is not None:
-        buyer = read_int(buyer, 'staff_discount_employee_id', minimum=1)
-        if not con.execute('SELECT 1 FROM employees WHERE id=? AND is_active=1', (buyer,)).fetchone():
-            raise InventoryValidationError('员工折扣要选一位在职员工。Choose an active staff member for the staff discount.')
     priced = quote(con, data, actor)
+    buyer = priced['staff_discount_employee_id']
     if priced['missing_prices']:
         raise InventoryConflict(f"先填价格 Enter a price first: {'、'.join(priced['missing_prices'])}", 'price_missing')
     amount = priced['tenders'][tender]
@@ -249,7 +276,9 @@ def save(con, data, actor, request_key):
             raise
     if order['status'] != 'completed':
         raise InventoryConflict('这笔没有存上，请再按一次保存。This sale was not saved; tap Save again.', 'quick_sale_retry')
-    return sale_row(con, order['id'], actor)
+    # For the 动态 line only (the route takes it out of the answer): prices a manager typed over the list price.
+    return {**sale_row(con, order['id'], actor),
+            'typed_prices': [line for line in priced['lines'] if line['price_from'] == 'typed' and line['list_price_cents']]}
 
 
 def _report_saved(con, store_id, business_date):
@@ -515,11 +544,17 @@ def day(con, store_id, business_date, actor):
     if not manager(actor) and not (on_shift and business_date == today):
         raise PermissionError('Only today’s sales at a store you are working at')
     store = con.execute('SELECT code FROM stores WHERE id=?', (store_id,)).fetchone()
+    # Owner, 2026-11-26: below manager a person sees only the sales they recorded themselves, and the day's count,
+    # totals and summary are of those; managers and admins see the whole day, which they review.
+    everyone = manager(actor)
     rows = [sale_row(con, row['id'], actor, today) for row in con.execute(
         """SELECT id FROM checkout_orders WHERE store_id=? AND business_date=? AND status='completed'
-           ORDER BY id""", (store_id, business_date))]
+           AND (?=1 OR created_by=?) ORDER BY id""", (store_id, business_date, int(everyone), actor.get('sub')))]
     kept = [row for row in rows if not row['undone']]
     code = store['code'] if store else str(store_id)
+    review = review_state(con, store_id, code, business_date)
+    if not everyone:  # the cash a manager counted and where a pasted 日报 differs are the store's figures
+        review = {**review, 'cash_counted_cents': None, 'differs': []}
     return {'store_id': store_id, 'business_date': business_date, 'today': today, 'sales': rows,
             'summary_text': summary_text(code, business_date, kept),
             'needs_photo': sum(1 for row in kept if row['needs_photo']),
@@ -527,7 +562,7 @@ def day(con, store_id, business_date, actor):
             # Cash taken in the day's sales: what the manager sees beside the cash they count.
             'cash_cents': sum(payment['amount_cents'] or 0 for row in kept for payment in row['payments']
                               if payment['tender'] == 'cash'),
-            'count': len(kept), 'review': review_state(con, store_id, code, business_date),
+            'count': len(kept), 'review': review,
             'can_review': manager(actor),
             # Earlier days whose stock has not come off yet: a manager reviews them too.
             'unreviewed_days': [day_ for day_ in unreviewed_days(con, store_id, today) if day_ != business_date]}

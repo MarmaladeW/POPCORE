@@ -265,11 +265,14 @@ def create_checkout(con, data, actor, request_key, *, stock_by_report=False, sta
     require_checkout(con, {'store_id':store_id}, actor, write=True)
     _begin(con)
     try:
-        require_checkout(con, {'store_id':store_id}, actor, write=True)
+        access = require_checkout(con, {'store_id':store_id}, actor, write=True)
         key, digest, prior = _replay(con, request_key, 'checkout_create', actor, data)
         if prior:
             con.commit()
             return checkout_detail(con, prior['id'], actor)
+        if not manager(actor):
+            # Owner, 2026-11-26: below manager a checkout is today's, whatever date the phone sends.
+            data = {**data, 'business_date': access['business_date']}
         reference = data.get('reference')
         if reference is None or isinstance(reference, str) and not reference.strip():
             # A phone order or an item another store is sending has no Clover order to refer to.

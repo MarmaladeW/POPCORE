@@ -91,7 +91,9 @@ Build 4 sales/payment/closing rules are in docs/sales-and-closing.md. Keep refun
 
 Build 5 trade and Today rules are in docs/trades-and-today.md. Personal shifts remain first and private; store selection must not filter them. Trade proof, condition decisions and slot versions remain explicit.
 
-Build 6 report, recovery and release rules are in docs/operational-reports.md, docs/build6-workflow-checklist.md, docs/release-and-recovery.md and docs/production-readiness.md. Financial reports are manager-only and scoped before aggregation. Complete backups include every referenced product, payment and condition attachment. Keep Schedule source outside Build 6 changes. The real pilot creates only disposable `.local/build6` services/data and does not prove live Auth0, devices, opening stock or recovery.
+Build 6 report, recovery and release rules are in docs/operational-reports.md, docs/build6-workflow-checklist.md, docs/release-and-recovery.md and docs/production-readiness.md. Financial reports are admin-only (docs/access-rules.md) and scoped before aggregation. Complete backups include every referenced product, payment and condition attachment. Keep Schedule source outside Build 6 changes. The real pilot creates only disposable `.local/build6` services/data and does not prove live Auth0, devices, opening stock or recovery.
+
+Who sees what (owner, 2026-11-26) is in docs/access-rules.md: 动态, sales, stock value, summaries and the 网站 page are admin-only; below manager people see only their own 记一笔, 员工折扣, schedule and hours; a PIN is only ever checked for the store computer and never leaves the server. New screens and API answers follow it, checked on the server.
 
 ## Files that must remain local
 

@@ -104,7 +104,7 @@ class ReportOpenSetTests(IsolatedApiCase):
             return row[0] if row else 0
 
     def notices(self):
-        response = self.client.get('/api/sales/report-stock', headers=self.headers('manager'))
+        response = self.client.get('/api/sales/report-stock', headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200, response.get_json())
         return {(row['product_id'], row['reason']): row['quantity'] for row in response.get_json()['notices']}
 
@@ -211,7 +211,7 @@ class ReportOpenSetTests(IsolatedApiCase):
             con.commit()
         self.receive(whole, 'upstairs', 1, 'set')
         retry = self.client.post('/api/sales/report-stock/retry', json={'date': DAY, 'store_code': 'DT'},
-                                 headers=self.headers('manager'))
+                                 headers=self.headers('admin:manager'))
         self.assertEqual(retry.status_code, 200, retry.get_json())
         stock = retry.get_json()['stock']
         self.assertEqual([(row['location'], row['sets']) for row in stock['sets_opened']], [('upstairs', 1)])

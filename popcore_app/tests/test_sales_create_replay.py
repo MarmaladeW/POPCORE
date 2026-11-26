@@ -20,7 +20,7 @@ class SaleCreateReplayTests(ReceivingFixture):
         self.tables = ('sale_documents', 'sale_lines', 'sale_sources', 'operation_requests',
                        'inventory_documents', 'inventory_movements', 'inventory_balances')
 
-    def create(self, body=None, role='staff'):
+    def create(self, body=None, role='manager:staff'):  # 补录 is a manager's (owner, 2026-11-26)
         return self.client.post('/api/sale-documents', json=self.body if body is None else body,
                                 headers={**self.headers(role), 'Idempotency-Key': 'sale-create-retry'})
 
@@ -61,6 +61,13 @@ class SaleCreateReplayTests(ReceivingFixture):
         self.assertEqual((replay.status_code, replay.get_json()), (201, created.get_json()))
         self.assertEqual(before, self.snapshot(self.tables))
 
+    def test_recording_a_sale_after_the_fact_is_a_managers(self):
+        """Owner, 2026-11-26: 补录 takes the phone's own date and prices, so below manager it is refused."""
+        before = self.snapshot(self.tables)
+        refused = self.create(role='staff')
+        self.assertEqual((refused.status_code, refused.get_json()['code']), (403, 'sale_needs_manager'))
+        self.assertEqual(before, self.snapshot(self.tables))
+
     def test_replay_keeps_intent_actor_permission_and_source_guards(self):
         self.assertEqual(self.create().status_code, 201)
         self.receive(self.product_id, 'piece')
@@ -77,7 +84,7 @@ class SaleCreateReplayTests(ReceivingFixture):
         with closing(self.connect()) as con:
             con.execute("INSERT INTO inventory_access VALUES ('auth0|other',?)", (self.store_id,))
             con.commit()
-        other = self.create(role='staff:other')
+        other = self.create(role='manager:other')
         self.assertEqual((other.status_code, other.get_json()['code']), (409, 'idempotency_conflict'))
         with closing(self.connect()) as con:
             con.execute("DELETE FROM inventory_access WHERE auth0_sub='auth0|staff'")

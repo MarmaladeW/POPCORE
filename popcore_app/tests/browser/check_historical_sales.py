@@ -27,7 +27,7 @@ def api(path, query, request):
 
 async def setup(browser,width=1440):
     state={'api_payload':api}
-    context,page=await context_with_api(browser,state,viewport={'width':width,'height':1000},auth={'role':'manager'})
+    context,page=await context_with_api(browser,state,viewport={'width':width,'height':1000},auth={'role':'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     return context,page,state
 
@@ -116,7 +116,8 @@ async def pending_and_race_checks(browser):
     await page.goto(BASE+'/sales?date=2026-09-18')
     await expect(page.get_by_label('POS quantity for DT Red design',exact=True)).to_be_visible()
     await page.get_by_label('POS quantity for DT Red design',exact=True).fill('6')
-    await page.evaluate("window.__FOUNDATION_AUTH={role:'admin'};window.dispatchEvent(new Event('foundation-auth'))")
+    # Another admin signs in on the same page (销售 is the admin's since 2026-11-26): the unsaved edit does not carry over.
+    await page.evaluate("window.__FOUNDATION_AUTH={role:'admin',sub:'fixture|admin-2'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_label('POS quantity for DT Red design',exact=True)).to_have_value('2')
     await page.get_by_role('button',name='Manage name mappings',exact=False).click()
     search_release=asyncio.Event()

@@ -58,9 +58,10 @@ interface InventoryCheckRow {
   name_cn_en: string
   ip_series: string
   product_type: string
-  theoretical_qty: number
+  // What the computer expected and the gap: null where this account does not see stock numbers (库存查看).
+  theoretical_qty: number | null
   actual_qty: number
-  discrepancy: number
+  discrepancy: number | null
   base_check_date: string
   created_at: string
 }
@@ -303,12 +304,12 @@ export function InventoryCheckHistory() {
     { title: '系列', dataIndex: 'ip_series', width: 120, ellipsis: true },
     {
       title: '理论库存', dataIndex: 'theoretical_qty', width: 90, align: 'center',
-      render: v => <Text type="secondary">{v}</Text>,
+      render: v => <Text type="secondary">{v ?? '—'}</Text>,
     },
     { title: '实盘数', dataIndex: 'actual_qty', width: 80, align: 'center' },
     {
       title: '差异', dataIndex: 'discrepancy', width: 70, align: 'center',
-      render: v => v !== 0
+      render: v => v == null ? <Text type="secondary">—</Text> : v !== 0
         ? <span style={{ color: '#EF4444', fontWeight: 700 }}>{v > 0 ? `+${v}` : v}</span>
         : <Text type="secondary">0</Text>,
     },
@@ -350,7 +351,7 @@ export function InventoryCheckHistory() {
         size="small"
         pagination={{ pageSize: 50, showTotal: t => `共 ${t} 条` }}
         locale={{ emptyText: <Empty description="暂无晚盘记录" /> }}
-        rowClassName={r => r.discrepancy !== 0 ? 'row-discrepancy' : ''}
+        rowClassName={r => r.discrepancy != null && r.discrepancy !== 0 ? 'row-discrepancy' : ''}
       />
     </>
   )

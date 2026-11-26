@@ -1,4 +1,4 @@
-"""Read-only, source-separated manager overview; never derives money from catalog prices."""
+"""Read-only, source-separated admin overview; never derives money from catalog prices."""
 import json
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -49,8 +49,9 @@ def _current_inventory(con, ids):
 
 
 def query_overview(con, *, actor, filters):
-    if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM,'viewer'),0)<ROLE_HIERARCHY['manager']:
-        raise PermissionError('Manager overview access required')
+    # Owner, 2026-11-26: only an admin sees sales and summaries.
+    if ROLE_HIERARCHY.get(actor.get(ROLE_CLAIM,'viewer'),0)<ROLE_HIERARCHY['admin']:
+        raise PermissionError('Admin overview access required')
     start=filters.get('from');end=filters.get('to')
     if read_date(start,'from')!=start or read_date(end,'to')!=end:
         raise InventoryValidationError('from/to must use YYYY-MM-DD')

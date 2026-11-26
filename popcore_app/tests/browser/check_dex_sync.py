@@ -125,7 +125,7 @@ async def run(browser, width):
         assert fixture.site.by_ref(bare)['entry']['extras']['format'] == 'Fragrance Blind Box'
         assert (fixture.status()['counts']['held'], fixture.status()['counts']['behind']) == (0, 0), fixture.status()['counts']
 
-        # The entry page: its state, and Upload picture for managers only.
+        # The entry page: its state with popcore.ca and Upload picture, both for managers only (owner, 2026-11-26).
         await page.goto(BASE + f'/dex/{product}')
         state = page.get_by_label('Dex sync state')
         await expect(state).to_contain_text('已发送 Sent')
@@ -133,7 +133,8 @@ async def run(browser, width):
         await fits(page, f'entry-{width}.png')
         page = await open_as('staff')
         await page.goto(BASE + f'/dex/{product}')
-        await expect(page.get_by_label('Dex sync state')).to_contain_text('已发送 Sent')
+        await expect(page.get_by_role('region', name='Entry')).to_be_visible()
+        await expect(page.get_by_label('Dex sync state')).to_have_count(0)
         await expect(page.get_by_role('button', name='上传图片 Upload picture')).to_have_count(0)
     finally:
         for context in contexts:
@@ -174,5 +175,5 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: Dex sync: off with the first send and its deletes by name; turn-on refused plainly while the website '
           "half is missing and needing the typed count; on with a refused entry, its reason and Retry; the entry page's "
-          'state with Upload picture for managers only; a product with no format held and listed, then sent once its format '
+          'state and Upload picture for managers only; a product with no format held and listed, then sent once its format '
           'is picked in the editor; at 390 and 1440 px')

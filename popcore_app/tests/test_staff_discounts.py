@@ -245,15 +245,27 @@ class StaffDiscountTests(StaffDiscountCase):
                 self.assertEqual(self.post('', body).status_code, 400)
         self.assertEqual(self.post('/99999/fix', {'uses': 1}).status_code, 404)
 
-    def test_staff_see_the_page_and_change_nothing_and_viewers_cannot_open_it(self):
-        page = self.page(headers=STAFF)
+    def test_staff_see_only_their_own_uses_and_change_nothing_and_viewers_cannot_open_it(self):
+        """Owner, 2026-11-26: an employee sees only their own 员工折扣: their own row and their own records."""
+        self.assertEqual(self.post('', {'employee_id': self.people['Amy'], 'date': '2026-11-11', 'store': 'DT',
+                                        'items': [{'name': 'Labubu', 'qty': 1}], 'amount': '20'}).status_code, 200)
+        page = self.page(headers=STAFF)  # Amy
         self.assertFalse(page['can_manage'])
-        self.assertEqual(self.person(page, 'Celia')['used'], 1)
+        self.assertEqual([(person['name'], person['used'], person['left']) for person in page['people']], [('Amy', 1, 3)])
+        self.assertEqual([entry['name'] for entry in page['uses']], ['Amy'])
+        self.assertEqual((page['waiting'], page['ignored']), ([], []))  # zm's line waits for a manager, not for Amy
         self.assertNotIn('totals', page)
         self.assertNotIn('employees', page)
-        for entry in page['uses'] + page['waiting']:
+        for entry in page['uses']:
             self.assertNotIn('amount_cents', entry)
             self.assertNotIn('raw_text', entry)
+        # Someone with no uses sees their own empty row; an account with no staff profile sees nothing.
+        celia = self.page(headers={'Authorization': 'Bearer staff:celia'})
+        self.assertEqual(([person['name'] for person in celia['people']], [entry['name'] for entry in celia['uses']]),
+                         (['Celia'], ['Celia']))
+        nobody = self.page(headers={'Authorization': 'Bearer staff:nobody'})
+        self.assertEqual((nobody['people'], nobody['uses'], nobody['waiting'], nobody['ignored']), ([], [], [], []))
+        self.assertEqual(len(self.page()['people']), 6)  # a manager still sees everyone
         celia = self.entry(self.page(), CELIA_LINE)
         before = self.snapshot(['staff_discount_uses', 'staff_discount_aliases'])
         for path, body in (('', {'employee_id': self.people['Amy'], 'date': '2026-11-11', 'store': 'DT',
@@ -266,3 +278,11 @@ class StaffDiscountTests(StaffDiscountCase):
                     self.assertEqual(self.post(path, body, headers=headers).status_code, 403)
         self.assertEqual(self.snapshot(['staff_discount_uses', 'staff_discount_aliases']), before)
         self.assertEqual(self.client.get('/api/staff-discounts', headers=VIEWER).status_code, 403)
+
+    def test_the_buyer_picker_lists_eligible_names_only(self):
+        """记一笔's "who bought" picker: eligible active people in rank order, with nobody's uses."""
+        response = self.client.get('/api/staff-discounts/buyers', headers=STAFF)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json(), {'buyers': [
+            {'employee_id': self.people[name], 'name': name} for name in ('Mia', 'Ben', 'Kai', 'Amy', 'Celia', 'Zimo')]})
+        self.assertEqual(self.client.get('/api/staff-discounts/buyers', headers=VIEWER).status_code, 403)

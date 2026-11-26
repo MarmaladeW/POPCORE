@@ -2,7 +2,8 @@
 "each 正式员工 and above have 4 discount per month, we wanna keep track of that"): a manager sees everyone in rank order
 with their uses out of 4, someone over 4 in red, a 培训员工 marked 不适用, the month's money per store, DT's two real
 日报 lines (Celia's counted, "zm" waiting); picks Zimo for "zm", marks a record 不算 and counts it again, and adds a
-use by hand where ten pieces of one product is one use. Staff see the page and change nothing; viewers cannot open it."""
+use by hand where ten pieces of one product is one use. Staff see only their own row and their own uses (owner,
+2026-11-26) and change nothing; viewers cannot open it."""
 import asyncio
 import json
 import subprocess
@@ -139,12 +140,19 @@ async def run(browser, width):
             assert json.loads(con.execute("SELECT items FROM staff_discount_uses WHERE source='manual' AND employee_id=?",
                                           (fixture.people['Amy'],)).fetchone()[0]) == [{'name': 'Smiski Hipper', 'qty': 10}]
 
-        # Staff see who has uses left, and change nothing; no money is shown.
+        # Staff (Amy here) see only their own row and their own uses, and change nothing; no money is shown.
         page = await open_as('staff')
         await page.goto(BASE + '/staff-discounts')
-        people = page.get_by_role('region', name='每人 People')
-        await expect(people.locator('.pc-sd-person').filter(has_text='Zimo').get_by_text('剩 3 次 3 left')).to_be_visible()
-        await expect(page.get_by_role('region', name='本月记录 Uses this month').get_by_text('Smiski Hipper ×10')).to_be_visible()
+        mine = page.get_by_role('region', name='我的 Mine')
+        await expect(mine.locator('.pc-sd-person strong')).to_have_text(['Amy'])
+        await expect(mine.get_by_text('剩 3 次 3 left')).to_be_visible()
+        await expect(page.get_by_role('region', name='每人 People')).to_have_count(0)
+        own = page.get_by_role('region', name='本月记录 Uses this month')
+        await expect(own.locator('.pc-sd-use')).to_have_count(1)
+        await expect(own.get_by_text('Smiski Hipper ×10')).to_be_visible()
+        # (Mia, the manager, is named on Amy's record as the one who added it by hand.)
+        for other in ('Zimo', 'Kai', 'Celia', 'Ben', 'Tina', 'Angry Molly'):
+            await expect(page.get_by_text(other, exact=False)).to_have_count(0)
         for name in ('修改 Fix', '不算 Ignore', '手动添加 Add by hand', '选人 Pick'):
             await expect(page.get_by_role('button', name=name)).to_have_count(0)
         await expect(page.locator('.pc-sd-figures')).to_have_count(0)
@@ -156,7 +164,7 @@ async def run(browser, width):
             await page.goto(BASE + '/more')
             await expect(page.get_by_role('navigation', name='More navigation').get_by_role('link', name='员工折扣', exact=False)).to_be_visible()
             await page.goto(BASE + '/staff-discounts')
-            await expect(page.get_by_role('region', name='每人 People')).to_be_visible()
+            await expect(page.get_by_role('region', name='我的 Mine')).to_be_visible()
         await fits(page, f'staff-{width}.png')
 
         # A 查看者 Viewer cannot open it.
@@ -202,4 +210,5 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: staff discounts in rank order with uses out of 4, over 4 in red, 不适用 for a 培训员工, money per store, '
           'the real 日报 lines, picking Zimo for "zm" and remembering it, 不算 and counting again, adding by hand '
-          '(ten pieces one use), staff reading without buttons or money, a viewer refused, at 390 and 1440 px')
+          '(ten pieces one use), staff reading only their own row and uses without buttons or money, a viewer refused, '
+          'at 390 and 1440 px')

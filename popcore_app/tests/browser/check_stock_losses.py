@@ -1,4 +1,5 @@
-"""损耗 Loss page and the 库存 stock value, isolated fixtures: managers record, undo and clear the damaged pile."""
+"""损耗 Loss page and the 库存 stock value, isolated fixtures: the admin sees what the stock is worth (owner, 2026-11-26:
+admins only); managers record, undo and clear the damaged pile without it."""
 import asyncio
 import re
 import subprocess
@@ -82,9 +83,9 @@ async def eventually(read, expected, timeout=5):
 
 async def check(browser, width):
     state = {'mode': 'data', 'api_payload': payload}
-    context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
+    context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
-    # The 库存 overview shows the stock's retail value to managers, and a loss in recent changes.
+    # The 库存 overview shows the stock's retail value to the admin, and a loss in recent changes.
     await page.goto(BASE + '/stock')
     overview = page.get_by_role('region', name='库存概况 Inventory overview', exact=True)
     await expect(overview.get_by_text('$888,459', exact=True)).to_be_visible()
@@ -93,7 +94,7 @@ async def check(browser, width):
     await expect(overview.get_by_text('价值 $240,926', exact=True)).to_be_visible()
     await expect(overview.get_by_text('价值 $647,534', exact=True)).to_be_visible()
     await expect(overview.get_by_text('−5', exact=True)).to_be_visible()
-    # Managers open a place's worth by IP line, then one line's parts.
+    # The admin opens a place's worth by IP line, then one line's parts.
     await overview.get_by_role('link', name=re.compile('^楼面 Floor')).click()
     await expect(page).to_have_url(re.compile(r'/stock/value\?place=floor$'))
     await expect(page.get_by_role('link', name=re.compile(r'^1 Labubu'))).to_contain_text('$160,288')
@@ -104,7 +105,20 @@ async def check(browser, width):
     await expect(page.get_by_text('104 端', exact=True)).to_be_visible()
     await page.get_by_role('navigation', name='Labubu by place').get_by_role('link', name=re.compile('^楼上')).click()
     await expect(page).to_have_url(re.compile(r'place=back&line=Labubu$'))
+    await context.close()
+
+    # A manager keeps 损耗 and the loss line, without what the stock is worth, even if a value were sent.
+    context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE + '/stock/value')
+    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await expect(page.get_by_text('按 IP 系列')).to_have_count(0)
     await page.goto(BASE + '/stock')
+    overview = page.get_by_role('region', name='库存概况 Inventory overview', exact=True)
+    await expect(overview.get_by_text('−5', exact=True)).to_be_visible()
+    for hidden in ('$888,459', '价值', 'At retail'):
+        await expect(overview.get_by_text(hidden, exact=False)).to_have_count(0)
+    await expect(page.locator('a[href^="/stock/value"]')).to_have_count(0)
     await page.get_by_role('link', name=re.compile('损耗')).first.click()
     await expect(page).to_have_url(re.compile(r'/stock/loss$'))
 
@@ -185,4 +199,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS 损耗 stock value, record, undo, damaged pile and staff refusal, 390/1280px')
+    print('PASS stock value for the admin only; 损耗 record, undo, damaged pile for managers; staff refusal, 390/1280px')

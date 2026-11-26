@@ -136,7 +136,11 @@ async def run(browser, width):
         await expect(page.get_by_text('已定价 Set', exact=False)).to_have_count(9)
         await fits(page, f'saved-{width}.png')
 
-        # Nothing waits on 网站 Website: the secret's jump was written without an OK.
+        # Nothing waits on 网站 Website: the secret's jump was written without an OK. The page is the admin's (owner,
+        # 2026-11-26): the manager who set the prices cannot open it.
+        await page.goto(BASE + '/website')
+        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        page = await open_as('admin')
         await page.goto(BASE + '/website')
         await page.get_by_text('Prices POPCORE wrote lately').click()
         await expect(page.get_by_text('$109.99 → $150.00 ·', exact=False)).to_be_visible()
