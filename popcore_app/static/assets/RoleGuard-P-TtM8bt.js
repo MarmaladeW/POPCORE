@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-C8212kph.js";import{n as t}from"./useRole-pY97lptl.js";var n=e();function r({minRole:e,children:r,fallback:i=null}){return t(e)?(0,n.jsx)(n.Fragment,{children:r}):(0,n.jsx)(n.Fragment,{children:i})}export{r as t};
