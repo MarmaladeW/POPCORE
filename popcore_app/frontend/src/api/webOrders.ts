@@ -13,11 +13,17 @@ export interface WebOrderLine {
 export interface WebOrderDelivery {
   window?: string; service?: string; zone?: string
   fleetnow_no?: string; fleetnow_pickup?: string; fleetnow_delivery?: string; fleetnow_status?: string
+  // The store the website booked FleetNow from ("dt", "mk"), once it has chosen.
+  collect?: string
 }
 export interface WebOrderCard {
   id: number; number: string; paid_at: string | null; kind: 'pickup' | 'delivery'; store: string; status: string
   lines: WebOrderLine[]
-  // Pickup: the other stores its stock came from, to be brought over.
+  // The stores it leaves from. A pickup: its pickup store. A delivery (owner, 2026-11-26): the store the courier
+  // collects from once the website booked it, else the store POPCORE took it from; two stores while its stock is in
+  // both and nobody has brought it together. `store` is the first of them.
+  stores?: string[]
+  // The other stores its stock came from, to be brought over to `store`.
   taken_elsewhere?: string[]
   delivery?: WebOrderDelivery
   // Delivery: who the parcel goes to (shipping name, else billing), read live; null when the website did not answer.
@@ -31,7 +37,7 @@ export interface WebOrdersBoard {
   configured: boolean; enabled: boolean; last_run: string | null
   // The stores this board shows: those the user has store operations access for.
   stores: string[]
-  // Whether the delivery store is one of them: only then are there deliveries to look up by name.
+  // Whether the board has deliveries, or is the delivery store's: only then is there a name box.
   deliveries: boolean
   // False when the website did not answer the names read: the delivery cards then have no names.
   names_read: boolean

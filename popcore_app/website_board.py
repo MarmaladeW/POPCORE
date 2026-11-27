@@ -3,8 +3,10 @@ information and not be able to change too many stuff"). Built from the popcore.c
 2026-11-19; see docs/web-orders-board.md.
 
 - The board shows the paid web orders of the stores a user has 门店操作权限 Store operations access for, in five
-  columns by kind and website status, with the orders that need a manager and those done today under them. Deliveries
-  all go out of WEBSITE_DELIVERY_STORE (DT). It never holds the pickup code, and the only personal thing in it is the
+  columns by kind and website status, with the orders that need a manager and those done today under them. A delivery
+  shows at the store it leaves from (owner, 2026-11-26, popcore-work#121: the courier collects from the store the
+  order was filled from): the store the website books FleetNow from once it has one, else the store POPCORE took it
+  from; see delivery_stores. It never holds the pickup code, and the only personal thing in it is the
   name each delivery goes to (owner, 2026-11-25), read live from the website on every refresh and never stored.
 - Two buttons, both pickup only: Ready (processing → ready-pickup; the website emails the customer the code) and
   Handed over (ready-pickup or processing → completed), which needs the code the customer gives at the counter. Each
@@ -18,7 +20,7 @@ information and not be able to change too many stuff"). Built from the popcore.c
 import json
 from datetime import datetime, time, timezone
 
-from website_sync import (BATCH, CODE_META, TORONTO, WebsiteError, _meta, call, clean_code)
+from website_sync import (BATCH, CODE_META, TORONTO, WebsiteError, _meta, call, clean_code, taken_stores)
 
 # (column, kind, website status), left to right (brief, 2026-11-19).
 COLUMNS = (('pick', 'pickup', 'processing'), ('ready', 'pickup', 'ready-pickup'),
@@ -47,8 +49,29 @@ def kind(row):
 
 
 def store_of(row, cfg):
-    """The store whose board shows the order: its pickup store, or the delivery store for a delivery."""
+    """A pickup's store: its pickup store. (For a delivery, the delivery store; its boards are delivery_stores.)"""
     return (row['pickup_store'] or cfg['delivery_store']) if kind(row) == 'pickup' else cfg['delivery_store']
+
+
+def collect_store(row, cfg):
+    """The store the courier collects a delivery from, or None while the website has not booked it: the store the
+    website names (`_fleetnow_pickup_store`, FleetNow 1.2.13), else WEBSITE_DELIVERY_STORE for an order FleetNow has
+    a number for (every booking went from there before, and still does while the website's switch is off)."""
+    delivery = json.loads(row['delivery'] or '{}')
+    named = str(delivery.get('collect') or '').strip().upper()
+    return named or (cfg['delivery_store'] if delivery.get('fleetnow_no') else None)
+
+
+def delivery_stores(con, row, cfg):
+    """(the stores a delivery leaves from, the other stores its stock has to be brought from), as store codes.
+    - Booked: the store the courier collects from; stock POPCORE took elsewhere has to be brought there.
+    - Not booked yet: the store POPCORE took it from, where the courier is expected. Taken from two stores, it is
+      both stores' until staff bring it together (the website books no courier for it).
+    - Not taken out of stock (it waits for a manager): WEBSITE_DELIVERY_STORE."""
+    taken, collect = taken_stores(con, row), collect_store(row, cfg)
+    if collect:
+        return [collect], [code for code in taken if code != collect]
+    return taken or [cfg['delivery_store']], []
 
 
 def user_stores(con, sub):
@@ -94,16 +117,25 @@ def card(con, row, cfg):
                       # Where it was taken from, on the first line of its product.
                       'picks': picks.get(product_id, []) if product_id not in shown else []})
         shown.add(product_id)
-    store = store_of(row, cfg)
-    taken = sorted({pick['store'] for found in picks.values() for pick in found})
-    result = {'id': row['wc_order_id'], 'number': row['number'], 'paid_at': row['paid_at'], 'kind': kind(row),
-              'store': store, 'status': row['wc_status'], 'lines': lines}
     if kind(row) == 'pickup':
         # Stock taken from another store has to be brought over to the pickup store.
-        result['taken_elsewhere'] = [code for code in taken if code != store]
+        stores = [store_of(row, cfg)]
+        elsewhere = sorted({pick['store'] for found in picks.values() for pick in found} - set(stores))
     else:
+        stores, elsewhere = delivery_stores(con, row, cfg)
+    # `stores`: the boards the order is on. `store`: where it is handed over (a delivery in two stores: the first).
+    result = {'id': row['wc_order_id'], 'number': row['number'], 'paid_at': row['paid_at'], 'kind': kind(row),
+              'store': stores[0], 'stores': stores, 'status': row['wc_status'], 'lines': lines,
+              'taken_elsewhere': elsewhere}
+    if kind(row) == 'delivery':
         result['delivery'] = json.loads(row['delivery'] or '{}')
     return result
+
+
+def board_stores(item):
+    """The stores whose boards show a card: a pickup's store; a delivery's, and the stores its stock has to be
+    brought from."""
+    return {*item['stores'], *(item['taken_elsewhere'] if item['kind'] == 'delivery' else ())}
 
 
 def _full_name(part):
@@ -141,9 +173,9 @@ def board(con, cfg, sub, store=None):
                WHERE wc_status NOT IN ('completed', 'cancelled', 'refunded') OR state IN ('needs_review', 'cancel_failed')
                   OR modified_at >= ?
                ORDER BY paid_at, wc_order_id""", (today,)):
-        if store_of(row, cfg) not in allowed:
-            continue
         item = card(con, row, cfg)
+        if not board_stores(item) & allowed:
+            continue
         if row['state'] in WAITING:
             needs_manager.append({**item, 'reason': row['state'] if row['state'] == 'cancel_failed' else row['problem']})
         elif row['wc_status'] in CLOSED:
@@ -167,7 +199,9 @@ def board(con, cfg, sub, store=None):
             names_read = False
     for item in deliveries:
         item['name'] = names.get(item['id'])
-    return {'stores': sorted(allowed), 'deliveries': cfg['delivery_store'] in allowed, 'names_read': names_read,
+    # The name box is for a board that has deliveries, or is the delivery store's.
+    return {'stores': sorted(allowed), 'deliveries': bool(deliveries) or cfg['delivery_store'] in allowed,
+            'names_read': names_read,
             'columns': columns, 'needs_manager': needs_manager, 'done_today': done_today}
 
 
