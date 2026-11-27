@@ -1,12 +1,13 @@
 import type { WebOrderCard, WebOrderCodeResult, WebOrderColumn, WebOrderLine, WebOrdersBoard } from '../../api/webOrders.ts'
 import { whereText } from '../../lib/stockPlaces.ts'
 
-// The five columns, left to right (website session's brief, 2026-11-19).
+// The five columns, left to right (website session's brief, 2026-11-19). Deliveries go by packing (owner, 2026-11-27):
+// 待打包 until 打包好了 Packed, 等快递 after it, whether a courier is booked yet or not.
 export const COLUMNS: Array<{ key: WebOrderColumn; zh: string; en: string }> = [
   { key: 'pick', zh: '自取 · 待拣货', en: 'Pickup · to pick' },
   { key: 'ready', zh: '自取 · 等顾客', en: 'Pickup · ready, waiting for the customer' },
   { key: 'pack', zh: '配送 · 待打包', en: 'Delivery · to pack' },
-  { key: 'booked', zh: '配送 · 等快递', en: 'Delivery · booked, waiting for the courier' },
+  { key: 'booked', zh: '配送 · 等快递', en: 'Delivery · packed, waiting for the courier' },
   { key: 'out', zh: '配送 · 派送中', en: 'Delivery · out for delivery' },
 ]
 
@@ -20,6 +21,10 @@ export function websiteTime(value: string | null | undefined): number | null {
   const time = Date.parse(`${value.replace(' ', 'T')}Z`)
   return Number.isNaN(time) ? null : time
 }
+
+/** A time on the store's clock: "14:05", or "—". */
+export const clockText = (time: number | null) => time === null ? '—'
+  : new Date(time).toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false })
 
 /** How long ago an order was paid: "5 min", "2 h", "3 days". */
 export function ageText(paidAt: string | null, now: number): string {
@@ -59,6 +64,21 @@ export function deliveryFacts(card: WebOrderCard): string[] {
     delivery.fleetnow_pickup && `取件 Pickup ${delivery.fleetnow_pickup}`,
     delivery.fleetnow_delivery && `派送 Delivery ${delivery.fleetnow_delivery}`)
   return facts.filter((fact): fact is string => !!fact)
+}
+
+/** Who packed a delivery and when: "已打包 Packed · 14:05 · DT 柜台", or '' while it is not packed. */
+export function packedText(card: WebOrderCard): string {
+  if (!card.packed_at) return ''
+  return ['已打包 Packed', clockText(websiteTime(card.packed_at)), card.packed_by].filter(Boolean).join(' · ')
+}
+
+/** What a delivery's courier means for the store, only when it needs saying: packed with no courier booked, or a
+ * courier booked for a parcel not packed yet. Gone once FleetNow picks it up. */
+export function courierText(card: WebOrderCard): string {
+  if (card.kind !== 'delivery' || card.status === 'out-for-delivery') return ''
+  if (card.packed_at && !card.booked) return '快递未预约 · Courier not booked yet: an admin books it on popcore.ca.'
+  if (!card.packed_at && card.booked) return '快递已预约,先打包 · A courier is booked: pack it first.'
+  return ''
 }
 
 // Why an order needs the admin, in staff words (the 网站 page that settles them is the admin's since 2026-11-26).

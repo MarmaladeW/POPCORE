@@ -23,7 +23,7 @@ call; hiding a menu is never the check.
 ## Store computer and admin only
 
 网站订单 (owner, 2026-11-26: "网站订单 pick board close to staff but available to viewer which is store computer"): the
-board, the code box, Ready and Handed over (`/api/website/board…`) answer only a 查看者 Viewer or an admin with 门店操作权限
+board, the code box, Ready, Handed over and Packed (`/api/website/board…`) answer only a 查看者 Viewer or an admin with 门店操作权限
 at the store. Staff and managers get 403 `board_store_computer_only`, their menus have no 网站订单, and `/web-orders`
 shows the no-access page. A new web order is pushed only to the store computer's and admins' devices. Managers keep
 a device switch on 异常提醒 for its alerts; staff cannot turn a device on (`notifications_not_for_staff`) but can turn
@@ -61,7 +61,7 @@ command, so an id sent as text cannot skip it.
 ## The store computer asks nothing
 
 Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras". The
-查看者 counter account makes its changes (Ready, Handed over) as itself: 动态 and the website note name the shared
+查看者 counter account makes its changes (Ready, Handed over, Packed) as itself: 动态 and the website note name the shared
 account ("Ready in popcore.store by DT 柜台"), and who was at the computer is the cameras' answer. There is no PIN
 and no name list: their routes are gone and migration `employee_pins_cleared` wiped every kept PIN. Nobody below
 admin changes their own name or email.

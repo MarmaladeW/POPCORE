@@ -7,7 +7,8 @@ could not fill, OK the price changes that wait, reread the catalogue and turn th
 网站订单 Web orders (website_board.py) is the store computer's and the admin's (owner, 2026-11-26: "网站订单 pick
 board close to staff but available to viewer which is store computer"): a 查看者 Viewer counter account, or an admin,
 with store operations access for a store sees its orders and the name each delivery goes to (owner, 2026-11-25),
-finds a pickup order by its code and marks pickup orders Ready and Handed over. Staff and managers get 403
+finds a pickup order by its code, marks pickup orders Ready and Handed over, and deliveries Packed (with an Undo;
+owner, 2026-11-27, popcore-work#139). Staff and managers get 403
 `board_store_computer_only`. Viewers can do nothing else anywhere: every other write needs staff or above.
 
 Phone notifications: the store computer and admins for new web orders, managers for 异常提醒 (watcher.py). Staff have
@@ -16,7 +17,7 @@ neither, so they cannot turn a device on; anyone can turn their own device off.
 import os
 from functools import wraps
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 import push_notifications as push
 import website_board as board
@@ -227,6 +228,8 @@ def web_orders_code():
 
 @bp.post('/api/website/board/orders/<int:wc_order_id>/ready', defaults={'action': 'ready'})
 @bp.post('/api/website/board/orders/<int:wc_order_id>/handed-over', defaults={'action': 'handed_over'})
+@bp.post('/api/website/board/orders/<int:wc_order_id>/packed', defaults={'action': 'packed'})
+@bp.post('/api/website/board/orders/<int:wc_order_id>/unpack', defaults={'action': 'unpack'})
 @board_only
 def web_orders_step(wc_order_id, action):
     data = request.get_json(silent=True) or {}
@@ -235,12 +238,23 @@ def web_orders_step(wc_order_id, action):
         return error
     if cfg is None:
         return _not_configured()
+    con, sub = get_db(), request.jwt_payload['sub']
     try:
         # On the store computer the note names its shared account ("Ready in popcore.store by DT 柜台").
-        result, noted = board.step(get_db(), cfg, wc_order_id, action, request.jwt_payload['sub'],
-                                   data.get('code') if isinstance(data.get('code'), str) else None)
+        if action in board.PACK_STEPS:
+            result, noted = board.pack(con, cfg, wc_order_id, action, sub)
+        else:
+            result, noted = board.step(con, cfg, wc_order_id, action, sub,
+                                       data.get('code') if isinstance(data.get('code'), str) else None)
     except (board.BoardError, sync.WebsiteError) as exc:
         return _board_error(exc)
+    if action == 'packed' and result == 'done':
+        try:  # Packed with no courier booked: the admins book one. A failed notification never fails Packed.
+            push.packed_not_booked(con, cfg, wc_order_id)
+        except Exception:  # noqa: BLE001 - Packed is already saved
+            if con.in_transaction:
+                con.rollback()
+            current_app.logger.exception('Packed notification for web order %s failed', wc_order_id)
     return jsonify(result=result, noted=noted)
 
 
