@@ -367,7 +367,7 @@ class StockIntegrityTests(IsolatedApiCase):
 
         response = self.client.delete(
             '/api/sales/clear_day',
-            headers=self.headers('manager'),
+            headers=self.headers('admin:manager'),
             query_string={'store_code': 'DT', 'date': '2026-09-08'},
         )
 
@@ -472,7 +472,7 @@ class StockIntegrityTests(IsolatedApiCase):
         before = self.snapshot(('daily_sales', 'stock_transactions'))
 
         response = self.client.delete(
-            f'/api/sales/record/{record_id}', headers=self.headers('manager')
+            f'/api/sales/record/{record_id}', headers=self.headers('admin:manager')
         )
 
         self.assertEqual(response.status_code, 409)

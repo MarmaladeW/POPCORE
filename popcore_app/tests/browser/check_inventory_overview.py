@@ -1,4 +1,5 @@
-"""库存 overview and list quantities on the inventory landing page, isolated fixtures."""
+"""库存 overview and list quantities on the inventory landing page, isolated fixtures. How things sell (best sellers,
+units sold, pace) and the stock value are the admin's (owner, 2026-11-26): staff get the same page without them."""
 import asyncio
 import re
 import subprocess
@@ -59,8 +60,40 @@ def payload(path, query, request):
     return base_payload(path, query)
 
 
+def staff_payload(path, query, request):
+    # What the server sends below admin: no sales figures on any item, no best sellers, no 日报 dates, no value.
+    data = payload(path, query, request)
+    if path != '/api/inventory/overview':
+        return data
+    hidden = {'sold_week':None,'sold_recent':None,'last_sold':None,'pace':None,'days_left':None}
+    return {**data, 'report_days':None, 'last_report':None, 'best_sellers':[], 'value':None,
+            **{name:[{**row, **hidden} for row in data[name]] for name in ('refill','running_low','sold_out')}}
+
+
+async def staff_check(browser, width):
+    context,page = await context_with_api(browser,{'mode':'data','api_payload':staff_payload},viewport={'width':width,'height':900},auth={'role':'staff'})
+    await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
+    await page.goto(BASE+'/stock')
+    overview = page.get_by_role('region',name='库存概况 Inventory overview',exact=True)
+    await expect(overview.get_by_text('7,134',exact=True)).to_be_visible()
+    await expect(overview.get_by_text('1,264 products in stock',exact=True)).to_be_visible()
+    # The lists stay; what sold and how fast does not.
+    await expect(overview.get_by_role('region',name='补货上架',exact=False).get_by_role('listitem').first).to_contain_text('4 端')
+    low = overview.get_by_role('region',name='快卖完',exact=False)
+    await expect(low.get_by_text('none upstairs',exact=True)).to_be_visible()
+    await expect(overview.get_by_role('region',name='刚卖完',exact=False).get_by_text('间谍过家家Q版挂饰')).to_be_visible()
+    await expect(overview.get_by_role('region',name='本周热卖',exact=False)).to_have_count(0)
+    await expect(overview.get_by_role('region',name='最近变动',exact=False)).to_be_visible()
+    for words in (re.compile(r'Sells \d'), re.compile(r'Sold \d'), re.compile(r'^sold$'), 'sales from 日报', 'no 日报 pasted', 'about 1 day', '价值', 'null', 'NaN'):
+        await expect(overview.get_by_text(words)).to_have_count(0)
+    await expect(page.locator('a[href^="/stock/value"]')).to_have_count(0)
+    assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), f'horizontal overflow at {width}px'
+    await page.screenshot(path=OUT/f'overview-staff-{width}.png',full_page=True,animations='disabled')
+    await context.close()
+
+
 async def check(browser, width):
-    context,page = await context_with_api(browser,{'mode':'data','api_payload':payload},viewport={'width':width,'height':900},auth={'role':'staff'})
+    context,page = await context_with_api(browser,{'mode':'data','api_payload':payload},viewport={'width':width,'height':900},auth={'role':'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE+'/stock')
     overview = page.get_by_role('region',name='库存概况 Inventory overview',exact=True)
@@ -143,6 +176,7 @@ async def main():
                 browser=await pw.chromium.launch(headless=True)
                 try:
                     for width in (390,768,1440): await check(browser,width)
+                    for width in (390,1440): await staff_check(browser,width)
                 finally: await browser.close()
         finally:
             process.terminate();process.wait(timeout=10)
@@ -150,4 +184,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS inventory overview figures, panels, show all, recent changes, list quantities, search and links, 390/768/1440px')
+    print('PASS inventory overview figures, panels, show all, recent changes, list quantities, search and links, 390/768/1440px; '
+          'staff without sales figures, best sellers or value, 390/1440px')

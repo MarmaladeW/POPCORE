@@ -466,7 +466,7 @@ def create_delivery(con, data, *, actor, request_key, kind='transfer', commit=Tr
     )
     business_date = read_date(data.get('business_date'), 'business_date')
     raw_lines = data.get('lines')
-    if not isinstance(raw_lines, list) or not raw_lines:
+    if not isinstance(raw_lines, list) or not raw_lines or any(not isinstance(line, dict) for line in raw_lines):
         raise InventoryValidationError('lines must be a non-empty list')
     grouped = {}
     for raw in raw_lines:
@@ -619,7 +619,7 @@ def act_on_delivery(con, delivery_id, action, data, *, actor, request_key):
     )
     expected_version = read_int(data.get('expected_version'), 'expected_version', minimum=1)
     raw_lines = data.get('lines')
-    if not isinstance(raw_lines, list) or not raw_lines:
+    if not isinstance(raw_lines, list) or not raw_lines or any(not isinstance(line, dict) for line in raw_lines):
         raise InventoryValidationError('lines must be a non-empty list')
     requested = []
     seen_lines = set()

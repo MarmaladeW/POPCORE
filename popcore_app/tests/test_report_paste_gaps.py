@@ -94,7 +94,7 @@ class ReportPasteGapTests(IsolatedApiCase):
 
     def parse(self, text, store='DT'):
         response = self.client.post('/api/sales/parse_report', json={'text': text, 'store_code': store},
-                                    headers=self.headers('manager'))
+                                    headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()
 
@@ -155,7 +155,7 @@ class ReportPasteGapTests(IsolatedApiCase):
                                      (product,)).fetchone())
 
     def notices(self):
-        response = self.client.get('/api/sales/report-stock', headers=self.headers('manager'))
+        response = self.client.get('/api/sales/report-stock', headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200, response.get_json())
         return {(row['product_id'], row['reason']) for row in response.get_json()['notices']}
 

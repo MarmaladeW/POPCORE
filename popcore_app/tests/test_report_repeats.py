@@ -29,7 +29,7 @@ class ReportRepeatTests(IsolatedApiCase):
     def parse(self, text, date='2026-11-14', live=True):
         with patch.object(sales, '_is_authoritative', return_value=live), \
                 patch.object(sales, 'other_store', return_value={'code': 'MK'}):
-            response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
+            response = self.client.post('/api/sales/parse_report', headers=self.headers('admin:manager'),
                                         json={'text': text, 'store_code': 'DT', 'date': date})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()

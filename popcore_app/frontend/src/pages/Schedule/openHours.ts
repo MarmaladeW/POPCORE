@@ -185,13 +185,16 @@ export function parsePositions(raw: string | null | undefined): PositionsMap {
 
 // Each position at a glance (owner, 2026-11-19: "the positions should be more accented (more obvious) in the shift
 // table. also can use emoji for different positions"). "End" is the old name of Back.
-const POSITION_EMOJI: Record<string, string> = { front: '👋', cashier: '💰', back: '📦', end: '📦', sales: '🛍️' }
+const POSITION_EMOJI: Record<string, string> = { front: '⬅️', cashier: '💻', back: '➡️', end: '➡️', sales: '🛍️' }
+
+// Owner, 2026-11-25: Front, Back and Cashier read 前⬅️ 后➡️ 收银💻.
+const POSITION_MARK: Record<string, string> = { front: '前⬅️', back: '后➡️', end: '后➡️', cashier: '收银💻' }
 
 /** A position's emoji, or a pin for one added in Settings without its own. */
 export const positionEmoji = (name: string) => POSITION_EMOJI[name.trim().toLowerCase()] ?? '📍'
 
-/** A position as the schedule shows it: "📦 Back". */
-export const positionText = (name: string) => `${positionEmoji(name)} ${name}`
+/** A position as the schedule shows it: "后➡️", or "🛍️ Sales" for one without a Chinese mark. */
+export const positionText = (name: string) => POSITION_MARK[name.trim().toLowerCase()] ?? `${positionEmoji(name)} ${name}`
 
 /** Positions configured for one store ('*' acts as an all-stores fallback). */
 export function positionsForStore(storeCode: string, map: PositionsMap): string[] {

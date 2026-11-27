@@ -9,7 +9,7 @@ import { useIsPhone } from '../../components/pc/useIsPhone'
 import { errorMessage } from '../Sales/checkoutParts'
 import { Problem, ProductSearch } from '../Sales/QuickSale'
 import {
-  asksSets, asksSetSize, landing, moveLines, unitWord, waitingFor,
+  asksSets, asksSetSize, isShort, landing, moveLines, unitWord, waitingFor,
   type CheckLine, type Move, type MoveItem, type MovesDay, type Place, type Places,
 } from './moveStock'
 import '../Sales/QuickSale.css'
@@ -102,7 +102,7 @@ export default function MoveStockPage() {
   if (loadError) return <div className="qs-page mv-page">{header}<Problem>{loadError}</Problem></div>
   if (!places) return <div className="qs-page mv-page">{header}<Skeleton active paragraph={{ rows: 6 }} /></div>
   const name = (list: Place[], code: string) => list.find(place => place.code === code)?.name ?? ''
-  const missing = (productId: number) => checked.find(line => line.product_id === productId)?.missing ?? 0
+  const checkedLine = (productId: number) => checked.find(line => line.product_id === productId)
   const opened = (productId: number) => checked.find(line => line.product_id === productId)?.opened ?? 0
 
   return <div className="qs-page mv-page">
@@ -112,21 +112,24 @@ export default function MoveStockPage() {
         {saved && <section className="qs-saved" role="status" aria-label="Saved">
           <p className="qs-saved-head"><i className="pc-dot pc-dot-ok" aria-hidden="true" /><strong>已移好</strong><span>{saved.from_name} → {saved.to_name}</span></p>
           <p className="qs-quiet">{saved.lines.map(line => line.text).join('、')}</p>
-          {saved.lines.some(line => line.missing > 0) && <p className="qs-quiet mv-short"><i className="pc-dot pc-dot-warn" aria-hidden="true" />电脑里{saved.from_name}不够的也算移过去了，{saved.from_name}有空盘点一下</p>}
+          {saved.lines.some(isShort) && <p className="qs-quiet mv-short"><i className="pc-dot pc-dot-warn" aria-hidden="true" />电脑里{saved.from_name}不够的也算移过去了，{saved.from_name}有空盘点一下</p>}
           {saved.can_undo && <div className="qs-saved-actions"><UndoMove move={saved} done={() => { setSaved(undefined); setRefresh(n => n + 1) }} /></div>}
         </section>}
         <section className="pc-panel mv-form" aria-label="Move stock">
-          <Chips label="从哪里" places={places.from} value={from} onPick={code => { setFrom(code); if (code === to) setTo(''); setSaved(undefined) }} />
+          <Chips label="从哪里" places={places.from} value={from} onPick={code => { setFrom(code); if (code === to) setTo(''); if (code !== 'claw' && reason === 'claw_prize') setReason(''); setSaved(undefined) }} />
           <Chips label="到哪里" places={places.to} value={to} onPick={code => { setTo(code); if (code === from) setFrom(''); setSaved(undefined) }} />
           {to === 'gone' && <>
-            <Chips label="为什么" places={places.reasons} value={reason} onPick={setReason} />
+            {/* A prize comes out of the claw machine only; the server refuses it from anywhere else. */}
+            <Chips label="为什么" places={places.reasons.filter(entry => entry.code !== 'claw_prize' || from === 'claw')} value={reason} onPick={setReason} />
             {reason === 'other' && <Input aria-label="What happened" placeholder="写一下原因" value={note} maxLength={300} onChange={event => setNote(event.target.value)} />}
           </>}
           <ProductSearch phone={phone} onPick={add} />
           {items.length > 0 && <ul className="mv-lines" aria-label="Goods">
             {items.map((item, index) => {
               const change = (value: Partial<MoveItem>) => setItems(old => old.map((entry, at) => at === index ? { ...entry, ...value } : entry))
-              const short = missing(item.productId)
+              const line = checkedLine(item.productId), short = isShort(line)
+              // 少 3, or just 不够 where this account does not see the place's numbers.
+              const by = line?.missing != null ? `少 ${line.missing}` : '不够 Not enough'
               return <li key={item.productId}>
                 <div className="mv-line-head">
                   <strong>{item.name}</strong>
@@ -139,7 +142,9 @@ export default function MoveStockPage() {
                   {landing(item, from) && <span className="mv-landing">{landing(item, from)}</span>}
                 </div>
                 {opened(item.productId) > 0 && <p className="qs-quiet">会拆开 {opened(item.productId)} 端，没移走的散盒留在{name(places.from, from)}</p>}
-                {short > 0 && <p className="qs-quiet mv-short"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{to === 'gone' ? `电脑里${name(places.from, from)}只有这么多，少算 ${short}` : `电脑里${name(places.from, from)}少 ${short}，照样移过去`}</p>}
+                {short && <p className="qs-quiet mv-short"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{to === 'gone'
+                  ? (line?.missing != null ? `电脑里${name(places.from, from)}只有这么多，少算 ${line.missing}` : `电脑里${name(places.from, from)}不够 Not enough`)
+                  : `电脑里${name(places.from, from)}${by}，照样移过去`}</p>}
               </li>
             })}
           </ul>}

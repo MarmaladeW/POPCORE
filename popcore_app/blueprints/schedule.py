@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db
+import people
 import ranks
 from auth import (
     login_required, role_required,
@@ -198,7 +199,7 @@ def schedule_me_get():
     con = get_db()
     emp = _get_or_create_employee(con, auth0_id, name=name, email=email)
     con.close()
-    return jsonify(emp)
+    return jsonify(people.public(emp))
 
 
 @bp.route('/api/schedule/me', methods=['PATCH'])
@@ -206,6 +207,11 @@ def schedule_me_get():
 def schedule_me_patch():
     auth0_id = request.jwt_payload.get('sub', '')
     data     = request.get_json(silent=True) or {}
+    # Owner, 2026-11-26: the name is what every mark of who did something shows, so nobody renames themselves.
+    if ('name' in data or 'email' in data) and \
+            ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM), 0) < ROLE_HIERARCHY['admin']:
+        return jsonify({'error': '姓名和邮箱只能由管理员修改 Only an admin can change a name or email',
+                        'code': 'name_locked'}), 403
     con      = get_db()
     emp      = _get_or_create_employee(con, auth0_id)
     updates  = {}
@@ -222,7 +228,7 @@ def schedule_me_patch():
         con.commit()
     row = con.execute('SELECT * FROM employees WHERE id = ?', (emp['id'],)).fetchone()
     con.close()
-    return jsonify(dict(row))
+    return jsonify(people.public(row))
 
 
 @bp.route('/api/schedule/employees', methods=['GET'])
@@ -232,7 +238,7 @@ def schedule_employees():
     rows = con.execute(
         f"SELECT * FROM employees WHERE is_active = 1 ORDER BY {ranks.order_by('')}"
     ).fetchall()
-    employees = [dict(r) for r in rows]
+    employees = [people.public(r) for r in rows]
 
     # Backfill names from Auth0 for any employee still missing one
     # (trainees have no Auth0 account — skip them)
@@ -299,7 +305,7 @@ def schedule_employee_patch(emp_id):
         con.commit()
     updated = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
     con.close()
-    return jsonify(dict(updated))
+    return jsonify(people.public(updated))
 
 
 # ─── Trainees ──────────────────────────────────────────────────────────────────
@@ -315,7 +321,7 @@ def schedule_trainees_list():
         'SELECT * FROM employees WHERE is_active = 1 AND is_trainee = 1 ORDER BY name'
     ).fetchall()
     con.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([people.public(r) for r in rows])
 
 
 @bp.route('/api/schedule/trainees', methods=['POST'])
@@ -335,7 +341,7 @@ def schedule_trainees_create():
         'SELECT * FROM employees WHERE id = last_insert_rowid()'
     ).fetchone()
     con.close()
-    return jsonify(dict(row)), 201
+    return jsonify(people.public(row)), 201
 
 
 @bp.route('/api/schedule/trainees/<int:trainee_id>', methods=['DELETE'])
@@ -1176,6 +1182,19 @@ def schedule_report_monthly():
 def schedule_report_monthly_employee(emp_id):
     """One employee's shifts in the monthly report's wage period and store scope,
     each with the hours it counts, so a manager can send the breakdown to them."""
+    return _report_monthly_employee(emp_id)
+
+
+@bp.route('/api/schedule/reports/monthly/me', methods=['GET'])
+@login_required
+def schedule_report_monthly_me():
+    """The caller's own month, in the same shape (owner, 2026-11-26: each employee sees only their own monthly
+    hours). Every store unless store_code names one."""
+    emp = _get_or_create_employee(get_db(), request.jwt_payload.get('sub', ''))
+    return _report_monthly_employee(emp['id'], own=True)
+
+
+def _report_monthly_employee(emp_id, own=False):
     con = get_db()
     start_day = _month_start_day(con)
     def_year, def_month = _current_wage_anchor(start_day)
@@ -1187,10 +1206,13 @@ def schedule_report_monthly_employee(emp_id):
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
 
-    store_id, store_code, err = _require_store_param(con)
-    if err:
-        con.close()
-        return err
+    if own and not (request.args.get('store_code') or '').strip():
+        store_id, store_code = None, 'ALL'
+    else:
+        store_id, store_code, err = _require_store_param(con)
+        if err:
+            con.close()
+            return err
 
     emp = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
     if not emp:

@@ -20,7 +20,7 @@ class ReportMatchChoiceTests(IsolatedApiCase):
             con.commit()
 
     def parse(self, line, header='随手记汇总：', store='DT'):
-        response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
+        response = self.client.post('/api/sales/parse_report', headers=self.headers('admin:manager'),
                                     json={'text': f'2026.9.14 {store}\n' + header + '\n' + line,
                                           'store_code': store, 'engine': 'rules'})
         self.assertEqual(response.status_code, 200)
@@ -303,11 +303,11 @@ class ReportMatchChoiceTests(IsolatedApiCase):
 
     # ── 名称记忆 Name picks: situations, stock lines and the page ───────────────
 
-    def day(self, store='DT', date='2026-09-14', role='manager'):
+    def day(self, store='DT', date='2026-09-14', role='admin:manager'):
         return self.client.get('/api/sales/name-picks/day', headers=self.headers(role),
                                query_string={'store_code': store, 'date': date})
 
-    def pick(self, role='manager', **body):
+    def pick(self, role='admin:manager', **body):
         return self.client.post('/api/sales/name-picks', headers=self.headers(role), json=body)
 
     def test_a_pick_confirms_only_in_the_store_and_section_it_was_confirmed_in(self):
@@ -381,7 +381,7 @@ class ReportMatchChoiceTests(IsolatedApiCase):
         other = self.add_product()
         parsed = self.parse('Nickname*1\nTest Product*1')
         self.assertEqual([r['raw_name'] for r in parsed['confirmed']], ['Test Product'])
-        days = self.client.get('/api/sales/name-picks', headers=self.headers('manager')).get_json()['days']
+        days = self.client.get('/api/sales/name-picks', headers=self.headers('admin:manager')).get_json()['days']
         self.assertEqual([(d['store_code'], d['date'], d['counts']['open'], d['saved']) for d in days],
                          [('DT', '2026-09-14', 1, False)])
         names = self.day().get_json()['names']
@@ -399,16 +399,16 @@ class ReportMatchChoiceTests(IsolatedApiCase):
         self.assertEqual((refused.status_code, refused.get_json()['code']), (409, 'pick_changed'))
         # 记住的 All picks: a change there replaces the pick and forgets where it was confirmed.
         self.assertEqual(self.pick(**key, raw_name='Nickname', note='', product_id=other, replaces=[self.product_id]).status_code, 200)
-        picks = self.client.get('/api/sales/name-picks', headers=self.headers('manager')).get_json()['picks']
+        picks = self.client.get('/api/sales/name-picks', headers=self.headers('admin:manager')).get_json()['picks']
         self.assertEqual([(p['raw_name'], [x['id'] for x in p['products']], p['places'], p['state']) for p in picks],
                          [('Nickname', [other], [], 'ok')])
         self.assertEqual(self.day().get_json()['names'][0]['status'], 'confirm')
         # Forget: the next paste matches the name as if it had never been answered.
-        forget = self.client.delete('/api/sales/name-picks', headers=self.headers('manager'), json={**key, 'replaces': [other]})
+        forget = self.client.delete('/api/sales/name-picks', headers=self.headers('admin:manager'), json={**key, 'replaces': [other]})
         self.assertEqual(forget.status_code, 200)
         self.assertNotIn('pick', self.parse('Nickname*1')['failed'][0])
         # Ignore: the page sets it aside; a paste still asks.
-        ignore = self.client.post('/api/sales/name-picks/ignore', headers=self.headers('manager'), json={**key, 'ignored': True})
+        ignore = self.client.post('/api/sales/name-picks/ignore', headers=self.headers('admin:manager'), json={**key, 'ignored': True})
         self.assertEqual(ignore.status_code, 200)
         self.assertEqual(self.day().get_json()['names'][0]['status'], 'ignored')
         self.assertTrue(self.parse('Nickname*1')['failed'])
@@ -416,11 +416,11 @@ class ReportMatchChoiceTests(IsolatedApiCase):
         self.parse('Test Product*1')
         self.assertEqual(self.day().get_json()['names'], [])
 
-    def test_name_picks_are_for_managers_who_may_save_the_store_reports(self):
+    def test_name_picks_are_for_admins(self):
         self.parse('Nickname*1')
-        self.assertEqual(self.client.get('/api/sales/name-picks', headers=self.headers('staff')).status_code, 403)
-        outsider = self.client.get('/api/sales/name-picks', headers=self.headers('manager:other')).get_json()
-        self.assertEqual(outsider['days'], [])
+        # Owner, 2026-11-26: the pasted reports and their names are the admin's.
+        for role in ('staff', 'manager', 'manager:other'):
+            self.assertEqual(self.client.get('/api/sales/name-picks', headers=self.headers(role)).status_code, 403)
         self.assertEqual(self.day(role='manager:other').status_code, 403)
         place = {'store_code': 'DT', 'section': 'cash', 'display': False}
         self.assertEqual(self.pick('manager:other', raw_name='Nickname', product_id=self.product_id, replaces=[], **place).status_code, 403)

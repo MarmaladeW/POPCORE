@@ -1,0 +1,1 @@
+import{t as e}from"./client-fDE6--Su.js";var t=(t,n)=>e.get(`/staff-discounts`,{params:{month:t},signal:n}).then(e=>e.data),n=t=>e.get(`/staff-discounts/buyers`,{signal:t}).then(e=>e.data.buyers??[]);export{t as n,n as t};

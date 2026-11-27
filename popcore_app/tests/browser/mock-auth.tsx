@@ -4,6 +4,8 @@ type AuthState = {
   loading?: boolean
   authenticated?: boolean
   role?: 'viewer' | 'staff' | 'manager' | 'admin'
+  /** Another account of the same role (default `fixture|<role>`), for checks that switch who is signed in. */
+  sub?: string
   tokenReject?: boolean
   redirectReject?: boolean
   token?: string
@@ -29,7 +31,7 @@ export function useAuth0() {
     isAuthenticated: current.authenticated ?? true,
     error: undefined,
     user: {
-      sub: `fixture|${role}`,
+      sub: current.sub ?? `fixture|${role}`,
       name: 'Foundation User',
       email: 'foundation@example.invalid',
       picture: '',

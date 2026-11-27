@@ -322,7 +322,7 @@ class WebsiteCase(IsolatedApiCase):
         return mk, locations
 
     def preview(self):
-        return self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+        return self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()
 
     def change(self, preview, wc_id):
         return next(change for change in preview['changes'] if change['wc_id'] == wc_id)
@@ -366,9 +366,9 @@ class WebsiteCase(IsolatedApiCase):
                 if 'regular_price' in update}
 
     def preview(self):
-        return self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+        return self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()
 
-    def ok_prices(self, wc_id, key=None, role='manager'):
+    def ok_prices(self, wc_id, key=None, role='admin'):
         """A manager's OK, with the key the page was given for that product unless another is named."""
         if key is None:
             key = next(group['ok_key'] for group in self.preview()['held_prices'] if group['wc_id'] == wc_id)
@@ -382,12 +382,12 @@ class WebsiteCase(IsolatedApiCase):
 class WebsiteSyncTests(WebsiteCase):
     def test_nothing_is_written_before_an_admin_turns_it_on(self):
         self.assertEqual(self.client.post('/api/website/refresh', headers=self.headers('manager')).status_code, 403)
-        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).status_code, 409)
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('admin')).status_code, 409)
         self.assertEqual(self.client.post('/api/website/refresh', headers=self.headers('admin')).status_code, 202)
         self.run_sync()
         self.run_sync()
         self.assertEqual(self.woo.writes, [])
-        preview = self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+        preview = self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()
         self.assertEqual((preview['items'], preview['unknown_id'], preview['shared_id'], preview['no_id']), (5, 1, 0, 3))
         self.assertEqual([(row['popcore_id'], row['shared']) for row in preview['unknown_ids']], [('PM0100-07', False)])
         self.assertEqual([(row['wc_id'], row['sku']) for row in preview['no_ids']],
@@ -403,9 +403,26 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertEqual(self.client.post('/api/website/switch', json={'on': True},
                                           headers=self.headers('manager')).status_code, 403)
 
+    def test_the_website_section_is_for_admins_only(self):
+        """Owner, 2026-11-26: employees, managers included, do not see the website section."""
+        self.turn_on()
+        before = self.snapshot(['website_orders', 'website_state', 'website_price_writes'])
+        for role in ('manager', 'staff', 'viewer'):
+            for method, path, body in (('get', '/api/website/status', None), ('get', '/api/website/preview', None),
+                                       ('get', '/api/website/orders', None),
+                                       ('post', '/api/website/prices/10/ok', {'key': 'k'}),
+                                       ('post', '/api/website/orders/502/retry', None),
+                                       ('post', '/api/website/orders/501/dismiss', {'reason': 'no'}),
+                                       ('post', '/api/website/refresh', None),
+                                       ('post', '/api/website/switch', {'on': False})):
+                response = getattr(self.client, method)(path, json=body, headers=self.headers(role))
+                self.assertEqual(response.status_code, 403, (role, path))
+        self.assertEqual(self.snapshot(['website_orders', 'website_state', 'website_price_writes']), before)
+        self.assertEqual(self.client.get('/api/website/status', headers=self.headers('admin')).get_json()['enabled'], True)
+
     def test_turning_on_pushes_stock_and_pickup_then_only_changes(self):
         self.turn_on()
-        self.assertEqual(self.client.get('/api/website/status', headers=self.headers('manager')).get_json()['enabled'],
+        self.assertEqual(self.client.get('/api/website/status', headers=self.headers('admin')).get_json()['enabled'],
                          True)
         # The first pass after turning on already wrote everything; nothing changed since.
         self.run_sync()
@@ -501,12 +518,12 @@ class WebsiteSyncTests(WebsiteCase):
         # The website already took them off; POPCORE's number must not put them back.
         self.assertEqual(self.woo.item(12)['stock_quantity'], 0)
         self.assertEqual(self.woo.item(20)['stock_quantity'], 3)
-        orders = self.client.get('/api/website/orders', headers=self.headers('manager')).get_json()['orders']
+        orders = self.client.get('/api/website/orders', headers=self.headers('admin')).get_json()['orders']
         self.assertEqual({row['wc_order_id'] for row in orders[:2]}, {501, 502})  # waiting orders first
         self.assertEqual(self.client.post('/api/website/orders/501/dismiss', json={},
-                                          headers=self.headers('manager')).status_code, 400)
+                                          headers=self.headers('admin')).status_code, 400)
         response = self.client.post('/api/website/orders/501/dismiss', json={'reason': 'Third set came from MK'},
-                                    headers=self.headers('manager'))
+                                    headers=self.headers('admin'))
         self.assertEqual(response.get_json()['state'], 'dismissed')
         self.run_sync()
         self.assertEqual(self.woo.item(12)['stock_quantity'], 2)
@@ -516,7 +533,7 @@ class WebsiteSyncTests(WebsiteCase):
             tote = self._product(con, 'DR0002', 'Tote bag', 'ordinary', 'piece')
             con.commit()
         self.woo.set_id(50, 'dr0002')
-        self.assertEqual(self.client.post('/api/website/orders/502/retry', headers=self.headers('manager')).get_json(),
+        self.assertEqual(self.client.post('/api/website/orders/502/retry', headers=self.headers('admin')).get_json(),
                          {'state': 'needs_review'})  # DT has none of it
         order = self.order_row(502)
         self.assertEqual(order['problem'], 'not_enough_stock')
@@ -570,7 +587,7 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertEqual((self.order_row(512)['state'], self.order_row(512)['store_id']), ('recorded', mk))
         self.assertEqual(dt_and_mk(), ((1, 0), (0, 0)))
         orders = {row['wc_order_id']: row for row in
-                  self.client.get('/api/website/orders', headers=self.headers('manager')).get_json()['orders']}
+                  self.client.get('/api/website/orders', headers=self.headers('admin')).get_json()['orders']}
         self.assertEqual({number: orders[number]['store_codes'] for number in (509, 510, 511, 512)},
                          {509: ['DT'], 510: ['DT', 'MK'], 511: ['MK'], 512: ['MK', 'DT']})
         # A cancel puts every box back where it came from, in both stores.
@@ -598,7 +615,7 @@ class WebsiteSyncTests(WebsiteCase):
         self.turn_on()
         self.woo.order(512, [(11, 1), (20, 1), (50, 1)])  # the tote bag has no POPCORE ID
         self.run_sync()
-        order = self.client.get('/api/website/orders', headers=self.headers('manager')).get_json()['orders'][0]
+        order = self.client.get('/api/website/orders', headers=self.headers('admin')).get_json()['orders'][0]
         self.assertEqual([(line['popcore_id'], line['popcore_name']) for line in order['lines']],
                          [('PM0100', 'Echo 记账名'), ('PM0200', 'Bear Charm Official'), ('', None)])
         self.assertEqual(order['lines'][2]['name'], 'Tote bag')  # the page falls back to the website's name
@@ -630,7 +647,7 @@ class WebsiteSyncTests(WebsiteCase):
         self.woo.product(95, 'pm0100-03', name='Echo Rain again')  # the same ID as item 30
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.run_sync()
-        preview = self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
+        preview = self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()
         self.assertEqual((preview['items'], preview['unknown_id'], preview['shared_id']), (4, 1, 2))
         self.assertEqual([(row['wc_id'], row['shared']) for row in preview['unknown_ids']],
                          [(30, True), (95, True), (70, False)])
@@ -665,12 +682,12 @@ class WebsiteSyncTests(WebsiteCase):
             self.assertEqual(con.execute('SELECT COUNT(*) FROM website_items').fetchone()[0], 0)
             self.assertIn('popcore_id', {row[1] for row in con.execute('PRAGMA table_info(website_items)')})
         # The products must be read again before the preview or turning on.
-        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).status_code, 409)
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('admin')).status_code, 409)
         self.assertEqual(self.client.post('/api/website/switch', json={'on': True},
                                           headers=self.headers('admin')).status_code, 409)
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.run_sync()
-        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()['items'], 5)
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()['items'], 5)
 
     def test_floor_sets_follow_the_owners_rule(self):
         """Owner, 2026-11-10: with 12 boxes per set, 25 floor boxes mean at least one whole set and 37 at
@@ -789,8 +806,8 @@ class WebsiteSyncTests(WebsiteCase):
             moment = datetime.fromisoformat(local).replace(tzinfo=website_sync.TORONTO).astimezone(timezone.utc)
             with patch.object(website_sync, '_now', return_value=moment), \
                     patch.dict('os.environ', {'WEBSITE_SHOP_OPENS': opens} if opens else {}):
-                preview = self.client.get('/api/website/preview', headers=self.headers('manager')).get_json()
-                status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
+                preview = self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()
+                status = self.client.get('/api/website/status', headers=self.headers('admin')).get_json()
             numbers = {change['popcore_id']: change['quantity'] for change in preview['changes']
                        if change['popcore_id'] in ('PM0100', 'PM0100-SET', 'PM0200')}
             pickup = {row['popcore_id']: row['wanted'] for row in preview['pickup']}.get('PM0200')
@@ -839,12 +856,12 @@ class WebsiteSyncTests(WebsiteCase):
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.woo.refuse = True
         self.run_sync()
-        status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
+        status = self.client.get('/api/website/status', headers=self.headers('admin')).get_json()
         self.assertEqual(status['last_error']['code'], 'website_auth')
         self.assertIsNone(status['refreshed_at'])
         self.woo.refuse = False
         self.run_sync()
-        status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
+        status = self.client.get('/api/website/status', headers=self.headers('admin')).get_json()
         self.assertIsNone(status['last_error'])
         self.assertIsNotNone(status['refreshed_at'])
 
@@ -907,7 +924,7 @@ class WebsiteSyncTests(WebsiteCase):
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.run_sync()
         self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'regular_price': '15.50'})])
-        status = self.client.get('/api/website/status', headers=self.headers('manager')).get_json()
+        status = self.client.get('/api/website/status', headers=self.headers('admin')).get_json()
         self.assertEqual([(row['wc_id'], row['old_cents'], row['new_cents']) for row in status['price_writes'][:2]],
                          [(20, 1300, 1550), (20, 1500, 1550)])
 
@@ -945,7 +962,7 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertEqual(self.prices_written(), {11: '20.99', 12: '251.88'})
         with closing(self.connect()) as con:
             self.assertEqual({tuple(row) for row in con.execute('SELECT wc_id, approved_by FROM website_price_writes')},
-                             {(11, 'auth0|manager'), (12, 'auth0|manager')})
+                             {(11, 'auth0|admin'), (12, 'auth0|admin')})
         # An OK is for exactly the change shown: POPCORE changing the price again asks again.
         self.assertEqual(self.ok_prices(20).status_code, 200)
         self.popcore_price(self.item, 16.00)
@@ -1115,7 +1132,7 @@ class WebsiteSyncTests(WebsiteCase):
             self.assertTrue({'regular_cents', 'sale_cents', 'daily_pool', 'vault'}
                             <= {row[1] for row in con.execute('PRAGMA table_info(website_items)')})
         self.assertIsNone(self.state('refreshed_at'))
-        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('manager')).status_code, 409)
+        self.assertEqual(self.client.get('/api/website/preview', headers=self.headers('admin')).status_code, 409)
         self.client.post('/api/website/refresh', headers=self.headers('admin'))
         self.run_sync()
         self.assertEqual(self.preview()['items'], 5)

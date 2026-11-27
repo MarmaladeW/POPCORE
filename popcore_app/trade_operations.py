@@ -9,6 +9,7 @@ from inventory_commands import (
     InventoryConflict, InventoryValidationError,
     _post_inventory_in_transaction, require_inventory_access,
 )
+from inventory_visibility import can_see_inventory, hide_quantities
 from validation import read_int
 
 
@@ -732,4 +733,8 @@ def slot_detail(con, slot_id, *, actor):
            ORDER BY p.stock_form DESC, name, p.id""",
         (slot['location_id'], slot['series_id']),
     )]
+    if not can_see_inventory(con, actor, (slot['store_id'],)):
+        # Without 库存查看 a trade says only whether there is one to take; the version stays for the write.
+        for product in result['products']:
+            hide_quantities(product, 'quantity')
     return result

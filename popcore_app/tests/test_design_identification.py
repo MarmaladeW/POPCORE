@@ -227,7 +227,7 @@ class DesignIdentificationTests(ReceivingFixture):
 
     def test_sale_of_design_a_does_not_consume_design_b_or_random_boxes(self):
         self.assertEqual(self.identify().status_code, 200)
-        created = self.client.post('/api/sale-documents', headers={**self.headers(), 'Idempotency-Key': 'design-sale-create'}, json={
+        created = self.client.post('/api/sale-documents', headers={**self.headers('manager:staff'), 'Idempotency-Key': 'design-sale-create'}, json={
             'store_id': self.store_id, 'business_date': '2026-09-30', 'entry_mode': 'planned_entry',
             'source': {'system': 'manual', 'account': 'DT', 'reference': 'DESIGN-A-SALE'},
             'subtotal_cents': 2000, 'source_tax_cents': 260, 'gross_cents': 2260,

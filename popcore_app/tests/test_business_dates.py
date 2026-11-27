@@ -130,7 +130,7 @@ class DefaultDateTests(IsolatedApiCase):
             con.execute("""INSERT INTO daily_sales(product_id,date,store,qty_pos,qty_sold)
                            VALUES (?,?,'DT',4,4)""", (self.product_id, TORONTO_DAY))
             con.commit()
-        manager = self.headers('manager')
+        manager = self.headers('admin')  # sales reads are the admin's (owner, 2026-11-26)
         rows = self.client.get('/api/sales?store_code=DT', headers=manager).get_json()
         self.assertEqual([row['date'] for row in rows], [TORONTO_DAY])
         export = self.client.get('/api/sales/export?store_code=DT', headers=manager)

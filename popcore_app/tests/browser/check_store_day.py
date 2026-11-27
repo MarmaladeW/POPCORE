@@ -117,8 +117,10 @@ def api_payload(path, query, request):
 
 async def staff_flow(browser, viewport):
     state = {'mode': 'data', 'api_payload': api_payload}
+    # 补录 is a manager's (owner, 2026-11-26: it takes the phone's own date and prices); staff record today's sales
+    # in 记一笔, add payment evidence and close the day.
     context, page = await context_with_api(
-        browser, state, viewport=viewport, auth={'role': 'staff'},
+        browser, state, viewport=viewport, auth={'role': 'manager'},
     )
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
@@ -137,7 +139,15 @@ async def staff_flow(browser, viewport):
     await expect(page.get_by_text('Draft saved', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Record sale').click()
     await expect(page.get_by_text('Sale recorded', exact=True)).to_be_visible()
+    await context.close()
 
+    context, page = await context_with_api(
+        browser, state, viewport=viewport, auth={'role': 'staff'},
+    )
+    await context.add_init_script("""localStorage.setItem('popcore_selected_store',
+      JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
+    await page.goto(BASE + '/sales/entry')
+    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
     await page.goto(BASE + '/sales/payments/61/evidence')
     png = base64.b64decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
@@ -196,7 +206,10 @@ async def manager_review_checks(browser):
     await expect(page.get_by_role('button', name='Return for changes')).to_be_visible()
     await expect(page.get_by_label('payment_unverified:61 acceptance reason')).to_be_visible()
     await expect(page.get_by_label('evidence_pending:81 acceptance reason')).to_be_visible()
+    # Reports are the admin's (owner, 2026-11-26): a manager is refused, the admin opens them.
     await page.goto(BASE + '/reports?report=inventory')
+    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await page.evaluate("window.__FOUNDATION_AUTH={role:'admin'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_text('Operational reports', exact=True)).to_be_visible()
     assert await page.evaluate('document.body.scrollWidth') <= 392
     BUILD6_UI.mkdir(parents=True, exist_ok=True)
@@ -209,7 +222,7 @@ async def payment_retry_checks(browser):
              'status_for_path': {'/api/sale-documents/41/payments':
                                  (503, {'error': 'payment save interrupted'})}}
     context, page = await context_with_api(
-        browser, state, viewport={'width': 768, 'height': 900}, auth={'role': 'staff'},
+        browser, state, viewport={'width': 768, 'height': 900}, auth={'role': 'manager'},
     )
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
@@ -263,7 +276,7 @@ async def payment_retry_checks(browser):
 
 async def sale_safety_checks(browser):
     state = {'mode': 'data', 'api_payload': api_payload}
-    context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/entry')
@@ -283,7 +296,7 @@ async def sale_safety_checks(browser):
     await context.close()
 
     state = {'mode': 'data', 'api_payload': api_payload}
-    context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/entry')
@@ -301,7 +314,7 @@ async def sale_safety_checks(browser):
     state = {'mode': 'data', 'api_payload': api_payload,
              'status_for_path': {'/api/sale-documents':
                                  (503, {'error': 'draft response lost'})}}
-    context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/entry')
@@ -324,7 +337,7 @@ async def sale_safety_checks(browser):
         return api_payload(path, query, request)
 
     state = {'mode': 'data', 'api_payload': scoped_products, 'delay_dt': True}
-    context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/entry')
@@ -429,7 +442,7 @@ async def sale_safety_checks(browser):
         return api_payload(path, query, request)
 
     state = {'mode': 'data', 'api_payload': box_entry_payload}
-    context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    context, page = await context_with_api(browser, state, auth={'role': 'manager'})
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/entry')
@@ -621,15 +634,20 @@ async def closing_resume_checks(browser):
 
 
 async def owner_rule_checks(browser):
-    """Owner, 2026-10-27: staff close with the day's totals and labels only; Closing's own cash refund is for
-    money with no sale; a sale shows a rejected payment as not received and a refund on its own date."""
+    """Owner, 2026-10-27: staff close with labels only, and since 2026-11-26 without the day's takings: no totals per
+    tender, no cash receipts, expected drawer or variance; Closing's own cash refund is for money with no sale; a sale
+    shows a rejected payment as not received and a refund on its own date."""
     def staff_payload(path, query, request):
         if path == '/api/closing/71':
             data = closing_detail()
-            data['cash'].pop('unknown_cash_payment_ids')  # managers only
+            # Managers only: the payment references, the day's cash receipts and what the drawer should hold.
+            for name in ('unknown_cash_payment_ids', 'verified_cash_receipts_cents', 'expected_drawer_cents'):
+                data['cash'].pop(name)
+            count = closing_detail('submitted')['latest_cash_count']
+            for name in ('expected_cents', 'variance_cents'):
+                count.pop(name)
             data.update(
-                latest_cash_count=closing_detail('submitted')['latest_cash_count'],
-                tender_totals_cents={'cash': 2000, 'card': 21000, 'e_transfer': 0, 'wechat': 0, 'alipay': 0},
+                latest_cash_count=count,
                 hard_blockers=['sales_intake_incomplete', 'pending_allocation', 'checkout_unresolved:51'],
                 actionable_blockers=['sales_intake_incomplete', 'checkout_unresolved:51'],
                 issue_targets={'sales_intake_incomplete': {'href': '#closing-sources'},
@@ -645,8 +663,11 @@ async def owner_rule_checks(browser):
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/closing?closing_id=71')
-    await expect(page.get_by_text('Tender review', exact=True)).to_be_visible()
-    await expect(page.get_by_text('$210.00', exact=True)).to_be_visible()
+    # What they counted shows; what the day took and what the drawer should hold does not.
+    await expect(page.get_by_text('点到 Counted', exact=True)).to_be_visible()
+    await expect(page.get_by_text('开店现金 Opening cash', exact=True)).to_be_visible()
+    for hidden in ('Tender review', 'Verified cash receipts', 'Expected drawer', 'Variance', 'NaN'):
+        await expect(page.get_by_text(hidden, exact=False)).to_have_count(0)
     await expect(page.get_by_text('Unknown payment amounts', exact=False)).to_have_count(0)
     await expect(page.get_by_text('No unknown manager-visible payment amounts.', exact=True)).to_have_count(0)
     # Another cashier's sale is a label without a link; the staff member's own open order keeps its link.
@@ -687,8 +708,9 @@ async def owner_rule_checks(browser):
                                'rejected_cents': 4520, 'refund_cents': 0, 'unknown_count': 0, 'pending_count': 0}]}
         return api_payload(path, query, request)
 
+    # The tender report is the admin's (owner, 2026-11-26); the sale page reads the same for a manager.
     context, page = await context_with_api(
-        browser, {'mode': 'data', 'api_payload': sale_payload}, auth={'role': 'manager'},
+        browser, {'mode': 'data', 'api_payload': sale_payload}, auth={'role': 'admin'},
     )
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
@@ -759,7 +781,7 @@ async def report_checks(browser):
     }
     context, page = await context_with_api(
         browser, state, viewport={'width': 1280, 'height': 900},
-        auth={'role': 'manager'},
+        auth={'role': 'admin'},
     )
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
@@ -785,7 +807,7 @@ async def report_checks(browser):
 
     context, page = await context_with_api(
         browser, {'mode': 'data', 'api_payload': api_payload},
-        viewport={'width': 768, 'height': 900}, auth={'role': 'staff'},
+        viewport={'width': 768, 'height': 900}, auth={'role': 'manager'},
     )
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")

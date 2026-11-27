@@ -14,6 +14,7 @@ def _is_valid_hex(color: str) -> bool:
     return bool(_HEX_RE.match(color))
 
 from db import get_db, HIDDEN_IMG_DIR
+import people
 import ranks
 from checkout_access import business_date
 from auth import (
@@ -418,7 +419,7 @@ def patch_employee_color(employee_id):
     con.commit()
     updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
     con.close()
-    return jsonify(dict(updated))
+    return jsonify(people.public(updated))
 
 
 @bp.route('/api/employees/<int:employee_id>/schedulable', methods=['PATCH'])
@@ -452,7 +453,7 @@ def patch_employee_schedulable(employee_id):
         'SELECT * FROM employees WHERE id = ?', (employee_id,)
     ).fetchone()
     con.close()
-    return jsonify(dict(updated))
+    return jsonify(people.public(updated))
 
 
 @bp.route('/api/employees/<int:employee_id>/status', methods=['PATCH'])
@@ -491,7 +492,7 @@ def patch_employee_status(employee_id):
     con.commit()
     updated = con.execute('SELECT * FROM employees WHERE id = ?', (employee_id,)).fetchone()
     con.close()
-    return jsonify(dict(updated))
+    return jsonify(people.public(updated))
 
 
 @bp.route('/api/employees/<int:employee_id>/stores', methods=['PUT'])

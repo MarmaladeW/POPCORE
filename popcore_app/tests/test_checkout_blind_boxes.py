@@ -225,16 +225,18 @@ class RecordSaleBlindBoxTests(BlindBoxFixture):
 
     def test_record_sale_takes_loose_boxes_and_a_pending_sale_takes_an_answer(self):
         # 补录 Record sale: the draft keeps the answer until it is recorded.
+        # 补录 is a manager's (owner, 2026-11-26): the same account, with a manager's role.
         draft = self.post('/api/sale-documents', self.sale_body('LOOSE-1', 'planned_entry', loose_boxes=True), 'loose-create',
-                           expect=201)
+                           role='manager:staff', expect=201)
         posted = self.post(f"/api/sale-documents/{draft['sale_id']}/post", {'expected_version': draft['version']}, 'loose-post')
         self.assertEqual(posted['allocation_status'], 'allocated')
         self.assertEqual(self.floor_stock(self.box_id), 3)
         self.post('/api/sale-documents', self.sale_body('BOTH', 'planned_entry', loose_boxes=True, open_set_id=1),
-                  'both-create', expect=400)
+                  'both-create', role='manager:staff', expect=400)
         # A paid sale with no answer waits; the page that could not finish it before now can.
         self.stock_up(7)
-        draft = self.post('/api/sale-documents', self.sale_body('PAID-1', 'already_paid'), 'paid-create', expect=201)
+        draft = self.post('/api/sale-documents', self.sale_body('PAID-1', 'already_paid'), 'paid-create',
+                          role='manager:staff', expect=201)
         pending = self.post(f"/api/sale-documents/{draft['sale_id']}/post", {'expected_version': draft['version']}, 'paid-post')
         self.assertEqual(pending['unresolved_reasons'], ['fresh_set_selection_required'])
         sale = self.sale(draft['sale_id'])

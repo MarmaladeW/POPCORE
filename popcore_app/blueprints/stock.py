@@ -7,7 +7,7 @@ import json
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db, esc_csv, _ensure_stock_row
-from auth import login_required, role_required
+from auth import ROLE_CLAIM, ROLE_HIERARCHY, login_required, role_required
 from checkout_access import business_date
 from store_access import legacy_store_denied
 from validation import SQLITE_INTEGER_MAX, invalid_input, read_date, read_int
@@ -157,10 +157,14 @@ def _authoritative_stock_adapter(con, data, store_id, operation, product_id,
 
 
 def _command_store_ids(con, payload):
-    """The stores whose locations a ledger command names; unknown ids are left to post_inventory."""
-    location_ids = {line.get(key) for line in payload.get('lines') or () if isinstance(line, dict)
-                    for key in ('from_location_id', 'to_location_id')}
-    location_ids = [value for value in location_ids if type(value) is int]
+    """The stores whose locations a ledger command names; unknown ids are left to post_inventory.
+
+    Each id is read the way the command reads it (a number may arrive as text), so the 库存查看 check never
+    misses a location the command then uses; an id that is not a number raises ValueError."""
+    lines = payload.get('lines')
+    location_ids = sorted({read_int(line[key], key, minimum=1)
+                           for line in (lines if isinstance(lines, list) else ()) if isinstance(line, dict)
+                           for key in ('from_location_id', 'to_location_id') if line.get(key) is not None})
     marks = ','.join('?' for _ in location_ids)
     return {row[0] for row in con.execute(
         f'SELECT store_id FROM inventory_locations WHERE id IN ({marks})', location_ids)} if location_ids else set()
@@ -203,6 +207,11 @@ def post_inventory_command():
         if con.in_transaction:
             con.rollback()
         return _inventory_error(exc)
+    except ValueError as exc:
+        # An id, quantity or date that cannot be read: refused, never passed over.
+        if con.in_transaction:
+            con.rollback()
+        return jsonify(invalid_input(exc)), 400
     finally:
         con.close()
 
@@ -494,6 +503,8 @@ def get_stock(product_id):
 @role_required('staff')
 def patch_stock(product_id):
     data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     notes = data.get('notes', '')
     con = get_db()
     store_id, store_code, err = _require_store_body(con, data)
@@ -783,7 +794,7 @@ def get_transactions():
     pid   = request.args.get('product_id')
     d     = request.args.get('date')
     try:
-        limit = int(request.args.get('limit', 50))
+        limit = min(500, max(1, int(request.args.get('limit', 50))))
     except (ValueError, TypeError):
         return jsonify({'error': 'limit must be an integer'}), 400
 
@@ -965,6 +976,9 @@ def stock_summary():
         ''', (store_id,))
         row['total_stock_value'] = cur.fetchone()[0]
 
+    # The value of stock is the admin's alone (owner, 2026-11-26).
+    if ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM), -1) < ROLE_HIERARCHY['admin']:
+        row['total_stock_value'] = None
     con.close()
     return jsonify(row)
 

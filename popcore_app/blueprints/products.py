@@ -145,7 +145,12 @@ def search_products():
     series        = request.args.get('series', '').strip()
     product_type  = request.args.get('product_type', '').strip()
     limit_raw     = request.args.get('limit')
-    limit         = int(limit_raw) if limit_raw else None
+    try:
+        limit     = int(limit_raw) if limit_raw else None
+        if limit is not None and limit < 0:
+            raise ValueError
+    except ValueError:
+        return jsonify({'error': 'limit must be a whole number of 0 or more', 'code': 'invalid_input'}), 400
     include_stock = request.args.get('include_stock', '0') == '1'
     store_code    = (request.args.get('store_code') or '').strip().upper()
 

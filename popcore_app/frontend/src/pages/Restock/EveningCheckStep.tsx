@@ -20,8 +20,8 @@ interface CheckItem {
   name_cn_en:          string
   ip_series:           string
   product_type:        string
-  current_instore_qty: number
-  theoretical_qty:     number
+  current_instore_qty: number | null
+  theoretical_qty:     number | null
   base_check_date:     string
   is_base_abnormal:    boolean
   check_id:            number | null
@@ -97,7 +97,8 @@ function StoreEveningCheck() {
   function localDiscrepancy(item: CheckItem): number | null {
     const actual = actualQty[item.product_id]
     if (actual === undefined) return item.discrepancy
-    return actual - item.theoretical_qty
+    // No expected number for this account (库存查看): no gap to show.
+    return item.theoretical_qty == null ? null : actual - item.theoretical_qty
   }
 
   async function handleSubmitAll() {
@@ -165,7 +166,7 @@ function StoreEveningCheck() {
       title: '理论库存',
       dataIndex: 'theoretical_qty',
       width: 90,
-      render: v => <Tag color="blue">{v} 端</Tag>,
+      render: v => v == null ? '—' : <Tag color="blue">{v} 端</Tag>,
     },
     {
       title: '实际库存',

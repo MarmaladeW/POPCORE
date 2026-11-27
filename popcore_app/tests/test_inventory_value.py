@@ -10,7 +10,7 @@ class InventoryValueTests(IsolatedApiCase):
         with closing(self.connect()) as con:
             self.loc = {code: con.execute('SELECT id FROM inventory_locations WHERE store_id=? AND code=?', (self.store_id, code)).fetchone()[0]
                         for code in ('floor', 'upstairs')}
-            for subject in ('auth0|manager', 'auth0|staff'):
+            for subject in ('auth0|admin', 'auth0|manager', 'auth0|staff'):
                 con.execute('INSERT INTO inventory_access VALUES (?,?)', (subject, self.store_id))
             con.execute("UPDATE inventory_mode SET mode='authoritative'")
             con.execute('UPDATE inventory_scope_state SET opening_verified=1 WHERE store_id=?', (self.store_id,))
@@ -34,7 +34,7 @@ class InventoryValueTests(IsolatedApiCase):
                 con.execute("INSERT INTO inventory_balances VALUES (?,?,'saleable',?,1)", (self.ids[key], self.loc[code], quantity))
             con.commit()
 
-    def get(self, query='store_code=DT', role='manager'):
+    def get(self, query='store_code=DT', role='admin'):
         return self.client.get('/api/inventory/value?' + query, headers=self.headers(role))
 
     def test_lines_by_value_with_inherited_split_and_guessed_lines(self):
@@ -66,11 +66,14 @@ class InventoryValueTests(IsolatedApiCase):
                          {'Sa summer': [True], 'SA dream': [False]})
         self.assertEqual(self.get('store_code=DT&line=Nope').get_json()['category']['units'], 0)
 
-    def test_managers_only_and_bad_place(self):
+    def test_admin_only_and_bad_place(self):
+        # The value of stock is the admin's alone (owner, 2026-11-26): a manager with the store's access is refused too.
         self.assertEqual(self.get(role='staff').status_code, 403)
+        refused = self.get(role='manager')
+        self.assertEqual((refused.status_code, refused.get_json()['code']), (403, 'inventory_forbidden'))
         self.assertEqual(self.get('store_code=DT&place=attic').status_code, 400)
         self.assertEqual(self.get('store_code=MK').status_code, 403)  # no MK store grant
         with closing(self.connect()) as con:
-            con.execute("INSERT INTO inventory_access SELECT 'auth0|manager', id FROM stores WHERE code='MK'")
+            con.execute("INSERT INTO inventory_access SELECT 'auth0|admin', id FROM stores WHERE code='MK'")
             con.commit()
         self.assertEqual(self.get('store_code=MK').get_json(), {'live': False})

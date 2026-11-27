@@ -128,7 +128,8 @@ export default function DexEntryPage() {
         {entry.ip && <DexIpTag tag={entry.ip} />}
         {facts.length ? <dl>{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
           : <p className="pc-dex-note">{manager ? 'No details yet. 编辑 Edit adds them.' : 'No details yet.'}</p>}
-        <DexSyncState entryId={entry.id} version={entry.version} />
+        {/* Where it stands with popcore.ca is a manager's to see (owner, 2026-11-26). */}
+        {manager && <DexSyncState entryId={entry.id} version={entry.version} />}
         {manager && <span className="pc-dex-actions">
           <Button onClick={() => setEditing({ mode: 'edit', entry })}>编辑 Edit</Button>
           <Button loading={uploading} onClick={() => fileInput.current?.click()}>上传图片 Upload picture</Button>

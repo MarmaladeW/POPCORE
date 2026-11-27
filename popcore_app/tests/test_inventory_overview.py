@@ -19,7 +19,8 @@ class InventoryOverviewTests(IsolatedApiCase):
             self.series_id = con.execute("INSERT INTO product_series(name) VALUES ('Garden')").lastrowid
             self.loc = {code: con.execute('SELECT id FROM inventory_locations WHERE store_id=? AND code=?', (self.store_id, code)).fetchone()[0]
                         for code in ('floor', 'upstairs', 'claw', 'display')}
-            con.execute("INSERT INTO inventory_access VALUES ('auth0|staff',?)", (self.store_id,))
+            con.executemany('INSERT INTO inventory_access VALUES (?,?)',
+                            [(subject, self.store_id) for subject in ('auth0|staff', 'auth0|manager', 'auth0|admin')])
             con.execute("UPDATE inventory_mode SET mode='authoritative'")
             con.execute('UPDATE inventory_scope_state SET opening_verified=1 WHERE store_id=?', (self.store_id,))
             self.ids = {}
@@ -52,7 +53,7 @@ class InventoryOverviewTests(IsolatedApiCase):
                            actor={'sub': 'auth0|staff', auth.ROLE_CLAIM: 'staff'}, request_key='overview-report')
             con.commit()
         before = self.snapshot(['products', 'inventory_balances', 'inventory_documents', 'daily_sales'])
-        response = self.get()
+        response = self.get(role='admin')  # the sales figures are the admin's (owner, 2026-11-26)
         self.assertEqual(response.status_code, 200, response.get_json())
         data = response.get_json()
         self.assertEqual(before, self.snapshot(before.keys()))
@@ -77,6 +78,25 @@ class InventoryOverviewTests(IsolatedApiCase):
                          [('report', 0, 1, 1)])
         self.assertEqual(data['in_stock_products'], 5)
         self.assertEqual(data['not_set_up'], 1)  # the fixture's untyped TEST-1
+
+    def test_below_admin_the_lists_stay_without_sales_figures(self):
+        """Owner, 2026-11-26: only the admin sees sales figures. Staff and managers keep what to refill, what runs
+        low and what sold out, with no units sold, pace, days left or sale dates, and no best sellers."""
+        admin = self.get(role='admin').get_json()
+        for role in ('staff', 'manager'):
+            with self.subTest(role=role):
+                data = self.get(role=role).get_json()
+                for name in ('refill', 'running_low', 'sold_out'):
+                    self.assertEqual([row['name'] for row in data[name]], [row['name'] for row in admin[name]])
+                    for row in data[name]:
+                        self.assertEqual({row[field] for field in ('sold_week', 'sold_recent', 'last_sold', 'pace', 'days_left')},
+                                         {None}, row)
+                # Stock numbers stay: this account may see the store's stock.
+                self.assertEqual([(row['name'], row['floor'], row['back']) for row in data['running_low']], [('Squishy', 3, 5)])
+                self.assertEqual((data['best_sellers'], data['report_days'], data['last_report']), ([], None, None))
+                self.assertIsNone(data['value'])
+                self.assertEqual(data['refill_count'], admin['refill_count'])
+        self.assertEqual([row['name'] for row in admin['best_sellers']], ['Squishy'])
 
     def test_a_box_with_loose_boxes_upstairs_or_on_the_floor(self):
         with closing(self.connect()) as con:

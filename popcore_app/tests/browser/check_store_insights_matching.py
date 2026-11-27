@@ -20,7 +20,11 @@ from test_store_insights import StoreOverviewTests
 
 async def mount(browser, fixture, width, prefixes):
     state = {'posts': [], 'lose_response': False, 'forced_get': None}
-    context, page = await context_with_api(browser, {}, viewport={'width': width, 'height': 1000}, auth={'role': 'manager'})
+    # Reports and past sales names are the admin's (owner, 2026-11-26). The fixtures give the manager DT; the admin
+    # here gets the same store, so MK still answers "access denied".
+    with closing(fixture.connect()) as con:
+        con.execute("INSERT INTO inventory_access(auth0_sub,store_id) VALUES ('auth0|admin',?)", (fixture.store_id,)); con.commit()
+    context, page = await context_with_api(browser, {}, viewport={'width': width, 'height': 1000}, auth={'role': 'admin'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     async def real_api(route):
         url = urlsplit(route.request.url)
@@ -32,7 +36,7 @@ async def mount(browser, fixture, width, prefixes):
         body = route.request.post_data_json if route.request.method == 'POST' else None
         key = route.request.headers.get('idempotency-key', '')
         response = fixture.client.open(url.path + ('?' + url.query if url.query else ''), method=route.request.method,
-            headers={**fixture.headers('manager'), 'Idempotency-Key': key}, json=body)
+            headers={**fixture.headers('admin'), 'Idempotency-Key': key}, json=body)
         if body is not None:
             state['posts'].append({'body': body, 'key': key, 'status': response.status_code})
             if state['lose_response'] and response.status_code == 200:
@@ -149,7 +153,8 @@ async def matching_guard_checks(browser):
         await page.get_by_label('Operations store', exact=True).select_option('DT')
         await prepare_review(page)
         await page.get_by_role('textbox', name='Reason for correction', exact=True).fill('Unsubmitted role draft')
-        await page.evaluate("window.__FOUNDATION_AUTH={role:'admin'};window.dispatchEvent(new Event('foundation-auth'))")
+        # Another admin signs in on the same page: the unsaved draft does not carry over.
+        await page.evaluate("window.__FOUNDATION_AUTH={role:'admin',sub:'fixture|admin-2'};window.dispatchEvent(new Event('foundation-auth'))")
         await expect(page.get_by_role('dialog')).not_to_be_visible()
         await prepare_review(page)
         await expect(page.get_by_role('textbox', name='Reason for correction', exact=True)).to_have_value('')

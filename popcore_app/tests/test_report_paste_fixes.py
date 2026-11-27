@@ -24,7 +24,7 @@ class ReportPasteFixTests(IsolatedApiCase):
     def parse(self, text, store='DT', date=None, live=True):
         # Both stores are live: their stock sections are stock lines.
         with patch.object(sales, '_is_authoritative', return_value=live):
-            response = self.client.post('/api/sales/parse_report', headers=self.headers('manager'),
+            response = self.client.post('/api/sales/parse_report', headers=self.headers('admin:manager'),
                                         json={'text': text, 'store_code': store, 'date': date})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()

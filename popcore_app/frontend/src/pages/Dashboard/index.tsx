@@ -17,7 +17,8 @@ import { sectionLabels, TodayRows } from './TodayRows'
 import { mergeWork, torontoDate } from './todayPresentation'
 import '../Home/Home.css'
 
-// Today's numbers on the manager home: only counts the Today payload already carries.
+// Today's numbers on the manager home: only counts the Today payload already carries. Payment checks and 日报
+// differences come for admins only (owner, 2026-11-26), so a manager's strip is 待审核产品 · 缺货.
 // The catalog list stops at 51 on the server, so 51 means "more than 50".
 const shownTotal = (name: string, total: number) => name === 'catalog' && total > 50 ? '50+' : total
 
@@ -43,6 +44,8 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
   const role = useRole()
   const staff = useHasRole('staff')
   const manager = useHasRole('manager')
+  // 报表, past sales names and 店里动态 are the admin's (owner, 2026-11-26).
+  const admin = useHasRole('admin')
   const store = useAppStore(state => state.selectedStore)
   const [data, setData] = useState<TodayPayload>()
   const [loading, setLoading] = useState(true)
@@ -75,9 +78,11 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
 
   const phone = useIsPhone()
   const order = home ? ['watch', 'report_stock', 'financial', 'tasks', 'catalog', 'inventory'] : ['tasks', 'watch', 'report_stock', 'financial', 'catalog', 'inventory']
-  const insights = home && manager ? <Link className="pc-btn" to="/reports">报表 Insights &amp; reports</Link> : null
+  const insights = home && admin ? <Link className="pc-btn" to="/reports">报表 Insights &amp; reports</Link> : null
+  // Payment checks and 日报 differences are the admin's; the server leaves them out for anyone else.
+  const shown = (name: string) => admin || (name !== 'financial' && name !== 'report_stock')
   const sections = data ? Object.entries(mergeWork(data.sections))
-    .filter(([, section]) => !home || section.total > 0)
+    .filter(([name, section]) => shown(name) && (!home || section.total > 0))
     .sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)) : []
   return <div className={home ? 'pc-hm' : 'pc-hm pc-today'}>
     <PageHeader
@@ -89,7 +94,7 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
     {home && saved?.saved && saved.storeId === store?.id && <p className="pc-hm-saved" role="status">已记录 Record saved</p>}
     {home && <HomeTiles />}
     {home && manager && data && <div className="pc-hm-strip">
-      {strip.filter(cell => data.sections[cell.key]).map(cell => {
+      {strip.filter(cell => shown(cell.key) && data.sections[cell.key]).map(cell => {
         const total = data.sections[cell.key].total
         return <div key={cell.key}><span>{cell.zh} {cell.en}</span><strong className={total > 0 ? `pc-hm-count-${cell.tone}` : undefined}>{shownTotal(cell.key, total)}</strong></div>
       })}
@@ -112,12 +117,12 @@ export default function DashboardPage({ home = false }: { home?: boolean }) {
                 : <TodayRows rows={section.rows} stores={data.authorized_stores} />}
             </Panel>)}
           </>}
-        {home && manager && <nav className="pc-hm-links" aria-label="Manager review">
+        {home && admin && <nav className="pc-hm-links" aria-label="Manager review">
           {phone && <Link to="/reports">报表 Insights &amp; reports</Link>}
           <Link to="/sales/matching">核对旧销售名称 Review past sales names</Link>
         </nav>}
       </div>
-      {staff && <aside className="pc-hm-side"><MyShifts key={`${user?.sub}:${role}`} outside={phone} />{home && <StoreActivityPanel />}</aside>}
+      {staff && <aside className="pc-hm-side"><MyShifts key={`${user?.sub}:${role}`} outside={phone} />{home && admin && <StoreActivityPanel />}</aside>}
     </div>
   </div>
 }

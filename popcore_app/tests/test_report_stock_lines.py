@@ -105,7 +105,7 @@ class ReportStockLineTests(IsolatedApiCase):
 
     def parse(self, text, store='DT'):
         response = self.client.post('/api/sales/parse_report', json={'text': text, 'store_code': store},
-                                    headers=self.headers('manager'))
+                                    headers=self.headers('admin:manager'))
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()
 
@@ -404,7 +404,7 @@ class ReportStockLineTests(IsolatedApiCase):
         self.assertEqual((line['moving'], line['short'], line['problem']), (1, 1, 'not_enough'))
         whole = self.product('SA dream', whole=True)
         self.assertEqual(self.balance(whole, 'upstairs'), 0)
-        notices = self.client.get('/api/sales/report-stock', headers=self.headers('manager')).get_json()['notices']
+        notices = self.client.get('/api/sales/report-stock', headers=self.headers('admin:manager')).get_json()['notices']
         (notice,) = notices
         self.assertEqual((notice['product_id'], notice['reason'], notice['quantity'], notice['where']),
                          (whole, 'move_short', 1, ['upstairs']))
@@ -417,15 +417,15 @@ class ReportStockLineTests(IsolatedApiCase):
                  'to_disposition': 'saleable', 'expected_versions': {'to': self._version(whole, 'upstairs')}}]},
                 actor={'sub': 'auth0|admin', 'https://popcore/role': 'admin'}, request_key='found-a-set')
         retried = self.client.post('/api/sales/report-stock/retry', json={'date': '2026-10-31', 'store_code': 'DT'},
-                                   headers=self.headers('manager')).get_json()['stock']
+                                   headers=self.headers('admin:manager')).get_json()['stock']
         self.assertEqual([line['moving'] for line in retried['lines']], [1])
-        self.assertEqual(self.client.get('/api/sales/report-stock', headers=self.headers('manager')).get_json()['notices'], [])
+        self.assertEqual(self.client.get('/api/sales/report-stock', headers=self.headers('admin:manager')).get_json()['notices'], [])
 
         # Short again on a re-paste with 3 sets; checked means the count already shows it: it never moves later.
         text = report_text('2026-10-31').replace('SA dream 12*2', 'SA dream 12*3')
         self.confirm_and_save(self.body(self.parse(text), keep))
-        (notice,) = self.client.get('/api/sales/report-stock', headers=self.headers('manager')).get_json()['notices']
-        checked = self.client.post(f"/api/sales/report-stock/{notice['id']}/check", headers=self.headers('manager'))
+        (notice,) = self.client.get('/api/sales/report-stock', headers=self.headers('admin:manager')).get_json()['notices']
+        checked = self.client.post(f"/api/sales/report-stock/{notice['id']}/check", headers=self.headers('admin:manager'))
         self.assertEqual(checked.status_code, 200, checked.get_json())
         with closing(self.connect()) as con:
             from inventory_commands import post_inventory
@@ -434,7 +434,7 @@ class ReportStockLineTests(IsolatedApiCase):
                  'to_disposition': 'saleable', 'expected_versions': {'to': self._version(whole, 'upstairs')}}]},
                 actor={'sub': 'auth0|admin', 'https://popcore/role': 'admin'}, request_key='another-set')
         retried = self.client.post('/api/sales/report-stock/retry', json={'date': '2026-10-31', 'store_code': 'DT'},
-                                   headers=self.headers('manager')).get_json()['stock']
+                                   headers=self.headers('admin:manager')).get_json()['stock']
         self.assertEqual([line['moving'] for line in retried['lines']], [0])
         self.assertEqual(self.balance(whole, 'upstairs'), 1)
 

@@ -75,7 +75,8 @@ class QuickSaleFixture(ReceivingFixture):
 
     def save(self, lines, tender, key, role='staff', expect=201, amount=None, **extra):
         if amount is None:
-            priced = self.quote(lines, role=role, **{k: v for k, v in extra.items() if k == 'discount_cents'})
+            priced = self.quote(lines, role=role, **{k: v for k, v in extra.items()
+                                                     if k in ('discount_cents', 'staff_discount_employee_id')})
             amount = priced['tenders'][tender]
             if tender in ('wechat', 'alipay') and priced['cny']:
                 extra.setdefault('cny_fen', priced['cny']['fen'])
@@ -108,13 +109,34 @@ class QuickSaleTests(QuickSaleFixture):
         # $14.99 + HST = $16.94; the cash price is $15.
         self.assertEqual(self.quote([{'product_id': self.head, 'quantity': 1}])['tenders']['cash'], 1500)
         # An agreed discount: other tenders pay the whole dollar under it; cash the same, card the exact total.
-        priced = self.quote([{'product_id': self.head, 'quantity': 1}], discount_cents=150)
+        priced = self.quote([{'product_id': self.head, 'quantity': 1}], role='manager', discount_cents=150)
         self.assertEqual(priced['total_cents'], 1544)
         self.assertEqual((priced['tenders']['card'], priced['tenders']['cash'], priced['tenders']['e_transfer']),
                          (1544, 1500, 1500))
         # A typed price replaces the list price.
-        typed = self.quote([{'product_id': self.product_id, 'quantity': 1, 'unit_price_cents': 1800}])
+        typed = self.quote([{'product_id': self.product_id, 'quantity': 1, 'unit_price_cents': 1800}], role='manager')
         self.assertEqual((typed['lines'][0]['price_from'], typed['subtotal_cents']), ('typed', 1800))
+
+    def test_below_manager_no_typed_price_over_a_list_price_and_no_discount_of_their_own(self):
+        """Owner, 2026-11-26: staff type a price only for a product that has none, and give no discount but a
+        员工折扣, which names who bought; a manager may do both, and the 动态 line says a price was typed."""
+        own = [{'product_id': self.product_id, 'quantity': 1, 'unit_price_cents': 1800}]
+        series = [{'product_id': self.design, 'quantity': 1, 'unit_price_cents': 100}]
+        for lines in (own, series):
+            self.assertEqual(self.quote(lines, expect=409)['code'], 'price_needs_manager')
+        self.assertEqual(self.save(own, 'cash', 'qs-typed-staff', expect=409, amount=1800)['code'], 'price_needs_manager')
+        unpriced = self.quote([{'product_id': self.no_price, 'quantity': 1, 'unit_price_cents': 500}])
+        self.assertEqual(unpriced['lines'][0]['price_from'], 'typed')
+        plain = [{'product_id': self.product_id, 'quantity': 1}]
+        self.assertEqual(self.quote(plain, expect=409, discount_cents=100)['code'], 'discount_needs_manager')
+        self.assertEqual(self.save(plain, 'cash', 'qs-discount-staff', expect=409, amount=2000, discount_cents=100)['code'],
+                         'discount_needs_manager')
+        self.assertEqual(self.one('SELECT COUNT(*) FROM checkout_orders')[0], 0)
+        sale = self.save(own, 'cash', 'qs-typed-manager', role='manager')
+        self.assertEqual(sale['lines'][0]['unit_price_cents'], 1800)
+        self.assertNotIn('typed_prices', sale)
+        line = self.one("SELECT detail FROM activity_log WHERE endpoint='checkout.quick_sale_save'")
+        self.assertIn('改价 Typed price: 蒙奇奇 $18.00（原价 $20.00）', line['detail'])
 
     def test_a_cash_sale_is_saved_and_paid_in_one_tap_and_moves_no_stock(self):
         lines = [{'product_id': self.product_id, 'quantity': 2}, {'product_id': self.design, 'quantity': 1}]
@@ -214,6 +236,31 @@ class QuickSaleTests(QuickSaleFixture):
                          '2026.11.21 DT\n\n卡机汇总：\n蒙奇奇*1（display）\nSA Santa*3\n\n'
                          '随手记汇总：\n蒙奇奇*1，SA Santa Reindeer*1\nSA Santa*1\n')
 
+    def test_a_staff_discount_buyer_is_eligible_and_below_manager_has_a_use_left(self):
+        """Owner, 2026-11-26: the buyer of a 员工折扣 sale is eligible as on the 员工折扣 page; a cashier below manager
+        records one only while the buyer has a use left this month, a manager may record one over the limit."""
+        with closing(self.connect()) as con:
+            amy = con.execute("UPDATE employees SET rank='regular' WHERE name='Amy' RETURNING id").fetchone()[0]
+            trainee = con.execute("UPDATE employees SET rank='trainee' WHERE name='Xiao Chen' RETURNING id").fetchone()[0]
+            con.commit()
+        one = [{'product_id': self.head, 'quantity': 1}]
+        self.assertEqual(self.quote(one, expect=400, staff_discount_employee_id=trainee)['code'], 'invalid_input')
+        self.save(one, 'cash', 'qs-trainee', expect=400, amount=1500, staff_discount_employee_id=trainee)
+        # Four different products are the month's four uses.
+        four = [{'product_id': self.product_id, 'quantity': 1}, {'product_id': self.head, 'quantity': 1},
+                {'product_id': self.design, 'quantity': 1}, {'product_id': self.set_id, 'quantity': 1}]
+        priced = self.quote(four, discount_cents=500, staff_discount_employee_id=amy)
+        self.assertEqual((priced['discount_cents'], priced['staff_discount_employee_id']), (500, amy))
+        self.assertEqual(self.save(four, 'cash', 'qs-four', discount_cents=500, staff_discount_employee_id=amy)['staff_discount'], 'Amy')
+        self.assertEqual(self.quote(one, expect=409, staff_discount_employee_id=amy)['code'], 'staff_discount_none_left')
+        refused = self.save(one, 'cash', 'qs-over', expect=409, amount=1500, staff_discount_employee_id=amy)
+        self.assertEqual(refused['code'], 'staff_discount_none_left')
+        self.assertEqual(self.one('SELECT COUNT(*) FROM checkout_orders')[0], 1)
+        # The same tap again is still the same sale, and a manager records one over the limit.
+        self.assertEqual(self.save(four, 'cash', 'qs-four', amount=1, staff_discount_employee_id=amy)['staff_discount'], 'Amy')
+        over = self.save(one, 'cash', 'qs-over-manager', role='manager', staff_discount_employee_id=amy)
+        self.assertEqual(over['staff_discount'], 'Amy')
+
     def test_only_someone_on_shift_with_store_access_records_a_sale(self):
         lines = [{'product_id': self.product_id, 'quantity': 1}]
         no_shift = self.quote(lines, role='staff:helper', expect=403)
@@ -237,6 +284,26 @@ class QuickSaleTests(QuickSaleFixture):
         self.day(date='2026-11-20', expect=403)
         self.assertEqual(self.day(role='manager', date=TODAY)['total_cents'], 2100)
         self.assertEqual(self.day(role='manager', date='2026-11-20')['sales'], [])
+
+    def test_below_manager_the_day_is_only_the_sales_they_recorded(self):
+        """Owner, 2026-11-26: an employee sees only their own 记一笔; the day's count, totals and summary are of
+        those. Managers and admins see the whole day, which they review."""
+        with closing(self.connect()) as con:
+            amy = con.execute("SELECT id FROM employees WHERE name='Amy'").fetchone()[0]
+            con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                           VALUES (?,?,'10:00','18:00','test',?)""", (amy, TODAY, self.store_id))
+            con.commit()
+        self.save([{'product_id': self.product_id, 'quantity': 1}], 'cash', 'qs-mine')
+        self.save([{'product_id': self.head, 'quantity': 2}], 'e_transfer', 'qs-amy', role='staff:helper')
+        self.save([{'product_id': self.design, 'quantity': 1}], 'cash', 'qs-manager', role='manager')
+        mine, hers, whole = self.day(), self.day(role='staff:helper'), self.day(role='manager')
+        self.assertEqual([sale['cashier'] for sale in mine['sales']], ['Xiao Chen'])
+        self.assertEqual((mine['count'], mine['total_cents'], mine['cash_cents'], mine['needs_photo']), (1, 2100, 2100, 0))
+        self.assertEqual(mine['summary_text'], '2026.11.21 DT\n\n卡机汇总：\n\n随手记汇总：\n蒙奇奇*1\n')
+        self.assertEqual([sale['cashier'] for sale in hers['sales']], ['Amy'])
+        self.assertEqual((hers['count'], hers['total_cents'], hers['cash_cents'], hers['needs_photo']), (1, 3200, 0, 1))
+        self.assertEqual((whole['count'], whole['total_cents']), (3, 2100 + 3200 + 1500))
+        self.assertEqual(self.day(role='admin')['count'], 3)
 
     def test_a_payment_that_fails_leaves_no_unpaid_order_behind(self):
         lines = [{'product_id': self.product_id, 'quantity': 1}]
@@ -280,10 +347,10 @@ class UndoTests(QuickSaleFixture):
         self.assertEqual(tuple(line)[:2], ('sale', 'Xiao Chen'))
         self.assertIn('应该是 SA Santa', line['detail'])
         # The tenders and sales reports leave it out.
-        tenders = self.client.get('/api/reports/tenders?store_code=DT&from=2026-11-21&to=2026-11-21', headers=self.headers('manager'))
+        tenders = self.client.get('/api/reports/tenders?store_code=DT&from=2026-11-21&to=2026-11-21', headers=self.headers('admin:manager'))
         cash = [row for row in tenders.get_json()['items'] if row['tender'] == 'cash']
         self.assertEqual(cash[0]['recorded_cents'] if cash else 0, 0)
-        sales = self.client.get('/api/reports/sales?store_code=DT&from=2026-11-21&to=2026-11-21', headers=self.headers('manager')).get_json()
+        sales = self.client.get('/api/reports/sales?store_code=DT&from=2026-11-21&to=2026-11-21', headers=self.headers('admin:manager')).get_json()
         self.assertEqual([row['product_id'] for row in sales['items']], [self.head])
 
     def test_only_the_cashier_on_the_day_or_a_manager_takes_a_sale_back(self):
@@ -309,7 +376,7 @@ class UndoTests(QuickSaleFixture):
         sale = self.save(lines, 'e_transfer', 'qs-staff', discount_cents=1000, staff_discount_employee_id=amy)
         self.assertEqual(sale['staff_discount'], 'Amy')
         self.assertIsNone(self.save([{'product_id': self.head, 'quantity': 1}], 'cash', 'qs-plain')['staff_discount'])
-        self.save(lines, 'cash', 'qs-nobody', expect=400, staff_discount_employee_id=99999)
+        self.save(lines, 'cash', 'qs-nobody', expect=400, amount=1, staff_discount_employee_id=99999)
 
         def page(role='manager'):
             response = self.client.get('/api/staff-discounts?month=2026-11', headers=self.headers(role))
@@ -323,8 +390,9 @@ class UndoTests(QuickSaleFixture):
         self.assertEqual([item['qty'] for item in use['items']], [3, 1])
         person = next(row for row in month['people'] if row['name'] == 'Amy')
         self.assertEqual((person['used'], person['left']), (2, 2))
-        # Read again (by anyone), it is still one record; staff do not see what was paid.
-        self.assertNotIn('amount_cents', page('staff')['uses'][0])
+        # Read again (by anyone), it is still one record; staff see only their own, and not what was paid.
+        self.assertEqual(page('staff')['uses'], [])
+        self.assertNotIn('amount_cents', page('staff:helper')['uses'][0])
         self.assertEqual(len(page()['uses']), 1)
         # Undone, it stops counting and stays on the page with why.
         self.undo(sale, 'undo-staff')
@@ -561,8 +629,12 @@ class ReviewDayTests(ReportTakesQuickSalesTests):
         self.assertEqual((day['cash_cents'], day['review']['cash_counted_cents']), (cash['total_cents'], None))
         self.review(cash_counted_cents=93505)
         self.assertEqual(self.state()['review']['cash_counted_cents'], 93505)
+        # The cash a manager counted is the store's figure: the cashier sees that the day was reviewed, not the cash.
+        mine = self.state(role='staff')['review']
+        self.assertEqual((mine['state'], mine['cash_counted_cents'], mine['differs']), ('reviewed', None, []))
+        self.assertIsNotNone(mine['at'])
         # It is kept where a pasted 日报's cash line was, so the 汇总 reads it the same way.
-        kept = self.client.get(f'/api/sales/report-metadata?date={self.DAY}&store=DT', headers=self.headers('manager')).get_json()
+        kept = self.client.get(f'/api/sales/report-metadata?date={self.DAY}&store=DT', headers=self.headers('admin')).get_json()
         self.assertEqual((kept['cash_actual'], kept['cash_expected']), (935.05, None))
         self.review(cash_counted_cents=-1, expect=400)
         self.review(cash_counted_cents='lots', expect=400)
@@ -661,8 +733,8 @@ class ReviewDayTests(ReportTakesQuickSalesTests):
         self.assertEqual(photo.status_code, 201, photo.get_json())
         tasks = self.client.get(f'/api/today?store_code=DT&business_date={self.DAY}', headers=self.headers()).get_json()
         self.assertEqual([row['type'] for row in tasks['sections']['my_work']['rows']], [])
-        manager = self.client.get(f'/api/today?store_code=DT&business_date={self.DAY}', headers=self.headers('manager')).get_json()
-        self.assertNotIn('payment_exception', {row['type'] for row in manager['sections']['financial']['rows']})
+        admin = self.client.get(f'/api/today?store_code=DT&business_date={self.DAY}', headers=self.headers('admin:manager')).get_json()
+        self.assertNotIn('payment_exception', {row['type'] for row in admin['sections']['financial']['rows']})
         self.client.post(f"/api/quick-sales/{wrong['id']}/undo", json={}, headers={**self.headers(), 'Idempotency-Key': 'undo-1'})
         summary = self.client.get(f'/api/store-events?store_id={self.dt}&business_date={self.DAY}', headers=self.headers())
         self.assertEqual(summary.status_code, 200, summary.get_json())

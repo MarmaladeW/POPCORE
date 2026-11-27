@@ -535,6 +535,8 @@ def restock_goods_action(sid, action):
 @role_required('staff')
 def add_restock_item():
     data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     try:
         sid = read_int(data.get('session_id'), 'session_id', minimum=1)
         pid = read_int(data.get('product_id'), 'product_id', minimum=1)
@@ -675,6 +677,8 @@ def restock_picking_list(sid):
 @role_required('staff')
 def pick_restock_item(iid):
     data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected an object', 'code': 'invalid_input'}), 400
     pick_status = data.get('pick_status', '')
     if pick_status not in ('found', 'not_found'):
         return jsonify({'error': 'pick_status 必须为 found 或 not_found'}), 400

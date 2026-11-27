@@ -15,14 +15,19 @@ for a second step.
   comes down lands as its boxes, as it always did.
 - The move is what happened: when POPCORE holds fewer at the source than were moved, it moves what it has and the
   rest still arrives at the destination (the source count was low; the line says so and the source is worth
-  counting). Going 不在了 takes only what POPCORE has.
+  counting). Going 不在了 takes only what POPCORE has. Sent to the other store, the rest is first added at the
+  source and all of it leaves as one move: the sender posts with their own store's access only.
 - Loose boxes taken from a back room that has only whole sets open as many sets as they need; the boxes not moved
   stay loose there.
 - 不在了 is a loss, kept where losses always were (stock_losses, the manager's 损耗 page): 坏了 sets the goods aside on
   the damaged pile at the place (owner, 2026-11-03), where a manager puts them back on sale or throws them away; 丢了,
-  送人 / 赠品 and 其他 leave stock at once. A claw prize is not a loss and only leaves the claw.
+  送人 / 赠品 and 其他 leave stock at once. A claw prize is not a loss and only leaves the claw: from any other
+  place it is refused, so nothing goes 不在了 without its loss record (owner, 2026-11-26).
 - 撤销: the person who recorded it, that day, or a manager puts a move back, while the goods are still where it left
   them.
+- 移货 is open to everyone with 门店操作权限, with or without 库存查看 (owner, 2026-11-24), but stock numbers are for
+  库存查看 (owner, 2026-11-26): without it a line says only that POPCORE is `short`, not by how many. Below manager
+  the day list is today's and leaves out what someone else sent 不在了.
 """
 import json
 
@@ -37,6 +42,7 @@ from goods_operations import _balance, _begin, _remember, _replay
 from inventory_catalog import sealed_set_for
 from inventory_commands import (InventoryConflict, InventoryError, InventoryValidationError,
                                 _post_inventory_in_transaction, require_inventory_access, store_is_live)
+from inventory_visibility import can_see_inventory
 from report_stock import _available, _name, _set_for_box, _stock_product, can_have_set
 from validation import read_date, read_int
 
@@ -121,6 +127,11 @@ def _read(con, data, actor):
     if target is None:
         if reason not in REASONS:
             raise InventoryValidationError('选一个原因 Choose why it is gone')
+        if reason == 'claw_prize' and source['code'] != 'claw':
+            # Anything else leaving this way would be gone without a loss record (owner, 2026-11-26).
+            raise InventoryValidationError('娃娃机出奖只能从娃娃机出，别的地方请选别的原因。'
+                                           'A claw prize can only leave the claw machine; choose another reason.',
+                                           'claw_prize_source')
         if reason == 'other' and not note:
             raise InventoryValidationError('写一下原因 Say what happened')
     else:
@@ -198,6 +209,10 @@ def _steps(con, move, line):
         if arriving:
             steps.append(('receipt', [side(box, target, arriving, 'to')]))
         return steps, 0
+    # Sent to the other store, the sender posts with their own store's access only (owner, 2026-11-24), which a
+    # receipt at the other store alone cannot carry: what POPCORE lacks is first added at the source (its count
+    # was low) and the whole quantity then leaves as one move.
+    away = target is not None and target['store_id'] != source['store_id']
     sets_taken = 0
     if sets:
         have = sets_taken = min(sets, _balance(con, whole['id'], source['id'], 'saleable')['quantity'])
@@ -206,9 +221,12 @@ def _steps(con, move, line):
             if have:
                 steps.append(gone(whole, have))
         elif _holds_sets(target):
+            if short and away:
+                steps.append(('receipt', [side(whole, source, short, 'to')]))
+                have = sets
             if have:
                 steps.append(('move', [{**side(whole, source, have, 'from'), **side(whole, target, have, 'to')}]))
-            if short:
+            if short and not away:
                 steps.append(('receipt', [side(whole, target, short, 'to')]))
         else:
             if have:
@@ -231,9 +249,12 @@ def _steps(con, move, line):
             if have:
                 steps.append(gone(box, have))
         else:
+            if short and away:
+                steps.append(('receipt', [side(box, source, short, 'to')]))
+                have = units
             if have:
                 steps.append(('move', [{**side(box, source, have, 'from'), **side(box, target, have, 'to')}]))
-            if short:
+            if short and not away:
                 steps.append(('receipt', [side(box, target, short, 'to')]))
         missing += short
     line['opened'] = max(opened, 0)
@@ -257,20 +278,22 @@ def product(con, store_id, product_id, actor):
             'movable': row['identity_status'] == 'verified' and bool(row['stock_form']) and bool(row['stock_counted'])}
 
 
-def _line_view(line, missing=None):
+def _line_view(line):
     return {'product_id': line['box']['id'], 'sku': line['box']['sku'], 'name': _name(line['box']), 'per_set': line['per'],
-            'unit': line['box']['stock_unit'], 'sets': line['sets'], 'units': line['units'],
-            **({} if missing is None else {'missing': missing})}
+            'unit': line['box']['stock_unit'], 'sets': line['sets'], 'units': line['units']}
 
 
 def check(con, data, actor):
-    """What a move would do, before it is saved: each line by name with its set size, and where POPCORE holds fewer
-    than are being moved (`missing`). Nothing is written."""
+    """What a move would do, before it is saved: each line by name with its set size, and whether POPCORE holds fewer
+    than are being moved (`short`); by how many (`missing`) only for whoever may see the store's stock (库存查看).
+    Nothing is written."""
     move = _read(con, data, actor)
+    visible = can_see_inventory(con, actor, (move['store_id'],))
     lines = []
     for line in move['lines']:
         _, missing = _steps(con, move, line)
-        lines.append({**_line_view(line, missing), 'opened': line.get('opened', 0)})
+        lines.append({**_line_view(line), 'short': missing > 0, 'missing': missing if visible else None,
+                      'opened': line.get('opened', 0)})
     return {'from': move['from'], 'to': move['to'], 'from_name': move['source_name'], 'to_name': move['target_name'], 'lines': lines}
 
 
@@ -405,11 +428,14 @@ def text_of(line):
 
 def view(con, move_id, actor=None, today=None):
     row = con.execute('SELECT * FROM stock_moves WHERE id=?', (move_id,)).fetchone()
+    # By how many POPCORE was short is a stock number: only for whoever may see the store's stock (库存查看).
+    visible = bool(actor) and can_see_inventory(con, actor, (row['store_id'],))
     lines = []
     for line in con.execute("""SELECT l.*, p.sku, p.jizhanming, p.name_cn_en, p.stock_unit FROM stock_move_lines l
                                JOIN products p ON p.id=l.product_id WHERE l.move_id=? ORDER BY l.line_no""", (move_id,)):
         entry = {'product_id': line['product_id'], 'sku': line['sku'], 'name': _name(line), 'unit': line['stock_unit'],
-                 'sets': line['sets'], 'units': line['units'], 'per_set': line['per_set'], 'missing': line['missing']}
+                 'sets': line['sets'], 'units': line['units'], 'per_set': line['per_set'],
+                 'short': line['missing'] > 0, 'missing': line['missing'] if visible else None}
         lines.append({**entry, 'text': text_of(entry)})
     today = today or checkout_access.business_date()
     mine = bool(actor) and actor.get('sub') == row['created_by']
@@ -421,14 +447,21 @@ def view(con, move_id, actor=None, today=None):
 
 
 def day(con, store_id, business_date, actor):
-    """A store's moves on one day, newest first."""
+    """A store's moves on one day, newest first. Below manager only today's, and what went 不在了 only for whoever
+    recorded it: those are loss records, kept for managers (owner, 2026-11-26)."""
     store_id = read_int(store_id, 'store_id', minimum=1)
     require_inventory_access(con, actor, (store_id,), 'staff')
     today = checkout_access.business_date()
     business_date = read_date(business_date or today, 'business_date')
+    rows = con.execute('SELECT id, to_code, created_by FROM stock_moves WHERE store_id=? AND business_date=? ORDER BY id DESC',
+                       (store_id, business_date)).fetchall()
+    if not _manager(actor):
+        if business_date != today:
+            raise InventoryError("这里只能看今天的移货记录。Only today's moves can be opened here.",
+                                 'stock_moves_today_only', 403)
+        rows = [row for row in rows if row['to_code'] != GONE or row['created_by'] == actor.get('sub')]
     return {'store_id': store_id, 'business_date': business_date, 'today': today,
-            'moves': [view(con, row['id'], actor, today) for row in con.execute(
-                'SELECT id FROM stock_moves WHERE store_id=? AND business_date=? ORDER BY id DESC', (store_id, business_date))]}
+            'moves': [view(con, row['id'], actor, today) for row in rows]}
 
 
 def migrate(cur):
@@ -508,7 +541,7 @@ def stock_move_day():
 
 def _note(move, word):
     goods = '、'.join(line['text'] for line in move['lines'][:6]) + ('…' if len(move['lines']) > 6 else '')
-    short = sum(1 for line in move['lines'] if line['missing'])
+    short = sum(1 for line in move['lines'] if line['short'])
     activity.note(store_id=move['store_id'], kind='stock', audience='store', link='/move',
                   summary=f"{word} · {move['from_name']} → {move['to_name']}",
                   detail=' · '.join(filter(None, [goods, move['reason'], move['note'],

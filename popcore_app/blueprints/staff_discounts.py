@@ -1,9 +1,10 @@
-"""员工折扣 Staff discounts: staff see who has uses left this month; managers fix, ignore and add. See staff_discounts.py."""
+"""员工折扣 Staff discounts: staff see their own uses this month; managers see everyone's and fix, ignore and add. See
+staff_discounts.py."""
 from flask import Blueprint, jsonify, request
 
 from auth import role_required
 from db import get_db
-from staff_discounts import add_use, fix_use, ignore_use, month_page, restore_use
+from staff_discounts import add_use, buyers, fix_use, ignore_use, month_page, restore_use
 
 
 bp = Blueprint('staff_discounts', __name__)
@@ -23,6 +24,13 @@ def _answer(work):
 @role_required('staff')
 def page():
     return _answer(lambda con: month_page(con, request.jwt_payload, request.args.get('month')))
+
+
+@bp.get('/api/staff-discounts/buyers')
+@role_required('staff')
+def buyer_list():
+    """Names for 记一笔's "who bought" picker; nobody's uses (owner, 2026-11-26: staff see only their own)."""
+    return _answer(buyers)
 
 
 @bp.post('/api/staff-discounts')

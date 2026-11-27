@@ -103,6 +103,10 @@ class LegacyStoreScopeTests(IsolatedApiCase):
             subject = 'mkstaff' if role == 'staff' else 'mkmanager'
             with self.subTest(path=path):
                 response = self.call(method, path, body, self.headers(f'{role}:{subject}'))
+                if path.startswith('/api/sales/') and 'submit_daily_report' not in path:
+                    # Sales records are the admin's (owner, 2026-11-26): no manager or staff of any store.
+                    self.assertEqual(response.status_code, 403)
+                    continue
                 self.assertEqual((response.status_code, (response.get_json() or {}).get('code')), DENIED)
         # Audit repro: a Markham-only staff member used to set Downtown upstairs 40 -> 0.
         self.assertEqual(self.snapshot(TABLES), before)
@@ -159,13 +163,14 @@ class LegacyStoreScopeTests(IsolatedApiCase):
         response = self.client.get('/api/restock/sessions/today?store_code=DT', headers=self.headers('viewer'))
         self.assertEqual(response.status_code, 200)
 
-    def test_daily_sales_reads_are_manager_only(self):
+    def test_daily_sales_reads_are_admin_only(self):
         for path in (f'/api/sales?date={TODAY}&store_code=ALL', '/api/sales/summary?store_code=ALL',
                      '/api/sales/recorded-dates?month=2026-10&store=ALL'):
             with self.subTest(path=path):
                 # Audit repro: a viewer could read every store's sales with prices.
-                for role in ('viewer', 'staff:granted'):
+                # Owner, 2026-11-26: only an admin sees sales.
+                for role in ('viewer', 'staff:granted', 'manager'):
                     self.assertEqual(self.client.get(path, headers=self.headers(role)).status_code, 403)
-                self.assertEqual(self.client.get(path, headers=self.headers('manager')).status_code, 200)
-        rows = self.client.get(f'/api/sales?date={TODAY}&store_code=DT', headers=self.headers('manager')).get_json()
+                self.assertEqual(self.client.get(path, headers=self.headers('admin')).status_code, 200)
+        rows = self.client.get(f'/api/sales?date={TODAY}&store_code=DT', headers=self.headers('admin:manager')).get_json()
         self.assertEqual([(row['store'], row['qty_sold'], row['unit_price']) for row in rows], [('DT', 3, 89.0)])

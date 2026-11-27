@@ -1,8 +1,8 @@
 """Website stock and price sync routes (popcore.ca); see website_sync.py and docs/website-sync.md.
 
-Managers see the sync, what the next push would change and the web orders, settle orders POPCORE
-could not fill, and OK the price changes that wait for them. Only admins reread the catalogue or
-turn the sync on and off.
+Only admins see the sync, what the next push would change and the web orders, settle orders POPCORE
+could not fill, OK the price changes that wait, reread the catalogue and turn the sync on and off
+(owner, 2026-11-26: employees, managers included, do not see the website section).
 
 网站订单 Web orders (website_board.py): anyone with store operations access for a store, staff or a 查看者 Viewer
 counter account (owner, 2026-11-19), sees its orders and the name each delivery goes to (owner, 2026-11-25), finds a
@@ -34,14 +34,14 @@ def _not_configured():
 
 
 @bp.get('/api/website/status')
-@role_required('manager')
+@role_required('admin')
 def website_status():
     con = get_db()
     return jsonify(sync.status(con))
 
 
 @bp.get('/api/website/preview')
-@role_required('manager')
+@role_required('admin')
 def website_preview():
     cfg, error = _config()
     if error:
@@ -92,9 +92,9 @@ def website_switch():
 
 
 @bp.post('/api/website/prices/<int:wc_id>/ok')
-@role_required('manager')
+@role_required('admin')
 def website_price_ok(wc_id):
-    """A manager's OK for one website product's held price changes, as {"key": the ok_key the preview gave}."""
+    """An admin's OK for one website product's held price changes, as {"key": the ok_key the preview gave}."""
     data = request.get_json(silent=True) or {}
     key = data.get('key')
     if not isinstance(key, str) or not key:
@@ -117,14 +117,14 @@ def website_price_ok(wc_id):
 
 
 @bp.get('/api/website/orders')
-@role_required('manager')
+@role_required('admin')
 def website_orders():
     con = get_db()
     return jsonify(orders=sync.orders(con))
 
 
 @bp.post('/api/website/orders/<int:wc_order_id>/retry')
-@role_required('manager')
+@role_required('admin')
 def website_order_retry(wc_order_id):
     cfg, error = _config()
     if error:
@@ -138,7 +138,7 @@ def website_order_retry(wc_order_id):
 
 
 @bp.post('/api/website/orders/<int:wc_order_id>/dismiss')
-@role_required('manager')
+@role_required('admin')
 def website_order_dismiss(wc_order_id):
     data = request.get_json(silent=True) or {}
     con = get_db()

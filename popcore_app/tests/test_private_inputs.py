@@ -21,7 +21,7 @@ class PrivateInputTests(IsolatedApiCase):
         ) as parse_llm:
             response = self.client.post(
                 '/api/sales/parse_report',
-                headers=self.headers('manager'),
+                headers=self.headers('admin:manager'),
                 json={'store_code': 'DT', 'text': '2026-09-08 DT'},
             )
 
@@ -38,7 +38,7 @@ class PrivateInputTests(IsolatedApiCase):
             ) as parse_llm:
                 response = self.client.post(
                     '/api/sales/parse_report',
-                    headers=self.headers('manager'),
+                    headers=self.headers('admin:manager'),
                     json={
                         'store_code': 'DT',
                         'text': '2026-09-08 DT',
@@ -65,7 +65,7 @@ class PrivateInputTests(IsolatedApiCase):
             ):
                 response = self.client.post(
                     '/api/sales/parse_report',
-                    headers=self.headers('manager'),
+                    headers=self.headers('admin:manager'),
                     json={
                         'store_code': 'DT',
                         'text': '2026-09-08 DT',
@@ -112,6 +112,8 @@ class TelemetryPrivacyTests(unittest.TestCase):
                 'headers': {
                     'Authorization': f'Bearer {canary}',
                     'Cookie': f'session={canary}',
+                    # The store computer's name + PIN (pins.py) never goes into an error report.
+                    'X-Popcore-Person': f'7:{canary}',
                     'Accept': 'application/json',
                 },
                 'query_string': f'token={canary}',
@@ -127,7 +129,8 @@ class TelemetryPrivacyTests(unittest.TestCase):
             'exception': {'values': [{'stacktrace': {'frames': [
                 {'module': 'website_board', 'vars': {'names': {703: canary}}},
                 {'module': 'blueprints.website', 'vars': {'result': canary}},
-                {'module': 'db', 'vars': {'path': 'popcore.db'}}]}}]},
+                {'module': 'db', 'vars': {'path': 'popcore.db'}},
+                {'module': 'pins', 'vars': {'pin': canary}}]}}]},
         }
 
         scrubbed = scrub_event(event, {})

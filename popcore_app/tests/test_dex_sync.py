@@ -405,7 +405,7 @@ class DexSyncTests(IsolatedApiCase):
         self.assertEqual(state['refused'], [])
         preview = self.client.get('/api/dex/sync/preview', headers=self.headers('manager')).get_json()
         self.assertEqual((preview['create'], preview['held'], preview['delete']), (8, 1, 1))
-        entry = self.client.get(f'/api/dex/sync/entries/{bare}', headers=self.headers('staff')).get_json()
+        entry = self.client.get(f'/api/dex/sync/entries/{bare}', headers=self.headers('manager')).get_json()
         self.assertEqual((entry['state'], entry['code']), ('held', 'format_missing'))
         self.on()
         self.run_pass()
@@ -753,7 +753,10 @@ class DexSyncTests(IsolatedApiCase):
         self.site.refuse[product] = 'bad_type'
         self.on()
         self.run_pass()
-        read = lambda entry_id: self.client.get(f'/api/dex/sync/entries/{entry_id}', headers=self.headers('staff')).get_json()
+        read = lambda entry_id: self.client.get(f'/api/dex/sync/entries/{entry_id}', headers=self.headers('manager')).get_json()
+        # Managers only (owner, 2026-11-26): staff and the store computer see nothing of the website sync.
+        for role in ('staff', 'viewer'):
+            self.assertEqual(self.client.get(f'/api/dex/sync/entries/{series}', headers=self.headers(role)).status_code, 403)
         self.assertEqual(read(series)['state'], 'sent')
         self.assertEqual((read(product)['state'], read(product)['code']), ('refused', 'bad_type'))
         self.change(series, name='Echo Series 3')
