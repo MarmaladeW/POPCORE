@@ -89,9 +89,10 @@ def _account_disabled(payload):
 
 
 def _person_guard():
-    """Name + PIN on the shared store computer (pins.py): who is doing this request, or why it is refused."""
-    import pins  # pins imports this module
-    return pins.guard()
+    """The name tapped on the shared store computer (store_computer.py): who is doing this request, or why it is
+    refused."""
+    import store_computer  # store_computer imports this module
+    return store_computer.guard()
 
 
 def login_required(f):

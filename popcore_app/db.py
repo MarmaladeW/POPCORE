@@ -2142,6 +2142,8 @@ def _get_migrations():
         ('quick_sale_stock_by_report',                 _migration_quick_sale_stock_by_report),
         ('stock_moves',                                _migration_stock_moves),
         ('quick_sale_staff_discount_cash',             _migration_quick_sale_staff_discount_cash),
+        ('employee_pins_cleared',                      _migration_employee_pins_cleared),
+        ('push_subscription_roles',                    _migration_push_subscription_roles),
     ]
 
 
@@ -2559,10 +2561,26 @@ def _migration_quick_sale_staff_discount_cash(con, cur):
 
 
 def _migration_employee_pins(con, cur):
-    # Name + PIN on the shared store computer (owner, 2026-11-20); see pins.py.
-    import pins
-    pins.migrate(cur)
+    # Name + PIN on the shared store computer (owner, 2026-11-20); see store_computer.py.
+    import store_computer
+    store_computer.migrate(cur)
     cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins')")
+
+
+def _migration_employee_pins_cleared(con, cur):
+    # Owner, 2026-11-26: "PIN not necessary". The store computer asks for a name only, and every kept PIN is wiped.
+    import store_computer
+    store_computer.clear_pins(cur)
+    cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins_cleared')")
+
+
+def _migration_push_subscription_roles(con, cur):
+    # 网站订单 is the store computer's and the admin's (owner, 2026-11-26), so a new web order is pushed only to their
+    # devices: each device keeps the role its owner signed in with (push_notifications.py). A device from before
+    # this has none until its owner next opens POPCORE.
+    if 'role' not in {row[1] for row in cur.execute('PRAGMA table_info(push_subscriptions)')}:
+        cur.execute('ALTER TABLE push_subscriptions ADD COLUMN role TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscription_roles')")
 
 
 def _migration_activity_log(con, cur):

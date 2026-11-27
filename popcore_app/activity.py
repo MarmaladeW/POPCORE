@@ -8,7 +8,7 @@ short detail and the store when one can be told. A route can add to its line wit
 
 Who sees what (owner, 2026-11-26: only the admin sees 动态): admins every line of every store. Everyone else,
 managers included, only the lines they did themselves (`actor_sub` is their own account, a change made on the store
-computer under their name + PIN included), at the stores they work at. The store computer's shared account did
+computer under their name included), at the stores they work at. The store computer's shared account did
 none of its lines, so it sees none. `audience` is still written on every row, but no longer decides who reads it.
 """
 import sqlite3
@@ -130,8 +130,6 @@ LABELS = {
     'stores.change_inventory_viewer': ('people', '库存查看', 'Inventory view', 'manager'),
     'stores.grant_inventory_access': ('people', '门店操作权限', 'Store operations access', 'manager'),
     'settings.put_settings': ('settings', '改设置', 'Changed settings', 'manager'),
-    'pins.set_my_pin': ('people', '设置 PIN', 'Set a PIN', 'manager'),
-    'pins.clear_pin': ('people', '重设 PIN', 'Reset a PIN', 'manager'),
     # 买单 (parked for staff, kept for managers)
     'checkout.create': ('checkout', '买单', 'Checkout', 'manager'),
     'stock_moves.stock_move_create': ('stock', '移货', 'Moved stock', 'store'),
@@ -150,7 +148,7 @@ SKIP = {
     'products.sync_sheet_preview', 'design_prices.design_price_check', 'products.batch_match_products',
     'website.web_orders_code', 'website.web_orders_notify_me', 'website.web_orders_notify_off',
     'website.web_orders_notify_test', 'schedule.schedule_calendar_feed_reset', 'insights.trigger_generate',
-    'pins.check_pin', 'checkout.quick_sale_quote', 'stock_moves.stock_move_check',
+    'checkout.quick_sale_quote', 'stock_moves.stock_move_check',
 }
 # The in-between steps of 搬下来了 Done (one person does a whole restock in one tap) may ask to stay quiet; the
 # line people see is the restock arriving on the floor, which is never quiet.
@@ -163,7 +161,7 @@ KIND_NAMES = {
 }
 # An action with no label of its own from these areas is about money, people or settings: managers only.
 MANAGER_AREAS = {'users', 'settings', 'closing', 'payments', 'checkout', 'special_orders', 'sale_documents', 'insights',
-                 'losses', 'clover_matches', 'design_prices', 'website', 'pins', 'stores'}
+                 'losses', 'clover_matches', 'design_prices', 'website', 'stores'}
 ACTIONS = {'pick': '发出 Sent', 'dispatch': '发出 Sent', 'receive': '收到 Received', 'return': '退回 Returned',
            'resolve-loss': '记为丢失 Lost', 'resolve_loss': '记为丢失 Lost', 'short-close': '关闭 Closed short',
            'short_close': '关闭 Closed short', 'post': '入库 Posted', 'cancel': '取消 Cancelled',
@@ -431,7 +429,7 @@ def _record(response):
         con.row_factory = sqlite3.Row
         if store is None and isinstance(result, dict) and isinstance(result.get('store_id'), int):
             store = result['store_id']
-        acting = getattr(g, 'acting_person', None)   # a name + PIN on the store computer (see people.py)
+        acting = getattr(g, 'acting_person', None)   # the name tapped on the store computer (store_computer.py)
         actor_sub = acting['sub'] if acting else actor['sub']
         detail = extra.get('detail') or _detail(con, endpoint, view, body, result)
         con.execute(

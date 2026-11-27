@@ -1,6 +1,6 @@
 """Notifications for new web orders (owner, 2026-11-19: "we need our own notification thing"): Web Push, signed with
-POPCORE's own key (RFC 8292) and encrypted for each device (RFC 8291), to the devices of the people with store operations
-access for the order's store. Only the browsers' push services are ever posted to, nothing about the customer is in a
+POPCORE's own key (RFC 8292) and encrypted for each device (RFC 8291), to the devices of the store computer and the
+admins (owner, 2026-11-26: the board is closed to staff) with store operations access for the order's store. Only the browsers' push services are ever posted to, nothing about the customer is in a
 message, a device the push service calls gone is forgotten, and a failed notification never stops the sync."""
 import base64
 import json
@@ -16,12 +16,12 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from test_website_board import OTHER, PRIVATE, STAFF, BoardCase
+from test_website_board import ADMIN, OTHER, PRIVATE, BoardCase
 from test_website_sync import _ago
 
 import push_notifications as push
 
-MK_STAFF = {'Authorization': 'Bearer staff:mkstaff'}  # auth0|mkstaff, MK store operations access only
+MK_ADMIN = {'Authorization': 'Bearer admin:mkstaff'}  # auth0|mkstaff, an admin with MK store operations access only
 
 
 class Device:
@@ -47,7 +47,9 @@ class Device:
         return json.loads(record[:-1])
 
 
-class WebOrderNotificationTests(BoardCase):
+class PushCase(BoardCase):
+    """The board's orders, with every push caught instead of sent."""
+
     def setUp(self):
         super().setUp()
         self.sent = []  # (endpoint, body, headers)
@@ -66,10 +68,12 @@ class WebOrderNotificationTests(BoardCase):
         self.sent.append((endpoint, body, headers))
         return self.answer
 
-    def notify_me(self, device, headers=STAFF):
+    def notify_me(self, device, headers=ADMIN):
         return self.client.post('/api/website/notifications', json={'subscription': device.subscription()},
                                 headers=headers)
 
+
+class WebOrderNotificationTests(PushCase):
     def test_encryption_matches_the_rfc_example_and_the_key_signs_for_each_push_service(self):
         # RFC 8291 section 5.
         server = ec.derive_private_key(int.from_bytes(push.unb64('yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw'), 'big'),
@@ -97,14 +101,14 @@ class WebOrderNotificationTests(BoardCase):
                           f'{head}.{claims}x'.encode(), ec.ECDSA(hashes.SHA256()))
 
     def test_the_key_is_made_once_beside_the_database_and_only_push_services_are_accepted(self):
-        answer = self.client.get('/api/website/notifications', headers=STAFF).get_json()
+        answer = self.client.get('/api/website/notifications', headers=ADMIN).get_json()
         self.assertEqual(answer['devices'], 0)
         self.assertEqual(push.unb64(answer['key'])[:1], b'\x04')
         path = push.key_file()
         self.assertEqual(path.parent, push.Path(push.db.DB_PATH).parent)
         if os.name == 'posix':  # Windows has no owner-only file modes; the server is Linux
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(self.client.get('/api/website/notifications', headers=STAFF).get_json()['key'], answer['key'])
+        self.assertEqual(self.client.get('/api/website/notifications', headers=ADMIN).get_json()['key'], answer['key'])
         with closing(self.connect()) as con:  # never in the database
             self.assertNotIn('PRIVATE KEY', '\n'.join(con.iterdump()))
         device = Device('a')
@@ -112,23 +116,23 @@ class WebOrderNotificationTests(BoardCase):
                          'https://evil.example/fcm.googleapis.com', 'https://fcm.googleapis.com.evil.example/a',
                          'https://fcm.googleapis.com:8443/a', 'https://user@fcm.googleapis.com/a'):
             response = self.client.post('/api/website/notifications', json={'subscription': device.subscription(endpoint)},
-                                        headers=STAFF)
+                                        headers=ADMIN)
             self.assertEqual(response.status_code, 400, endpoint)
         broken = device.subscription()
         broken['keys']['p256dh'] = push.b64(b'\x04' + b'\x01' * 64)
         self.assertEqual(self.client.post('/api/website/notifications', json={'subscription': broken},
-                                          headers=STAFF).status_code, 400)
+                                          headers=ADMIN).status_code, 400)
         self.assertEqual(self.notify_me(device).get_json(), {'devices': 1})
         for host in ('web.push.apple.com', 'updates.push.services.mozilla.com', 'wns2-by3p.notify.windows.com'):
             self.assertEqual(self.client.post('/api/website/notifications', headers=OTHER, json={
                 'subscription': Device('y').subscription(f'https://{host}/push/y')}).status_code, 200, host)
         # A device signed in as someone else since is theirs; only its owner turns it off.
-        self.notify_me(device, headers=MK_STAFF)
-        self.assertEqual(self.client.get('/api/website/notifications', headers=STAFF).get_json()['devices'], 0)
-        self.client.post('/api/website/notifications/off', json={'endpoint': device.endpoint}, headers=STAFF)
-        self.assertEqual(self.client.get('/api/website/notifications', headers=MK_STAFF).get_json()['devices'], 1)
+        self.notify_me(device, headers=MK_ADMIN)
+        self.assertEqual(self.client.get('/api/website/notifications', headers=ADMIN).get_json()['devices'], 0)
+        self.client.post('/api/website/notifications/off', json={'endpoint': device.endpoint}, headers=ADMIN)
+        self.assertEqual(self.client.get('/api/website/notifications', headers=MK_ADMIN).get_json()['devices'], 1)
         self.assertEqual(self.client.post('/api/website/notifications/off', json={'endpoint': device.endpoint},
-                                          headers=MK_STAFF).get_json(), {'devices': 0})
+                                          headers=MK_ADMIN).get_json(), {'devices': 0})
         # A viewer counter account turns them on too (owner, 2026-11-19); an account with no role cannot.
         self.assertEqual(self.client.get('/api/website/notifications', headers=self.headers('viewer')).status_code, 200)
         self.assertEqual(self.client.get('/api/website/notifications', headers=self.headers('norole')).status_code, 403)
@@ -136,7 +140,7 @@ class WebOrderNotificationTests(BoardCase):
     def test_a_new_paid_order_reaches_the_devices_of_its_store_only(self):
         dt, mk, nobody = Device('dt'), Device('mk'), Device('nobody')
         self.notify_me(dt)
-        self.notify_me(mk, headers=MK_STAFF)
+        self.notify_me(mk, headers=MK_ADMIN)
         self.notify_me(nobody, headers=OTHER)
         self.woo.order(801, [(11, 2)], pickup='dt', meta=[('_popcore_pickup_code', 'PUSH01')])
         self.woo.order(802, [(11, 1)], pickup='mk', modified=_ago(0))
@@ -171,7 +175,7 @@ class WebOrderNotificationTests(BoardCase):
         self.woo.order(811, [(11, 1)], pickup='dt')
         self.run_sync()
         self.assertEqual(self.order_row(811)['state'], 'recorded')
-        self.assertEqual(self.client.get('/api/website/notifications', headers=STAFF).get_json()['devices'], 0)
+        self.assertEqual(self.client.get('/api/website/notifications', headers=ADMIN).get_json()['devices'], 0)
         for problem, order, failures in ((requests.ConnectionError('down'), 812, 1), (RuntimeError('unexpected'), 813, 0)):
             self.notify_me(device)
             self.answer = problem
@@ -184,7 +188,64 @@ class WebOrderNotificationTests(BoardCase):
         # The test button reaches every device of this person.
         self.answer = 201
         self.notify_me(Device('second'))
-        result = self.client.post('/api/website/notifications/test', headers=STAFF).get_json()
+        result = self.client.post('/api/website/notifications/test', headers=ADMIN).get_json()
         self.assertEqual((result['sent'], result['failed'], result['devices']), (2, 0, 2))
         body = next(body for endpoint, body, _ in reversed(self.sent) if endpoint == device.endpoint)
         self.assertEqual(device.read(body)['body'], '通知已开启 Notifications are on.')
+
+
+class WhoIsNotifiedTests(PushCase):
+    """Owner, 2026-11-26: 网站订单 is the store computer's and the admin's, so only their devices hear of a new web
+    order. Managers keep a device for 异常提醒; staff have nothing to be told."""
+
+    def setUp(self):
+        super().setUp()
+        with closing(self.connect()) as con:
+            con.executemany('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)',
+                            [(f'auth0|{name}', self.dt) for name in ('counter', 'manager', 'amy')])
+            con.commit()
+
+    def roles(self):
+        with closing(self.connect()) as con:
+            return dict(con.execute('SELECT auth0_sub, role FROM push_subscriptions'))
+
+    def test_staff_cannot_turn_a_device_on_but_anyone_turns_their_own_off(self):
+        device = Device('staff')
+        staff = self.headers('staff:amy')
+        for response in (self.client.get('/api/website/notifications', headers=staff), self.notify_me(device, headers=staff),
+                         self.client.post('/api/website/notifications/test', headers=staff)):
+            self.assertEqual((response.status_code, response.get_json()['code']), (403, 'notifications_not_for_staff'))
+        self.assertEqual(self.roles(), {})
+        # A device a staff member turned on before this still turns off.
+        with closing(self.connect()) as con:
+            push.subscribe(con, 'auth0|amy', device.subscription())
+        self.assertEqual(self.client.post('/api/website/notifications/off', json={'endpoint': device.endpoint},
+                                          headers=staff).get_json(), {'devices': 0})
+
+    def test_a_new_order_reaches_the_store_computer_and_the_admin_only(self):
+        admin, counter, manager = Device('admin'), Device('counter'), Device('manager')
+        self.notify_me(admin)
+        self.notify_me(counter, headers=self.headers('viewer:counter'))
+        self.assertEqual(self.notify_me(manager, headers=self.headers('manager')).status_code, 200)   # for 异常提醒
+        self.assertEqual(self.roles(), {'auth0|staff': 'admin', 'auth0|counter': 'viewer', 'auth0|manager': 'manager'})
+        self.woo.order(821, [(11, 1)], pickup='dt')
+        self.run_sync()
+        self.assertEqual(sorted(endpoint for endpoint, _, _ in self.sent), sorted([admin.endpoint, counter.endpoint]))
+
+    def test_a_device_from_before_follows_its_owners_role_once_they_open_the_app(self):
+        old_staff, old_admin = Device('old-staff'), Device('old-admin')
+        with closing(self.connect()) as con:   # turned on before roles were kept: no role
+            push.subscribe(con, 'auth0|amy', old_staff.subscription())
+            push.subscribe(con, 'auth0|staff', old_admin.subscription())
+        self.assertEqual(self.roles(), {'auth0|amy': None, 'auth0|staff': None})
+        self.woo.order(831, [(11, 1)], pickup='dt')
+        self.run_sync()   # nobody goes quiet on the day this goes live
+        self.assertEqual(sorted(endpoint for endpoint, _, _ in self.sent), sorted([old_staff.endpoint, old_admin.endpoint]))
+        # The app opens with GET /api/stores: each account's devices take its role.
+        for headers in (self.headers('staff:amy'), ADMIN):
+            self.assertEqual(self.client.get('/api/stores', headers=headers).status_code, 200)
+        self.assertEqual(self.roles(), {'auth0|amy': 'staff', 'auth0|staff': 'admin'})
+        self.sent.clear()
+        self.woo.order(832, [(11, 1)], pickup='dt', modified=_ago(0))
+        self.run_sync()
+        self.assertEqual([endpoint for endpoint, _, _ in self.sent], [old_admin.endpoint])
