@@ -29,6 +29,10 @@ AUTH_HEADERS = {'Authorization': 'Bearer test-token'}
 
 class EmployeeSchedulableApiTests(unittest.TestCase):
     def setUp(self):
+        # Written on fixed dates before managers were held to this month and next (test_schedule_manager_months).
+        window = patch('blueprints.schedule._manager_window', return_value=None)
+        window.start()
+        self.addCleanup(window.stop)
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_db_path = db.DB_PATH
         db.DB_PATH = str(Path(self.tempdir.name) / 'test.db')

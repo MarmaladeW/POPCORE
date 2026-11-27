@@ -13,6 +13,7 @@ TOKEN = 'private-calendar-token-0123456789'
 class EmployeePrivacyTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        self.open_every_month()
         self.app.register_blueprint(users.bp)
         with closing(self.connect()) as con:
             self.mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]

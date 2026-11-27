@@ -75,6 +75,7 @@ jobs:
       - run: python popcore_app/tests/browser/check_count_sheet.py
       - run: python popcore_app/tests/browser/check_products_series.py
       - run: python popcore_app/tests/browser/check_schedule_calendar.py
+      - run: python popcore_app/tests/browser/check_manager_months.py
       - run: python popcore_app/tests/browser/check_attendance.py
       - run: python popcore_app/tests/browser/check_checkout_focus.py
       - run: python popcore_app/tests/browser/check_staff_home.py

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
@@ -57,6 +57,8 @@ import {
 import ShiftModal from './ShiftModal'
 import ScheduleDayPanel from './ScheduleDayPanel'
 import { cycleStart } from './availabilityPeriod'
+import { calendarRange, canGoBack, canGoForward, MONTH_LIMIT_HINT } from './managerWindow'
+import useManagerWindow from './useManagerWindow'
 import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -143,6 +145,11 @@ export default function ManagerCalendar() {
   const shiftById    = useRef<Record<number, Shift>>({})
   const availsByDate = useRef<Record<string, Availability[]>>({})
   const [currentRange, setCurrentRange] = useState<{ start: string; end: string } | null>(null)
+  // The shown period without a month grid's padding days; with the manager's months it decides the arrows.
+  const [periodRange, setPeriodRange] = useState<{ start: string; end: string } | null>(null)
+  const months = useManagerWindow()
+  // One object per window: a new validRange on every render makes FullCalendar reset and re-render without end.
+  const validRange = useMemo(() => calendarRange(months), [months])
   // Real period bounds (end exclusive) — used to skip the red understaffing
   // tint on a month grid's padding days from adjacent months
   const periodRangeRef = useRef<{ start: string; end: string } | null>(null)
@@ -384,6 +391,7 @@ export default function ManagerCalendar() {
         end:   dayjs(arg.view.currentEnd).format('YYYY-MM-DD'),
       }
       periodRangeRef.current = pr
+      setPeriodRange(pr)
       loadEvents(start, end, vt)
     },
     [loadEvents]
@@ -543,11 +551,13 @@ export default function ManagerCalendar() {
       {/* Row 1: navigation ←→ + Today + Month|Week|Day toggle */}
       <div className="pc-calendar-navigation flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center justify-between gap-0.5 sm:justify-start">
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Previous calendar period" onClick={() => eachCal((a) => a.prev())}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Previous calendar period" onClick={() => eachCal((a) => a.prev())}
+            disabled={!!periodRange && !canGoBack(months, periodRange.start)} title={periodRange && !canGoBack(months, periodRange.start) ? MONTH_LIMIT_HINT : undefined}>
             <ChevronLeft className="size-4" />
           </Button>
           <span className="text-sm font-semibold min-w-24 text-center px-1">{viewTitle}</span>
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Next calendar period" onClick={() => eachCal((a) => a.next())}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Next calendar period" onClick={() => eachCal((a) => a.next())}
+            disabled={!!periodRange && !canGoForward(months, periodRange.end)} title={periodRange && !canGoForward(months, periodRange.end) ? MONTH_LIMIT_HINT : undefined}>
             <ChevronRight className="size-4" />
           </Button>
         </div>
@@ -881,6 +891,7 @@ export default function ManagerCalendar() {
               plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
               initialView={viewType}
               initialDate={cycleStart(dayjs().format('YYYY-MM-DD'))}
+              validRange={validRange}
               views={{ dayGridFortnight: { type: 'dayGrid', duration: { weeks: 2 }, dateIncrement: { weeks: 2 }, dateAlignment: 'week' } }}
               headerToolbar={false}
               height={isMobile || !isTimeGrid ? 'auto' : '100%'}

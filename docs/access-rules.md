@@ -34,6 +34,18 @@ their own off.
 审核 of the day's 记一笔 (the whole day's list and totals), 收工 review, 损耗, 排班 and everyone's hours, 员工折扣
 management with amounts, 异常提醒, products, 图鉴 editing, section counts.
 
+### 排班: this month and next only
+
+Owner, 2026-11-27: "the manager can only see the schedule for that month, not all of them" (picked this month + next).
+For `manager` (not `admin`), `blueprints/schedule.py` `_manager_window` limits the team's shifts, availability, notes,
+checklist, conflict check and shift changes to the dates from the earliest of this month's 1st, the current wage
+month's first day (so the first days of a month can still fix the end of the wage month) and the first day of the
+two-week cycle being worked (so that fortnight is whole) to the end of next month:
+reads are cut to the window, anything wholly outside is 403 `schedule_month_closed`. 月工时 (`reports/monthly`, one
+person's month, `employees/<id>/hours`) opens only the current wage month and the next one. `GET /api/schedule/config`
+gives the page `manager_window` so its arrows and month picker stop there. One's own shifts and own 月工时 stay open in
+every month; admins see every month.
+
 ## Own records only (below manager)
 
 - 记一笔: `GET /api/quick-sales` returns the caller's own sales and totals from those.
