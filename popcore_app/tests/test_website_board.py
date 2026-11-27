@@ -179,6 +179,53 @@ class WebOrdersBoardTests(BoardCase):
         self.assertEqual(cards['711']['lines'][0]['picks'], [{'store': 'MK', 'place': 'floor', 'quantity': 1},
                                                              {'store': 'DT', 'place': 'floor', 'quantity': 2}])
 
+    def test_a_delivery_shows_at_the_store_it_leaves_from(self):
+        """Owner, 2026-11-26 (popcore-work#121): the courier collects from the store the order was filled from, so
+        Markham's board shows the deliveries Markham packs. Once the website has booked FleetNow, the card follows
+        the store the courier collects from, and says what has to be brought there. (DT has 8 Echo boxes left here,
+        MK opens with 6.)"""
+        self.open_mk(6)
+        with closing(self.connect()) as con:
+            mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (mk,))
+            con.commit()
+        booked = [('fleetnow_order_no', 'DO202611260000000001'), ('fleetnow_status', 'CONFIRMED')]
+        self.woo.order(720, [(11, 9)], paid=_ago(9), modified=_ago(0))   # no store has 9: DT's 8 and 1 of MK's
+        self.woo.order(721, [(11, 2)], paid=_ago(8), modified=_ago(0),   # DT has none left: MK
+                       shipping={'first_name': 'Mei', 'last_name': 'Markham'})
+        # Filled from MK, but booked before the website followed POPCORE's answer: the courier comes to DT.
+        self.woo.order(722, [(11, 1)], paid=_ago(7), modified=_ago(0), status='dispatched', meta=booked)
+        # Filled from MK and booked from MK (FleetNow 1.2.13 names the store).
+        self.woo.order(723, [(11, 1)], paid=_ago(6), modified=_ago(0), status='dispatched',
+                       meta=[*booked, ('_fleetnow_pickup_store', 'mk')])
+        self.run_sync()
+        self.assertEqual(self.woo.fill_writes[-4:], [(720, 'dt,mk'), (721, 'mk'), (722, 'mk'), (723, 'mk')])
+
+        def cards(store=None):
+            board = self.board(store=store)
+            return board, {card['number']: card for column in ('pack', 'booked', 'out') for card in board['columns'][column]}
+
+        def where(card):
+            return card['store'], card['stores'], card['taken_elsewhere']
+
+        board, found = cards()
+        self.assertEqual({name: self.numbers(board['columns'][name]) for name in ('pack', 'booked')},
+                         {'pack': ['703', '720', '721'], 'booked': ['704', '722', '723']})  # each order once
+        self.assertEqual({number: where(found[number]) for number in ('703', '720', '721', '722', '723')}, {
+            '703': ('DT', ['DT'], []),             # DT filled it, as before
+            '720': ('DT', ['DT', 'MK'], []),       # in two stores: bring it to one
+            '721': ('MK', ['MK'], []),             # MK packs it, the courier comes to MK
+            '722': ('DT', ['DT'], ['MK']),         # the courier comes to DT: bring it from MK
+            '723': ('MK', ['MK'], [])})
+        self.assertEqual(found['723']['delivery']['collect'], 'mk')
+        # DT's board: what leaves from DT. MK's board: what leaves from MK, and what MK has to send over.
+        board, found = cards('DT')
+        self.assertEqual(sorted(found), ['703', '704', '705', '720', '722'])
+        board, found = cards('MK')
+        self.assertEqual(sorted(found), ['720', '721', '722', '723'])
+        # MK's board has deliveries now, so it has the name box and their names.
+        self.assertEqual((board['deliveries'], found['721']['name']), (True, 'Mei Markham'))
+
     def test_ready_moves_a_pickup_on_the_website_and_says_who(self):
         response = self.step(701, 'ready')
         self.assertEqual(response.get_json(), {'result': 'done', 'noted': True})
@@ -273,6 +320,7 @@ class WebOrdersBoardTests(BoardCase):
         self.assertIsNone(self.state('last_error'))
 
     def test_orders_recorded_before_the_board_read_their_facts_once(self):
+        self.run_sync()  # reads the deliveries again, once: telling the website where each was filled from changed them
         with closing(self.connect()) as con:
             con.execute('UPDATE website_orders SET pickup_code=NULL, delivery=NULL')
             con.commit()

@@ -3,7 +3,7 @@
 today; Ready moves a pickup on the website; the code box finds an order by its code and shows the customer's first
 name, and Handed over completes it and clears the name; delivery cards show the name the parcel goes to and the name
 box finds them by part of a name (owner, 2026-11-25); the board's data holds no pickup code and nothing personal but
-those names;
+those names; a delivery shows at the store it leaves from, Markham's included (owner, 2026-11-26);
 viewers cannot open the page; a new order pops up at the board's next refresh and the notifications control is
 there (owner, 2026-11-19)."""
 import asyncio
@@ -31,13 +31,14 @@ async def run(browser, width):
     fixture.setUp()
     contexts, board_bodies = [], []
 
-    async def open_as(role, token=None):
+    async def open_as(role, token=None, store=None):
         token = token or role  # the server's sign-in: 'viewer:counter' is the viewer auth0|counter
+        store_id, code, name = store or (fixture.dt, 'DT', 'Downtown')
         context = await browser.new_context(viewport={'width': width, 'height': 900})
         contexts.append(context)
         await context.add_init_script(
             f"window.__FOUNDATION_AUTH={{role:'{role}',token:'{role}'}};"
-            f"localStorage.setItem('popcore_selected_store',JSON.stringify({{id:{fixture.dt},code:'DT',name:'Downtown'}}));"
+            f"localStorage.setItem('popcore_selected_store',JSON.stringify({{id:{store_id},code:'{code}',name:'{name}'}}));"
             # Headless Chromium always answers "denied"; a browser nobody has asked yet answers "default".
             "Object.defineProperty(Notification,'permission',{get:()=>'default'})")
         page = await context.new_page()
@@ -89,6 +90,9 @@ async def run(browser, width):
         await expect(booked.get_by_text('收件人 Ship to Ana Lima')).to_be_visible()
         await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('Private Person')).to_be_visible()
         await expect(pick.get_by_text('收件人', exact=False)).to_have_count(0)
+        # A delivery says the store it leaves from, as a pickup says its store.
+        await expect(pack.get_by_text('配送 DT', exact=True)).to_be_visible()
+        await expect(pick.get_by_text('自取 DT', exact=True)).to_be_visible()
         await fits(page, f'board-{width}.png')
 
         # The name box finds deliveries by part of a name, whatever the case and accents; pickups only by code.
@@ -189,6 +193,36 @@ async def run(browser, width):
         await fits(page, f'counter-no-store-{width}.png')
         await page.goto(BASE + '/web-orders')
         await expect(page.get_by_text('DT 没有勾选 店铺电脑', exact=False)).to_be_visible()
+
+        # Owner, 2026-11-26 (popcore-work#121): the courier collects from the store the order was filled from, so
+        # Markham's board shows the deliveries Markham packs. DT has 7 Echo boxes left, MK opens with 6.
+        mk, _ = fixture.open_mk(6)
+        with fixture.connect() as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (mk,))
+        fixture.woo.order(730, [(11, 8)], modified=_ago(0))  # no store has 8: DT's 7 and 1 of MK's
+        fixture.woo.order(731, [(11, 2)], modified=_ago(0), shipping={'first_name': 'Mei', 'last_name': 'Markham'})
+        # Filled from MK, but booked with no store named (the website's switch is off): the courier comes to DT.
+        fixture.woo.order(732, [(11, 1)], modified=_ago(0), status='dispatched',
+                          meta=[('fleetnow_order_no', 'DO202611260000000001'), ('fleetnow_status', 'CONFIRMED')])
+        fixture.run_sync()
+        assert fixture.woo.fill_writes[-3:] == [(730, 'dt,mk'), (731, 'mk'), (732, 'mk')], fixture.woo.fill_writes
+        page = await open_as('staff', store=(mk, 'MK', 'Markham'))
+        await page.goto(BASE + '/web-orders')
+        pack = page.get_by_role('region', name='Delivery · to pack')
+        mine = pack.get_by_role('article', name='Order #731')
+        await expect(mine.get_by_text('配送 MK', exact=True)).to_be_visible()
+        await expect(mine.get_by_text('收件人 Ship to Mei Markham')).to_be_visible()
+        await expect(mine.locator('.pc-web-flag')).to_have_count(0)  # nothing to move: no flag
+        split = pack.get_by_role('article', name='Order #730')
+        await expect(split.get_by_text('配送 DT + MK', exact=True)).to_be_visible()
+        await expect(split.get_by_text('Taken from DT and MK: bring it to one store', exact=False)).to_be_visible()
+        await expect(pack.get_by_text('#703')).to_have_count(0)  # DT's delivery stays on DT's board
+        booked = page.get_by_role('region', name='Delivery · booked, waiting for the courier')
+        await expect(booked.get_by_role('article', name='Order #732').get_by_text(
+            '从 MK 拿 · Taken from MK: bring it to DT')).to_be_visible()
+        # MK's board has deliveries now, so it has the name box.
+        await expect(page.get_by_role('region', name='Delivery name')).to_be_visible()
+        await fits(page, f'markham-{width}.png')
     finally:
         for context in contexts:
             await context.close()
@@ -228,4 +262,5 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: web orders board columns, Ready, the code box with the first name, Handed over clearing it, '
           'delivery names and the name box, nothing personal but delivery names in the board data, a new order popping up, the notifications control and its service '
-          'worker, a viewer counter account working the board and reading 库存 without tools, at 390 and 1440 px')
+          'worker, a viewer counter account working the board and reading 库存 without tools, Markham\'s board with the '
+          'deliveries it packs, at 390 and 1440 px')

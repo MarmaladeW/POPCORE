@@ -129,9 +129,25 @@ export function nameMatches(board: WebOrdersBoard, typed: string): NameMatch[] {
     .map(card => ({ card, where })))
 }
 
+/** The stores an order leaves from: one, or two while a delivery's stock is in both. */
+export const cardStores = (card: WebOrderCard) => card.stores?.length ? card.stores : [card.store]
+
+/** A card's kind and store: "自取 DT", "配送 MK", "配送 DT + MK". */
+export const kindText = (card: WebOrderCard) => `${card.kind === 'pickup' ? '自取' : '配送'} ${cardStores(card).join(' + ')}`
+
+/** What staff must move before the order can leave, or '' when it is all in its store. */
+export function moveText(card: WebOrderCard): string {
+  const elsewhere = card.taken_elsewhere ?? []
+  if (elsewhere.length) return `从 ${elsewhere.join(' + ')} 拿 · Taken from ${elsewhere.join(' + ')}: bring it to ${card.store}`
+  const stores = cardStores(card)
+  // The website books no courier for a delivery taken from two stores (owner, 2026-11-26).
+  if (card.kind === 'delivery' && stores.length > 1) return `货在 ${stores.join(' + ')},先集中到一家店 · Taken from ${stores.join(' and ')}: bring it to one store. No courier is booked yet.`
+  return ''
+}
+
 /** A new order as the board's pop-up says it. */
 export const announceText = (card: WebOrderCard) =>
-  `${card.kind === 'pickup' ? `自取 ${card.store} pickup` : '配送 Delivery'} · ${card.lines.map(line => `${line.name} × ${line.quantity}`).join(', ')}`
+  `${kindText(card)} ${card.kind === 'pickup' ? 'pickup' : 'delivery'} · ${card.lines.map(line => `${line.name} × ${line.quantity}`).join(', ')}`
 
 // POPCORE's push key travels as base64url; browsers take and give it as bytes.
 export function keyBytes(text: string): Uint8Array<ArrayBuffer> {
