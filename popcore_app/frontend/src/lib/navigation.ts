@@ -1,5 +1,5 @@
 // Menu model for the desktop rail, the phone bottom bar and the 更多 page (Figma "Menus" page).
-// Pages that left the menus keep their routes: /trades, /today.
+// Pages that left the menus keep their routes: /trades, /today, /closing.
 
 // inventory: 库存查看 at the selected store (always true for managers and admins).
 // operations: 门店操作权限 Store operations access at some store.
@@ -30,18 +30,22 @@ const item = {
   stock: { key: '/stock', zh: '库存', en: 'Inventory', icon: 'box', note: '晚盘、娃娃机' },
   // Without 库存查看 the 库存 entry opens 晚盘 only (owner, 2026-11-01).
   eveningCount: { key: '/stock/count', zh: '晚盘', en: 'Evening count', icon: 'count' },
-  // The shop computer's pickup and delivery orders from popcore.ca (owner, 2026-11-19).
+  // The shop computer's pickup and delivery orders from popcore.ca (owner, 2026-11-19). The store computer and admins
+  // only (owner, 2026-11-26: "网站订单 pick board close to staff but available to viewer which is store computer").
   webOrders: { key: '/web-orders', zh: '网站订单', en: 'Web orders', icon: 'web' },
   // Photos and notes of people who stole from the stores (owner, 2026-11-19: "so everyone can recognize the people that
   // stole from the store ... also something showing in the store computer"): every role, the counter account included.
   watchList: { key: '/watch-list', zh: '可疑人员', en: 'Watch list', icon: 'eye' },
   // Who did what at the store, like the group chat (owner, 2026-11-20). Admins only (owner, 2026-11-26).
   activity: { key: '/activity', zh: '动态', en: 'Activity', icon: 'clock' },
-  // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs. Admins only (owner,
-  // 2026-11-26): a manager has 汇总 (their own records) like staff, and reaches 收工 from it.
-  sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
+  // 销售 opens its first tab, 每日汇总; 历史日报 (/sales) is its other tab. Admins only (owner, 2026-11-26): a manager
+  // has 汇总 (their own records) like staff. 收工 (/closing) left the menus on 2026-11-27 (owner: "Drop 收工 instead").
+  sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、历史日报' },
   // 正式员工 and above have 4 员工折扣 a month (owner, 2026-11-19): staff see their own uses, managers keep the record.
   staffDiscounts: { key: '/staff-discounts', zh: '员工折扣', en: 'Staff discounts', icon: 'user' },
+  // What POPCORE noticed by itself (losses, count gaps, cash gaps), and the phone notification switch for it: 店长
+  // and admins (owner, 2026-11-27: "fix the small issues"; before, a 店长 needed the address).
+  alerts: { key: '/watch', zh: '异常提醒', en: 'Alerts', icon: 'eye', note: '店长' },
   reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '管理员' },
   // popcore.ca stock sync and web orders (owner, 2026-11-01). Admins only (owner, 2026-11-26).
   website: { key: '/website', zh: '网站', en: 'Website', icon: 'web', note: '管理员' },
@@ -53,20 +57,21 @@ const item = {
   settings: { key: '/settings', zh: '设置', en: 'Settings', icon: 'gear', note: '管理员' },
 } satisfies Record<string, NavItem>
 
-export const removedFromMenus = ['/trades', '/today', '/incoming', '/restock']
+export const removedFromMenus = ['/trades', '/today', '/incoming', '/restock', '/closing']
 
 export function railGroups(access: NavAccess): NavGroup[] {
   if (!access.staff) return [
     { label: '日常', items: [...counterItems(access), item.watchList] },
     { label: '查看', items: [item.products, item.dex] },
   ]
-  // Only admins have 动态, 销售, 报表 and 网站 (owner, 2026-11-26); a manager's menu is the staff one.
+  // Only admins have 动态, 销售, 报表, 网站 and 网站订单 (owner, 2026-11-26); a manager's menu is the staff one.
   const daily: NavItem[] = [item.home]
   if (access.admin) daily.push(item.checkout, item.move, item.stock, item.webOrders, item.activity)
-  else if (access.inventory) daily.push(...checkoutFor(access), item.move, item.summary, item.stock, item.webOrders, item.staffDiscounts)
-  else daily.push(...checkoutFor(access), item.move, item.summary, item.eveningCount, item.webOrders, item.staffDiscounts)
+  else if (access.inventory) daily.push(...checkoutFor(access), item.move, item.summary, item.stock, item.staffDiscounts)
+  else daily.push(...checkoutFor(access), item.move, item.summary, item.eveningCount, item.staffDiscounts)
   daily.push(item.watchList)
-  const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
+  const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.manager ? [item.alerts] : []),
+    ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
     ...(access.admin ? [{ label: '查看', items: [item.sales, item.staffDiscounts, item.reports, item.website] }] : []),
@@ -76,11 +81,12 @@ export function railGroups(access: NavAccess): NavGroup[] {
 
 export function moreItems(access: NavAccess): NavItem[] {
   return [
-    ...(access.staff ? [item.move, access.inventory ? item.stock : item.eveningCount, item.webOrders, ...(access.admin ? [item.activity] : [item.staffDiscounts])]
+    ...(access.staff ? [item.move, access.inventory ? item.stock : item.eveningCount, ...(access.admin ? [item.webOrders, item.activity] : [item.staffDiscounts])]
       : counterItems(access).filter(entry => entry !== item.home)),
     item.watchList,
     item.products,
     item.dex,
+    ...(access.manager ? [item.alerts] : []),
     ...(access.admin ? [item.sales, item.staffDiscounts, item.reports, item.website, item.users, item.settings] : []),
   ]
 }

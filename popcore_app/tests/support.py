@@ -24,7 +24,6 @@ import payment_evidence  # noqa: E402
 import condition_evidence  # noqa: E402
 import watch_list  # noqa: E402
 import activity  # noqa: E402
-import pins  # noqa: E402
 import stock_moves  # noqa: E402
 from blueprints import staff_discounts  # noqa: E402
 from blueprints import checkout, closing as closing_blueprint, counting, goods, inventory, losses, payments, products, reports, restock, sale_documents, sales, schedule, special_orders, stock, store_events, stores, trades, today  # noqa: E402
@@ -96,7 +95,6 @@ class IsolatedApiCase(unittest.TestCase):
             app.register_blueprint(blueprint)
         # 动态 Activity: every change these tests make leaves its line, as in the app.
         activity.init_app(app)
-        pins.init_app(app)
         app.teardown_appcontext(db.close_db)
         self.app = app
         self.client = app.test_client()

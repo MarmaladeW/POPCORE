@@ -87,7 +87,7 @@ _COLUMNS = """e.id, e.kind, e.parent_id, e.partner_id, e.character_id, e.name, e
     e.product_id, e.picture_id, e.picture_url, e.thumb_url, e.extras, e.website_id, e.version, e.created_at,
     e.updated_at, e.updated_by, e.ip_id, ni.name AS named_ip_name,
     (SELECT COUNT(*) FROM dex_entries c WHERE c.parent_id=e.id AND c.deleted_at IS NULL) AS child_count,
-    p.sku AS product_sku, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS product_name"""
+    p.sku AS product_sku, COALESCE(NULLIF(p.name_cn_en, ''), p.jizhanming) AS product_name, p.price AS product_price"""
 _FROM = """FROM dex_entries e LEFT JOIN products p ON p.id=e.product_id
     LEFT JOIN dex_entries ni ON ni.id=e.ip_id AND ni.deleted_at IS NULL WHERE e.deleted_at IS NULL"""
 
@@ -97,6 +97,13 @@ def _shape(row):
     entry['blind_box'] = None if entry['blind_box'] is None else bool(entry['blind_box'])
     name = entry.pop('named_ip_name')
     entry['named_ip'] = None if entry['ip_id'] is None or name is None else {'id': entry['ip_id'], 'name': name}
+    # The linked POPCORE item's price now, so a list of designs shows each price without opening it (owner,
+    # 2026-11-26). None when nothing is linked or the item has no price.
+    price = entry.pop('product_price')
+    try:
+        entry['price_cents'] = round(float(price) * 100) if price not in (None, '') and float(price) > 0 else None
+    except (TypeError, ValueError):
+        entry['price_cents'] = None
     try:
         entry['extras'] = json.loads(entry['extras'] or '{}')
     except ValueError:

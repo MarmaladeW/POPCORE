@@ -111,7 +111,7 @@ async def check(browser, width):
     context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 900}, auth={'role': 'manager'})
     await context.add_init_script("localStorage.setItem('popcore_selected_store',JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))")
     await page.goto(BASE + '/stock/value')
-    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
     await expect(page.get_by_text('按 IP 系列')).to_have_count(0)
     await page.goto(BASE + '/stock')
     overview = page.get_by_role('region', name='库存概况 Inventory overview', exact=True)

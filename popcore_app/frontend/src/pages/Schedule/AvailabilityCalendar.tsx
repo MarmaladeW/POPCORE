@@ -106,7 +106,7 @@ export default function AvailabilityCalendar() {
         <Button aria-label="Next availability period" disabled={busy} onClick={() => setPeriod(dayjs(period).add(14, 'day').format('YYYY-MM-DD'))}>›</Button>
         <Button disabled={busy} onClick={() => setPeriod(cycleStart(dayjs().format('YYYY-MM-DD')))}>Current period</Button>
       </Space>
-      <label>Availability store <Select aria-label="Availability store" placeholder="Choose a store" value={storeCode} disabled={busy}
+      <label className="pc-availability-store">Availability store <Select aria-label="Availability store" placeholder="Choose a store" value={storeCode} disabled={busy}
         style={{ minWidth: 160 }} options={stores.filter(store => store.code !== 'ALL').map(store => ({ value: store.code, label: store.name || store.code }))}
         onChange={code => { const store = stores.find(item => item.code === code); if (store) setSelectedStore(store) }} /></label>
     </div>

@@ -72,7 +72,13 @@ const TradeCasePage=lazyPage(()=>import('./pages/Trades/TradeCase'))
 const ReportsPage=lazyPage(()=>import('./pages/Reports'))
 
 function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNode }) {
-  return useHasRole(minRole) ? <>{element}</> : <Unauthorized />
+  return useHasRole(minRole) ? <>{element}</> : <Unauthorized closedFor={minRole} />
+}
+
+// 网站订单 is the store computer's (the 查看者 account) and the admin's (owner, 2026-11-26): closed to staff and managers.
+function BoardRoute({ element }: { element: React.ReactNode }) {
+  const staff = useHasRole('staff'), admin = useHasRole('admin')
+  return !staff || admin ? <>{element}</> : <Unauthorized closedFor="board" />
 }
 
 // 库存 and the tools reached from it (盘点, 入店/入库, 调拨, 娃娃机) need 库存查看 at the selected store. `readOnly` pages
@@ -81,7 +87,7 @@ function RoleRoute({ minRole, element }: { minRole: Role; element: React.ReactNo
 function InventoryRoute({ element, readOnly = false }: { element: React.ReactNode; readOnly?: boolean }) {
   const staff = useHasRole('staff'), visible = useInventoryVisible()
   const storesLoaded = useAppStore(state => state.stores.length > 0)
-  if (!staff && !readOnly) return <Unauthorized />
+  if (!staff && !readOnly) return <Unauthorized closedFor="staff" />
   if (visible) return <>{element}</>
   return storesLoaded ? <InventoryHidden /> : <div role="status" aria-live="polite">Loading page…</div>
 }
@@ -220,7 +226,7 @@ function AppInner() {
           <Route path="/sales/report-stock" element={<RoleRoute minRole="admin" element={<ReportStockPage />} />} />
           <Route path="/sales/name-picks" element={<RoleRoute minRole="admin" element={<NamePicksPage />} />} />
           <Route path="/website" element={<RoleRoute minRole="admin" element={<WebsitePage />} />} />
-          <Route path="/web-orders" element={<RoleRoute minRole="viewer" element={<WebOrdersPage />} />} />
+          <Route path="/web-orders" element={<BoardRoute element={<WebOrdersPage />} />} />
           <Route path="/watch-list" element={<RoleRoute minRole="viewer" element={<WatchListPage />} />} />
           <Route path="/activity" element={<RoleRoute minRole="admin" element={<ActivityPage />} />} />
           <Route path="/watch" element={<RoleRoute minRole="manager" element={<WatchPage />} />} />

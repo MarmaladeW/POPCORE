@@ -4,11 +4,11 @@ import { torontoDate } from '../Dashboard/todayPresentation'
 
 const tabs = [
   { to: '/summary', zh: '每日汇总', en: 'Daily summary' },
-  { to: '/closing', zh: '收工', en: 'Closing' },
   { to: '/sales', zh: '历史日报', en: 'Historical reports' },
 ]
 
-// Manager 销售 Sales: 每日汇总 · 收工 · 历史日报 (Figma Summary desktop). Staff reach 汇总 and 收工 from Home.
+// Admin 销售 Sales: 每日汇总 · 历史日报. 收工 left the tabs (owner, 2026-11-27: "Drop 收工 instead"); the day is closed
+// by the 店长's 审核 in 记一笔.
 export function SalesTabs() {
   const path = useLocation().pathname
   const active = path.startsWith('/sales') ? '/sales' : path

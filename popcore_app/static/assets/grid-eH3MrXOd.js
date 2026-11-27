@@ -1,0 +1,1 @@
+import{t as e}from"./useBreakpoint-BDRxunM9.js";function t(){return e()}var n={useBreakpoint:t};export{n as t};

@@ -4,6 +4,7 @@ blueprints/stores.py — store directory and shared store-resolution helper.
 import re
 from flask import Blueprint, request, jsonify
 
+import push_notifications
 from db import get_db
 from auth import ROLE_CLAIM, login_required, role_required
 from checkout_access import checkout_open
@@ -44,6 +45,8 @@ def list_stores():
     # And whether it takes checkouts there: staff wait for the store's Clover (owner, 2026-11-20), so 买单 hides.
     role = request.jwt_payload.get(ROLE_CLAIM, 'viewer')
     checkout = {r['id'] for r in rows if checkout_open(con, role, r['id'])}
+    # The app opens with this call: this account's phones follow its role (who gets new web orders).
+    push_notifications.remember_role(con, request.jwt_payload.get('sub'), role)
     con.close()
     return jsonify([{**dict(r), 'inventory_visible': r['id'] in visible, 'operations': r['id'] in operations,
                      'checkout': r['id'] in checkout} for r in rows])

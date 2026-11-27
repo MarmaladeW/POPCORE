@@ -6,6 +6,8 @@ import { checkWatchAlert, getWatch, runWatchNow, type WatchAlert, type WatchView
 import PageHeader from '../../components/pc/PageHeader'
 import { ListRow, Panel } from '../../components/pc/Panel'
 import { kindLabels, kindLinks, outcomeText, splitAlerts, statusLine, torontoTime } from './watchView'
+import Notifications from '../WebOrders/Notifications'
+import '../WebOrders/webOrders.css'
 import './watch.css'
 
 function AlertRow({ alert, busy, onCheck }: { alert: WatchAlert; busy?: boolean; onCheck?: () => void }) {
@@ -91,9 +93,9 @@ export default function WatchPage() {
     {data && <Panel zh="要看" en="Needs a look" label="Open alerts" count={look.length} tone={look.length ? 'warn' : 'ok'}>
       {look.length === 0 ? <p className="pc-quiet">没有异常 · Nothing unusual</p>
         : look.map(alert => <AlertRow key={alert.id} alert={alert} busy={busy === alert.id} onCheck={() => check(alert.id)} />)}
-      <p className="pc-quiet">手机通知用 <Link to="/web-orders">网站订单</Link> 页的 本设备通知 开关；推送只说有几条，不写内容。
-        Phone pushes use the device switch on Web orders and say only how many.</p>
+      <p className="pc-quiet">手机通知只说有几条，不写内容。Phone notifications say only how many, never what.</p>
     </Panel>}
+    <Notifications alerts />
     {quiet.length > 0 && <details className="pc-panel pc-watch-fold">
       <summary>Claude 认为正常 · Looked normal to Claude ({quiet.length})</summary>
       {quiet.map(alert => <AlertRow key={alert.id} alert={alert} busy={busy === alert.id} onCheck={() => check(alert.id)} />)}

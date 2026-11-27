@@ -1,11 +1,12 @@
 """网站订单 Web orders in a real browser against the real Flask app, a disposable database and a fake WooCommerce
-(owner, 2026-11-19): staff see DT's web orders in their five columns, the ones that need a manager and those done
+(owner, 2026-11-19): an admin sees DT's web orders in their five columns, the ones that need a manager and those done
 today; Ready moves a pickup on the website; the code box finds an order by its code and shows the customer's first
 name, and Handed over completes it and clears the name; delivery cards show the name the parcel goes to and the name
 box finds them by part of a name (owner, 2026-11-25); the board's data holds no pickup code and nothing personal but
 those names; a delivery shows at the store it leaves from, Markham's included (owner, 2026-11-26);
-viewers cannot open the page; a new order pops up at the board's next refresh and the notifications control is
-there (owner, 2026-11-19)."""
+a new order pops up at the board's next refresh and the notifications control is
+there (owner, 2026-11-19); staff and managers cannot open the page, and their menus have no 网站订单 (owner,
+2026-11-26: the board is the store computer's and the admin's)."""
 import asyncio
 import subprocess
 import sys
@@ -60,7 +61,7 @@ async def run(browser, width):
         return page
 
     try:
-        page = await open_as('staff')
+        page = await open_as('admin', 'admin:staff')   # auth0|staff, Amy, as an admin
         await page.clock.install()  # the board's 30-second refresh is moved on by hand below
         await page.goto(BASE + '/web-orders')
         # Notifications: this browser can take them, and nothing is turned on until someone taps.
@@ -80,7 +81,7 @@ async def run(browser, width):
         booked = page.get_by_role('region', name='Delivery · booked, waiting for the courier')
         await expect(booked.get_by_text('FleetNow DO202611190000000001 · CONFIRMED')).to_be_visible()
         await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('#705')).to_be_visible()
-        manager = page.get_by_role('region', name='Needs a manager')
+        manager = page.get_by_role('region', name='Needs an admin')
         await expect(manager.get_by_text('库存不够', exact=False)).to_be_visible()
         await expect(manager.get_by_text('A special order waiting for stock', exact=False)).to_be_visible()
         # Only the pickup to pick has a button; nothing else on the board does.
@@ -160,8 +161,17 @@ async def run(browser, width):
         # It opens on the orders to prepare (owner, 2026-11-24).
         await page.goto(BASE + '/')
         await expect(page).to_have_url(BASE + '/web-orders')
-        await expect(page.get_by_role('region', name='Pickup · to pick').get_by_text('#720')).to_be_visible()
+        pick = page.get_by_role('region', name='Pickup · to pick')
+        await expect(pick.get_by_text('#720')).to_be_visible()
         await expect(page.get_by_role('button', name='拣好了 Ready')).to_have_count(1)
+        # Ready goes straight through: nothing asks who is at the computer (owner, 2026-11-26: "we have cameras").
+        await pick.get_by_role('button', name='拣好了 Ready').click()
+        await page.get_by_role('button', name='Ready', exact=True).click()
+        await expect(page.get_by_text('#720 is ready', exact=False)).to_be_visible()
+        await expect(page.get_by_role('dialog')).to_have_count(0)
+        await expect(page.get_by_text('谁在操作', exact=False)).to_have_count(0)
+        assert fixture.woo.orders[720]['status'] == 'ready-pickup'
+        await fits(page, f'counter-ready-{width}.png')
         if width > 600:  # the rail: 网站订单 and 库存, nothing that changes anything
             rail = page.get_by_role('navigation', name='Primary navigation')
             await expect(rail.get_by_role('link', name='网站订单 Web orders')).to_be_visible()
@@ -179,11 +189,11 @@ async def run(browser, width):
             await page.goto(BASE + '/stock')
         await expect(page.get_by_role('heading', name='库存', exact=False).first).to_be_visible()
         await expect(page.get_by_role('navigation', name='Inventory sections')).to_have_count(0)
-        await expect(page.get_by_text("You don't have permission", exact=False)).to_have_count(0)
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_have_count(0)
         await fits(page, f'counter-stock-{width}.png')
         # No shifts for the store computer.
         await page.goto(BASE + '/schedule')
-        await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+        await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
 
         # A viewer with no 店铺电脑 store ticked: home says so, and the board names the tick it needs.
         page = await open_as('viewer')
@@ -208,7 +218,7 @@ async def run(browser, width):
                           meta=[('fleetnow_order_no', 'DO202611260000000001'), ('fleetnow_status', 'CONFIRMED')])
         fixture.run_sync()
         assert fixture.woo.fill_writes[-3:] == [(730, 'dt,mk'), (731, 'mk'), (732, 'mk')], fixture.woo.fill_writes
-        page = await open_as('staff', store=(mk, 'MK', 'Markham'))
+        page = await open_as('admin', 'admin:staff', store=(mk, 'MK', 'Markham'))
         await page.goto(BASE + '/web-orders')
         pack = page.get_by_role('region', name='Delivery · to pack')
         mine = pack.get_by_role('article', name='Order #731')
@@ -225,6 +235,24 @@ async def run(browser, width):
         # MK's board has deliveries now, so it has the name box.
         await expect(page.get_by_role('region', name='Delivery name')).to_be_visible()
         await fits(page, f'markham-{width}.png')
+
+        # Staff and managers (owner, 2026-11-26): the page says where web orders are handled, and no menu offers it.
+        with fixture.connect() as con:
+            con.executemany('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)',
+                            [('auth0|amy', fixture.dt), ('auth0|manager', fixture.dt)])
+        for role, token in (('staff', 'staff:amy'), ('manager', 'manager')):
+            page = await open_as(role, token)
+            await page.goto(BASE + '/web-orders')
+            await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
+            await expect(page.get_by_text('网站订单在店铺电脑上处理。', exact=True)).to_be_visible()
+            await expect(page.get_by_role('region', name='Pickup · to pick')).to_have_count(0)
+            await expect(page.get_by_role('link', name='网站订单 Web orders')).to_have_count(0)
+            await fits(page, f'closed-{role}-{width}.png')
+            await page.get_by_role('link', name='回首页 Home').click()
+            await expect(page).to_have_url(BASE + '/')
+            if width <= 600:
+                await page.goto(BASE + '/more')
+                await expect(page.get_by_role('link', name='网站订单', exact=False)).to_have_count(0)
     finally:
         for context in contexts:
             await context.close()

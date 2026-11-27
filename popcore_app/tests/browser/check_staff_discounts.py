@@ -18,7 +18,14 @@ OUT = ROOT / '.local' / 'staff-discounts'
 
 
 async def fits(page, name):
-    assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), name
+    # A dialog or a dropdown still sliding shut can stick out for a moment: the page must fit once it has settled.
+    # On GitHub this check failed in one of two runs of the same commit (popcore-work#136).
+    try:
+        await page.wait_for_function('document.documentElement.scrollWidth <= innerWidth', timeout=5000)
+    except Exception:
+        wide = await page.evaluate("""() => [...document.querySelectorAll('body *')].filter(node => node.getBoundingClientRect().right > innerWidth + 0.5)
+            .slice(0, 8).map(node => `${node.tagName}.${String(node.className).slice(0, 50)} right=${node.getBoundingClientRect().right.toFixed(1)}`)""")
+        raise AssertionError(f'{name}: the page scrolls sideways; sticking out: {wide}')
     await page.screenshot(path=OUT / name, animations='disabled', full_page=True)
 
 
@@ -170,7 +177,7 @@ async def run(browser, width):
         # A 查看者 Viewer cannot open it.
         page = await open_as('viewer')
         await page.goto(BASE + '/staff-discounts')
-        await expect(page.get_by_text("You don't have permission", exact=False)).to_be_visible()
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
     finally:
         for context in contexts:
             await context.close()

@@ -510,12 +510,6 @@ function UserDetail({
     </Group>
 
     <footer className="pc-ud-foot">
-      {entry?.empId && <Popconfirm title={`重设 ${name} 的 PIN？Reset ${name}'s PIN?`}
-        description="他们下次在手机上 我的 PIN 设新的。They set a new one from 我的 PIN on their phone."
-        onConfirm={() => client.delete(`/employees/${entry.empId}/pin`).then(() => message.success('PIN 已重设 PIN reset'))
-          .catch((cause: any) => message.error(cause?._serverMessage ?? '没有重设 Not reset'))}>
-        <Button variant="outline">重设 PIN Reset PIN</Button>
-      </Popconfirm>}
       <DeleteUserConfirm user={user} disabled={isSelf} onConfirm={onDelete} />
       <span className="pc-ud-hint">删除后，未来的班次会留在排班表上 · Their future shifts stay on the schedule.</span>
     </footer>

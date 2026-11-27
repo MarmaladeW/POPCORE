@@ -61,9 +61,9 @@ export function deliveryFacts(card: WebOrderCard): string[] {
   return facts.filter((fact): fact is string => !!fact)
 }
 
-// Why an order needs a manager, in staff words.
+// Why an order needs the admin, in staff words (the 网站 page that settles them is the admin's since 2026-11-26).
 const PROBLEM: Record<string, string> = {
-  not_enough_stock: '库存不够 · POPCORE’s count does not have enough of it. A manager counts or receives it.',
+  not_enough_stock: '库存不够 · POPCORE’s count does not have enough of it. Tell the admin: it needs a count or a receipt.',
   unknown_item: '产品未连接 · An item is not linked to POPCORE. An admin fixes the website item.',
   no_live_store: '没有上线的门店 · No live store can fill it.',
   no_items: '没有产品 · The order has no items.',
@@ -92,12 +92,12 @@ export function codeMissText(result: Exclude<WebOrderCodeResult, { found: true }
     case 'cancelled': return '已取消 · This order was cancelled on the website. Hand nothing over.'
     case 'refunded': return '已退款 · This order was refunded on the website. Hand nothing over.'
     case 'other_store': return `${result.store} 的订单 · This order is for pickup at ${result.store}.`
-    case 'status': return `${STATUS[result.status ?? ''] ?? `The website has this order as “${result.status}”.`} It cannot be handed over here: ask a manager.`
+    case 'status': return `${STATUS[result.status ?? ''] ?? `The website has this order as “${result.status}”.`} It cannot be handed over here: ask the admin.`
   }
   return ''
 }
 
-/** Every order on the board that is still open: the five columns and Needs a manager. */
+/** Every order on the board that is still open: the five columns and Needs an admin. */
 export const openCards = (board: WebOrdersBoard): WebOrderCard[] =>
   [...Object.values(board.columns).flat(), ...board.needs_manager]
 
@@ -121,7 +121,7 @@ export function nameMatches(board: WebOrdersBoard, typed: string): NameMatch[] {
   if (!words.length) return []
   const places: Array<[WebOrderCard[], string]> = [
     ...COLUMNS.map(column => [board.columns[column.key], `${column.zh} · ${column.en}`] as [WebOrderCard[], string]),
-    [board.needs_manager, '需要经理 · Needs a manager'],
+    [board.needs_manager, '需要管理员 · Needs an admin'],
     [board.done_today, '今天完成 · Done today'],
   ]
   return places.flatMap(([cards, where]) => cards

@@ -1,0 +1,1 @@
+import{g as e,p as t}from"./jsx-runtime-C8212kph.js";var n=e(t()),r=()=>n.useReducer(e=>e+1,0);export{r as t};

@@ -15,8 +15,6 @@ import { PageHeaderSlots, PhoneTopBar } from './pc/PageHeader'
 import StoreChip from './pc/StoreChip'
 import { CheckoutBusy, useCheckoutBusyListener } from './pc/useCheckoutBusy'
 import { useIsPhone } from './pc/useIsPhone'
-import PersonPicker, { ActingPersonBar } from './people/PersonPicker'
-import MyPinModal from './people/MyPin'
 import './AppLayout.css'
 import './pc/pc.css'
 
@@ -66,10 +64,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const slots = useMemo(() => ({ phone: phoneSlot, desktop: desktopSlot, mobile, register }), [phoneSlot, desktopSlot, mobile, register])
 
   const signOut = () => logout({ logoutParams: { returnTo: window.location.origin } })
-  const [pinOpen, setPinOpen] = useState(false)
   const accountItems: MenuProps['items'] = [
-    // A PIN is a person's: the store computer's 查看者 account has none.
-    ...(staff ? [{ key: 'pin', label: '我的 PIN My PIN', onClick: () => setPinOpen(true) }] : []),
     { key: 'logout', label: '退出登录 Sign out', danger: true, onClick: signOut },
   ]
   const userName = user?.nickname ?? user?.name ?? 'User'
@@ -121,7 +116,5 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </Link>
       </nav>}
     </div>
-  {/* Name + PIN is the store computer's (the 查看者 account); a staff phone never asks who is at the computer. */}
-  {!staff && <PersonPicker />}<ActingPersonBar /><MyPinModal open={pinOpen} onClose={() => setPinOpen(false)} />
     </PageHeaderSlots.Provider></CheckoutBusy.Provider>
 }

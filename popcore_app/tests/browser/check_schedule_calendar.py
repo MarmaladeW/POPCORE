@@ -138,7 +138,10 @@ async def run_checks(browser, case):
     await page.get_by_role('link', name='首页 Home', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
     await page.get_by_role('link', name='排班 Schedule', exact=True).click()
-    await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
+    # Coming back from Home on a slow runner took longer than the default 5 s in one of two runs of the same
+    # commit (popcore-work#136); the wait says where the page was if it still fails.
+    await expect(page).to_have_url(re.compile(r'/schedule$'), timeout=20_000)
+    await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible(timeout=20_000)
     await page.get_by_role('tab', name='我的班 My shifts', exact=True).click()
     await page.get_by_role('button', name='Edit reminder', exact=True).click()
     await page.get_by_label('Reminder for all employees (both stores)', exact=True).fill('提前十分钟到！\nPlease check your shift time.')

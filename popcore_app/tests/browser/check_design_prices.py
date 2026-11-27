@@ -139,7 +139,7 @@ async def run(browser, width):
         # Nothing waits on 网站 Website: the secret's jump was written without an OK. The page is the admin's (owner,
         # 2026-11-26): the manager who set the prices cannot open it.
         await page.goto(BASE + '/website')
-        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
         page = await open_as('admin')
         await page.goto(BASE + '/website')
         await page.get_by_text('Prices POPCORE wrote lately').click()
@@ -149,7 +149,7 @@ async def run(browser, width):
 
         page = await open_as('staff')
         await page.goto(BASE + '/products/design-prices')
-        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
     finally:
         for context in contexts:
             await context.close()

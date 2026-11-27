@@ -120,7 +120,7 @@ async def run(browser, width):
         state['role'] = 'staff'
         await context.add_init_script("window.__FOUNDATION_AUTH={role:'staff',token:'staff'};")
         await page.goto(BASE + '/count/sections')
-        await expect(page.get_by_text('Access Denied')).to_be_visible()
+        await expect(page.get_by_text('这一页没有对你开放')).to_be_visible()
     finally:
         await context.close()
         fixture.tearDown()

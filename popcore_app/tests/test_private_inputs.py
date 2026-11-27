@@ -112,7 +112,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
                 'headers': {
                     'Authorization': f'Bearer {canary}',
                     'Cookie': f'session={canary}',
-                    # The store computer's name + PIN (pins.py) never goes into an error report.
+                    # The store computer's name header (it once carried a PIN) never goes into an error report.
                     'X-Popcore-Person': f'7:{canary}',
                     'Accept': 'application/json',
                 },
@@ -129,8 +129,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
             'exception': {'values': [{'stacktrace': {'frames': [
                 {'module': 'website_board', 'vars': {'names': {703: canary}}},
                 {'module': 'blueprints.website', 'vars': {'result': canary}},
-                {'module': 'db', 'vars': {'path': 'popcore.db'}},
-                {'module': 'pins', 'vars': {'pin': canary}}]}}]},
+                {'module': 'db', 'vars': {'path': 'popcore.db'}}]}}]},
         }
 
         scrubbed = scrub_event(event, {})

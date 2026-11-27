@@ -8,7 +8,10 @@ replaced its pickup-code brief of 2026-11-16. Code: `website_board.py`, routes i
 
 ## Who sees what
 
-- Anyone with a role opens it. Each user sees the orders of the stores they have **Users → Store operations access**
+- The store computer (a 查看者 Viewer) and admins open it (owner, 2026-11-26: "网站订单 pick board close to staff but
+  available to viewer which is store computer"). Staff and managers cannot: the server answers 403
+  `board_store_computer_only`, their menus have no 网站订单 and the address shows the no-access page
+  (docs/access-rules.md). Each of the two sees the orders of the stores they have **Users → Store operations access**
   for; with a store selected in the top bar, only that store's. A pickup belongs to its pickup store. A delivery
   belongs to the store it leaves from (see [Which store a delivery leaves from](#which-store-a-delivery-leaves-from)).
 - The page reads the board every 30 seconds, the sync's pace, without reloading.
@@ -36,8 +39,9 @@ show their 入库, 调拨, 晚盘, 娃娃机, count and move buttons to staff on
 补货, 汇总 or 晚盘.
 
 A viewer with no 店铺电脑 store ticked opens on a 店铺电脑 page that says so, with links to Products, the Dex and the
-watch list; its board names the tick it needs. Notes on the website name the account ("Ready in popcore.store by DT
-柜台"), so personal sign-ins remain the way to record who pressed.
+watch list; its board names the tick it needs. Its two buttons ask nothing (owner, 2026-11-26: no PIN, and "dont
+need the 谁在操作 on the store computer, we have cameras"), so the note on the website names the account ("Ready in
+popcore.store by DT 柜台").
 
 ## The board
 
@@ -54,10 +58,10 @@ columns, each with the oldest paid order first:
 
 Under them:
 
-- **需要经理 Needs a manager**, with the reason in staff words:
+- **需要管理员 Needs an admin** (需要经理 until 2026-11-27; `needs_manager` in the data), with the reason in staff words:
   - every open order whose status is none of the five, such as `awaiting-stock` (a special order waiting for stock);
   - every order POPCORE could not take out of stock (`needs_review`) or put back after a cancel (`cancel_failed`).
-    These leave their column until a manager settles them on the Website page.
+    These leave their column until an admin settles them on the Website page.
 - **今天完成 Done today**, folded shut: orders completed, cancelled or refunded today (Toronto time), newest first.
 
 Each card shows:
@@ -86,7 +90,7 @@ Markham's board shows the deliveries Markham packs. POPCORE tells the website wh
 | Booked: the website names the store (`_fleetnow_pickup_store`, FleetNow 1.2.13) | that store's | 配送 MK |
 | Booked with no store named (before 1.2.13, or its switch off) | DT's | 配送 DT |
 | Booked at one store, but some of it was taken from another | both | "Taken from MK: bring it to DT" |
-| Waiting for a manager (not taken out of stock) | DT's | under Needs a manager, as before |
+| Waiting for a manager (not taken out of stock) | DT's | under Needs an admin, as before |
 
 A new delivery's phone notification goes to the people of the store it leaves from. Until FleetNow 1.2.13 is on
 popcore.ca with *Collect from the store popcore.store names* switched on, every booking still goes from Downtown: a
@@ -101,7 +105,7 @@ a pickup's name stays behind its code.
 Owner, 2026-11-25: "for the popcore.store 网站订单 tab, we should be able to see the name for the delivery orders, as
 well as searching up the name." Pickups were left as they are: their names show only after the code is typed.
 
-- Every delivery card, in the three delivery columns, Needs a manager and Done today, shows the shipping first and
+- Every delivery card, in the three delivery columns, Needs an admin and Done today, shows the shipping first and
   last name, else the billing name.
 - POPCORE reads them live from the website on each board refresh, in one request for all the board's deliveries
   (`GET /orders?include=<ids>&status=any&_fields=id,shipping.first_name,shipping.last_name,billing.first_name,billing.last_name`,
@@ -162,8 +166,10 @@ need our own notification thing." Two kinds, both for new paid web orders only:
 
 - **On a phone or computer, even with POPCORE closed** (`push_notifications.py`). On 网站订单, a person taps
   **在本设备开启 Notify me on this device** and allows notifications. From then on that device gets a notification for
-  every new paid web order of the stores they have store operations access for: "网站订单 #35864 · 自取 DT pickup" with
-  its lines (and "需要经理 Needs a manager" first when POPCORE could not take it out of stock). Tapping it opens
+  every new paid web order of the stores they have store operations access for (the store computer and admins only
+  since 2026-11-26; each device keeps its owner's role, refreshed whenever they open POPCORE, and a device turned on
+  before that keeps getting them until its owner's next visit): "网站订单 #35864 · 自取 DT pickup" with
+  its lines (and "需要管理员 Needs an admin" first when POPCORE could not take it out of stock). Tapping it opens
   网站订单. **测试 Test** sends one to every device of that person; **关闭 Turn off** stops this device.
   - iPhone and iPad: only POPCORE added to the Home Screen (Share → Add to Home Screen, iOS 16.4 or later) and opened
     from there can turn them on. In Safari itself the page says so.

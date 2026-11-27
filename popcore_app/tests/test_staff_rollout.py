@@ -328,7 +328,7 @@ class ActivityLogTests(StaffCheckoutWaitsForCloverTests):
                 "INSERT INTO activity_log(business_date, store_id, actor_sub, actor_name, via_sub, kind, endpoint, summary) "
                 "VALUES (?, ?, ?, ?, ?, 'stock', 'counting.save', ?)",
                 [(day, self.store_id, 'auth0|helper', 'Photo Helper', None, '盘点 Counted'),
-                 # Done on the store computer under the staff member's name + PIN: theirs, not the shared account's.
+                 # Done on the store computer under the staff member's name: theirs, not the shared account's.
                  (day, self.store_id, 'auth0|staff', 'Staff', 'auth0|counter', '盘点 Counted at the counter')])
             con.commit()
         admin = self.feed('admin', date=day, store_code='DT')
@@ -349,8 +349,9 @@ class ActivityLogTests(StaffCheckoutWaitsForCloverTests):
 from support import IsolatedApiCase  # noqa: E402
 
 
-class StoreComputerPinTests(IsolatedApiCase):
-    """Name + PIN on the shared store computer: a change there is marked with the person, not the shared account."""
+class StoreComputerAsksNothingTests(IsolatedApiCase):
+    """Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras".
+    A change made on the store computer is its shared account's own; nothing asks who."""
 
     def setUp(self):
         super().setUp()
@@ -364,124 +365,41 @@ class StoreComputerPinTests(IsolatedApiCase):
 
         with closing(self.connect()) as con:
             self.zimo = con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|staff', 'Zimo')").lastrowid
-            con.execute("INSERT INTO employee_stores(employee_id, store_id) VALUES (?, ?)", (self.zimo, self.store_id))
+            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT 柜台')")
             con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (self.store_id,))
             con.commit()
 
-    def counter(self, person=None, **extra):
-        headers = {**self.headers('viewer:counter'), **({'X-Popcore-Person': person} if person else {})}
-        return self.client.post('/api/test/touch', json={'store_id': self.store_id}, headers={**headers, **extra})
-
-    def test_staff_set_their_pin_and_the_store_computer_asks_for_it(self):
-        self.assertEqual(self.client.post('/api/me/pin', json={'pin': '1111'}, headers=self.headers()).status_code, 400)
-        self.assertEqual(self.client.post('/api/me/pin', json={'pin': '2580'}, headers=self.headers()).status_code, 200)
-        self.assertTrue(self.client.get('/api/me/pin', headers=self.headers()).get_json()['has_pin'])
-        people = self.client.get('/api/counter/people?store_code=DT', headers=self.headers('viewer:counter')).get_json()
-        self.assertEqual([(person['name'], person['has_pin']) for person in people['people']], [('Zimo', True)])
-        # No name: refused with 428 so the computer asks; a wrong PIN is refused; the right one goes through.
-        self.assertEqual(self.counter().get_json()['code'], 'person_needed')
-        self.assertEqual(self.counter(f'{self.zimo}:1234').get_json()['code'], 'pin_wrong')
-        self.assertEqual(self.counter(f'{self.zimo}:2580').status_code, 200)
+    def test_a_change_on_the_store_computer_is_the_shared_accounts_own(self):
+        counter = self.headers('viewer:counter')
+        sent = self.client.post('/api/test/touch', json={'store_id': self.store_id}, headers=counter)
+        self.assertEqual(sent.status_code, 200, sent.get_json())
+        # A page loaded before this still sends a name (and an older one a PIN): nothing reads it.
+        for person in (str(self.zimo), f'{self.zimo}:9999', 'nobody'):
+            sent = self.client.post('/api/test/touch', json={'store_id': self.store_id},
+                                    headers={**counter, 'X-Popcore-Person': person})
+            self.assertEqual(sent.status_code, 200, person)
         with closing(self.connect()) as con:
-            row = con.execute('SELECT actor_sub, actor_name, via_sub FROM activity_log ORDER BY id DESC LIMIT 1').fetchone()
-        self.assertEqual(tuple(row), ('auth0|staff', 'Zimo', 'auth0|counter'))
-        # Staff on their own phone need no PIN.
-        self.assertEqual(self.client.post('/api/test/touch', json={}, headers=self.headers('staff')).status_code, 200)
+            marks = {tuple(row) for row in con.execute(
+                "SELECT actor_sub, actor_name, via_sub FROM activity_log WHERE endpoint='touch'")}
+        self.assertEqual(marks, {('auth0|counter', 'DT 柜台', None)})
 
-    def test_five_wrong_pins_lock_it_and_an_admin_can_reset_it(self):
-        self.client.post('/api/me/pin', json={'pin': '2580'}, headers=self.headers())
-        for _ in range(5):
-            self.assertEqual(self.counter(f'{self.zimo}:9999').status_code, 403)
-        self.assertEqual(self.counter(f'{self.zimo}:2580').get_json()['code'], 'pin_locked')
-        # Admin only (owner, 2026-11-26): a forgotten PIN is set anew from the person's own phone.
-        for role in ('staff', 'manager'):
-            self.assertEqual(self.client.delete(f'/api/employees/{self.zimo}/pin', headers=self.headers(role)).status_code, 403)
-        self.assertEqual(self.client.delete(f'/api/employees/{self.zimo}/pin', headers=self.headers('admin')).status_code, 200)
-        self.assertEqual(self.counter(f'{self.zimo}:2580').get_json()['code'], 'pin_not_set')
-        self.assertEqual(self.client.post('/api/counter/check', json={'employee_id': self.zimo, 'pin': '2580'},
-                                          headers=self.headers('viewer:counter')).get_json()['code'], 'pin_not_set')
-
-    def pin_state(self, employee=None):
+    def test_the_pin_and_the_name_list_are_gone(self):
+        """Their routes answer 404, and the migration wiped what was kept of every PIN."""
+        for method, path in (('get', '/api/me/pin'), ('post', '/api/me/pin'), ('post', '/api/counter/check'),
+                             ('get', '/api/counter/people'), ('delete', f'/api/employees/{self.zimo}/pin')):
+            for role in ('viewer:counter', 'staff', 'admin'):
+                self.assertEqual(getattr(self.client, method)(path, headers=self.headers(role)).status_code, 404, (method, path))
+        import db as database
         with closing(self.connect()) as con:
-            return tuple(con.execute('SELECT pin_failures, pin_locked_until IS NOT NULL FROM employees WHERE id=?',
-                                     (employee or self.zimo,)).fetchone())
-
-    def lock_runs_out(self):
-        with closing(self.connect()) as con:
-            con.execute("UPDATE employees SET pin_locked_until='2026-01-01T00:00:00+00:00' WHERE id=?", (self.zimo,))
+            con.execute("""UPDATE employees SET pin_hash='hash', pin_salt='salt', pin_set_at='2026-11-20', pin_failures=3,
+                               pin_locked_until='2026-11-21' WHERE id=?""", (self.zimo,))
+            con.execute("DELETE FROM _migrations WHERE name='employee_pins_cleared'")
             con.commit()
-
-    def test_a_wrong_pin_after_the_lock_ran_out_locks_again_at_once(self):
-        self.client.post('/api/me/pin', json={'pin': '2580'}, headers=self.headers())
-        for _ in range(5):
-            self.counter(f'{self.zimo}:9999')
-        self.assertEqual(self.pin_state(), (5, 1))
-        self.lock_runs_out()
-        self.assertEqual(self.counter(f'{self.zimo}:9999').get_json()['code'], 'pin_wrong')
-        self.assertEqual(self.counter(f'{self.zimo}:2580').get_json()['code'], 'pin_locked')
-        # Only the right PIN clears the count.
-        self.lock_runs_out()
-        self.assertEqual(self.counter(f'{self.zimo}:2580').status_code, 200)
-        self.assertEqual(self.pin_state(), (0, 0))
-        # A new PIN from the person's own phone clears a lock too.
-        for _ in range(5):
-            self.counter(f'{self.zimo}:9999')
-        self.assertEqual(self.client.post('/api/me/pin', json={'pin': '1470'}, headers=self.headers()).status_code, 200)
-        self.assertEqual(self.counter(f'{self.zimo}:1470').status_code, 200)
-
-    def test_a_pin_is_only_checked_for_the_store_computer(self):
-        """Owner, 2026-11-26: nobody tries, or locks, a colleague's PIN from their own phone."""
-        self.client.post('/api/me/pin', json={'pin': '2580'}, headers=self.headers())
-        with closing(self.connect()) as con:
-            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|amy', 'Amy')")
+            database._migration_employee_pins_cleared(con, con.cursor())
             con.commit()
-        for role in ('staff:amy', 'manager', 'admin', 'viewer:nostore'):
-            for _ in range(6):   # the header is ignored: not checked, nobody acting, nothing counted
-                sent = self.client.post('/api/test/touch', json={},
-                                        headers={**self.headers(role), 'X-Popcore-Person': f'{self.zimo}:9999'})
-                self.assertEqual(sent.status_code, 200, role)
-        self.assertEqual(self.pin_state(), (0, 0))
-        with closing(self.connect()) as con:
-            marks = {tuple(row) for row in con.execute("SELECT actor_sub, via_sub FROM activity_log WHERE endpoint='touch'")}
-        self.assertEqual(marks, {('auth0|amy', None), ('auth0|manager', None), ('auth0|admin', None), ('auth0|nostore', None)})
-        # The check route: a phone checks only its own PIN; the store computer anyone's.
-        check = lambda role, pin: self.client.post('/api/counter/check', json={'employee_id': self.zimo, 'pin': pin},  # noqa: E731
-                                                   headers=self.headers(role))
-        for role in ('staff:amy', 'staff:noprofile', 'manager', 'admin', 'viewer:nostore'):
-            refused = check(role, '9999')
-            self.assertEqual((refused.status_code, refused.get_json()['code']), (403, 'pin_not_yours'), role)
-        self.assertEqual(self.pin_state(), (0, 0))
-        self.assertEqual(check('staff', '2580').get_json()['employee_id'], self.zimo)
-        self.assertEqual(check('viewer:counter', '2580').get_json()['name'], 'Zimo')
-        self.assertEqual(check('viewer:counter', '9999').get_json()['code'], 'pin_wrong')
-        self.assertEqual(self.pin_state(), (1, 0))
-
-    def test_the_people_list_is_for_the_store_computer_and_managers_and_never_lists_the_asker(self):
-        with closing(self.connect()) as con:
-            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT computer')")
-            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|manager', 'Kitty')")
-            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)", (self.store_id,))
-            con.commit()
-        people = lambda role: self.client.get('/api/counter/people?store_code=DT', headers=self.headers(role))  # noqa: E731
-        for role in ('staff', 'viewer:nostore'):
-            self.assertEqual((people(role).status_code, people(role).get_json()['code']), (403, 'forbidden'), role)
-        names = lambda role: sorted(person['name'] for person in people(role).get_json()['people'])  # noqa: E731
-        self.assertEqual(names('viewer:counter'), ['Kitty', 'Zimo'])       # not the shared account itself
-        self.assertEqual(names('manager'), ['DT computer', 'Zimo'])
-        self.assertEqual(names('admin'), ['DT computer', 'Kitty', 'Zimo'])
-
-    def test_a_viewer_account_has_no_pin(self):
-        with closing(self.connect()) as con:
-            counter = con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT computer')").lastrowid
-            con.commit()
-        self.client.post('/api/me/pin', json={'pin': '2580'}, headers=self.headers())
-        for headers in (self.headers('viewer:counter'),
-                        {**self.headers('viewer:counter'), 'X-Popcore-Person': f'{self.zimo}:2580'},
-                        self.headers('viewer:nostore')):
-            refused = self.client.post('/api/me/pin', json={'pin': '3690'}, headers=headers)
-            self.assertEqual((refused.status_code, refused.get_json()['code']), (403, 'pin_not_for_viewer'))
-        with closing(self.connect()) as con:
-            self.assertIsNone(con.execute('SELECT pin_hash FROM employees WHERE id=?', (counter,)).fetchone()[0])
+            self.assertEqual(tuple(con.execute("""SELECT pin_hash, pin_salt, pin_set_at, pin_failures, pin_locked_until
+                                                   FROM employees WHERE id=?""", (self.zimo,)).fetchone()),
+                             (None, None, None, 0, None))
 
 
 class RestockInOneGoTests(SetsFixture):

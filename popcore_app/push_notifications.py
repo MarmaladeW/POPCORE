@@ -3,7 +3,8 @@ it only notifies the one email that is setted, so we need our own notification t
 
 Standard Web Push, so no app store and no outside account: a person taps 通知 Notify me on 网站订单 Web orders, their
 browser (or POPCORE added to an iPhone's Home Screen) gives POPCORE a push address, and every new paid web order of a
-store they have store operations access for is pushed there. Messages are signed with POPCORE's own key (VAPID,
+store they have store operations access for is pushed there. Since 2026-11-26 that is the store computer and the
+admins only (the board is closed to staff); managers turn a device on from 异常提醒 for the watcher's alerts. Messages are signed with POPCORE's own key (VAPID,
 RFC 8292) and encrypted for that one device (RFC 8291), so the push service in between cannot read them. They hold the
 order number, the store and the lines, never anything about the customer.
 
@@ -36,6 +37,10 @@ CONTACT = 'https://popcore.store'
 RECORD_SIZE = 4096
 # How long a push service keeps a message for a phone that is off: a web order is news for a day.
 TTL = 24 * 60 * 60
+# Who a new web order is pushed to: the store computer (a 查看者 Viewer) and admins, who have 网站订单 (owner, 2026-11-26).
+ORDER_ROLES = ('viewer', 'admin')
+# Who can turn a device on at all: they, and managers for 异常提醒 (watcher.py). Staff have nothing to be told.
+DEVICE_ROLES = ('viewer', 'manager', 'admin')
 
 
 class PushError(ValueError):
@@ -145,13 +150,23 @@ def check_subscription(data):
     return endpoint, p256dh, auth
 
 
-def subscribe(con, sub, data):
-    """Keep a device for this person; a device signed in as someone else since moves to them."""
+def subscribe(con, sub, data, role=None):
+    """Keep a device for this person, with the role they are signed in with; a device signed in as someone else
+    since moves to them."""
     endpoint, p256dh, auth = check_subscription(data)
-    con.execute("""INSERT INTO push_subscriptions(endpoint, auth0_sub, p256dh, auth) VALUES (?, ?, ?, ?)
+    con.execute("""INSERT INTO push_subscriptions(endpoint, auth0_sub, p256dh, auth, role) VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(endpoint) DO UPDATE SET auth0_sub=excluded.auth0_sub, p256dh=excluded.p256dh,
-                       auth=excluded.auth, failures=0""", (endpoint, sub, p256dh, auth))
+                       auth=excluded.auth, role=excluded.role, failures=0""", (endpoint, sub, p256dh, auth, role))
     con.commit()
+
+
+def remember_role(con, sub, role):
+    """Keep this person's devices on the role they are signed in with now. Called when the app opens (GET
+    /api/stores), so a device turned on before roles were kept, or by someone whose role changed since, is right
+    after their next visit."""
+    if con.execute('SELECT 1 FROM push_subscriptions WHERE auth0_sub=? AND role IS NOT ? LIMIT 1', (sub, role)).fetchone():
+        con.execute('UPDATE push_subscriptions SET role=? WHERE auth0_sub=?', (role, sub))
+        con.commit()
 
 
 def unsubscribe(con, sub, endpoint):
@@ -203,13 +218,15 @@ def order_message(con, cfg, row):
     card = website_board.card(con, row, cfg)
     lines = ', '.join(f"{line['name']} × {line['quantity']}" for line in card['lines'])
     where = f"自取 {card['store']} pickup" if card['kind'] == 'pickup' else f"配送 {' + '.join(card['stores'])} delivery"
-    waiting = '需要经理 Needs a manager · ' if row['state'] in website_board.WAITING else ''
+    waiting = '需要管理员 Needs an admin · ' if row['state'] in website_board.WAITING else ''
     return {'title': f"网站订单 #{card['number']} · {where}", 'body': (waiting + lines)[:240],
             'url': '/web-orders', 'tag': f"web-order-{card['id']}"}
 
 
 def new_order(con, cfg, wc_order_id):
-    """Tell everyone who asked, at the order's store, about a new paid web order."""
+    """Tell the store computer and the admins who asked, at the order's store, about a new paid web order (owner,
+    2026-11-26: 网站订单 is closed to staff). A device turned on before roles were kept (`role` empty) still gets it
+    until its owner next opens POPCORE, so no admin phone goes quiet on the day this went live."""
     import website_board
     row = con.execute('SELECT * FROM website_orders WHERE wc_order_id=?', (wc_order_id,)).fetchone()
     if row is None:
@@ -218,7 +235,8 @@ def new_order(con, cfg, wc_order_id):
     stores = sorted(website_board.board_stores(website_board.card(con, row, cfg)))
     rows = con.execute(
         f"""SELECT p.* FROM push_subscriptions p
-            WHERE EXISTS (SELECT 1 FROM inventory_access a JOIN stores s ON s.id=a.store_id
+            WHERE (p.role IS NULL OR p.role IN ({','.join('?' * len(ORDER_ROLES))}))
+              AND EXISTS (SELECT 1 FROM inventory_access a JOIN stores s ON s.id=a.store_id
                           WHERE a.auth0_sub=p.auth0_sub AND s.code IN ({','.join('?' * len(stores))})
-                            AND s.is_active=1)""", stores).fetchall()
+                            AND s.is_active=1)""", (*ORDER_ROLES, *stores)).fetchall()
     return send(con, rows, order_message(con, cfg, row)) if rows else (0, 0)

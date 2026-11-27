@@ -1,11 +1,12 @@
 """Privacy boundary for optional error telemetry."""
 
 
-# x-popcore-person is the store computer's name + PIN header (pins.py): a PIN never goes into an error report.
+# x-popcore-person was the store computer's name + PIN header. Nothing reads it since 2026-11-26, but a page loaded
+# before that still sends a PIN in it, so it never goes into an error report.
 SENSITIVE_HEADERS = {'authorization', 'cookie', 'set-cookie', 'x-api-key', 'x-popcore-person'}
-# Code that holds customers' names read live from the website (web orders board, owner 2026-11-25), or a PIN as
-# typed (pins.py): an error report never carries its local variables.
-PRIVATE_MODULES = {'website_board', 'blueprints.website', 'pins'}
+# Code that holds customers' names read live from the website (web orders board, owner 2026-11-25): an error report
+# never carries its local variables.
+PRIVATE_MODULES = {'website_board', 'blueprints.website'}
 
 
 def scrub_event(event, _hint):

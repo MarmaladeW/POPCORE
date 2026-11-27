@@ -17,14 +17,16 @@ const before: Record<string, string[]> = {
   // account, lost 排班 (owner, 2026-11-24: "no need for shift").
   viewer: ['/', '/products', '/dex', '/watch-list'],
   staff: ['/', '/checkout', '/incoming', '/claw', '/summary', '/stock', '/restock', '/special-orders', '/today', '/trades', '/schedule', '/products', '/dex',
-    // 网站订单 Web orders, 可疑人员 Watch list and 员工折扣 Staff discounts came after the redesign (owner, 2026-11-19).
-    '/web-orders', '/watch-list', '/staff-discounts',
+    // 可疑人员 Watch list and 员工折扣 Staff discounts came after the redesign (owner, 2026-11-19). 网站订单 came with
+    // them and left again: it is the store computer's and the admin's (owner, 2026-11-26).
+    '/watch-list', '/staff-discounts',
     // 移货 Move stock (owner, 2026-11-24) is the one way to move goods; 入店 and 补货 left the menus for it.
     '/move'],
 }
-// Only admins have 动态, 销售, 报表 and 网站 (owner, 2026-11-26): a manager's menus are the staff ones.
-before.manager = [...before.staff]
-before.admin = [...before.manager, '/activity', '/sales', '/reports', '/website', '/users', '/settings']
+// Only admins have 动态, 销售, 报表, 网站 and 网站订单 (owner, 2026-11-26): a manager's menus are the staff ones.
+// A 店长 also has 异常提醒 (owner, 2026-11-27: before, they needed its address).
+before.manager = [...before.staff, '/watch']
+before.admin = [...before.manager, '/web-orders', '/activity', '/sales', '/reports', '/website', '/users', '/settings']
 
 // Special orders sit inside Checkout, so anyone who can open Checkout reaches them from there.
 // The claw machine sits inside Inventory.
@@ -33,8 +35,8 @@ const viaCheckout = (keys: string[], admin = false) => [...new Set([...keys, ...
 const rail = (access: NavAccess) => viaCheckout(railGroups(access).flatMap(group => group.items.map(entry => entry.key)), access.admin)
 const phone = (access: NavAccess) => viaCheckout([...bottomItems(access, '/'), ...moreItems(access), ...homeShortcuts(access)].map(entry => entry.key), access.admin)
 
-test('Trades and Today leave every menu, and 入店 and 补货 give way to 移货', () => {
-  assert.deepEqual(removedFromMenus, ['/trades', '/today', '/incoming', '/restock'])
+test('Trades, Today and 收工 leave every menu, and 入店 and 补货 give way to 移货', () => {
+  assert.deepEqual(removedFromMenus, ['/trades', '/today', '/incoming', '/restock', '/closing'])
   for (const access of Object.values(roles)) {
     for (const key of removedFromMenus) {
       assert.ok(!rail(access).includes(key), `${key} still in rail`)
@@ -67,10 +69,10 @@ test('menus never offer a page above the role', () => {
 })
 
 test('更多 lists 移货, 库存, 网站订单, 可疑人员, 产品, 图鉴, 销售, 员工折扣, 报表, 网站, 员工, 设置 in order, by role', () => {
-  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['移货', '库存', '网站订单', '动态', '可疑人员', '产品', '图鉴', '销售', '员工折扣', '报表', '网站', '员工', '设置'])
-  // Staff and managers find 员工折扣 after 网站订单; an admin finds it beside 销售.
-  assert.deepEqual(moreItems(roles.staff).map(entry => entry.zh), ['移货', '库存', '网站订单', '员工折扣', '可疑人员', '产品', '图鉴'])
-  assert.deepEqual(moreItems(roles.manager).map(entry => entry.zh), moreItems(roles.staff).map(entry => entry.zh))
+  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['移货', '库存', '网站订单', '动态', '可疑人员', '产品', '图鉴', '异常提醒', '销售', '员工折扣', '报表', '网站', '员工', '设置'])
+  // Staff and managers have no 网站订单 (owner, 2026-11-26) and find 员工折扣 after 库存; an admin finds it beside 销售.
+  assert.deepEqual(moreItems(roles.staff).map(entry => entry.zh), ['移货', '库存', '员工折扣', '可疑人员', '产品', '图鉴'])
+  assert.deepEqual(moreItems(roles.manager).map(entry => entry.zh), [...moreItems(roles.staff).map(entry => entry.zh), '异常提醒'])
   assert.equal(moreItems(roles.admin).find(entry => entry.zh === '销售')?.key, '/summary')
   assert.deepEqual(moreItems(roles.viewer).map(entry => entry.key), ['/watch-list', '/products', '/dex'])
 })
@@ -80,7 +82,7 @@ test('rails follow the Figma groups', () => {
   assert.deepEqual(railGroups(roles.staff).map(group => group.label), ['日常', '计划'])
   assert.deepEqual(railGroups(roles.admin)[1].items.map(entry => entry.zh), ['销售', '员工折扣', '报表', '网站'])
   assert.deepEqual(railGroups(roles.admin)[0].items.map(entry => entry.zh), ['首页', '买单', '移货', '库存', '网站订单', '动态', '可疑人员'])
-  assert.deepEqual(railGroups(roles.staff)[0].items.map(entry => entry.zh), ['首页', '买单', '移货', '汇总', '库存', '网站订单', '员工折扣', '可疑人员'])
+  assert.deepEqual(railGroups(roles.staff)[0].items.map(entry => entry.zh), ['首页', '买单', '移货', '汇总', '库存', '员工折扣', '可疑人员'])
   // A manager keeps store work: the staff's daily group, with 排班, 产品 and 图鉴 under 计划与管理.
   assert.deepEqual(railGroups(roles.manager).map(group => group.label), ['日常', '计划与管理'])
   assert.deepEqual(railGroups(roles.manager)[0].items.map(entry => entry.zh), railGroups(roles.staff)[0].items.map(entry => entry.zh))
@@ -132,8 +134,8 @@ test('nested pages light up their section', () => {
 })
 
 test('without 库存查看, 库存 becomes 晚盘 and 入店 leaves the menus', () => {
-  assert.deepEqual(railGroups(unpicked)[0].items.map(entry => entry.zh), ['首页', '买单', '移货', '汇总', '晚盘', '网站订单', '员工折扣', '可疑人员'])
-  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/move', '/stock/count', '/web-orders', '/staff-discounts', '/watch-list', '/products', '/dex'])
+  assert.deepEqual(railGroups(unpicked)[0].items.map(entry => entry.zh), ['首页', '买单', '移货', '汇总', '晚盘', '员工折扣', '可疑人员'])
+  assert.deepEqual(moreItems(unpicked).map(entry => entry.key), ['/move', '/stock/count', '/staff-discounts', '/watch-list', '/products', '/dex'])
   assert.deepEqual(homeShortcuts(unpicked).map(entry => entry.key), ['/checkout', '/move', '/stock/count', '/summary'])
   const everywhere = [...rail(unpicked), ...phone(unpicked)]
   for (const key of ['/stock', '/incoming', '/claw']) assert.ok(!everywhere.includes(key), key)
@@ -178,7 +180,7 @@ test('staff see no 买单 where checkout waits for Clover (owner, 2026-11-20)', 
   assert.ok(!keys.includes('/checkout'))
   assert.deepEqual(bottomItems(waiting, '/').map(entry => entry.zh), ['首页', '排班'])
   assert.deepEqual(homeShortcuts({ ...unpicked, checkout: false }).map(entry => entry.zh), ['移货', '晚盘', '汇总'])
-  assert.deepEqual(railGroups({ ...unpicked, checkout: false })[0].items.map(entry => entry.zh), ['首页', '移货', '汇总', '晚盘', '网站订单', '员工折扣', '可疑人员'])
+  assert.deepEqual(railGroups({ ...unpicked, checkout: false })[0].items.map(entry => entry.zh), ['首页', '移货', '汇总', '晚盘', '员工折扣', '可疑人员'])
   // Managers and admins keep it, and an open store shows it as before.
   assert.ok(railGroups({ ...roles.manager, checkout: false })[0].items.some(entry => entry.key === '/checkout'))
   assert.deepEqual(bottomItems({ ...roles.staff, checkout: true }, '/').map(entry => entry.zh), ['首页', '买单', '排班'])

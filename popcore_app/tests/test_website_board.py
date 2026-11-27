@@ -1,19 +1,21 @@
-"""网站订单 Web orders board (owner, 2026-11-19; the popcore.ca website session's brief of the same day): staff with
-store operations access see their stores' paid web orders in five columns, the orders that need a manager and those
+"""网站订单 Web orders board (owner, 2026-11-19; the popcore.ca website session's brief of the same day): the store
+computer and admins (owner, 2026-11-26: closed to staff) with store operations access see their stores' paid web
+orders in five columns, the orders that need a manager and those
 done today; Ready and Handed over move a pickup order on the website and leave a note; the code box finds a pickup
 order by its code and reads the customer's first name live. No pickup code reaches the board's data; the only
 personal thing in it is the name each delivery goes to (owner, 2026-11-25), read live and never stored."""
 import json
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from test_website_sync import WebsiteCase, _ago
 
 import website_board as board_module
 import website_sync
 
-STAFF = {'Authorization': 'Bearer staff'}            # auth0|staff, DT store operations access, named Amy
-OTHER = {'Authorization': 'Bearer staff:other'}      # auth0|other, no store operations access
+ADMIN = {'Authorization': 'Bearer admin:staff'}      # auth0|staff, an admin with DT store operations access, named Amy
+OTHER = {'Authorization': 'Bearer admin:other'}      # auth0|other, an admin with no store operations access
 PRIVATE = ('Private', 'Person', '416-555', 'Secret St', 'someone@example.com')
 # What never reaches the board, names aside: the customer's phone, email and addresses.
 CONTACT = ('416-555', 'Secret St', 'someone@example.com', '647-555', 'Hidden Ave')
@@ -24,12 +26,17 @@ def _days_ago(days):
 
 
 class BoardCase(WebsiteCase):
-    """DT live with nine web orders in every state, and a staff member with DT access (test_web_order_notifications.py
+    """DT live with nine web orders in every state, and an admin with DT access (test_web_order_notifications.py
     builds on it)."""
 
     def setUp(self):
         super().setUp()
         self.turn_on()
+        # "Done today" is by Toronto's date, so an order completed ten minutes ago was done yesterday for the first
+        # ten minutes after midnight, and these tests failed then (popcore-work#132). Here the day began an hour ago.
+        day = patch.object(board_module, '_today_starts', return_value=_ago(60))
+        day.start()
+        self.addCleanup(day.stop)
         with closing(self.connect()) as con:
             con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (self.dt,))
             con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|staff', 'Amy')")
@@ -58,7 +65,7 @@ class BoardCase(WebsiteCase):
         woo.order(709, [(11, 1)], pickup='mk', paid=_ago(5), meta=[('_popcore_pickup_code', 'MKP999')])
         self.run_sync()
 
-    def board(self, headers=STAFF, store=None):
+    def board(self, headers=ADMIN, store=None):
         response = self.client.get('/api/website/board' + (f'?store={store}' if store else ''), headers=headers)
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()
@@ -66,17 +73,17 @@ class BoardCase(WebsiteCase):
     def numbers(self, cards):
         return [card['number'] for card in cards]
 
-    def code(self, code, headers=STAFF, store='DT'):
+    def code(self, code, headers=ADMIN, store='DT'):
         return self.client.post('/api/website/board/code', json={'code': code, 'store': store}, headers=headers)
 
-    def step(self, order_id, action, code=None, headers=STAFF):
+    def step(self, order_id, action, code=None, headers=ADMIN):
         return self.client.post(f'/api/website/board/orders/{order_id}/{action}',
                                 json={'code': code} if code else {}, headers=headers)
 
 
 class WebOrdersBoardTests(BoardCase):
     def test_orders_sit_in_their_columns_oldest_first_with_nothing_personal_but_delivery_names(self):
-        response = self.client.get('/api/website/board', headers=STAFF)
+        response = self.client.get('/api/website/board', headers=ADMIN)
         board = response.get_json()
         self.assertEqual(board['stores'], ['DT'])
         self.assertEqual({name: self.numbers(cards) for name, cards in board['columns'].items()},
@@ -122,7 +129,7 @@ class WebOrdersBoardTests(BoardCase):
                        shipping={'first_name': 'Done', 'last_name': 'Today'})
         self.run_sync()
         self.woo.reads.clear()
-        response = self.client.get('/api/website/board', headers=STAFF)
+        response = self.client.get('/api/website/board', headers=ADMIN)
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
         board = response.get_json()
         self.assertEqual((board['deliveries'], board['names_read']), (True, True))
@@ -355,16 +362,15 @@ class CounterAccountTests(BoardCase):
     def test_a_viewer_counter_account_works_the_board_and_reads_stock_but_changes_nothing(self):
         board = self.board(self.COUNTER)
         self.assertEqual((board['stores'], self.numbers(board['columns']['pick'])), (['DT'], ['701']))
-        # Its buttons ask who is at the computer (owner, 2026-11-20): a name + PIN, and the note names that person.
-        self.assertEqual(self.step(701, 'ready', headers=self.COUNTER).get_json()['code'], 'person_needed')
-        self.assertEqual(self.client.post('/api/me/pin', json={'pin': '2580'}, headers=STAFF).status_code, 200)
+        # Its buttons ask nothing (owner, 2026-11-26: "dont need the 谁在操作 on the store computer, we have cameras"):
+        # the note on the website names the shared account.
         with closing(self.connect()) as con:
-            amy = con.execute("SELECT id FROM employees WHERE auth0_id='auth0|staff'").fetchone()[0]
-        person = {**self.COUNTER, 'X-Popcore-Person': f'{amy}:2580'}
-        self.assertEqual(self.step(701, 'ready', headers=person).get_json(), {'result': 'done', 'noted': True})
-        self.assertEqual(self.woo.notes[-1][1]['note'], 'Ready in popcore.store by Amy')
+            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT 柜台')")
+            con.commit()
+        self.assertEqual(self.step(701, 'ready', headers=self.COUNTER).get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.notes[-1][1]['note'], 'Ready in popcore.store by DT 柜台')
         self.assertEqual(self.code('K7R4MX', headers=self.COUNTER).get_json()['first_name'], 'Private')
-        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX', headers=person).get_json()['result'], 'done')
+        self.assertEqual(self.step(701, 'handed-over', code='K7R4MX', headers=self.COUNTER).get_json()['result'], 'done')
         # The menus learn where it has store operations access.
         stores = {row['code']: row for row in self.client.get('/api/stores', headers=self.COUNTER).get_json()}
         self.assertEqual((stores['DT']['operations'], stores['DT']['inventory_visible'], stores['MK']['operations']),
@@ -372,11 +378,11 @@ class CounterAccountTests(BoardCase):
         # It reads DT's stock ...
         self.assertEqual(self.client.get('/api/inventory/series?store_code=DT', headers=self.COUNTER).status_code, 200)
         self.assertEqual(self.client.get('/api/inventory/overview?store_code=DT', headers=self.COUNTER).status_code, 200)
-        # ... and changes none of it, whatever its store access; a name + PIN says who, never adds a permission.
+        # ... and changes none of it, whatever its store access.
         with closing(self.connect()) as con:
             version = con.execute("""SELECT version FROM inventory_balances WHERE product_id=? AND location_id=?
                                      AND disposition='saleable'""", (self.item, self.locations['upstairs'])).fetchone()[0]
-        move = self.client.post('/api/inventory/commands', headers={**person, 'Idempotency-Key': 'counter-move'}, json={
+        move = self.client.post('/api/inventory/commands', headers={**self.COUNTER, 'Idempotency-Key': 'counter-move'}, json={
             'kind': 'move', 'business_date': '2026-11-01', 'lines': [{
                 'product_id': self.item, 'unit': 'piece', 'quantity': 1, 'from_location_id': self.locations['upstairs'],
                 'from_disposition': 'saleable', 'to_location_id': self.locations['floor'], 'to_disposition': 'saleable',
@@ -392,3 +398,29 @@ class CounterAccountTests(BoardCase):
         self.assertEqual(self.step(701, 'ready', headers=plain).status_code, 403)
         self.assertEqual(self.code('K7R4MX', headers=plain).get_json(), {'found': False, 'why': 'other_store', 'store': 'DT'})
         self.assertEqual(self.woo.status_writes, [])
+
+
+class ClosedToStaffTests(BoardCase):
+    """Owner, 2026-11-26: "网站订单 pick board close to staff but available to viewer which is store computer". Staff
+    and managers get nothing from it, whatever their store operations access; the admin keeps it."""
+
+    def setUp(self):
+        super().setUp()
+        with closing(self.connect()) as con:
+            con.executemany('INSERT INTO inventory_access(auth0_sub, store_id) VALUES (?, ?)',
+                            [('auth0|amy', self.dt), ('auth0|manager', self.dt)])
+            con.commit()
+
+    def test_staff_and_managers_get_nothing_from_the_board(self):
+        for role in ('staff:amy', 'manager'):
+            headers = self.headers(role)
+            for response in (self.client.get('/api/website/board', headers=headers),
+                             self.code('K7R4MX', headers=headers),
+                             self.step(701, 'ready', headers=headers),
+                             self.step(702, 'handed-over', code='ACD346', headers=headers)):
+                self.assertEqual((response.status_code, response.get_json()['code']), (403, 'board_store_computer_only'), role)
+                for value in PRIVATE:
+                    self.assertNotIn(value, response.get_data(as_text=True))
+        self.assertEqual(self.woo.status_writes, [])
+        # The admin still works it.
+        self.assertEqual(self.numbers(self.board(ADMIN)['columns']['pick']), ['701'])

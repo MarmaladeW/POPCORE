@@ -136,7 +136,7 @@ async def run(browser, width):
         for role in ('manager', 'staff'):
             page = await open_as(role)
             await page.goto(BASE + '/website')
-            await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+            await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
             await expect(page.get_by_role('region', name='Stock sync')).to_have_count(0)
     finally:
         for context in contexts:

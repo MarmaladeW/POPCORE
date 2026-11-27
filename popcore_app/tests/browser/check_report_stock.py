@@ -94,7 +94,7 @@ async def run(browser, width):
         await expect(page.get_by_role('heading', name='门店概览')).to_be_visible()
         await expect(page.get_by_text(re.compile('日报差异|日报库存'))).to_have_count(0)
         await page.goto(BASE + '/sales/report-stock')
-        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
         await expect(page.get_by_text('Bare 整端 (BARE-SET) × 1')).to_have_count(0)
 
         # Staff never see the checks either: not on their home, and the page refuses them.
@@ -103,7 +103,7 @@ async def run(browser, width):
         await expect(page.get_by_role('heading', name=re.compile('开始工作'))).to_be_visible()
         await expect(page.get_by_text(re.compile('日报差异|日报库存'))).to_have_count(0)
         await page.goto(BASE + '/sales/report-stock')
-        await expect(page.get_by_text("You don't have permission to view this page", exact=False)).to_be_visible()
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
         await expect(page.get_by_text('Bare 整端 (BARE-SET) × 1')).to_have_count(0)
     finally:
         for context in contexts:

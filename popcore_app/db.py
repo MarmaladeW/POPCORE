@@ -2143,6 +2143,8 @@ def _get_migrations():
         ('stock_moves',                                _migration_stock_moves),
         ('quick_sale_staff_discount_cash',             _migration_quick_sale_staff_discount_cash),
         ('website_order_fill_stores',                  _migration_website_order_fill_stores),
+        ('employee_pins_cleared',                      _migration_employee_pins_cleared),
+        ('push_subscription_roles',                    _migration_push_subscription_roles),
     ]
 
 
@@ -2560,10 +2562,33 @@ def _migration_quick_sale_staff_discount_cash(con, cur):
 
 
 def _migration_employee_pins(con, cur):
-    # Name + PIN on the shared store computer (owner, 2026-11-20); see pins.py.
-    import pins
-    pins.migrate(cur)
+    # Name + PIN on the shared store computer (owner, 2026-11-20). Gone since 2026-11-26: see
+    # `employee_pins_cleared` and docs/daily-use-and-marks.md.
+    # Kept so a database from before still migrates the same way; the columns are unused since 2026-11-26.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(employees)')}
+    for column, kind in (('pin_hash', 'TEXT'), ('pin_salt', 'TEXT'), ('pin_set_at', 'TEXT'),
+                         ('pin_failures', 'INTEGER NOT NULL DEFAULT 0'), ('pin_locked_until', 'TEXT')):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE employees ADD COLUMN {column} {kind}')
     cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins')")
+
+
+def _migration_employee_pins_cleared(con, cur):
+    # Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras".
+    # The store computer asks nothing, and what was kept of every PIN (hash, salt, wrong tries) is wiped: four
+    # digits are found from a hash at once, and they open nothing now.
+    cur.execute("""UPDATE employees SET pin_hash=NULL, pin_salt=NULL, pin_set_at=NULL, pin_failures=0,
+                       pin_locked_until=NULL""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins_cleared')")
+
+
+def _migration_push_subscription_roles(con, cur):
+    # 网站订单 is the store computer's and the admin's (owner, 2026-11-26), so a new web order is pushed only to their
+    # devices: each device keeps the role its owner signed in with (push_notifications.py). A device from before
+    # this has none until its owner next opens POPCORE.
+    if 'role' not in {row[1] for row in cur.execute('PRAGMA table_info(push_subscriptions)')}:
+        cur.execute('ALTER TABLE push_subscriptions ADD COLUMN role TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscription_roles')")
 
 
 def _migration_activity_log(con, cur):

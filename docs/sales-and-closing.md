@@ -37,6 +37,9 @@ Back up the SQLite database before its referenced evidence files, then copy the 
 
 ## Closing
 
+Since 2026-11-27 收工 Closing is out of the menus (owner: "Drop 收工 instead"; docs/access-rules.md): stores close the day
+with the 店长's 审核 in 记一笔. What follows describes the screen and rules that remain at `/closing`.
+
 There is one closing session per store and local business date. A staff member with a shift at that store on that business date opens the closing, counts the cash and submits it, whoever took the day's orders; a manager still signs off (owner, 2026-10-27). Staff see as little as possible: the day's tender totals, expected and counted cash, and every blocker and review exception as a label. Only what they can act on and open (their own order, an open order in today's queue, a delivery, a count) keeps its link; anything else has no id. They never get another cashier's order, amount or reference, or the payment references behind the totals. The server sends this staff view; managers and admins keep the full view within today's checkout scope.
 
 Staff declare sales intake complete, resolve receiving/restock work, save explicit opening and retained coin amounts, enter every bill and coin denomination count, and complete required hot-item counts. The application uses a fixed $650 bill float plus the explicitly entered coins.

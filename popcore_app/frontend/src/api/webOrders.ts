@@ -28,7 +28,7 @@ export interface WebOrderCard {
   delivery?: WebOrderDelivery
   // Delivery: who the parcel goes to (shipping name, else billing), read live; null when the website did not answer.
   name?: string | null
-  // Needs a manager: a POPCORE problem code, 'cancel_failed', or 'status' (a website status the columns lack).
+  // Needs an admin (`needs_manager` in the data): a POPCORE problem code, 'cancel_failed', or 'status' (a website status the columns lack).
   reason?: string | null
   done_at?: string | null
 }

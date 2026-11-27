@@ -20,7 +20,7 @@ Tracked in MarmaladeW/popcore-work#81. Code: `popcore_app/watcher.py`, `blueprin
 **告诉谁**：管理员看全部；每家店的经理只看自己店的；同步问题只给管理员。提醒出现在首页「异常提醒」和
 「异常提醒」页面，看过点「已查看」。**要紧的**（被偷/丢失、盘点少 25 个以上、现金差 $50 以上、同步卡住）
 马上推送到手机；其他的每天早上 Claude 看完后再推送。手机推送只写「N 条新提醒」，不写内容。
-手机要先在「网站订单」页打开「本设备通知」。
+手机要先在「异常提醒」页下面打开「手机通知」。
 
 **Claude 做什么**：每天早上 7:00（可改）用 Claude Opus 5.5 看一遍新提醒，给每条写一句中英文说明；
 看起来正常的标成「Claude 认为正常」折起来（不会删掉，要紧的不能被它折起来）。
@@ -50,7 +50,7 @@ When 日报 pasting stops, the two 日报 checks simply go quiet.
 **Who is told**: admins see everything; each store's managers see their own store's; sync problems go to admins
 only. Alerts show on the manager home and on the 异常提醒 Alerts page; "已查看 Checked" clears one. **Urgent** ones
 (stolen/missing, a count 25+ short, a cash gap of $50+, a stuck sync) are pushed to phones at once; the rest after
-Claude's morning review. A push says only "N new alerts", never what. Phones turn pushes on from the Web orders page.
+Claude's morning review. A push says only "N new alerts", never what. Phones turn pushes on from the switch at the bottom of 异常提醒 (admins can also use the one on Web orders).
 
 **What Claude does**: every morning at 07:00 (changeable), Claude Opus 5.5 reads the new alerts and writes one line
 in Chinese and English for each; ones that look normal are folded under "Looked normal to Claude" (never removed;
