@@ -2,6 +2,8 @@
 blueprints/schedule.py — employee profiles, availability, shifts, monthly hours report.
 """
 import datetime as _dt
+import json as _json
+import math
 import secrets
 import re as _re
 from zoneinfo import ZoneInfo
@@ -9,6 +11,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db
+import activity
 import people
 import ranks
 from auth import (
@@ -799,15 +802,97 @@ def schedule_shifts_me():
     return jsonify([dict(r) for r in rows])
 
 
+# ─── 打卡 only at the store (owner, 2026-11-27: "make sure they dont click 打卡 when they are not in the store yet";
+# Markham has no store computer, so the owner picked GPS) ──────────────────────────────────────────────────────
+# Tapping 打卡 sends the phone's location. A punch counts only within PUNCH_RADIUS_M of the shift's store, when the
+# phone itself says it knows where it is to within PUNCH_ACCURACY_M, and from PUNCH_EARLY_MINUTES before the shift
+# starts. An admin saves each store's spot in 设置 → 打卡定位 (one app_settings row, JSON keyed by store code); a
+# store with no spot saved takes no punches. The staff member's coordinates are never stored: only the distance,
+# on the punch's 动态 line.
+
+PUNCH_EARLY_MINUTES = 30
+PUNCH_RADIUS_M = 150
+PUNCH_ACCURACY_M = 150
+PUNCH_PLACES_KEY = 'punch_places'
+_PUNCH_LOCATION = ('lat', 'lng', 'accuracy')
+
+
+def _real_number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _real_place(lat, lng):
+    return _real_number(lat) and _real_number(lng) and -90 <= lat <= 90 and -180 <= lng <= 180
+
+
+def _punch_places(con):
+    row = con.execute('SELECT value FROM app_settings WHERE key=?', (PUNCH_PLACES_KEY,)).fetchone()
+    try:
+        saved = _json.loads(row['value']) if row else {}
+    except ValueError:
+        saved = {}
+    return {code: place for code, place in saved.items() if isinstance(place, dict)} if isinstance(saved, dict) else {}
+
+
+def _metres_between(lat1, lng1, lat2, lng2):
+    """Distance over the Earth's surface (haversine), in metres."""
+    lat1, lng1, lat2, lng2 = map(math.radians, (lat1, lng1, lat2, lng2))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(h))
+
+
+def _far(metres):
+    return (f'{metres} 米', f'{metres} m') if metres < 1000 else (f'{metres / 1000:.1f} 公里', f'{metres / 1000:.1f} km')
+
+
+def _punch_status(con, shift, now):
+    """From when this shift can punch in, and whether its store has a spot saved."""
+    hour, minute = map(int, shift['start_time'].split(':'))
+    opens = max(0, hour * 60 + minute - PUNCH_EARLY_MINUTES)
+    opens_at = f'{opens // 60:02d}:{opens % 60:02d}'
+    return {'opens_at': opens_at, 'radius_m': PUNCH_RADIUS_M,
+            'too_early': now.astimezone(ZoneInfo('America/Toronto')).strftime('%H:%M') < opens_at,
+            'place_set': shift['store_code'] in _punch_places(con)}
+
+
+def _punch_refusal(con, shift, punch, data):
+    """(None, metres from the store) when this punch counts, else ((code, message), None)."""
+    if punch['too_early']:
+        return ('punch_too_early', f"{punch['opens_at']} 起才能打卡（上班前 {PUNCH_EARLY_MINUTES} 分钟）· Punch in from "
+                f"{punch['opens_at']}, {PUNCH_EARLY_MINUTES} minutes before your shift."), None
+    place = _punch_places(con).get(shift['store_code'])
+    if not place or not _real_place(place.get('lat'), place.get('lng')):
+        return ('punch_place_unset', '这家店还没设置打卡位置，请找管理员 · This store has no punch-in location yet. '
+                'Ask an admin.'), None
+    if 'lat' not in data:
+        return ('punch_needs_location', '打卡要用定位，请允许 popcore.store 使用你的位置 · Punch-in needs your location: '
+                'allow popcore.store to use it.'), None
+    if data['accuracy'] > PUNCH_ACCURACY_M:
+        zh, en = _far(round(data['accuracy']))
+        return ('punch_location_rough', f'手机的定位不够准（±{zh}），走到门口再试 · Your phone only knows where you are to '
+                f'±{en}. Step to the door and try again.'), None
+    metres = round(_metres_between(data['lat'], data['lng'], place['lat'], place['lng']))
+    if metres > PUNCH_RADIUS_M:
+        zh, en = _far(metres)
+        return ('punch_too_far', f'你离店还有 {zh}，到店再打卡 · You are {en} from the store. Punch in when you get '
+                'there.'), None
+    return None, metres
+
+
 @bp.route('/api/schedule/attendance/today', methods=['GET', 'POST'])
 @role_required('staff')
 def schedule_attendance_today():
     data = request.get_json(silent=True) if request.method == 'POST' else None
     if request.method == 'POST' and (
-        not isinstance(data, dict) or set(data) != {'shift_id'}
+        not isinstance(data, dict) or 'shift_id' not in data or not set(data) <= {'shift_id', *_PUNCH_LOCATION}
         or type(data['shift_id']) is not int or data['shift_id'] <= 0
+        # The location comes whole or not at all: a retry of a saved punch may send none.
+        or (set(data) & set(_PUNCH_LOCATION) and not (
+            set(_PUNCH_LOCATION) <= set(data) and _real_place(data['lat'], data['lng'])
+            and _real_number(data['accuracy']) and data['accuracy'] >= 0))
     ):
-        return jsonify({'error': 'A positive shift_id is required; time and employee are recorded automatically.'}), 400
+        return jsonify({'error': 'Send shift_id, and the phone\'s lat, lng and accuracy; time and employee are '
+                                 'recorded automatically.'}), 400
 
     con = get_db()
     try:
@@ -828,19 +913,73 @@ def schedule_attendance_today():
                 (employee['id'], today)).fetchone()
             attendance = con.execute('''SELECT * FROM schedule_attendance
                 WHERE employee_id=? AND business_date=?''', (employee['id'], today)).fetchone()
+        punch = _punch_status(con, shift, now) if shift else None
         if request.method == 'POST':
             if not employee or not shift or data['shift_id'] != shift['id']:
                 return jsonify({'error': 'An active assigned shift for today is required. Refresh your schedule.'}), 403
+            # A punch already saved stays saved: a retry answers with it wherever the phone is now.
             if attendance is None:
+                refusal, metres = _punch_refusal(con, shift, punch, data)
+                if refusal:
+                    return jsonify({'code': refusal[0], 'error': refusal[1], 'punch': punch}), 403
                 con.execute('''INSERT INTO schedule_attendance
                     (employee_id,business_date,store_id,shift_id,punched_in_at)
                     VALUES (?,?,?,?,?)''',
                     (employee['id'], today, shift['store_id'], shift['id'], now.isoformat()))
                 attendance = con.execute('''SELECT * FROM schedule_attendance
                     WHERE employee_id=? AND business_date=?''', (employee['id'], today)).fetchone()
+                activity.note(store_id=shift['store_id'], detail=f'上班 In · 离店 {metres} m from the store')
         con.commit()
         return jsonify({'business_date': today, 'shift': dict(shift) if shift else None,
-                        'attendance': dict(attendance) if attendance else None})
+                        'attendance': dict(attendance) if attendance else None, 'punch': punch})
+    finally:
+        con.close()
+
+
+def _punch_places_view(con):
+    saved = _punch_places(con)
+    return {'radius_m': PUNCH_RADIUS_M, 'stores': [
+        {'code': store['code'], 'name': store['name'], 'saved': saved.get(store['code'])}
+        for store in con.execute('SELECT code, name FROM stores WHERE is_active=1 ORDER BY id').fetchall()]}
+
+
+@bp.route('/api/schedule/punch-places', methods=['GET'])
+@role_required('admin')
+def punch_places_get():
+    con = get_db()
+    try:
+        return jsonify(_punch_places_view(con))
+    finally:
+        con.close()
+
+
+@bp.route('/api/schedule/punch-places/<store_code>', methods=['PUT', 'DELETE'])
+@role_required('admin')
+def punch_place_set(store_code):
+    """PUT {lat, lng} saves where the store is (the admin's phone standing in it, or a pin copied from a map);
+    DELETE forgets it, and that store takes no punches until a spot is saved again."""
+    data = request.get_json(silent=True) if request.method == 'PUT' else None
+    if request.method == 'PUT' and (not isinstance(data, dict) or set(data) != {'lat', 'lng'}
+                                    or not _real_place(data['lat'], data['lng'])):
+        return jsonify({'error': 'Send the store\'s lat and lng.'}), 400
+    con = get_db()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        store = con.execute('SELECT id FROM stores WHERE code=? AND is_active=1', (store_code,)).fetchone()
+        if not store:
+            return jsonify({'error': 'Unknown store'}), 404
+        saved = _punch_places(con)
+        if data is None:
+            saved.pop(store_code, None)
+        else:
+            saved[store_code] = {'lat': round(float(data['lat']), 6), 'lng': round(float(data['lng']), 6),
+                                 'saved_at': _dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')}
+        con.execute('INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                    (PUNCH_PLACES_KEY, _json.dumps(saved, sort_keys=True)))
+        con.commit()
+        place = saved.get(store_code)
+        activity.note(store_id=store['id'], detail=f"{place['lat']}, {place['lng']}" if place else '清除 Cleared')
+        return jsonify(_punch_places_view(con))
     finally:
         con.close()
 
