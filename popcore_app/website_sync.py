@@ -27,9 +27,9 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   WEBSITE_SHOP_OPENS (owner, 2026-11-02). Once the report is in, nothing is held until the shop opens.
 - Pickup: a product's `_popcore_pickup_stores` lists the live stores that have it.
 - Count per store (popcore-work#140): each linked item's `_popcore_store_stock` holds, for every live store, how many
-  units of it an order could take from that store alone, as `_take` fills it: loose units, and a blind box's own
-  sealed sets that may open. The website's delivery checkout uses it to tell a customer before paying that an order
-  will come from two stores. It is never the website number: no shop hold, keep-back or held order units. A blind box
+  units of it an order could take from that store alone, as `_take` fills it: loose units less the store's shop hold,
+  and a blind box's own sealed sets that may open. The website's delivery checkout uses it to tell a customer before
+  paying that an order will come from two stores. It is never the website number: no keep-back or held order units. A blind box
   whose sealed set may open also carries `_popcore_store_sets`: each live store's sealed sets of it, boxes per set and
   the website item of its Whole Set, since a Single Box and its own Whole Set in one bag share those sets.
 - Orders: a paid web order takes its items out of the live stores' stock. A pickup comes off its pickup
@@ -39,7 +39,10 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   only when no store has all of it DT first and then the others. In each store the floor first, then
   upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). A store's
   own sealed sets count as its boxes (popcore-work#128): when its loose boxes run out, the order opens as few of
-  them as it needs where they are kept and takes the boxes from there, before another store is asked. It
+  them as it needs where they are kept and takes the boxes from there, before another store is asked. A store's
+  units under its shop hold (what it may have sold since its last report) count as gone when the order picks its
+  stores, as they do for the website number (popcore-work#144); only an order that cannot be filled without them
+  takes them. It
   is a separate Website order outside the stores' sales and closing (owner, 2026-11-01). A cancelled
   order puts its boxes back where they were taken, loose; an opened set stays open. An order POPCORE cannot fill
   waits for a manager and holds its units off the website.
@@ -427,14 +430,14 @@ def _shelf_stock(con):
     return stock, floor
 
 
-def _store_stock_values(con, stock, codes):
+def _store_stock_values(con, stock, codes, hold=None):
     """{linked product id: its `_popcore_store_stock`}: for every live store, how many units of the product an order
-    line could take from that store alone, as `_take(con, [store], [line])` fills it (popcore-work#140). It uses
+    line could take from that store alone, as `_take(con, [store], [line], hold)` fills it (popcore-work#140). It uses
     _take's own inputs, from the one read `stock` (_shelf_stock): the loose units at the store's floor, upstairs and
-    warehouse, boxes kept in opened sets left out; and for a blind box whose sealed set may open (_set_to_open), the
-    store's sealed sets of it times boxes per set. A Whole Set counts its sealed sets only: no order makes one from loose
-    boxes. Never the shop hold, WEBSITE_KEEP_BACK or held order units: it tells where an order would be filled from,
-    not the website number. Every live store is named, with 0 when it has none.
+    warehouse, boxes kept in opened sets left out, less the store's shop `hold` (popcore-work#144); and for a blind box
+    whose sealed set may open (_set_to_open), the store's sealed sets of it times boxes per set. A Whole Set counts its
+    sealed sets only: no order makes one from loose boxes. Never WEBSITE_KEEP_BACK or held order units: it tells where
+    an order would be filled from, not the website number. Every live store is named, with 0 when it has none.
 
     Also {linked blind box id: its `_popcore_store_sets`} for each box whose sealed set may open: the same sealed sets
     store by store, `per` (boxes per set) and `set`, the website item that holds that very set (the one `_take` opens,
@@ -452,7 +455,8 @@ def _store_stock_values(con, stock, codes):
         whole = _set_to_open(con, product)
         counts, sealed = {}, {}
         for store_id in live:
-            units = stock.get(product['id'], {}).get(store_id, 0)
+            units = max(0, stock.get(product['id'], {}).get(store_id, 0)
+                        - (hold or {}).get(store_id, {}).get(product['id'], 0))
             if whole is not None:
                 sealed[codes[store_id]] = int(stock.get(whole['id'], {}).get(store_id, 0))
                 units += whole['boxes_per_set'] * sealed[codes[store_id]]
@@ -558,7 +562,7 @@ def plan(con, cfg):
     """Every linked item's website number and count per store, and every product's pickup stores, with what changes."""
     (stock, floor), held, hold = _shelf_stock(con), _held(con), _shop_hold(con, cfg)
     codes = {row[0]: row[1].lower() for row in con.execute('SELECT id, code FROM stores')}
-    store_stock, store_sets = _store_stock_values(con, stock, codes)
+    store_stock, store_sets = _store_stock_values(con, stock, codes, hold)
     # Every item with a POPCORE ID: one POPCORE does not have (or that is on two items) shows sold out.
     items = [dict(row) for row in con.execute(
         "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') AND popcore_id != '' ORDER BY wc_id")]
@@ -1154,7 +1158,7 @@ def _filling_stores(con, cfg, order_row):
     return stores
 
 
-def _take(con, store_ids, lines):
+def _take(con, store_ids, lines, hold=None):
     """Pick lines store by store in `store_ids` order. In each store the loose stock comes first, in PICK_ORDER (the
     floor, then upstairs, then the warehouse; boxes kept in opened sets excluded). When a blind box's loose boxes in
     that store run short, it opens as few of that store's own sealed sets as cover the rest, a set on the floor first,
@@ -1162,6 +1166,10 @@ def _take(con, store_ids, lines):
     floor though DT had it in a sealed set upstairs). The set opens where it is kept, its boxes are taken from there,
     and the boxes not taken stay loose there, as 移货 opens one (stock_moves.py); only a set the 日报 paste may open
     opens (report_stock._set_to_open). A Whole Set line takes its sealed sets before any box opens one.
+
+    `hold` ({store_id: {product_id: units}}, _shop_hold) leaves out of each store's loose units what the shop may
+    have sold since its last report, floor first, the units the website number already leaves out (popcore-work#144:
+    order #42224 went to DT for a box DT had sold out of that afternoon, its report not in yet).
 
     Returns (consume lines, sets to open, the stores the lines come from in `store_ids` order, None), or
     (None, [], [], problem) when the stores together cannot fill them. Nothing is posted here: record() opens the sets
@@ -1191,8 +1199,12 @@ def _take(con, store_ids, lines):
         product, left = products[product_id], wanted[product_id]
         whole = _set_to_open(con, product)
         for store_id in store_ids:
+            sold = (hold or {}).get(store_id, {}).get(product_id, 0)
             for location_id in places[store_id]:
-                units = min(left, max(0, _units_at(con, product, location_id) - claimed[(product_id, location_id)]))
+                have = max(0, _units_at(con, product, location_id) - claimed[(product_id, location_id)])
+                skip = min(sold, have)
+                sold -= skip
+                units = min(left, have - skip)
                 if units:
                     pick(product, store_id, location_id, units)
                     left -= units
@@ -1219,18 +1231,26 @@ def _take(con, store_ids, lines):
     return lines_out, opens, [store_id for store_id in store_ids if store_id in used], None
 
 
-def _take_order(con, order_row, store_ids, lines):
+def _take_order(con, order_row, store_ids, lines, hold=None):
     """_take for one order. A delivery leaves from one store when one store has all of it, its own sealed sets
     counted, since the courier collects at one address (owner, 2026-11-26, popcore-work#121): DT if it has the whole
     order, else the next live store that does. Only when no store has all of it is it taken DT first and then the
     others, and the website then holds the booking until staff bring it together. A pickup is taken as before: its own
-    store first (its sealed sets too), then what it lacks from the others."""
-    if order_row['fulfilment'] != 'pickup':
-        for store_id in store_ids:
-            take, opens, used, problem = _take(con, [store_id], lines)
-            if problem is None:
-                return take, opens, used, None
-    return _take(con, store_ids, lines)
+    store first (its sealed sets too), then what it lacks from the others.
+
+    All of that first with each store's shop `hold` left out (popcore-work#144), so an order goes where the website
+    counted the stock; only an order that cannot be filled that way (the hold is a guess) is taken from POPCORE's
+    balances as they stand, as before, rather than wait for a manager."""
+    for held in ((hold, None) if hold else (None,)):
+        if order_row['fulfilment'] != 'pickup':
+            for store_id in store_ids:
+                take, opens, used, problem = _take(con, [store_id], lines, held)
+                if problem is None:
+                    return take, opens, used, None
+        take, opens, used, problem = _take(con, store_ids, lines, held)
+        if problem is None:
+            return take, opens, used, None
+    return take, opens, used, problem
 
 
 def _versioned(con, lines, side):
@@ -1295,7 +1315,7 @@ def record(con, cfg, wc_order_id):
             problem = 'no_live_store'
         take = opens = None
         if problem is None:
-            take, opens, used, problem = _take_order(con, row, stores, lines)
+            take, opens, used, problem = _take_order(con, row, stores, lines, _shop_hold(con, cfg))
             store_id = used[0] if used else store_id
         document_id = None
         if problem is None:

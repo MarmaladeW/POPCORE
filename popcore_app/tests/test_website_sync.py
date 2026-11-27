@@ -496,9 +496,12 @@ class WebsiteCase(IsolatedApiCase):
 
     def assert_take_agrees(self):
         """Each linked item's count at each live store is the most `_take` fills one order line with from that store
-        alone: that many is taken, and one more is not. Also that every live store is named, and only those."""
+        alone, its shop hold left out as an order leaves it out (popcore-work#144): that many is taken, and one more is
+        not. Also that every live store is named, and only those."""
         with closing(self.connect()) as con:
-            items, _ = website_sync.plan(con, website_sync.config())
+            cfg = website_sync.config()
+            items, _ = website_sync.plan(con, cfg)
+            hold = website_sync._shop_hold(con, cfg)
             stores = {row[1].lower(): row[0] for row in con.execute('SELECT id, code FROM stores')}
             live = {code for code, store_id in stores.items() if store_id in website_sync.live_store_ids(con)}
             checked = 0
@@ -510,11 +513,12 @@ class WebsiteCase(IsolatedApiCase):
                 self.assertEqual(set(counts), live, item['wc_id'])
                 for code, units in counts.items():
                     line = [{'product_id': item['product_id'], 'quantity': units + 1}]
-                    self.assertEqual(website_sync._take(con, [stores[code]], line)[3], 'not_enough_stock',
+                    self.assertEqual(website_sync._take(con, [stores[code]], line, hold)[3], 'not_enough_stock',
                                      (item['wc_id'], code, units))
                     if units:
                         line[0]['quantity'] = units
-                        self.assertIsNone(website_sync._take(con, [stores[code]], line)[3], (item['wc_id'], code, units))
+                        self.assertIsNone(website_sync._take(con, [stores[code]], line, hold)[3],
+                                          (item['wc_id'], code, units))
                     checked += 1
         self.assertGreater(checked, 0)
 
@@ -749,6 +753,38 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertIsNone(self.state('last_error'))
         self.assertEqual(self.order_row(512)['state'], 'cancelled')
         self.assertEqual(dt_and_mk(), ((2, 0), (1, 1)))
+
+    def test_an_order_skips_what_a_store_may_have_sold_since_its_report(self):
+        """popcore-work#144: order #42224 went to DT for a box DT had sold out of that afternoon. DT's report was not
+        in, so POPCORE still had boxes on DT's floor, though the website number already left them out (the shop hold).
+        An order now picks its stores with each store's hold left out, as the website number does; only an order that
+        cannot be filled that way takes the held units, rather than wait for a manager."""
+        self.no_dt_sets()
+        mk, mk_locations = self.open_mk(5)
+        self.turn_on()
+        # DT's best report day sold 14 Echo boxes, all it holds loose, and its days since LIVE_DATE are not reported.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO daily_sales(product_id, date, store, qty_pos, qty_sold) VALUES (?, '2026-05-20', 'DT', 14, 14)",
+                        (self.box,))
+            con.commit()
+        self.run_sync()
+        # The website counts MK's 5 alone, and so does the count per store the delivery checkout reads.
+        self.assertEqual(self.woo.item(11)['stock_quantity'], 5)
+        self.assertEqual(website_sync._store_stock(self.woo.item(11)['meta_data']), '{"dt":0,"mk":5}')
+        self.assert_take_agrees()
+        # A delivery of 3 comes off MK, which has them, not off DT's 14 boxes on record.
+        self.woo.order(509, [(11, 3)])
+        self.run_sync()
+        self.assertEqual((self.order_row(509)['state'], self.order_row(509)['store_id']), ('recorded', mk))
+        self.assertEqual((self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'),
+                          self.at(self.box, mk_locations['floor'])), (10, 4, 2))
+        self.assertEqual(self.woo.fill_writes, [(509, 'mk')])
+        # 4 more: MK's 2 and DT's held boxes cannot make it without the hold, so it is taken as before (off DT's floor)
+        # rather than wait for a manager.
+        self.woo.order(510, [(11, 4)])
+        self.run_sync()
+        self.assertEqual((self.order_row(510)['state'], self.order_row(510)['store_id']), ('recorded', self.dt))
+        self.assertEqual((self.balance(self.box, 'floor'), self.at(self.box, mk_locations['floor'])), (6, 2))
 
     def test_the_website_is_told_which_store_filled_a_delivery(self):
         """Owner, 2026-11-26 (popcore-work#121): the FleetNow courier collects from the store the order was filled
@@ -1229,8 +1265,9 @@ class WebsiteSyncTests(WebsiteCase):
 
     def test_the_count_per_store_is_never_the_website_number(self):
         """The count tells where an order would be filled from, so nothing that only moves the website number counts:
-        not the whole sets floor boxes are sure to have (no order makes a Whole Set from loose boxes), the shop hold,
-        units of orders waiting for a manager, or WEBSITE_KEEP_BACK."""
+        not the whole sets floor boxes are sure to have (no order makes a Whole Set from loose boxes), units of orders
+        waiting for a manager, or WEBSITE_KEEP_BACK. The shop hold does count since popcore-work#144: an order leaves it
+        out too."""
         self.post('receipt', self.box, self.locations['floor'], 27, 'box')  # 37 floor boxes: at least 2 whole sets
         with closing(self.connect()) as con:
             con.execute("""INSERT INTO daily_sales(product_id, date, store, qty_pos, qty_sold)
@@ -1247,9 +1284,10 @@ class WebsiteSyncTests(WebsiteCase):
             self.assert_take_agrees()
         # The Single Box shows its 41 loose less the keep-back; an order can take those and its 2 sets' 24.
         # The Whole Set shows 2 sealed + 2 sure from the floor, less the keep-back; an order can take only the 2.
-        # Bear 吊卡 shows 4 less its best day, the waiting order and the keep-back; an order can take all 4.
+        # Bear 吊卡 shows 4 less its best day, the waiting order and the keep-back; an order picking a store counts the
+        # 4 less its best day, 3.
         self.assertEqual({wc_id: planned[wc_id] for wc_id in (11, 12, 20)},
-                         {11: (40, '{"dt":65}'), 12: (3, '{"dt":2}'), 20: (1, '{"dt":4}')})
+                         {11: (40, '{"dt":65}'), 12: (3, '{"dt":2}'), 20: (1, '{"dt":3}')})
 
     def test_the_count_per_store_goes_with_the_items_other_changes_and_only_when_it_changes(self):
         self.turn_on()
