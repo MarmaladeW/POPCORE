@@ -2143,6 +2143,7 @@ def _get_migrations():
         ('stock_moves',                                _migration_stock_moves),
         ('quick_sale_staff_discount_cash',             _migration_quick_sale_staff_discount_cash),
         ('website_order_fill_stores',                  _migration_website_order_fill_stores),
+        ('popmart_prices',                             _migration_popmart_prices),
     ]
 
 
@@ -2543,6 +2544,48 @@ def _migration_stock_moves(con, cur):
     import stock_moves
     stock_moves.migrate(cur)
     cur.execute("INSERT INTO _migrations(name) VALUES ('stock_moves')")
+
+
+def _migration_popmart_prices(con, cur):
+    # POP MART 价格 POP MART prices (owner, 2026-11-25, popcore-work#91): POPCORE reads POP MART CA and US every Monday
+    # (popmart_prices.py). One row per read and region; the newest good list, one row per POP MART option; and a
+    # manager's own match where a product's name differs from POP MART's. Replaces the March scraper's
+    # market_prices / scrape_log, which nothing reads any more (left in place, not filled).
+    cur.execute("""CREATE TABLE IF NOT EXISTS popmart_reads (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        region      TEXT    NOT NULL CHECK (region IN ('ca', 'us')),
+        trigger     TEXT    NOT NULL CHECK (trigger IN ('weekly', 'manual')),
+        started_by  TEXT,
+        started_at  TEXT    NOT NULL,
+        finished_at TEXT,
+        status      TEXT    NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'ok', 'error')),
+        products    INTEGER NOT NULL DEFAULT 0,
+        options     INTEGER NOT NULL DEFAULT 0,
+        error       TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_popmart_reads_region ON popmart_reads(region, id)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS popmart_items (
+        region       TEXT    NOT NULL CHECK (region IN ('ca', 'us')),
+        option_id    TEXT    NOT NULL,
+        popmart_id   TEXT    NOT NULL,
+        title        TEXT    NOT NULL,
+        title_norm   TEXT    NOT NULL,
+        option_title TEXT    NOT NULL DEFAULT '',
+        price_cents  INTEGER,
+        sale_cents   INTEGER,
+        in_stock     INTEGER NOT NULL DEFAULT 0 CHECK (in_stock IN (0, 1)),
+        read_id      INTEGER NOT NULL REFERENCES popmart_reads(id),
+        PRIMARY KEY (region, option_id)
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_popmart_items_name ON popmart_items(region, title_norm)')
+    cur.execute("""CREATE TABLE IF NOT EXISTS popmart_links (
+        product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+        title      TEXT    NOT NULL,
+        title_norm TEXT    NOT NULL,
+        linked_by  TEXT,
+        linked_at  TEXT    NOT NULL
+    )""")
+    cur.execute("INSERT INTO _migrations(name) VALUES ('popmart_prices')")
 
 
 def _migration_quick_sale_staff_discount_cash(con, cur):
@@ -3367,39 +3410,10 @@ def migrate_db():
         if column not in report_columns:
             cur.execute(f"ALTER TABLE daily_report_metadata ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
 
-    # ── Market price tables ─────────────────────────────────────────────────
+    # ── Product and section aliases ─────────────────────────────────────────
+    # (POP MART prices live in popmart_* tables, _migration_popmart_prices; the March scraper's market_prices and
+    # scrape_log are no longer created.)
     cur.executescript('''
-        CREATE TABLE IF NOT EXISTS market_prices (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            store_key        TEXT    NOT NULL,
-            store_name       TEXT    NOT NULL,
-            external_title   TEXT    NOT NULL,
-            product_id       INTEGER REFERENCES products(id),
-            sku              TEXT,
-            price_cad        REAL,
-            compare_at_price REAL,
-            on_sale          INTEGER NOT NULL DEFAULT 0,
-            in_stock         INTEGER NOT NULL DEFAULT 1,
-            url              TEXT,
-            match_score      INTEGER,
-            scraped_at       TEXT,
-            UNIQUE(store_key, external_title)
-        );
-        CREATE INDEX IF NOT EXISTS idx_mp_product ON market_prices(product_id);
-        CREATE INDEX IF NOT EXISTS idx_mp_store   ON market_prices(store_key);
-
-        CREATE TABLE IF NOT EXISTS scrape_log (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            store_key        TEXT    NOT NULL,
-            status           TEXT    NOT NULL DEFAULT 'running',
-            products_scraped INTEGER DEFAULT 0,
-            products_matched INTEGER DEFAULT 0,
-            error_msg        TEXT,
-            started_at       TEXT    DEFAULT (datetime('now')),
-            finished_at      TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_sl_store ON scrape_log(store_key);
-
         CREATE TABLE IF NOT EXISTS product_aliases (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,

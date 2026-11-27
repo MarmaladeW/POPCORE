@@ -5,10 +5,9 @@ Central product matching engine for POPCORE.
 Used by:
   • app.py  /api/products/by_jizhanming  (legacy single-query lookup)
   • app.py  /api/products/match          (new batch endpoint)
-  • scraper.py  run_scrape()             (market price title matching)
 
-Two matching modes
-──────────────────
+Matching mode
+─────────────
 match_jzm(query, products, aliases, threshold=75)
   For paste-import (sales / stock batch).
   Matches a user's informal 记账名 against product.jizhanming.
@@ -21,10 +20,7 @@ batch_match_jzm(queries, products, aliases, threshold=75)
   Same as match_jzm but for multiple queries at once (loads products once).
   Also filters header lines ("卡机汇总:", "现金:") with is_header_line().
 
-match_title(scraped_title, products, threshold=65)
-  For web-scraper market price matching.
-  Matches English store titles against name_cn_en / jizhanming.
-  Uses space-preserving normalisation (better for English token matching).
+(POP MART prices match by exact name instead: popmart_prices.norm.)
 """
 
 import hashlib
@@ -456,50 +452,3 @@ def batch_match_jzm(
             results.append({'query': raw, 'status': 'fuzzy', 'candidates': [p for _, p in hits]})
 
     return results
-
-
-# ─── Public API: title (scraper) ─────────────────────────────────────────────
-
-def _english_part(text: str) -> str:
-    """Extract ASCII/Latin portion from a mixed CN-EN string."""
-    parts = re.findall(
-        r'[^\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef\u3000-\u303f]+',
-        text or '',
-    )
-    return ' '.join(p.strip() for p in parts if p.strip())
-
-
-def match_title(scraped_title: str, products: list, threshold: int = 65) -> tuple:
-    """
-    Match a scraped store title against products.
-
-    Returns (product_id, sku, score) or (None, None, best_score).
-
-    Checks (highest priority first):
-      1. English portion of name_cn_en  — best for English-language stores
-      2. Full name_cn_en
-      3. jizhanming
-    """
-    qt = normalize_spaced(scraped_title)
-    if not qt:
-        return None, None, 0
-
-    best_score, best_pid, best_sku = 0, None, None
-    for p in products:
-        eng  = normalize_spaced(_english_part(p.get('name_cn_en') or ''))
-        full = normalize_spaced(p.get('name_cn_en') or '')
-        jzm  = normalize_spaced(p.get('jizhanming')  or '')
-
-        s = max(
-            _raw_sim(qt, eng)  if eng  else 0,
-            _raw_sim(qt, full) if full else 0,
-            _raw_sim(qt, jzm)  if jzm  else 0,
-        )
-        if s > best_score:
-            best_score = s
-            best_pid   = p['id']
-            best_sku   = p['sku']
-
-    if best_score >= threshold:
-        return best_pid, best_sku, best_score
-    return None, None, best_score

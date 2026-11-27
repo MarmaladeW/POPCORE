@@ -32,6 +32,7 @@ const ProductsPage=lazyPage(()=>import('./pages/Products'))
 const CloverMatchingPage=lazyPage(()=>import('./pages/Products/CloverMatching'))
 const SeriesCatalogPage=lazyPage(()=>import('./pages/Products/SeriesCatalog'))
 const DesignPricesPage=lazyPage(()=>import('./pages/Products/DesignPrices'))
+const PopmartPricesPage=lazyPage(()=>import('./pages/Products/PopmartPrices'))
 const StockPage=lazyPage(()=>import('./pages/Stock'))
 const SeriesInventory=lazyPage(()=>import('./pages/Stock/SeriesInventory'))
 const GoodsPage=lazyPage(()=>import('./pages/Stock/Goods'))
@@ -197,6 +198,7 @@ function AppInner() {
           <Route path="/products/series" element={<SeriesCatalogPage />} />
           <Route path="/products/clover-matching" element={<RoleRoute minRole="manager" element={<CloverMatchingPage />} />} />
           <Route path="/products/design-prices" element={<RoleRoute minRole="manager" element={<DesignPricesPage />} />} />
+          <Route path="/products/popmart-prices" element={<RoleRoute minRole="manager" element={<PopmartPricesPage />} />} />
           <Route path="/stock"          element={<InventoryRoute readOnly element={<SeriesInventory />} />} />
           <Route path="/stock/products" element={<InventoryRoute readOnly element={<StockPage />} />} />
           <Route path="/goods/receiving" element={<InventoryRoute element={<GoodsPage initialTab="receiving" />} />} />

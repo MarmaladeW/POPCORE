@@ -87,6 +87,7 @@ from blueprints.dex       import bp as dex_bp
 from blueprints.watch_list import bp as watch_list_bp
 from blueprints.staff_discounts import bp as staff_discounts_bp
 from blueprints.watch     import bp as watch_bp
+from blueprints.popmart_prices import bp as popmart_prices_bp
 
 app.register_blueprint(health_bp)  # unauthenticated: ok + release only
 # 动态 Activity: every change leaves a line with who did it (owner, 2026-11-20).
@@ -123,6 +124,7 @@ app.register_blueprint(watch_list_bp)
 app.register_blueprint(stock_moves.bp)
 app.register_blueprint(staff_discounts_bp)
 app.register_blueprint(watch_bp)
+app.register_blueprint(popmart_prices_bp)
 
 # ─── Nightly insight scheduler ────────────────────────────────────────────────
 # Guard with DISABLE_SCHEDULER so tests and dev workers don't double-start it.
@@ -236,6 +238,26 @@ if not os.environ.get('DISABLE_SCHEDULER'):
     _watch_scheduler.add_job(_watch_job, 'interval', minutes=10, id='watcher', max_instances=1, coalesce=True)
     _watch_scheduler.start()
     atexit.register(lambda: _watch_scheduler.shutdown(wait=False))
+
+# ─── POP MART 价格 POP MART prices ───────────────────────────────────────────
+# Every minute, never two at once: a manager's Read now, else POP MART CA and US every Monday from 6:00 AM Toronto
+# time, about two minutes in all (popmart_prices.py, docs/popmart-prices.md). It changes no price; a failure is logged
+# and kept on its read, and never reaches the other jobs.
+if not os.environ.get('DISABLE_SCHEDULER'):
+    import atexit
+    from apscheduler.schedulers.background import BackgroundScheduler
+    import popmart_prices
+
+    def _popmart_job():
+        try:
+            popmart_prices.run_due()
+        except Exception:
+            app.logger.exception('POP MART price read failed')
+
+    _popmart_scheduler = BackgroundScheduler(daemon=True)
+    _popmart_scheduler.add_job(_popmart_job, 'interval', minutes=1, id='popmart_prices', max_instances=1, coalesce=True)
+    _popmart_scheduler.start()
+    atexit.register(lambda: _popmart_scheduler.shutdown(wait=False))
 
 # ─── SPA fallback (React Router) ─────────────────────────────────────────────
 @app.errorhandler(404)

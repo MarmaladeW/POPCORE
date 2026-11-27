@@ -24,7 +24,7 @@ call; hiding a menu is never the check.
 ## Managers keep
 
 审核 of the day's 记一笔 (the whole day's list and totals), 收工 review, 损耗, 排班 and everyone's hours, 员工折扣
-management with amounts, 异常提醒, products, 图鉴 editing, section counts.
+management with amounts, 异常提醒, products (with Products → POP MART prices), 图鉴 editing, section counts.
 
 ## Own records only (below manager)
 
