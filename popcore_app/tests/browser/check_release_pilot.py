@@ -46,7 +46,7 @@ async def main():
             await page.route('**/api/**',real_api)
             # 补录 is a manager's (owner, 2026-11-26): staff are refused, the manager enters the sale.
             await page.goto(BASE+'/sales/entry')
-            await expect(page.get_by_text('Access Denied',exact=True)).to_be_visible()
+            await expect(page.get_by_text('这一页没有对你开放',exact=True)).to_be_visible()
             await page.evaluate("([token])=>{window.__FOUNDATION_AUTH={role:'manager',token};window.dispatchEvent(new Event('foundation-auth'))}",[config['tokens']['manager']])
             await expect(page.get_by_text('Enter completed sale',exact=True)).to_be_visible()
             await page.get_by_label('Receipt or order reference').fill('PILOT-REAL-1')

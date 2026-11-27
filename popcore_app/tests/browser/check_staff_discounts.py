@@ -170,7 +170,7 @@ async def run(browser, width):
         # A 查看者 Viewer cannot open it.
         page = await open_as('viewer')
         await page.goto(BASE + '/staff-discounts')
-        await expect(page.get_by_text("You don't have permission", exact=False)).to_be_visible()
+        await expect(page.get_by_text('This page is not open to you', exact=False)).to_be_visible()
     finally:
         for context in contexts:
             await context.close()

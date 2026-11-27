@@ -17,9 +17,9 @@ export function resetAuthWarnings() {
 
 const client = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || '/api' })
 
-// Name + PIN on the shared store computer (owner, 2026-11-20): the person at the computer stays picked for a short
-// while, so a few changes in a row ask once. Kept in memory only, never stored.
-export type ActingPerson = { employeeId: number; pin: string; name: string; until: number }
+// Who is at the shared store computer (owner, 2026-11-20; no PIN since 2026-11-26): the person who tapped their name
+// stays picked for a short while, so a few changes in a row ask once. Kept in memory only, never stored.
+export type ActingPerson = { employeeId: number; name: string; until: number }
 export const PERSON_MINUTES = 2
 let _person: ActingPerson | null = null
 let _askForPerson: (() => Promise<ActingPerson | null>) | null = null
@@ -62,7 +62,7 @@ client.interceptors.request.use(async (config) => {
   }
   config.headers.Authorization = `Bearer ${token}`
   const person = actingPerson()
-  if (person) config.headers['X-Popcore-Person'] = `${person.employeeId}:${person.pin}`
+  if (person) config.headers['X-Popcore-Person'] = String(person.employeeId)
   return config
 })
 
@@ -71,9 +71,9 @@ client.interceptors.response.use(
   async (err: AxiosError) => {
     const code = (err.response?.data as any)?.code
     const original = err.config as (typeof err.config & { _askedForPerson?: boolean }) | undefined
-    if (original && !original._askedForPerson && _askForPerson && (code === 'person_needed' || code === 'pin_wrong' && original.headers?.['X-Popcore-Person'])) {
-      // The store computer: ask who is doing this, then send the same request once more with their name + PIN.
-      if (code === 'pin_wrong') setActingPerson(null)
+    if (original && !original._askedForPerson && _askForPerson && code === 'person_needed') {
+      // The store computer: ask who is doing this, then send the same request once more under their name.
+      setActingPerson(null)
       const person = await _askForPerson()
       if (person) {
         original._askedForPerson = true

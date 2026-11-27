@@ -1,8 +1,8 @@
-"""Name + PIN on the shared store computer in a real browser against the real Flask app, a disposable database and a
-fake WooCommerce (owner, 2026-11-20: every action leaves a mark of who did it): a staff member sets their PIN from
-我的 PIN; on the store computer's counter account, 拣好了 Ready asks 谁在操作？, a wrong PIN is refused, the right
-one sends the same Ready once more, the website note and 动态 name that person, and a bar shows who is using the
-computer until 结束 Done; nothing scrolls sideways, at 390 and 1440 px."""
+"""The name tap on the shared store computer in a real browser against the real Flask app, a disposable database and
+a fake WooCommerce (owner, 2026-11-20: every action leaves a mark of who did it; 2026-11-26: "PIN not necessary"):
+on the store computer's counter account, 拣好了 Ready asks 谁在操作？, one tap on a name sends the same Ready once
+more, the website note and 动态 name that person, and a bar shows who is using the computer until 结束 Done; no
+screen mentions a PIN, on the store computer or on a staff phone; nothing scrolls sideways, at 390 and 1440 px."""
 import asyncio
 import re
 import subprocess
@@ -16,7 +16,7 @@ from check_foundation import FRONTEND, HERE, ROOT
 
 PORT = 5191
 BASE = f'http://127.0.0.1:{PORT}'
-OUT = ROOT / '.local' / 'store-computer-pin'
+OUT = ROOT / '.local' / 'store-computer-name'
 
 
 async def fits(page, name):
@@ -58,19 +58,17 @@ async def run(browser, width):
         return page
 
     try:
-        # Amy sets her PIN from her own phone.
+        # A staff phone: nothing asks for a PIN any more.
         phone = await open_as('staff')
         await phone.goto(BASE + '/')
-        prompt = phone.get_by_role('note').filter(has_text='设置你的 4 位 PIN')
-        await expect(prompt).to_be_visible()
-        await prompt.get_by_role('button', name='设置 Set').click()
-        await phone.get_by_label('新 PIN New PIN').fill('2580')
-        await phone.get_by_label('再输一次 Again').fill('2580')
-        await phone.get_by_role('button', name='保存 Save').click()
-        await expect(phone.get_by_text('PIN 已设置 PIN saved')).to_be_visible()
-        await expect(prompt).to_have_count(0)
+        await expect(phone.get_by_role('heading', name='开始工作', exact=False).first).to_be_visible()
+        await expect(phone.get_by_text('PIN', exact=False)).to_have_count(0)
+        if width < 768:
+            await phone.goto(BASE + '/more')
+            await expect(phone.get_by_role('button', name='退出登录 Sign out')).to_be_visible()
+            await expect(phone.get_by_text('PIN', exact=False)).to_have_count(0)
 
-        # The store computer: Ready asks who is doing it.
+        # The store computer: Ready asks who is doing it, and one tap on a name is enough.
         page = await open_as('viewer:counter')
         await page.goto(BASE + '/web-orders')
         pick = page.get_by_role('region', name='Pickup · to pick')
@@ -78,15 +76,9 @@ async def run(browser, width):
         await page.get_by_role('button', name='Ready', exact=True).click()
         picker = page.get_by_role('dialog')
         await expect(picker.get_by_text('谁在操作？Who is doing this?')).to_be_visible()
+        await expect(picker.get_by_text('PIN', exact=False)).to_have_count(0)
         await fits(page, f'who-{width}.png')
-        await picker.get_by_role('listitem').filter(has_text='Amy').click()
-        await expect(picker.get_by_text('Amy · 输入 PIN Type your PIN')).to_be_visible()
-        for digit in '1111':
-            await picker.get_by_role('button', name=digit, exact=True).click()
-        await expect(picker.get_by_text('Wrong PIN.')).to_be_visible()
-        await fits(page, f'pin-{width}.png')
-        for digit in '2580':
-            await picker.get_by_role('button', name=digit, exact=True).click()
+        await picker.get_by_role('button', name=re.compile('Amy')).click()
         await expect(page.get_by_text('#701 is ready', exact=False)).to_be_visible()
         assert fixture.woo.notes[-1][1]['note'] == 'Ready in popcore.store by Amy', fixture.woo.notes
         with closing(fixture.connect()) as con:
@@ -98,14 +90,13 @@ async def run(browser, width):
         await fits(page, f'bar-{width}.png')
         await bar.get_by_role('button', name=re.compile('结束')).click()
         await expect(bar).to_have_count(0)
-        # A PIN is a person's: the store computer's account is not offered 我的 PIN (owner, 2026-11-26).
         if width >= 768:
             await page.get_by_role('button', name='Account menu').click()
             await expect(page.get_by_role('menuitem', name='退出登录 Sign out')).to_be_visible()
         else:
             await page.goto(BASE + '/more')
             await expect(page.get_by_role('button', name='退出登录 Sign out')).to_be_visible()
-        await expect(page.get_by_text('我的 PIN', exact=False)).to_have_count(0)
+        await expect(page.get_by_text('PIN', exact=False)).to_have_count(0)
     finally:
         for context in contexts:
             await context.close()
@@ -143,5 +134,5 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: name + PIN on the store computer: 我的 PIN from the phone, Ready asks who, a wrong PIN refused, the '
-          'right one sends Ready again, the website note and 动态 name the person, the bar until Done; at 390 and 1440 px')
+    print('PASS: the name tap on the store computer: Ready asks who, one tap sends Ready again, the website note and '
+          '动态 name the person, the bar until Done, no PIN anywhere; at 390 and 1440 px')

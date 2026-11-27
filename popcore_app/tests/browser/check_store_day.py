@@ -147,7 +147,7 @@ async def staff_flow(browser, viewport):
     await context.add_init_script("""localStorage.setItem('popcore_selected_store',
       JSON.stringify({id:1,code:'DT',name:'Downtown',color:'#6366f1'}))""")
     await page.goto(BASE + '/sales/entry')
-    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
     await page.goto(BASE + '/sales/payments/61/evidence')
     png = base64.b64decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
@@ -176,9 +176,9 @@ async def permission_and_zoom_checks(browser):
         browser, {'mode': 'data', 'api_payload': api_payload}, auth={'role': 'viewer'},
     )
     await page.goto(BASE + '/sales/entry')
-    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
     await page.goto(BASE + '/closing')
-    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
     await context.close()
 
 
@@ -208,7 +208,7 @@ async def manager_review_checks(browser):
     await expect(page.get_by_label('evidence_pending:81 acceptance reason')).to_be_visible()
     # Reports are the admin's (owner, 2026-11-26): a manager is refused, the admin opens them.
     await page.goto(BASE + '/reports?report=inventory')
-    await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+    await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
     await page.evaluate("window.__FOUNDATION_AUTH={role:'admin'};window.dispatchEvent(new Event('foundation-auth'))")
     await expect(page.get_by_text('Operational reports', exact=True)).to_be_visible()
     assert await page.evaluate('document.body.scrollWidth') <= 392

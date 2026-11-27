@@ -111,7 +111,7 @@ async def check(browser, case):
     for role in ('manager', 'staff'):
         context, page = await context_with_api(browser, {'mode': 'data'}, auth={'role': role})
         await page.goto(BASE + '/users')
-        await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+        await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
         await expect(page.get_by_role('checkbox')).to_have_count(0)
         await context.close()
 

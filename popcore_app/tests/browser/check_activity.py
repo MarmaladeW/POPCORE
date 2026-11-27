@@ -77,7 +77,7 @@ async def run(browser, width):
         for role in ('staff', 'manager'):
             refused = await open_as(role)
             await refused.goto(BASE + '/activity')
-            await expect(refused.get_by_text('Access Denied')).to_be_visible()
+            await expect(refused.get_by_text('这一页没有对你开放')).to_be_visible()
             await expect(refused.locator('.pc-act-row')).to_have_count(0)
             if width >= 768:
                 await expect(refused.locator('.pc-rail')).to_be_visible()

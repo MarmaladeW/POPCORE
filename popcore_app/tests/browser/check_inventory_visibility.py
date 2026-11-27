@@ -73,14 +73,14 @@ async def unpicked(browser, fixture, width, session):
 
         for path in ('/stock', '/stock/products', '/count', '/incoming', '/goods/receiving', '/stock/claw'):
             await page.goto(BASE + path)
-            await expect(page.get_by_text('库存查看未开启 · Inventory view is off', exact=True)).to_be_visible()
+            await expect(page.get_by_text('库存查看未开启', exact=True)).to_be_visible()
         notice = page.get_by_role('main')
         await expect(notice.get_by_role('link', name='晚盘 Evening count', exact=True)).to_have_attribute('href', '/stock/count')
         await expect(notice.get_by_role('link', name='移货 Move stock', exact=True)).to_have_attribute('href', '/move')
         await fits(page, f'unpicked-hidden-{width}.png')
 
         await page.goto(BASE + '/stock/count')
-        await expect(page.get_by_text('库存查看未开启 · Inventory view is off', exact=True)).to_have_count(0)
+        await expect(page.get_by_text('库存查看未开启', exact=True)).to_have_count(0)
         await expect(page.get_by_role('tab', name=re.compile('今晚清单'))).to_be_visible()
 
         await page.goto(BASE + '/products')
@@ -135,7 +135,7 @@ async def picked(browser, fixture, width):
         await expect(actions.locator('a[href="/stock"]')).to_be_visible()
         await expect(actions.locator('a[href="/move"]')).to_be_visible()
         await page.goto(BASE + '/stock')
-        await expect(page.get_by_text('库存查看未开启 · Inventory view is off', exact=True)).to_have_count(0)
+        await expect(page.get_by_text('库存查看未开启', exact=True)).to_have_count(0)
         await expect(page.get_by_role('navigation', name='Inventory tools')).to_be_visible()
         await page.goto(BASE + '/products')
         await expect(await product_stock(page, phone, 'Test Product')).to_have_text('12')

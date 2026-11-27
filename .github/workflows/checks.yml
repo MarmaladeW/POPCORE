@@ -79,7 +79,7 @@ jobs:
       - run: python popcore_app/tests/browser/check_checkout_focus.py
       - run: python popcore_app/tests/browser/check_staff_home.py
       - run: python popcore_app/tests/browser/check_activity.py
-      - run: python popcore_app/tests/browser/check_store_computer_pin.py
+      - run: python popcore_app/tests/browser/check_store_computer_name.py
       - run: python popcore_app/tests/browser/check_restock_one_go.py
       - run: python popcore_app/tests/browser/check_evening_count.py
       - run: python popcore_app/tests/browser/check_quick_sale.py

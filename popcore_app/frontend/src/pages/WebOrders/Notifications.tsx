@@ -56,8 +56,9 @@ async function currentSubscription() {
 
 // 通知 Notifications (owner, 2026-11-19: "we need our own notification thing"): this device gets a notification for
 // every new paid web order of the stores this person has store operations access for, even with POPCORE closed. The
-// board also chimes and pops up while it is open.
-export default function Notifications() {
+// board also chimes and pops up while it is open. `alerts`: the same device switch on 异常提醒, for managers, who have
+// no board (owner, 2026-11-26) and are told of new alerts only.
+export default function Notifications({ alerts = false }: { alerts?: boolean }) {
   const [state, setState] = useState<DeviceState>('loading')
   const [busy, setBusy] = useState(false)
   const [sound, setSound] = useState(soundOn)
@@ -80,10 +81,10 @@ export default function Notifications() {
   }, [])
 
   useEffect(() => {
-    if (!sound) return
+    if (!sound || alerts) return
     document.addEventListener('pointerdown', wakeSound, { once: true })
     return () => document.removeEventListener('pointerdown', wakeSound)
-  }, [sound])
+  }, [sound, alerts])
 
   function toggleSound(next: boolean) {
     setSound(next)
@@ -108,7 +109,7 @@ export default function Notifications() {
       subscription ||= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) })
       await notifyThisDevice(subscription.toJSON())
       setState('on')
-      message.success('This device now gets a notification for every new web order.')
+      message.success(alerts ? '本设备已开启 This device now gets a notification for new alerts.' : 'This device now gets a notification for every new web order.')
     } catch (cause: any) {
       message.error(cause?._serverMessage || 'Notifications could not be turned on here. Try again.')
     } finally {
@@ -159,11 +160,11 @@ export default function Notifications() {
   }[state]
 
   return <section className="pc-panel pc-web-notify" aria-label="Notifications">
-    <div><strong>新订单通知</strong> <small>New order notifications</small></div>
+    <div><strong>{alerts ? '手机通知' : '新订单通知'}</strong> <small>{alerts ? 'Phone notifications' : 'New order notifications'}</small></div>
     <div className="pc-web-notify-row">{device}</div>
-    <label className="pc-web-notify-row">
+    {!alerts && <label className="pc-web-notify-row">
       <Switch size="small" checked={sound} onChange={toggleSound} />
       <span>提示音 Sound on this board</span>
-    </label>
+    </label>}
   </section>
 }

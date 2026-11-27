@@ -206,7 +206,7 @@ async def viewer_flow(browser):
         await expect(page.get_by_role('heading', name='店铺电脑', exact=True)).to_be_visible()
         await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         await page.goto(BASE + '/schedule')
-        await expect(page.get_by_text('Access Denied', exact=True)).to_be_visible()
+        await expect(page.get_by_text('这一页没有对你开放', exact=True)).to_be_visible()
         await expect(page.get_by_role('region', name="Today's attendance")).to_have_count(0)
         assert not any(r['path'] == ENDPOINT for r in state.get('requests', []))
     finally:

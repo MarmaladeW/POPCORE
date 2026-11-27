@@ -30,7 +30,8 @@ const item = {
   stock: { key: '/stock', zh: '库存', en: 'Inventory', icon: 'box', note: '晚盘、娃娃机' },
   // Without 库存查看 the 库存 entry opens 晚盘 only (owner, 2026-11-01).
   eveningCount: { key: '/stock/count', zh: '晚盘', en: 'Evening count', icon: 'count' },
-  // The shop computer's pickup and delivery orders from popcore.ca (owner, 2026-11-19).
+  // The shop computer's pickup and delivery orders from popcore.ca (owner, 2026-11-19). The store computer and admins
+  // only (owner, 2026-11-26: "网站订单 pick board close to staff but available to viewer which is store computer").
   webOrders: { key: '/web-orders', zh: '网站订单', en: 'Web orders', icon: 'web' },
   // Photos and notes of people who stole from the stores (owner, 2026-11-19: "so everyone can recognize the people that
   // stole from the store ... also something showing in the store computer"): every role, the counter account included.
@@ -60,11 +61,11 @@ export function railGroups(access: NavAccess): NavGroup[] {
     { label: '日常', items: [...counterItems(access), item.watchList] },
     { label: '查看', items: [item.products, item.dex] },
   ]
-  // Only admins have 动态, 销售, 报表 and 网站 (owner, 2026-11-26); a manager's menu is the staff one.
+  // Only admins have 动态, 销售, 报表, 网站 and 网站订单 (owner, 2026-11-26); a manager's menu is the staff one.
   const daily: NavItem[] = [item.home]
   if (access.admin) daily.push(item.checkout, item.move, item.stock, item.webOrders, item.activity)
-  else if (access.inventory) daily.push(...checkoutFor(access), item.move, item.summary, item.stock, item.webOrders, item.staffDiscounts)
-  else daily.push(...checkoutFor(access), item.move, item.summary, item.eveningCount, item.webOrders, item.staffDiscounts)
+  else if (access.inventory) daily.push(...checkoutFor(access), item.move, item.summary, item.stock, item.staffDiscounts)
+  else daily.push(...checkoutFor(access), item.move, item.summary, item.eveningCount, item.staffDiscounts)
   daily.push(item.watchList)
   const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
   return [
@@ -76,7 +77,7 @@ export function railGroups(access: NavAccess): NavGroup[] {
 
 export function moreItems(access: NavAccess): NavItem[] {
   return [
-    ...(access.staff ? [item.move, access.inventory ? item.stock : item.eveningCount, item.webOrders, ...(access.admin ? [item.activity] : [item.staffDiscounts])]
+    ...(access.staff ? [item.move, access.inventory ? item.stock : item.eveningCount, ...(access.admin ? [item.webOrders, item.activity] : [item.staffDiscounts])]
       : counterItems(access).filter(entry => entry !== item.home)),
     item.watchList,
     item.products,
