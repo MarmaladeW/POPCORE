@@ -1,6 +1,6 @@
 # Website stock and price sync (popcore.ca)
 
-Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10); Whole Sets also count the whole sets floor boxes are sure to have since branch `claude/website-whole-sets` (2026-11-10); confirmed designs get the prices a manager sets on 确认款价格 Design prices since branch `claude/design-prices-244851` (2026-11-12). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
+Status (2026-11-10): built on branch `claude/website-sync` (2026-11-01); items link by the website's POPCORE ID field since branch `claude/website-link-by-popcore-id` (2026-11-07); regular prices since branch `claude/website-prices` (2026-11-10); Whole Sets also count the whole sets floor boxes are sure to have since branch `claude/website-whole-sets` (2026-11-10); confirmed designs get the prices a manager sets on 确认款价格 Design prices since branch `claude/design-prices-244851` (2026-11-12); each item's count per store since branch `claude/store-stock` (2026-11-27). The unit tests and the browser check pass against a fake WooCommerce. The live website and the production database are untouched. The sync stays off until an admin turns it on (below).
 
 POPCORE owns stock (owner, 2026-10-25) and, since 2026-11-10, the regular prices of linked boxes, Whole Sets and items; since 2026-11-12 also the prices a manager sets for confirmed designs. popcore.ca (WooCommerce) takes its stock numbers and those prices from POPCORE, and paid web orders take their items out of POPCORE stock. Everything runs on the POPCORE side through WooCommerce's REST API; there is no website plugin. Code: `popcore_app/website_sync.py`, routes in `blueprints/website.py`, page 网站 Website (`/website`).
 
@@ -49,7 +49,7 @@ Trashed products are not read, so the POPCORE ID on a trashed item is ignored.
 
 ### WooCommerce's meta_data
 
-WooCommerce 10.9.1 returns custom meta in `meta_data` for products (`WC_REST_Products_V2_Controller::api_get_meta_data`) and for variations (`WC_REST_Product_Variations_Controller`). It includes keys that start with an underscore. It leaves out only its own internal keys (`_sku`, `_stock`, `_price`, …), keys starting with `wp_`, and, for variations, `attribute_*` (`WC_Data_Store_WP::exclude_internal_meta_keys`). `_popcore_id` and `_popcore_pickup_stores` come back as written. POPCORE writes its own fields the same way, in `meta_data` of the batch update: `_popcore_pickup_stores`, and `_popcore_design_price_at` with a design's price ([Design prices](#design-prices-owner-2026-11-12)). The website must not add a `woocommerce_data_store_wp_post_read_meta` filter or an `exclude_meta` default that drops them.
+WooCommerce 10.9.1 returns custom meta in `meta_data` for products (`WC_REST_Products_V2_Controller::api_get_meta_data`) and for variations (`WC_REST_Product_Variations_Controller`). It includes keys that start with an underscore. It leaves out only its own internal keys (`_sku`, `_stock`, `_price`, …), keys starting with `wp_`, and, for variations, `attribute_*` (`WC_Data_Store_WP::exclude_internal_meta_keys`). `_popcore_id` and `_popcore_pickup_stores` come back as written. POPCORE writes its own fields the same way, in `meta_data` of the batch update: `_popcore_pickup_stores`, `_popcore_store_stock` ([Each store's count](#each-stores-count-popcore-work140)), and `_popcore_design_price_at` with a design's price ([Design prices](#design-prices-owner-2026-11-12)). The website must not add a `woocommerce_data_store_wp_post_read_meta` filter or an `exclude_meta` default that drops them.
 
 ## The website's number
 
@@ -108,7 +108,7 @@ Once a day's report is pasted after closing, nothing is held back until the shop
 
 On the 2026-11-01 data (395 in-stock linked items), one day not reported holds back 7 items completely. On their best recent day, none of the 395 would sell out in the shop while the website still showed it. A flat `WEBSITE_KEEP_BACK=1` hides 39 items and still leaves 4 at risk. The last piece of a slow seller can still sell twice. In that case the night's report shows a floor shortfall (日报差异) for it, and the web order needs a refund or a swap.
 
-POPCORE writes an item only when its number, price or pickup list differs from what POPCORE last saw or wrote there. An edit made by hand on the website is corrected at the next full catalogue read: every day, and whenever an admin presses **Read website products**.
+POPCORE writes an item only when its number, count per store, price or pickup list differs from what POPCORE last saw or wrote there. An edit made by hand on the website is corrected at the next full catalogue read: every day, and whenever an admin presses **Read website products**.
 
 ## Prices
 
@@ -282,6 +282,24 @@ Owner, 2026-11-26 (popcore-work#121), after a FleetNow driver came to Downtown f
 - Store codes are the website's lowercase ones. POPCORE sends its own store codes in lowercase, so a third live store would be sent as its code and the website would hold the booking until it has an address for it.
 - The [web orders board](web-orders-board.md) shows each delivery at the store it leaves from.
 
+### Each store's count (popcore-work#140)
+
+The courier collects a delivery at one store (above). POPCORE picks that store only when it records the paid order. The owner wants the customer told before paying when an order will come from two stores. The website cannot tell from its own numbers. It has each item's total and, on the product, which stores have it, but not how many each store has.
+
+So POPCORE writes each linked item's count per store in the product field `_popcore_store_stock`:
+
+- The value is a JSON string, compact, with its keys sorted: `{"dt":3,"mk":0}`. Every live store is named by its lowercase code, with 0 when it has none. A store that is not live is not named.
+- It goes on every linked simple product and option: Single Box, Whole Set, design or item. Never on a variable parent, and never on an item POPCORE cannot link.
+- Each number is how many units of the item one order line could take from that store alone, as a web order is filled (`_take`):
+  - the loose units at the store's floor, upstairs and warehouse, without boxes kept in opened sets;
+  - for a blind box, also the store's own sealed sets of it times boxes per set, when such a set may open (a verified blind box whose verified sealed set has a recorded size);
+  - for a Whole Set, its sealed sets only. No order makes a Whole Set from loose boxes, so the floor's sure sets do not count here.
+- It is not the website number. The shop hold, `WEBSITE_KEEP_BACK` and the units of orders waiting for a manager stay out, because the count says where an order would be filled from. A Single Box with 4 loose boxes and one sealed set of 12 at DT shows 4 on the website and `{"dt":16}` here.
+- The website's delivery checkout compares the bag with these counts. When no one store has the whole bag, it tells the customer before paying that the order comes from two stores.
+- It goes in the same batch write as the item's other changes, and only when it changes. `website_items.store_stock` keeps what the website was last told or read. The daily catalogue read reads it back, so a hand edit is put back. A value that is not a string counts as none and is written again.
+- Each count is for one order line. A bag with a Single Box and its Whole Set can fit each count and still not fit one store, because both use that store's sealed sets. POPCORE still decides when it records the order.
+- Upgrading (migration `website_items_store_stock`) adds the column empty. The next pass then writes the count on every linked item once, in batches of 100. After that, an item is written whenever a store's count changes, even when its website number does not, for example when a sealed set arrives.
+
 Web orders take stock but are not POPCORE sales. Closing leaves their documents out of the store day's source token, so a web order paid while the manager reviews closing never makes it stale. Store reports and closing totals do not include them.
 
 The website's stock access is an ordinary **Users → Store operations access** grant for `popcore:website`. It is given once for each store when that store is first seen live. An admin can revoke it, and it is never granted again behind their back.
@@ -324,7 +342,7 @@ POPCORE staging (`staging.popcore.store`) talks to the test copy `staging.popcor
 
 - **In-store sales at DT reach POPCORE only when the day's report is pasted,** until Clover is connected. The hold above covers each item's best day, not every day. Paste each day's report after closing: a report pasted during the day stops the hold for the rest of that day. Reading Clover alone would not close the gap, because 47% of DT's units are sold off the card machine (随手记: cash, transfer, WeChat, Alipay). POPCORE's Clover checkout, where every sale is rung through POPCORE, removes it.
 - **Between the order read and the stock write** of one 30-second pass, a newly paid order can be overwritten by a number POPCORE just changed for the same item. WooCommerce's own 32-minute checkout hold still protects the moment of payment.
-- **A Single Box counts loose boxes only,** never boxes inside sealed sets. A Whole Set counts sealed sets and the whole sets the floor boxes are sure to have ([Whole Sets](#whole-sets)).
+- **A Single Box counts loose boxes only,** never boxes inside sealed sets. Its count per store does count them, as an order can open them ([Each store's count](#each-stores-count-popcore-work140)). A Whole Set counts sealed sets and the whole sets the floor boxes are sure to have ([Whole Sets](#whole-sets)).
 - **Sealed sets opened since the last report.** The daily report's 出库入店 lines open sealed sets upstairs (or in MK's warehouse) onto the floor as boxes. Until that day's report is pasted, POPCORE still counts those sealed sets, and the Whole Set still shows them. No hold covers this yet. Between 2026-11-01 and 2026-11-08, DT's reports opened 8 to 19 sealed sets a day, at most 3 of one set; MK's opened 4 to 23. The daily report records no Whole Set sold as a set (a set sold counts as its boxes, off the floor).
 - **Other ways to pay.** The PayPal gateway, WooCommerce POS and the website's own Special Orders "Arrived" button change stock outside POPCORE's checkout. Keep them off while the sync is on (probe questions 5 and 6).
 - **Vault products** follow their POPCORE IDs like any item. Vault items without an ID keep their placeholder quantities.
@@ -344,6 +362,7 @@ POPCORE staging (`staging.popcore.store`) talks to the test copy `staging.popcor
   - The manager's OK, for exactly the change shown and used only once. Sales that would end or start.
   - The read just before a write: a new sale, a new Daily Shop mark, and swapped POPCORE IDs.
   - The Daily Shop hour, `WEBSITE_DAILY_RESET`, and the upgrade.
+  - Each store's count (popcore-work#140): every count equals the most `_take` fills one line with from that store alone (loose units, boxes kept in an opened set, a set that opens and one that may not, a Whole Set), checked against `_take` itself. Every live store is named and no other. The count is never the website number (floor sure sets, shop hold, waiting orders, keep-back). It goes with the item's other changes, only when it changes, and is remembered after the website takes it; a refused write goes again. A hand edit is put back at the next read. A parent or an unlinked item gets none. The upgrade writes every linked item's count once.
 - `tests/test_design_prices.py`: a design's box price is never sent, at turn-on, after a new box price copied into designs, or over a price a manager set; a price set on the screen or in the design's editor goes, and a rename sets none; first prices (a draft at its box's price, or none, or a hand-set draft price) go without an OK; a live design's +36% and a draft's +50% over the price POPCORE wrote go without an OK too (owner, 2026-11-14), while a change that would restart a sale waits; every design price write sets `_popcore_design_price_at` (a simple product, an option, beside a pickup change in the same write), and box prices carry none; the summary before saving matches what the sync does; the list, grouped by box, with secrets, website prices and "changed today"; a save refused as a whole when a price moved, input refusals, idempotent saves; removing a design with a set price; the upgrade.
 - `tests/browser/check_design_prices.py`: the 确认款价格 screen at 390 and 1440 px, against the real Flask app and the same fake: typing, a pasted column, one price for a box's regular designs then +10%, the secret apart, the review, the save, and the writes, a +36% jump included, with nothing waiting on 网站 Website. Staff cannot open it. `frontend/src/pages/Products/designPriceMath.test.ts` covers reading prices and pasted columns.
 - `tests/browser/check_website_sync.py`: the page at 390 and 1440 px, against the real Flask app and the same fake. It covers reading products, the preview (including where a Whole Set number comes from), turning on, an order that waits and is settled, a price that goes and one a manager OKs, managers unable to turn the sync on, and staff unable to open the page.

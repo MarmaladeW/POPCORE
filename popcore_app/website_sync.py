@@ -26,6 +26,10 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   its best day of the last 30 reports, once for every shop day not reported; a shop day starts at
   WEBSITE_SHOP_OPENS (owner, 2026-11-02). Once the report is in, nothing is held until the shop opens.
 - Pickup: a product's `_popcore_pickup_stores` lists the live stores that have it.
+- Count per store (popcore-work#140): each linked item's `_popcore_store_stock` holds, for every live store, how many
+  units of it an order could take from that store alone, as `_take` fills it: loose units, and a blind box's own
+  sealed sets that may open. The website's delivery checkout uses it to tell a customer before paying that an order
+  will come from two stores. It is never the website number: no shop hold, keep-back or held order units.
 - Orders: a paid web order takes its items out of the live stores' stock. A pickup comes off its pickup
   store first (owner, 2026-11-22: "for markham pickup they come off markham floor"), then
   WEBSITE_DELIVERY_STORE (DT), then any other live store. A delivery comes off one store when one store has all
@@ -109,6 +113,11 @@ DAILY_META = '_popcore_daily_pool'
 # the courier collects from, and waits up to 15 minutes for it (popcore-work#121, website brief of 2026-11-26).
 FILL_META = '_popcore_fill_stores'
 FILL_NONE = 'none'
+# Written on every linked simple product and variation: a JSON string, compact with its keys sorted, of each live
+# store's lowercase code and how many units of the item an order could take from that store alone ('{"dt":3,"mk":0}').
+# popcore.ca's delivery checkout reads it to tell a customer before paying that the order comes from two stores
+# (popcore-work#140). See _store_stock_values.
+STORE_STOCK_META = '_popcore_store_stock'
 # Written with every design price POPCORE sends (UTC, ISO 8601), so the website can tell the designs POPCORE prices,
 # show "Set by POPCORE" and lock their price field (website session, 2026-11-12). Box prices carry none.
 DESIGN_PRICE_META = '_popcore_design_price_at'
@@ -268,6 +277,16 @@ def _popcore_id(meta_data):
     return ''
 
 
+def _store_stock(meta_data):
+    """The item's `_popcore_store_stock` as the website holds it, or None. Anything but a string is not what POPCORE
+    writes, so it counts as none and is written again."""
+    for meta in meta_data or ():
+        if meta.get('key') == STORE_STOCK_META:
+            value = meta.get('value')
+            return value if isinstance(value, str) else None
+    return None
+
+
 def _flag(item, key):
     """A yes/1 product field from REST meta_data, as 1 or 0."""
     return 1 if str(_meta(item, key) or '').strip().lower() in ('1', 'yes', 'true') else 0
@@ -312,6 +331,7 @@ def refresh_items(con, cfg):
                       'manage_stock': 1 if product.get('manage_stock') is True else 0,
                       'stock_quantity': product.get('stock_quantity'), 'stock_status': product.get('stock_status'),
                       'pickup': json.dumps(_pickup(product.get('meta_data'))),
+                      'store_stock': _store_stock(product.get('meta_data')) if kind == 'simple' else None,
                       'regular_cents': _price(product.get('regular_price')), 'sale_cents': _price(product.get('sale_price')),
                       'daily_pool': pool, 'vault': vault})
         if kind != 'variable':
@@ -326,6 +346,7 @@ def refresh_items(con, cfg):
                           'manage_stock': 1 if variation.get('manage_stock') is True else 0,
                           'stock_quantity': variation.get('stock_quantity'),
                           'stock_status': variation.get('stock_status'), 'pickup': None,
+                          'store_stock': _store_stock(variation.get('meta_data')),
                           'regular_cents': _price(variation.get('regular_price')),
                           'sale_cents': _price(variation.get('sale_price')), 'daily_pool': pool, 'vault': vault})
     # One ID is on at most one item (owner, 2026-11-05). An ID on two items links neither, since
@@ -337,11 +358,11 @@ def refresh_items(con, cfg):
         for item in items:
             linked = item['popcore_id'] and holders[item['popcore_id'].upper()] == 1
             con.execute("""INSERT INTO website_items(wc_id, parent_id, kind, sku, popcore_id, name, status, manage_stock,
-                               stock_quantity, stock_status, pickup, product_id, regular_cents, sale_cents,
+                               stock_quantity, stock_status, pickup, store_stock, product_id, regular_cents, sale_cents,
                                daily_pool, vault)
                            VALUES (:wc_id, :parent_id, :kind, :sku, :popcore_id, :name, :status, :manage_stock,
-                               :stock_quantity, :stock_status, :pickup, :product_id, :regular_cents, :sale_cents,
-                               :daily_pool, :vault)""",
+                               :stock_quantity, :stock_status, :pickup, :store_stock, :product_id, :regular_cents,
+                               :sale_cents, :daily_pool, :vault)""",
                         {**item, 'product_id': _product_for_id(con, item['popcore_id']) if linked else None})
         set_state(con, 'refreshed_at', _iso(_now()))
         set_state(con, 'refresh_requested', None)
@@ -381,6 +402,30 @@ def _shelf_stock(con):
                 on_floor = floor.setdefault(row['product_id'], {})
                 on_floor[row['store_id']] = on_floor.get(row['store_id'], 0) + units
     return stock, floor
+
+
+def _store_stock_values(con, stock, codes):
+    """{linked product id: its `_popcore_store_stock`}: for every live store, how many units of the product an order
+    line could take from that store alone, as `_take(con, [store], [line])` fills it (popcore-work#140). It uses
+    _take's own inputs, from the one read `stock` (_shelf_stock): the loose units at the store's floor, upstairs and
+    warehouse, boxes kept in opened sets left out; and for a blind box whose sealed set may open (_set_to_open), the
+    store's sealed sets of it times boxes per set. A Whole Set counts its sealed sets only: no order makes one from loose
+    boxes. Never the shop hold, WEBSITE_KEEP_BACK or held order units: it tells where an order would be filled from,
+    not the website number. Every live store is named, with 0 when it has none."""
+    live = sorted(live_store_ids(con))
+    values = {}
+    # Each product once per pass, so _set_to_open runs once for each.
+    for product in con.execute("""SELECT id, stock_form, identity_status FROM products
+                                  WHERE id IN (SELECT product_id FROM website_items WHERE product_id IS NOT NULL)"""):
+        whole = _set_to_open(con, product)
+        counts = {}
+        for store_id in live:
+            units = stock.get(product['id'], {}).get(store_id, 0)
+            if whole is not None:
+                units += whole['boxes_per_set'] * stock.get(whole['id'], {}).get(store_id, 0)
+            counts[codes[store_id]] = int(units)
+        values[product['id']] = json.dumps(counts, sort_keys=True, separators=(',', ':'))
+    return values
 
 
 def floor_sets(boxes, per_set):
@@ -472,9 +517,10 @@ def _shop_hold(con, cfg):
 
 
 def plan(con, cfg):
-    """Every linked item's website number and every product's pickup stores, with what changes."""
+    """Every linked item's website number and count per store, and every product's pickup stores, with what changes."""
     (stock, floor), held, hold = _shelf_stock(con), _held(con), _shop_hold(con, cfg)
     codes = {row[0]: row[1].lower() for row in con.execute('SELECT id, code FROM stores')}
+    store_stock = _store_stock_values(con, stock, codes)
     # Every item with a POPCORE ID: one POPCORE does not have (or that is on two items) shows sold out.
     items = [dict(row) for row in con.execute(
         "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') AND popcore_id != '' ORDER BY wc_id")]
@@ -496,6 +542,10 @@ def plan(con, cfg):
                 shown[store_id] = shown.get(store_id, 0) + sets
         item['quantity'] = max(0, sum(shown.values()) - held.get(item['product_id'], 0) - cfg['keep_back'])
         item['stock_change'] = not item['manage_stock'] or item['stock_quantity'] != item['quantity']
+        # Linked items only: an item POPCORE cannot link gets no count per store.
+        item['store_stock_wanted'] = store_stock.get(item['product_id']) if item['product_id'] else None
+        item['store_stock_change'] = (item['store_stock_wanted'] is not None
+                                      and item['store_stock_wanted'] != item['store_stock'])
         stores = pickup_by_parent.setdefault(item['parent_id'] or item['wc_id'], set())
         if item['quantity'] > 0:
             stores.update(codes[store_id] for store_id, units in shown.items() if units > cfg['keep_back'])
@@ -864,7 +914,8 @@ def design_price_effects(con, product_ids):
 
 
 def push(con, cfg):
-    """Write the numbers, prices and pickup stores that changed. Returns how many writes the website took."""
+    """Write the numbers, counts per store, prices and pickup stores that changed. Returns how many writes the
+    website took."""
     items, parents = plan(con, cfg)
     pricing = [item for item in items if item['price_state'] == 'send']
     if pricing:
@@ -893,6 +944,10 @@ def push(con, cfg):
             if item['design']:
                 # A design's price is marked as POPCORE's in the same write.
                 entry.setdefault('meta_data', []).append({'key': DESIGN_PRICE_META, 'value': _now().isoformat()})
+        if item['store_stock_change']:
+            # Each live store's own count, in the same write as the item's other changes (popcore-work#140).
+            updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']}).setdefault(
+                'meta_data', []).append({'key': STORE_STOCK_META, 'value': item['store_stock_wanted']})
     for parent in parents:
         if parent['pickup_change']:
             entry = updates.setdefault('/products/batch', {}).setdefault(parent['wc_id'], {'id': parent['wc_id']})
@@ -928,6 +983,10 @@ def push(con, cfg):
                 if any(meta['key'] == PICKUP_META for meta in sent.get('meta_data', ())):
                     con.execute("UPDATE website_items SET pickup=?, error=NULL, pushed_at=datetime('now') WHERE wc_id=?",
                                 (json.dumps(pickups[wc_id]), wc_id))
+                for meta in sent.get('meta_data', ()):
+                    if meta['key'] == STORE_STOCK_META:
+                        con.execute("""UPDATE website_items SET store_stock=?, error=NULL, pushed_at=datetime('now')
+                                       WHERE wc_id=?""", (meta['value'], wc_id))
                 written += 1
             con.commit()
     if written:

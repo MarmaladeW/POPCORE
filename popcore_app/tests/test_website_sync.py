@@ -412,6 +412,45 @@ class WebsiteCase(IsolatedApiCase):
         return {option['wc_id']: option['price_reasons'] for group in self.preview()['held_prices']
                 for option in group['options']}
 
+    @staticmethod
+    def count_meta(value):
+        """The `_popcore_store_stock` entry of a batch write (popcore-work#140)."""
+        return {'key': '_popcore_store_stock', 'value': value}
+
+    def store_stock(self, wc_id):
+        """The count per store the website holds on an item, or None."""
+        return website_sync._store_stock(self.woo.item(wc_id)['meta_data'])
+
+    def planned(self):
+        """{website item id: (its website number, the count per store POPCORE would write)} as plan() has them now."""
+        with closing(self.connect()) as con:
+            items, _ = website_sync.plan(con, website_sync.config())
+        return {item['wc_id']: (item['quantity'], item['store_stock_wanted']) for item in items}
+
+    def assert_take_agrees(self):
+        """Each linked item's count at each live store is the most `_take` fills one order line with from that store
+        alone: that many is taken, and one more is not. Also that every live store is named, and only those."""
+        with closing(self.connect()) as con:
+            items, _ = website_sync.plan(con, website_sync.config())
+            stores = {row[1].lower(): row[0] for row in con.execute('SELECT id, code FROM stores')}
+            live = {code for code, store_id in stores.items() if store_id in website_sync.live_store_ids(con)}
+            checked = 0
+            for item in items:
+                if item['product_id'] is None:
+                    self.assertIsNone(item['store_stock_wanted'], item['wc_id'])
+                    continue
+                counts = json.loads(item['store_stock_wanted'])
+                self.assertEqual(set(counts), live, item['wc_id'])
+                for code, units in counts.items():
+                    line = [{'product_id': item['product_id'], 'quantity': units + 1}]
+                    self.assertEqual(website_sync._take(con, [stores[code]], line)[3], 'not_enough_stock',
+                                     (item['wc_id'], code, units))
+                    if units:
+                        line[0]['quantity'] = units
+                        self.assertIsNone(website_sync._take(con, [stores[code]], line)[3], (item['wc_id'], code, units))
+                    checked += 1
+        self.assertGreater(checked, 0)
+
 
 class WebsiteSyncTests(WebsiteCase):
     def test_nothing_is_written_before_an_admin_turns_it_on(self):
@@ -477,7 +516,7 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertEqual(self.woo.item(11)['sku'], '6941848263001')
         self.assertEqual(website_sync._pickup(self.woo.item(20)['meta_data']), ['dt'])
         self.assertEqual(website_sync._pickup(self.woo.item(10)['meta_data']), ['dt'])
-        # A sale in the shop changes one number, and only that one is written.
+        # A sale in the shop changes one number, and only that one is written, with DT's own count (popcore-work#140).
         with closing(self.connect()) as con:
             version = con.execute("""SELECT version FROM inventory_balances WHERE product_id=? AND location_id=?
                                      AND disposition='saleable'""", (self.item, self.locations['floor'])).fetchone()[0]
@@ -486,7 +525,8 @@ class WebsiteSyncTests(WebsiteCase):
                 'from_disposition': 'saleable', 'expected_versions': {'from': version}}]},
                 actor={'sub': 'auth0|admin', 'https://popcore/role': 'admin'}, request_key='shop-sale')
         self.run_sync()
-        self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'manage_stock': True, 'stock_quantity': 3})])
+        self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'manage_stock': True, 'stock_quantity': 3,
+                                                                'meta_data': [self.count_meta('{"dt":3}')]})])
 
     def test_a_paid_order_takes_the_floor_first_and_stays_out_of_closing(self):
         self.turn_on()
@@ -1080,6 +1120,155 @@ class WebsiteSyncTests(WebsiteCase):
         status = self.client.get('/api/website/status', headers=self.headers('admin')).get_json()
         self.assertIsNone(status['last_error'])
         self.assertIsNotNone(status['refreshed_at'])
+
+    # ── Count per store (popcore-work#140) ──────────────────────────────────
+
+    def test_each_item_counts_what_one_store_could_fill_an_order_with(self):
+        """popcore-work#140: the website's delivery checkout tells a customer before paying that an order comes from two
+        stores. So each linked item carries how many of it each live store could fill alone, as an order is filled
+        (_take): loose units at the floor, upstairs and warehouse, boxes kept in an opened set left out, a blind box's
+        own sealed sets when they may open, and a Whole Set's sealed sets only."""
+        with closing(self.connect()) as con:  # 3 of DT's 10 floor boxes are kept in an opened set
+            document = con.execute("SELECT id FROM inventory_documents WHERE kind='opening'").fetchone()[0]
+            con.execute("""INSERT INTO inventory_open_sets(opening_document_id, random_product_id, location_id, purpose,
+                               remaining_qty) VALUES (?, ?, ?, 'customer_tray', 3)""",
+                        (document, self.box, self.locations['floor']))
+            con.commit()
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        planned = self.planned()
+        # (website number, count per store). The Single Box: 7 loose on the floor, 4 upstairs and 2 sets of 12, though
+        # the website shows the 11 loose. The Whole Set: its 2 sealed sets. Bear 吊卡: floor and upstairs, never
+        # display. MK is not live, so no item names it. An ID POPCORE does not have gets no count.
+        self.assertEqual({wc_id: planned[wc_id] for wc_id in (11, 12, 20, 30, 60, 70)},
+                         {11: (11, '{"dt":35}'), 12: (2, '{"dt":2}'), 20: (4, '{"dt":4}'), 30: (0, '{"dt":0}'),
+                          60: (0, '{"dt":0}'), 70: (0, None)})
+        self.assert_take_agrees()
+        # MK goes live with 5 loose boxes and a sealed set in its warehouse: every linked item names it, with 0 too.
+        _, mk_locations = self.open_mk(5)
+        self.post('receipt', self.set, mk_locations['warehouse'], 1, 'set')
+        planned = self.planned()
+        self.assertEqual({wc_id: planned[wc_id][1] for wc_id in (11, 12, 20, 60)},
+                         {11: '{"dt":35,"mk":17}', 12: '{"dt":2,"mk":1}', 20: '{"dt":4,"mk":0}', 60: '{"dt":0,"mk":0}'})
+        self.assert_take_agrees()
+        # A set an order may not open (its sealed set is not verified): the box counts its loose boxes only, and the
+        # Whole Set still its sealed sets.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET identity_status='unverified' WHERE id=?", (self.set,))
+            con.commit()
+        planned = self.planned()
+        self.assertEqual((planned[11][1], planned[12][1]), ('{"dt":11,"mk":5}', '{"dt":2,"mk":1}'))
+        self.assert_take_agrees()
+
+    def test_the_count_per_store_is_never_the_website_number(self):
+        """The count tells where an order would be filled from, so nothing that only moves the website number counts:
+        not the whole sets floor boxes are sure to have (no order makes a Whole Set from loose boxes), the shop hold,
+        units of orders waiting for a manager, or WEBSITE_KEEP_BACK."""
+        self.post('receipt', self.box, self.locations['floor'], 27, 'box')  # 37 floor boxes: at least 2 whole sets
+        with closing(self.connect()) as con:
+            con.execute("""INSERT INTO daily_sales(product_id, date, store, qty_pos, qty_sold)
+                           VALUES (?, '2026-05-20', 'DT', 1, 1)""", (self.item,))  # Bear 吊卡's best day
+            con.execute("""INSERT INTO website_orders(wc_order_id, number, wc_status, lines, state)
+                           VALUES (900, '900', 'processing', ?, 'needs_review')""",
+                        (json.dumps([{'product_id': self.item, 'quantity': 1}]),))
+            con.commit()
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        moment = datetime(2026, 11, 1, 13, 0, tzinfo=website_sync.TORONTO).astimezone(timezone.utc)  # not reported
+        with patch.object(website_sync, '_now', return_value=moment), patch.dict('os.environ', {'WEBSITE_KEEP_BACK': '1'}):
+            planned = self.planned()
+            self.assert_take_agrees()
+        # The Single Box shows its 41 loose less the keep-back; an order can take those and its 2 sets' 24.
+        # The Whole Set shows 2 sealed + 2 sure from the floor, less the keep-back; an order can take only the 2.
+        # Bear 吊卡 shows 4 less its best day, the waiting order and the keep-back; an order can take all 4.
+        self.assertEqual({wc_id: planned[wc_id] for wc_id in (11, 12, 20)},
+                         {11: (40, '{"dt":65}'), 12: (3, '{"dt":2}'), 20: (1, '{"dt":4}')})
+
+    def test_the_count_per_store_goes_with_the_items_other_changes_and_only_when_it_changes(self):
+        self.turn_on()
+        wc_ids = (10, 11, 12, 20, 30, 40, 50, 60, 70, 80)
+        # The first pass wrote every linked item's count. Never on the variable parent, an item with an ID POPCORE does
+        # not have, or an item without a POPCORE ID.
+        self.assertEqual({wc_id: self.store_stock(wc_id) for wc_id in wc_ids},
+                         {10: None, 11: '{"dt":38}', 12: '{"dt":2}', 20: '{"dt":4}', 30: '{"dt":0}', 40: None,
+                          50: None, 60: '{"dt":0}', 70: None, 80: None})
+        with closing(self.connect()) as con:  # and POPCORE remembers what it wrote
+            self.assertEqual({row[0]: row[1] for row in con.execute('SELECT wc_id, store_stock FROM website_items')},
+                             {wc_id: self.store_stock(wc_id) for wc_id in wc_ids})
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])
+        # A sealed set arrives upstairs. The Single Box's website number counts loose boxes only and stays, so its
+        # write carries only DT's new count; the Whole Set's number and count go in one write.
+        self.post('receipt', self.set, self.locations['upstairs'], 1, 'set')
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [
+            ('/products/10/variations/batch', {'id': 11, 'meta_data': [self.count_meta('{"dt":50}')]}),
+            ('/products/10/variations/batch', {'id': 12, 'manage_stock': True, 'stock_quantity': 3,
+                                               'meta_data': [self.count_meta('{"dt":3}')]})])
+        self.assertEqual((self.woo.item(11)['stock_quantity'], self.store_stock(11)), (14, '{"dt":50}'))
+        # A write the website refuses is not remembered, and goes again in the next pass.
+        self.woo.writes.clear()
+        self.woo.refuse_ids = {20}
+        self.post('consume', self.item, self.locations['floor'], 1, 'piece')
+        self.run_sync()
+        with closing(self.connect()) as con:
+            row = con.execute('SELECT store_stock, error FROM website_items WHERE wc_id=20').fetchone()
+        self.assertEqual((tuple(row), self.store_stock(20)), (('{"dt":4}', 'Not saved.'), '{"dt":4}'))
+        self.woo.refuse_ids = set()
+        self.woo.writes.clear()
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [('/products/batch', {'id': 20, 'manage_stock': True, 'stock_quantity': 3,
+                                                                'meta_data': [self.count_meta('{"dt":3}')]})])
+        # MK goes live: every linked item is written again, naming MK, with 0 where MK has none.
+        self.open_mk(5)
+        self.run_sync()
+        self.assertEqual({wc_id: self.store_stock(wc_id) for wc_id in (10, 11, 12, 20, 30, 60, 70)},
+                         {10: None, 11: '{"dt":50,"mk":5}', 12: '{"dt":3,"mk":0}', 20: '{"dt":3,"mk":0}',
+                          30: '{"dt":0,"mk":0}', 60: '{"dt":0,"mk":0}', 70: None})
+
+    def test_a_count_edited_on_the_website_is_put_back_at_the_next_read(self):
+        self.turn_on()
+
+        def edit(wc_id, *value):
+            item = self.woo.item(wc_id)
+            item['meta_data'] = [meta for meta in item['meta_data'] if meta['key'] != '_popcore_store_stock'] + [
+                {'key': '_popcore_store_stock', 'value': one} for one in value]
+
+        edit(20, '{"dt":99}')   # another number
+        edit(11, {'dt': 38})    # an object, not the JSON string
+        edit(12)                # removed
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])  # POPCORE sees it at the next full read
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual({update['id']: update for _, update in self.woo.writes},
+                         {11: {'id': 11, 'meta_data': [self.count_meta('{"dt":38}')]},
+                          12: {'id': 12, 'meta_data': [self.count_meta('{"dt":2}')]},
+                          20: {'id': 20, 'meta_data': [self.count_meta('{"dt":4}')]}})
+        # Read back as written, nothing more goes.
+        self.woo.writes.clear()
+        self.client.post('/api/website/refresh', headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])
+
+    def test_the_count_upgrade_writes_every_linked_items_count_once(self):
+        """The migration adds `website_items.store_stock` empty, so the next pass writes every linked item's count."""
+        self.turn_on()
+        with closing(self.connect()) as con:  # the table as it was before the count
+            con.execute('ALTER TABLE website_items DROP COLUMN store_stock')
+            con.execute("DELETE FROM _migrations WHERE name='website_items_store_stock'")
+            con.commit()
+        db.migrate_db()
+        db.migrate_db()  # safe to re-run
+        with closing(self.connect()) as con:
+            self.assertEqual({row[0] for row in con.execute('SELECT store_stock FROM website_items')}, {None})
+        self.run_sync()
+        self.assertEqual({update['id']: update for _, update in self.woo.writes},
+                         {wc_id: {'id': wc_id, 'meta_data': [self.count_meta(value)]} for wc_id, value in (
+                             (11, '{"dt":38}'), (12, '{"dt":2}'), (20, '{"dt":4}'), (30, '{"dt":0}'), (60, '{"dt":0}'))})
+        self.woo.writes.clear()
+        self.run_sync()
+        self.assertEqual(self.woo.writes, [])
 
     # ── Prices (owner, 2026-11-10) ──────────────────────────────────────────
 
