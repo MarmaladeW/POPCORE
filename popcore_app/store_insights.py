@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from checkout_access import require_checkout_history_store
+from inventory_catalog import carried
 from inventory_commands import InventoryValidationError, inventory_mode_for
 from inventory_overview import BACK, needs_refill, sealed_set_of_box
 from operational_reports import _scope, _inventory_identity_valid, _product_name
@@ -22,18 +23,21 @@ def _current_inventory(con, ids):
             WHERE l.is_active=1 AND l.store_id IN ({marks})''',ids)}
     items=[];counts=Counter({key:0 for key in ('out_of_stock','replenish','condition','unverified')})
     set_of=sealed_set_of_box(con)
+    # Only what a store has held since going live can be out of stock there or missing from its floor (see carried).
+    held,on_floor=carried(con,[location['id'] for location in locations if location['opening_verified']])
     for row in con.execute('SELECT p.*,ps.name series_name FROM products p LEFT JOIN product_series ps ON ps.id=p.series_id ORDER BY p.id'):
         valid=_inventory_identity_valid(row)
+        pair=set_of.get(row['id'])
         def available(location):
             return balances.get((row['id'],location['id'],'saleable'),0) if valid and location['opening_verified'] else None
+        def with_sets(location):  # a blind box counts its whole sets: none left means neither
+            return (available(location) or 0)+(balances.get((pair,location['id'],'saleable'),0) if pair and location['opening_verified'] else 0)
         known=bool(locations) and all(available(location) is not None for location in locations)
+        stocked=any((location['store_id'],product) in held for location in locations for product in (row['id'],pair) if product)
         reasons=[]
         if not known: reasons.append('unverified')
-        elif all(available(location)==0 for location in locations): reasons.append('out_of_stock')
-        def back_stock(location):  # a blind box's whole sets upstairs refill its floor too
-            pair=set_of.get(row['id'])
-            return (available(location) or 0)+(balances.get((pair,location['id'],'saleable'),0) if pair and location['opening_verified'] else 0)
-        if any(floor['code']=='floor' and needs_refill(row['stock_form'],available(floor),sum(back_stock(back) for back in locations if back['store_id']==floor['store_id'] and back['code'] in BACK)) for floor in locations):
+        elif row['stock_form']!='sealed_set' and stocked and all(with_sets(location)==0 for location in locations): reasons.append('out_of_stock')
+        if any(floor['code']=='floor' and needs_refill(row['stock_form'],available(floor),sum(with_sets(back) for back in locations if back['store_id']==floor['store_id'] and back['code'] in BACK),(floor['store_id'],row['id']) in on_floor) for floor in locations):
             reasons.append('replenish')
         if valid and any(location['opening_verified'] and any(balances.get((row['id'],location['id'],kind),0)>0 for kind in ('hold','damaged')) for location in locations):
             reasons.append('condition')

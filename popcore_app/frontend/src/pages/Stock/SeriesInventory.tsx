@@ -12,7 +12,7 @@ import SeriesHistory from './SeriesHistory'
 import SeriesWorksheet from './SeriesWorksheet'
 import SeriesStockAction from './SeriesStockAction'
 import InventoryPhoto from './InventoryPhoto'
-import { inventoryAttention, type InventoryAttention } from '../../lib/inventoryAttention'
+import { inventoryAttention, needsAttention, type InventoryAttention } from '../../lib/inventoryAttention'
 import './seriesInventory.css'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
@@ -123,7 +123,7 @@ function InventoryScope({storeCode,storeName,role}:{storeCode:string;storeName:s
   ] as const) : []
   function matchesStock(product:SeriesProduct, siblings:readonly SeriesProduct[]=[]) {
     const attention=inventoryAttention(product,data?.locations||[],sealedSetFor(product,siblings))
-    const match=stockFilter==='all'||(stockFilter==='attention'?attention.length>0:attention.includes(stockFilter))
+    const match=stockFilter==='all'||(stockFilter==='attention'?needsAttention(product,attention):attention.includes(stockFilter))
     const needle=designQuery.trim().normalize('NFKC').toLocaleLowerCase()
     return match&&(!selected||!needle||[product.name,product.design_name,product.sku,product.jizhanming,product.name_cn_en,product.alias_text].filter(Boolean).join(' ').normalize('NFKC').toLocaleLowerCase().includes(needle))
   }

@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from inventory_catalog import _locations
+from inventory_catalog import _locations, carried
 from inventory_visibility import sees_every_store
 from operational_reports import _inventory_identity_valid, _product_name
 from stock_losses import cents
@@ -29,9 +29,10 @@ CHANGE_SOURCES = {'daily_report': 'report', 'sale_document': 'checkout', 'checko
                   'stock_loss': 'loss', 'stock_loss_undo': 'loss', 'damaged_pile': 'damaged'}
 
 
-def needs_refill(form, floor, back):
-    """The floor has none while the same store holds some upstairs (a blind box counts its whole sets there)."""
-    return form in REFILL_FORMS and floor == 0 and back > 0
+def needs_refill(form, floor, back, on_floor):
+    """The floor has none of a product it has held since going live (`on_floor`, see inventory_catalog.carried),
+    while the same store holds some upstairs (a blind box counts its whole sets there)."""
+    return form in REFILL_FORMS and on_floor and floor == 0 and back > 0
 
 
 def sealed_set_of_box(con):
@@ -62,6 +63,8 @@ def inventory_overview(con, actor, store_code, today=None):
     valid = {product_id for product_id, product in products.items() if _inventory_identity_valid(product)}
     set_of = sealed_set_of_box(con)
     box_of = {set_id: box_id for box_id, set_id in set_of.items()}
+    store_id = {location['store_code']: location['store_id'] for location in locations}
+    _, on_floor = carried(con, list(by_id))
 
     # Saleable stock per store and product, by role: floor, back (upstairs or warehouse), display, claw.
     stock = defaultdict(Counter)
@@ -142,7 +145,7 @@ def inventory_overview(con, actor, store_code, today=None):
             held = stock[key]
             pair = set_of.get(product_id)
             back = held['back'] + (stock[store, pair]['back'] if pair else 0)
-            if floor_and_back and needs_refill(product['stock_form'], held['floor'], back):
+            if floor_and_back and needs_refill(product['stock_form'], held['floor'], back, (store_id[store], product_id) in on_floor):
                 refill.append(item(key))
             if week[key] and held['floor'] and held['floor'] * len(report_days[store]) < week[key] * LOW_DAYS:
                 low.append(item(key))

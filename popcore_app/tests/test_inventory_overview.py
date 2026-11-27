@@ -40,6 +40,17 @@ class InventoryOverviewTests(IsolatedApiCase):
             for name, ago, sold in [('Squishy', 1, 3), ('Squishy', 2, 3), ('Gone', 10, 4), ('Old', 40, 9)]:
                 con.execute("INSERT INTO daily_sales(product_id,date,store,qty_sold) VALUES (?,?,'DT',?)", (self.ids[name], days_ago(ago), sold))
             con.commit()
+            # Blind's floor has held it (and sold out): only a floor that has held a product can need a refill of it.
+            self.post(con, 'receipt', 'Blind', 'floor', 0, 'blind-in', days_ago(30))
+            self.post(con, 'consume', 'Blind', 'floor', 1, 'blind-sold', days_ago(30))
+
+    def post(self, con, kind, name, code, version, key, day):
+        side = 'to' if kind == 'receipt' else 'from'
+        unit = con.execute('SELECT stock_unit FROM products WHERE id=?', (self.ids[name],)).fetchone()[0]
+        post_inventory(con, {'kind': kind, 'business_date': day, 'reason': 'Fixture', 'source_type': 'fixture', 'source_id': key,
+                             'lines': [{'product_id': self.ids[name], 'quantity': 1, 'unit': unit, f'{side}_location_id': self.loc[code],
+                                        f'{side}_disposition': 'saleable', 'expected_versions': {side: version}}]},
+                       actor={'sub': 'auth0|staff', auth.ROLE_CLAIM: 'staff'}, request_key=key)
 
     def get(self, query='store_code=DT', role='staff'):
         return self.client.get('/api/inventory/overview?' + query, headers=self.headers(role))
@@ -80,7 +91,7 @@ class InventoryOverviewTests(IsolatedApiCase):
 
     def test_a_box_with_loose_boxes_upstairs_or_on_the_floor(self):
         with closing(self.connect()) as con:
-            con.execute("INSERT INTO inventory_balances VALUES (?,?,'saleable',3,1)", (self.ids['Blind'], self.loc['floor']))
+            con.execute('UPDATE inventory_balances SET quantity=3 WHERE product_id=? AND location_id=?', (self.ids['Blind'], self.loc['floor']))
             con.commit()
         self.assertEqual(self.get().get_json()['refill'], [])
         with closing(self.connect()) as con:
@@ -103,3 +114,33 @@ class InventoryOverviewTests(IsolatedApiCase):
             current = _current_inventory(con, [self.store_id])
         self.assertEqual([row['product_name'] for row in current['items'] if 'replenish' in row['reasons']], ['Blind'])
         self.assertEqual(current['exception_counts']['replenish'], 1)
+
+    def test_only_what_the_store_has_held_can_run_out_or_leave_the_floor_empty(self):
+        from store_insights import _current_inventory
+        def reasons():
+            with closing(self.connect()) as con:
+                return {row['product_name']: row['reasons'] for row in _current_inventory(con, [self.store_id])['items']}
+        def refill():
+            return [row['name'] for row in self.get().get_json()['refill']]
+        with closing(self.connect()) as con:
+            # A big figure: one on display and spares upstairs, never on the floor. Back stock by choice, not a refill.
+            figure = con.execute('''INSERT INTO products(sku,jizhanming,name_cn_en,stock_form,stock_unit,identity_status)
+                                     VALUES ('OV-Figure','Figure','Figure','ordinary','piece','verified')''').lastrowid
+            for code, quantity in [('display', 1), ('upstairs', 2)]:
+                con.execute("INSERT INTO inventory_balances VALUES (?,?,'saleable',?,1)", (figure, self.loc[code], quantity))
+            con.commit()
+        # Gone sold before inventory went live and the store has never held it since: not out of stock here.
+        self.assertNotIn('Gone', reasons())
+        self.assertNotIn('Figure', reasons())
+        self.assertEqual(refill(), ['Blind'])
+        with closing(self.connect()) as con:
+            self.post(con, 'receipt', 'Gone', 'floor', 0, 'gone-in', days_ago(20))
+            self.post(con, 'consume', 'Gone', 'floor', 1, 'gone-sold', days_ago(20))
+        self.assertEqual(reasons()['Gone'], ['out_of_stock'])
+        with closing(self.connect()) as con:
+            self.post(con, 'receipt', 'Gone', 'upstairs', 0, 'gone-up', days_ago(20))
+        self.assertEqual(reasons()['Gone'], ['replenish'])
+        self.assertEqual(sorted(refill()), ['Blind', 'Gone'])
+        # A box with whole sets upstairs is not out of stock, and a sealed set never is on its own.
+        self.assertEqual(reasons()['Blind'], ['replenish'])
+        self.assertNotIn('Set', reasons())

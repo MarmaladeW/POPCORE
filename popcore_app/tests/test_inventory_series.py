@@ -76,6 +76,28 @@ class InventorySeriesTests(IsolatedApiCase):
         self.assertEqual({row['disposition'] for row in rows['Red']['balances']},{'saleable','hold','damaged','trade','transit','display'})
         self.assertEqual(before,self.snapshot(before.keys()))
 
+    def test_products_say_which_stores_and_floors_have_held_them(self):
+        # Needs attention reads this (owner, 2026-11-11): only what the ledger has put in a store can run out there, and
+        # only a floor that has held a product can be empty of it. Blue is received onto the floor and sold out; Red is
+        # received upstairs only; the balances the fixture wrote without a ledger entry count for nothing.
+        actor = {'sub': 'auth0|staff', 'https://popcore/role': 'staff'}
+        with closing(self.connect()) as con:
+            con.execute('UPDATE inventory_scope_state SET opening_verified=1 WHERE location_id=?', (self.back,))
+            con.commit()
+            def post(kind, name, location, version, key):
+                side = 'to' if kind == 'receipt' else 'from'
+                post_inventory(con, {'kind': kind, 'business_date': '2026-09-01', 'reason': 'Fixture', 'source_type': 'fixture', 'source_id': key,
+                                     'lines': [{'product_id': self.products[name], 'quantity': 1, 'unit': 'piece', f'{side}_location_id': location,
+                                                f'{side}_disposition': 'saleable', 'expected_versions': {side: version}}]},
+                               actor=actor, request_key=key)
+            post('receipt', 'Blue', self.floor, 0, 'blue-in')
+            post('consume', 'Blue', self.floor, 1, 'blue-sold')
+            post('receipt', 'Red', self.back, 0, 'red-up')
+        rows = {row['design_name'] or row['stock_form']: row for row in self.get().get_json()['series'][0]['products']}
+        self.assertEqual({name: (row['stocked_store_ids'], row['floor_store_ids']) for name, row in rows.items()},
+                         {'Blue': ([self.store_id], [self.store_id]), 'Red': ([self.store_id], []), 'random_box': ([], []),
+                          'sealed_set': ([], []), 'Unknown': ([], [])})
+
     def test_reference_photo_uses_exact_product_and_prefers_general_image(self):
         with closing(self.connect()) as con:
             con.execute("INSERT INTO hidden_images(product_id,image_type,filename) VALUES (?,'small','old-package.webp')", (self.products['Red'],))

@@ -23,6 +23,9 @@ export interface SeriesProduct {
   /** When the product was added (UTC); null for products added before times were recorded. */
   created_at?: string | null
   balances: SeriesBalance[]
+  /** Stores that have held it since their inventory went live, and those whose floor has: only those can run out or need a floor refill. */
+  stocked_store_ids?: number[]
+  floor_store_ids?: number[]
   open_sets?: Array<{id:number;location_id:number;purpose:string;remaining_qty:number;opening_document_id:number}>
   /** A plain blind box's sealed set (its "Whole set" variation). */
   variations?: SeriesProduct[]

@@ -45,6 +45,28 @@ def _locations(con, actor, store_code):
                     WHERE l.is_active=1 AND l.store_id IN ({marks}) ORDER BY l.id''', stores)]
 
 
+def carried(con, location_ids):
+    """The products each store has held since its inventory went live, read from the posted ledger.
+
+    Returns two sets of (store_id, product_id): held anywhere in the store, and held on its floor. A zero for a
+    product the store never held is not out of stock, and a floor that never held a product is not empty of it:
+    big figures kept on display and old series kept upstairs are back stock by choice, not refills (owner,
+    2026-11-11: Needs attention should show only real problems)."""
+    if not location_ids:
+        return set(), set()
+    marks = ','.join('?' for _ in location_ids)
+    held, floor = set(), set()
+    for row in con.execute(
+            f'''SELECT DISTINCT l.store_id,l.code,m.product_id FROM inventory_movements m
+                JOIN inventory_documents d ON d.id=m.document_id JOIN inventory_locations l ON l.id=m.location_id
+                WHERE d.status='posted' AND m.disposition='saleable' AND m.quantity>0 AND m.location_id IN ({marks})''',
+            list(location_ids)):
+        held.add((row['store_id'], row['product_id']))
+        if row['code'] == 'floor':
+            floor.add((row['store_id'], row['product_id']))
+    return held, floor
+
+
 def series_inventory(con, actor, store_code, query='', series_id=None, product_id=None):
     """Series (a product we sell confirmed designs of) and plain products, each with its stock.
 
@@ -79,6 +101,8 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
             [location['id'] for location in locations]):
             item = dict(row)
             opened_sets.setdefault(item.pop('random_product_id'), []).append(item)
+    held, on_floor = carried(con, [location['id'] for location in locations if location['opening_verified']])
+    store_ids = sorted({location['store_id'] for location in locations})
     # A sealed set is its blind box's other variation (owner, 2026-10-26): it is shown with the box, never as its own
     # entry, whether or not the box is a series (a series means the box also sells confirmed designs).
     set_box = {row[0]: row[1] for row in con.execute(
@@ -105,6 +129,9 @@ def series_inventory(con, actor, store_code, query='', series_id=None, product_i
                  and FORMS_TO_UNITS.get(product['stock_form']) == product['stock_unit']
                  and (product['stock_form'] != 'confirmed_design' or bool((product['design_name'] or '').strip())))
         product['open_sets'] = opened_sets.get(product['id'], []) if valid else []
+        # Stores that have held it since going live, and those whose floor has (see carried).
+        product['stocked_store_ids'] = [store for store in store_ids if valid and (store, product['id']) in held]
+        product['floor_store_ids'] = [store for store in store_ids if valid and (store, product['id']) in on_floor]
         product['balances'] = []
         for location in locations:
             trusted = location['opening_verified'] and valid
