@@ -166,7 +166,8 @@ class WebOrderNotificationTests(BoardCase):
 
     def test_a_delivery_reaches_the_devices_of_the_store_it_leaves_from(self):
         """Owner, 2026-11-26: the courier collects from the store the order was filled from, so that store hears of
-        it. (DT has 8 Echo boxes left here, MK opens with 3.)"""
+        it. (DT has 8 Echo boxes left here and its sealed sets are sold first; MK opens with 3.)"""
+        self.no_dt_sets()
         self.open_mk(3)
         dt, mk = Device('dt'), Device('mk')
         self.notify_me(dt)

@@ -2,7 +2,8 @@
 linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07), the live stores'
 shelves set the website number, paid web orders take their items
 out of the pickup store (owner, 2026-11-22) or, for a delivery, DT first (owner, 2026-11-19) and from one store
-when one has all of it, the floor first, then upstairs, and stay out of its closing, a cancel puts them back,
+when one has all of it, the floor first, then upstairs, a store's own sealed sets opened when its loose boxes run out
+(popcore-work#128), and stay out of its closing, a cancel puts them back,
 the website is told which store filled each delivery (owner, 2026-11-26),
 and nothing is written to the website before an admin turns the sync on. Since 2026-11-10 POPCORE
 also writes the regular prices of linked boxes, Whole Sets and items, never sale prices; big or doubtful
@@ -334,6 +335,26 @@ class WebsiteCase(IsolatedApiCase):
                           '--apply', '--backup', str(Path(self.tempdir.name) / 'before-mk.db')])
         return mk, locations
 
+    def no_dt_sets(self):
+        """DT's two sealed Echo sets leave stock, so DT holds loose boxes only. A web order opens a store's own sealed
+        sets when its loose boxes run out (popcore-work#128); the tests of which store fills an order use this."""
+        WebsiteCase.post(self, 'consume', self.set, self.locations['upstairs'], 2, 'set')
+
+    def at(self, product, location_id):
+        """The saleable balance of a product at any store's place."""
+        with closing(self.connect()) as con:
+            row = con.execute("""SELECT quantity FROM inventory_balances WHERE product_id=? AND location_id=?
+                                 AND disposition='saleable'""", (product, location_id)).fetchone()
+            return row[0] if row else 0
+
+    @staticmethod
+    def moves(con, document_id):
+        """A document's movements as (product, store code, place code, quantity), in line order."""
+        return [tuple(row) for row in con.execute(
+            """SELECT m.product_id, s.code, l.code, m.quantity FROM inventory_movements m
+               JOIN inventory_locations l ON l.id=m.location_id JOIN stores s ON s.id=l.store_id
+               WHERE m.document_id=? ORDER BY m.line_no, m.id""", (document_id,))]
+
     def preview(self):
         return self.client.get('/api/website/preview', headers=self.headers('admin')).get_json()
 
@@ -564,7 +585,8 @@ class WebsiteSyncTests(WebsiteCase):
         (floor, then upstairs or the warehouse), then DT. A delivery comes off DT when DT has all of it (owner,
         2026-11-19: "we ship our product from downtown"), else off another live store that has all of it (owner,
         2026-11-26: the courier collects from the store the order was filled from), and only when no store has all
-        of it off DT first, then the others."""
+        of it off DT first, then the others. (Loose boxes only here: DT's sealed sets are sold first.)"""
+        self.no_dt_sets()
         mk, mk_locations = self.open_mk(5)
         self.post('receipt', self.box, mk_locations['warehouse'], 2, 'box')
         self.turn_on()
@@ -625,6 +647,7 @@ class WebsiteSyncTests(WebsiteCase):
         """Owner, 2026-11-26 (popcore-work#121): the FleetNow courier collects from the store the order was filled
         from. POPCORE writes `_popcore_fill_stores` on the website's order: the stores, "none" while the order waits
         for a manager, the stores again once Try again fills it, and never the same answer twice."""
+        self.no_dt_sets()
         self.open_mk(5)
         self.turn_on()
 
@@ -684,13 +707,120 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertEqual((self.order_row(532)['fill_stores'], self.state('last_error')), ('dt', None))
 
     def test_a_pickup_at_a_store_with_none_of_it_waits_at_that_store(self):
-        """An MK pickup that no live store can fill waits for a manager as MK's order."""
+        """An MK pickup that no live store can fill waits for a manager as MK's order. MK has 1 box, DT 14 loose and
+        2 sealed sets of 12: 39 in all."""
         mk, _ = self.open_mk(1)
         self.turn_on()
-        self.woo.order(513, [(11, 20)], pickup='mk')
+        self.woo.order(513, [(11, 40)], pickup='mk')
         self.run_sync()
         order = self.order_row(513)
         self.assertEqual((order['state'], order['problem'], order['store_id']), ('needs_review', 'not_enough_stock', mk))
+
+    def test_a_delivery_opens_dts_own_sealed_set_before_going_to_mk(self):
+        """popcore-work#128: web order #42170 took a Smiski box off MK's floor though DT had it in a sealed set
+        upstairs. A store's own sealed sets count as its boxes: DT, with no loose box left, opens as few of its sets as
+        the order needs where they are kept and takes the boxes from there, and the boxes not taken stay loose there.
+        The order is still one consume; a cancel puts back the boxes it took, loose, and the set stays open."""
+        self.post('consume', self.box, self.locations['floor'], 10, 'box')
+        self.post('consume', self.box, self.locations['upstairs'], 4, 'box')
+        mk, mk_locations = self.open_mk(39)
+        self.turn_on()
+        self.woo.order(540, [(11, 9)])
+        self.run_sync()
+        order = self.order_row(540)
+        self.assertEqual((order['state'], order['store_id'], order['fill_stores']), ('recorded', self.dt, 'dt'))
+        self.assertEqual(self.woo.fill_writes, [(540, 'dt')])
+        # One of DT's two sets opened upstairs: 12 boxes, 9 taken, 3 loose upstairs. MK's floor is untouched.
+        self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
+                          self.balance(self.box, 'floor'), self.at(self.box, mk_locations['floor'])), (1, 3, 0, 39))
+        with closing(self.connect()) as con:
+            opened = con.execute("SELECT * FROM inventory_documents WHERE source_type='website_order_open'").fetchall()
+            self.assertEqual([(row['kind'], row['source_id'], row['actor_sub']) for row in opened],
+                             [('correction', '540', website_sync.WEBSITE_SUB)])
+            self.assertEqual(self.moves(con, opened[0]['id']),
+                             [(self.set, 'DT', 'upstairs', -1), (self.box, 'DT', 'upstairs', 12)])
+            self.assertEqual(self.moves(con, order['inventory_document_id']), [(self.box, 'DT', 'upstairs', -9)])
+            # Both stay out of DT's closing, as web orders do.
+            session = {'id': 0, 'version': 1, 'status': 'open', 'intake_complete': 0, 'store_id': self.dt,
+                       'business_date': opened[0]['business_date']}
+            documents = {row[0] for row in closing_operations._source_facts(con, session)['inventory_documents']}
+            self.assertFalse({opened[0]['id'], order['inventory_document_id']} & documents)
+        # The website: DT's 3 loose boxes and MK's 39; DT's last sealed set and the 2 sets MK's 39 boxes are sure of.
+        self.assertEqual((self.woo.item(11)['stock_quantity'], self.woo.item(12)['stock_quantity']), (42, 3))
+        # Cancelled: the 9 boxes go back upstairs, loose beside the other 3; the opened set stays open.
+        self.woo.orders[540].update(status='cancelled', date_modified_gmt=_ago(0))
+        self.run_sync()
+        self.assertEqual(self.order_row(540)['state'], 'cancelled')
+        self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
+                          self.at(self.box, mk_locations['floor'])), (1, 12, 39))
+
+    def test_a_delivery_no_store_can_fill_opens_dts_sets_then_mks(self):
+        """With its sets neither store has the whole order: DT gives its loose boxes and opens its sets first, then MK
+        its loose boxes and as few of its sets as cover the rest. A cancel puts every box back where it was taken."""
+        mk, mk_locations = self.open_mk(5)
+        self.post('receipt', self.set, mk_locations['warehouse'], 1, 'set')
+        self.turn_on()
+        # DT: 14 loose boxes and 2 sets of 12 (38). MK: 5 loose and 1 set (17). Neither has 45.
+        self.woo.order(541, [(11, 45)])
+        self.run_sync()
+        order = self.order_row(541)
+        self.assertEqual((order['state'], order['store_id'], order['fill_stores']), ('recorded', self.dt, 'dt,mk'))
+
+        def stock():
+            return ((self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'), self.balance(self.set, 'upstairs')),
+                    (self.at(self.box, mk_locations['floor']), self.at(self.box, mk_locations['warehouse']),
+                     self.at(self.set, mk_locations['warehouse'])))
+
+        # MK's set opened for the last 2 boxes: 10 stay loose in MK's warehouse.
+        self.assertEqual(stock(), ((0, 0, 0), (0, 10, 0)))
+        with closing(self.connect()) as con:
+            opened = con.execute("SELECT id FROM inventory_documents WHERE source_type='website_order_open'").fetchone()[0]
+            self.assertEqual(self.moves(con, opened), [
+                (self.set, 'DT', 'upstairs', -2), (self.box, 'DT', 'upstairs', 24),
+                (self.set, 'MK', 'warehouse', -1), (self.box, 'MK', 'warehouse', 12)])
+            # One consume line per place: DT upstairs gives its 4 loose boxes and the 24 from its sets together.
+            self.assertEqual(self.moves(con, order['inventory_document_id']), [
+                (self.box, 'DT', 'floor', -10), (self.box, 'DT', 'upstairs', -28),
+                (self.box, 'MK', 'floor', -5), (self.box, 'MK', 'warehouse', -2)])
+        self.woo.orders[541].update(status='cancelled', date_modified_gmt=_ago(0))
+        self.run_sync()
+        self.assertEqual(self.order_row(541)['state'], 'cancelled')
+        self.assertEqual(stock(), ((10, 28, 0), (5, 12, 0)))
+
+    def test_a_pickup_opens_its_own_stores_sealed_set_first(self):
+        """An MK pickup MK has 1 loose box of and the rest in a sealed set: MK's floor box first, then MK's set opens
+        in its warehouse for the other 3. DT, which has loose boxes, gives none."""
+        mk, mk_locations = self.open_mk(1)
+        self.post('receipt', self.set, mk_locations['warehouse'], 1, 'set')
+        self.turn_on()
+        self.woo.order(542, [(11, 4)], pickup='mk')
+        self.run_sync()
+        order = self.order_row(542)
+        self.assertEqual((order['state'], order['store_id'], order['fill_stores']), ('recorded', mk, None))
+        self.assertEqual((self.at(self.box, mk_locations['floor']), self.at(self.set, mk_locations['warehouse']),
+                          self.at(self.box, mk_locations['warehouse'])), (0, 0, 9))
+        self.assertEqual((self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'),
+                          self.balance(self.set, 'upstairs')), (10, 4, 2))
+        orders = {row['wc_order_id']: row for row in
+                  self.client.get('/api/website/orders', headers=self.headers('admin')).get_json()['orders']}
+        self.assertEqual(orders[542]['store_codes'], ['MK'])
+
+    def test_a_whole_set_line_takes_its_sealed_sets_before_a_box_opens_one(self):
+        """A Whole Set sold with its boxes in one order: the Whole Set takes its sealed sets first, and the boxes
+        open only the sets left."""
+        self.turn_on()
+        # DT: 14 loose boxes and 2 sealed sets. 2 Whole Sets and 16 boxes would need a third set.
+        self.woo.order(543, [(12, 2), (11, 16)])
+        self.run_sync()
+        self.assertEqual((self.order_row(543)['state'], self.order_row(543)['problem']), ('needs_review', 'not_enough_stock'))
+        self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
+                          self.balance(self.box, 'floor')), (2, 4, 10))
+        # 1 Whole Set and 16 boxes: the Whole Set takes one set, the boxes open the other for their last 2.
+        self.woo.order(544, [(12, 1), (11, 16)], modified=_ago(0))
+        self.run_sync()
+        self.assertEqual(self.order_row(544)['state'], 'recorded')
+        self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
+                          self.balance(self.box, 'floor')), (0, 10, 0))
 
     def test_order_lines_show_the_name_staff_know(self):
         """Owner, 2026-11-19: show the 记账名, or the official name when there is none, not just the POPCORE ID."""

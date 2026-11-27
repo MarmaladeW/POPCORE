@@ -31,9 +31,12 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   WEBSITE_DELIVERY_STORE (DT), then any other live store. A delivery comes off one store when one store has all
   of it: DT if it can (owner, 2026-11-19: "we ship our product from downtown"), else another live store, and
   only when no store has all of it DT first and then the others. In each store the floor first, then
-  upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). It
+  upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). A store's
+  own sealed sets count as its boxes (popcore-work#128): when its loose boxes run out, the order opens as few of
+  them as it needs where they are kept and takes the boxes from there, before another store is asked. It
   is a separate Website order outside the stores' sales and closing (owner, 2026-11-01). A cancelled
-  order puts them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
+  order puts its boxes back where they were taken, loose; an opened set stays open. An order POPCORE cannot fill
+  waits for a manager and holds its units off the website.
 - Where the courier collects (owner, 2026-11-26, popcore-work#121: the FleetNow driver collects from the store
   the order was filled from). POPCORE writes each delivery's `_popcore_fill_stores` on the website's order:
   the stores it was taken from ("dt", "mk", "dt,mk"), or "none" while it waits for a manager. The website
@@ -78,7 +81,7 @@ import design_prices
 from auth import ROLE_CLAIM
 from goods_operations import _balance
 from inventory_commands import InventoryError, _post_inventory_in_transaction, live_store_ids
-from report_stock import _stock_product, live_since
+from report_stock import _available as _units_at, _set_to_open, _stock_product, live_since
 
 TORONTO = ZoneInfo('America/Toronto')
 # The website's own actor. It never comes from a login: Auth0 subjects always contain '|'.
@@ -86,8 +89,11 @@ WEBSITE_SUB = 'popcore:website'
 WEBSITE_NAME = 'Website'
 SOURCE_ORDER = 'website_order'
 SOURCE_CANCEL = 'website_order_cancel'
+# The sealed sets a web order opened for its boxes (popcore-work#128); like the order, outside the store's closing.
+SOURCE_OPEN = 'website_order_open'
 ORDER_REASON = '网站订单 Website order'
 CANCEL_REASON = '网站订单取消 Website order cancelled'
+OPEN_REASON = '网站订单开端 Website order opened a set'
 SHELF_LOCATIONS = ('floor', 'upstairs', 'warehouse')
 # Web orders are picked from the floor first, then upstairs, then the warehouse (owner, 2026-11-19: "stock should be
 # taken from floor first, as we have many loose box orders, those are always taken from floor"). Boxes kept in opened
@@ -1043,55 +1049,105 @@ def _filling_stores(con, cfg, order_row):
 
 
 def _take(con, store_ids, lines):
-    """Consume lines picked store by store in `store_ids` order and, in each store, in PICK_ORDER (the floor first,
-    then upstairs, then the warehouse; boxes kept in opened sets excluded), with the stores they come from in that
-    order, or (None, [], problem) when the stores together cannot fill them."""
-    places = []
+    """Pick lines store by store in `store_ids` order. In each store the loose stock comes first, in PICK_ORDER (the
+    floor, then upstairs, then the warehouse; boxes kept in opened sets excluded). When a blind box's loose boxes in
+    that store run short, it opens as few of that store's own sealed sets as cover the rest, a set on the floor first,
+    then upstairs, then the warehouse, before the next store is asked (popcore-work#128: order #42170 took a box off MK's
+    floor though DT had it in a sealed set upstairs). The set opens where it is kept, its boxes are taken from there,
+    and the boxes not taken stay loose there, as 移货 opens one (stock_moves.py); only a set the 日报 paste may open
+    opens (report_stock._set_to_open). A Whole Set line takes its sealed sets before any box opens one.
+
+    Returns (consume lines, sets to open, the stores the lines come from in `store_ids` order, None), or
+    (None, [], [], problem) when the stores together cannot fill them. Nothing is posted here: record() opens the sets
+    and then consumes, reading the balance versions as it posts."""
+    places = {}
     for store_id in store_ids:
         locations = {row[0]: row[1] for row in con.execute(
             'SELECT code, id FROM inventory_locations WHERE store_id=? AND is_active=1', (store_id,))}
-        places += [(store_id, locations[code]) for code in PICK_ORDER if code in locations]
+        places[store_id] = [locations[code] for code in PICK_ORDER if code in locations]
     wanted = {}
     for line in lines:
         wanted[line['product_id']] = wanted.get(line['product_id'], 0) + line['quantity']
-    take, used = [], set()
-    for product_id, quantity in wanted.items():
-        product = con.execute('SELECT stock_form, stock_unit FROM products WHERE id=?', (product_id,)).fetchone()
-        left = quantity
-        for store_id, location_id in places:
-            if left == 0:
-                break
-            balance = _balance(con, product_id, location_id, 'saleable')
-            available = balance['quantity']
-            if product['stock_form'] == 'random_box':
-                available -= con.execute(
-                    """SELECT COALESCE(SUM(remaining_qty), 0) FROM inventory_open_sets
-                       WHERE random_product_id=? AND location_id=? AND remaining_qty>0""",
-                    (product_id, location_id)).fetchone()[0]
-            units = min(left, max(0, available))
-            if units:
-                take.append({'product_id': product_id, 'unit': product['stock_unit'] or 'piece', 'quantity': units,
-                             'from_location_id': location_id, 'from_disposition': 'saleable',
-                             'expected_versions': {'from': balance['version']}})
-                used.add(store_id)
+    products = {product_id: con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone()
+                for product_id in wanted}
+    # One consume line per product and place, since each line checks the balance version it was read at.
+    take, opens, claimed, used = {}, [], Counter(), set()
+
+    def pick(product, store_id, location_id, units):
+        line = take.setdefault((product['id'], location_id), {
+            'product_id': product['id'], 'unit': product['stock_unit'] or 'piece', 'quantity': 0,
+            'from_location_id': location_id, 'from_disposition': 'saleable'})
+        line['quantity'] += units
+        claimed[(product['id'], location_id)] += units
+        used.add(store_id)
+
+    for product_id in sorted(wanted, key=lambda product_id: products[product_id]['stock_form'] == 'random_box'):
+        product, left = products[product_id], wanted[product_id]
+        whole = _set_to_open(con, product)
+        for store_id in store_ids:
+            for location_id in places[store_id]:
+                units = min(left, max(0, _units_at(con, product, location_id) - claimed[(product_id, location_id)]))
+                if units:
+                    pick(product, store_id, location_id, units)
+                    left -= units
+            for location_id in places[store_id] if whole is not None and left else ():
+                per = whole['boxes_per_set']
+                sets = min(-(-left // per), _balance(con, whole['id'], location_id, 'saleable')['quantity']
+                           - claimed[(whole['id'], location_id)])
+                if sets <= 0:
+                    continue
+                claimed[(whole['id'], location_id)] += sets
+                opens.append({'set': whole, 'box': product, 'location_id': location_id, 'sets': sets, 'per': per})
+                units = min(left, sets * per)
+                pick(product, store_id, location_id, units)
                 left -= units
+                if not left:
+                    break
+            if not left:
+                break
         if left:
-            return None, [], 'not_enough_stock'
-    return take, [store_id for store_id in store_ids if store_id in used], None
+            return None, [], [], 'not_enough_stock'
+    # The consume keeps the order's own line order; within a product, the order the places were picked in.
+    rank = {product_id: index for index, product_id in enumerate(wanted)}
+    lines_out = sorted(take.values(), key=lambda line: rank[line['product_id']])
+    return lines_out, opens, [store_id for store_id in store_ids if store_id in used], None
 
 
 def _take_order(con, order_row, store_ids, lines):
-    """_take for one order. A delivery leaves from one store when one store has all of it, since the courier collects
-    at one address (owner, 2026-11-26, popcore-work#121): DT if it has the whole order, else the next live store
-    that does. Only when no store has all of it is it taken DT first and then the others, and the website then holds
-    the booking until staff bring it together. A pickup is taken as before: its own store first, then what it lacks
-    from the others."""
+    """_take for one order. A delivery leaves from one store when one store has all of it, its own sealed sets
+    counted, since the courier collects at one address (owner, 2026-11-26, popcore-work#121): DT if it has the whole
+    order, else the next live store that does. Only when no store has all of it is it taken DT first and then the
+    others, and the website then holds the booking until staff bring it together. A pickup is taken as before: its own
+    store first (its sealed sets too), then what it lacks from the others."""
     if order_row['fulfilment'] != 'pickup':
         for store_id in store_ids:
-            take, used, problem = _take(con, [store_id], lines)
+            take, opens, used, problem = _take(con, [store_id], lines)
             if problem is None:
-                return take, used, None
+                return take, opens, used, None
     return _take(con, store_ids, lines)
+
+
+def _versioned(con, lines, side):
+    """Lines with the version of the balance each one takes from (`side` 'from') or adds to ('to'), read now."""
+    for line in lines:
+        balance = _balance(con, line['product_id'], line[f'{side}_location_id'], line[f'{side}_disposition'])
+        line['expected_versions'] = {side: balance['version']}
+    return lines
+
+
+def _open_lines(con, opens):
+    """The `correction` that opens an order's sealed sets where they are kept: each set off, its boxes on at the same
+    place, as 移货 opens a back room's set (stock_moves.py)."""
+    lines = []
+    for item in opens:
+        whole, box, place = item['set'], item['box'], item['location_id']
+        lines += [{'product_id': whole['id'], 'unit': whole['stock_unit'] or 'set', 'quantity': item['sets'],
+                   'from_location_id': place, 'from_disposition': 'saleable',
+                   'expected_versions': {'from': _balance(con, whole['id'], place, 'saleable')['version']}},
+                  {'product_id': box['id'], 'unit': box['stock_unit'] or 'box', 'quantity': item['sets'] * item['per'],
+                   'to_location_id': place, 'to_disposition': 'saleable',
+                   'expected_versions': {'to': _balance(con, box['id'], place, 'saleable')['version']}}]
+    return lines
 
 
 def _grant(con):
@@ -1131,20 +1187,29 @@ def record(con, cfg, wc_order_id):
             problem = 'unknown_item'
         elif not stores:
             problem = 'no_live_store'
-        take = None
+        take = opens = None
         if problem is None:
-            take, used, problem = _take_order(con, row, stores, lines)
+            take, opens, used, problem = _take_order(con, row, stores, lines)
             store_id = used[0] if used else store_id
         document_id = None
         if problem is None:
             paid = _gmt(row['paid_at']) or _now()
+            day = paid.astimezone(TORONTO).date().isoformat()
             # A post that fails part way must leave nothing behind; the order row is still updated.
             con.execute('SAVEPOINT website_take')
             try:
+                if opens:
+                    # The sealed sets the order needs open first, in the same transaction; the consume then takes
+                    # the order's boxes alone, so a cancel puts back exactly those.
+                    _post_inventory_in_transaction(con, {
+                        'kind': 'correction', 'business_date': day, 'source_type': SOURCE_OPEN,
+                        'source_id': str(wc_order_id), 'reason': f"{OPEN_REASON} #{row['number']}",
+                        'lines': _open_lines(con, opens),
+                    }, actor=website_actor(), request_key=f'website:open:{wc_order_id}')
                 document_id = _post_inventory_in_transaction(con, {
-                    'kind': 'consume', 'business_date': paid.astimezone(TORONTO).date().isoformat(),
+                    'kind': 'consume', 'business_date': day,
                     'source_type': SOURCE_ORDER, 'source_id': str(wc_order_id),
-                    'reason': f"{ORDER_REASON} #{row['number']}", 'lines': take,
+                    'reason': f"{ORDER_REASON} #{row['number']}", 'lines': _versioned(con, take, 'from'),
                 }, actor=website_actor(), request_key=f'website:order:{wc_order_id}')['document_id']
             except (InventoryError, PermissionError) as exc:
                 con.execute('ROLLBACK TO website_take')
@@ -1164,7 +1229,8 @@ def record(con, cfg, wc_order_id):
 
 
 def _reverse(con, wc_order_id):
-    """A cancelled order's items go back where they came from (WooCommerce restores its own number)."""
+    """A cancelled order's items go back where they came from (WooCommerce restores its own number). Only the
+    consume is reversed: boxes taken from a set the order opened go back loose where it was opened."""
     con.execute('BEGIN IMMEDIATE')
     try:
         row = con.execute('SELECT * FROM website_orders WHERE wc_order_id=?', (wc_order_id,)).fetchone()
