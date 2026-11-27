@@ -190,7 +190,8 @@ class WebOrdersBoardTests(BoardCase):
         """Owner, 2026-11-26 (popcore-work#121): the courier collects from the store the order was filled from, so
         Markham's board shows the deliveries Markham packs. Once the website has booked FleetNow, the card follows
         the store the courier collects from, and says what has to be brought there. (DT has 8 Echo boxes left here,
-        MK opens with 6.)"""
+        MK opens with 6, and DT's sealed sets are sold first.)"""
+        self.no_dt_sets()
         self.open_mk(6)
         with closing(self.connect()) as con:
             mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]

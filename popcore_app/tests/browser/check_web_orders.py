@@ -205,7 +205,9 @@ async def run(browser, width):
         await expect(page.get_by_text('DT 没有勾选 店铺电脑', exact=False)).to_be_visible()
 
         # Owner, 2026-11-26 (popcore-work#121): the courier collects from the store the order was filled from, so
-        # Markham's board shows the deliveries Markham packs. DT has 7 Echo boxes left, MK opens with 6.
+        # Markham's board shows the deliveries Markham packs. DT has 7 Echo boxes left and its sealed sets are sold
+        # first (a web order would open them, popcore-work#128); MK opens with 6.
+        fixture.no_dt_sets()
         mk, _ = fixture.open_mk(6)
         with fixture.connect() as con:
             con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (mk,))
