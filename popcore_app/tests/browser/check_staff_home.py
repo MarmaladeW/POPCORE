@@ -9,7 +9,7 @@ import sys
 
 from playwright.async_api import async_playwright, expect
 from check_foundation import BASE, FRONTEND, HERE, context_with_api, wait_for_server
-from check_attendance import fixture
+from check_attendance import at_store, fixture
 from check_checkout_focus import checkout
 
 OUT = Path(__file__).resolve().parents[3] / '.local/staff-home/browser'
@@ -117,6 +117,7 @@ async def flow(browser, width):
 
     state['api_payload'] = api
     context, page = await context_with_api(browser, state, viewport={'width': width, 'height': 844}, auth={'role': 'staff'})
+    await at_store(context)  # 打卡 sends the phone's location
     await context.add_init_script("localStorage.setItem('popcore_selected_store', JSON.stringify({id:1,code:'DT',name:'Downtown'}))")
     await page.clock.install(time=datetime(2026, 9, 16, 14, tzinfo=timezone.utc))
     errors = []

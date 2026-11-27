@@ -11,6 +11,7 @@ import { useHasRole } from '../../auth/useRole'
 import client from '../../api/client'
 import UsersPage from '../Users'
 import WatcherSettings from './WatcherSettings'
+import PunchPlaceSettings from './PunchPlaceSettings'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import './settings.css'
@@ -763,6 +764,7 @@ export default function SettingsPage() {
     { key: 'insights',   label: '洞察 / Insights',   children: insightTab    },
     { key: 'reports',    label: '报表计划 / Reports',    children: reportTab     },
     { key: 'scheduling', label: '排班 / Scheduling', children: schedulingTab },
+    { key: 'punch',      label: '打卡位置 / Punch-in', children: <PunchPlaceSettings /> },
     { key: 'checkout',   label: '买单 / Checkout', children: checkoutTab },
     { key: 'watcher',    label: '异常提醒 / Alerts', children: <WatcherSettings /> },
     { key: 'stores',     label: '门店 / Stores',     children: storesTab     },
