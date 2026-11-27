@@ -153,7 +153,7 @@ class WebOrderNotificationTests(PushCase):
         self.assertEqual(dt.read(body), {'title': '网站订单 #801 · 自取 DT pickup', 'body': 'Echo × 2',
                                          'url': '/web-orders', 'tag': 'web-order-801'})
         self.assertEqual(mk.read(self.sent[1][1])['title'], '网站订单 #802 · 自取 MK pickup')
-        self.assertEqual(dt.read(self.sent[2][1])['title'], '网站订单 #803 · 配送 delivery')
+        self.assertEqual(dt.read(self.sent[2][1])['title'], '网站订单 #803 · 配送 DT delivery')
         for _, body, _ in self.sent:
             for value in (*PRIVATE, 'PUSH01'):
                 self.assertNotIn(value.encode(), body)
@@ -167,6 +167,23 @@ class WebOrderNotificationTests(PushCase):
         self.woo.order(804, [(12, 5)], pickup='dt', modified=_ago(0))
         self.run_sync()
         self.assertEqual(dt.read(self.sent[-1][1])['body'], '需要经理 Needs a manager · Echo 整端 × 5')
+
+    def test_a_delivery_reaches_the_devices_of_the_store_it_leaves_from(self):
+        """Owner, 2026-11-26: the courier collects from the store the order was filled from, so that store hears of
+        it. (DT has 8 Echo boxes left here, MK opens with 3.)"""
+        self.open_mk(3)
+        dt, mk = Device('dt'), Device('mk')
+        self.notify_me(dt)
+        self.notify_me(mk, headers=MK_ADMIN)
+        self.woo.order(820, [(11, 9)], paid=_ago(3))   # no store has 9: DT's 8 and 1 of MK's
+        self.woo.order(821, [(11, 2)], paid=_ago(2))   # DT has none left, MK has 2
+        self.run_sync()
+        heard = {}
+        for endpoint, body, _ in self.sent:
+            device = dt if endpoint == dt.endpoint else mk
+            heard.setdefault(device.read(body)['title'], set()).add(endpoint)
+        self.assertEqual(heard, {'网站订单 #820 · 配送 DT + MK delivery': {dt.endpoint, mk.endpoint},
+                                 '网站订单 #821 · 配送 MK delivery': {mk.endpoint}})
 
     def test_gone_devices_are_forgotten_and_a_failed_notification_never_stops_the_sync(self):
         device = Device('gone')

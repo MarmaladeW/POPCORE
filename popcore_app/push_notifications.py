@@ -217,7 +217,7 @@ def order_message(con, cfg, row):
     import website_board  # imported here: website_board imports website_sync, which calls this module
     card = website_board.card(con, row, cfg)
     lines = ', '.join(f"{line['name']} × {line['quantity']}" for line in card['lines'])
-    where = f"自取 {card['store']} pickup" if card['kind'] == 'pickup' else '配送 delivery'
+    where = f"自取 {card['store']} pickup" if card['kind'] == 'pickup' else f"配送 {' + '.join(card['stores'])} delivery"
     waiting = '需要经理 Needs a manager · ' if row['state'] in website_board.WAITING else ''
     return {'title': f"网站订单 #{card['number']} · {where}", 'body': (waiting + lines)[:240],
             'url': '/web-orders', 'tag': f"web-order-{card['id']}"}
@@ -231,10 +231,12 @@ def new_order(con, cfg, wc_order_id):
     row = con.execute('SELECT * FROM website_orders WHERE wc_order_id=?', (wc_order_id,)).fetchone()
     if row is None:
         return 0, 0
+    # A delivery tells the store it leaves from (the store POPCORE took it from), a pickup its pickup store.
+    stores = sorted(website_board.board_stores(website_board.card(con, row, cfg)))
     rows = con.execute(
         f"""SELECT p.* FROM push_subscriptions p
             WHERE (p.role IS NULL OR p.role IN ({','.join('?' * len(ORDER_ROLES))}))
               AND EXISTS (SELECT 1 FROM inventory_access a JOIN stores s ON s.id=a.store_id
-                          WHERE a.auth0_sub=p.auth0_sub AND s.code=? AND s.is_active=1)""",
-        (*ORDER_ROLES, website_board.store_of(row, cfg))).fetchall()
+                          WHERE a.auth0_sub=p.auth0_sub AND s.code IN ({','.join('?' * len(stores))})
+                            AND s.is_active=1)""", (*ORDER_ROLES, *stores)).fetchall()
     return send(con, rows, order_message(con, cfg, row)) if rows else (0, 0)

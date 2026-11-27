@@ -28,11 +28,16 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
 - Pickup: a product's `_popcore_pickup_stores` lists the live stores that have it.
 - Orders: a paid web order takes its items out of the live stores' stock. A pickup comes off its pickup
   store first (owner, 2026-11-22: "for markham pickup they come off markham floor"), then
-  WEBSITE_DELIVERY_STORE (DT), then any other live store; a delivery comes off DT first, then any other
-  live store (owner, 2026-11-19: "we ship our product from downtown"). In each store the floor first, then
+  WEBSITE_DELIVERY_STORE (DT), then any other live store. A delivery comes off one store when one store has all
+  of it: DT if it can (owner, 2026-11-19: "we ship our product from downtown"), else another live store, and
+  only when no store has all of it DT first and then the others. In each store the floor first, then
   upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). It
   is a separate Website order outside the stores' sales and closing (owner, 2026-11-01). A cancelled
   order puts them back. An order POPCORE cannot fill waits for a manager and holds its units off the website.
+- Where the courier collects (owner, 2026-11-26, popcore-work#121: the FleetNow driver collects from the store
+  the order was filled from). POPCORE writes each delivery's `_popcore_fill_stores` on the website's order:
+  the stores it was taken from ("dt", "mk", "dt,mk"), or "none" while it waits for a manager. The website
+  books FleetNow from that store.
 - Prices (owner, 2026-11-10: "it should be POPCORE automatically sending price to the website too";
   until then prices stayed on the website, owner 2026-11-01). A linked Single Box or simple product
   gets its POPCORE product's price, which is its Clover price; a Whole Set gets boxes per set × that
@@ -93,6 +98,11 @@ PICK_ORDER = ('floor', 'upstairs', 'warehouse')
 PICKUP_META = '_popcore_pickup_stores'
 ID_META = '_popcore_id'
 DAILY_META = '_popcore_daily_pool'
+# Written on a delivery order: the stores POPCORE took it from, as the website's lowercase store codes ("dt", "mk",
+# "dt,mk"), or FILL_NONE while it waits for a manager. popcore.ca's FleetNow booking reads it to choose the address
+# the courier collects from, and waits up to 15 minutes for it (popcore-work#121, website brief of 2026-11-26).
+FILL_META = '_popcore_fill_stores'
+FILL_NONE = 'none'
 # Written with every design price POPCORE sends (UTC, ISO 8601), so the website can tell the designs POPCORE prices,
 # show "Set by POPCORE" and lock their price field (website session, 2026-11-12). Box prices carry none.
 DESIGN_PRICE_META = '_popcore_design_price_at'
@@ -973,7 +983,10 @@ def _order_facts(con, order):
 # personal: the customer's name, phone, email, address and notes are never kept.
 DELIVERY_META = {'window': '_pcc_delivery_window', 'service': '_pcc_delivery_service', 'zone': '_pcc_delivery_zone',
                  'fleetnow_no': 'fleetnow_order_no', 'fleetnow_pickup': 'fleetnow_pickup_window',
-                 'fleetnow_delivery': 'fleetnow_delivery_window', 'fleetnow_status': 'fleetnow_status'}
+                 'fleetnow_delivery': 'fleetnow_delivery_window', 'fleetnow_status': 'fleetnow_status',
+                 # The store the website books FleetNow from ("dt" or "mk"), once it has decided or staff chose
+                 # (FleetNow 1.2.13). An order booked without it is collected at WEBSITE_DELIVERY_STORE.
+                 'collect': '_fleetnow_pickup_store'}
 # The pickup code the website emails the customer (6 of ACDEFHJKMNPRTUVWXY34679). It proves the person at the
 # counter is the customer, so POPCORE keeps it only to find the order by it and never sends it to a page.
 CODE_META = '_popcore_pickup_code'
@@ -1017,8 +1030,8 @@ def _read_ids(con, cfg, lines):
 def _filling_stores(con, cfg, order_row):
     """The live stores a web order is taken from, in order. A pickup: its pickup store first (owner, 2026-11-22:
     "for markham pickup they come off markham floor"), then WEBSITE_DELIVERY_STORE (DT), then any other live store.
-    A delivery: DT first (owner, 2026-11-19: "we ship our product from downtown"), then any other live store.
-    A pickup store that is not live is skipped."""
+    A delivery: DT first (owner, 2026-11-19: "we ship our product from downtown"), then any other live store
+    (_take_order tries each of them alone first). A pickup store that is not live is skipped."""
     live = live_store_ids(con)
     codes = {row[1]: row[0] for row in con.execute('SELECT id, code FROM stores ORDER BY code')}
     pickup = order_row['pickup_store'] if order_row['fulfilment'] == 'pickup' else None
@@ -1067,6 +1080,20 @@ def _take(con, store_ids, lines):
     return take, [store_id for store_id in store_ids if store_id in used], None
 
 
+def _take_order(con, order_row, store_ids, lines):
+    """_take for one order. A delivery leaves from one store when one store has all of it, since the courier collects
+    at one address (owner, 2026-11-26, popcore-work#121): DT if it has the whole order, else the next live store
+    that does. Only when no store has all of it is it taken DT first and then the others, and the website then holds
+    the booking until staff bring it together. A pickup is taken as before: its own store first, then what it lacks
+    from the others."""
+    if order_row['fulfilment'] != 'pickup':
+        for store_id in store_ids:
+            take, used, problem = _take(con, [store_id], lines)
+            if problem is None:
+                return take, used, None
+    return _take(con, store_ids, lines)
+
+
 def _grant(con):
     """The website may take stock at each live store. A store is granted once, when it is first seen
     live; an admin can revoke it under Users and it is never granted again behind their back."""
@@ -1096,7 +1123,7 @@ def record(con, cfg, wc_order_id):
         problem = None
         stores = _filling_stores(con, cfg, row)
         # The order's store is the first it takes from (the pickup store for a pickup, DT for a delivery, unless that
-        # store had none of it), or that first store while it waits.
+        # store had none of it or, for a delivery, another store had all of it), or that first store while it waits.
         store_id = stores[0] if stores else None
         if not lines:
             problem = 'no_items'
@@ -1106,7 +1133,7 @@ def record(con, cfg, wc_order_id):
             problem = 'no_live_store'
         take = None
         if problem is None:
-            take, used, problem = _take(con, stores, lines)
+            take, used, problem = _take_order(con, row, stores, lines)
             store_id = used[0] if used else store_id
         document_id = None
         if problem is None:
@@ -1242,6 +1269,60 @@ def state_of(con, wc_order_id):
     return row[0] if row else None
 
 
+def taken_stores(con, row):
+    """The codes of the stores a recorded order's stock was taken from, its own store first; [] before that."""
+    if not row['inventory_document_id']:
+        return []
+    found = {store_id: code for store_id, code in con.execute(
+        """SELECT DISTINCT s.id, s.code FROM inventory_document_lines d
+           JOIN inventory_locations l ON l.id=d.from_location_id JOIN stores s ON s.id=l.store_id
+           WHERE d.document_id=?""", (row['inventory_document_id'],))}
+    return [found[store_id] for store_id in sorted(found, key=lambda store_id: (store_id != row['store_id'], found[store_id]))]
+
+
+def fill_stores(con, row):
+    """What the website is told of an order in `_popcore_fill_stores` (FILL_META), or None when there is nothing to
+    tell. A delivery POPCORE took out of stock: the stores it came from, lowercase, its own store first ("dt", "mk",
+    "dt,mk"). A delivery waiting for a manager, whatever the reason: "none", so the website books no courier for an
+    order POPCORE cannot place in a store. A pickup, and an order that is cancelled or settled by hand: nothing."""
+    if row['fulfilment'] == 'pickup':
+        return None
+    if row['state'] == 'needs_review':
+        return FILL_NONE
+    if row['state'] == 'recorded':
+        return ','.join(code.lower() for code in taken_stores(con, row)) or None
+    return None
+
+
+def tell_fill_stores(con, cfg, wc_order_id=None):
+    """Write `_popcore_fill_stores` on the website's order for every open delivery (or the one named) whose answer is
+    not the one the website was last told: after it is recorded, when it has to wait for a manager, and after Try
+    again fills it. An order already told is not written again, so the write never makes the website's orders look
+    changed twice. An order the website refuses is tried again on the next pass; returns that error, or None. Never
+    inside a transaction."""
+    rows = con.execute(
+        f"""SELECT * FROM website_orders
+            WHERE fulfilment != 'pickup' AND state IN ('recorded', 'needs_review')
+              AND wc_status NOT IN ('completed', 'cancelled', 'refunded') {'AND wc_order_id=?' if wc_order_id else ''}
+            ORDER BY wc_order_id""", (wc_order_id,) if wc_order_id else ()).fetchall()
+    refused = None
+    for row in rows:
+        answer = fill_stores(con, row)
+        if answer is None or answer == row['fill_stores']:
+            continue
+        try:
+            call(cfg, 'PUT', f"/orders/{row['wc_order_id']}", body={'meta_data': [{'key': FILL_META, 'value': answer}]})
+        except WebsiteError as exc:
+            if exc.status != 404:  # an order the website no longer has needs no answer
+                refused = exc
+                if exc.code == 'website_unavailable':
+                    break
+                continue
+        con.execute('UPDATE website_orders SET fill_stores=? WHERE wc_order_id=?', (answer, row['wc_order_id']))
+        con.commit()
+    return refused
+
+
 def poll_orders(con, cfg):
     """Read orders changed since the last read; a little overlap makes sure none is missed."""
     after = _gmt(state(con, 'orders_after')) or _now()
@@ -1295,7 +1376,8 @@ def switch(con, on, actor_sub):
 
 
 def run_once(con, cfg):
-    """One pass: reread the catalogue when asked or due, then (when on) orders first, then stock."""
+    """One pass: reread the catalogue when asked or due, then (when on) orders first, then where each delivery was
+    filled from, then stock."""
     refreshed = _gmt(state(con, 'refreshed_at'))
     if state(con, 'refresh_requested') or (enabled(con) and (refreshed is None or _now() - refreshed > REFRESH_EVERY)):
         refresh_items(con, cfg)
@@ -1307,7 +1389,12 @@ def run_once(con, cfg):
     read_board_facts(con, cfg)
     for row in con.execute("SELECT wc_order_id FROM website_orders WHERE state='new'").fetchall():
         record(con, cfg, row[0])
+    # The website's FleetNow booking waits for this answer, so it goes before the stock numbers. A write the website
+    # refused does not hold those up: it is reported after them and tried again on the next pass.
+    refused = tell_fill_stores(con, cfg)
     push(con, cfg)
+    if refused is not None:
+        raise refused
 
 
 def background_sync():
@@ -1370,7 +1457,7 @@ def status(con):
 def orders(con, limit=100):
     """The latest web orders, waiting ones first. Each line carries its product's name as staff know it (owner,
     2026-11-19): the 记账名, or the official name when it has none. `store_codes` are the stores a recorded order
-    came from, its own store first."""
+    came from, its own store first. `fill_stores` is what the website was last told of a delivery (fill_stores())."""
     codes = {row[0]: row[1] for row in con.execute('SELECT id, code FROM stores')}
     rows = []
     for row in con.execute(
@@ -1384,12 +1471,7 @@ def orders(con, limit=100):
                                   (line['product_id'],)).fetchone() if line.get('product_id') else None
             line['popcore_name'] = ((product['jizhanming'] or '').strip() or product['name_cn_en']) if product else None
         item['store_code'] = codes.get(item['store_id'])
-        taken_from = {store_id for (store_id,) in con.execute(
-            """SELECT DISTINCT l.store_id FROM inventory_document_lines d
-               JOIN inventory_locations l ON l.id=d.from_location_id WHERE d.document_id=?""",
-            (item['inventory_document_id'],))} if item['inventory_document_id'] else set()
-        item['store_codes'] = [codes[store_id] for store_id in sorted(
-            taken_from, key=lambda store_id: (store_id != item['store_id'], codes.get(store_id) or ''))]
+        item['store_codes'] = taken_stores(con, item)
         rows.append(item)
     return rows
 
@@ -1409,7 +1491,10 @@ def retry_order(con, cfg, wc_order_id):
         con.execute('UPDATE website_orders SET lines=? WHERE wc_order_id=? AND state=?',
                     (json.dumps(lines), wc_order_id, 'needs_review'))
         con.commit()
-    return record(con, cfg, wc_order_id)
+    result = record(con, cfg, wc_order_id)
+    # Filled now: the website learns the store at once. If it refuses the write, the next background pass tries again.
+    tell_fill_stores(con, cfg, wc_order_id)
+    return result
 
 
 def dismiss_order(con, wc_order_id, actor_sub, reason):

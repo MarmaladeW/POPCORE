@@ -11,8 +11,8 @@ import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
 import Notifications, { chime, soundOn } from './Notifications'
 import {
-  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, longWait, nameMatches, newCards, openCards, picksText, reasonText,
-  websiteTime,
+  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, kindText, longWait, moveText, nameMatches, newCards, openCards,
+  picksText, reasonText, websiteTime,
 } from './webOrdersView'
 import './webOrders.css'
 
@@ -34,17 +34,16 @@ function stepMessage(step: WebOrderStep, done: string, already: string) {
 
 function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: number; action?: React.ReactNode; extra?: React.ReactNode }) {
   const waited = longWait(card, now)
-  const elsewhere = card.taken_elsewhere ?? []
+  const move = moveText(card)
   return <article className="pc-web-card" aria-label={`Order #${card.number}`}>
     <header>
       <strong>#{card.number}</strong>
-      <span>{card.kind === 'pickup' ? `自取 ${card.store}` : '配送 Delivery'}</span>
+      <span>{kindText(card)}</span>
       <time>{ageText(card.paid_at, now)}</time>
     </header>
     {card.kind === 'delivery' && card.name && <p className="pc-web-to">收件人 Ship to <strong>{card.name}</strong></p>}
     {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
-    {elsewhere.length > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
-      从 {elsewhere.join(' + ')} 拿 · Taken from {elsewhere.join(' + ')}: bring it to {card.store}</p>}
+    {move && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{move}</p>}
     <ul className="pc-web-lines">
       {card.lines.map((line, index) => <li key={index}>
         <span><strong>{line.name}</strong> × {line.quantity}</span>

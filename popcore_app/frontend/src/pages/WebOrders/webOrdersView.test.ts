@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { WebOrderCard, WebOrdersBoard } from '../../api/webOrders.ts'
-import { ageText, announceText, codeMissText, deliveryFacts, keyBytes, keyText, longWait, nameMatches, newCards, picksText, plainName, reasonText } from './webOrdersView.ts'
+import { ageText, announceText, codeMissText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, picksText, plainName, reasonText } from './webOrdersView.ts'
 
 const now = Date.parse('2026-11-19T18:00:00Z')
 const card = (fields: Partial<WebOrderCard>): WebOrderCard =>
@@ -53,7 +53,8 @@ test('the board announces only open orders it did not have before', () => {
   assert.deepEqual(newCards(board([1, 2], [3]), new Set([1])).map(found => found.id), [2, 3])
   assert.deepEqual(newCards(board([1]), new Set([1, 2])), [])
   assert.equal(announceText(card({ lines: [{ name: 'Echo', quantity: 2, popcore_id: 'PM0100', picks: [] }] })), '自取 DT pickup · Echo × 2')
-  assert.equal(announceText(card({ kind: 'delivery', lines: [] })), '配送 Delivery · ')
+  assert.equal(announceText(card({ kind: 'delivery', lines: [] })), '配送 DT delivery · ')
+  assert.equal(announceText(card({ kind: 'delivery', store: 'MK', stores: ['MK'], lines: [] })), '配送 MK delivery · ')
 })
 
 test('the name box finds deliveries by part of a name, whatever the case and accents (owner, 2026-11-25)', () => {
@@ -85,4 +86,20 @@ test('POPCORE’s push key goes to the browser as bytes and back', () => {
   assert.equal(bytes[0], 4)
   assert.equal(keyText(bytes.buffer), key)
   assert.equal(keyText(null), '')
+})
+
+test('a delivery says the store it leaves from, and what has to be brought there', () => {
+  // Owner, 2026-11-26: the courier collects from the store the order was filled from.
+  assert.equal(kindText(card({})), '自取 DT')
+  assert.equal(kindText(card({ kind: 'delivery', store: 'MK', stores: ['MK'] })), '配送 MK')
+  assert.equal(moveText(card({ kind: 'delivery', store: 'MK', stores: ['MK'], taken_elsewhere: [] })), '')
+  // Booked at DT, taken from MK: it has to come over.
+  assert.equal(moveText(card({ kind: 'delivery', store: 'DT', stores: ['DT'], taken_elsewhere: ['MK'] })),
+    '从 MK 拿 · Taken from MK: bring it to DT')
+  // In two stores: the website books no courier until it is in one.
+  const split = card({ kind: 'delivery', store: 'DT', stores: ['DT', 'MK'], taken_elsewhere: [] })
+  assert.equal(kindText(split), '配送 DT + MK')
+  assert.match(moveText(split), /^货在 DT \+ MK,先集中到一家店 · Taken from DT and MK: bring it to one store/)
+  // A pickup short at its own store, as before.
+  assert.equal(moveText(card({ store: 'MK', taken_elsewhere: ['DT'] })), '从 DT 拿 · Taken from DT: bring it to MK')
 })

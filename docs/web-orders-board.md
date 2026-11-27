@@ -12,8 +12,8 @@ replaced its pickup-code brief of 2026-11-16. Code: `website_board.py`, routes i
   available to viewer which is store computer"). Staff and managers cannot: the server answers 403
   `board_store_computer_only`, their menus have no 网站订单 and the address shows the no-access page
   (docs/access-rules.md). Each of the two sees the orders of the stores they have **Users → Store operations access**
-  for; with a store selected in the top bar, only that store's. A pickup belongs to its pickup store. Every delivery
-  goes out of `WEBSITE_DELIVERY_STORE` (DT), so deliveries show on DT's board.
+  for; with a store selected in the top bar, only that store's. A pickup belongs to its pickup store. A delivery
+  belongs to the store it leaves from (see [Which store a delivery leaves from](#which-store-a-delivery-leaves-from)).
 - The page reads the board every 30 seconds, the sync's pace, without reloading.
 
 ### The store computer's account
@@ -71,8 +71,28 @@ Each card shows:
 - pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
   A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
-- delivery: "收件人 Ship to" and the name the parcel goes to (see below); the window, Normal or door to door, and the
-  zone the customer chose; once FleetNow is booked, its number, status, pickup window and delivery window.
+- delivery: the store it leaves from ("配送 MK"); "收件人 Ship to" and the name the parcel goes to (see below); the
+  window, Normal or door to door, and the zone the customer chose; once FleetNow is booked, its number, status, pickup
+  window and delivery window; and what has to be moved first, only when something does (next section).
+
+## Which store a delivery leaves from
+
+Owner, 2026-11-26 (popcore-work#121): the FleetNow courier collects from the store the order was filled from, so
+Markham's board shows the deliveries Markham packs. POPCORE tells the website which store that is
+([website-sync.md](website-sync.md#where-the-courier-collects-a-delivery)), and the board follows the same facts:
+
+| The delivery | Whose board | The card says |
+| --- | --- | --- |
+| Not booked yet, taken from one store | that store's | 配送 MK |
+| Not booked yet, taken from DT and MK | both | 配送 DT + MK, and "bring it to one store" (the website books no courier for it until a manager dispatches it) |
+| Booked: the website names the store (`_fleetnow_pickup_store`, FleetNow 1.2.13) | that store's | 配送 MK |
+| Booked with no store named (before 1.2.13, or its switch off) | DT's | 配送 DT |
+| Booked at one store, but some of it was taken from another | both | "Taken from MK: bring it to DT" |
+| Waiting for a manager (not taken out of stock) | DT's | under Needs a manager, as before |
+
+A new delivery's phone notification goes to the people of the store it leaves from. Until FleetNow 1.2.13 is on
+popcore.ca with *Collect from the store popcore.store names* switched on, every booking still goes from Downtown: a
+delivery Markham filled then shows on both boards once it is booked, with "Taken from MK: bring it to DT".
 
 The pickup code is never on the board or in its data: the code proves the person at the counter is the customer. The
 managers' Website page never receives the code either. The only personal thing on the board is each delivery's name;
@@ -94,13 +114,14 @@ well as searching up the name." Pickups were left as they are: their names show 
 - **收件人 Delivery name**, the box beside the pickup code, looks through the deliveries on the board as staff type:
   part of a first or last name, any case, with or without accents ("zoe", "NG" and "zo n" all find Zoë Ng). Each match
   shows as a card with where it is on the board. It searches in the browser, so a typed name is never sent or put in
-  a link. It is there only on a board that shows the delivery store (`WEBSITE_DELIVERY_STORE`).
+  a link. It is there on a board that has deliveries, and always on the delivery store's (`WEBSITE_DELIVERY_STORE`).
 
 ## The website's fields
 
 The sync keeps these from each order's `meta_data` on every read (`website_orders.pickup_code` and the JSON
 `website_orders.delivery`): `_popcore_pickup_code`, `_pcc_delivery_window`, `_pcc_delivery_service`,
-`_pcc_delivery_zone`, `fleetnow_order_no`, `fleetnow_pickup_window`, `fleetnow_delivery_window`, `fleetnow_status`.
+`_pcc_delivery_zone`, `fleetnow_order_no`, `fleetnow_pickup_window`, `fleetnow_delivery_window`, `fleetnow_status`,
+`_fleetnow_pickup_store` (the store FleetNow is booked from).
 Open orders recorded before the board came read them once (`website_sync.read_board_facts`).
 
 ## The code box

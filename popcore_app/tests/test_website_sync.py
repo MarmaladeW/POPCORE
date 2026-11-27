@@ -1,8 +1,9 @@
 """popcore.ca takes its stock from POPCORE (owner, 2026-10-25 and 2026-11-01): website items are
 linked by their POPCORE ID field `_popcore_id`, never by SKU (owner, 2026-11-07), the live stores'
 shelves set the website number, paid web orders take their items
-out of the pickup store (owner, 2026-11-22) or, for a delivery, DT first (owner, 2026-11-19), the floor
-first, then upstairs, and stay out of its closing, a cancel puts them back,
+out of the pickup store (owner, 2026-11-22) or, for a delivery, DT first (owner, 2026-11-19) and from one store
+when one has all of it, the floor first, then upstairs, and stay out of its closing, a cancel puts them back,
+the website is told which store filled each delivery (owner, 2026-11-26),
 and nothing is written to the website before an admin turns the sync on. Since 2026-11-10 POPCORE
 also writes the regular prices of linked boxes, Whole Sets and items, never sale prices; big or doubtful
 changes wait for a manager's OK, and Daily Shop products wait for the reset. A design gets only a price a
@@ -78,7 +79,9 @@ class FakeWoo:
         self.every_write = []  # never cleared
         self.refuse = False
         self.refuse_ids = set()  # items a batch write reports an error for
-        self.status_writes = []  # (order id, status) of every order PUT
+        self.status_writes = []  # (order id, status) of every order PUT that sets a status
+        self.fill_writes = []  # (order id, value) of every order PUT of `_popcore_fill_stores`
+        self.refuse_fill = set()  # orders whose `_popcore_fill_stores` PUT answers 500
         self.notes = []  # (order id, note body)
         self.refuse_orders = False  # order PUTs answer 500
         self.refuse_notes = False  # notes answer 500
@@ -212,7 +215,7 @@ class FakeWoo:
         return Response(404, {'message': 'No route'})
 
     def order_request(self, method, parts, params, body):
-        """One order (GET, or PUT of its status) and its notes (POST), as the website session checked them."""
+        """One order (GET, or PUT of its status or fields) and its notes (POST), as the website session checked them."""
         order = self.orders.get(int(parts[1]))
         if order is None:
             return Response(404, {'code': 'woocommerce_rest_shop_order_invalid_id', 'message': 'Invalid ID.'})
@@ -224,8 +227,18 @@ class FakeWoo:
         if method == 'PUT' and len(parts) == 2:
             if self.refuse_orders:
                 return Response(500, {'message': 'Something went wrong.'})
-            self.status_writes.append((order['id'], body['status']))
-            order.update(status=body['status'], date_modified_gmt=_ago(0))
+            for meta in body.get('meta_data', ()):  # as WooCommerce's update_meta_data: the key written is replaced
+                if meta['key'] == '_popcore_fill_stores':
+                    if order['id'] in self.refuse_fill:
+                        return Response(500, {'message': 'Something went wrong.'})
+                    self.fill_writes.append((order['id'], meta['value']))
+                order['meta_data'] = [old for old in order['meta_data'] if old['key'] != meta['key']] + [dict(meta)]
+            if 'status' in body:
+                self.status_writes.append((order['id'], body['status']))
+                order['status'] = body['status']
+            # Any write counts as a change, as on the website. A fields-only write is stamped a second back, so the
+            # next change a test makes "now" always has a later time.
+            order['date_modified_gmt'] = _ago(0 if 'status' in body else 0.02)
             return Response(200, dict(order))
         if method == 'POST' and parts[2:] == ['notes']:
             if self.refuse_notes:
@@ -546,10 +559,12 @@ class WebsiteSyncTests(WebsiteCase):
         self.run_sync()
         self.assertEqual((self.order_row(503)['state'], self.order_row(503)['store_id']), ('recorded', self.dt))
 
-    def test_a_pickup_comes_off_its_own_store_first_and_a_delivery_off_dt(self):
+    def test_a_pickup_comes_off_its_own_store_first_and_a_delivery_off_one_store(self):
         """Owner, 2026-11-22: "for markham pickup they come off markham floor." A pickup comes off its pickup store
-        (floor, then upstairs or the warehouse), then DT. A delivery still comes off DT first (owner, 2026-11-19:
-        "we ship our product from downtown"), then the other live stores."""
+        (floor, then upstairs or the warehouse), then DT. A delivery comes off DT when DT has all of it (owner,
+        2026-11-19: "we ship our product from downtown"), else off another live store that has all of it (owner,
+        2026-11-26: the courier collects from the store the order was filled from), and only when no store has all
+        of it off DT first, then the others."""
         mk, mk_locations = self.open_mk(5)
         self.post('receipt', self.box, mk_locations['warehouse'], 2, 'box')
         self.turn_on()
@@ -570,32 +585,103 @@ class WebsiteSyncTests(WebsiteCase):
         self.run_sync()
         self.assertEqual((self.order_row(509)['state'], self.order_row(509)['store_id']), ('recorded', self.dt))
         self.assertEqual(dt_and_mk(), ((0, 2), (5, 2)))
-        # What DT lacks comes from MK's floor.
+        # DT has 2 of the 3 and MK has them all: the whole order comes off MK, none off DT.
         self.woo.order(510, [(11, 3)])
         self.run_sync()
-        self.assertEqual((self.order_row(510)['state'], self.order_row(510)['store_id']), ('recorded', self.dt))
-        self.assertEqual(dt_and_mk(), ((0, 0), (4, 2)))
+        self.assertEqual((self.order_row(510)['state'], self.order_row(510)['store_id']), ('recorded', mk))
+        self.assertEqual(dt_and_mk(), ((0, 2), (2, 2)))
+        # Neither store has 5: DT's 2 first, then MK's floor (2) and warehouse (1).
+        self.woo.order(514, [(11, 5)])
+        self.run_sync()
+        self.assertEqual((self.order_row(514)['state'], self.order_row(514)['store_id']), ('recorded', self.dt))
+        self.assertEqual(dt_and_mk(), ((0, 0), (0, 1)))
         # An MK pickup comes off MK's floor, though DT has boxes again.
         self.post('receipt', self.box, self.locations['floor'], 2, 'box')
+        self.post('receipt', self.box, mk_locations['floor'], 4, 'box')
         self.woo.order(511, [(11, 3)], pickup='mk')
         self.run_sync()
         self.assertEqual((self.order_row(511)['state'], self.order_row(511)['store_id']), ('recorded', mk))
-        self.assertEqual(dt_and_mk(), ((2, 0), (1, 2)))
-        # MK's floor (1), then MK's warehouse (2), then what MK lacks from DT's floor (1).
+        self.assertEqual(dt_and_mk(), ((2, 0), (1, 1)))
+        # MK's floor (1), then MK's warehouse (1), then what MK lacks from DT's floor (2): a pickup still takes
+        # its own store's first, though DT could not fill it alone either.
         self.woo.order(512, [(11, 4)], pickup='mk')
         self.run_sync()
         self.assertEqual((self.order_row(512)['state'], self.order_row(512)['store_id']), ('recorded', mk))
-        self.assertEqual(dt_and_mk(), ((1, 0), (0, 0)))
+        self.assertEqual(dt_and_mk(), ((0, 0), (0, 0)))
         orders = {row['wc_order_id']: row for row in
                   self.client.get('/api/website/orders', headers=self.headers('admin')).get_json()['orders']}
-        self.assertEqual({number: orders[number]['store_codes'] for number in (509, 510, 511, 512)},
-                         {509: ['DT'], 510: ['DT', 'MK'], 511: ['MK'], 512: ['MK', 'DT']})
+        self.assertEqual({number: orders[number]['store_codes'] for number in (509, 510, 514, 511, 512)},
+                         {509: ['DT'], 510: ['MK'], 514: ['DT', 'MK'], 511: ['MK'], 512: ['MK', 'DT']})
+        # The website is told where each delivery came from, once; a pickup needs no answer.
+        self.assertEqual(self.woo.fill_writes, [(509, 'dt'), (510, 'mk'), (514, 'dt,mk')])
         # A cancel puts every box back where it came from, in both stores.
         self.woo.orders[512].update(status='cancelled', date_modified_gmt=_ago(0))
         self.run_sync()
         self.assertIsNone(self.state('last_error'))
         self.assertEqual(self.order_row(512)['state'], 'cancelled')
-        self.assertEqual(dt_and_mk(), ((2, 0), (1, 2)))
+        self.assertEqual(dt_and_mk(), ((2, 0), (1, 1)))
+
+    def test_the_website_is_told_which_store_filled_a_delivery(self):
+        """Owner, 2026-11-26 (popcore-work#121): the FleetNow courier collects from the store the order was filled
+        from. POPCORE writes `_popcore_fill_stores` on the website's order: the stores, "none" while the order waits
+        for a manager, the stores again once Try again fills it, and never the same answer twice."""
+        self.open_mk(5)
+        self.turn_on()
+
+        def told(order_id):
+            return website_sync._meta(self.woo.orders[order_id], '_popcore_fill_stores')
+
+        self.woo.order(520, [(11, 2)])                        # DT has it
+        self.woo.order(521, [(11, 1)], pickup='dt')           # a pickup: no courier
+        self.woo.order(522, [(11, 30)])                       # no store has 30: it waits
+        self.woo.order(523, [(50, 1), (11, 1)])               # the tote bag has no POPCORE ID: it waits
+        self.woo.order(524, [(11, 1)], status='completed')    # already closed: nothing to book
+        self.run_sync()
+        self.assertEqual({number: self.order_row(number)['state'] for number in (520, 521, 522, 523, 524)},
+                         {520: 'recorded', 521: 'recorded', 522: 'needs_review', 523: 'needs_review', 524: 'recorded'})
+        self.assertEqual(self.woo.fill_writes, [(520, 'dt'), (522, 'none'), (523, 'none')])
+        self.assertEqual((told(520), told(521), told(522), told(524)), ('dt', None, 'none', None))
+        self.assertEqual({number: self.order_row(number)['fill_stores'] for number in (520, 521, 522, 524)},
+                         {520: 'dt', 521: None, 522: 'none', 524: None})
+        # The write changed the orders on the website, so the next pass reads them again: nothing is written twice.
+        self.run_sync()
+        self.run_sync()
+        self.assertEqual(len(self.woo.fill_writes), 3)
+        self.assertIsNone(self.state('last_error'))
+        # Stock arrives and an admin presses Try again: the website learns the store at once, before the next pass.
+        self.post('receipt', self.box, self.locations['upstairs'], 30, 'box')
+        self.assertEqual(self.client.post('/api/website/orders/522/retry', headers=self.headers('admin')).get_json(),
+                         {'state': 'recorded'})
+        self.assertEqual((self.woo.fill_writes[3:], told(522), self.order_row(522)['fill_stores']),
+                         ([(522, 'dt')], 'dt', 'dt'))
+        # Settled by hand: the website keeps "none", so staff choose the store when they dispatch it.
+        self.client.post('/api/website/orders/523/dismiss', json={'reason': 'Tote packed by hand'},
+                         headers=self.headers('admin'))
+        self.run_sync()
+        self.assertEqual((told(523), len(self.woo.fill_writes)), ('none', 4))
+
+    def test_a_refused_fill_store_write_is_reported_and_tried_again_without_holding_up_stock(self):
+        self.turn_on()
+        self.woo.refuse_fill = {530}
+        self.woo.order(530, [(20, 1)])
+        self.woo.order(531, [(20, 1)], modified=_ago(0))
+        self.woo.products[20]['stock_quantity'] = 1  # the website lowered its own number at payment
+        self.run_sync()
+        # The other order is told, the stock number still goes out, and the Website page shows the error.
+        self.assertEqual((self.woo.fill_writes, self.order_row(530)['fill_stores']), ([(531, 'dt')], None))
+        self.assertEqual(self.woo.item(20)['stock_quantity'], 2)
+        self.assertEqual(json.loads(self.state('last_error'))['code'], 'website_error')
+        self.woo.refuse_fill = set()
+        self.run_sync()
+        self.assertEqual((self.woo.fill_writes, self.order_row(530)['fill_stores']), ([(531, 'dt'), (530, 'dt')], 'dt'))
+        self.assertIsNone(self.state('last_error'))
+        # An order the website no longer has needs no answer.
+        self.woo.order(532, [(20, 1)])
+        with patch.object(website_sync, 'tell_fill_stores', return_value=None):
+            self.run_sync()
+        del self.woo.orders[532]
+        self.run_sync()
+        self.assertEqual((self.order_row(532)['fill_stores'], self.state('last_error')), ('dt', None))
 
     def test_a_pickup_at_a_store_with_none_of_it_waits_at_that_store(self):
         """An MK pickup that no live store can fill waits for a manager as MK's order."""
