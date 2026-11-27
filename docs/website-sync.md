@@ -234,8 +234,9 @@ The sync reads orders changed since its last read, with two minutes of overlap, 
   - Each line is linked by the POPCORE ID of the item it sold, as the last catalogue read found it. The line's SKU is a barcode and is not read. If that read found no ID on the item, POPCORE reads the ID from that one product or variation on the website. This covers an item added, or given its ID, since the last read. An item deleted from the website leaves its line unlinked.
   - Its items are taken out of stock in one `consume`, by the actor `popcore:website` (named "Website"), with the reason `网站订单 Website order #<n>`.
   - **A pickup comes off its pickup store first** (owner, 2026-11-22: "for markham pickup they come off markham floor"), then `WEBSITE_DELIVERY_STORE` (DT), then any other live store. A pickup store that is not live yet is skipped.
-  - **A delivery comes off DT first** (owner, 2026-11-19: "we ship our product from downtown"), then any other live store.
-  - What the first store lacks comes from the next, so one order can come from DT and MK together. The order's store is the first one it took from (the pickup store for a pickup, DT for a delivery, unless that store had none of it); a waiting order shows that first store.
+  - **A delivery comes off one store when one store has all of it** (owner, 2026-11-26: the courier collects from the store the order was filled from). DT if it has the whole order (owner, 2026-11-19: "we ship our product from downtown"), else the next live store that has the whole order. Only when no store has all of it is it taken from DT first and then the others.
+  - For a pickup, and for a delivery no single store can fill, what the first store lacks comes from the next, so one order can come from DT and MK together. The order's store is the first one it took from; a waiting order shows the first store it would take from.
+    - Until 2026-11-26 a delivery always took DT's part first, so an order DT had only part of came from both stores.
     - Until 2026-11-19 a pickup at a live store was filled from that store alone, and a delivery from DT alone. From 2026-11-19 to 2026-11-22 every order came off DT first, pickups too. Orders recorded then keep the places they were taken from, and a cancel puts their items back there.
   - In each store, units are picked **from the floor first, then upstairs, then the warehouse** (owner, 2026-11-19: "stock should be taken from floor first, as we have many loose box orders, those are always taken from floor"). Staff pick web orders from the floor. Boxes kept in opened sets on the floor never count.
     - The order is the same for every kind of stock. A confirmed design or an item on the floor comes off the floor first too; one with no floor stock comes from upstairs.
@@ -255,6 +256,24 @@ The sync reads orders changed since its last read, with two minutes of overlap, 
   The Website page names each order line as staff know it (owner, 2026-11-19): the product's 记账名, or its official name when it has none, or the website's name for a line POPCORE could not link. A recorded order shows the stores it came from (`出库 DT`, `出库 DT + MK`).
 
   A manager then either presses **Try again** (after counting, receiving, or setting the item's POPCORE ID on the website), or **Settled** with a reason. Try again reads a missing ID from the item on the website straight away. Settled takes nothing out of stock.
+
+### Where the courier collects a delivery
+
+Owner, 2026-11-26 (popcore-work#121), after a FleetNow driver came to Downtown for a box only Markham had: the driver collects from the store the order was filled from. popcore.ca books FleetNow with that store's address, and for that it needs POPCORE's answer. POPCORE writes it on the website's order, in the field `_popcore_fill_stores` (`PUT /orders/<id>` with `meta_data`):
+
+| POPCORE's state of a delivery | `_popcore_fill_stores` | What the website does (FleetNow 1.2.13, switch on) |
+| --- | --- | --- |
+| Taken out of stock at one store | `dt` or `mk` | Books FleetNow from that store |
+| Taken from two stores | `dt,mk` (the order's own store first) | Books nothing; staff bring it to one store, then Dispatch via Fleetnow |
+| Waiting for a manager, whatever the reason | `none` | Books nothing until staff dispatch it |
+| No answer within 15 minutes | | Books from Downtown, with a note on the order |
+
+- The answer goes in the same 30-second pass that records the order, after the orders are read and before the stock numbers. After **Try again** fills a waiting order, it goes at once.
+- It is written only when it changes. POPCORE keeps what it last told the website (`website_orders.fill_stores`), so an order is not written twice. The write changes the order on the website, so the next pass reads that order once more and finds nothing new.
+- Only deliveries get an answer, and only while they are open (not completed, cancelled or refunded). A pickup has no courier. An order settled by hand keeps `none`: staff choose the store when they dispatch it.
+- If the website refuses the write, the stock numbers still go out, the Website page shows the error, and the next pass tries again. An order the website no longer has is left alone.
+- Store codes are the website's lowercase ones. POPCORE sends its own store codes in lowercase, so a third live store would be sent as its code and the website would hold the booking until it has an address for it.
+- The [web orders board](web-orders-board.md) shows each delivery at the store it leaves from.
 
 Web orders take stock but are not POPCORE sales. Closing leaves their documents out of the store day's source token, so a web order paid while the manager reviews closing never makes it stale. Store reports and closing totals do not include them.
 
@@ -312,7 +331,7 @@ POPCORE staging (`staging.popcore.store`) talks to the test copy `staging.popcor
 
 ## Local checks
 
-- `tests/test_website_sync.py`: the floor-set rule (24, 25, 36, 37 boxes at 12 per set), Whole Sets counting sealed sets and the floor's sure sets store by store after opened sets and the shop hold, an unknown set size, a Whole-Set-only listing's pickup stores, a Whole Set order with only floor sets waiting for a manager and holding its set, linking by `_popcore_id` (any case, never by SKU, a parent's stray ID ignored, an ID on two items linking neither), drafts and disabled options, the upgrade from the SKU link, an order line whose item was added since the last read or deleted, the website number, keep-back, the hold until the daily report is in, opened sets, turning on, writes only on change, the floor first then upstairs, a pickup from its own store first and a delivery from DT first (one order from both, a cancel back to both, a short pickup waiting at its store), order lines named by 记账名 or official name, closing exclusion, cancel, orders that wait and hold their units, MK pickup while MK is not live, orders from before the switch, and a refused key. It uses a fake WooCommerce and blocks every real request.
+- `tests/test_website_sync.py`: the floor-set rule (24, 25, 36, 37 boxes at 12 per set), Whole Sets counting sealed sets and the floor's sure sets store by store after opened sets and the shop hold, an unknown set size, a Whole-Set-only listing's pickup stores, a Whole Set order with only floor sets waiting for a manager and holding its set, linking by `_popcore_id` (any case, never by SKU, a parent's stray ID ignored, an ID on two items linking neither), drafts and disabled options, the upgrade from the SKU link, an order line whose item was added since the last read or deleted, the website number, keep-back, the hold until the daily report is in, opened sets, turning on, writes only on change, the floor first then upstairs, a pickup from its own store first and a delivery from one store when one has all of it (DT first, one order from both when neither does, a cancel back to both, a short pickup waiting at its store), the website told which store filled each delivery (`none` while it waits, the store after Try again, never twice, a refused write tried again without holding up stock), order lines named by 记账名 or official name, closing exclusion, cancel, orders that wait and hold their units, MK pickup while MK is not live, orders from before the switch, and a refused key. It uses a fake WooCommerce and blocks every real request.
   - Prices: boxes and items get POPCORE's price, and Whole Sets boxes per set × the box, never the set record's own price. Designs, Vault products, old records and records without a price keep theirs. The sale price is never written. Only changes are written, and a website edit is put back at the next read. The log.
   - Changes held for being big, a first price, unchecked against Clover, or a set unlike its box, with the other option. A set the website refused goes once its box has.
   - The manager's OK, for exactly the change shown and used only once. Sales that would end or start.

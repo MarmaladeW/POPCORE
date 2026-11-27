@@ -2142,6 +2142,7 @@ def _get_migrations():
         ('quick_sale_stock_by_report',                 _migration_quick_sale_stock_by_report),
         ('stock_moves',                                _migration_stock_moves),
         ('quick_sale_staff_discount_cash',             _migration_quick_sale_staff_discount_cash),
+        ('website_order_fill_stores',                  _migration_website_order_fill_stores),
         ('popmart_prices',                             _migration_popmart_prices),
     ]
 
@@ -2687,6 +2688,17 @@ def _migration_website_order_board(con, cur):
         cur.execute('ALTER TABLE website_orders ADD COLUMN delivery TEXT')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_website_orders_pickup_code ON website_orders(pickup_code)')
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_board')")
+
+
+def _migration_website_order_fill_stores(con, cur):
+    # The courier collects a delivery from the store it was filled from (owner, 2026-11-26; popcore-work#121). POPCORE
+    # tells the website which store that is in the order's `_popcore_fill_stores` field: "dt", "mk", "dt,mk", or
+    # "none" while the order waits for a manager. `fill_stores` is what the website was last told, so the field is
+    # written again only when the answer changes (website_sync.tell_fill_stores).
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_orders)')}
+    if 'fill_stores' not in columns:
+        cur.execute('ALTER TABLE website_orders ADD COLUMN fill_stores TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_fill_stores')")
 
 
 def _migration_push_subscriptions(con, cur):
