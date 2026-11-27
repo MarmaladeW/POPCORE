@@ -2145,6 +2145,7 @@ def _get_migrations():
         ('website_order_fill_stores',                  _migration_website_order_fill_stores),
         ('employee_pins_cleared',                      _migration_employee_pins_cleared),
         ('push_subscription_roles',                    _migration_push_subscription_roles),
+        ('website_items_store_stock',                  _migration_website_items_store_stock),
     ]
 
 
@@ -2681,6 +2682,17 @@ def _migration_website_order_fill_stores(con, cur):
     if 'fill_stores' not in columns:
         cur.execute('ALTER TABLE website_orders ADD COLUMN fill_stores TEXT')
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_fill_stores')")
+
+
+def _migration_website_items_store_stock(con, cur):
+    # The website's delivery checkout tells a customer before paying that an order will come from two stores
+    # (popcore-work#140). POPCORE writes each linked item's count per live store in its `_popcore_store_stock` field;
+    # `store_stock` is that value as the website was last told or last read, so it is written again only when it
+    # changes. NULL until then: the next pass writes it on every linked item.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_items)')}
+    if 'store_stock' not in columns:
+        cur.execute('ALTER TABLE website_items ADD COLUMN store_stock TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_items_store_stock')")
 
 
 def _migration_push_subscriptions(con, cur):
