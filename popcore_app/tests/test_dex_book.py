@@ -174,6 +174,16 @@ class DexBookTests(IsolatedApiCase):
         listed = self.get(f'/api/dex/entries?parent={series}')
         self.assertEqual([(row['name'], row['product_sku'], row['child_count']) for row in listed],
                          [('Echo box', 'PM0100', 2), ('Echo again', 'PM0200', 0)])
+        # Each row carries its linked item's price now (owner, 2026-11-26: "show the prices here, so dont have to
+        # click into there"); nothing linked, or no price, is None.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE products SET price='49.99' WHERE id=?", (items['PM0100-01'],))
+            con.execute("UPDATE products SET price='0' WHERE id=?", (items['PM0200'],))
+            con.commit()
+        self.assertEqual([(row['name'], row['price_cents']) for row in self.get(f'/api/dex/entries?parent={product}')],
+                         [('Sun', 4999), ('Moon', None)])
+        self.assertEqual([row['price_cents'] for row in self.get(f'/api/dex/entries?parent={series}')], [None, None])
+        self.assertEqual(self.get(f'/api/dex/entries/{sun}')['price_cents'], 4999)
         self.assertEqual(self.patch(product, product_id=None).get_json()['product'], None)  # unlink
         with closing(self.connect()) as con:  # the database refuses a second link too
             with self.assertRaises(sqlite3.IntegrityError):

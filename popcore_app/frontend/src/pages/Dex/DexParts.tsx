@@ -7,6 +7,7 @@ import {
   type DexEntry, type DexIpTag as IpTag, type DexKind, type DexSearchHit,
 } from '../../api/dex'
 import { KIND_LABEL, kindText } from '../../lib/dexFields'
+import { formatCents } from '../../lib/money'
 
 export const errorText = (cause: any, fallback = 'That did not save. Try again.') => cause?._serverMessage || fallback
 
@@ -76,8 +77,9 @@ export function DexIpPick({ entry, options, onSaved }: {
     placeholder="IP —" aria-label={`IP of ${entry.name}`} popupMatchSelectWidth={false} onChange={pick} />
 }
 
-// One child row: thumbnail, name, how many sit under it, the linked POPCORE ID, the IP it names; managers move it
-// up or down. `extra` sits before the move buttons (the row's IP picker).
+// One child row: thumbnail, name, how many sit under it, the linked POPCORE ID, the IP it names, and the linked
+// item's price at the right (owner, 2026-11-26: "show the prices here, so dont have to click into there"); managers
+// move it up or down. `extra` sits before the move buttons (the row's IP picker).
 export function DexRow({ entry, onUp, onDown, busy, extra }: {
   entry: DexEntry; onUp?: () => void; onDown?: () => void; busy?: boolean; extra?: ReactNode
 }) {
@@ -92,6 +94,7 @@ export function DexRow({ entry, onUp, onDown, busy, extra }: {
     <DexThumb entry={entry} />
     <Link className="pc-row-main" to={`/dex/${entry.id}`}><strong>{entry.name}</strong>
       {(meta || tag) && <span className="pc-dex-meta"><DexIpTag tag={tag} />{meta && <small>{meta}</small>}</span>}</Link>
+    {entry.price_cents != null && <span className="pc-dex-price" aria-label={`Price ${formatCents(entry.price_cents)}`}>{formatCents(entry.price_cents)}</span>}
     {extra}
     {(onUp || onDown) && <span className="pc-dex-move">
       <Button size="small" aria-label={`Move ${entry.name} up`} disabled={!onUp || busy} onClick={onUp}>↑</Button>

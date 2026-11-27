@@ -13,6 +13,8 @@ export interface DexEntry {
   id: number; kind: DexKind; name: string; parent_id: number | null; partner_id: number | null
   character_id: number | null; sort_order: number; blind_box: boolean | null; rarity: DexRarity | null
   product_id: number | null; product_sku: string | null; product_name: string | null
+  // The linked POPCORE item's price now; null when nothing is linked or it has no price.
+  price_cents: number | null
   picture_url: string | null; thumb_url: string | null; extras: DexExtras; website_id: number | null
   version: number; child_count: number; updated_at: string; updated_by: string | null
   // Contract 1.3: a product or design with no IP above names its own IP (a series with several IPs).
