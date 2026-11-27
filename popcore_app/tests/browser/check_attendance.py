@@ -10,6 +10,7 @@ from fixtures import payload as foundation_payload
 
 OUT = Path(__file__).resolve().parents[3] / '.local' / 'attendance' / 'browser'
 ENDPOINT = '/api/schedule/attendance/today'
+AT_STORE = {'latitude': 43.6533, 'longitude': -79.3831, 'accuracy': 20}
 STORE_SCRIPT = "localStorage.setItem('popcore_selected_store', JSON.stringify({id:2,code:'MK',name:'Markham',color:'#10b981'}))"
 
 
@@ -19,7 +20,8 @@ def fixture(state):
             if state.get('malformed_get') and request.method == 'GET':
                 return {}
             if request.method == 'POST':
-                assert request.post_data_json == {'shift_id': 7}
+                # The phone's location goes with the punch; the server decides whether it is at the store.
+                assert request.post_data_json == {'shift_id': 7, 'lat': 43.6533, 'lng': -79.3831, 'accuracy': 20}
                 if state.get('malformed_post'):
                     return {}
                 state['attendance'] = {
@@ -31,6 +33,8 @@ def fixture(state):
                 'shift': {'id': 7, 'date': state['day'], 'start_time': '09:00',
                           'end_time': '17:00', 'store_code': 'DT', 'store_name': 'Downtown'}
                 if state.get('assigned', True) else None,
+                'punch': {'opens_at': '08:30', 'radius_m': 150, 'too_early': state.get('too_early', False),
+                          'place_set': state.get('place_set', True)} if state.get('assigned', True) else None,
             }
         if path == '/api/today':
             return {'business_date': state['day'], 'generated_at': '', 'role': 'staff',
@@ -42,10 +46,16 @@ def fixture(state):
     return payload
 
 
+async def at_store(context):
+    await context.grant_permissions(['geolocation'])
+    await context.set_geolocation(AT_STORE)
+
+
 async def flow(browser, viewport):
     state = {'day': '2026-09-16'}
     state['api_payload'] = fixture(state)
     context, page = await context_with_api(browser, state, viewport=viewport, auth={'role': 'staff'})
+    await at_store(context)
     await context.add_init_script(STORE_SCRIPT)
     await page.clock.install(time=datetime(2026, 9, 16, 13, tzinfo=timezone.utc))
     errors = []
@@ -75,11 +85,25 @@ async def flow(browser, viewport):
         await expect(panel.get_by_role('alert')).to_contain_text('could not be confirmed')
         await expect(punch).to_be_enabled()
         state['malformed_post'] = False
+        # Without location permission nothing is sent, and the card says how to allow it.
+        await context.clear_permissions()
+        await punch.click()
+        await expect(panel.get_by_role('alert')).to_contain_text('打卡要用定位')
+        await expect(punch).to_be_enabled()
+        await at_store(context)
+        # A refusal (too far, too early, no store location) shows the server's own words.
+        state['status_for_path'] = {ENDPOINT: (403, {'code': 'punch_too_far', 'error': '你离店还有 1.1 公里，到店再打卡 · You are 1.1 km from the store.'})}
+        async with page.expect_response(lambda response: ENDPOINT in response.url and response.request.method == 'POST'):
+            await punch.click()
+        await expect(panel.get_by_role('alert')).to_contain_text('你离店还有 1.1 公里')
+        await expect(punch).to_be_enabled()
+        await expect(panel.get_by_role('button', name='Retry attendance')).to_have_count(0)  # tapping 打卡 is the retry
+        state['status_for_path'] = {}
         await punch.click()
         await expect(panel).to_have_count(0)
         assert state['attendance'] is not None
         post_count = sum(r['method'] == 'POST' and r['path'] == ENDPOINT for r in state['requests'])
-        assert post_count == 3
+        assert post_count == 4
 
         async with page.expect_response(lambda response: ENDPOINT in response.url):
             await page.reload()
@@ -127,6 +151,19 @@ async def flow(browser, viewport):
         await page.evaluate("window.dispatchEvent(new Event('focus'))")
         await expect(panel).to_have_count(0)
 
+        # Before the window it says from when; a store with no location saved says so and offers no button.
+        state['attendance'] = None
+        state['too_early'] = True
+        await page.evaluate("window.dispatchEvent(new Event('focus'))")
+        await expect(panel).to_contain_text('08:30 起可打卡')
+        await expect(punch).to_be_enabled()
+        state['too_early'] = False
+        state['place_set'] = False
+        await page.evaluate("window.dispatchEvent(new Event('focus'))")
+        await expect(panel).to_contain_text('还没设置打卡位置')
+        await expect(punch).to_have_count(0)
+        state['place_set'] = True
+
         # Toronto midnight refreshes an idle page without a focus event.
         state['day'] = '2026-09-17'
         state['attendance'] = None
@@ -148,6 +185,7 @@ async def timeout_flow(browser):
     state = {'day': '2026-09-16'}
     state['api_payload'] = fixture(state)
     context, page = await context_with_api(browser, state, auth={'role': 'staff'})
+    await at_store(context)
     await page.clock.install(time=datetime(2026, 9, 17, 3, 59, tzinfo=timezone.utc))
     held_method = 'GET'
     held = asyncio.Event()

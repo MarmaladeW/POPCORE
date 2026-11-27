@@ -8,6 +8,15 @@ Special orders (`/special-orders`) is a separate Daily work page for customer-re
 
 The existing attendance component shows the employee's assigned shift and punch-in before the four choices. It disappears only after the server confirms punch-in for the Toronto business date. Schedule retains attendance and shift access. Home keeps recent events and personal shifts below the choices.
 
+### 打卡 only at the store (owner, 2026-11-27)
+
+"Make sure they dont click 打卡 when they are not in the store yet." Markham has no store computer, so the owner picked GPS:
+
+- Tapping 打卡 asks the phone for its location and sends it with the punch. The server counts the punch only when the phone is within 150 m of the shift's store, the phone's own accuracy is within 150 m, and it is no earlier than 30 minutes before the shift starts (`PUNCH_RADIUS_M`, `PUNCH_ACCURACY_M`, `PUNCH_EARLY_MINUTES` in `blueprints/schedule.py`). Otherwise the card says why in the server's words (too early, how far, location off) and tapping 打卡 again is the retry. A punch already saved stays saved; a retry answers with it wherever the phone is.
+- Each store's spot is saved by an admin in 设置 → 打卡位置 Punch-in: "用我现在的位置 Use where I am now" while standing in the store (refused when the fix is rougher than 150 m), or a pin pasted from Google Maps. It is one `app_settings` row, `punch_places`. A store with no spot saved takes no punches and its card says to ask an admin.
+- The staff member's coordinates are never stored. The punch's 动态 line records only how many metres from the store it was.
+- A phone can fake its location with effort; the time on the punch is the server's, and the cameras remain the check.
+
 入店 links the receipt workflow and an incoming-transfer chooser that includes unfinished deliveries from earlier days, lists today's authorized incoming documents, and provides display-arrival recording. Managers can create a transfer separately from the chooser. Existing opening-count, inventory access, version, transit, and manager-draft safeguards remain in force.
 
 娃娃机 records prizes, replenishments and card/e-transfer exchanged for equal cash. Product choices use exact catalog IDs; actor, date and timestamp come from the server. Cash exchange requires a payment reference/note and explicit UI confirmation that payment was received and the same cash handed over. The backend writes its event and one cash payout in a transaction, reducing the expected drawer through the existing closing calculation. It creates no merchandise sale. Unknown write outcomes retain the request key and original payload; retry does not post again.
@@ -20,4 +29,4 @@ Clover remains disconnected. This implementation does not verify live order sync
 
 ## Verification
 
-Run backend tests with `python -m unittest discover -s popcore_app/tests -v`. Run `npm test` and `npm run build -- --outDir ../../.local/frontend-build` from the frontend directory; the latter preserves committed release assets. Browser checks: `check_staff_home.py`, `check_store_navigation.py`, `check_transfer_receiving.py`, `check_checkout_focus.py`, `check_attendance.py`, `check_special_orders.py`, and `check_foundation.py` under `popcore_app/tests/browser`. Home and checkout checks include actual Flask/SQLite flows with disposable data and test authentication. Never deploy test authentication.
+Run backend tests with `python -m unittest discover -s popcore_app/tests -v`. Run `npm test` and `npm run build -- --outDir ../../.local/frontend-build` from the frontend directory; the latter preserves committed release assets. Browser checks: `check_staff_home.py`, `check_store_navigation.py`, `check_transfer_receiving.py`, `check_checkout_focus.py`, `check_attendance.py`, `check_punch_places.py`, `check_special_orders.py`, and `check_foundation.py` under `popcore_app/tests/browser`. Home and checkout checks include actual Flask/SQLite flows with disposable data and test authentication. Never deploy test authentication.

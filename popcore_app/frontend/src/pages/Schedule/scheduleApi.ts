@@ -351,6 +351,8 @@ export interface AttendanceToday {
     shift_id: number | null
     punched_in_at: string
   } | null
+  /** 打卡 rules for today's shift (owner, 2026-11-27): from when, how near the store, and whether its spot is saved. */
+  punch?: { opens_at: string; radius_m: number; too_early: boolean; place_set: boolean } | null
 }
 
 function readAttendanceStatus(data: AttendanceToday): AttendanceToday {
@@ -360,7 +362,9 @@ function readAttendanceStatus(data: AttendanceToday): AttendanceToday {
         || typeof data.shift.end_time !== 'string' || typeof data.shift.store_code !== 'string'
         || typeof data.shift.store_name !== 'string'))
       || (data.attendance !== null && (!data.attendance || data.attendance.business_date !== data.business_date
-        || typeof data.attendance.punched_in_at !== 'string' || !Number.isFinite(Date.parse(data.attendance.punched_in_at))))) {
+        || typeof data.attendance.punched_in_at !== 'string' || !Number.isFinite(Date.parse(data.attendance.punched_in_at))))
+      || (data.punch != null && (typeof data.punch.opens_at !== 'string' || !Number.isFinite(data.punch.radius_m)
+        || typeof data.punch.too_early !== 'boolean' || typeof data.punch.place_set !== 'boolean'))) {
     throw new Error('Invalid attendance response')
   }
   return data
@@ -369,5 +373,6 @@ function readAttendanceStatus(data: AttendanceToday): AttendanceToday {
 export const getAttendanceToday = () =>
   client.get<AttendanceToday>('/schedule/attendance/today', { timeout: 15_000 }).then(r => readAttendanceStatus(r.data))
 
-export const punchInToday = (shiftId: number) =>
-  client.post<AttendanceToday>('/schedule/attendance/today', { shift_id: shiftId }, { timeout: 15_000 }).then(r => readAttendanceStatus(r.data))
+export const punchInToday = (shiftId: number, at: { lat: number; lng: number; accuracy: number }) =>
+  client.post<AttendanceToday>('/schedule/attendance/today', { shift_id: shiftId, lat: at.lat, lng: at.lng, accuracy: at.accuracy },
+    { timeout: 15_000 }).then(r => readAttendanceStatus(r.data))
