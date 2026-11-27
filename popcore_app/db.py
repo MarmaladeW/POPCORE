@@ -2146,6 +2146,7 @@ def _get_migrations():
         ('employee_pins_cleared',                      _migration_employee_pins_cleared),
         ('push_subscription_roles',                    _migration_push_subscription_roles),
         ('website_items_store_stock',                  _migration_website_items_store_stock),
+        ('website_items_store_sets',                   _migration_website_items_store_sets),
     ]
 
 
@@ -2693,6 +2694,17 @@ def _migration_website_items_store_stock(con, cur):
     if 'store_stock' not in columns:
         cur.execute('ALTER TABLE website_items ADD COLUMN store_stock TEXT')
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_items_store_stock')")
+
+
+def _migration_website_items_store_sets(con, cur):
+    # Each count per store is for one order line, so a Single Box and its own Whole Set in one bag could each fit a
+    # store and still need the same sealed sets (popcore-work#140). POPCORE writes a blind box's sealed sets per live
+    # store, boxes per set and its Whole Set's website item in `_popcore_store_sets`; `store_sets` is that value as the
+    # website was last told or last read. NULL until then: the next pass writes it on every linked box with a set.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_items)')}
+    if 'store_sets' not in columns:
+        cur.execute('ALTER TABLE website_items ADD COLUMN store_sets TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_items_store_sets')")
 
 
 def _migration_push_subscriptions(con, cur):

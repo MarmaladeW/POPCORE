@@ -29,7 +29,9 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
 - Count per store (popcore-work#140): each linked item's `_popcore_store_stock` holds, for every live store, how many
   units of it an order could take from that store alone, as `_take` fills it: loose units, and a blind box's own
   sealed sets that may open. The website's delivery checkout uses it to tell a customer before paying that an order
-  will come from two stores. It is never the website number: no shop hold, keep-back or held order units.
+  will come from two stores. It is never the website number: no shop hold, keep-back or held order units. A blind box
+  whose sealed set may open also carries `_popcore_store_sets`: each live store's sealed sets of it, boxes per set and
+  the website item of its Whole Set, since a Single Box and its own Whole Set in one bag share those sets.
 - Orders: a paid web order takes its items out of the live stores' stock. A pickup comes off its pickup
   store first (owner, 2026-11-22: "for markham pickup they come off markham floor"), then
   WEBSITE_DELIVERY_STORE (DT), then any other live store. A delivery comes off one store when one store has all
@@ -118,6 +120,15 @@ FILL_NONE = 'none'
 # popcore.ca's delivery checkout reads it to tell a customer before paying that the order comes from two stores
 # (popcore-work#140). See _store_stock_values.
 STORE_STOCK_META = '_popcore_store_stock'
+# Written on every linked blind box whose sealed set may open (_set_to_open): a JSON string, compact with its keys
+# sorted, of each live store's lowercase code and its sealed sets of the box, `per` (boxes per set) and, when a linked
+# website item holds that set, `set` (that Whole Set's website item id): '{"dt":2,"mk":0,"per":12,"set":34567}'. Each
+# count in STORE_STOCK_META is for one order line, so a Single Box and its own Whole Set in one bag would each fit and
+# still need the same sealed sets; popcore.ca checks the two lines together with it (popcore-work#140). '' on every
+# other linked item, so a value left from before is cleared. See _store_stock_values.
+STORE_SETS_META = '_popcore_store_sets'
+# What a field POPCORE did not write (not a string) reads as, so it never matches what POPCORE wants there.
+NOT_WRITTEN = '(not a string)'
 # Written with every design price POPCORE sends (UTC, ISO 8601), so the website can tell the designs POPCORE prices,
 # show "Set by POPCORE" and lock their price field (website session, 2026-11-12). Box prices carry none.
 DESIGN_PRICE_META = '_popcore_design_price_at'
@@ -287,6 +298,16 @@ def _store_stock(meta_data):
     return None
 
 
+def _store_sets(meta_data):
+    """The item's `_popcore_store_sets` as the website holds it, or None when it has none. Anything but a string is
+    not what POPCORE writes: it is read as NOT_WRITTEN, which never matches, so it is written again (or cleared)."""
+    for meta in meta_data or ():
+        if meta.get('key') == STORE_SETS_META:
+            value = meta.get('value')
+            return value if isinstance(value, str) else NOT_WRITTEN
+    return None
+
+
 def _flag(item, key):
     """A yes/1 product field from REST meta_data, as 1 or 0."""
     return 1 if str(_meta(item, key) or '').strip().lower() in ('1', 'yes', 'true') else 0
@@ -332,6 +353,7 @@ def refresh_items(con, cfg):
                       'stock_quantity': product.get('stock_quantity'), 'stock_status': product.get('stock_status'),
                       'pickup': json.dumps(_pickup(product.get('meta_data'))),
                       'store_stock': _store_stock(product.get('meta_data')) if kind == 'simple' else None,
+                      'store_sets': _store_sets(product.get('meta_data')) if kind == 'simple' else None,
                       'regular_cents': _price(product.get('regular_price')), 'sale_cents': _price(product.get('sale_price')),
                       'daily_pool': pool, 'vault': vault})
         if kind != 'variable':
@@ -347,6 +369,7 @@ def refresh_items(con, cfg):
                           'stock_quantity': variation.get('stock_quantity'),
                           'stock_status': variation.get('stock_status'), 'pickup': None,
                           'store_stock': _store_stock(variation.get('meta_data')),
+                          'store_sets': _store_sets(variation.get('meta_data')),
                           'regular_cents': _price(variation.get('regular_price')),
                           'sale_cents': _price(variation.get('sale_price')), 'daily_pool': pool, 'vault': vault})
     # One ID is on at most one item (owner, 2026-11-05). An ID on two items links neither, since
@@ -358,11 +381,11 @@ def refresh_items(con, cfg):
         for item in items:
             linked = item['popcore_id'] and holders[item['popcore_id'].upper()] == 1
             con.execute("""INSERT INTO website_items(wc_id, parent_id, kind, sku, popcore_id, name, status, manage_stock,
-                               stock_quantity, stock_status, pickup, store_stock, product_id, regular_cents, sale_cents,
-                               daily_pool, vault)
+                               stock_quantity, stock_status, pickup, store_stock, store_sets, product_id, regular_cents,
+                               sale_cents, daily_pool, vault)
                            VALUES (:wc_id, :parent_id, :kind, :sku, :popcore_id, :name, :status, :manage_stock,
-                               :stock_quantity, :stock_status, :pickup, :store_stock, :product_id, :regular_cents,
-                               :sale_cents, :daily_pool, :vault)""",
+                               :stock_quantity, :stock_status, :pickup, :store_stock, :store_sets, :product_id,
+                               :regular_cents, :sale_cents, :daily_pool, :vault)""",
                         {**item, 'product_id': _product_for_id(con, item['popcore_id']) if linked else None})
         set_state(con, 'refreshed_at', _iso(_now()))
         set_state(con, 'refresh_requested', None)
@@ -411,21 +434,36 @@ def _store_stock_values(con, stock, codes):
     warehouse, boxes kept in opened sets left out; and for a blind box whose sealed set may open (_set_to_open), the
     store's sealed sets of it times boxes per set. A Whole Set counts its sealed sets only: no order makes one from loose
     boxes. Never the shop hold, WEBSITE_KEEP_BACK or held order units: it tells where an order would be filled from,
-    not the website number. Every live store is named, with 0 when it has none."""
+    not the website number. Every live store is named, with 0 when it has none.
+
+    Also {linked blind box id: its `_popcore_store_sets`} for each box whose sealed set may open: the same sealed sets
+    store by store, `per` (boxes per set) and `set`, the website item that holds that very set (the one `_take` opens,
+    found by its conversion, not by its POPCORE ID), left out when no linked item holds it. `_take` fills a Whole Set
+    line from those sealed sets before its box opens any, so with both in one order a store fits when it has the sets
+    and its loose boxes (the box's count less sets × per) plus the sets left × per cover the boxes."""
     live = sorted(live_store_ids(con))
-    values = {}
+    holders = {row[0]: row[1] for row in con.execute(
+        """SELECT product_id, wc_id FROM website_items
+           WHERE product_id IS NOT NULL AND kind IN ('simple', 'variation')""")}
+    values, sets = {}, {}
     # Each product once per pass, so _set_to_open runs once for each.
     for product in con.execute("""SELECT id, stock_form, identity_status FROM products
                                   WHERE id IN (SELECT product_id FROM website_items WHERE product_id IS NOT NULL)"""):
         whole = _set_to_open(con, product)
-        counts = {}
+        counts, sealed = {}, {}
         for store_id in live:
             units = stock.get(product['id'], {}).get(store_id, 0)
             if whole is not None:
-                units += whole['boxes_per_set'] * stock.get(whole['id'], {}).get(store_id, 0)
+                sealed[codes[store_id]] = int(stock.get(whole['id'], {}).get(store_id, 0))
+                units += whole['boxes_per_set'] * sealed[codes[store_id]]
             counts[codes[store_id]] = int(units)
         values[product['id']] = json.dumps(counts, sort_keys=True, separators=(',', ':'))
-    return values
+        if whole is not None:
+            sealed['per'] = int(whole['boxes_per_set'])
+            if whole['id'] in holders:
+                sealed['set'] = holders[whole['id']]
+            sets[product['id']] = json.dumps(sealed, sort_keys=True, separators=(',', ':'))
+    return values, sets
 
 
 def floor_sets(boxes, per_set):
@@ -520,7 +558,7 @@ def plan(con, cfg):
     """Every linked item's website number and count per store, and every product's pickup stores, with what changes."""
     (stock, floor), held, hold = _shelf_stock(con), _held(con), _shop_hold(con, cfg)
     codes = {row[0]: row[1].lower() for row in con.execute('SELECT id, code FROM stores')}
-    store_stock = _store_stock_values(con, stock, codes)
+    store_stock, store_sets = _store_stock_values(con, stock, codes)
     # Every item with a POPCORE ID: one POPCORE does not have (or that is on two items) shows sold out.
     items = [dict(row) for row in con.execute(
         "SELECT * FROM website_items WHERE kind IN ('simple', 'variation') AND popcore_id != '' ORDER BY wc_id")]
@@ -546,6 +584,10 @@ def plan(con, cfg):
         item['store_stock_wanted'] = store_stock.get(item['product_id']) if item['product_id'] else None
         item['store_stock_change'] = (item['store_stock_wanted'] is not None
                                       and item['store_stock_wanted'] != item['store_stock'])
+        # A linked blind box's sealed sets; '' on any other linked item, which clears a value left from before.
+        item['store_sets_wanted'] = store_sets.get(item['product_id'], '') if item['product_id'] else None
+        item['store_sets_change'] = (item['store_sets_wanted'] is not None
+                                     and item['store_sets_wanted'] != (item['store_sets'] or ''))
         stores = pickup_by_parent.setdefault(item['parent_id'] or item['wc_id'], set())
         if item['quantity'] > 0:
             stores.update(codes[store_id] for store_id, units in shown.items() if units > cfg['keep_back'])
@@ -948,6 +990,10 @@ def push(con, cfg):
             # Each live store's own count, in the same write as the item's other changes (popcore-work#140).
             updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']}).setdefault(
                 'meta_data', []).append({'key': STORE_STOCK_META, 'value': item['store_stock_wanted']})
+        if item['store_sets_change']:
+            # A blind box's sealed sets go with its count, so the website reads the two from one pass.
+            updates.setdefault(path, {}).setdefault(item['wc_id'], {'id': item['wc_id']}).setdefault(
+                'meta_data', []).append({'key': STORE_SETS_META, 'value': item['store_sets_wanted']})
     for parent in parents:
         if parent['pickup_change']:
             entry = updates.setdefault('/products/batch', {}).setdefault(parent['wc_id'], {'id': parent['wc_id']})
@@ -984,9 +1030,10 @@ def push(con, cfg):
                     con.execute("UPDATE website_items SET pickup=?, error=NULL, pushed_at=datetime('now') WHERE wc_id=?",
                                 (json.dumps(pickups[wc_id]), wc_id))
                 for meta in sent.get('meta_data', ()):
-                    if meta['key'] == STORE_STOCK_META:
-                        con.execute("""UPDATE website_items SET store_stock=?, error=NULL, pushed_at=datetime('now')
-                                       WHERE wc_id=?""", (meta['value'], wc_id))
+                    if meta['key'] in (STORE_STOCK_META, STORE_SETS_META):
+                        column = 'store_stock' if meta['key'] == STORE_STOCK_META else 'store_sets'
+                        con.execute(f"""UPDATE website_items SET {column}=?, error=NULL, pushed_at=datetime('now')
+                                        WHERE wc_id=?""", (meta['value'], wc_id))
                 written += 1
             con.commit()
     if written:
