@@ -35,18 +35,15 @@ Idempotency-Key from the same account is kept once; writing the row never fails 
 - The app: 动态 in the menu for everyone who works at a store (staff and up, and the counter account), and 店里动态 on
   both home pages with the store's five newest lines. A line opens what it was about.
 
-## The name on the store computer
+## The store computer
 
-`store_computer.py`. The store computer signs in as one 查看者 Viewer with 门店操作权限. Every change it makes asks
-谁在操作？: the person taps their name, the request is sent again with `X-Popcore-Person: <employee id>`, and 动态 and
-the website order note name that person (by way of the counter account). The server refuses a counter change without
-one (`428 person_needed`); a name never adds a permission. Looking around, the pickup-code lookup and notification
-settings need none. The person stays picked for two minutes (a bar shows who, with 结束 Done) and is kept in memory
-only.
-
-There is no PIN since 2026-11-26 (owner: "PIN not necessary"). 我的 PIN, the PIN pad, 重设 PIN in 员工 Users and their
-routes are gone; migration `employee_pins_cleared` emptied the PIN columns, which stay in the table unused. A page
-loaded before the change still sends `<id>:<pin>`; only the id is read. Anyone at the computer can tap any name.
+The store computer signs in as one 查看者 Viewer with 门店操作权限 and asks nothing before a change (owner,
+2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras"). What it does
+is marked with the shared account in 动态 and in the website order note; who stood at the computer is for the
+cameras. From 2026-11-20 to 2026-11-26 it asked for a name and a 4-digit PIN: 我的 PIN, the PIN pad, the name list,
+重设 PIN in 员工 Users and their routes are gone, migration `employee_pins_cleared` emptied the PIN columns (they
+stay in the table unused), and the `X-Popcore-Person` header an old page may still send is ignored. Lines made in
+those days keep the person's name with "by way of" the counter account (`via_sub`, `via_name`).
 
 ## Daily shortcuts
 
@@ -116,7 +113,7 @@ they happen; the screen is quick enough that an end-of-day batch still works.
 - **A retry is the same sale**: the same Idempotency-Key returns the saved sale before anything is priced again, so a
   price or rate that changed in between cannot make a second sale.
 - **Who may**: staff with a shift at the store today and 门店操作权限 there, while 员工买单 is open for that store
-  (Settings → 员工买单 → 所有店). The store computer's counter account cannot record sales: a name adds no permission.
+  (Settings → 员工买单 → 所有店). The store computer's counter account cannot record sales.
 - **Photos**: E-transfer, WeChat Pay and Alipay ask for a photo of the payment after saving. A sale saved without one
   shows 没有照片 No photo in today's list and its 动态 line until a photo is added there (owner: "they can save the order
   without image, but that order should be flagged and saying there isnt a picture").
@@ -183,7 +180,7 @@ the same thing with the stock, what I want is a easy to use app. Keep all of the
 
 ## Checks
 
-`tests/test_staff_rollout.py`; browser checks `check_activity.py`, `check_store_computer_name.py`,
+`tests/test_staff_rollout.py`; browser checks `check_activity.py`, `check_web_orders.py` (the store computer),
 `check_restock_one_go.py`, `check_evening_count.py`, `check_quick_sale.py` and `check_staff_home.py` (staff waiting for
 Clover); `tests/test_quick_sale.py` for 记一笔 and the paste leaving its sales out; `tests/test_stock_moves.py` and
 `check_move_stock.py` for 移货.

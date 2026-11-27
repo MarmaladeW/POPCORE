@@ -88,13 +88,6 @@ def _account_disabled(payload):
                     'code': 'account_disabled'}), 403
 
 
-def _person_guard():
-    """The name tapped on the shared store computer (store_computer.py): who is doing this request, or why it is
-    refused."""
-    import store_computer  # store_computer imports this module
-    return store_computer.guard()
-
-
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -115,9 +108,6 @@ def login_required(f):
         disabled = _account_disabled(request.jwt_payload)
         if disabled:
             return disabled
-        refused = _person_guard()
-        if refused:
-            return refused
         return f(*args, **kwargs)
     return decorated
 
@@ -148,9 +138,6 @@ def role_required(*allowed_roles):
                 return disabled
             if ROLE_HIERARCHY[role] < min_level:
                 return jsonify({'error': 'Forbidden'}), 403
-            refused = _person_guard()
-            if refused:
-                return refused
             return f(*args, **kwargs)
         return decorated
     return decorator

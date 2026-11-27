@@ -2562,16 +2562,23 @@ def _migration_quick_sale_staff_discount_cash(con, cur):
 
 
 def _migration_employee_pins(con, cur):
-    # Name + PIN on the shared store computer (owner, 2026-11-20); see store_computer.py.
-    import store_computer
-    store_computer.migrate(cur)
+    # Name + PIN on the shared store computer (owner, 2026-11-20). Gone since 2026-11-26: see
+    # `employee_pins_cleared` and docs/daily-use-and-marks.md.
+    # Kept so a database from before still migrates the same way; the columns are unused since 2026-11-26.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(employees)')}
+    for column, kind in (('pin_hash', 'TEXT'), ('pin_salt', 'TEXT'), ('pin_set_at', 'TEXT'),
+                         ('pin_failures', 'INTEGER NOT NULL DEFAULT 0'), ('pin_locked_until', 'TEXT')):
+        if column not in columns:
+            cur.execute(f'ALTER TABLE employees ADD COLUMN {column} {kind}')
     cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins')")
 
 
 def _migration_employee_pins_cleared(con, cur):
-    # Owner, 2026-11-26: "PIN not necessary". The store computer asks for a name only, and every kept PIN is wiped.
-    import store_computer
-    store_computer.clear_pins(cur)
+    # Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras".
+    # The store computer asks nothing, and what was kept of every PIN (hash, salt, wrong tries) is wiped: four
+    # digits are found from a hash at once, and they open nothing now.
+    cur.execute("""UPDATE employees SET pin_hash=NULL, pin_salt=NULL, pin_set_at=NULL, pin_failures=0,
+                       pin_locked_until=NULL""")
     cur.execute("INSERT INTO _migrations(name) VALUES ('employee_pins_cleared')")
 
 

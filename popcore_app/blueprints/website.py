@@ -16,7 +16,7 @@ neither, so they cannot turn a device on; anyone can turn their own device off.
 import os
 from functools import wraps
 
-from flask import g, Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request
 
 import push_notifications as push
 import website_board as board
@@ -236,11 +236,9 @@ def web_orders_step(wc_order_id, action):
     if cfg is None:
         return _not_configured()
     try:
-        # On the store computer the note names the person who tapped their name (store_computer.py), not the
-        # shared account.
+        # On the store computer the note names its shared account ("Ready in popcore.store by DT 柜台").
         result, noted = board.step(get_db(), cfg, wc_order_id, action, request.jwt_payload['sub'],
-                                   data.get('code') if isinstance(data.get('code'), str) else None,
-                                   by=(g.get('acting_person') or {}).get('sub'))
+                                   data.get('code') if isinstance(data.get('code'), str) else None)
     except (board.BoardError, sync.WebsiteError) as exc:
         return _board_error(exc)
     return jsonify(result=result, noted=noted)

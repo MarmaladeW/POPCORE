@@ -39,8 +39,9 @@ show their 入库, 调拨, 晚盘, 娃娃机, count and move buttons to staff on
 补货, 汇总 or 晚盘.
 
 A viewer with no 店铺电脑 store ticked opens on a 店铺电脑 page that says so, with links to Products, the Dex and the
-watch list; its board names the tick it needs. Its two buttons ask 谁在操作？ and take one tap on a name, no PIN
-(docs/daily-use-and-marks.md), so the note on the website names that person ("Ready in popcore.store by Amy").
+watch list; its board names the tick it needs. Its two buttons ask nothing (owner, 2026-11-26: no PIN, and "dont
+need the 谁在操作 on the store computer, we have cameras"), so the note on the website names the account ("Ready in
+popcore.store by DT 柜台").
 
 ## The board
 

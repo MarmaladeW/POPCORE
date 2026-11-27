@@ -7,7 +7,7 @@ SYSTEM_NAMES = {
 }
 
 
-# Never sent to a page (owner, 2026-11-26): a PIN's hash and lock state (empty since 2026-11-26, store_computer.py; four digits are found from the
+# Never sent to a page (owner, 2026-11-26): a PIN's hash and lock state (empty since 2026-11-26, migration employee_pins_cleared; four digits are found from the
 # hash at once), and the private calendar address, which only GET /api/schedule/calendar-feed gives, to its owner.
 PRIVATE_FIELDS = ('pin_hash', 'pin_salt', 'pin_failures', 'pin_locked_until', 'pin_set_at', 'ical_token')
 

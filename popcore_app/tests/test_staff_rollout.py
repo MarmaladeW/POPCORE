@@ -349,9 +349,9 @@ class ActivityLogTests(StaffCheckoutWaitsForCloverTests):
 from support import IsolatedApiCase  # noqa: E402
 
 
-class StoreComputerNameTests(IsolatedApiCase):
-    """A name on the shared store computer: a change there is marked with the person, not the shared account. No PIN
-    (owner, 2026-11-26: "PIN not necessary")."""
+class StoreComputerAsksNothingTests(IsolatedApiCase):
+    """Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras".
+    A change made on the store computer is its shared account's own; nothing asks who."""
 
     def setUp(self):
         super().setUp()
@@ -365,89 +365,41 @@ class StoreComputerNameTests(IsolatedApiCase):
 
         with closing(self.connect()) as con:
             self.zimo = con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|staff', 'Zimo')").lastrowid
-            con.execute("INSERT INTO employee_stores(employee_id, store_id) VALUES (?, ?)", (self.zimo, self.store_id))
+            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT 柜台')")
             con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (self.store_id,))
             con.commit()
 
-    def counter(self, person=None, **extra):
-        headers = {**self.headers('viewer:counter'), **({'X-Popcore-Person': str(person)} if person else {})}
-        return self.client.post('/api/test/touch', json={'store_id': self.store_id}, headers={**headers, **extra})
-
-    def last_mark(self):
+    def test_a_change_on_the_store_computer_is_the_shared_accounts_own(self):
+        counter = self.headers('viewer:counter')
+        sent = self.client.post('/api/test/touch', json={'store_id': self.store_id}, headers=counter)
+        self.assertEqual(sent.status_code, 200, sent.get_json())
+        # A page loaded before this still sends a name (and an older one a PIN): nothing reads it.
+        for person in (str(self.zimo), f'{self.zimo}:9999', 'nobody'):
+            sent = self.client.post('/api/test/touch', json={'store_id': self.store_id},
+                                    headers={**counter, 'X-Popcore-Person': person})
+            self.assertEqual(sent.status_code, 200, person)
         with closing(self.connect()) as con:
-            return tuple(con.execute('SELECT actor_sub, actor_name, via_sub FROM activity_log ORDER BY id DESC LIMIT 1').fetchone())
+            marks = {tuple(row) for row in con.execute(
+                "SELECT actor_sub, actor_name, via_sub FROM activity_log WHERE endpoint='touch'")}
+        self.assertEqual(marks, {('auth0|counter', 'DT 柜台', None)})
 
-    def test_the_store_computer_asks_for_a_name_and_nothing_else(self):
-        people = self.client.get('/api/counter/people?store_code=DT', headers=self.headers('viewer:counter')).get_json()
-        self.assertEqual(people['people'], [{'id': self.zimo, 'name': 'Zimo', 'on_shift': False}])
-        # No name: refused with 428 so the computer asks; a tapped name goes through, with no PIN.
-        refused = self.counter()
-        self.assertEqual((refused.status_code, refused.get_json()['code']), (428, 'person_needed'))
-        self.assertEqual(self.counter(self.zimo).status_code, 200)
-        self.assertEqual(self.last_mark(), ('auth0|staff', 'Zimo', 'auth0|counter'))
-        # A page loaded before the PIN went away still sends one after the id: only the id is read.
-        self.assertEqual(self.counter(f'{self.zimo}:9999').status_code, 200)
-        self.assertEqual(self.last_mark(), ('auth0|staff', 'Zimo', 'auth0|counter'))
-        # Staff on their own phone are never asked.
-        self.assertEqual(self.client.post('/api/test/touch', json={}, headers=self.headers('staff')).status_code, 200)
-
-    def test_a_name_that_is_nobody_is_asked_again(self):
-        with closing(self.connect()) as con:
-            counter = con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT computer')").lastrowid
-            gone = con.execute("INSERT INTO employees(auth0_id, name, is_active) VALUES ('auth0|gone', 'Gone', 0)").lastrowid
-            con.commit()
-        # Someone removed, an id that does not exist, the shared account itself, or not a number at all.
-        for person in (gone, 99999, counter, 'zimo'):
-            refused = self.counter(person)
-            self.assertEqual((refused.status_code, refused.get_json()['code']), (428, 'person_needed'), person)
-        with closing(self.connect()) as con:
-            self.assertEqual(con.execute("SELECT COUNT(*) FROM activity_log WHERE endpoint='touch'").fetchone()[0], 0)
-
-    def test_the_name_is_only_read_for_the_store_computer(self):
-        with closing(self.connect()) as con:
-            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|amy', 'Amy')")
-            con.commit()
-        for role in ('staff:amy', 'manager', 'admin', 'viewer:nostore'):   # the header is ignored: nobody acting
-            sent = self.client.post('/api/test/touch', json={}, headers={**self.headers(role), 'X-Popcore-Person': str(self.zimo)})
-            self.assertEqual(sent.status_code, 200, role)
-        with closing(self.connect()) as con:
-            marks = {tuple(row) for row in con.execute("SELECT actor_sub, via_sub FROM activity_log WHERE endpoint='touch'")}
-        self.assertEqual(marks, {('auth0|amy', None), ('auth0|manager', None), ('auth0|admin', None), ('auth0|nostore', None)})
-
-    def test_the_pin_is_gone(self):
-        """Its routes answer 404, and the migration wiped what was kept of every PIN."""
+    def test_the_pin_and_the_name_list_are_gone(self):
+        """Their routes answer 404, and the migration wiped what was kept of every PIN."""
         for method, path in (('get', '/api/me/pin'), ('post', '/api/me/pin'), ('post', '/api/counter/check'),
-                             ('delete', f'/api/employees/{self.zimo}/pin')):
+                             ('get', '/api/counter/people'), ('delete', f'/api/employees/{self.zimo}/pin')):
             for role in ('viewer:counter', 'staff', 'admin'):
-                self.assertEqual(getattr(self.client, method)(path, json={'pin': '2580', 'employee_id': self.zimo},
-                                                               headers=self.headers(role)).status_code, 404, (method, path))
-        import sqlite3
-        import store_computer
+                self.assertEqual(getattr(self.client, method)(path, headers=self.headers(role)).status_code, 404, (method, path))
+        import db as database
         with closing(self.connect()) as con:
             con.execute("""UPDATE employees SET pin_hash='hash', pin_salt='salt', pin_set_at='2026-11-20', pin_failures=3,
                                pin_locked_until='2026-11-21' WHERE id=?""", (self.zimo,))
+            con.execute("DELETE FROM _migrations WHERE name='employee_pins_cleared'")
             con.commit()
-            self.assertIsInstance(con, sqlite3.Connection)
-            store_computer.clear_pins(con.cursor())
+            database._migration_employee_pins_cleared(con, con.cursor())
             con.commit()
             self.assertEqual(tuple(con.execute("""SELECT pin_hash, pin_salt, pin_set_at, pin_failures, pin_locked_until
                                                    FROM employees WHERE id=?""", (self.zimo,)).fetchone()),
                              (None, None, None, 0, None))
-            self.assertTrue(con.execute("SELECT 1 FROM _migrations WHERE name='employee_pins_cleared'").fetchone())
-
-    def test_the_people_list_is_for_the_store_computer_and_managers_and_never_lists_the_asker(self):
-        with closing(self.connect()) as con:
-            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|counter', 'DT computer')")
-            con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|manager', 'Kitty')")
-            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|manager', ?)", (self.store_id,))
-            con.commit()
-        people = lambda role: self.client.get('/api/counter/people?store_code=DT', headers=self.headers(role))  # noqa: E731
-        for role in ('staff', 'viewer:nostore'):
-            self.assertEqual((people(role).status_code, people(role).get_json()['code']), (403, 'forbidden'), role)
-        names = lambda role: sorted(person['name'] for person in people(role).get_json()['people'])  # noqa: E731
-        self.assertEqual(names('viewer:counter'), ['Kitty', 'Zimo'])       # not the shared account itself
-        self.assertEqual(names('manager'), ['DT computer', 'Zimo'])
-        self.assertEqual(names('admin'), ['DT computer', 'Kitty', 'Zimo'])
 
 
 class RestockInOneGoTests(SetsFixture):

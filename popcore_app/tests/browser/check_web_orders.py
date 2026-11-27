@@ -161,8 +161,17 @@ async def run(browser, width):
         # It opens on the orders to prepare (owner, 2026-11-24).
         await page.goto(BASE + '/')
         await expect(page).to_have_url(BASE + '/web-orders')
-        await expect(page.get_by_role('region', name='Pickup · to pick').get_by_text('#720')).to_be_visible()
+        pick = page.get_by_role('region', name='Pickup · to pick')
+        await expect(pick.get_by_text('#720')).to_be_visible()
         await expect(page.get_by_role('button', name='拣好了 Ready')).to_have_count(1)
+        # Ready goes straight through: nothing asks who is at the computer (owner, 2026-11-26: "we have cameras").
+        await pick.get_by_role('button', name='拣好了 Ready').click()
+        await page.get_by_role('button', name='Ready', exact=True).click()
+        await expect(page.get_by_text('#720 is ready', exact=False)).to_be_visible()
+        await expect(page.get_by_role('dialog')).to_have_count(0)
+        await expect(page.get_by_text('谁在操作', exact=False)).to_have_count(0)
+        assert fixture.woo.orders[720]['status'] == 'ready-pickup'
+        await fits(page, f'counter-ready-{width}.png')
         if width > 600:  # the rail: 网站订单 and 库存, nothing that changes anything
             rail = page.get_by_role('navigation', name='Primary navigation')
             await expect(rail.get_by_role('link', name='网站订单 Web orders')).to_be_visible()

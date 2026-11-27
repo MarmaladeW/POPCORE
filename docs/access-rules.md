@@ -57,12 +57,13 @@ answers only `short`, never how many, without the tick. Goods counts, 晚盘 exp
 numbers and trade-slot quantities are hidden without it. Ids are read the same way before the check and by the
 command, so an id sent as text cannot skip it.
 
-## The name on the store computer
+## The store computer asks nothing
 
-Only for the store computer: it says who is acting there. Before a change, the person taps their name; the header
-is read for the 查看者 counter account only and ignored for everyone else. There is no PIN (owner, 2026-11-26: "PIN not
-necessary"): its routes are gone and migration `employee_pins_cleared` wiped every kept PIN. Anyone at the computer
-can tap any name, so the mark there is on trust. Nobody below admin changes their own name or email.
+Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the store computer, we have cameras". The
+查看者 counter account makes its changes (Ready, Handed over) as itself: 动态 and the website note name the shared
+account ("Ready in popcore.store by DT 柜台"), and who was at the computer is the cameras' answer. There is no PIN
+and no name list: their routes are gone and migration `employee_pins_cleared` wiped every kept PIN. Nobody below
+admin changes their own name or email.
 
 ## A page someone cannot open
 

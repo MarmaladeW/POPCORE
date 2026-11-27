@@ -15,7 +15,6 @@ import { PageHeaderSlots, PhoneTopBar } from './pc/PageHeader'
 import StoreChip from './pc/StoreChip'
 import { CheckoutBusy, useCheckoutBusyListener } from './pc/useCheckoutBusy'
 import { useIsPhone } from './pc/useIsPhone'
-import PersonPicker, { ActingPersonBar } from './people/PersonPicker'
 import './AppLayout.css'
 import './pc/pc.css'
 
@@ -117,7 +116,5 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </Link>
       </nav>}
     </div>
-  {/* The name picker is the store computer's (the 查看者 account); a staff phone never asks who is at the computer. */}
-  {!staff && <PersonPicker />}<ActingPersonBar />
     </PageHeaderSlots.Provider></CheckoutBusy.Provider>
 }

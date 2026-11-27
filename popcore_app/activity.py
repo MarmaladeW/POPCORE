@@ -7,9 +7,10 @@ short detail and the store when one can be told. A route can add to its line wit
 (the same Idempotency-Key from the same account) is kept once. Writing the row never fails the request.
 
 Who sees what (owner, 2026-11-26: only the admin sees 动态): admins every line of every store. Everyone else,
-managers included, only the lines they did themselves (`actor_sub` is their own account, a change made on the store
-computer under their name included), at the stores they work at. The store computer's shared account did
-none of its lines, so it sees none. `audience` is still written on every row, but no longer decides who reads it.
+managers included, only the lines they did themselves (`actor_sub` is their own account), at the stores they work
+at. Changes made on the store computer are its shared account's own lines (owner, 2026-11-26: "dont need the
+谁在操作 on the store computer, we have cameras"); lines from before, made there under a tapped name, stay that
+person's. `audience` is still written on every row, but no longer decides who reads it.
 """
 import sqlite3
 from contextlib import closing
@@ -429,8 +430,8 @@ def _record(response):
         con.row_factory = sqlite3.Row
         if store is None and isinstance(result, dict) and isinstance(result.get('store_id'), int):
             store = result['store_id']
-        acting = getattr(g, 'acting_person', None)   # the name tapped on the store computer (store_computer.py)
-        actor_sub = acting['sub'] if acting else actor['sub']
+        # via_sub / via_name: lines made before 2026-11-26 under a name tapped on the store computer keep them.
+        acting, actor_sub = None, actor['sub']
         detail = extra.get('detail') or _detail(con, endpoint, view, body, result)
         con.execute(
             """INSERT OR IGNORE INTO activity_log(business_date, store_id, actor_sub, actor_name, via_sub, via_name, kind,
