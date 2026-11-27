@@ -41,7 +41,7 @@ test('reasons and code misses are in staff words', () => {
   assert.match(reasonText(card({ reason: 'status', status: 'trash' })), /“trash”/)
   assert.equal(codeMissText({ found: false, why: 'other_store', store: 'MK' }), 'MK 的订单 · This order is for pickup at MK.')
   assert.match(codeMissText({ found: false, why: 'cancelled' }), /Hand nothing over/)
-  assert.match(codeMissText({ found: false, why: 'status', status: 'on-hold' }), /payment is not settled.*ask a manager/)
+  assert.match(codeMissText({ found: false, why: 'status', status: 'on-hold' }), /payment is not settled.*ask the admin/)
 })
 
 test('the board announces only open orders it did not have before', () => {
@@ -72,7 +72,7 @@ test('the name box finds deliveries by part of a name, whatever the case and acc
   assert.deepEqual(found('ZO NG'), ['2 配送 · 待打包 · Delivery · to pack', '6 今天完成 · Done today'])
   assert.deepEqual(found('ngo'), ['6 今天完成 · Done today'])
   assert.deepEqual(found('lim'), ['3 配送 · 等快递 · Delivery · booked, waiting for the courier'])
-  assert.deepEqual(found('emile'), ['5 需要经理 · Needs a manager'])
+  assert.deepEqual(found('emile'), ['5 需要管理员 · Needs an admin'])
   assert.deepEqual(found('   '), [])
   assert.deepEqual(found('Ana Roy'), [])
   // Pickups are found by their code only; the board gives them no name.

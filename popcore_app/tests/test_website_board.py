@@ -7,6 +7,7 @@ personal thing in it is the name each delivery goes to (owner, 2026-11-25), read
 import json
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from test_website_sync import WebsiteCase, _ago
 
@@ -31,6 +32,11 @@ class BoardCase(WebsiteCase):
     def setUp(self):
         super().setUp()
         self.turn_on()
+        # "Done today" is by Toronto's date, so an order completed ten minutes ago was done yesterday for the first
+        # ten minutes after midnight, and these tests failed then (popcore-work#132). Here the day began an hour ago.
+        day = patch.object(board_module, '_today_starts', return_value=_ago(60))
+        day.start()
+        self.addCleanup(day.stop)
         with closing(self.connect()) as con:
             con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|staff', ?)", (self.dt,))
             con.execute("INSERT INTO employees(auth0_id, name) VALUES ('auth0|staff', 'Amy')")

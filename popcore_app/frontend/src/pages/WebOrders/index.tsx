@@ -120,7 +120,7 @@ function CodeBox({ store, onChange }: { store?: string; onChange: () => void }) 
         <p className="pc-web-customer">顾客 Customer: <strong>{result.first_name || '—'}</strong>
           {result.collector && <> · Collecting: <strong>{result.collector}</strong></>}</p>
         {result.needs_manager && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
-          POPCORE could not take this order out of stock. Hand it over, then tell a manager.</p>}
+          POPCORE could not take this order out of stock. Hand it over, then tell the admin.</p>}
       </>}
       action={<div className="pc-web-actions">
         <Popconfirm title={`Hand over #${result.order.number}?`} description="The website marks it completed and emails the customer."
@@ -259,9 +259,9 @@ export default function WebOrdersPage() {
       })}
     </div>
 
-    <Panel zh="需要经理" en="Needs a manager" label="Needs a manager" count={board.needs_manager.length}
+    <Panel zh="需要管理员" en="Needs an admin" label="Needs an admin" count={board.needs_manager.length}
       tone={board.needs_manager.length ? 'warn' : 'ok'}>
-      {board.needs_manager.length === 0 ? <p className="pc-quiet">没有 · Nothing waits for a manager.</p>
+      {board.needs_manager.length === 0 ? <p className="pc-quiet">没有 · Nothing waits for an admin.</p>
         : <div className="pc-web-grid">{board.needs_manager.map(card => <OrderCard key={card.id} card={card} now={now}
           extra={<p className="pc-web-reason">{reasonText(card)}</p>} />)}</div>}
       {board.needs_manager.length > 0 && <p className="pc-quiet">处理好后，由管理员在 网站 页重试或关闭 · Once it is sorted out, an admin retries or dismisses the order on the 网站 page.</p>}

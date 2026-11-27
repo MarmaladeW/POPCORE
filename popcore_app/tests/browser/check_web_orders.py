@@ -81,7 +81,7 @@ async def run(browser, width):
         booked = page.get_by_role('region', name='Delivery · booked, waiting for the courier')
         await expect(booked.get_by_text('FleetNow DO202611190000000001 · CONFIRMED')).to_be_visible()
         await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('#705')).to_be_visible()
-        manager = page.get_by_role('region', name='Needs a manager')
+        manager = page.get_by_role('region', name='Needs an admin')
         await expect(manager.get_by_text('库存不够', exact=False)).to_be_visible()
         await expect(manager.get_by_text('A special order waiting for stock', exact=False)).to_be_visible()
         # Only the pickup to pick has a button; nothing else on the board does.

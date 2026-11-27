@@ -166,7 +166,7 @@ class WebOrderNotificationTests(PushCase):
         # One POPCORE cannot fill says so.
         self.woo.order(804, [(12, 5)], pickup='dt', modified=_ago(0))
         self.run_sync()
-        self.assertEqual(dt.read(self.sent[-1][1])['body'], '需要经理 Needs a manager · Echo 整端 × 5')
+        self.assertEqual(dt.read(self.sent[-1][1])['body'], '需要管理员 Needs an admin · Echo 整端 × 5')
 
     def test_a_delivery_reaches_the_devices_of_the_store_it_leaves_from(self):
         """Owner, 2026-11-26: the courier collects from the store the order was filled from, so that store hears of

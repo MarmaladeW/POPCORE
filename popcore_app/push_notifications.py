@@ -218,7 +218,7 @@ def order_message(con, cfg, row):
     card = website_board.card(con, row, cfg)
     lines = ', '.join(f"{line['name']} × {line['quantity']}" for line in card['lines'])
     where = f"自取 {card['store']} pickup" if card['kind'] == 'pickup' else f"配送 {' + '.join(card['stores'])} delivery"
-    waiting = '需要经理 Needs a manager · ' if row['state'] in website_board.WAITING else ''
+    waiting = '需要管理员 Needs an admin · ' if row['state'] in website_board.WAITING else ''
     return {'title': f"网站订单 #{card['number']} · {where}", 'body': (waiting + lines)[:240],
             'url': '/web-orders', 'tag': f"web-order-{card['id']}"}
 

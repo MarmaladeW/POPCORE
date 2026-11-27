@@ -43,6 +43,9 @@ const item = {
   sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
   // 正式员工 and above have 4 员工折扣 a month (owner, 2026-11-19): staff see their own uses, managers keep the record.
   staffDiscounts: { key: '/staff-discounts', zh: '员工折扣', en: 'Staff discounts', icon: 'user' },
+  // What POPCORE noticed by itself (losses, count gaps, cash gaps), and the phone notification switch for it: 店长
+  // and admins (owner, 2026-11-27: "fix the small issues"; before, a 店长 needed the address).
+  alerts: { key: '/watch', zh: '异常提醒', en: 'Alerts', icon: 'eye', note: '店长' },
   reports: { key: '/reports', zh: '报表', en: 'Insights', icon: 'chart', note: '管理员' },
   // popcore.ca stock sync and web orders (owner, 2026-11-01). Admins only (owner, 2026-11-26).
   website: { key: '/website', zh: '网站', en: 'Website', icon: 'web', note: '管理员' },
@@ -67,7 +70,8 @@ export function railGroups(access: NavAccess): NavGroup[] {
   else if (access.inventory) daily.push(...checkoutFor(access), item.move, item.summary, item.stock, item.staffDiscounts)
   else daily.push(...checkoutFor(access), item.move, item.summary, item.eveningCount, item.staffDiscounts)
   daily.push(item.watchList)
-  const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.admin ? [item.users, item.settings] : [])]
+  const planning: NavItem[] = [item.schedule, item.products, item.dex, ...(access.manager ? [item.alerts] : []),
+    ...(access.admin ? [item.users, item.settings] : [])]
   return [
     { label: '日常', items: daily },
     ...(access.admin ? [{ label: '查看', items: [item.sales, item.staffDiscounts, item.reports, item.website] }] : []),
@@ -82,6 +86,7 @@ export function moreItems(access: NavAccess): NavItem[] {
     item.watchList,
     item.products,
     item.dex,
+    ...(access.manager ? [item.alerts] : []),
     ...(access.admin ? [item.sales, item.staffDiscounts, item.reports, item.website, item.users, item.settings] : []),
   ]
 }

@@ -24,7 +24,8 @@ const before: Record<string, string[]> = {
     '/move'],
 }
 // Only admins have 动态, 销售, 报表, 网站 and 网站订单 (owner, 2026-11-26): a manager's menus are the staff ones.
-before.manager = [...before.staff]
+// A 店长 also has 异常提醒 (owner, 2026-11-27: before, they needed its address).
+before.manager = [...before.staff, '/watch']
 before.admin = [...before.manager, '/web-orders', '/activity', '/sales', '/reports', '/website', '/users', '/settings']
 
 // Special orders sit inside Checkout, so anyone who can open Checkout reaches them from there.
@@ -68,10 +69,10 @@ test('menus never offer a page above the role', () => {
 })
 
 test('更多 lists 移货, 库存, 网站订单, 可疑人员, 产品, 图鉴, 销售, 员工折扣, 报表, 网站, 员工, 设置 in order, by role', () => {
-  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['移货', '库存', '网站订单', '动态', '可疑人员', '产品', '图鉴', '销售', '员工折扣', '报表', '网站', '员工', '设置'])
+  assert.deepEqual(moreItems(roles.admin).map(entry => entry.zh), ['移货', '库存', '网站订单', '动态', '可疑人员', '产品', '图鉴', '异常提醒', '销售', '员工折扣', '报表', '网站', '员工', '设置'])
   // Staff and managers have no 网站订单 (owner, 2026-11-26) and find 员工折扣 after 库存; an admin finds it beside 销售.
   assert.deepEqual(moreItems(roles.staff).map(entry => entry.zh), ['移货', '库存', '员工折扣', '可疑人员', '产品', '图鉴'])
-  assert.deepEqual(moreItems(roles.manager).map(entry => entry.zh), moreItems(roles.staff).map(entry => entry.zh))
+  assert.deepEqual(moreItems(roles.manager).map(entry => entry.zh), [...moreItems(roles.staff).map(entry => entry.zh), '异常提醒'])
   assert.equal(moreItems(roles.admin).find(entry => entry.zh === '销售')?.key, '/summary')
   assert.deepEqual(moreItems(roles.viewer).map(entry => entry.key), ['/watch-list', '/products', '/dex'])
 })

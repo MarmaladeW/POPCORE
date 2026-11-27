@@ -257,3 +257,6 @@ body:has(.pc-slip-page) .pc-coverage-float { display: none; }
   .pc-slip-table th:last-child, .pc-slip-table td:last-child { padding-right: 14px; }
   .pc-slip-note { padding: 10px 14px 14px; }
 }
+/* The store picker is taller than its line of text: as a flex row it takes its own height, so on a phone it no
+   longer covers the "Submit by" sentence under it. */
+.pc-availability-store { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
