@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { WebOrderCard, WebOrdersBoard } from '../../api/webOrders.ts'
-import { ageText, announceText, codeMissText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, picksText, plainName, reasonText } from './webOrdersView.ts'
+import { ageText, announceText, codeMissText, courierText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, packedText, picksText, plainName, reasonText } from './webOrdersView.ts'
 
 const now = Date.parse('2026-11-19T18:00:00Z')
 const card = (fields: Partial<WebOrderCard>): WebOrderCard =>
@@ -71,7 +71,7 @@ test('the name box finds deliveries by part of a name, whatever the case and acc
   assert.deepEqual(found('zoe'), ['2 配送 · 待打包 · Delivery · to pack', '6 今天完成 · Done today'])
   assert.deepEqual(found('ZO NG'), ['2 配送 · 待打包 · Delivery · to pack', '6 今天完成 · Done today'])
   assert.deepEqual(found('ngo'), ['6 今天完成 · Done today'])
-  assert.deepEqual(found('lim'), ['3 配送 · 等快递 · Delivery · booked, waiting for the courier'])
+  assert.deepEqual(found('lim'), ['3 配送 · 等快递 · Delivery · packed, waiting for the courier'])
   assert.deepEqual(found('emile'), ['5 需要管理员 · Needs an admin'])
   assert.deepEqual(found('   '), [])
   assert.deepEqual(found('Ana Roy'), [])
@@ -102,4 +102,19 @@ test('a delivery says the store it leaves from, and what has to be brought there
   assert.match(moveText(split), /^货在 DT \+ MK,先集中到一家店 · Taken from DT and MK: bring it to one store/)
   // A pickup short at its own store, as before.
   assert.equal(moveText(card({ store: 'MK', taken_elsewhere: ['DT'] })), '从 DT 拿 · Taken from DT: bring it to MK')
+})
+
+test('a packed delivery says who packed it, and the courier is flagged only when it needs saying (owner, 2026-11-27)', () => {
+  const delivery = (fields: Partial<WebOrderCard>) => card({ kind: 'delivery', booked: false, packed_at: null, packed_by: null, ...fields })
+  // 18:05 GMT is 13:05 in Toronto.
+  assert.equal(packedText(delivery({ packed_at: '2026-11-19T18:05:00', packed_by: 'DT 柜台' })), '已打包 Packed · 13:05 · DT 柜台')
+  assert.equal(packedText(delivery({ packed_at: '2026-11-19T18:05:00' })), '已打包 Packed · 13:05')
+  assert.equal(packedText(delivery({})), '')
+  // Packed, no courier: an admin books one. Booked, not packed: pack it first. Both or neither: nothing to say.
+  assert.match(courierText(delivery({ packed_at: '2026-11-19T18:05:00' })), /^快递未预约 · Courier not booked yet/)
+  assert.match(courierText(delivery({ booked: true })), /^快递已预约,先打包 · A courier is booked: pack it first/)
+  assert.equal(courierText(delivery({ booked: true, packed_at: '2026-11-19T18:05:00' })), '')
+  assert.equal(courierText(delivery({})), '')
+  assert.equal(courierText(delivery({ status: 'out-for-delivery', booked: true })), '')
+  assert.equal(courierText(card({ booked: true })), '')   // a pickup has no courier
 })

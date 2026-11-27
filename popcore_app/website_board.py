@@ -8,10 +8,13 @@ information and not be able to change too many stuff"). Built from the popcore.c
   order was filled from): the store the website books FleetNow from once it has one, else the store POPCORE took it
   from; see delivery_stores. It never holds the pickup code, and the only personal thing in it is the
   name each delivery goes to (owner, 2026-11-25), read live from the website on every refresh and never stored.
-- Two buttons, both pickup only: Ready (processing → ready-pickup; the website emails the customer the code) and
-  Handed over (ready-pickup or processing → completed), which needs the code the customer gives at the counter. Each
-  reads the order's status live first, waits for the website's 200 before anything shows as done, and leaves a
-  private note saying who did it. An order already there counts as done.
+- Pickup buttons: Ready (processing → ready-pickup; the website emails the customer the code) and Handed over
+  (ready-pickup or processing → completed), which needs the code the customer gives at the counter. Each reads the
+  order's status live first, waits for the website's 200 before anything shows as done, and leaves a private note
+  saying who did it. An order already there counts as done.
+- Delivery buttons (owner, 2026-11-27, popcore-work#139): 打包好了 Packed moves a delivery from 待打包 to 等快递,
+  and 撤销 Undo moves it back. POPCORE keeps who and when; the website gets only a private note. Deliveries go by
+  packing, not booking: one booked before it is packed stays in 待打包, showing the courier's pickup window.
 - The code box reads the customer's first name and the optional collector's name live from the website for that one
   order. They are never stored or logged.
 - The board never cancels, refunds or edits an order, sends an email, books FleetNow, moves stock or sets a delivery
@@ -22,16 +25,21 @@ from datetime import datetime, time, timezone
 
 from website_sync import (BATCH, CODE_META, TORONTO, WebsiteError, _meta, call, clean_code, taken_stores)
 
-# (column, kind, website status), left to right (brief, 2026-11-19).
-COLUMNS = (('pick', 'pickup', 'processing'), ('ready', 'pickup', 'ready-pickup'),
-           ('pack', 'delivery', 'processing'), ('booked', 'delivery', 'dispatched'),
-           ('out', 'delivery', 'out-for-delivery'))
+# The five columns, left to right (brief, 2026-11-19). Pickups go by website status. Deliveries go by packing (owner,
+# 2026-11-27, popcore-work#139): 'pack' until Packed, then 'booked' (等快递 packed, waiting for the courier; the key
+# is kept so a page opened before this still reads the board) until FleetNow picks it up ('out').
+COLUMNS = ('pick', 'ready', 'pack', 'booked', 'out')
+PICKUP_COLUMNS = {'processing': 'pick', 'ready-pickup': 'ready'}
+# The website statuses a delivery is packed (or unpacked) in: paid, with a courier booked or not.
+PACKABLE = ('processing', 'dispatched')
 CLOSED = ('completed', 'cancelled', 'refunded')
 # Orders POPCORE could not take out of stock, or put back after a cancel: a manager settles them first.
 WAITING = ('needs_review', 'cancel_failed')
 # What each button moves a pickup order to, and from.
 STEPS = {'ready': ('ready-pickup', ('processing',), 'Ready'),
          'handed_over': ('completed', ('ready-pickup', 'processing'), 'Handed over')}
+# Packed and its Undo on a delivery: the words of the website note.
+PACK_STEPS = {'packed': 'Packed', 'unpack': 'Packed undone'}
 COLLECTOR_META = '_pcc_collector_name'
 # Owner, 2026-11-25: "we should be able to see the name for the delivery orders, as well as searching up the name."
 # Only these four fields are asked for; nothing else of the customer's details leaves the website.
@@ -46,6 +54,18 @@ class BoardError(Exception):
 
 def kind(row):
     return 'pickup' if row['fulfilment'] == 'pickup' else 'delivery'
+
+
+def column_of(row):
+    """The column of an open order, or None when its website status is none of the board's."""
+    status = row['wc_status']
+    if kind(row) == 'pickup':
+        return PICKUP_COLUMNS.get(status)
+    if status == 'out-for-delivery':
+        return 'out'
+    if status in PACKABLE:
+        return 'booked' if row['packed_at'] else 'pack'
+    return None
 
 
 def store_of(row, cfg):
@@ -128,7 +148,11 @@ def card(con, row, cfg):
               'store': stores[0], 'stores': stores, 'status': row['wc_status'], 'lines': lines,
               'taken_elsewhere': elsewhere}
     if kind(row) == 'delivery':
-        result['delivery'] = json.loads(row['delivery'] or '{}')
+        delivery = json.loads(row['delivery'] or '{}')
+        result.update(delivery=delivery,
+                      # A courier is on its way to the store: FleetNow has a number for it, or the website says so.
+                      booked=bool(delivery.get('fleetnow_no')) or row['wc_status'] == 'dispatched',
+                      packed_at=row['packed_at'], packed_by=row['packed_by'])
     return result
 
 
@@ -165,7 +189,7 @@ def board(con, cfg, sub, store=None):
     allowed = user_stores(con, sub)
     if store:
         allowed &= {store.upper()}
-    columns = {name: [] for name, _, _ in COLUMNS}
+    columns = {name: [] for name in COLUMNS}
     needs_manager, done_today = [], []
     today = _today_starts()
     for row in con.execute(
@@ -182,8 +206,7 @@ def board(con, cfg, sub, store=None):
             if (row['modified_at'] or '') >= today:
                 done_today.append({**item, 'done_at': row['modified_at']})
         else:
-            column = next((name for name, wanted, status in COLUMNS
-                           if wanted == item['kind'] and status == row['wc_status']), None)
+            column = column_of(row)
             if column:
                 columns[column].append(item)
             else:
@@ -285,7 +308,7 @@ def step(con, cfg, wc_order_id, action, sub, code=None, by=None):
     target, starts, label = STEPS[action]
     row = _row(con, wc_order_id)
     if kind(row) != 'pickup':
-        raise BoardError('Only a pickup order is marked here; FleetNow moves deliveries.', 'not_pickup')
+        raise BoardError('Only a pickup order is marked Ready or Handed over; a delivery is marked Packed.', 'not_pickup')
     if store_of(row, cfg) not in user_stores(con, sub):
         raise BoardError('This order is for a store you have no store operations access for.', 'forbidden', 403)
     if action == 'handed_over' and (not row['pickup_code'] or clean_code(code) != row['pickup_code']):
@@ -303,10 +326,41 @@ def step(con, cfg, wc_order_id, action, sub, code=None, by=None):
                          'status_changed')
     call(cfg, 'PUT', f'/orders/{wc_order_id}', body={'status': target})  # raises unless the website says 2xx
     _keep_status(con, wc_order_id, target, changed=True)
+    return 'done', _note(con, cfg, wc_order_id, label, by or sub)
+
+
+def _note(con, cfg, wc_order_id, label, sub):
+    """A private note on the website order naming who did it; whether the website took it."""
     try:
         call(cfg, 'POST', f'/orders/{wc_order_id}/notes',
-             body={'note': f'{label} in popcore.store by {_actor_name(con, by or sub)}', 'customer_note': False})
-        noted = True
+             body={'note': f'{label} in popcore.store by {_actor_name(con, sub)}', 'customer_note': False})
+        return True
     except WebsiteError:
-        noted = False
-    return 'done', noted
+        return False
+
+
+def pack(con, cfg, wc_order_id, action, sub):
+    """打包好了 Packed ('packed') or 撤销 Undo ('unpack') on one delivery (owner, 2026-11-27, popcore-work#139): 'done',
+    or 'already' when it was so. POPCORE keeps when and who; the website gets a private note and nothing else, so
+    the customer hears nothing and FleetNow is not booked. Returns (result, whether the note was added)."""
+    row = _row(con, wc_order_id)
+    if kind(row) != 'delivery':
+        raise BoardError('Only a delivery is marked Packed; a pickup is marked Ready.', 'not_delivery')
+    if row['state'] in WAITING:
+        raise BoardError('An admin settles this order on the 网站 page first.', 'needs_manager')
+    # The store that packs it: the one it leaves from (either, while its stock is in two).
+    if not set(delivery_stores(con, row, cfg)[0]) & user_stores(con, sub):
+        raise BoardError('This order leaves from a store you have no store operations access for.', 'forbidden', 403)
+    status = _live(cfg, wc_order_id)['status']
+    if status != row['wc_status']:
+        _keep_status(con, wc_order_id, status)
+    if status not in PACKABLE:
+        raise BoardError(f'The website has this order as “{status}” now, so it cannot be marked here.', 'status_changed')
+    packing = action == 'packed'
+    if bool(row['packed_at']) == packing:
+        return 'already', None
+    con.execute("""UPDATE website_orders SET packed_at=CASE WHEN ? THEN strftime('%Y-%m-%dT%H:%M:%S', 'now') END,
+                       packed_by=?, updated_at=datetime('now') WHERE wc_order_id=?""",
+                (packing, _actor_name(con, sub) if packing else None, wc_order_id))
+    con.commit()
+    return 'done', _note(con, cfg, wc_order_id, PACK_STEPS[action], sub)

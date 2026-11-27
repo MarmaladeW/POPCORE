@@ -6,7 +6,8 @@ browser (or POPCORE added to an iPhone's Home Screen) gives POPCORE a push addre
 store they have store operations access for is pushed there. Since 2026-11-26 that is the store computer and the
 admins only (the board is closed to staff); managers turn a device on from 异常提醒 for the watcher's alerts. Messages are signed with POPCORE's own key (VAPID,
 RFC 8292) and encrypted for that one device (RFC 8291), so the push service in between cannot read them. They hold the
-order number, the store and the lines, never anything about the customer.
+order number, the store and the lines, never anything about the customer. Admins are also told when a delivery is
+packed and no courier is booked yet (owner, 2026-11-27, popcore-work#139).
 
 The key is made on first use and kept in a file beside the database (PUSH_KEY_FILE overrides), never in the database,
 so a copy of the database cannot send notifications. A new key means every device turns notifications on again.
@@ -41,6 +42,9 @@ TTL = 24 * 60 * 60
 ORDER_ROLES = ('viewer', 'admin')
 # Who can turn a device on at all: they, and managers for 异常提醒 (watcher.py). Staff have nothing to be told.
 DEVICE_ROLES = ('viewer', 'manager', 'admin')
+# Who hears that a delivery is packed and no courier is booked: the admins, who book FleetNow on popcore.ca (owner,
+# 2026-11-27, popcore-work#139).
+BOOKING_ROLES = ('admin',)
 
 
 class PushError(ValueError):
@@ -223,6 +227,35 @@ def order_message(con, cfg, row):
             'url': '/web-orders', 'tag': f"web-order-{card['id']}"}
 
 
+def _devices_at(con, roles, stores):
+    """The devices of people signed in with one of `roles` who have store operations access at one of `stores`."""
+    return con.execute(
+        f"""SELECT p.* FROM push_subscriptions p
+            WHERE (p.role IS NULL OR p.role IN ({','.join('?' * len(roles))}))
+              AND EXISTS (SELECT 1 FROM inventory_access a JOIN stores s ON s.id=a.store_id
+                          WHERE a.auth0_sub=p.auth0_sub AND s.code IN ({','.join('?' * len(stores))})
+                            AND s.is_active=1)""", (*roles, *stores)).fetchall()
+
+
+def packed_not_booked(con, cfg, wc_order_id):
+    """Tell the admins at the store a delivery leaves from that it is packed and no courier is booked yet, so one of
+    them books FleetNow on popcore.ca (owner, 2026-11-27, popcore-work#139). The order number and store only."""
+    import website_board
+    row = con.execute('SELECT * FROM website_orders WHERE wc_order_id=?', (wc_order_id,)).fetchone()
+    if row is None or not row['packed_at']:
+        return 0, 0
+    card = website_board.card(con, row, cfg)
+    if card['kind'] != 'delivery' or card['booked']:
+        return 0, 0
+    # Admins only: a device kept before roles were (role empty) may be the store computer that just pressed Packed.
+    rows = [device for device in _devices_at(con, BOOKING_ROLES, card['stores']) if device['role'] in BOOKING_ROLES]
+    stores = ' + '.join(card['stores'])
+    return send(con, rows, {
+        'title': f"网站订单 #{card['number']} · 已打包 Packed",
+        'body': f'配送 {stores} · 快递未预约 Courier not booked yet: book it on popcore.ca (Dispatch via Fleetnow).',
+        'url': '/web-orders', 'tag': f"web-order-packed-{card['id']}"}) if rows else (0, 0)
+
+
 def new_order(con, cfg, wc_order_id):
     """Tell the store computer and the admins who asked, at the order's store, about a new paid web order (owner,
     2026-11-26: 网站订单 is closed to staff). A device turned on before roles were kept (`role` empty) still gets it
@@ -233,10 +266,5 @@ def new_order(con, cfg, wc_order_id):
         return 0, 0
     # A delivery tells the store it leaves from (the store POPCORE took it from), a pickup its pickup store.
     stores = sorted(website_board.board_stores(website_board.card(con, row, cfg)))
-    rows = con.execute(
-        f"""SELECT p.* FROM push_subscriptions p
-            WHERE (p.role IS NULL OR p.role IN ({','.join('?' * len(ORDER_ROLES))}))
-              AND EXISTS (SELECT 1 FROM inventory_access a JOIN stores s ON s.id=a.store_id
-                          WHERE a.auth0_sub=p.auth0_sub AND s.code IN ({','.join('?' * len(stores))})
-                            AND s.is_active=1)""", (*ORDER_ROLES, *stores)).fetchall()
+    rows = _devices_at(con, ORDER_ROLES, stores)
     return send(con, rows, order_message(con, cfg, row)) if rows else (0, 0)

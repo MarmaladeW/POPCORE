@@ -2147,6 +2147,7 @@ def _get_migrations():
         ('push_subscription_roles',                    _migration_push_subscription_roles),
         ('website_items_store_stock',                  _migration_website_items_store_stock),
         ('website_items_store_sets',                   _migration_website_items_store_sets),
+        ('website_order_packed',                       _migration_website_order_packed),
     ]
 
 
@@ -2592,6 +2593,18 @@ def _migration_push_subscription_roles(con, cur):
         cur.execute('ALTER TABLE push_subscriptions ADD COLUMN role TEXT')
     cur.execute("INSERT INTO _migrations(name) VALUES ('push_subscription_roles')")
 
+
+def _migration_website_order_packed(con, cur):
+    # 打包好了 Packed on the 网站订单 board (owner, 2026-11-27, popcore-work#139: "shouldnt it be moved to 等快递"): a
+    # delivery is in 待打包 until someone presses Packed, then in 等快递 until FleetNow picks it up. POPCORE keeps
+    # when (website GMT time, like modified_at) and the name of the account that pressed it; the website only gets a
+    # private note. Undo clears both. Nothing is marked for orders from before: they show as not packed.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_orders)')}
+    if 'packed_at' not in columns:
+        cur.execute('ALTER TABLE website_orders ADD COLUMN packed_at TEXT')
+    if 'packed_by' not in columns:
+        cur.execute('ALTER TABLE website_orders ADD COLUMN packed_by TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_packed')")
 
 def _migration_activity_log(con, cur):
     # 动态 Activity: one line per change anyone makes (owner, 2026-11-20); see activity.py.

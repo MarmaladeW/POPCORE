@@ -5,9 +5,11 @@ name, and Handed over completes it and clears the name; delivery cards show the 
 box finds them by part of a name (owner, 2026-11-25); the board's data holds no pickup code and nothing personal but
 those names; a delivery shows at the store it leaves from, Markham's included (owner, 2026-11-26);
 a new order pops up at the board's next refresh and the notifications control is
-there (owner, 2026-11-19); staff and managers cannot open the page, and their menus have no 网站订单 (owner,
+there (owner, 2026-11-19); Packed moves a delivery to 等快递 with who and when, and Undo moves it back (owner,
+2026-11-27); staff and managers cannot open the page, and their menus have no 网站订单 (owner,
 2026-11-26: the board is the store computer's and the admin's)."""
 import asyncio
+import re
 import subprocess
 import sys
 from urllib.parse import urlsplit
@@ -78,21 +80,27 @@ async def run(browser, width):
         pack = page.get_by_role('region', name='Delivery · to pack')
         await expect(pack.get_by_text('送达 Fri Nov 21, 2–6 pm')).to_be_visible()
         await expect(pack.get_by_text('区域 Zone Downtown')).to_be_visible()
-        booked = page.get_by_role('region', name='Delivery · booked, waiting for the courier')
-        await expect(booked.get_by_text('FleetNow DO202611190000000001 · CONFIRMED')).to_be_visible()
+        # Deliveries go by packing (owner, 2026-11-27): 704's courier is booked but it is not packed, so it waits here.
+        unpacked = pack.get_by_role('article', name='Order #704')
+        await expect(unpacked.get_by_text('FleetNow DO202611190000000001 · CONFIRMED')).to_be_visible()
+        await expect(unpacked.get_by_text('快递已预约,先打包 · A courier is booked: pack it first.')).to_be_visible()
+        booked = page.get_by_role('region', name='Delivery · packed, waiting for the courier')
+        await expect(booked.get_by_text('没有 · None')).to_be_visible()
         await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('#705')).to_be_visible()
         manager = page.get_by_role('region', name='Needs an admin')
         await expect(manager.get_by_text('库存不够', exact=False)).to_be_visible()
         await expect(manager.get_by_text('A special order waiting for stock', exact=False)).to_be_visible()
-        # Only the pickup to pick has a button; nothing else on the board does.
+        # The pickup to pick has Ready, each delivery to pack has Packed; nothing else on the board has a button.
         await expect(page.get_by_role('button', name='拣好了 Ready')).to_have_count(1)
+        await expect(pack.get_by_role('button', name='打包好了 Packed')).to_have_count(2)
+        await expect(page.get_by_role('button', name='撤销 Undo')).to_have_count(0)
         # Each delivery shows who it goes to (owner, 2026-11-25): the shipping name, else the billing name.
         await expect(pack.get_by_text('收件人 Ship to Zoë Ng')).to_be_visible()
-        await expect(booked.get_by_text('收件人 Ship to Ana Lima')).to_be_visible()
+        await expect(pack.get_by_text('收件人 Ship to Ana Lima')).to_be_visible()
         await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('Private Person')).to_be_visible()
         await expect(pick.get_by_text('收件人', exact=False)).to_have_count(0)
         # A delivery says the store it leaves from, as a pickup says its store.
-        await expect(pack.get_by_text('配送 DT', exact=True)).to_be_visible()
+        await expect(pack.get_by_role('article', name='Order #703').get_by_text('配送 DT', exact=True)).to_be_visible()
         await expect(pick.get_by_text('自取 DT', exact=True)).to_be_visible()
         await fits(page, f'board-{width}.png')
 
@@ -111,6 +119,21 @@ async def run(browser, width):
         await names.get_by_role('button', name='清除 Clear').click()
         await expect(names.get_by_label('收件人 Delivery name')).to_have_value('')
         await expect(names.get_by_role('status')).to_have_count(0)
+
+        # Packed (owner, 2026-11-27): one click moves the card to 等快递, with when and who; no courier yet says so.
+        await pack.get_by_role('article', name='Order #703').get_by_role('button', name='打包好了 Packed').click()
+        await expect(page.get_by_text('#703 已打包 Packed', exact=False)).to_be_visible()
+        packed = booked.get_by_role('article', name='Order #703')
+        await expect(packed.get_by_text(re.compile(r'^已打包 Packed · \d\d:\d\d · Amy$'))).to_be_visible()
+        await expect(packed.get_by_text('快递未预约 · Courier not booked yet', exact=False)).to_be_visible()
+        assert fixture.woo.notes[-1] == (703, {'note': 'Packed in popcore.store by Amy', 'customer_note': False})
+        assert fixture.woo.status_writes == []  # the website status stays FleetNow's
+        await fits(page, f'packed-{width}.png')
+        # Undo: back to 待打包.
+        await packed.get_by_role('button', name='撤销 Undo').click()
+        await expect(pack.get_by_role('article', name='Order #703')).to_be_visible()
+        await expect(booked.get_by_text('没有 · None')).to_be_visible()
+        assert fixture.woo.notes[-1][1]['note'] == 'Packed undone in popcore.store by Amy'
 
         # Ready: the website moves it and emails the customer; the card moves over.
         await pick.get_by_role('button', name='拣好了 Ready').click()
@@ -229,8 +252,8 @@ async def run(browser, width):
         await expect(split.get_by_text('配送 DT + MK', exact=True)).to_be_visible()
         await expect(split.get_by_text('Taken from DT and MK: bring it to one store', exact=False)).to_be_visible()
         await expect(pack.get_by_text('#703')).to_have_count(0)  # DT's delivery stays on DT's board
-        booked = page.get_by_role('region', name='Delivery · booked, waiting for the courier')
-        await expect(booked.get_by_role('article', name='Order #732').get_by_text(
+        # Booked, not packed yet: it waits in 待打包, and says what to bring over.
+        await expect(pack.get_by_role('article', name='Order #732').get_by_text(
             '从 MK 拿 · Taken from MK: bring it to DT')).to_be_visible()
         # MK's board has deliveries now, so it has the name box.
         await expect(page.get_by_role('region', name='Delivery name')).to_be_visible()
@@ -292,5 +315,5 @@ if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: web orders board columns, Ready, the code box with the first name, Handed over clearing it, '
           'delivery names and the name box, nothing personal but delivery names in the board data, a new order popping up, the notifications control and its service '
-          'worker, a viewer counter account working the board and reading 库存 without tools, Markham\'s board with the '
+          'worker, Packed and Undo on a delivery, a viewer counter account working the board and reading 库存 without tools, Markham\'s board with the '
           'deliveries it packs, at 390 and 1440 px')
