@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Alert, Button, Input, Popconfirm, Skeleton, message, notification } from 'antd'
 
 import {
-  findWebOrderCode, getWebOrdersBoard, handWebOrderOver, markWebOrderReady,
+  findWebOrderCode, getWebOrdersBoard, handWebOrderOver, markWebOrderPacked, markWebOrderReady, undoWebOrderPacked,
   type WebOrderCard, type WebOrderCodeResult, type WebOrdersBoard, type WebOrderStep,
 } from '../../api/webOrders'
 import { useHasRole } from '../../auth/useRole'
@@ -11,8 +11,8 @@ import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
 import Notifications, { chime, soundOn } from './Notifications'
 import {
-  COLUMNS, ageText, announceText, codeMissText, deliveryFacts, kindText, longWait, moveText, nameMatches, newCards, openCards,
-  picksText, reasonText, websiteTime,
+  COLUMNS, ageText, announceText, clockText as clock, codeMissText, courierText, deliveryFacts, kindText, longWait, moveText,
+  nameMatches, newCards, openCards, packedText, picksText, reasonText, websiteTime,
 } from './webOrdersView'
 import './webOrders.css'
 
@@ -20,9 +20,6 @@ import './webOrders.css'
 const REFRESH_MS = 30_000
 // A found order's customer name leaves the screen by itself after this long.
 const CODE_CARD_MS = 3 * 60_000
-
-const clock = (time: number | null) => time === null ? '—'
-  : new Date(time).toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false })
 
 const errorText = (cause: any, fallback: string) => cause?._serverMessage || fallback
 
@@ -35,6 +32,8 @@ function stepMessage(step: WebOrderStep, done: string, already: string) {
 function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: number; action?: React.ReactNode; extra?: React.ReactNode }) {
   const waited = longWait(card, now)
   const move = moveText(card)
+  const courier = courierText(card)
+  const packed = packedText(card)
   return <article className="pc-web-card" aria-label={`Order #${card.number}`}>
     <header>
       <strong>#{card.number}</strong>
@@ -44,6 +43,7 @@ function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: numb
     {card.kind === 'delivery' && card.name && <p className="pc-web-to">收件人 Ship to <strong>{card.name}</strong></p>}
     {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
     {move && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{move}</p>}
+    {courier && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{courier}</p>}
     <ul className="pc-web-lines">
       {card.lines.map((line, index) => <li key={index}>
         <span><strong>{line.name}</strong> × {line.quantity}</span>
@@ -53,6 +53,7 @@ function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: numb
     {card.kind === 'delivery' && deliveryFacts(card).length > 0 && <ul className="pc-web-facts">
       {deliveryFacts(card).map(fact => <li key={fact}>{fact}</li>)}
     </ul>}
+    {packed && <p className="pc-web-reason">{packed}</p>}
     {extra}
     {action}
   </article>
@@ -157,9 +158,9 @@ function NameBox({ board, now }: { board: WebOrdersBoard; now: number }) {
   </section>
 }
 
-// 网站订单 Web orders: the shop computer's order fulfilment screen (owner, 2026-11-19). Two buttons only, Ready and
-// Handed over; everything else is for looking. Never the pickup code; of the customer, only each delivery's name
-// (owner, 2026-11-25), read live.
+// 网站订单 Web orders: the shop computer's order fulfilment screen (owner, 2026-11-19). Its buttons: Ready and Handed
+// over on pickups, Packed and its Undo on deliveries (owner, 2026-11-27); everything else is for looking. Never the
+// pickup code; of the customer, only each delivery's name (owner, 2026-11-25), read live.
 export default function WebOrdersPage() {
   const selected = useAppStore(state => state.selectedStore)
   // The 查看者 Viewer here is the store computer, whose stores are its 店铺电脑 ticks in Users.
@@ -210,6 +211,38 @@ export default function WebOrdersPage() {
     }
   }
 
+  // Packed moves a delivery to 等快递 and Undo back; the website gets a note only (owner, 2026-11-27).
+  async function pack(card: WebOrderCard, undo = false) {
+    setBusy(card.id)
+    try {
+      stepMessage(await (undo ? undoWebOrderPacked : markWebOrderPacked)(card.id),
+        undo ? `#${card.number} 回到 待打包 · back to be packed.` : `#${card.number} 已打包 Packed: it waits in 等快递 for the courier.`,
+        undo ? `#${card.number} was not packed.` : `#${card.number} was already packed.`)
+    } catch (cause) {
+      message.error(errorText(cause, 'It was not saved. Nothing changed; try again.'))
+    } finally {
+      setBusy(0)
+      reload()
+    }
+  }
+
+  const actions = (column: string, card: WebOrderCard) => {
+    if (column === 'pick') return <div className="pc-web-actions">
+      <Popconfirm title={`#${card.number} 拣好了? Mark it ready?`}
+        description="The website emails the customer that it is ready, with their pickup code." okText="Ready"
+        onConfirm={() => ready(card)}>
+        <Button loading={busy === card.id} disabled={!!busy}>拣好了 Ready</Button>
+      </Popconfirm>
+    </div>
+    if (column === 'pack') return <div className="pc-web-actions">
+      <Button loading={busy === card.id} disabled={!!busy} onClick={() => pack(card)}>打包好了 Packed</Button>
+    </div>
+    if (column === 'booked') return <div className="pc-web-actions">
+      <Button type="text" loading={busy === card.id} disabled={!!busy} onClick={() => pack(card, true)}>撤销 Undo</Button>
+    </div>
+    return undefined
+  }
+
   const header = <PageHeader title="网站订单" sub="Web orders · popcore.ca" />
   if (!board) return <div className="pc-web-orders">
     {header}
@@ -248,13 +281,7 @@ export default function WebOrdersPage() {
             <span className="pc-panel-count">{cards.length}</span>
           </header>
           {cards.length === 0 ? <p className="pc-quiet">没有 · None</p> : cards.map(card => <OrderCard key={card.id} card={card} now={now}
-            action={column.key === 'pick' ? <div className="pc-web-actions">
-              <Popconfirm title={`#${card.number} 拣好了? Mark it ready?`}
-                description="The website emails the customer that it is ready, with their pickup code." okText="Ready"
-                onConfirm={() => ready(card)}>
-                <Button loading={busy === card.id} disabled={!!busy}>拣好了 Ready</Button>
-              </Popconfirm>
-            </div> : undefined} />)}
+            action={actions(column.key, card)} />)}
         </section>
       })}
     </div>

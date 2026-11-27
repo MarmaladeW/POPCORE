@@ -167,7 +167,8 @@ ACTIONS = {'pick': '发出 Sent', 'dispatch': '发出 Sent', 'receive': '收到 
            'resolve-loss': '记为丢失 Lost', 'resolve_loss': '记为丢失 Lost', 'short-close': '关闭 Closed short',
            'short_close': '关闭 Closed short', 'post': '入库 Posted', 'cancel': '取消 Cancelled',
            'submit': '提交 Submitted', 'approve': '通过 Approved', 'ready': '备好 Ready',
-           'handed-over': '已取货 Handed over', 'handed_over': '已取货 Handed over'}
+           'handed-over': '已取货 Handed over', 'handed_over': '已取货 Handed over',
+           'packed': '打包好了 Packed', 'unpack': '撤销打包 Undid Packed'}
 
 
 def note(**fields):

@@ -26,12 +26,19 @@ export interface WebOrderCard {
   // The other stores its stock came from, to be brought over to `store`.
   taken_elsewhere?: string[]
   delivery?: WebOrderDelivery
+  // Delivery: a courier is on its way to the store (FleetNow has a number for it, or the website says dispatched).
+  booked?: boolean
+  // Delivery: when 打包好了 Packed was pressed (website GMT time) and the account that pressed it; null until then
+  // and after 撤销 Undo (owner, 2026-11-27, popcore-work#139).
+  packed_at?: string | null; packed_by?: string | null
   // Delivery: who the parcel goes to (shipping name, else billing), read live; null when the website did not answer.
   name?: string | null
   // Needs an admin (`needs_manager` in the data): a POPCORE problem code, 'cancel_failed', or 'status' (a website status the columns lack).
   reason?: string | null
   done_at?: string | null
 }
+// Deliveries go by packing (owner, 2026-11-27): 'pack' until Packed, then 'booked' (等快递 packed, waiting for the
+// courier; the key is kept from before) until FleetNow picks it up ('out').
 export type WebOrderColumn = 'pick' | 'ready' | 'pack' | 'booked' | 'out'
 export interface WebOrdersBoard {
   configured: boolean; enabled: boolean; last_run: string | null
@@ -60,6 +67,10 @@ export const markWebOrderReady = (id: number) =>
   client.post<WebOrderStep>(`/website/board/orders/${id}/ready`).then(r => r.data)
 export const handWebOrderOver = (id: number, code: string) =>
   client.post<WebOrderStep>(`/website/board/orders/${id}/handed-over`, { code }).then(r => r.data)
+export const markWebOrderPacked = (id: number) =>
+  client.post<WebOrderStep>(`/website/board/orders/${id}/packed`).then(r => r.data)
+export const undoWebOrderPacked = (id: number) =>
+  client.post<WebOrderStep>(`/website/board/orders/${id}/unpack`).then(r => r.data)
 
 // Notifications for new web orders (owner, 2026-11-19): Web Push to the devices a person turns on.
 export type WebOrderDevices = { devices: number }

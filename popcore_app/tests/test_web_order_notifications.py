@@ -267,3 +267,38 @@ class WhoIsNotifiedTests(PushCase):
         self.woo.order(832, [(11, 1)], pickup='dt', modified=_ago(0))
         self.run_sync()
         self.assertEqual([endpoint for endpoint, _, _ in self.sent], [old_admin.endpoint])
+
+
+class PackedNotificationTests(PushCase):
+    """Owner, 2026-11-27 (popcore-work#139): a delivery packed with no courier booked tells the admins of the store it
+    leaves from, who book FleetNow on popcore.ca. The order number and store only."""
+
+    def test_packed_with_no_courier_booked_tells_the_admins_of_its_store(self):
+        counter = self.headers('viewer:counter')
+        admin, mk_admin, computer = Device('admin'), Device('mk-admin'), Device('computer')
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO inventory_access(auth0_sub, store_id) VALUES ('auth0|counter', ?)", (self.dt,))
+            con.commit()
+        self.notify_me(admin)
+        self.notify_me(mk_admin, headers=MK_ADMIN)
+        self.notify_me(computer, headers=counter)
+        # The store computer packs 703 (no courier yet): DT's admin is told, not MK's, not the store computer.
+        self.assertEqual(self.step(703, 'packed', headers=counter).get_json()['result'], 'done')
+        self.assertEqual([endpoint for endpoint, _, _ in self.sent], [admin.endpoint])
+        message = admin.read(self.sent[0][1])
+        self.assertEqual(message, {
+            'title': '网站订单 #703 · 已打包 Packed',
+            'body': '配送 DT · 快递未预约 Courier not booked yet: book it on popcore.ca (Dispatch via Fleetnow).',
+            'url': '/web-orders', 'tag': 'web-order-packed-703'})
+        for value in ('Zoë', 'Ng', *PRIVATE):
+            self.assertNotIn(value, json.dumps(message, ensure_ascii=False))
+        # 704 has its courier already: nobody needs telling. Nor does Undo.
+        self.sent.clear()
+        self.assertEqual(self.step(704, 'packed').get_json()['result'], 'done')
+        self.assertEqual(self.step(703, 'unpack').get_json()['result'], 'done')
+        self.assertEqual(self.sent, [])
+        # A notification that breaks never fails Packed.
+        with patch.object(push, 'send', side_effect=RuntimeError('push broke')):
+            self.assertEqual(self.step(703, 'packed').get_json(), {'result': 'done', 'noted': True})
+        with closing(self.connect()) as con:
+            self.assertIsNotNone(con.execute('SELECT packed_at FROM website_orders WHERE wc_order_id=703').fetchone()[0])

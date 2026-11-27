@@ -87,7 +87,8 @@ class WebOrdersBoardTests(BoardCase):
         board = response.get_json()
         self.assertEqual(board['stores'], ['DT'])
         self.assertEqual({name: self.numbers(cards) for name, cards in board['columns'].items()},
-                         {'pick': ['701'], 'ready': ['702'], 'pack': ['703'], 'booked': ['704'], 'out': ['705']})
+                         # Deliveries go by packing (owner, 2026-11-27): 704 has a courier booked but is not packed.
+                         {'pick': ['701'], 'ready': ['702'], 'pack': ['704', '703'], 'booked': [], 'out': ['705']})
         # The MK pickup is on MK's board only, though DT's stock filled it (MK is not live here).
         self.assertEqual([(card['number'], card['reason']) for card in board['needs_manager']],
                          [('706', 'status'), ('707', 'not_enough_stock')])
@@ -98,9 +99,10 @@ class WebOrdersBoardTests(BoardCase):
         # Lines by 记账名, with where they were taken from (the floor first, owner 2026-11-19).
         self.assertEqual(pick['lines'], [{'name': 'Bear 记账名', 'quantity': 1, 'popcore_id': 'PM0200',
                                           'picks': [{'store': 'DT', 'place': 'floor', 'quantity': 1}]}])
-        self.assertEqual(board['columns']['pack'][0]['delivery'],
-                         {'window': 'Fri Nov 21, 2–6 pm', 'service': 'normal', 'zone': 'Downtown'})
-        self.assertEqual(board['columns']['booked'][0]['delivery'], {
+        booked, waiting = board['columns']['pack']
+        self.assertEqual(waiting['delivery'], {'window': 'Fri Nov 21, 2–6 pm', 'service': 'normal', 'zone': 'Downtown'})
+        self.assertEqual((waiting['booked'], waiting['packed_at'], booked['booked']), (False, None, True))
+        self.assertEqual(booked['delivery'], {
             'window': 'Thu Nov 20, 2–6 pm', 'service': 'door', 'fleetnow_no': 'DO202611190000000001',
             'fleetnow_pickup': '13:00–14:00', 'fleetnow_delivery': '14:00–18:00', 'fleetnow_status': 'CONFIRMED'})
         self.assertNotIn('delivery', pick)
@@ -217,8 +219,8 @@ class WebOrdersBoardTests(BoardCase):
             return card['store'], card['stores'], card['taken_elsewhere']
 
         board, found = cards()
-        self.assertEqual({name: self.numbers(board['columns'][name]) for name in ('pack', 'booked')},
-                         {'pack': ['703', '720', '721'], 'booked': ['704', '722', '723']})  # each order once
+        self.assertEqual({name: self.numbers(board['columns'][name]) for name in ('pack', 'booked')},  # each order once
+                         {'pack': ['704', '703', '720', '721', '722', '723'], 'booked': []})
         self.assertEqual({number: where(found[number]) for number in ('703', '720', '721', '722', '723')}, {
             '703': ('DT', ['DT'], []),             # DT filled it, as before
             '720': ('DT', ['DT', 'MK'], []),       # in two stores: bring it to one
@@ -347,6 +349,76 @@ class WebOrdersBoardTests(BoardCase):
         self.assertFalse([params for path, params in self.woo.reads if 'include' in params and path == '/orders'])
 
 
+class PackedTests(BoardCase):
+    """Owner, 2026-11-27 (popcore-work#139): "theres no option to say packed for the 打包 ones?" … "shouldnt it be
+    moved to 等快递？". 打包好了 Packed moves a delivery from 待打包 to 等快递 and 撤销 Undo moves it back. POPCORE
+    keeps who and when; the website gets a private note only, never a status, so the customer hears nothing."""
+
+    def columns(self, headers=ADMIN):
+        board = self.board(headers)
+        return {name: self.numbers(board['columns'][name]) for name in ('pack', 'booked', 'out')}, \
+            {card['number']: card for name in ('pack', 'booked') for card in board['columns'][name]}
+
+    def test_packed_moves_a_delivery_to_waiting_for_the_courier_and_undo_moves_it_back(self):
+        self.assertEqual(self.step(703, 'packed').get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.notes, [(703, {'note': 'Packed in popcore.store by Amy', 'customer_note': False})])
+        self.assertEqual(self.woo.status_writes, [])   # the website status is FleetNow's
+        columns, cards = self.columns()
+        self.assertEqual(columns, {'pack': ['704'], 'booked': ['703'], 'out': ['705']})
+        packed = cards['703']
+        self.assertEqual((packed['packed_by'], packed['booked']), ('Amy', False))   # no courier booked yet
+        self.assertRegex(packed['packed_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d$')   # website GMT time
+        # A second press is safe.
+        self.assertEqual(self.step(703, 'packed').get_json(), {'result': 'already', 'noted': None})
+        # Booked before it was packed: it waited in 待打包 with its courier, and moves once packed.
+        self.assertTrue(cards['704']['booked'])
+        self.assertEqual(self.step(704, 'packed').get_json()['result'], 'done')
+        self.assertEqual(self.columns()[0], {'pack': [], 'booked': ['704', '703'], 'out': ['705']})
+        # Undo: back to 待打包, with a note saying so.
+        self.assertEqual(self.step(703, 'unpack').get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.notes[-1], (703, {'note': 'Packed undone in popcore.store by Amy', 'customer_note': False}))
+        columns, cards = self.columns()
+        self.assertEqual((columns['pack'], cards['703']['packed_at'], cards['703']['packed_by']), (['703'], None, None))
+        self.assertEqual(self.step(703, 'unpack').get_json(), {'result': 'already', 'noted': None})
+        # FleetNow picked 704 up: it is out for delivery whether packed or not.
+        self.woo.orders[704]['status'] = 'out-for-delivery'
+        self.woo.orders[704]['date_modified_gmt'] = _ago(0)
+        self.run_sync()
+        self.assertEqual(self.columns()[0], {'pack': ['703'], 'booked': [], 'out': ['705', '704']})
+        # 动态 says who did what.
+        with closing(self.connect()) as con:
+            lines = [tuple(row) for row in con.execute(
+                """SELECT summary, detail, actor_name FROM activity_log WHERE endpoint='website.web_orders_step'
+                   ORDER BY id""")]
+        self.assertEqual([detail for _, detail, _ in lines],
+                         ['打包好了 Packed', '打包好了 Packed', '打包好了 Packed', '撤销打包 Undid Packed', '撤销打包 Undid Packed'])
+
+    def test_packed_is_for_open_deliveries_of_your_store_read_live_first(self):
+        # A pickup is marked Ready; another admin's stores are not theirs.
+        self.assertEqual(self.step(701, 'packed').get_json()['code'], 'not_delivery')
+        self.assertEqual(self.step(703, 'packed', headers=OTHER).status_code, 403)
+        # Out for delivery: too late to pack, or to undo.
+        response = self.step(705, 'packed')
+        self.assertEqual((response.status_code, response.get_json()['code']), (409, 'status_changed'))
+        # Cancelled on the website a minute ago: never marked, and it leaves the column at once.
+        self.woo.orders[703]['status'] = 'cancelled'
+        self.assertEqual(self.step(703, 'packed').get_json()['code'], 'status_changed')
+        self.assertNotIn('703', self.columns()[0]['pack'])
+        # Waiting for an admin: settled on the 网站 page first.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE website_orders SET state='needs_review' WHERE wc_order_id=704")
+            con.commit()
+        self.assertEqual(self.step(704, 'packed').get_json()['code'], 'needs_manager')
+        # The website does not take the note: Packed still counts, and the page says the note is missing.
+        with closing(self.connect()) as con:
+            con.execute("UPDATE website_orders SET state='recorded' WHERE wc_order_id=704")
+            con.commit()
+        self.woo.refuse_notes = True
+        self.assertEqual(self.step(704, 'packed').get_json(), {'result': 'done', 'noted': False})
+        self.assertEqual(self.woo.notes, [])
+        self.assertEqual(self.woo.status_writes, [])
+
+
 class CounterAccountTests(BoardCase):
     """Owner, 2026-11-19: the store computer's account looks up products, stock and Dex prices but edits nothing, and
     uses the board's two buttons. It is a 查看者 Viewer with DT store operations access and 库存查看."""
@@ -371,6 +443,8 @@ class CounterAccountTests(BoardCase):
         self.assertEqual(self.woo.notes[-1][1]['note'], 'Ready in popcore.store by DT 柜台')
         self.assertEqual(self.code('K7R4MX', headers=self.COUNTER).get_json()['first_name'], 'Private')
         self.assertEqual(self.step(701, 'handed-over', code='K7R4MX', headers=self.COUNTER).get_json()['result'], 'done')
+        self.assertEqual(self.step(703, 'packed', headers=self.COUNTER).get_json(), {'result': 'done', 'noted': True})
+        self.assertEqual(self.woo.notes[-1][1]['note'], 'Packed in popcore.store by DT 柜台')
         # The menus learn where it has store operations access.
         stores = {row['code']: row for row in self.client.get('/api/stores', headers=self.COUNTER).get_json()}
         self.assertEqual((stores['DT']['operations'], stores['DT']['inventory_visible'], stores['MK']['operations']),
@@ -417,7 +491,8 @@ class ClosedToStaffTests(BoardCase):
             for response in (self.client.get('/api/website/board', headers=headers),
                              self.code('K7R4MX', headers=headers),
                              self.step(701, 'ready', headers=headers),
-                             self.step(702, 'handed-over', code='ACD346', headers=headers)):
+                             self.step(702, 'handed-over', code='ACD346', headers=headers),
+                             self.step(703, 'packed', headers=headers), self.step(703, 'unpack', headers=headers)):
                 self.assertEqual((response.status_code, response.get_json()['code']), (403, 'board_store_computer_only'), role)
                 for value in PRIVATE:
                     self.assertNotIn(value, response.get_data(as_text=True))
