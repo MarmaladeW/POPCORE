@@ -18,8 +18,16 @@ call; hiding a menu is never the check.
   `total_stock_value` in `/api/stock/summary`, the Stock Value column in 库存 → All products.
 - Sales figures in the 库存 overview: units sold, pace, days left, last sale, best sellers, 日报 dates. The refill,
   running-low and sold-out lists stay for everyone who sees the overview.
-- The 网站 page: `/api/website/status`, `preview`, `orders`, price OK, retry, dismiss. The 网站订单 board stays for
-  staff and the store computer.
+- The 网站 page: `/api/website/status`, `preview`, `orders`, price OK, retry, dismiss.
+
+## Store computer and admin only
+
+网站订单 (owner, 2026-11-26: "网站订单 pick board close to staff but available to viewer which is store computer"): the
+board, the code box, Ready and Handed over (`/api/website/board…`) answer only a 查看者 Viewer or an admin with 门店操作权限
+at the store. Staff and managers get 403 `board_store_computer_only`, their menus have no 网站订单, and `/web-orders`
+shows the no-access page. A new web order is pushed only to the store computer's and admins' devices. Managers keep
+a device switch on 异常提醒 for its alerts; staff cannot turn a device on (`notifications_not_for_staff`) but can turn
+their own off.
 
 ## Managers keep
 
@@ -49,9 +57,15 @@ answers only `short`, never how many, without the tick. Goods counts, 晚盘 exp
 numbers and trade-slot quantities are hidden without it. Ids are read the same way before the check and by the
 command, so an id sent as text cannot skip it.
 
-## Name + PIN
+## The name on the store computer
 
-Only for the store computer: it says who is acting there. A PIN is never checked for another account, never sent
-to a page (`people.public`), and an account can check only its own from a phone. Every wrong PIN after a lock locks
-again at once. Nobody below admin changes their own name or email. An admin clears a PIN; anyone sets a new one
-from their own phone.
+Only for the store computer: it says who is acting there. Before a change, the person taps their name; the header
+is read for the 查看者 counter account only and ignored for everyone else. There is no PIN (owner, 2026-11-26: "PIN not
+necessary"): its routes are gone and migration `employee_pins_cleared` wiped every kept PIN. Anyone at the computer
+can tap any name, so the mark there is on trust. Nobody below admin changes their own name or email.
+
+## A page someone cannot open
+
+One page for every closed address (`pages/Unauthorized.tsx`): Chinese first, who the page is for (管理员, 店长和管理员,
+or "网站订单在店铺电脑上处理") and one button, 回首页. It never says what the page holds. 库存 without the 库存查看 tick uses the
+same look and offers 晚盘 and 移货.

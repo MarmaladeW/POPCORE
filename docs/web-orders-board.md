@@ -8,7 +8,10 @@ replaced its pickup-code brief of 2026-11-16. Code: `website_board.py`, routes i
 
 ## Who sees what
 
-- Anyone with a role opens it. Each user sees the orders of the stores they have **Users → Store operations access**
+- The store computer (a 查看者 Viewer) and admins open it (owner, 2026-11-26: "网站订单 pick board close to staff but
+  available to viewer which is store computer"). Staff and managers cannot: the server answers 403
+  `board_store_computer_only`, their menus have no 网站订单 and the address shows the no-access page
+  (docs/access-rules.md). Each of the two sees the orders of the stores they have **Users → Store operations access**
   for; with a store selected in the top bar, only that store's. A pickup belongs to its pickup store. Every delivery
   goes out of `WEBSITE_DELIVERY_STORE` (DT), so deliveries show on DT's board.
 - The page reads the board every 30 seconds, the sync's pace, without reloading.
@@ -36,8 +39,8 @@ show their 入库, 调拨, 晚盘, 娃娃机, count and move buttons to staff on
 补货, 汇总 or 晚盘.
 
 A viewer with no 店铺电脑 store ticked opens on a 店铺电脑 page that says so, with links to Products, the Dex and the
-watch list; its board names the tick it needs. Notes on the website name the account ("Ready in popcore.store by DT
-柜台"), so personal sign-ins remain the way to record who pressed.
+watch list; its board names the tick it needs. Its two buttons ask 谁在操作？ and take one tap on a name, no PIN
+(docs/daily-use-and-marks.md), so the note on the website names that person ("Ready in popcore.store by Amy").
 
 ## The board
 
@@ -140,7 +143,9 @@ need our own notification thing." Two kinds, both for new paid web orders only:
 
 - **On a phone or computer, even with POPCORE closed** (`push_notifications.py`). On 网站订单, a person taps
   **在本设备开启 Notify me on this device** and allows notifications. From then on that device gets a notification for
-  every new paid web order of the stores they have store operations access for: "网站订单 #35864 · 自取 DT pickup" with
+  every new paid web order of the stores they have store operations access for (the store computer and admins only
+  since 2026-11-26; each device keeps its owner's role, refreshed whenever they open POPCORE, and a device turned on
+  before that keeps getting them until its owner's next visit): "网站订单 #35864 · 自取 DT pickup" with
   its lines (and "需要经理 Needs a manager" first when POPCORE could not take it out of stock). Tapping it opens
   网站订单. **测试 Test** sends one to every device of that person; **关闭 Turn off** stops this device.
   - iPhone and iPad: only POPCORE added to the Home Screen (Share → Add to Home Screen, iOS 16.4 or later) and opened

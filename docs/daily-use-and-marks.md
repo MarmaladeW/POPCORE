@@ -35,18 +35,18 @@ Idempotency-Key from the same account is kept once; writing the row never fails 
 - The app: 动态 in the menu for everyone who works at a store (staff and up, and the counter account), and 店里动态 on
   both home pages with the store's five newest lines. A line opens what it was about.
 
-## Name + PIN on the store computer
+## The name on the store computer
 
-`pins.py`, migration `employee_pins`. The store computer signs in as one 查看者 Viewer with 门店操作权限. Every change
-it makes asks 谁在操作？: the person taps their name and types their own 4-digit PIN, the request is sent again with
-`X-Popcore-Person: <employee id>:<pin>`, and 动态 and the website order note name that person (by way of the counter
-account). The server refuses a counter change without one (`428 person_needed`); a PIN never adds a permission.
-Looking around, the pickup-code lookup and notification settings need none. The person stays picked for two minutes
-(a bar shows who, with 结束 Done) and is kept in memory only.
+`store_computer.py`. The store computer signs in as one 查看者 Viewer with 门店操作权限. Every change it makes asks
+谁在操作？: the person taps their name, the request is sent again with `X-Popcore-Person: <employee id>`, and 动态 and
+the website order note name that person (by way of the counter account). The server refuses a counter change without
+one (`428 person_needed`); a name never adds a permission. Looking around, the pickup-code lookup and notification
+settings need none. The person stays picked for two minutes (a bar shows who, with 结束 Done) and is kept in memory
+only.
 
-- Staff set their own PIN from 我的 PIN (the account menu, 更多 on the phone, and a prompt on the staff home while they
-  have none). Four digits, not all the same and not 1234/4321/0123; stored salted and hashed (PBKDF2).
-- Five wrong PINs in a row lock that PIN for five minutes. Every wrong PIN after that locks it again at once, until the right one is typed. A forgotten PIN is set again from 我的 PIN on the person's own phone; an admin can clear one in 员工 Users → 重设 PIN.
+There is no PIN since 2026-11-26 (owner: "PIN not necessary"). 我的 PIN, the PIN pad, 重设 PIN in 员工 Users and their
+routes are gone; migration `employee_pins_cleared` emptied the PIN columns, which stay in the table unused. A page
+loaded before the change still sends `<id>:<pin>`; only the id is read. Anyone at the computer can tap any name.
 
 ## Daily shortcuts
 
@@ -116,7 +116,7 @@ they happen; the screen is quick enough that an end-of-day batch still works.
 - **A retry is the same sale**: the same Idempotency-Key returns the saved sale before anything is priced again, so a
   price or rate that changed in between cannot make a second sale.
 - **Who may**: staff with a shift at the store today and 门店操作权限 there, while 员工买单 is open for that store
-  (Settings → 员工买单 → 所有店). The store computer's counter account cannot record sales: a PIN adds no permission.
+  (Settings → 员工买单 → 所有店). The store computer's counter account cannot record sales: a name adds no permission.
 - **Photos**: E-transfer, WeChat Pay and Alipay ask for a photo of the payment after saving. A sale saved without one
   shows 没有照片 No photo in today's list and its 动态 line until a photo is added there (owner: "they can save the order
   without image, but that order should be flagged and saying there isnt a picture").
@@ -183,7 +183,7 @@ the same thing with the stock, what I want is a easy to use app. Keep all of the
 
 ## Checks
 
-`tests/test_staff_rollout.py`; browser checks `check_activity.py`, `check_store_computer_pin.py`,
+`tests/test_staff_rollout.py`; browser checks `check_activity.py`, `check_store_computer_name.py`,
 `check_restock_one_go.py`, `check_evening_count.py`, `check_quick_sale.py` and `check_staff_home.py` (staff waiting for
 Clover); `tests/test_quick_sale.py` for 记一笔 and the paste leaving its sales out; `tests/test_stock_moves.py` and
 `check_move_stock.py` for 移货.
