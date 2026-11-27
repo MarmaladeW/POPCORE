@@ -39,7 +39,8 @@ management with amounts, 异常提醒, products, 图鉴 editing, section counts.
 - 记一笔: `GET /api/quick-sales` returns the caller's own sales and totals from those.
 - 员工折扣: the caller's own row and uses; `GET /api/staff-discounts/buyers` gives names only for the buyer picker.
 - 排班: own shifts and availability; own month from `GET /api/schedule/reports/monthly/me`.
-- 收工: no day totals, expected drawer or variance, and today only.
+- 收工: no day totals, expected drawer or variance, and today only. (收工 left the menus on 2026-11-27, see below;
+  the rule still holds for its address.)
 - 特殊订单: orders of stores the account has 门店操作权限 for, or its own.
 - 移货 day list: today only, and 不在了 moves only for whoever recorded them.
 
@@ -64,6 +65,13 @@ Owner, 2026-11-26: "PIN not necessary", then "dont need the 谁在操作 on the 
 account ("Ready in popcore.store by DT 柜台"), and who was at the computer is the cameras' answer. There is no PIN
 and no name list: their routes are gone and migration `employee_pins_cleared` wiped every kept PIN. Nobody below
 admin changes their own name or email.
+
+## 收工 is out of the menus
+
+Owner, 2026-11-27: "Drop 收工 instead". A 收工 could not be submitted on a normal day: it wanted a manager-approved 盘点
+of every bestseller for that day (the 晚盘 does not count) and every 记一笔 cash payment verified one by one, and none
+was ever submitted on live. The day is closed by the 店长's 审核 in 记一笔, with 数到的现金. `/closing`, its API and
+every record stay; no menu, tab or page links to it any more.
 
 ## A page someone cannot open
 

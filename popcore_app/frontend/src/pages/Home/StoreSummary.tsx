@@ -155,11 +155,8 @@ export default function StoreSummary() {
     <textarea ref={text} aria-label="Summary text" value={data.summary_text} readOnly rows={Math.min(Math.max(lines, 6), phone ? 18 : 24)} />
     {copied && !phone && <p role="status" className="pc-sum-copied">{copied}</p>}
   </section>
-  const closingPanel = <section className="pc-panel pc-sum-closing" aria-label="Closing">
-    <header className="pc-panel-head"><h2><span>收工</span> <small>Closing</small></h2></header>
-    <p className="pc-quiet">点钱、核对单据、提交给经理审核。<br />Count the drawer, check sources and submit for review.</p>
-    <Link className="pc-btn pc-btn-ink" to="/closing">{manager ? '审核收工 Review closing' : '去收工 Close the day'}</Link>
-  </section>
+  // 收工 left this page (owner, 2026-11-27: "Drop 收工 instead"): the 店长's 审核 in 记一笔, with 数到的现金, closes
+  // the day. /closing keeps its address and every record.
   const note = <p className="pc-sum-note">{data?.scope === 'personal'
     ? 'Your own orders and records. A manager reviews the whole store day.'
     : 'Only completed checkouts in POPCORE. Check for missing sales before closing; Clover sync isn’t connected yet.'}</p>
@@ -180,10 +177,9 @@ export default function StoreSummary() {
         <MethodCards groups={groups} />
         <h2 className="pc-sum-heading">记录 <small>Store records</small></h2>
         <RecordGroups data={data} />
-        <h2 className="pc-sum-heading">{dayTitle(day)} <small>汇总文字 · 收工</small></h2>
+        <h2 className="pc-sum-heading">{dayTitle(day)} <small>汇总文字</small></h2>
         {copyPanel}
         <div className="pc-sum-links">{refresh}<Link className="pc-btn" to="/checkout/history">订单记录 Order history</Link></div>
-        {closingPanel}
         {note}
         <div className="pc-sum-dock">
           {copied && <p role="status" className="pc-sum-copied">{copied}</p>}
@@ -197,7 +193,7 @@ export default function StoreSummary() {
             <MethodTable groups={groups} orders={orders} />
             <RecordTable data={data} />
           </div>
-          <aside className="pc-sum-side">{copyPanel}{closingPanel}{note}</aside>
+          <aside className="pc-sum-side">{copyPanel}{note}</aside>
         </div>
       </>}
   </div>

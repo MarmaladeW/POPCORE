@@ -1,5 +1,5 @@
 // Menu model for the desktop rail, the phone bottom bar and the 更多 page (Figma "Menus" page).
-// Pages that left the menus keep their routes: /trades, /today.
+// Pages that left the menus keep their routes: /trades, /today, /closing.
 
 // inventory: 库存查看 at the selected store (always true for managers and admins).
 // operations: 门店操作权限 Store operations access at some store.
@@ -38,9 +38,9 @@ const item = {
   watchList: { key: '/watch-list', zh: '可疑人员', en: 'Watch list', icon: 'eye' },
   // Who did what at the store, like the group chat (owner, 2026-11-20). Admins only (owner, 2026-11-26).
   activity: { key: '/activity', zh: '动态', en: 'Activity', icon: 'clock' },
-  // 销售 opens its first tab, 每日汇总; 收工 and 历史日报 (/closing, /sales) are its other tabs. Admins only (owner,
-  // 2026-11-26): a manager has 汇总 (their own records) like staff, and reaches 收工 from it.
-  sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、收工、历史日报' },
+  // 销售 opens its first tab, 每日汇总; 历史日报 (/sales) is its other tab. Admins only (owner, 2026-11-26): a manager
+  // has 汇总 (their own records) like staff. 收工 (/closing) left the menus on 2026-11-27 (owner: "Drop 收工 instead").
+  sales: { key: '/summary', zh: '销售', en: 'Sales', icon: 'doc', note: '汇总、历史日报' },
   // 正式员工 and above have 4 员工折扣 a month (owner, 2026-11-19): staff see their own uses, managers keep the record.
   staffDiscounts: { key: '/staff-discounts', zh: '员工折扣', en: 'Staff discounts', icon: 'user' },
   // What POPCORE noticed by itself (losses, count gaps, cash gaps), and the phone notification switch for it: 店长
@@ -57,7 +57,7 @@ const item = {
   settings: { key: '/settings', zh: '设置', en: 'Settings', icon: 'gear', note: '管理员' },
 } satisfies Record<string, NavItem>
 
-export const removedFromMenus = ['/trades', '/today', '/incoming', '/restock']
+export const removedFromMenus = ['/trades', '/today', '/incoming', '/restock', '/closing']
 
 export function railGroups(access: NavAccess): NavGroup[] {
   if (!access.staff) return [

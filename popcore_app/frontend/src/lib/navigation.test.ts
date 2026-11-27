@@ -35,8 +35,8 @@ const viaCheckout = (keys: string[], admin = false) => [...new Set([...keys, ...
 const rail = (access: NavAccess) => viaCheckout(railGroups(access).flatMap(group => group.items.map(entry => entry.key)), access.admin)
 const phone = (access: NavAccess) => viaCheckout([...bottomItems(access, '/'), ...moreItems(access), ...homeShortcuts(access)].map(entry => entry.key), access.admin)
 
-test('Trades and Today leave every menu, and 入店 and 补货 give way to 移货', () => {
-  assert.deepEqual(removedFromMenus, ['/trades', '/today', '/incoming', '/restock'])
+test('Trades, Today and 收工 leave every menu, and 入店 and 补货 give way to 移货', () => {
+  assert.deepEqual(removedFromMenus, ['/trades', '/today', '/incoming', '/restock', '/closing'])
   for (const access of Object.values(roles)) {
     for (const key of removedFromMenus) {
       assert.ok(!rail(access).includes(key), `${key} still in rail`)
