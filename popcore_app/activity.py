@@ -115,6 +115,7 @@ LABELS = {
     'schedule.schedule_shifts_update': ('schedule', '改班', 'Changed a shift', 'store'),
     'schedule.schedule_shifts_delete': ('schedule', '删班', 'Removed a shift', 'store'),
     'schedule.schedule_attendance_today': ('schedule', '打卡', 'Punch', 'manager'),
+    'schedule.punch_place_set': ('schedule', '打卡位置', 'Punch-in location', 'manager'),
     'schedule.schedule_avail_upsert': ('schedule', '改可上班时间', 'Changed availability', 'manager'),
     'schedule.schedule_avail_delete': ('schedule', '删可上班时间', 'Removed availability', 'manager'),
     'schedule.schedule_availability_period': ('schedule', '改可上班时间', 'Changed availability', 'manager'),
@@ -343,8 +344,6 @@ def _detail(con, endpoint, view, body, result):
         return f"{result.get('saved', 0)} 项 items" + (f" · {result['differ']} 🥲" if result['differ'] else ' · ✅')
     if endpoint == 'settings.put_settings':
         return '、'.join(sorted(body))
-    if endpoint == 'schedule.schedule_attendance_today':
-        return {'in': '上班 In', 'out': '下班 Out'}.get(body.get('action'), str(body.get('action') or ''))
     if endpoint == 'schedule.schedule_shifts_create':
         who = _one(con, 'SELECT name FROM employees WHERE id=?', body.get('employee_id'))
         return ' '.join(filter(None, [who and who['name'], str(body.get('date') or ''),
