@@ -1,5 +1,6 @@
-"""店长/副店长 only look at 排班, and only at this month (owner, 2026-11-28: managers must not edit the schedule and see
-one month; replaces 2026-11-27's this month + next). Admins change and see every month; everyone keeps their own."""
+"""店长/副店长 only look at 排班, and only at the current wage month (owner, 2026-11-28: managers must not edit the
+schedule and see one month, the wage month, e.g. Nov 4 – Dec 3; replaces 2026-11-27's this month + next). Admins change
+and see every month; everyone keeps their own."""
 from contextlib import closing
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -43,7 +44,7 @@ class ManagerMonthTests(IsolatedApiCase):
     def window(self, role='manager'):
         return self.client.get('/api/schedule/config', headers=self.headers(role)).get_json()['manager_window']
 
-    def test_manager_reads_only_this_month(self):
+    def test_manager_reads_only_this_wage_month(self):
         self.assertEqual(self.dates('manager'), ['2026-11-10'])
         self.assertEqual(self.dates('manager', store='ALL'), ['2026-11-10'])
         self.assertEqual([r['date'] for r in self.client.get(f'{SHIFTS}?store_code=DT', headers=self.headers('manager')).get_json()],
@@ -56,15 +57,19 @@ class ManagerMonthTests(IsolatedApiCase):
         own = self.client.get('/api/schedule/shifts/me?store_code=ALL', headers=self.headers('staff')).get_json()
         self.assertEqual(len(own), 4)
 
-    def test_the_month_is_the_calendar_month_in_toronto(self):
-        self.assertEqual(self.window(), {'first': '2026-11-01', 'last': '2026-11-30', 'months': ['2026-11']})
-        self.at(2026, 12, 2)  # December's calendar; 月工时 is still the November wage month (Nov 4 – Dec 3)
-        self.assertEqual(self.window(), {'first': '2026-12-01', 'last': '2026-12-31', 'months': ['2026-11']})
+    def test_the_month_is_the_wage_month_in_toronto(self):
+        self.assertEqual(self.window(), {'first': '2026-11-04', 'last': '2026-12-03', 'months': ['2026-11']})
+        self.at(2026, 12, 3)  # the November wage month still runs
+        self.assertEqual(self.window(), {'first': '2026-11-04', 'last': '2026-12-03', 'months': ['2026-11']})
+        self.assertEqual(self.dates('manager'), ['2026-11-10'])
+        self.clock.now.return_value = datetime(2026, 12, 4, 3, tzinfo=timezone.utc)  # 22:00 on Dec 3 in Toronto
+        self.assertEqual(self.window()['first'], '2026-11-04')
+        self.at(2026, 12, 4)  # it moves on the 4th
+        self.assertEqual(self.window(), {'first': '2026-12-04', 'last': '2027-01-03', 'months': ['2026-12']})
         self.assertEqual(self.dates('manager'), ['2026-12-20'])
-        self.clock.now.return_value = datetime(2027, 1, 1, 3, tzinfo=timezone.utc)  # 22:00 on Dec 31 in Toronto
-        self.assertEqual(self.window()['first'], '2026-12-01')
+        self.assertEqual(self.dates('manager', '/api/schedule/availability'), ['2026-12-21'])
         self.at(2027, 1, 15)  # across the year end
-        self.assertEqual(self.window(), {'first': '2027-01-01', 'last': '2027-01-31', 'months': ['2027-01']})
+        self.assertEqual(self.window(), {'first': '2027-01-04', 'last': '2027-02-03', 'months': ['2027-01']})
         self.assertEqual(self.dates('manager'), ['2027-01-15'])
         for role in ('admin', 'staff'):
             self.assertIsNone(self.window(role))
@@ -108,11 +113,11 @@ class ManagerMonthTests(IsolatedApiCase):
 
     def test_notes_and_checklist_reads_follow_the_month(self):
         manager = self.headers('manager')
-        for key in ('month:2026-10', 'month:2026-12', 'fortnight:2026-10-12', 'day:2026-12-01'):
+        for key in ('month:2026-10', 'week:2026-10-26', 'day:2026-11-03', 'day:2026-12-04', 'month:2027-01'):
             self.closed(self.client.get(f'/api/schedule/notes?key={key}', headers=manager))
             self.closed(self.client.get(f'/api/schedule/checklist?key={key}', headers=manager))
-        self.assertEqual(self.client.get('/api/schedule/notes?key=month:2026-11', headers=manager).status_code, 200)
-        self.assertEqual(self.client.get('/api/schedule/notes?key=week:2026-10-26', headers=manager).status_code, 200)  # to Nov 1
+        for key in ('month:2026-11', 'month:2026-12', 'week:2026-11-02', 'day:2026-12-03'):  # each touches Nov 4 – Dec 3
+            self.assertEqual(self.client.get(f'/api/schedule/notes?key={key}', headers=manager).status_code, 200, key)
         self.assertEqual(self.client.get('/api/schedule/notes?key=month:2026-13', headers=manager).status_code, 400)
         self.assertEqual(self.client.get('/api/schedule/notes?key=month:2026-10', headers=self.headers('admin')).status_code, 200)
 

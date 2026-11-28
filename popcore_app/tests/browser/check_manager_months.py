@@ -1,8 +1,8 @@
-"""店长/副店长 only look at 排班, and only at this month (owner, 2026-11-28: managers do not edit the schedule and see
-one month), in a real browser against the real Flask app and a disposable database on 27 Nov 2026.
-The manager's team calendar arrows stop at November, with the reason; a day shows who works without any assign or
-edit button, no shift dialog opens and the checklist is gone; the 月工时 picker opens November only; the manager has
-their own availability tab and no reminder editing. An admin still moves freely and assigns."""
+"""店长/副店长 only look at 排班, and only at the current wage month (owner, 2026-11-28: managers do not edit the
+schedule and see one month, the wage month), in a real browser against the real Flask app and a disposable database on
+27 Nov 2026. The manager's team calendar arrows stop at Nov 4 – Dec 3, with the dates; a day shows who works without
+any assign or edit button, no shift dialog opens and the checklist is gone; the 月工时 picker opens November only; the
+manager has their own availability tab and no reminder editing. An admin still moves freely and assigns."""
 import asyncio
 import re
 import subprocess
@@ -15,7 +15,7 @@ from check_foundation import FRONTEND, HERE, ROOT
 PORT = 5202
 BASE = f'http://127.0.0.1:{PORT}'
 OUT = ROOT / '.local' / 'manager-months'
-HINT = '店长只能看这个月 · Managers see this month only'
+HINT = '店长只能看 2026-11-04 到 2026-12-03 的排班 · Managers see 2026-11-04 – 2026-12-03 only'
 VIEW_ONLY = '只能查看 · View only: 排班由管理员安排 The admin makes the schedule'
 
 
@@ -73,7 +73,7 @@ async def run(browser, width):
         if width > 600:
             await page.get_by_role('button', name='Month', exact=True).click()
             await expect(back).to_be_disabled()
-            await expect(forward).to_be_disabled()
+            await expect(forward).to_be_enabled()  # December's grid still holds Dec 1–3 of the wage month
             await page.get_by_role('button', name='View 2026-11-10 DT', exact=True).click()
             day = page.get_by_role('region', name='Schedule details 2026-11-10 DT')
             await expect(day.get_by_text('Assigned · 1', exact=True)).to_be_visible()
@@ -143,6 +143,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: manager view only — the manager\'s calendar arrows stop at November 2026 with the reason, a day shows '
+    print('PASS: manager view only — the manager\'s calendar arrows stop at Nov 4 – Dec 3 2026 with the dates, a day shows '
           'its shifts without buttons or dialogs, no checklist, 月工时 opens November only, own availability tab; '
           'an admin moves freely; at 1440 and 390 px')

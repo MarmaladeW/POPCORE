@@ -57,7 +57,7 @@ import {
 import ShiftModal from './ShiftModal'
 import ScheduleDayPanel from './ScheduleDayPanel'
 import { cycleStart } from './availabilityPeriod'
-import { calendarRange, canGoBack, canGoForward, MONTH_LIMIT_HINT, READ_ONLY_HINT } from './managerWindow'
+import { calendarRange, canGoBack, canGoForward, monthLimitHint, READ_ONLY_HINT } from './managerWindow'
 import useManagerWindow from './useManagerWindow'
 import { useHasRole } from '../../auth/useRole'
 import CoveragePanel from './CoveragePanel'
@@ -556,12 +556,12 @@ export default function ManagerCalendar() {
       <div className="pc-calendar-navigation flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center justify-between gap-0.5 sm:justify-start">
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Previous calendar period" onClick={() => eachCal((a) => a.prev())}
-            disabled={!!periodRange && !canGoBack(months, periodRange.start)} title={periodRange && !canGoBack(months, periodRange.start) ? MONTH_LIMIT_HINT : undefined}>
+            disabled={!!periodRange && !canGoBack(months, periodRange.start)} title={periodRange && !canGoBack(months, periodRange.start) ? monthLimitHint(months) : undefined}>
             <ChevronLeft className="size-4" />
           </Button>
           <span className="text-sm font-semibold min-w-24 text-center px-1">{viewTitle}</span>
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Next calendar period" onClick={() => eachCal((a) => a.next())}
-            disabled={!!periodRange && !canGoForward(months, periodRange.end)} title={periodRange && !canGoForward(months, periodRange.end) ? MONTH_LIMIT_HINT : undefined}>
+            disabled={!!periodRange && !canGoForward(months, periodRange.end)} title={periodRange && !canGoForward(months, periodRange.end) ? monthLimitHint(months) : undefined}>
             <ChevronRight className="size-4" />
           </Button>
         </div>
