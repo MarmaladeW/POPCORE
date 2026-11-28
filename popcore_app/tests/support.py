@@ -138,6 +138,13 @@ class IsolatedApiCase(unittest.TestCase):
     def headers(role='staff'):
         return {'Authorization': f'Bearer {role}'}
 
+    def open_every_month(self):
+        """Managers see this month and next only (test_schedule_manager_months); tests written on fixed dates before
+        that window lift it."""
+        window = patch('blueprints.schedule._manager_window', return_value=None)
+        window.start()
+        self.addCleanup(window.stop)
+
     def grant_inventory_view(self, *subjects):
         """库存查看 Inventory view at every store for these accounts, as an admin ticks it in Users."""
         with closing(self.connect()) as con:

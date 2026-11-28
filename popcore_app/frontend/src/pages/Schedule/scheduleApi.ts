@@ -1,3 +1,4 @@
+import type { ManagerWindow } from './managerWindow'
 import client from '../../api/client'
 import type { DetailShift } from './monthlyDetail'
 
@@ -165,6 +166,8 @@ export interface ScheduleConfig {
   schedule_open_hours: string
   schedule_shift_presets: string
   schedule_positions: string
+  /** 店长/副店长's months (this month and next); null for an admin and for staff. */
+  manager_window?: ManagerWindow | null
 }
 
 export interface ScheduleNote {

@@ -355,6 +355,7 @@ async def users_page(browser, case, width):
 async def main():
     OUT.mkdir(parents=True, exist_ok=True)
     case = IsolatedApiCase(); case.setUp()
+    case.open_every_month()  # the browser lives on 2026-10-28 but the server on today: lift the manager's month window
     seed(case)
     with (OUT / 'vite.log').open('w') as log:
         process = subprocess.Popen(['node', str(FRONTEND / 'node_modules/vite/bin/vite.js'), '--config',
