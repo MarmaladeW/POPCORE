@@ -32,13 +32,21 @@ class PricingTests(unittest.TestCase):
                 pricing.suggest_payable(value)
 
     # The same vectors are in popcore_app/frontend/src/lib/checkoutPricing.test.ts: both sides must agree.
-    def test_under_ten_dollars_the_cash_price_is_the_previous_whole_dollar(self):
-        # Owner, 2026-10-27: $5.10 is $5, $9.99 is $9; a whole-dollar total keeps its price.
-        for total, expected in ((510, 500), (999, 900), (712, 700), (101, 100), (199, 100), (950, 900),
-                                (100, 100), (500, 500), (900, 900), (1000, 900), (1099, 1000)):
+    def test_under_ten_dollars_the_cash_price_is_the_previous_half_dollar(self):
+        # Owner, 2026-11-28: $7.80 is $7.50, $9.99 is $9.50, $6.50 stays $6.50; never above the total.
+        for total, expected in ((780, 750), (999, 950), (650, 650), (510, 500), (712, 700), (101, 100),
+                                (149, 100), (150, 150), (199, 150), (949, 900), (950, 950), (100, 100),
+                                (500, 500), (900, 900)):
             self.assertEqual(pricing.suggest_payable(total), expected, total)
+            self.assertLessEqual(pricing.suggest_payable(total), total, total)
         self.assertEqual(due(order(442, total=500), popcore=1, plan='pay'), (500, 'exact'))
+        self.assertEqual(due(order(575, total=650), popcore=1, plan='pay'), (650, 'exact'))
         self.assertEqual(due(order(452, total=510), popcore=1, plan='pay'), (500, 'cash_discount'))
+        self.assertEqual(due(order(884, total=999), popcore=1, plan='pay'), (950, 'cash_discount'))
+
+    def test_from_exactly_ten_dollars_the_whole_dollar_rule_stays(self):
+        for total, expected in ((1000, 900), (1001, 1000), (1099, 1000), (1250, 1200), (1500, 1400)):
+            self.assertEqual(pricing.suggest_payable(total), expected, total)
 
     def test_cash_is_rounded_to_five_cents_the_canadian_way(self):
         for cents, expected in ((2160, 2160), (2161, 2160), (2162, 2160), (2163, 2165), (2164, 2165), (2165, 2165),

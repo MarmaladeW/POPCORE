@@ -29,9 +29,17 @@ test('above $15 suggestPayable takes at least $1 off, or 2.5% when more, rounded
 })
 
 // The same vectors are in popcore_app/tests/test_clover_pricing.py: both sides must agree.
-test('under $10 the cash price is the previous whole dollar, and a whole dollar keeps its price', () => {
-  for (const [total, expected] of [[510, 500], [999, 900], [712, 700], [101, 100], [199, 100], [950, 900],
-    [100, 100], [500, 500], [900, 900], [1000, 900], [1099, 1000]]) {
+test('under $10 the cash price goes down to the previous 50 cents, never above the total', () => {
+  // Owner, 2026-11-28: $7.80 → $7.50, $9.99 → $9.50, $6.50 stays $6.50.
+  for (const [total, expected] of [[780, 750], [999, 950], [650, 650], [510, 500], [712, 700], [101, 100],
+    [149, 100], [150, 150], [199, 150], [949, 900], [950, 950], [100, 100], [500, 500], [900, 900]]) {
+    assert.equal(suggestPayable(total), expected, String(total))
+    assert.ok(suggestPayable(total) <= total, String(total))
+  }
+})
+
+test('from exactly $10 the cash price keeps the whole-dollar rule', () => {
+  for (const [total, expected] of [[1000, 900], [1001, 1000], [1099, 1000], [1250, 1200], [1500, 1400]]) {
     assert.equal(suggestPayable(total), expected, String(total))
   }
 })
