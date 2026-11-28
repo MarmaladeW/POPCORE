@@ -139,8 +139,8 @@ class IsolatedApiCase(unittest.TestCase):
         return {'Authorization': f'Bearer {role}'}
 
     def open_every_month(self):
-        """Managers see this month only (test_schedule_manager_months); tests written on fixed dates before that
-        window lift it."""
+        """Managers see only the next two weeks (test_schedule_manager_months), which move with today; tests that read
+        fixed dates as a manager lift the window."""
         window = patch('blueprints.schedule._manager_window', return_value=None)
         window.start()
         self.addCleanup(window.stop)

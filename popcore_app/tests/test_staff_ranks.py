@@ -158,6 +158,7 @@ class StaffRankTests(IsolatedApiCase):
         self.assertEqual(self.employee('auth0|celia')['rank'], 'trainee')
 
     def test_people_are_listed_store_manager_first(self):
+        self.open_every_month()  # reads shifts on a fixed date as a manager, whose two weeks move with today
         expected = ['Xiao Na', 'Kitty', 'Zimo', 'Celia', 'YC', 'Amy']
         employees = self.client.get('/api/schedule/employees', headers=self.headers('manager')).get_json()
         self.assertEqual([row['name'] for row in employees if row['name'] in expected], expected)
