@@ -70,19 +70,21 @@ Under them:
 - **今天完成 Done today**, folded shut: orders completed, cancelled or refunded today (Toronto time), newest first.
 
 Each card shows (owner, 2026-11-27, popcore-work#147: "the number/amount for each order is not that obvious ... make
-the important information clearer"):
+the important information clearer"; then "the order number is not what is important here, what important here are:
+item name, item piece, pickup code, delivery name"; the pickup code stays off the board, see below):
 
-- at the top, large: the order number and how many pieces it holds, all lines together ("3 件 items"); under them
-  自取 or 配送 with the store, and how long ago it was paid;
-- each line by 记账名 (else the official name, else the website's name) beside its quantity in a box, filled in ink when
+- a quiet top line: 自取 or 配送 with the store, the order number and how long ago it was paid, and how many pieces
+  the order holds, all lines together ("3 件 items");
+- who it is for, large: a delivery's "收件人 Ship to" name; a pickup found by its code, the customer's first name
+  (and who collects it). Pickup cards on the board have no name;
+- each line by 记账名 (else the official name, else the website's name), in bold, beside its quantity in a box, filled in ink when
   it is more than one; under the name its POPCORE ID and where it was taken from (store and place), from the order's
   consume document. Boxes taken from a sealed set the order opened (popcore-work#128) show the place the set was
   kept, such as 楼上 upstairs;
 - pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
   A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
-- delivery: the store it leaves from ("配送 MK"); "收件人 Ship to" and the name the parcel goes to (see below); the
-  window, Normal or door to door, and the zone the customer chose; once FleetNow is booked, its pickup window,
+- delivery: the store it leaves from ("配送 MK"); the Normal or door to door, and the zone the customer chose; once FleetNow is booked, its pickup window,
   delivery window, number and status (the long number last); and what has to be moved first, only when something
   does (next section);
 - delivery, once packed: "已打包 Packed · 14:05 · DT 柜台" (when, and the account that pressed it). Flagged when it
@@ -147,8 +149,8 @@ Open orders recorded before the board came read them once (`website_sync.read_bo
 - Completed, cancelled or refunded, not a pickup, not found: said plainly, with nothing about the order.
 - Another store's order (by store operations access, or the selected store): says which store. No Handed over.
 - Any other status than `processing` or `ready-pickup`: says so and asks for a manager. No Handed over.
-- Otherwise the card shows the order, the customer's first name (`billing.first_name`) and "Collecting: <name>" when
-  `_pcc_collector_name` is set, with **Handed over**. Only those two values are taken from the read; the rest of the
+- Otherwise the card shows the order with the customer's first name (`billing.first_name`) large at the top, and
+  "代取 Collecting: <name>" when `_pcc_collector_name` is set, with **Handed over**. Only those two values are taken from the read; the rest of the
   billing details are dropped at once. They are never stored or logged, the answer is sent `Cache-Control: no-store`,
   and they leave the screen when the card closes (Close, Handed over, or after 3 minutes).
 
