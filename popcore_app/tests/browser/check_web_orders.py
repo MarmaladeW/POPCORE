@@ -77,6 +77,13 @@ async def run(browser, width):
         await expect(pick.get_by_text('PM0200 · DT 楼下 Floor 1')).to_be_visible()
         ready = page.get_by_role('region', name='Pickup · ready, waiting for the customer')
         await expect(ready.get_by_text('已等 4 天 · Waiting 4 days')).to_be_visible()
+        # Each card leads with its number and how many pieces it holds; a line of more than one has its quantity in
+        # an ink box (owner, 2026-11-27, popcore-work#147: "the number/amount for each order is not that obvious").
+        await expect(pick.get_by_role('article', name='Order #701').get_by_text('1 件 item', exact=True)).to_be_visible()
+        await expect(pick.locator('.pc-web-qty-many')).to_have_count(0)
+        waiting = ready.get_by_role('article', name='Order #702')
+        await expect(waiting.get_by_text('2 件 items', exact=True)).to_be_visible()
+        await expect(waiting.locator('.pc-web-qty-many')).to_have_text('× 2')
         pack = page.get_by_role('region', name='Delivery · to pack')
         await expect(pack.get_by_text('送达 Fri Nov 21, 2–6 pm')).to_be_visible()
         await expect(pack.get_by_text('区域 Zone Downtown')).to_be_visible()

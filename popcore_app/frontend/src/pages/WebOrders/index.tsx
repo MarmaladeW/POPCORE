@@ -11,8 +11,8 @@ import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
 import Notifications, { chime, soundOn } from './Notifications'
 import {
-  COLUMNS, ageText, announceText, clockText as clock, codeMissText, courierText, deliveryFacts, kindText, longWait, moveText,
-  nameMatches, newCards, openCards, packedText, picksText, reasonText, websiteTime,
+  COLUMNS, ageText, announceText, cardStores, clockText as clock, codeMissText, courierText, deliveryFacts, longWait, moveText,
+  nameMatches, newCards, openCards, packedText, picksText, pieceCount, reasonText, websiteTime,
 } from './webOrdersView'
 import './webOrders.css'
 
@@ -29,15 +29,21 @@ function stepMessage(step: WebOrderStep, done: string, already: string) {
   else message.success(done)
 }
 
+// One order (owner, 2026-11-27: "the number/amount for each order is not that obvious ... make the important
+// information clearer"). The order number and how many pieces lead the card; each line's quantity stands in its own
+// box, filled in ink when it is more than one; the delivery's details come last, quiet.
 function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: number; action?: React.ReactNode; extra?: React.ReactNode }) {
   const waited = longWait(card, now)
   const move = moveText(card)
   const courier = courierText(card)
   const packed = packedText(card)
+  const facts = card.kind === 'delivery' ? deliveryFacts(card) : []
+  const pieces = pieceCount(card)
   return <article className="pc-web-card" aria-label={`Order #${card.number}`}>
-    <header>
-      <strong>#{card.number}</strong>
-      <span>{kindText(card)}</span>
+    <header className="pc-web-head">
+      <strong className="pc-web-number"><span>#</span>{card.number}</strong>
+      <span className="pc-web-pieces"><b>{pieces}</b> 件 <small>{pieces === 1 ? 'item' : 'items'}</small></span>
+      <span className="pc-web-kind">{card.kind === 'pickup' ? '自取' : '配送'} <b>{cardStores(card).join(' + ')}</b></span>
       <time>{ageText(card.paid_at, now)}</time>
     </header>
     {card.kind === 'delivery' && card.name && <p className="pc-web-to">收件人 Ship to <strong>{card.name}</strong></p>}
@@ -46,14 +52,15 @@ function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: numb
     {courier && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{courier}</p>}
     <ul className="pc-web-lines">
       {card.lines.map((line, index) => <li key={index}>
-        <span><strong>{line.name}</strong> × {line.quantity}</span>
+        <span className={line.quantity > 1 ? 'pc-web-qty pc-web-qty-many' : 'pc-web-qty'}><span className="sr-only">× </span>{line.quantity}</span>
+        <strong>{line.name}</strong>
         {(line.popcore_id || line.picks.length > 0) && <small>{[line.popcore_id, picksText(line)].filter(Boolean).join(' · ')}</small>}
       </li>)}
     </ul>
-    {card.kind === 'delivery' && deliveryFacts(card).length > 0 && <ul className="pc-web-facts">
-      {deliveryFacts(card).map(fact => <li key={fact}>{fact}</li>)}
+    {facts.length > 0 && <ul className="pc-web-facts">
+      {facts.map(fact => <li key={fact}>{fact}</li>)}
     </ul>}
-    {packed && <p className="pc-web-reason">{packed}</p>}
+    {packed && <p className="pc-web-packed"><i className="pc-dot pc-dot-ok" aria-hidden="true" />{packed}</p>}
     {extra}
     {action}
   </article>

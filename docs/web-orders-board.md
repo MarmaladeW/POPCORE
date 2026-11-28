@@ -69,18 +69,22 @@ Under them:
     These leave their column until an admin settles them on the Website page.
 - **今天完成 Done today**, folded shut: orders completed, cancelled or refunded today (Toronto time), newest first.
 
-Each card shows:
+Each card shows (owner, 2026-11-27, popcore-work#147: "the number/amount for each order is not that obvious ... make
+the important information clearer"):
 
-- the order number and how long ago it was paid;
-- each line by 记账名 (else the official name, else the website's name), its quantity and POPCORE ID, and where it
-  was taken from (store and place), from the order's consume document. Boxes taken from a sealed set the order
-  opened (popcore-work#128) show the place the set was kept, such as 楼上 upstairs;
+- at the top, large: the order number and how many pieces it holds, all lines together ("3 件 items"); under them
+  自取 or 配送 with the store, and how long ago it was paid;
+- each line by 记账名 (else the official name, else the website's name) beside its quantity in a box, filled in ink when
+  it is more than one; under the name its POPCORE ID and where it was taken from (store and place), from the order's
+  consume document. Boxes taken from a sealed set the order opened (popcore-work#128) show the place the set was
+  kept, such as 楼上 upstairs;
 - pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
   A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
 - delivery: the store it leaves from ("配送 MK"); "收件人 Ship to" and the name the parcel goes to (see below); the
-  window, Normal or door to door, and the zone the customer chose; once FleetNow is booked, its number, status, pickup
-  window and delivery window; and what has to be moved first, only when something does (next section);
+  window, Normal or door to door, and the zone the customer chose; once FleetNow is booked, its pickup window,
+  delivery window, number and status (the long number last); and what has to be moved first, only when something
+  does (next section);
 - delivery, once packed: "已打包 Packed · 14:05 · DT 柜台" (when, and the account that pressed it). Flagged when it
   needs saying: **快递未预约 Courier not booked yet** on a packed delivery no courier is booked for (an admin books it
   on popcore.ca), and **快递已预约,先打包 A courier is booked: pack it first** on a booked one not packed yet.

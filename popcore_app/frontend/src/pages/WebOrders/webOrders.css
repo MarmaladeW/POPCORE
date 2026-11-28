@@ -33,18 +33,32 @@
 .pc-web-column .pc-panel-head h2 { display: grid; gap: 0; white-space: normal; }
 .pc-web-column .pc-panel-head h2 small { overflow: visible; }
 
-.pc-web-card { display: grid; gap: 6px; min-width: 0; padding: 12px; background: var(--surface-default); }
-.pc-web-column .pc-web-card + .pc-web-card { border-top: 1px solid var(--line-hair); }
-.pc-web-card > header { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.pc-web-card > header strong { color: var(--text-primary); font-size: 15px; font-weight: 600; }
-.pc-web-card > header span { overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.pc-web-card > header time { margin-left: auto; flex: none; color: var(--text-tertiary); font-size: 12px; }
+/* An order card: the number and its piece count lead (owner, 2026-11-27), then the pick list with a quantity box per
+   line (ink when more than one), then the delivery's details, quiet, under a dashed rule. */
+.pc-web-card { display: grid; gap: 10px; min-width: 0; padding: 14px 12px; background: var(--surface-default); }
+.pc-web-column .pc-web-card + .pc-web-card { border-top: 1px solid var(--line-soft); }
+.pc-web-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.pc-web-number { min-width: 0; color: var(--text-primary); font-size: 22px; font-weight: 600; line-height: 26px; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.pc-web-number span { margin-right: 1px; color: var(--text-tertiary); font-weight: 500; }
+.pc-web-pieces { justify-self: end; color: var(--text-secondary); font-size: 13px; line-height: 26px; white-space: nowrap; }
+.pc-web-pieces b { margin-right: 2px; color: var(--text-primary); font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.pc-web-pieces small { color: var(--text-tertiary); font-size: 11.5px; }
+.pc-web-kind { justify-self: start; padding: 1px 7px; border: 1px solid var(--line-soft); color: var(--text-secondary); font-size: 12px; line-height: 18px; white-space: nowrap; }
+.pc-web-kind b { color: var(--text-primary); font-weight: 600; }
+.pc-web-head time { justify-self: end; color: var(--text-secondary); font-size: 12px; line-height: 18px; white-space: nowrap; }
 .pc-web-flag { display: flex; align-items: baseline; gap: 6px; margin: 0; color: var(--status-restock-ink); font-size: 12px; line-height: 17px; }
 .pc-web-flag .pc-dot { flex: none; transform: translateY(-1px); }
-.pc-web-lines, .pc-web-facts { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
-.pc-web-lines li { display: grid; min-width: 0; color: var(--text-secondary); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
-.pc-web-lines li strong { color: var(--text-primary); font-weight: 500; }
-.pc-web-lines li small, .pc-web-facts li { color: var(--text-tertiary); font-size: 11.5px; line-height: 17px; overflow-wrap: anywhere; }
+.pc-web-lines, .pc-web-facts { display: grid; margin: 0; padding: 0; list-style: none; }
+.pc-web-lines { gap: 10px; }
+.pc-web-lines li { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; min-width: 0; }
+.pc-web-qty { grid-row: span 2; align-self: start; display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); color: var(--text-primary); font-size: 15px; font-weight: 600; line-height: 1; }
+.pc-web-qty-many { border-color: var(--surface-ink); background: var(--surface-ink); color: var(--text-on-ink); }
+.pc-web-lines li strong { min-height: 28px; padding-top: 4px; color: var(--text-primary); font-size: 14px; font-weight: 500; line-height: 20px; overflow-wrap: anywhere; }
+.pc-web-lines li small { color: var(--text-secondary); font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+.pc-web-facts { gap: 2px; padding-top: 10px; border-top: 1px dashed var(--line-dashed); }
+.pc-web-facts li { color: var(--text-secondary); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.pc-web-packed { display: flex; align-items: baseline; gap: 6px; margin: 0; color: var(--status-ok-ink); font-size: 12px; line-height: 17px; }
+.pc-web-packed .pc-dot { flex: none; transform: translateY(-1px); }
 .pc-web-customer { margin: 4px 0 0; color: var(--text-secondary); font-size: 14px; }
 .pc-web-customer strong { color: var(--text-primary); font-weight: 600; }
 .pc-web-reason { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 17px; }

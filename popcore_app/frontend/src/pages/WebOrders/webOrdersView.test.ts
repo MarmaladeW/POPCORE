@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { WebOrderCard, WebOrdersBoard } from '../../api/webOrders.ts'
-import { ageText, announceText, codeMissText, courierText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, packedText, picksText, plainName, reasonText } from './webOrdersView.ts'
+import { ageText, announceText, codeMissText, courierText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, packedText, picksText, pieceCount, plainName, reasonText } from './webOrdersView.ts'
 
 const now = Date.parse('2026-11-19T18:00:00Z')
 const card = (fields: Partial<WebOrderCard>): WebOrderCard =>
@@ -21,6 +21,14 @@ test('a pickup that has waited 3 days or more stands out; deliveries never do', 
   assert.equal(longWait(card({ paid_at: '2026-11-10T17:30:00', kind: 'delivery' }), now), 0)
 })
 
+test('a card counts its pieces across every line', () => {
+  assert.equal(pieceCount(card({})), 0)
+  assert.equal(pieceCount(card({ lines: [
+    { name: 'Echo', quantity: 2, popcore_id: 'PM0100', picks: [] },
+    { name: 'Bear', quantity: 1, popcore_id: null, picks: [] },
+  ] })), 3)
+})
+
 test('lines say where they were taken from', () => {
   assert.equal(picksText({ name: 'Echo', quantity: 3, popcore_id: 'PM0100',
     picks: [{ store: 'DT', place: 'floor', quantity: 2 }, { store: 'MK', place: 'warehouse', quantity: 1 }] }),
@@ -32,7 +40,7 @@ test('a delivery shows the customer’s choice, then FleetNow’s booking', () =
     ['送达 Fri Nov 21, 2–6 pm', '送到门口 Door to door', '区域 Zone Downtown'])
   assert.deepEqual(deliveryFacts(card({ kind: 'delivery', delivery: { service: 'normal', fleetnow_no: 'DO202611190000000001',
     fleetnow_status: 'PICKED_UP', fleetnow_pickup: '13:00–14:00', fleetnow_delivery: '14:00–18:00' } })),
-  ['普通 Normal', 'FleetNow DO202611190000000001 · PICKED_UP', '取件 Pickup 13:00–14:00', '派送 Delivery 14:00–18:00'])
+  ['普通 Normal', '取件 Pickup 13:00–14:00', '派送 Delivery 14:00–18:00', 'FleetNow DO202611190000000001 · PICKED_UP'])
 })
 
 test('reasons and code misses are in staff words', () => {

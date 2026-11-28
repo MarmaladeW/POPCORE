@@ -45,13 +45,18 @@ export function longWait(card: WebOrderCard, now: number): number {
   return days >= LONG_WAIT_DAYS ? days : 0
 }
 
+/** How many pieces an order holds, all lines together: the card's 共 N 件 (owner, 2026-11-27: "the number/amount
+ * for each order is not that obvious"). */
+export const pieceCount = (card: WebOrderCard) => card.lines.reduce((sum, line) => sum + line.quantity, 0)
+
 /** Where a line's stock was taken from: "DT 楼下 Floor 2 · DT 楼上 Upstairs 1". */
 export const picksText = (line: WebOrderLine) =>
   line.picks.map(pick => `${whereText(pick.place, pick.store)} ${pick.quantity}`).join(' · ')
 
 const SERVICE: Record<string, string> = { normal: '普通 Normal', door: '送到门口 Door to door' }
 
-/** A delivery card's facts: what the customer chose, then FleetNow's once it is booked. */
+/** A delivery card's facts: what the customer chose, then FleetNow's once it is booked, its times before its long
+ * booking number (the times are what the store works to). */
 export function deliveryFacts(card: WebOrderCard): string[] {
   const delivery = card.delivery ?? {}
   const facts = [
@@ -60,9 +65,9 @@ export function deliveryFacts(card: WebOrderCard): string[] {
     delivery.zone && `区域 Zone ${delivery.zone}`,
   ]
   if (delivery.fleetnow_no) facts.push(
-    `FleetNow ${delivery.fleetnow_no}${delivery.fleetnow_status ? ` · ${delivery.fleetnow_status}` : ''}`,
     delivery.fleetnow_pickup && `取件 Pickup ${delivery.fleetnow_pickup}`,
-    delivery.fleetnow_delivery && `派送 Delivery ${delivery.fleetnow_delivery}`)
+    delivery.fleetnow_delivery && `派送 Delivery ${delivery.fleetnow_delivery}`,
+    `FleetNow ${delivery.fleetnow_no}${delivery.fleetnow_status ? ` · ${delivery.fleetnow_status}` : ''}`)
   return facts.filter((fact): fact is string => !!fact)
 }
 
