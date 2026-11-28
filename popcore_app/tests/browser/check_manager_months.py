@@ -1,7 +1,8 @@
-"""店长/副店长 see only this month and next in 排班 (owner, 2026-11-27: "the manager can only see the schedule for that
-month, not all of them"), in a real browser against the real Flask app and a disposable database on 27 Nov 2026.
-The manager's team calendar arrows stop at the window, with the reason, and the 月工时 picker opens November and
-December only. An admin still moves freely."""
+"""店长/副店长 only look at 排班, and only at the current wage month (owner, 2026-11-28: managers do not edit the
+schedule and see one month, the wage month), in a real browser against the real Flask app and a disposable database on
+27 Nov 2026. The manager's team calendar arrows stop at Nov 4 – Dec 3, with the dates; a day shows who works without
+any assign or edit button, no shift dialog opens and the checklist is gone; the 月工时 picker opens November only; the
+manager has their own availability tab and no reminder editing. An admin still moves freely and assigns."""
 import asyncio
 import re
 import subprocess
@@ -14,7 +15,8 @@ from check_foundation import FRONTEND, HERE, ROOT
 PORT = 5202
 BASE = f'http://127.0.0.1:{PORT}'
 OUT = ROOT / '.local' / 'manager-months'
-HINT = '店长只能看这个月和下个月 · Managers see this month and next only'
+HINT = '店长只能看 2026-11-04 到 2026-12-03 的排班 · Managers see 2026-11-04 – 2026-12-03 only'
+VIEW_ONLY = '只能查看 · View only: 排班由管理员安排 The admin makes the schedule'
 
 
 async def open_as(browser, fixture, width, role):
@@ -66,6 +68,24 @@ async def run(browser, width):
         await walk(forward, 12)
         await expect(forward).to_be_disabled()
         await page.screenshot(path=OUT / f'manager-last-{width}.png', full_page=True)
+        await expect(page.get_by_text(VIEW_ONLY, exact=True)).to_be_visible()
+        await expect(page.locator('.pc-coverage-toggle')).to_have_count(0)
+        if width > 600:
+            await page.get_by_role('button', name='Month', exact=True).click()
+            await expect(back).to_be_disabled()
+            await expect(forward).to_be_enabled()  # December's grid still holds Dec 1–3 of the wage month
+            await page.get_by_role('button', name='View 2026-11-10 DT', exact=True).click()
+            day = page.get_by_role('region', name='Schedule details 2026-11-10 DT')
+            await expect(day.get_by_text('Assigned · 1', exact=True)).to_be_visible()
+            await expect(day.get_by_role('button')).to_have_count(0)
+            await expect(page.get_by_role('dialog')).to_have_count(0)
+            await page.locator('.pc-store-calendars .pc-shift').filter(has_text='Cashier').first.click()
+            await expect(page.get_by_role('dialog')).to_have_count(0)
+            await page.screenshot(path=OUT / f'manager-view-only-{width}.png', full_page=True)
+            await page.get_by_role('tab', name='我的可上时间 My availability').click()
+            await expect(page.get_by_role('button', name='Submit two weeks', exact=True)).to_be_visible()
+            await page.get_by_role('tab', name='我的班 My shifts').click()
+            await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
 
         if width < 600:  # the phone's tab bar is full: pick it from its ⋯ menu, as a person would
             await page.get_by_role('button', name='More tabs').hover()
@@ -73,7 +93,7 @@ async def run(browser, width):
         else:
             await page.get_by_role('tab', name='月工时 Monthly report').click()
         await page.locator('.ant-picker').first.click()
-        for month, closed in (('2026-09', True), ('2026-10', True), ('2026-11', False), ('2026-12', False)):
+        for month, closed in (('2026-10', True), ('2026-11', False), ('2026-12', True)):
             cell = expect(page.locator(f'.ant-picker-dropdown td[title="{month}"]'))
             await (cell.to_have_class(re.compile('ant-picker-cell-disabled')) if closed
                    else cell.not_to_have_class(re.compile('ant-picker-cell-disabled')))
@@ -85,6 +105,8 @@ async def run(browser, width):
         back = page.get_by_role('button', name='Previous calendar period')
         assert await walk(back, 5) == 5, 'an admin moves back freely'
         await expect(back).to_be_enabled()
+        await expect(page.get_by_text(VIEW_ONLY, exact=True)).to_have_count(0)
+        await expect(page.get_by_role('tab', name='我的可上时间 My availability')).to_have_count(0)
         await context.close()
     finally:
         fixture.tearDown()
@@ -121,5 +143,6 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    print('PASS: manager months — the manager\'s calendar arrows stop at November and December 2026 with the reason, '
-          '月工时 opens November and December only; an admin moves freely; at 1440 and 390 px')
+    print('PASS: manager view only — the manager\'s calendar arrows stop at Nov 4 – Dec 3 2026 with the dates, a day shows '
+          'its shifts without buttons or dialogs, no checklist, 月工时 opens November only, own availability tab; '
+          'an admin moves freely; at 1440 and 390 px')

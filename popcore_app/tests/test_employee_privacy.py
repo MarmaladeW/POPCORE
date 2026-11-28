@@ -44,7 +44,7 @@ class EmployeePrivacyTests(IsolatedApiCase):
         rows = [mine, self.client.patch('/api/schedule/me', json={}, headers=jessi).get_json()]
         rows += self.client.get('/api/schedule/employees', headers=manager).get_json()
         rows += self.client.get('/api/schedule/trainees', headers=manager).get_json()
-        rows.append(self.client.post('/api/schedule/trainees', json={'name': 'Newer'}, headers=manager).get_json())
+        rows.append(self.client.post('/api/schedule/trainees', json={'name': 'Newer'}, headers=self.headers('admin')).get_json())
         rows.append(self.client.patch(f'/api/schedule/employees/{self.jessi}', json={'name': 'Jessi W'},
                                       headers=manager).get_json())
         for path, body in (('color', {'color': '#123456'}), ('schedulable', {'is_schedulable': False}),
