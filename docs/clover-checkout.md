@@ -51,7 +51,7 @@ The server works out every amount from Clover's current total A (`popcore_app/cl
 
 | Clover order | Card only | Other tenders only | Split with card |
 |---|---|---|---|
-| No other discount | A | Cash discount: under $10, the previous whole dollar ($5.10 to $5; a whole-dollar total keeps its price); $10 to $15, the nearest whole dollar to 2.5% off, below A; above $15, at least $1 off (or 2.5% when more), rounded down (same rule as manual checkout) | Rounding: A down to a whole dollar |
+| No other discount | A | Cash discount: under $10, down to the previous 50¢ ($7.80 to $7.50, $9.99 to $9.50; a total on a 50¢ step keeps its price); $10 to $15, the nearest whole dollar to 2.5% off, below A; above $15, at least $1 off (or 2.5% when more), rounded down (same rule as manual checkout) | Rounding: A down to a whole dollar |
 | RewardUp or any other discount already on it | A | Rounding: A down to a whole dollar | Rounding: A down to a whole dollar |
 | An old manual cash price (`CA$x.xx Off`) | Not offered | A | A |
 
