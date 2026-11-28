@@ -75,8 +75,10 @@ item name, item piece, pickup code, delivery name"; the pickup code stays off th
 
 - a quiet top line: 自取 or 配送 with the store, the order number and how long ago it was paid, and how many pieces
   the order holds, all lines together ("3 件 items");
-- who it is for, large: a delivery's "收件人 Ship to" name; a pickup found by its code, the customer's first name
-  (and who collects it). Pickup cards on the board have no name;
+- who it is for, large: a delivery's "收件人 Ship to" name, the largest thing on its card, since the courier is
+  matched to the parcel by it (owner, 2026-11-28: "名字 is also for 快递, as that is what we use to match"); when the
+  website did not send it, the card says "名字没读到 · Name not read" instead of leaving it out. A pickup found by its
+  code shows the customer's first name (and who collects it). Pickup cards on the board have no name;
 - each line by 记账名 (else the official name, else the website's name), in bold, beside its quantity in a box, filled in ink when
   it is more than one; under the name its POPCORE ID and where it was taken from (store and place), from the order's
   consume document. Boxes taken from a sealed set the order opened (popcore-work#128) show the place the set was
@@ -124,7 +126,7 @@ well as searching up the name." Pickups were left as they are: their names show 
 - POPCORE reads them live from the website on each board refresh, in one request for all the board's deliveries
   (`GET /orders?include=<ids>&status=any&_fields=id,shipping.first_name,shipping.last_name,billing.first_name,billing.last_name`,
   100 orders a request), so only those four fields leave the website. It waits 15 seconds at most: if the website does
-  not answer, the board shows without names and the name box says so.
+  not answer, each delivery card says "名字没读到 · Name not read" and the name box says so.
 - Names are never written to POPCORE's database, logs, activity, push notifications or the service worker. The board's
   answer is sent `Cache-Control: no-store`, and an error report (Sentry) drops the local variables of the board's code.
 - **收件人 Delivery name**, the box beside the pickup code, looks through the deliveries on the board as staff type:

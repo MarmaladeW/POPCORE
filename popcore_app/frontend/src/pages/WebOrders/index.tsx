@@ -45,7 +45,9 @@ function OrderCard({ card, now, customer, action, extra }: {
   const packed = packedText(card)
   const facts = card.kind === 'delivery' ? deliveryFacts(card) : []
   const pieces = pieceCount(card)
-  const shipTo = card.kind === 'delivery' ? card.name : null
+  // The courier is matched to the parcel by this name (owner, 2026-11-28: "名字 is also for 快递, as that is what we
+  // use to match"), so a delivery always has the slot, and says so when the website did not send the name.
+  const shipTo = card.kind === 'delivery' ? card.name ?? '' : null
   return <article className="pc-web-card" aria-label={`Order #${card.number}`}>
     <header className="pc-web-head">
       <span className="pc-web-kind">{card.kind === 'pickup' ? '自取' : '配送'} <b>{cardStores(card).join(' + ')}</b></span>
@@ -55,7 +57,8 @@ function OrderCard({ card, now, customer, action, extra }: {
     </header>
     {customer ? <p className="pc-web-person"><small>顾客 Customer</small> <strong>{customer.name || '—'}</strong>
       {customer.collector && <small>代取 Collecting: <b>{customer.collector}</b></small>}</p>
-      : shipTo && <p className="pc-web-person"><small>收件人 Ship to</small> <strong>{shipTo}</strong></p>}
+      : shipTo !== null && <p className="pc-web-person pc-web-ship"><small>收件人 Ship to</small> {shipTo
+        ? <strong>{shipTo}</strong> : <em>名字没读到 · Name not read. It comes back at the next refresh.</em>}</p>}
     {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
     {move && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{move}</p>}
     {courier && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{courier}</p>}

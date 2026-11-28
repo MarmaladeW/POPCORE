@@ -49,6 +49,9 @@
 .pc-web-person small { color: var(--text-secondary); font-size: 11.5px; line-height: 16px; }
 .pc-web-person strong { color: var(--text-primary); font-size: 18px; font-weight: 600; line-height: 24px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 .pc-web-person small + strong + small { margin-top: 2px; }
+/* A delivery's name is what the courier is matched by (owner, 2026-11-28): the largest thing on its card. */
+.pc-web-ship strong { font-size: 21px; line-height: 27px; letter-spacing: -0.015em; }
+.pc-web-person em { color: var(--text-secondary); font-size: 13px; font-style: normal; line-height: 19px; }
 .pc-web-person b { color: var(--text-primary); font-weight: 600; }
 .pc-web-flag { display: flex; align-items: baseline; gap: 6px; margin: 0; color: var(--status-restock-ink); font-size: 12px; line-height: 17px; }
 .pc-web-flag .pc-dot { flex: none; transform: translateY(-1px); }
