@@ -63,8 +63,8 @@ async def run(browser, width):
         await page.goto(BASE + '/schedule')
         back = page.get_by_role('button', name='Previous calendar period')
         forward = page.get_by_role('button', name='Next calendar period')
-        await expect(back).to_be_visible()
-        await walk(back)
+        # The two weeks start today, so the fortnight holding today is the first one. Waiting for the arrow to turn
+        # off also waits for the window to load: before it does, the arrows still move freely.
         await expect(back).to_be_disabled()
         await expect(back).to_have_attribute('title', HINT)
         await page.screenshot(path=OUT / f'manager-first-{width}.png', full_page=True)
