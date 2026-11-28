@@ -127,9 +127,10 @@ def _current_wage_anchor(start_day: int):
 # month, the current wage month, e.g. Nov 4 – Dec 3, moving on the 4th; replaces 2026-11-27's this month + next, in
 # which they could still change shifts) ──────────────────────────────────────────────────────────────────────────────
 # Only an admin adds, changes or removes shifts, the period notes, the checklist, the reminder and schedule-only
-# trainees. A manager reads the team's schedule, availability, notes and 月工时 only for the current wage month; admins
-# see every month. Everyone's own shifts, own availability, own 月工时, 打卡 and own calendar feed stay theirs in every
-# month.
+# trainees. A manager reads the team's schedule, availability and notes only for the current wage month; admins see
+# every month. 月工时 is one's own (same day: "manager can only see their own monthly report"): the team report,
+# another person's month and another person's hours are the admin's. Everyone's own shifts, own availability,
+# own 月工时, 打卡 and own calendar feed stay theirs in every month.
 
 MONTH_CLOSED = '店长只能看这个工资月的排班 · Managers see only this wage month of the schedule.'
 READ_ONLY = '排班只能由管理员修改 · Only an admin changes the schedule.'
@@ -173,19 +174,6 @@ def _month_closed(con, first, last=None):
     if window and (last < window[0] or first > window[1]):
         return jsonify({'code': 'schedule_month_closed', 'error': MONTH_CLOSED}), 403
     return None
-
-
-def _wage_months(con):
-    """The current wage month as a one-item list of YYYY-MM: the only 月工时 month a manager may open."""
-    year, month = _current_wage_anchor(_month_start_day(con))
-    return [f'{year}-{month:02d}']
-
-
-def _wage_month_closed(con, year, month):
-    """A 403 when a manager asks for a 月工时 month other than the current wage month."""
-    if _manager_window(con) is None or f'{year}-{month:02d}' in _wage_months(con):
-        return None
-    return jsonify({'code': 'schedule_month_closed', 'error': MONTH_CLOSED}), 403
 
 
 def _require_store_param(con):
@@ -236,7 +224,7 @@ def schedule_config():
     # The months a manager's 排班 opens on (None for an admin, who sees every month, and for staff, who see their own).
     role = ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM, 'viewer'), 0)
     window = _manager_window(con) if role == ROLE_HIERARCHY['manager'] else None
-    result['manager_window'] = {'first': window[0], 'last': window[1], 'months': _wage_months(con)} if window else None
+    result['manager_window'] = {'first': window[0], 'last': window[1]} if window else None
     con.close()
     return jsonify(result)
 
@@ -1309,7 +1297,7 @@ def schedule_checklist_put():
 # ─── Monthly hours report ──────────────────────────────────────────────────────
 
 @bp.route('/api/schedule/reports/monthly', methods=['GET'])
-@role_required('manager')
+@role_required('admin')
 def schedule_report_monthly():
     import datetime as dt
     from collections import defaultdict
@@ -1324,10 +1312,6 @@ def schedule_report_monthly():
     except ValueError:
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
-    closed = _wage_month_closed(con, year, month)
-    if closed:
-        con.close()
-        return closed
 
     month_str = f'{year}-{month:02d}'
 
@@ -1410,10 +1394,10 @@ def schedule_report_monthly():
 
 
 @bp.route('/api/schedule/reports/monthly/<int:emp_id>', methods=['GET'])
-@role_required('manager')
+@role_required('admin')
 def schedule_report_monthly_employee(emp_id):
     """One employee's shifts in the monthly report's wage period and store scope,
-    each with the hours it counts, so a manager can send the breakdown to them."""
+    each with the hours it counts, so the admin can send the breakdown to them."""
     return _report_monthly_employee(emp_id)
 
 
@@ -1437,10 +1421,6 @@ def _report_monthly_employee(emp_id, own=False):
     except ValueError:
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
-    closed = None if own else _wage_month_closed(con, year, month)  # one's own months are always one's own
-    if closed:
-        con.close()
-        return closed
 
     if own and not (request.args.get('store_code') or '').strip():
         store_id, store_code = None, 'ALL'
@@ -1503,7 +1483,7 @@ def _report_monthly_employee(emp_id, own=False):
 # ─── Per-employee hours (wage period) ─────────────────────────────────────────
 
 @bp.route('/api/schedule/employees/<int:emp_id>/hours', methods=['GET'])
-@role_required('manager')
+@role_required('admin')
 def schedule_employee_hours(emp_id):
     """Hours worked by one employee in a wage period, across all stores.
     Defaults to the period containing today when year/month are omitted."""
@@ -1517,10 +1497,6 @@ def schedule_employee_hours(emp_id):
     except ValueError:
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
-    closed = _wage_month_closed(con, year, month)
-    if closed:
-        con.close()
-        return closed
 
     emp = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
     if not emp:

@@ -1,8 +1,9 @@
 """店长/副店长 only look at 排班, and only at the current wage month (owner, 2026-11-28: managers do not edit the
 schedule and see one month, the wage month), in a real browser against the real Flask app and a disposable database on
 27 Nov 2026. The manager's team calendar arrows stop at Nov 4 – Dec 3, with the dates; a day shows who works without
-any assign or edit button, no shift dialog opens and the checklist is gone; the 月工时 picker opens November only; the
-manager has their own availability tab and no reminder editing. An admin still moves freely and assigns."""
+any assign or edit button, no shift dialog opens and the checklist is gone; 月工时 is their own slip only and the page
+never asks for anyone else's hours; the manager has their own availability tab and no reminder editing. An admin still
+moves freely and assigns."""
 import asyncio
 import re
 import subprocess
@@ -57,6 +58,8 @@ async def run(browser, width):
     fixture.setUp()
     try:
         context, page = await open_as(browser, fixture, width, 'manager')
+        asked = []
+        page.on('request', lambda request: asked.append(urlsplit(request.url).path))
         await page.goto(BASE + '/schedule')
         back = page.get_by_role('button', name='Previous calendar period')
         forward = page.get_by_role('button', name='Next calendar period')
@@ -87,17 +90,21 @@ async def run(browser, width):
             await page.get_by_role('tab', name='我的班 My shifts').click()
             await expect(page.get_by_role('button', name='Edit reminder', exact=True)).to_have_count(0)
 
+        # 月工时 is their own slip, as staff have it (2026-11-28): no team report, nobody else's hours.
         if width < 600:  # the phone's tab bar is full: pick it from its ⋯ menu, as a person would
             await page.get_by_role('button', name='More tabs').hover()
-            await page.get_by_role('option', name='月工时 Monthly report').click()
+            await page.get_by_role('option', name='月工时 My hours').click()
         else:
-            await page.get_by_role('tab', name='月工时 Monthly report').click()
-        await page.locator('.ant-picker').first.click()
-        for month, closed in (('2026-10', True), ('2026-11', False), ('2026-12', True)):
-            cell = expect(page.locator(f'.ant-picker-dropdown td[title="{month}"]'))
-            await (cell.to_have_class(re.compile('ant-picker-cell-disabled')) if closed
-                   else cell.not_to_have_class(re.compile('ant-picker-cell-disabled')))
-        await page.screenshot(path=OUT / f'manager-report-{width}.png')
+            await page.get_by_role('tab', name='月工时 My hours').click()
+        await expect(page.get_by_role('article', name=re.compile('2026-11 hours$'))).to_be_visible()
+        await expect(page.get_by_text('Monthly hours report', exact=True)).to_have_count(0)
+        await expect(page.get_by_role('tab', name='月工时 Monthly report')).to_have_count(0)
+        await page.get_by_role('button', name='上个月 Previous month').click()
+        await expect(page.get_by_role('article', name=re.compile('2026-10 hours$'))).to_be_visible()
+        await page.screenshot(path=OUT / f'manager-my-hours-{width}.png')
+        reports = {path for path in asked if path.startswith('/api/schedule/reports/')}
+        assert reports == {'/api/schedule/reports/monthly/me'}, reports
+        assert not [path for path in asked if re.fullmatch(r'/api/schedule/employees/\d+/hours', path)], asked
         await context.close()
 
         context, page = await open_as(browser, fixture, width, 'admin')
@@ -144,5 +151,5 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: manager view only — the manager\'s calendar arrows stop at Nov 4 – Dec 3 2026 with the dates, a day shows '
-          'its shifts without buttons or dialogs, no checklist, 月工时 opens November only, own availability tab; '
+          'its shifts without buttons or dialogs, no checklist, 月工时 is their own slip only, own availability tab; '
           'an admin moves freely; at 1440 and 390 px')

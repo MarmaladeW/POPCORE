@@ -1,6 +1,6 @@
 """店长/副店长 only look at 排班, and only at the current wage month (owner, 2026-11-28: managers must not edit the
-schedule and see one month, the wage month, e.g. Nov 4 – Dec 3; replaces 2026-11-27's this month + next). Admins change
-and see every month; everyone keeps their own."""
+schedule and see one month, the wage month, e.g. Nov 4 – Dec 3; replaces 2026-11-27's this month + next). 月工时 is one's
+own (same day). Admins change and see every month; everyone keeps their own."""
 from contextlib import closing
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -58,18 +58,18 @@ class ManagerMonthTests(IsolatedApiCase):
         self.assertEqual(len(own), 4)
 
     def test_the_month_is_the_wage_month_in_toronto(self):
-        self.assertEqual(self.window(), {'first': '2026-11-04', 'last': '2026-12-03', 'months': ['2026-11']})
+        self.assertEqual(self.window(), {'first': '2026-11-04', 'last': '2026-12-03'})
         self.at(2026, 12, 3)  # the November wage month still runs
-        self.assertEqual(self.window(), {'first': '2026-11-04', 'last': '2026-12-03', 'months': ['2026-11']})
+        self.assertEqual(self.window(), {'first': '2026-11-04', 'last': '2026-12-03'})
         self.assertEqual(self.dates('manager'), ['2026-11-10'])
         self.clock.now.return_value = datetime(2026, 12, 4, 3, tzinfo=timezone.utc)  # 22:00 on Dec 3 in Toronto
         self.assertEqual(self.window()['first'], '2026-11-04')
         self.at(2026, 12, 4)  # it moves on the 4th
-        self.assertEqual(self.window(), {'first': '2026-12-04', 'last': '2027-01-03', 'months': ['2026-12']})
+        self.assertEqual(self.window(), {'first': '2026-12-04', 'last': '2027-01-03'})
         self.assertEqual(self.dates('manager'), ['2026-12-20'])
         self.assertEqual(self.dates('manager', '/api/schedule/availability'), ['2026-12-21'])
         self.at(2027, 1, 15)  # across the year end
-        self.assertEqual(self.window(), {'first': '2027-01-04', 'last': '2027-02-03', 'months': ['2027-01']})
+        self.assertEqual(self.window(), {'first': '2027-01-04', 'last': '2027-02-03'})
         self.assertEqual(self.dates('manager'), ['2027-01-15'])
         for role in ('admin', 'staff'):
             self.assertIsNone(self.window(role))
@@ -121,20 +121,21 @@ class ManagerMonthTests(IsolatedApiCase):
         self.assertEqual(self.client.get('/api/schedule/notes?key=month:2026-13', headers=manager).status_code, 400)
         self.assertEqual(self.client.get('/api/schedule/notes?key=month:2026-10', headers=self.headers('admin')).status_code, 200)
 
-    def test_monthly_hours_only_this_wage_month(self):
+    def test_monthly_hours_are_ones_own(self):
         manager, admin = self.headers('manager'), self.headers('admin')
+        with closing(self.connect()) as con:
+            mine = con.execute("INSERT INTO employees(auth0_id,name) VALUES ('auth0|manager','Store Manager')").lastrowid
+            con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                           VALUES (?,'2026-10-15','12:00','20:00','admin',?)""", (mine, self.store_id))
+            con.commit()
+        # The team report, another person's month and another person's hours are the admin's, in every month.
         for path in ('/api/schedule/reports/monthly?store_code=DT', f'/api/schedule/reports/monthly/{self.employee}?store_code=DT',
-                     f'/api/schedule/employees/{self.employee}/hours?'):
-            for month in (10, 12):
-                self.closed(self.client.get(f'{path}&year=2026&month={month}', headers=manager))
+                     f'/api/schedule/employees/{self.employee}/hours?', f'/api/schedule/employees/{mine}/hours?'):
+            for month in (10, 11):
+                self.assertEqual(self.client.get(f'{path}&year=2026&month={month}', headers=manager).status_code, 403, path)
                 self.assertEqual(self.client.get(f'{path}&year=2026&month={month}', headers=admin).status_code, 200, path)
-            self.assertEqual(self.client.get(f'{path}&year=2026&month=11', headers=manager).status_code, 200, path)
-        # One's own month report stays one's own in every month.
-        own = self.client.get('/api/schedule/reports/monthly/me?year=2026&month=10', headers=self.headers('staff'))
-        self.assertEqual(own.status_code, 200)
-        self.at(2026, 12, 2)  # still the November wage month
-        self.assertEqual(self.client.get('/api/schedule/reports/monthly?store_code=DT&year=2026&month=11', headers=manager).status_code, 200)
-        self.closed(self.client.get('/api/schedule/reports/monthly?store_code=DT&year=2026&month=12', headers=manager))
-        self.at(2026, 12, 10)  # the December wage month
-        self.assertEqual(self.client.get('/api/schedule/reports/monthly?store_code=DT&year=2026&month=12', headers=manager).status_code, 200)
-        self.closed(self.client.get('/api/schedule/reports/monthly?store_code=DT&year=2026&month=11', headers=manager))
+        # One's own month stays one's own in every month, a manager's as a staff member's.
+        own = self.client.get('/api/schedule/reports/monthly/me?year=2026&month=10', headers=manager)
+        self.assertEqual((own.status_code, own.get_json()['employee']['id'], own.get_json()['total_hours']), (200, mine, 8.0))
+        self.assertEqual(self.client.get('/api/schedule/reports/monthly/me?year=2026&month=10', headers=self.headers('staff'))
+                         .get_json()['total_hours'], 8.0)
