@@ -2,16 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { calendarRange, canGoBack, canGoForward, monthLimitHint, type ManagerWindow } from './managerWindow.ts'
 
-const november: ManagerWindow = { first: '2026-11-04', last: '2026-12-03' }
+const twoWeeks: ManagerWindow = { first: '2026-11-28', last: '2026-12-11' }
 
-test('a manager moves only inside this wage month', () => {
-  assert.equal(canGoBack(november, '2026-11-01'), false)  // the November month grid
-  assert.equal(canGoBack(november, '2026-11-05'), true)   // a week or fortnight starting after the 4th
-  assert.equal(canGoForward(november, '2026-12-01'), true) // December's grid still holds Dec 1–3
-  assert.equal(canGoForward(november, '2026-12-03'), true)
-  assert.equal(canGoForward(november, '2026-12-04'), false)
-  assert.deepEqual(calendarRange(november), { start: '2026-11-04', end: '2026-12-04' })
-  assert.equal(monthLimitHint(november), '店长只能看 2026-11-04 到 2026-12-03 的排班 · Managers see 2026-11-04 – 2026-12-03 only')
+test('a manager moves only inside the next two weeks', () => {
+  assert.equal(canGoBack(twoWeeks, '2026-11-23'), false)  // the fortnight holding today
+  assert.equal(canGoBack(twoWeeks, '2026-12-07'), true)   // the next one, with today before it
+  assert.equal(canGoForward(twoWeeks, '2026-12-07'), true) // Dec 7–11 are still ahead
+  assert.equal(canGoForward(twoWeeks, '2026-12-11'), true)
+  assert.equal(canGoForward(twoWeeks, '2026-12-12'), false)
+  assert.deepEqual(calendarRange(twoWeeks), { start: '2026-11-28', end: '2026-12-12' })
+  assert.equal(monthLimitHint(twoWeeks), '店长只能看 2026-11-28 到 2026-12-11 的排班 · Managers see 2026-11-28 – 2026-12-11 only')
 })
 
 test('an admin moves anywhere', () => {

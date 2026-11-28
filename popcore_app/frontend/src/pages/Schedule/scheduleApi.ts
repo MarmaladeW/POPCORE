@@ -166,7 +166,7 @@ export interface ScheduleConfig {
   schedule_open_hours: string
   schedule_shift_presets: string
   schedule_positions: string
-  /** The dates a 店长/副店长 may look at (the current wage month); null for an admin and for staff. */
+  /** The dates a 店长/副店长 may look at (the next two weeks); null for an admin and for staff. */
   manager_window?: ManagerWindow | null
 }
 

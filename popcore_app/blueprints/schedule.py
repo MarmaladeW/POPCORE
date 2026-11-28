@@ -123,16 +123,17 @@ def _current_wage_anchor(start_day: int):
     return year, month
 
 
-# ─── 店长/副店长 only look at this wage month (owner, 2026-11-28: managers must not edit the schedule and see one
-# month, the current wage month, e.g. Nov 4 – Dec 3, moving on the 4th; replaces 2026-11-27's this month + next, in
-# which they could still change shifts) ──────────────────────────────────────────────────────────────────────────────
+# ─── 店长/副店长 only look, at the next two weeks (2026-11-28: managers must not edit the schedule; they always see
+# the next two weeks, today and the 13 days after it, no past days; replaces the wage month picked earlier that day
+# and 2026-11-27's this month + next, in which they could still change shifts) ───────────────────────────────────────
 # Only an admin adds, changes or removes shifts, the period notes, the checklist, the reminder and schedule-only
-# trainees. A manager reads the team's schedule, availability and notes only for the current wage month; admins see
+# trainees. A manager reads the team's schedule, availability and notes only for the next two weeks; admins see
 # every month. 月工时 is one's own (same day: "manager can only see their own monthly report"): the team report,
 # another person's month and another person's hours are the admin's. Everyone's own shifts, own availability,
 # own 月工时, 打卡 and own calendar feed stay theirs in every month.
 
-MONTH_CLOSED = '店长只能看这个工资月的排班 · Managers see only this wage month of the schedule.'
+MANAGER_DAYS = 14
+MONTH_CLOSED = '店长只能看接下来两周的排班 · Managers see only the next two weeks of the schedule.'
 READ_ONLY = '排班只能由管理员修改 · Only an admin changes the schedule.'
 
 
@@ -152,11 +153,11 @@ def admin_changes(f):
 
 
 def _manager_window(con):
-    """(first, last) ISO dates a manager may see, or None for an admin: the wage month running today in Toronto."""
+    """(first, last) ISO dates a manager may see, or None for an admin: today in Toronto and the 13 days after it."""
     if _is_admin():
         return None
-    start_day = _month_start_day(con)
-    return tuple(str(day) for day in _wage_period(*_current_wage_anchor(start_day), start_day))
+    today = _toronto_today()
+    return str(today), str(today + _dt.timedelta(days=MANAGER_DAYS - 1))
 
 
 def _within_window(con, start, end):
@@ -1183,7 +1184,7 @@ _PERIOD_KEY_RE = _re.compile(r'^(month:\d{4}-\d{2}|(fortnight|week|day):\d{4}-\d
 
 
 def _period_closed(key):
-    """A 403 (or 400 for a date that does not exist) when a manager asks for a period wholly outside this wage month."""
+    """A 403 (or 400 for a date that does not exist) when a manager asks for a period wholly outside their two weeks."""
     kind, _, day = key.partition(':')
     try:
         first = _dt.date.fromisoformat(day + '-01' if kind == 'month' else day)

@@ -31,21 +31,22 @@ their own off.
 
 ## Managers keep
 
-审核 of the day's 记一笔 (the whole day's list and totals), 收工 review, 损耗, a look at this wage month's 排班
+审核 of the day's 记一笔 (the whole day's list and totals), 收工 review, 损耗, a look at the next two weeks of 排班
 (their own 月工时 only), 员工折扣 management with amounts, 异常提醒, products, 图鉴 editing, section counts.
 
-### 排班: look only, this wage month only
+### 排班: look only, the next two weeks only
 
-Owner, 2026-11-28: 店长 and 副店长 must not edit the schedule, and see one month: the current wage month (now Nov 4 –
-Dec 3; it moves on the 4th, the `schedule_month_start_day` setting). Replaces 2026-11-27's "this month + next", in which
-they could still change shifts inside the window.
+2026-11-28: 店长 and 副店长 must not edit the schedule, and always see the next two weeks: today and the 13 days after
+it, no past days (picked over the wage month chosen earlier that day). Replaces 2026-11-27's "this month + next", in
+which they could still change shifts inside the window.
 
 - Only an admin changes the team's 排班. `blueprints/schedule.py` `admin_changes` answers a `manager` 403
   `schedule_read_only` on adding, changing (times, store, position, notes, 实际下班 actual finish) and removing
   shifts, the conflict check (asked only before saving), period notes, the checklist, the shared reminder and
   schedule-only trainees. Staff get the plain 403 as before.
-- `_manager_window` limits a manager's reads of the team's shifts, availability, notes and checklist to the wage
-  month running today in Toronto: reads are cut to it, anything wholly outside is 403 `schedule_month_closed`.
+- `_manager_window` limits a manager's reads of the team's shifts, availability, notes and checklist to today in
+  Toronto and the 13 days after it (`MANAGER_DAYS`): reads are cut to it, anything wholly outside is 403
+  `schedule_month_closed`.
   `GET /api/schedule/config` gives the page `manager_window` so its arrows (titled with the dates) stop there.
 - 月工时 is one's own (2026-11-28: "manager can only see their own monthly report"). The team report
   (`reports/monthly`), another person's month (`reports/monthly/<id>`) and another person's hours

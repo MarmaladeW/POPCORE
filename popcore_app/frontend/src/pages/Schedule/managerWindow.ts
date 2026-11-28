@@ -1,7 +1,7 @@
 import dayjs from 'dayjs'
 
-// 店长/副店长 only look at 排班 for the current wage month, e.g. Nov 4 – Dec 3 (owner, 2026-11-28: managers do not edit
-// the schedule and see one month).
+// 店长/副店长 only look at 排班, and only at the next two weeks: today and the 13 days after it (2026-11-28: managers
+// do not edit the schedule and always see the next two weeks).
 // The server refuses the rest; these keep the page's arrows inside the window.
 // `null` is an admin (every month) or a page that has not heard from the server yet.
 export type ManagerWindow = { first: string; last: string }
