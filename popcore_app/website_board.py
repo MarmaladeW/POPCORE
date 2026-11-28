@@ -121,6 +121,19 @@ def _picks(con, document_id):
     return picks
 
 
+def _checks(con, row):
+    """请核对 Check (owner, 2026-11-27, popcore-work#149: "take the order, but make sure it is flagged"): what POPCORE
+    could only guess when it took the order, by the name staff know (website_sync CHECK_GUESSED / CHECK_OPENED):
+    [{name, store, why, units}]."""
+    codes = {store_id: code for store_id, code in con.execute('SELECT id, code FROM stores')}
+    checks = []
+    for check in json.loads(row['checks'] or '[]'):
+        product = con.execute('SELECT jizhanming, name_cn_en FROM products WHERE id=?', (check['product_id'],)).fetchone()
+        checks.append({'name': ((product['jizhanming'] or '').strip() or product['name_cn_en']) if product else '',
+                       'store': codes.get(check['store_id'], ''), 'why': check['why'], 'units': check['units']})
+    return checks
+
+
 def card(con, row, cfg):
     """What the board shows of one order: nothing personal, never the pickup code. A push notification is made from
     it too; the delivery name is added by board() only."""
@@ -146,7 +159,7 @@ def card(con, row, cfg):
     # `stores`: the boards the order is on. `store`: where it is handed over (a delivery in two stores: the first).
     result = {'id': row['wc_order_id'], 'number': row['number'], 'paid_at': row['paid_at'], 'kind': kind(row),
               'store': stores[0], 'stores': stores, 'status': row['wc_status'], 'lines': lines,
-              'taken_elsewhere': elsewhere}
+              'taken_elsewhere': elsewhere, 'checks': _checks(con, row)}
     if kind(row) == 'delivery':
         delivery = json.loads(row['delivery'] or '{}')
         result.update(delivery=delivery,

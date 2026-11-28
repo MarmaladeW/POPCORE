@@ -10,6 +10,9 @@ export interface WebOrderLine {
   // Where the stock was taken from, when the order's consume document records it.
   picks: WebOrderPick[]
 }
+// 'maybe_sold': it took `units` boxes POPCORE guessed the shop had sold since its last report. 'set_opened': POPCORE had
+// no loose boxes there, so it brought `units` sealed sets down to the floor and opened them (staff never open one upstairs).
+export interface WebOrderCheck { name: string; store: string; why: 'maybe_sold' | 'set_opened'; units: number }
 export interface WebOrderDelivery {
   window?: string; service?: string; zone?: string
   fleetnow_no?: string; fleetnow_pickup?: string; fleetnow_delivery?: string; fleetnow_status?: string
@@ -25,6 +28,8 @@ export interface WebOrderCard {
   stores?: string[]
   // The other stores its stock came from, to be brought over to `store`.
   taken_elsewhere?: string[]
+  // 请核对 Check (owner, 2026-11-27, popcore-work#149): what POPCORE could only guess when it took the order.
+  checks?: WebOrderCheck[]
   delivery?: WebOrderDelivery
   // Delivery: a courier is on its way to the store (FleetNow has a number for it, or the website says dispatched).
   booked?: boolean

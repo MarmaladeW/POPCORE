@@ -74,7 +74,12 @@ Each card shows:
 - the order number and how long ago it was paid;
 - each line by 记账名 (else the official name, else the website's name), its quantity and POPCORE ID, and where it
   was taken from (store and place), from the order's consume document. Boxes taken from a sealed set the order
-  opened (popcore-work#128) show the place the set was kept, such as 楼上 upstairs;
+  opened (popcore-work#128) show the floor, where the set was opened (popcore-work#149; before 2026-11-28 the place
+  the set was kept, such as 楼上 upstairs);
+- 请核对 Check, with a warning dot (owner, 2026-11-27, popcore-work#149: "take the order, but make sure it is
+  flagged"), when POPCORE could only guess: "Sa圣诞 1 盒，日报没到，可能已卖完" when it took boxes it guessed the shop had
+  sold since its last report, or "没有散盒，系统拿下 1 端开到楼下" when it had no loose boxes and brought a sealed set down to
+  the floor. Staff check the floor while packing; the next 日报 settles the count;
 - pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
   A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
