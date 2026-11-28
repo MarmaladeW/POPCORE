@@ -51,7 +51,7 @@ class EmployeeRegularTests(IsolatedApiCase):
     def detail(self, store='ALL'):
         response = self.client.get(
             f'/api/schedule/reports/monthly/{self.employee}?year=2026&month=9&store_code={store}',
-            headers=self.headers('manager'))
+            headers=self.headers('admin'))
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()
 
@@ -97,7 +97,7 @@ class EmployeeRegularTests(IsolatedApiCase):
         self.assertEqual({row['employee_name']: (row['regular_since'], row['is_training']) for row in shifts},
                          {'Jessi': ('2026-09-15', 0), 'Amy': (None, 1)})
         report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL',
-                                 headers=self.headers('manager')).get_json()
+                                 headers=self.headers('admin')).get_json()
         rows = {row['name']: row for row in report['employees']}
         self.assertEqual((rows['Jessi']['regular_since'], rows['Jessi']['is_training']), ('2026-09-15', 0))
         self.assertEqual((rows['Amy']['regular_since'], rows['Amy']['is_training']), (None, 1))
@@ -110,15 +110,15 @@ class EmployeeRegularTests(IsolatedApiCase):
             con.execute("INSERT INTO employees(auth0_id,name,is_active) VALUES ('auth0|gone','Gone',0)")
             con.commit()
         report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL',
-                                 headers=self.headers('manager')).get_json()
+                                 headers=self.headers('admin')).get_json()
         self.assertEqual([row['name'] for row in report['employees']], ['Amy', 'Jessi'])
         # In one store's scope, only who worked there: Amy has no MK shifts.
         mk = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=MK',
-                             headers=self.headers('manager')).get_json()
+                             headers=self.headers('admin')).get_json()
         self.assertEqual([(row['name'], row['total_hours']) for row in mk['employees']], [('Jessi', 4.0)])
         # A month nobody worked: an empty report.
         empty = self.client.get('/api/schedule/reports/monthly?year=2026&month=6&store_code=ALL',
-                                headers=self.headers('manager')).get_json()
+                                headers=self.headers('admin')).get_json()
         self.assertEqual(empty['employees'], [])
 
     def test_detail_lists_each_shift_with_the_hours_it_counts(self):
@@ -140,7 +140,7 @@ class EmployeeRegularTests(IsolatedApiCase):
         self.assertEqual(detail['total_hours'], 32.83)
         # The report row for the same period and scope adds up to the same total.
         report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL',
-                                 headers=self.headers('manager')).get_json()
+                                 headers=self.headers('admin')).get_json()
         self.assertEqual(next(r for r in report['employees'] if r['name'] == 'Jessi')['total_hours'], 32.83)
 
     def test_detail_follows_the_report_store_scope(self):
@@ -149,9 +149,10 @@ class EmployeeRegularTests(IsolatedApiCase):
         self.assertEqual([s['date'] for s in detail['shifts']], ['2026-09-09'])
         self.assertEqual(detail['total_hours'], 4.0)
 
-    def test_detail_needs_a_manager_store_and_known_employee(self):
+    def test_detail_needs_the_admin_a_store_and_known_employee(self):
         url = f'/api/schedule/reports/monthly/{self.employee}?year=2026&month=9'
-        self.assertEqual(self.client.get(url + '&store_code=ALL', headers=self.headers('staff')).status_code, 403)
-        self.assertEqual(self.client.get(url, headers=self.headers('manager')).status_code, 400)
+        for role in ('staff', 'manager'):  # another person's month is the admin's (2026-11-28)
+            self.assertEqual(self.client.get(url + '&store_code=ALL', headers=self.headers(role)).status_code, 403)
+        self.assertEqual(self.client.get(url, headers=self.headers('admin')).status_code, 400)
         self.assertEqual(self.client.get('/api/schedule/reports/monthly/9999?year=2026&month=9&store_code=ALL',
-                                         headers=self.headers('manager')).status_code, 404)
+                                         headers=self.headers('admin')).status_code, 404)
