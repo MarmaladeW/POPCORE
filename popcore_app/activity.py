@@ -444,7 +444,6 @@ def _record(response):
             store = result['store_id']
         # via_sub / via_name: lines made before 2026-11-26 under a name tapped on the store computer keep them.
         acting, actor_sub = None, actor['sub']
-        detail = extra.get('detail') or _detail(con, endpoint, view, body, result)
         try:
             changes = activity_changes.collect(
                 con, endpoint, view, request.get_json(silent=True), result, getattr(g, 'activity_records', None),
@@ -452,6 +451,8 @@ def _record(response):
         except Exception:  # noqa: BLE001 - a line without its details is still a line
             current_app.logger.exception('activity: reading what changed failed')
             changes = None
+        # An edit's line says what really changed (owner, 2026-11-28), not which fields a form happened to send.
+        detail = extra.get('detail') or activity_changes.brief(changes) or _detail(con, endpoint, view, body, result)
         con.execute(
             """INSERT OR IGNORE INTO activity_log(business_date, store_id, actor_sub, actor_name, via_sub, via_name, kind,
                    endpoint, summary, detail, link, audience, request_key, changes)
@@ -461,7 +462,8 @@ def _record(response):
              extra.get('kind', kind), endpoint,
              extra.get('summary') or ' '.join(filter(None, (zh, en))) + (f' · {about}' if about else ''),
              detail or '', extra.get('link') or _link(endpoint, view, result), extra.get('audience', audience),
-             request.headers.get('Idempotency-Key') or None, changes))
+             request.headers.get('Idempotency-Key') or None,
+             json.dumps(changes, ensure_ascii=False, separators=(',', ':')) if changes else None))
         con.commit()
 
 

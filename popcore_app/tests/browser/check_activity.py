@@ -2,7 +2,10 @@
 WeChat it is super easy to check who did what … account tracking/leaving mark is really important"): what staff and
 a manager do leaves one line each with their name. Only the admin sees 动态 (owner, 2026-11-26): staff and managers
 have no menu entry and the page refuses them; the admin reads every line, filters by person and kind, and opens a
-line's record; nothing scrolls sideways, at 390 and 1440 px."""
+line to see exactly what it changed (owner, 2026-11-28): a product's changed fields before → after, the stock moved
+from place to place with each count, a plain "no details" for a line that kept none, and the record a tap away. The
+sheet closes with the phone's back. Nothing scrolls sideways, at 390 and 1440 px."""
+import json
 import asyncio
 import re
 import subprocess
@@ -110,9 +113,68 @@ async def run(browser, width):
         await expect(rows).to_have_count(1)
         await chips.get_by_role('button', name='全部 All').click()
         await expect(rows).to_have_count(1)
-        # A line opens what it was about.
+        # A line opens what it changed. These restock lines changed no record or stock: the sheet says so plainly,
+        # and links on to the record.
         await rows.first.click()
+        sheet = page.get_by_role('dialog')
+        await expect(sheet).to_contain_text('补货加货 Added to a restock sheet')
+        await expect(sheet).to_contain_text('Photo Helper')
+        await expect(sheet).to_contain_text('这条没有保存改动细节')
+        await expect(page).to_have_url(re.compile(r'/activity\?entry=\d+$'))
+        await fits(page, f'admin-none-{width}.png')
+        # The phone's back closes the sheet, staying on 动态.
+        await page.go_back()
+        await expect(sheet).to_be_hidden()
+        await expect(page).to_have_url(re.compile(r'/activity$'))
+        await rows.first.click()
+        await sheet.get_by_role('link', name='打开 Open').click()
         await expect(page).to_have_url(re.compile(r'/restock$'))
+
+        # A manager changes a product's price and notes (the form sends every field); a stock move lands.
+        with closing(fixture.connect()) as con:
+            con.execute("UPDATE products SET price=19.99, notes=NULL WHERE id=?", (fixture.product_id,))
+            con.commit()
+        edited = fixture.client.patch(f'/api/products/{fixture.product_id}', headers=fixture.headers('manager'),
+                                      json={'price': 20.99, 'notes': '新到 New in', 'jizhanming': 'Test Product'})
+        assert edited.status_code == 200, edited.get_json()
+        from activity import _business_date
+        with closing(fixture.connect()) as con:
+            con.execute("""INSERT INTO activity_log(business_date, store_id, actor_sub, actor_name, kind, endpoint, summary,
+                                                    detail, link, changes)
+                           VALUES (?, ?, 'auth0|staff', 'Staff Cashier', 'stock', 'stock_moves.stock_move_create',
+                                   '移货 Moved stock · 楼上 → 楼下', 'Echo 1端', '/move', ?)""",
+                        (_business_date(), fixture.store_id, json.dumps({'v': 1, 'stock': [
+                            {'product': 'ECHO-SET Echo 整端', 'qty': 1, 'from': {'place': 'DT 楼上', 'before': 2, 'after': 1},
+                             'to': {'place': 'DT 楼下', 'before': 28, 'after': 40}, 'into': 'ECHO Echo ×12',
+                             'why': '移货 楼上 → 楼下'},
+                            {'product': 'BEAR Bear 吊卡', 'qty': 3, 'from': {'place': 'DT 楼下', 'before': 3, 'after': 0},
+                             'to': {'place': '卖出 Sold'}, 'why': '日报 Daily report'}]}, ensure_ascii=False)))
+            con.commit()
+        await page.goto(BASE + '/activity')
+        await expect(rows).to_have_count(5)
+        await rows.nth(0).click()
+        await expect(sheet).to_contain_text('移货 Moved stock · 楼上 → 楼下')
+        await expect(sheet.get_by_text('2 行 lines')).to_be_visible()
+        first = sheet.locator('.pc-actd-line').first
+        await expect(first).to_contain_text('ECHO-SET Echo 整端')
+        await expect(first).to_contain_text('×1')
+        ends = first.locator('.pc-actd-end')
+        await expect(ends.locator('.pc-actd-end-word')).to_have_text(['从', '到'])
+        await expect(ends.locator('.pc-actd-place')).to_have_text(['DT 楼上', 'DT 楼下ECHO Echo ×12'])
+        await expect(ends.locator('.pc-actd-count')).to_have_text([re.compile(r'^2 → .*1$'), re.compile(r'^28 → .*40$')])
+        sold = sheet.locator('.pc-actd-line').nth(1).locator('.pc-actd-end').nth(1)
+        await expect(sold).to_have_text('到卖出 Sold')   # outside the stock: no count
+        await expect(sheet.locator('.pc-actd-why')).to_have_count(2)   # two reasons: each heads its lines
+        await fits(page, f'admin-stock-{width}.png')
+        await page.go_back()
+        await rows.nth(1).click()
+        await expect(sheet).to_contain_text('改产品 Edited a product · TEST-1')
+        fields = sheet.locator('.pc-actd-record dl')
+        await expect(fields.locator('dt')).to_have_text(['价格 Price', '备注 Notes'])
+        await expect(fields.locator('dd').nth(0)).to_contain_text('$19.99')
+        await expect(fields.locator('dd').nth(0).locator('.pc-actd-after')).to_have_text('$20.99')
+        await expect(fields.locator('dd').nth(1).locator('.pc-actd-after')).to_have_text('新到 New in')
+        await fits(page, f'admin-product-{width}.png')
     finally:
         for context in contexts:
             await context.close()
@@ -151,4 +213,5 @@ async def main():
 if __name__ == '__main__':
     asyncio.run(main())
     print('PASS: 动态 Activity: each change leaves a named line; staff and managers have no 动态 (menu or page); the '
-          'admin reads every line, filters by person and kind and opens a line; at 390 and 1440 px')
+          'admin reads every line, filters by person and kind, and opens a line to see what it changed (fields '
+          'before → after, stock from → to with counts, or plainly none) and the record; at 390 and 1440 px')

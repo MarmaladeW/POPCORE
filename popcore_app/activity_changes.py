@@ -395,7 +395,7 @@ def _doc_lines(document, moves, label):
 
 
 def collect(con, endpoint, view, body, result, before, documents):
-    """The changes JSON for one 动态 line, or None when the request changed nothing that is kept."""
+    """What one 动态 line changed, or None when the request changed nothing that is kept."""
     records = diff(before or {}, read(con, endpoint, view, body, result)) if endpoint in WATCH else []
     extra = secret_fields(endpoint, body)
     if extra:
@@ -417,4 +417,19 @@ def collect(con, endpoint, view, body, result, before, documents):
         changes['stock'] = lines[:STOCK_MAX]
         if len(lines) > STOCK_MAX:
             changes['stock_more'] = len(lines) - STOCK_MAX
-    return json.dumps(changes, ensure_ascii=False, separators=(',', ':'))
+    return changes
+
+
+def brief(changes, most=3, width=24):
+    """The line's few words for an edit, from what really changed ("价格 Price $19.99 → $20.99"), so the list says
+    what moved without opening it. None for anything but edits, whose own words stay."""
+    records = (changes or {}).get('records') or []
+    if not records or any(record['op'] != 'edit' for record in records):
+        return None
+
+    def cut(value):
+        value = '—' if value is None else value.replace('\n', ' ')
+        return value if len(value) <= width else value[:width - 1] + '…'
+    fields = [field for record in records for field in record['fields']]
+    words = [f"{field['label']} {cut(field['before'])} → {cut(field['after'])}" for field in fields[:most]]
+    return '、'.join(words) + (f' +{len(fields) - most}' if len(fields) > most else '')

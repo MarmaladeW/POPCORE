@@ -126,6 +126,8 @@ class RecordChangeTests(Lines, IsolatedApiCase):
         self.assertEqual(self.fields(changes), {('edit', '价格 Price', '$19.99', '$20.99'),
                                                 ('edit', '备注 Notes', None, '新到 New in')})
         self.assertEqual(self.opened(entry_id)['changes'], changes)
+        # The line itself says what moved, not every field the form sent.
+        self.assertEqual(self.opened(entry_id)['detail'], '价格 Price $19.99 → $20.99、备注 Notes — → 新到 New in')
         # Nothing changed: the line is still there, with nothing to show.
         self.client.patch(f'/api/products/{self.product_id}', headers=self.headers('manager'), json={'price': 20.99})
         self.assertIsNone(self.line('products.update_product')[1])
