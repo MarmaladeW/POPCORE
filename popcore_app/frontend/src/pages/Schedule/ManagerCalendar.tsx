@@ -349,9 +349,9 @@ export default function ManagerCalendar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees, storesKey, staffReqs, storeHours, empColors])
 
-  // Hours worked this wage month for the filtered employee
+  // Hours worked this wage month for the filtered employee: the admin's only, a 店长/副店长 sees their own 月工时 alone.
   useEffect(() => {
-    if (filterEmpId === null) {
+    if (filterEmpId === null || !canEdit) {
       setEmpHours(null)
       return
     }
@@ -360,7 +360,7 @@ export default function ManagerCalendar() {
       .then((h) => { if (!cancelled) setEmpHours(h) })
       .catch(() => { if (!cancelled) setEmpHours(null) })
     return () => { cancelled = true }
-  }, [filterEmpId, eventsByStore])
+  }, [filterEmpId, eventsByStore, canEdit])
 
   const eachCal = (fn: (api: CalendarApi) => void) => {
     Object.values(calRefs.current).forEach((c) => {
@@ -795,8 +795,8 @@ export default function ManagerCalendar() {
         </div>
       )}
 
-      {/* Hours summary for the filtered employee (wage month, all stores) */}
-      {filterEmpId !== null && (
+      {/* Hours summary for the filtered employee (wage month, all stores); the admin's only */}
+      {canEdit && filterEmpId !== null && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
           {empHours ? (
             <>

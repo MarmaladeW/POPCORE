@@ -113,7 +113,7 @@ async def fits(page, name):
 
 async def monthly_hours(browser, case, width):
     phone = width < 768
-    context, page = await open_as(browser, case, 'manager', width)
+    context, page = await open_as(browser, case, 'admin', width)
     try:
         await page.goto(BASE + '/schedule')
         await page.get_by_role('tab', name='月工时 Monthly report').click()
@@ -125,7 +125,7 @@ async def monthly_hours(browser, case, width):
         amy_name = page.get_by_role('button', name='Amy: 每班工时 Hours by shift', exact=True)
         await expect(amy_name.locator('.pc-regular-mark')).to_have_count(0)
         await expect(amy_name.locator('.pc-training-mark')).to_have_count(1)
-        # Only people with hours this month: Admin and the manager worked none.
+        # Only people with hours this month: Admin and the manager worked none. (The team report is the admin's, 2026-11-28.)
         await expect(page.locator('.pc-report-person-name')).to_have_text(['Amy', 'Belle', 'Jessi'])
         jessi_row = page.locator('.ant-table-row').filter(has=jessi)
         await expect(jessi_row).to_contain_text('62.83h')
@@ -186,7 +186,7 @@ async def monthly_hours(browser, case, width):
         await context.close()
 
     # One store: the slip follows the report's scope and drops the store column.
-    context, page = await open_as(browser, case, 'manager', width, store='DT')
+    context, page = await open_as(browser, case, 'admin', width, store='DT')
     try:
         await page.goto(BASE + '/schedule')
         await page.get_by_role('tab', name='月工时 Monthly report').click()

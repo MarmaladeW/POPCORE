@@ -34,7 +34,7 @@ class TraineePromotionTests(IsolatedApiCase):
             employees = con.execute('SELECT id, auth0_id, name, is_trainee FROM employees').fetchall()
             self.assertEqual(len(employees), 1)
             self.assertEqual(tuple(employees[0]), (self.trainee_id, 'auth0|jessi', 'Jessi', 0))
-        report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL', headers=self.headers('manager'))
+        report = self.client.get('/api/schedule/reports/monthly?year=2026&month=9&store_code=ALL', headers=self.headers('admin'))
         self.assertEqual(report.get_json()['employees'][0]['total_hours'], 8.0)
         self.assertEqual(report.get_json()['employees'][0]['id'], self.trainee_id)
         signed_in = self.client.get('/api/schedule/me', headers=self.headers('staff:jessi'))

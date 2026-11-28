@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ManagerWindow } from './managerWindow'
 import { getScheduleConfig } from './scheduleApi'
 
-/** This manager's months in 排班, from the server; null for an admin, and until the server answers. */
+/** The dates this manager may look at in 排班, from the server; null for an admin, and until the server answers. */
 export default function useManagerWindow(): ManagerWindow | null {
   const [range, setRange] = useState<ManagerWindow | null>(null)
   useEffect(() => {
