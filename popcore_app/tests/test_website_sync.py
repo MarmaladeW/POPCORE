@@ -785,6 +785,40 @@ class WebsiteSyncTests(WebsiteCase):
         self.run_sync()
         self.assertEqual((self.order_row(510)['state'], self.order_row(510)['store_id']), ('recorded', self.dt))
         self.assertEqual((self.balance(self.box, 'floor'), self.at(self.box, mk_locations['floor'])), (6, 2))
+        # It took boxes the hold guessed sold: 请核对 Check (popcore-work#149). The order that had MK's boxes has none.
+        self.assertEqual(json.loads(self.order_row(510)['checks']),
+                         [{'product_id': self.box, 'store_id': self.dt, 'why': 'maybe_sold', 'units': 4}])
+        self.assertIsNone(self.order_row(509)['checks'])
+
+    def test_a_store_with_sealed_sets_takes_its_floor_boxes_before_opening_one(self):
+        """popcore-work#149 (Black Friday, 2026-11-27): DT's report was not in and the hold left out every Sa圣诞 box on
+        DT's floor, so order #42232 opened a sealed set upstairs. Owner: "we do not open sets upstairs, we take single
+        box from downstairs" and "take the order, but make sure it is flagged". A store with sealed sets of the box
+        keeps the order and takes the boxes the hold guessed sold, floor first, and the order is checked; no set opens,
+        and MK, which has the boxes, gives none."""
+        mk, mk_locations = self.open_mk(20)
+        self.turn_on()
+        # DT: 10 floor + 4 upstairs loose and 2 sealed sets upstairs; its best report day sold 14, all its loose boxes.
+        with closing(self.connect()) as con:
+            con.execute("INSERT INTO daily_sales(product_id, date, store, qty_pos, qty_sold) VALUES (?, '2026-05-20', 'DT', 14, 14)",
+                        (self.box,))
+            con.commit()
+        self.run_sync()
+        # DT can still fill 14 + 24 boxes alone; the website number leaves DT's loose boxes out as before (MK's 20).
+        self.assertEqual(json.loads(website_sync._store_stock(self.woo.item(11)['meta_data'])), {'dt': 38, 'mk': 20})
+        self.assertEqual(self.woo.item(11)['stock_quantity'], 20)
+        self.assert_take_agrees()
+        self.woo.order(545, [(11, 2)])
+        self.run_sync()
+        order = self.order_row(545)
+        self.assertEqual((order['state'], order['store_id'], order['fill_stores']), ('recorded', self.dt, 'dt'))
+        self.assertEqual((self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'),
+                          self.balance(self.set, 'upstairs'), self.at(self.box, mk_locations['floor'])), (8, 4, 2, 20))
+        self.assertEqual(json.loads(order['checks']),
+                         [{'product_id': self.box, 'store_id': self.dt, 'why': 'maybe_sold', 'units': 2}])
+        with closing(self.connect()) as con:
+            self.assertIsNone(con.execute(
+                "SELECT 1 FROM inventory_documents WHERE source_type='website_order_open'").fetchone())
 
     def test_the_website_is_told_which_store_filled_a_delivery(self):
         """Owner, 2026-11-26 (popcore-work#121): the FleetNow courier collects from the store the order was filled
@@ -861,9 +895,10 @@ class WebsiteSyncTests(WebsiteCase):
 
     def test_a_delivery_opens_dts_own_sealed_set_before_going_to_mk(self):
         """popcore-work#128: web order #42170 took a Smiski box off MK's floor though DT had it in a sealed set
-        upstairs. A store's own sealed sets count as its boxes: DT, with no loose box left, opens as few of its sets as
-        the order needs where they are kept and takes the boxes from there, and the boxes not taken stay loose there.
-        The order is still one consume; a cancel puts back the boxes it took, loose, and the set stays open."""
+        upstairs. A store's own sealed sets count as its boxes: DT, with no loose box left, brings as few of its sets
+        down to the floor as the order needs and opens them there, since staff never open a set upstairs
+        (popcore-work#149), takes the boxes from the floor, and the boxes not taken stay loose on the floor. The order
+        is still one consume, marked 请核对 Check; a cancel puts back the boxes it took, loose, and the set stays open."""
         self.post('consume', self.box, self.locations['floor'], 10, 'box')
         self.post('consume', self.box, self.locations['upstairs'], 4, 'box')
         mk, mk_locations = self.open_mk(39)
@@ -873,16 +908,19 @@ class WebsiteSyncTests(WebsiteCase):
         order = self.order_row(540)
         self.assertEqual((order['state'], order['store_id'], order['fill_stores']), ('recorded', self.dt, 'dt'))
         self.assertEqual(self.woo.fill_writes, [(540, 'dt')])
-        # One of DT's two sets opened upstairs: 12 boxes, 9 taken, 3 loose upstairs. MK's floor is untouched.
+        # One of DT's two sets came down and opened on the floor: 12 boxes, 9 taken, 3 loose on the floor. MK's floor
+        # is untouched.
         self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
-                          self.balance(self.box, 'floor'), self.at(self.box, mk_locations['floor'])), (1, 3, 0, 39))
+                          self.balance(self.box, 'floor'), self.at(self.box, mk_locations['floor'])), (1, 0, 3, 39))
+        self.assertEqual(json.loads(order['checks']),
+                         [{'product_id': self.box, 'store_id': self.dt, 'why': 'set_opened', 'units': 1}])
         with closing(self.connect()) as con:
             opened = con.execute("SELECT * FROM inventory_documents WHERE source_type='website_order_open'").fetchall()
             self.assertEqual([(row['kind'], row['source_id'], row['actor_sub']) for row in opened],
                              [('correction', '540', website_sync.WEBSITE_SUB)])
             self.assertEqual(self.moves(con, opened[0]['id']),
-                             [(self.set, 'DT', 'upstairs', -1), (self.box, 'DT', 'upstairs', 12)])
-            self.assertEqual(self.moves(con, order['inventory_document_id']), [(self.box, 'DT', 'upstairs', -9)])
+                             [(self.set, 'DT', 'upstairs', -1), (self.box, 'DT', 'floor', 12)])
+            self.assertEqual(self.moves(con, order['inventory_document_id']), [(self.box, 'DT', 'floor', -9)])
             # Both stay out of DT's closing, as web orders do.
             session = {'id': 0, 'version': 1, 'status': 'open', 'intake_complete': 0, 'store_id': self.dt,
                        'business_date': opened[0]['business_date']}
@@ -890,11 +928,11 @@ class WebsiteSyncTests(WebsiteCase):
             self.assertFalse({opened[0]['id'], order['inventory_document_id']} & documents)
         # The website: DT's 3 loose boxes and MK's 39; DT's last sealed set and the 2 sets MK's 39 boxes are sure of.
         self.assertEqual((self.woo.item(11)['stock_quantity'], self.woo.item(12)['stock_quantity']), (42, 3))
-        # Cancelled: the 9 boxes go back upstairs, loose beside the other 3; the opened set stays open.
+        # Cancelled: the 9 boxes go back on the floor, loose beside the other 3; the opened set stays open.
         self.woo.orders[540].update(status='cancelled', date_modified_gmt=_ago(0))
         self.run_sync()
         self.assertEqual(self.order_row(540)['state'], 'cancelled')
-        self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
+        self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'floor'),
                           self.at(self.box, mk_locations['floor'])), (1, 12, 39))
 
     def test_a_delivery_no_store_can_fill_opens_dts_sets_then_mks(self):
@@ -914,25 +952,26 @@ class WebsiteSyncTests(WebsiteCase):
                     (self.at(self.box, mk_locations['floor']), self.at(self.box, mk_locations['warehouse']),
                      self.at(self.set, mk_locations['warehouse'])))
 
-        # MK's set opened for the last 2 boxes: 10 stay loose in MK's warehouse.
-        self.assertEqual(stock(), ((0, 0, 0), (0, 10, 0)))
+        # Every set opened on its store's floor; MK's for the last 2 boxes: 10 stay loose on MK's floor.
+        self.assertEqual(stock(), ((0, 0, 0), (10, 0, 0)))
         with closing(self.connect()) as con:
             opened = con.execute("SELECT id FROM inventory_documents WHERE source_type='website_order_open'").fetchone()[0]
             self.assertEqual(self.moves(con, opened), [
-                (self.set, 'DT', 'upstairs', -2), (self.box, 'DT', 'upstairs', 24),
-                (self.set, 'MK', 'warehouse', -1), (self.box, 'MK', 'warehouse', 12)])
-            # One consume line per place: DT upstairs gives its 4 loose boxes and the 24 from its sets together.
+                (self.set, 'DT', 'upstairs', -2), (self.set, 'MK', 'warehouse', -1),
+                (self.box, 'DT', 'floor', 24), (self.box, 'MK', 'floor', 12)])
+            # One consume line per place: DT's floor gives its 10 loose boxes and the 24 from its sets together.
             self.assertEqual(self.moves(con, order['inventory_document_id']), [
-                (self.box, 'DT', 'floor', -10), (self.box, 'DT', 'upstairs', -28),
-                (self.box, 'MK', 'floor', -5), (self.box, 'MK', 'warehouse', -2)])
+                (self.box, 'DT', 'floor', -34), (self.box, 'DT', 'upstairs', -4), (self.box, 'MK', 'floor', -7)])
+        self.assertEqual([(check['store_id'], check['why'], check['units']) for check in json.loads(order['checks'])],
+                         [(self.dt, 'set_opened', 2), (mk, 'set_opened', 1)])
         self.woo.orders[541].update(status='cancelled', date_modified_gmt=_ago(0))
         self.run_sync()
         self.assertEqual(self.order_row(541)['state'], 'cancelled')
-        self.assertEqual(stock(), ((10, 28, 0), (5, 12, 0)))
+        self.assertEqual(stock(), ((34, 4, 0), (17, 0, 0)))
 
     def test_a_pickup_opens_its_own_stores_sealed_set_first(self):
-        """An MK pickup MK has 1 loose box of and the rest in a sealed set: MK's floor box first, then MK's set opens
-        in its warehouse for the other 3. DT, which has loose boxes, gives none."""
+        """An MK pickup MK has 1 loose box of and the rest in a sealed set: MK's floor box first, then MK's set comes
+        down from its warehouse and opens on MK's floor for the other 3. DT, which has loose boxes, gives none."""
         mk, mk_locations = self.open_mk(1)
         self.post('receipt', self.set, mk_locations['warehouse'], 1, 'set')
         self.turn_on()
@@ -941,7 +980,7 @@ class WebsiteSyncTests(WebsiteCase):
         order = self.order_row(542)
         self.assertEqual((order['state'], order['store_id'], order['fill_stores']), ('recorded', mk, None))
         self.assertEqual((self.at(self.box, mk_locations['floor']), self.at(self.set, mk_locations['warehouse']),
-                          self.at(self.box, mk_locations['warehouse'])), (0, 0, 9))
+                          self.at(self.box, mk_locations['warehouse'])), (9, 0, 0))
         self.assertEqual((self.balance(self.box, 'floor'), self.balance(self.box, 'upstairs'),
                           self.balance(self.set, 'upstairs')), (10, 4, 2))
         orders = {row['wc_order_id']: row for row in
@@ -958,12 +997,12 @@ class WebsiteSyncTests(WebsiteCase):
         self.assertEqual((self.order_row(543)['state'], self.order_row(543)['problem']), ('needs_review', 'not_enough_stock'))
         self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
                           self.balance(self.box, 'floor')), (2, 4, 10))
-        # 1 Whole Set and 16 boxes: the Whole Set takes one set, the boxes open the other for their last 2.
+        # 1 Whole Set and 16 boxes: the Whole Set takes one set, the boxes open the other on the floor for their last 2.
         self.woo.order(544, [(12, 1), (11, 16)], modified=_ago(0))
         self.run_sync()
         self.assertEqual(self.order_row(544)['state'], 'recorded')
         self.assertEqual((self.balance(self.set, 'upstairs'), self.balance(self.box, 'upstairs'),
-                          self.balance(self.box, 'floor')), (0, 10, 0))
+                          self.balance(self.box, 'floor')), (0, 0, 10))
 
     def test_order_lines_show_the_name_staff_know(self):
         """Owner, 2026-11-19: show the 记账名, or the official name when there is none, not just the POPCORE ID."""
@@ -1442,7 +1481,7 @@ class WebsiteSyncTests(WebsiteCase):
                     'SELECT l.id, s.code FROM inventory_locations l JOIN stores s ON s.id=l.store_id')}
                 lines = [{'product_id': product, 'quantity': quantity}
                          for product, quantity in ((self.box, boxes), (self.set, sets)) if quantity]
-                take, _, used, problem = website_sync._take_order(con, order, stores, lines)
+                take, _, used, problem, _ = website_sync._take_order(con, order, stores, lines)
                 if problem:
                     return 'unknown', None
                 if len(used) == 1:
