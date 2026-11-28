@@ -6,6 +6,7 @@ import EmployeeView from './EmployeeView'
 import TeamAvailability from './TeamAvailability'
 import AvailabilityCalendar from './AvailabilityCalendar'
 import MonthlyReport from './MonthlyReport'
+import MyHours from './MyHours'
 
 export default function ManagerView() {
   // The admin makes the schedule, a 店长/副店长's shifts too (owner, 2026-11-28), so they send their own hours as staff do.
@@ -15,6 +16,8 @@ export default function ManagerView() {
     { key: 'availability', label: '可上时间 Availability', children: <TeamAvailability /> },
     ...isAdmin ? [] : [{ key: 'my-availability', label: '我的可上时间 My availability', children: <AvailabilityCalendar /> }],
     { key: 'shifts', label: '我的班 My shifts', children: <EmployeeView /> },
-    { key: 'report', label: '月工时 Monthly report', children: <MonthlyReport /> },
+    // A 店长/副店长 sees only their own 月工时, as staff do (2026-11-28); the team report is the admin's.
+    isAdmin ? { key: 'report', label: '月工时 Monthly report', children: <MonthlyReport /> }
+      : { key: 'hours', label: '月工时 My hours', children: <MyHours /> },
   ]} />
 }

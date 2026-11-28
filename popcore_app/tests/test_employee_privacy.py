@@ -74,14 +74,14 @@ class EmployeePrivacyTests(IsolatedApiCase):
         mine = self.client.get('/api/schedule/reports/monthly/me?year=2026&month=9', headers=jessi)
         self.assertEqual(mine.status_code, 200, mine.get_json())
         mine = mine.get_json()
-        as_manager = self.client.get(f'/api/schedule/reports/monthly/{self.jessi}?year=2026&month=9&store_code=ALL',
-                                     headers=self.headers('manager')).get_json()
-        self.assertEqual(mine, as_manager)   # the same shape, from the same code
+        as_admin = self.client.get(f'/api/schedule/reports/monthly/{self.jessi}?year=2026&month=9&store_code=ALL',
+                                     headers=self.headers('admin')).get_json()
+        self.assertEqual(mine, as_admin)   # the same shape, from the same code
         self.assertEqual((mine['employee']['id'], mine['store_code'], mine['total_hours']), (self.jessi, 'ALL', 12.0))
         self.assertEqual([shift['date'] for shift in mine['shifts']], ['2026-09-05', '2026-09-09'])
         one_store = self.client.get('/api/schedule/reports/monthly/me?year=2026&month=9&store_code=MK', headers=jessi).get_json()
         self.assertEqual((one_store['store_code'], one_store['total_hours']), ('MK', 4.0))
-        # Whatever is asked for, it is the caller's own; other people's stay with managers.
+        # Whatever is asked for, it is the caller's own; other people's stay with the admin.
         other = self.client.get(f'/api/schedule/reports/monthly/me?year=2026&month=9&employee_id={self.amy}', headers=jessi)
         self.assertEqual(other.get_json()['employee']['id'], self.jessi)
         for url in (f'/api/schedule/reports/monthly/{self.amy}?year=2026&month=9&store_code=ALL',

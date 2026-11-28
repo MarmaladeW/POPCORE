@@ -38,10 +38,10 @@ class ActualFinishTests(IsolatedApiCase):
         )
 
     def hours(self):
-        report = self.client.get(REPORT, headers=self.headers('manager')).get_json()
+        report = self.client.get(REPORT, headers=self.headers('admin')).get_json()
         employee = self.client.get(
             f'/api/schedule/employees/{self.employee}/hours?year=2026&month=9',
-            headers=self.headers('manager'),
+            headers=self.headers('admin'),
         ).get_json()
         row = report['employees'][0]
         return row['total_hours'], row['weeks']['2026-W38']['days']['2026-09-16'], employee['total_hours'], employee['by_store']['DT']
@@ -106,21 +106,21 @@ class ActualFinishTests(IsolatedApiCase):
             con.commit()
         for store in ('ALL', 'DT'):
             report = self.client.get(
-                f'/api/schedule/reports/monthly?year=2026&month=9&store_code={store}', headers=self.headers('manager'),
+                f'/api/schedule/reports/monthly?year=2026&month=9&store_code={store}', headers=self.headers('admin'),
             ).get_json()
             self.assertEqual(
                 {row['name']: row['total_hours'] for row in report['employees']},
                 {'Cashier': 16.5, 'Gone': 5.0},
             )
         other = self.client.get(
-            '/api/schedule/reports/monthly?year=2026&month=9&store_code=MK', headers=self.headers('manager'),
+            '/api/schedule/reports/monthly?year=2026&month=9&store_code=MK', headers=self.headers('admin'),
         ).get_json()
         self.assertEqual(other['employees'], [])
 
     def test_default_wage_period_follows_toronto_not_the_utc_server_date(self):
         # 22:00 Toronto on Oct 3 is already Oct 4 in UTC; the wage month starting on the 4th has not begun.
         self.clock.now.return_value = datetime(2026, 10, 4, 2, tzinfo=timezone.utc)
-        hours = self.client.get(f'/api/schedule/employees/{self.employee}/hours', headers=self.headers('manager')).get_json()
+        hours = self.client.get(f'/api/schedule/employees/{self.employee}/hours', headers=self.headers('admin')).get_json()
         self.assertEqual((hours['period_start'], hours['period_end']), ('2026-09-04', '2026-10-03'))
         self.assertEqual(hours['total_hours'], 16.0)
 
