@@ -8,6 +8,7 @@ from blueprints import users
 class EmployeeRegularTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        self.open_every_month()
         self.app.register_blueprint(users.bp)
         with closing(self.connect()) as con:
             self.mk = con.execute("SELECT id FROM stores WHERE code='MK'").fetchone()[0]

@@ -7,6 +7,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getMonthlyReport, type EmployeeMonthlyHours, type MonthlyReport as MonthlyReportData } from './scheduleApi'
 import { useAppStore } from '../../store'
 import { useHasRole } from '../../auth/useRole'
+import { monthClosed } from './managerWindow'
+import useManagerWindow from './useManagerWindow'
 import client from '../../api/client'
 import { isRegularOn, monthDay } from './monthlyDetail'
 import RegularMark from './RegularMark'
@@ -38,6 +40,7 @@ export default function MonthlyReport() {
   const [savingStartDay, setSavingStartDay] = useState(false)
   const { selectedStore } = useAppStore()
   const isAdmin = useHasRole('admin')
+  const months = useManagerWindow()
   const [msgApi, msgCtx] = message.useMessage()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -163,6 +166,7 @@ export default function MonthlyReport() {
           value={month}
           onChange={(v) => v && setMonth(v)}
           allowClear={false}
+          disabledDate={(d) => monthClosed(months, d.format('YYYY-MM'))}
         />
         {report && (
           <Text type="secondary">

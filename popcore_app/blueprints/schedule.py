@@ -121,6 +121,59 @@ def _current_wage_anchor(start_day: int):
     return year, month
 
 
+# ─── 店长/副店长 see this month and next (owner, 2026-11-27: "the manager can only see the schedule for that month,
+# not all of them"; picked this month + next) ─────────────────────────────────────────────────────────────────
+# Managers read and change the team's schedule, availability, notes and 月工时 only inside this window; admins see
+# every month. Everyone's own shifts and own 月工时 are theirs in every month.
+
+MONTH_CLOSED = '店长只能看和改这个月和下个月的排班 · Managers see and change only this month and next month.'
+
+
+def _manager_window(con):
+    """(first, last) ISO dates a manager may see and change, or None for an admin. "This month" starts at the earliest
+    of its 1st, the current wage period's first day (so in the first days of a month the end of the wage period is
+    still open) and the current two-week schedule cycle's first day (so the fortnight being worked is whole); the
+    window ends with next month."""
+    if ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['admin']:
+        return None
+    start_day = _month_start_day(con)
+    today = _toronto_today()
+    wage_first, _ = _wage_period(*_current_wage_anchor(start_day), start_day)
+    month_after_next = _dt.date(today.year + (today.month >= 11), (today.month + 1) % 12 + 1, 1)
+    cycle_first = _dt.date.fromisoformat(_availability_period(today))
+    return str(min(today.replace(day=1), wage_first, cycle_first)), str(month_after_next - _dt.timedelta(days=1))
+
+
+def _within_window(con, start, end):
+    """The asked date range cut to the manager's window (an admin's stays as asked)."""
+    window = _manager_window(con)
+    if window is None:
+        return start, end
+    return max(start or window[0], window[0]), min(end or window[1], window[1])
+
+
+def _month_closed(con, first, last=None):
+    """A 403 answer when the dates first..last lie wholly outside the manager's window, else None."""
+    window = _manager_window(con)
+    first, last = str(first)[:10], str(last or first)[:10]
+    if window and (last < window[0] or first > window[1]):
+        return jsonify({'code': 'schedule_month_closed', 'error': MONTH_CLOSED}), 403
+    return None
+
+
+def _wage_months(con):
+    """The current wage month and the next one, as YYYY-MM: the 月工时 months a manager may open."""
+    year, month = _current_wage_anchor(_month_start_day(con))
+    return [f'{year}-{month:02d}', f'{year + (month == 12)}-{month % 12 + 1:02d}']
+
+
+def _wage_month_closed(con, year, month):
+    """A 403 when a manager asks for a 月工时 month other than the current wage month and the next one."""
+    if _manager_window(con) is None or f'{year}-{month:02d}' in _wage_months(con):
+        return None
+    return jsonify({'code': 'schedule_month_closed', 'error': MONTH_CLOSED}), 403
+
+
 def _require_store_param(con):
     store_code = (request.args.get('store_code') or '').strip().upper()
     if not store_code:
@@ -166,6 +219,10 @@ def schedule_config():
     for key in keys:
         row = con.execute('SELECT value FROM app_settings WHERE key = ?', (key,)).fetchone()
         result[key] = row['value'] if row else SETTINGS_DEFAULTS.get(key, DEFAULT_SCHEDULE_REMINDER if key == 'schedule_reminder' else '')
+    # The months a manager's 排班 opens on (None for an admin, who sees every month, and for staff, who see their own).
+    role = ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM, 'viewer'), 0)
+    window = _manager_window(con) if role == ROLE_HIERARCHY['manager'] else None
+    result['manager_window'] = {'first': window[0], 'last': window[1], 'months': _wage_months(con)} if window else None
     con.close()
     return jsonify(result)
 
@@ -557,6 +614,7 @@ def schedule_avail_all():
     if err:
         con.close()
         return err
+    start, end = _within_window(con, start, end)
     query = '''
         SELECT a.*, e.name AS employee_name, e.auth0_id, e.is_trainee, e.regular_since, e.is_training, e.rank,
                COALESCE(st.code, '') AS store_code
@@ -644,6 +702,8 @@ def schedule_shifts_get():
         con.close()
         return err
 
+    if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
+        start, end = _within_window(con, start, end)
     if store_code == 'ALL':
         if ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY['manager']:
             query  = '''
@@ -966,6 +1026,10 @@ def schedule_shifts_create():
     if not emp['is_schedulable']:
         con.close()
         return jsonify({'error': 'Employee is disabled for shift assignment'}), 409
+    closed = _month_closed(con, shift_date)
+    if closed:
+        con.close()
+        return closed
     if con.execute('SELECT id FROM shifts WHERE employee_id=? AND date=?', (employee_id,shift_date)).fetchone():
         con.close()
         return jsonify({'error': 'Employee already has a shift on this date. Edit the existing shift.'}), 409
@@ -997,6 +1061,10 @@ def schedule_shifts_update(shift_id):
     if not row:
         con.close()
         return jsonify({'error': 'Not found'}), 404
+    closed = _month_closed(con, row['date'])
+    if closed:
+        con.close()
+        return closed
     updates: dict = {}
     for field in ('start_time', 'end_time', 'notes'):
         if field in data:
@@ -1056,10 +1124,14 @@ def schedule_shifts_update(shift_id):
 @role_required('manager')
 def schedule_shifts_delete(shift_id):
     con = get_db()
-    row = con.execute('SELECT id FROM shifts WHERE id = ?', (shift_id,)).fetchone()
+    row = con.execute('SELECT id, date FROM shifts WHERE id = ?', (shift_id,)).fetchone()
     if not row:
         con.close()
         return jsonify({'error': 'Not found'}), 404
+    closed = _month_closed(con, row['date'])
+    if closed:
+        con.close()
+        return closed
     con.execute('DELETE FROM shifts WHERE id = ?', (shift_id,))
     con.commit()
     con.close()
@@ -1088,6 +1160,10 @@ def schedule_conflicts():
         con.close()
         return jsonify({'error': 'Invalid store_code'}), 400
 
+    closed = _month_closed(con, shift_date)
+    if closed:
+        con.close()
+        return closed
     store_id = store_row['id']
     rows = con.execute('''
         SELECT s.id AS shift_id, st.code AS store_code, st.name AS store_name,
@@ -1120,11 +1196,26 @@ def schedule_conflicts():
 _PERIOD_KEY_RE = _re.compile(r'^(month:\d{4}-\d{2}|(fortnight|week|day):\d{4}-\d{2}-\d{2})$')
 
 
+def _period_closed(key):
+    """A 403 (or 400 for a date that does not exist) when a manager asks for a period outside this month and next."""
+    kind, _, day = key.partition(':')
+    try:
+        first = _dt.date.fromisoformat(day + '-01' if kind == 'month' else day)
+    except ValueError:
+        return jsonify({'error': 'The period key is not a real date'}), 400
+    if kind == 'month':
+        last = (first.replace(day=28) + _dt.timedelta(days=4)).replace(day=1) - _dt.timedelta(days=1)
+    else:
+        last = first + _dt.timedelta(days={'fortnight': 13, 'week': 6, 'day': 0}[kind])
+    return _month_closed(get_db(), first, last)
+
+
 def _require_period_key():
     key = (request.args.get('key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
         return None, (jsonify({'error': 'key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400)
-    return key, None
+    closed = _period_closed(key)
+    return (None, closed) if closed else (key, None)
 
 
 @bp.route('/api/schedule/notes', methods=['GET'])
@@ -1148,6 +1239,9 @@ def schedule_notes_put():
     key  = str(data.get('period_key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
         return jsonify({'error': 'period_key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
+    closed = _period_closed(key)
+    if closed:
+        return closed
     content    = str(data.get('content') or '')[:5000]
     updated_by = request.jwt_payload.get('sub', '')
     con = get_db()
@@ -1187,6 +1281,9 @@ def schedule_checklist_put():
     key  = str(data.get('period_key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
         return jsonify({'error': 'period_key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
+    closed = _period_closed(key)
+    if closed:
+        return closed
     try:
         employee_id = int(data.get('employee_id'))
     except (TypeError, ValueError):
@@ -1235,6 +1332,10 @@ def schedule_report_monthly():
     except ValueError:
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
+    closed = _wage_month_closed(con, year, month)
+    if closed:
+        con.close()
+        return closed
 
     month_str = f'{year}-{month:02d}'
 
@@ -1344,6 +1445,10 @@ def _report_monthly_employee(emp_id, own=False):
     except ValueError:
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
+    closed = None if own else _wage_month_closed(con, year, month)  # one's own months are always one's own
+    if closed:
+        con.close()
+        return closed
 
     if own and not (request.args.get('store_code') or '').strip():
         store_id, store_code = None, 'ALL'
@@ -1420,6 +1525,10 @@ def schedule_employee_hours(emp_id):
     except ValueError:
         con.close()
         return jsonify({'error': 'year and month must be integers'}), 400
+    closed = _wage_month_closed(con, year, month)
+    if closed:
+        con.close()
+        return closed
 
     emp = con.execute('SELECT * FROM employees WHERE id = ?', (emp_id,)).fetchone()
     if not emp:

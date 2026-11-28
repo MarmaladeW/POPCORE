@@ -136,6 +136,9 @@ async def run_checks(browser, case):
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
     # Store tasks left the menus (approved redesign); leave Schedule through Home instead.
     await page.get_by_role('link', name='首页 Home', exact=True).click()
+    # Wait until Home has really taken over: tapping 排班 before it renders never leaves /schedule, so the rail
+    # keeps the state it had (the race behind popcore-work#136).
+    await expect(page.get_by_role('link', name='首页 Home', exact=True)).to_have_attribute('aria-current', 'page')
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
     await page.get_by_role('link', name='排班 Schedule', exact=True).click()
     # Coming back from Home on a slow runner took longer than the default 5 s in one of two runs of the same
@@ -553,15 +556,19 @@ async def run_checks(browser, case):
     await page.locator('.pc-coverage-notes summary').click()
     await show_checklist(False)
     await page.get_by_role('button', name='Month', exact=True).click()
-    # Check the previous month too (August 2026 has six actual calendar weeks).
+    # A manager sees this month and next only (owner, 2026-11-27), so the way back is closed; check that next month
+    # fits too.
     await page.set_viewport_size({'width':1280,'height':800})
-    await page.get_by_role('button', name='Previous calendar period', exact=True).click()
-    previous_date = START.replace(day=1) - timedelta(days=1)
-    await select_date(previous_date, 'MK')
-    await expect(page.get_by_role('region', name=f'Schedule details {previous_date} MK')).to_be_visible()
+    back = page.get_by_role('button', name='Previous calendar period', exact=True)
+    await expect(back).to_be_disabled()
+    await expect(back).to_have_attribute('title', '店长只能看这个月和下个月 · Managers see this month and next only')
+    await page.get_by_role('button', name='Next calendar period', exact=True).click()
+    next_date = (START.replace(day=28) + timedelta(days=4)).replace(day=1)
+    await select_date(next_date, 'MK')
+    await expect(page.get_by_role('region', name=f'Schedule details {next_date} MK')).to_be_visible()
     await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.scrollHeight <= el.clientHeight + 2)")
     assert await page.locator('.pc-store-calendars .fc-scroller').evaluate_all('(els) => els.every(e => e.scrollHeight <= e.clientHeight + 2)')
-    await page.screenshot(path=OUT/'previous-month-fit-1280.png', animations='disabled')
+    await page.screenshot(path=OUT/'next-month-fit-1280.png', animations='disabled')
     await page.set_viewport_size({'width':1024,'height':800})
     await expect(page.locator('.pc-store-calendars .fc-daygrid-more-link')).to_have_count(0)
     await page.wait_for_function("[...document.querySelectorAll('.pc-store-calendar-body')].every(el => el.scrollHeight <= el.clientHeight + 2)")

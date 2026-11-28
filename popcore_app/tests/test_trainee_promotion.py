@@ -8,6 +8,7 @@ from blueprints import users
 class TraineePromotionTests(IsolatedApiCase):
     def setUp(self):
         super().setUp()
+        self.open_every_month()
         self.app.register_blueprint(users.bp)
         response = self.client.post('/api/schedule/trainees', headers=self.headers('manager'), json={'name': 'Jessi'})
         self.trainee_id = response.get_json()['id']

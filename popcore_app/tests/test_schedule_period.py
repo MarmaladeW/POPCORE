@@ -5,6 +5,10 @@ from support import IsolatedApiCase, db
 
 
 class SchedulePeriodTests(IsolatedApiCase):
+    def setUp(self):
+        super().setUp()
+        self.open_every_month()
+
     def test_managers_and_admins_assign_without_submission(self):
         for role in ('manager', 'admin'):
             employee = self.client.get('/api/schedule/me', headers=self.headers('staff:' + role)).json['id']

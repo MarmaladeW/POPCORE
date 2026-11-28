@@ -5,6 +5,8 @@ import dayjs from 'dayjs'
 import { useAppStore } from '../../store'
 import AvailabilityCalendar from './AvailabilityCalendar'
 import { cycleDates, cycleStart } from './availabilityPeriod'
+import { canGoBack, canGoForward, MONTH_LIMIT_HINT } from './managerWindow'
+import useManagerWindow from './useManagerWindow'
 import { getAllAvailability, getEmployees, type Availability, type Employee } from './scheduleApi'
 import { scheduleApiErrorMessage } from './employeeScheduling'
 
@@ -16,6 +18,7 @@ export default function TeamAvailability() {
   const [rosterError, setRosterError] = useState('')
   const [period, setPeriod] = useState(() => cycleStart(dayjs().format('YYYY-MM-DD')))
   const [reload, setReload] = useState(0)
+  const months = useManagerWindow()
   const [response, setResponse] = useState<{ scope: string; days: Availability[]; error?: string }>()
   const storeCode = selectedStore?.code !== 'ALL' ? selectedStore?.code : undefined
   const scope = `${employeeId}:${storeCode}:${period}`
@@ -58,9 +61,12 @@ export default function TeamAvailability() {
     {employeeId === 'me' ? <AvailabilityCalendar /> : <section aria-label="Declared availability">
       <div className="pc-page-actions">
         <Space wrap>
-          <Button aria-label="Previous declared availability period" onClick={() => setPeriod(dayjs(period).subtract(14, 'day').format('YYYY-MM-DD'))}>‹</Button>
+          <Button aria-label="Previous declared availability period" disabled={!canGoBack(months, period)} title={canGoBack(months, period) ? undefined : MONTH_LIMIT_HINT}
+            onClick={() => setPeriod(dayjs(period).subtract(14, 'day').format('YYYY-MM-DD'))}>‹</Button>
           <strong>{dayjs(period).format('MMM D')} – {dayjs(dates[13]).format('MMM D, YYYY')}</strong>
-          <Button aria-label="Next declared availability period" onClick={() => setPeriod(dayjs(period).add(14, 'day').format('YYYY-MM-DD'))}>›</Button>
+          <Button aria-label="Next declared availability period" disabled={!canGoForward(months, dayjs(period).add(14, 'day').format('YYYY-MM-DD'))}
+            title={canGoForward(months, dayjs(period).add(14, 'day').format('YYYY-MM-DD')) ? undefined : MONTH_LIMIT_HINT}
+            onClick={() => setPeriod(dayjs(period).add(14, 'day').format('YYYY-MM-DD'))}>›</Button>
           <Button onClick={() => setReload(value => value + 1)}>Refresh availability</Button>
         </Space>
         <label>Availability store <Select aria-label="Availability store" placeholder="Choose a store" value={storeCode} style={{ minWidth: 160 }}
