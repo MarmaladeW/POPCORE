@@ -34,9 +34,9 @@ def safe_cents(value):
 def suggest_payable(total):
     """The cash price, for cash, e-transfer, WeChat Pay and Alipay (before cash is rounded to 5¢).
 
-    Under $1: about 2.5% off, at least 1¢. From $1 to $9.99: down to the previous whole dollar, so
-    $5.10 is $5, $9.99 is $9 and $7.12 is $7 (owner, 2026-10-27); a whole-dollar total is
-    whole_dollar_under_ten. From $10 to $15: the nearest whole dollar to 2.5% off, ties down and
+    Under $1: about 2.5% off, at least 1¢. From $1 to $9.99: half_dollar_under_ten, down to the
+    previous 50¢ step, never above the total: $7.80 is $7.50, $9.99 is $9.50, $6.50 stays $6.50
+    (owner, 2026-11-28). From $10 to $15: the nearest whole dollar to 2.5% off, ties down and
     always below the total. Above $15: at least $1 off, or 2.5% when that is more, rounded down:
     $22.59 to $21, $41.34 to $40, $99.14 to $96."""
     if not safe_cents(total):
@@ -46,9 +46,7 @@ def suggest_payable(total):
     if total < 100:
         return max(1, (total * 390 + 199) // 400)
     if total < 1000:
-        if total % 100 == 0:
-            return whole_dollar_under_ten(total)
-        return total - total % 100
+        return half_dollar_under_ten(total)
     if total > 1500:
         return min(total * 975 // 100_000, (total - 100) // 100) * 100
     suggestion = ((total * 1950 + 99_999) // 200_000) * 100
@@ -57,12 +55,13 @@ def suggest_payable(total):
     return max(1, suggestion)
 
 
-def whole_dollar_under_ten(total):
-    """The cash price of a whole-dollar total from $1 to $9: the total itself, $5.00 stays $5.00.
+def half_dollar_under_ten(total):
+    """The cash price of a total from $1 to $9.99: down to the previous 50¢ step, so the customer never pays
+    more than the total. $7.80 is $7.50, $9.99 is $9.50; a total on a 50¢ step keeps it, $6.50 stays $6.50.
 
-    Owner, 2026-10-27. The owner may switch this to one dollar less; change it here and in
-    wholeDollarUnderTen in checkoutPricing.ts."""
-    return total
+    Owner, 2026-11-28 (before: down to the whole dollar, owner 2026-10-27). Mirrored by halfDollarUnderTen
+    in checkoutPricing.ts."""
+    return total - total % 50
 
 
 def nickel(cents):
