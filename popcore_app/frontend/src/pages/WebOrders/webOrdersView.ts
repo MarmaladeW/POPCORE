@@ -1,4 +1,4 @@
-import type { WebOrderCard, WebOrderCodeResult, WebOrderColumn, WebOrderLine, WebOrdersBoard } from '../../api/webOrders.ts'
+import type { WebOrderCard, WebOrderCheck, WebOrderCodeResult, WebOrderColumn, WebOrderLine, WebOrdersBoard } from '../../api/webOrders.ts'
 import { whereText } from '../../lib/stockPlaces.ts'
 
 // The five columns, left to right (website session's brief, 2026-11-19). Deliveries go by packing (owner, 2026-11-27):
@@ -163,6 +163,12 @@ export function moveText(card: WebOrderCard): string {
   // The website books no courier for a delivery taken from two stores (owner, 2026-11-26).
   if (card.kind === 'delivery' && stores.length > 1) return `货在 ${stores.join(' + ')},先集中到一家店 · Taken from ${stores.join(' and ')}: bring it to one store. No courier is booked yet.`
   return ''
+}
+
+/** 请核对 Check (popcore-work#149): what staff should check on the floor before they pack it. */
+export function checkText(check: WebOrderCheck): string {
+  if (check.why === 'set_opened') return `请核对 ${check.store} 楼下：${check.name} 没有散盒，系统拿下 ${check.units} 端开到楼下 · Check ${check.store} floor: no loose ${check.name}, POPCORE brought ${check.units} set${check.units === 1 ? '' : 's'} down and opened ${check.units === 1 ? 'it' : 'them'}`
+  return `请核对 ${check.store} 楼下：${check.name} ${check.units} 盒，日报没到，可能已卖完 · Check ${check.store} floor: ${check.name} ×${check.units} may have sold in store (report not in)`
 }
 
 /** A new order as the board's pop-up says it. */

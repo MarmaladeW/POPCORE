@@ -38,11 +38,14 @@ whose ID is on more than one item, shows sold out. Items without a POPCORE ID ar
   of it: DT if it can (owner, 2026-11-19: "we ship our product from downtown"), else another live store, and
   only when no store has all of it DT first and then the others. In each store the floor first, then
   upstairs, then the warehouse (owner, 2026-11-19: loose box orders are always taken from the floor). A store's
-  own sealed sets count as its boxes (popcore-work#128): when its loose boxes run out, the order opens as few of
-  them as it needs where they are kept and takes the boxes from there, before another store is asked. A store's
-  units under its shop hold (what it may have sold since its last report) count as gone when the order picks its
-  stores, as they do for the website number (popcore-work#144); only an order that cannot be filled without them
-  takes them. It
+  own sealed sets count as its boxes (popcore-work#128): when its loose boxes run out, the order brings as few of
+  them down to the floor as it needs, opens them there and takes the boxes off the floor, before another store is
+  asked; staff never open a set upstairs (owner, 2026-11-27, popcore-work#149). A store's units under its shop hold
+  (what it may have sold since its last report) count as gone when the order picks its stores, as they do for the
+  website number (popcore-work#144), except at a store with sealed sets of the box, which keeps the order and takes
+  them before a set comes down; otherwise only an order that cannot be filled without them takes them. An order that
+  takes held boxes or opens a set is marked 请核对 Check on the 网站订单 board ("take the order, but make sure it is
+  flagged"). It
   is a separate Website order outside the stores' sales and closing (owner, 2026-11-01). A cancelled
   order puts its boxes back where they were taken, loose; an opened set stays open. An order POPCORE cannot fill
   waits for a manager and holds its units off the website.
@@ -103,6 +106,11 @@ SOURCE_OPEN = 'website_order_open'
 ORDER_REASON = '网站订单 Website order'
 CANCEL_REASON = '网站订单取消 Website order cancelled'
 OPEN_REASON = '网站订单开端 Website order opened a set'
+# 请核对 Check on a web order (owner, 2026-11-27, popcore-work#149: "take the order, but make sure it is flagged"): it
+# took boxes POPCORE guessed the shop had sold since its last report (CHECK_GUESSED), or brought sealed sets down to the
+# floor and opened them there because POPCORE had no loose boxes (CHECK_OPENED).
+CHECK_GUESSED = 'maybe_sold'
+CHECK_OPENED = 'set_opened'
 SHELF_LOCATIONS = ('floor', 'upstairs', 'warehouse')
 # Web orders are picked from the floor first, then upstairs, then the warehouse (owner, 2026-11-19: "stock should be
 # taken from floor first, as we have many loose box orders, those are always taken from floor"). Boxes kept in opened
@@ -435,7 +443,8 @@ def _store_stock_values(con, stock, codes, hold=None):
     line could take from that store alone, as `_take(con, [store], [line], hold)` fills it (popcore-work#140). It uses
     _take's own inputs, from the one read `stock` (_shelf_stock): the loose units at the store's floor, upstairs and
     warehouse, boxes kept in opened sets left out, less the store's shop `hold` (popcore-work#144); and for a blind box
-    whose sealed set may open (_set_to_open), the store's sealed sets of it times boxes per set. A Whole Set counts its
+    whose sealed set may open (_set_to_open), the store's sealed sets of it times boxes per set, with the boxes the hold
+    left out back in when it has any (such a store keeps the order, popcore-work#149). A Whole Set counts its
     sealed sets only: no order makes one from loose boxes. Never WEBSITE_KEEP_BACK or held order units: it tells where
     an order would be filled from, not the website number. Every live store is named, with 0 when it has none.
 
@@ -455,11 +464,13 @@ def _store_stock_values(con, stock, codes, hold=None):
         whole = _set_to_open(con, product)
         counts, sealed = {}, {}
         for store_id in live:
-            units = max(0, stock.get(product['id'], {}).get(store_id, 0)
-                        - (hold or {}).get(store_id, {}).get(product['id'], 0))
+            loose = stock.get(product['id'], {}).get(store_id, 0)
+            units = max(0, loose - (hold or {}).get(store_id, {}).get(product['id'], 0))
             if whole is not None:
                 sealed[codes[store_id]] = int(stock.get(whole['id'], {}).get(store_id, 0))
-                units += whole['boxes_per_set'] * sealed[codes[store_id]]
+                if sealed[codes[store_id]]:
+                    # A store with sealed sets keeps the order and takes the boxes the hold guessed sold too (#149).
+                    units = loose + whole['boxes_per_set'] * sealed[codes[store_id]]
             counts[codes[store_id]] = int(units)
         values[product['id']] = json.dumps(counts, sort_keys=True, separators=(',', ':'))
         if whole is not None:
@@ -1158,34 +1169,41 @@ def _filling_stores(con, cfg, order_row):
     return stores
 
 
-def _take(con, store_ids, lines, hold=None):
+def _take(con, store_ids, lines, hold=None, use_held=False):
     """Pick lines store by store in `store_ids` order. In each store the loose stock comes first, in PICK_ORDER (the
-    floor, then upstairs, then the warehouse; boxes kept in opened sets excluded). When a blind box's loose boxes in
-    that store run short, it opens as few of that store's own sealed sets as cover the rest, a set on the floor first,
-    then upstairs, then the warehouse, before the next store is asked (popcore-work#128: order #42170 took a box off MK's
-    floor though DT had it in a sealed set upstairs). The set opens where it is kept, its boxes are taken from there,
-    and the boxes not taken stay loose there, as 移货 opens one (stock_moves.py); only a set the 日报 paste may open
-    opens (report_stock._set_to_open). A Whole Set line takes its sealed sets before any box opens one.
+    floor, then upstairs, then the warehouse; boxes kept in opened sets excluded).
 
     `hold` ({store_id: {product_id: units}}, _shop_hold) leaves out of each store's loose units what the shop may
     have sold since its last report, floor first, the units the website number already leaves out (popcore-work#144:
     order #42224 went to DT for a box DT had sold out of that afternoon, its report not in yet).
 
-    Returns (consume lines, sets to open, the stores the lines come from in `store_ids` order, None), or
-    (None, [], [], problem) when the stores together cannot fill them. Nothing is posted here: record() opens the sets
+    A blind box whose store keeps sealed sets of it stays with that store (popcore-work#128: order #42170 took a box
+    off MK's floor though DT had it in a sealed set upstairs), and staff take single boxes from the floor, never open a
+    set upstairs (owner, 2026-11-27, popcore-work#149). So when its loose boxes less the hold run short, the order takes
+    the boxes the hold guessed sold, floor first, and is checked (CHECK_GUESSED); only when POPCORE has no loose boxes
+    there at all does it bring as few of that store's sealed sets down to the floor as cover the rest and open them
+    there, a set on the floor first, then upstairs, then the warehouse, and is checked (CHECK_OPENED): "take the order,
+    but make sure it is flagged". The boxes not taken stay loose on the floor. Only a set the 日报 paste may open opens
+    (report_stock._set_to_open). A Whole Set line takes its sealed sets before any box opens one. `use_held` lets every
+    store take its guessed-sold boxes that way (_take_order's last try).
+
+    Returns (consume lines, sets to open, the stores the lines come from in `store_ids` order, None, checks), or
+    (None, [], [], problem, []) when the stores together cannot fill them; checks are [{product_id, store_id, why,
+    units}] (units: boxes for CHECK_GUESSED, sets for CHECK_OPENED). Nothing is posted here: record() opens the sets
     and then consumes, reading the balance versions as it posts."""
-    places = {}
+    places, floors = {}, {}
     for store_id in store_ids:
         locations = {row[0]: row[1] for row in con.execute(
             'SELECT code, id FROM inventory_locations WHERE store_id=? AND is_active=1', (store_id,))}
         places[store_id] = [locations[code] for code in PICK_ORDER if code in locations]
+        floors[store_id] = locations.get('floor')
     wanted = {}
     for line in lines:
         wanted[line['product_id']] = wanted.get(line['product_id'], 0) + line['quantity']
     products = {product_id: con.execute('SELECT * FROM products WHERE id=?', (product_id,)).fetchone()
                 for product_id in wanted}
     # One consume line per product and place, since each line checks the balance version it was read at.
-    take, opens, claimed, used = {}, [], Counter(), set()
+    take, opens, claimed, used, checks = {}, [], Counter(), set(), []
 
     def pick(product, store_id, location_id, units):
         line = take.setdefault((product['id'], location_id), {
@@ -1194,6 +1212,9 @@ def _take(con, store_ids, lines, hold=None):
         line['quantity'] += units
         claimed[(product['id'], location_id)] += units
         used.add(store_id)
+
+    def sealed_at(whole, location_id):
+        return _balance(con, whole['id'], location_id, 'saleable')['quantity'] - claimed[(whole['id'], location_id)]
 
     for product_id in sorted(wanted, key=lambda product_id: products[product_id]['stock_form'] == 'random_box'):
         product, left = products[product_id], wanted[product_id]
@@ -1208,27 +1229,44 @@ def _take(con, store_ids, lines, hold=None):
                 if units:
                     pick(product, store_id, location_id, units)
                     left -= units
+            keeps = whole is not None and any(sealed_at(whole, location_id) > 0 for location_id in places[store_id])
+            if left and (keeps or use_held):
+                guessed = 0
+                for location_id in places[store_id]:
+                    units = min(left, max(0, _units_at(con, product, location_id) - claimed[(product_id, location_id)]))
+                    if units:
+                        pick(product, store_id, location_id, units)
+                        left -= units
+                        guessed += units
+                if guessed:
+                    checks.append({'product_id': product_id, 'store_id': store_id, 'why': CHECK_GUESSED,
+                                   'units': guessed})
+            opened = 0
             for location_id in places[store_id] if whole is not None and left else ():
                 per = whole['boxes_per_set']
-                sets = min(-(-left // per), _balance(con, whole['id'], location_id, 'saleable')['quantity']
-                           - claimed[(whole['id'], location_id)])
+                sets = min(-(-left // per), sealed_at(whole, location_id))
                 if sets <= 0:
                     continue
                 claimed[(whole['id'], location_id)] += sets
-                opens.append({'set': whole, 'box': product, 'location_id': location_id, 'sets': sets, 'per': per})
+                floor = floors[store_id] or location_id
+                opens.append({'set': whole, 'box': product, 'location_id': location_id, 'to_location_id': floor,
+                              'sets': sets, 'per': per})
                 units = min(left, sets * per)
-                pick(product, store_id, location_id, units)
+                pick(product, store_id, floor, units)
                 left -= units
+                opened += sets
                 if not left:
                     break
+            if opened:
+                checks.append({'product_id': product_id, 'store_id': store_id, 'why': CHECK_OPENED, 'units': opened})
             if not left:
                 break
         if left:
-            return None, [], [], 'not_enough_stock'
+            return None, [], [], 'not_enough_stock', []
     # The consume keeps the order's own line order; within a product, the order the places were picked in.
     rank = {product_id: index for index, product_id in enumerate(wanted)}
     lines_out = sorted(take.values(), key=lambda line: rank[line['product_id']])
-    return lines_out, opens, [store_id for store_id in store_ids if store_id in used], None
+    return lines_out, opens, [store_id for store_id in store_ids if store_id in used], None, checks
 
 
 def _take_order(con, order_row, store_ids, lines, hold=None):
@@ -1239,18 +1277,19 @@ def _take_order(con, order_row, store_ids, lines, hold=None):
     store first (its sealed sets too), then what it lacks from the others.
 
     All of that first with each store's shop `hold` left out (popcore-work#144), so an order goes where the website
-    counted the stock; only an order that cannot be filled that way (the hold is a guess) is taken from POPCORE's
-    balances as they stand, as before, rather than wait for a manager."""
-    for held in ((hold, None) if hold else (None,)):
+    counted the stock (a store with sealed sets of a box keeps it, _take); only an order that cannot be filled that way
+    (the hold is a guess) also takes the boxes the hold guessed sold, and is checked, rather than wait for a manager.
+    Returns _take's five."""
+    for use_held in ((False, True) if hold else (False,)):
         if order_row['fulfilment'] != 'pickup':
             for store_id in store_ids:
-                take, opens, used, problem = _take(con, [store_id], lines, held)
-                if problem is None:
-                    return take, opens, used, None
-        take, opens, used, problem = _take(con, store_ids, lines, held)
-        if problem is None:
-            return take, opens, used, None
-    return take, opens, used, problem
+                result = _take(con, [store_id], lines, hold, use_held)
+                if result[3] is None:
+                    return result
+        result = _take(con, store_ids, lines, hold, use_held)
+        if result[3] is None:
+            return result
+    return result
 
 
 def _versioned(con, lines, side):
@@ -1262,18 +1301,21 @@ def _versioned(con, lines, side):
 
 
 def _open_lines(con, opens):
-    """The `correction` that opens an order's sealed sets where they are kept: each set off, its boxes on at the same
-    place, as 移货 opens a back room's set (stock_moves.py)."""
-    lines = []
+    """The `correction` that opens an order's sealed sets: each set off where it is kept, its boxes on at the store's
+    floor (popcore-work#149: staff never open a set upstairs), one line per balance."""
+    sets, boxes = [], {}
     for item in opens:
         whole, box, place = item['set'], item['box'], item['location_id']
-        lines += [{'product_id': whole['id'], 'unit': whole['stock_unit'] or 'set', 'quantity': item['sets'],
-                   'from_location_id': place, 'from_disposition': 'saleable',
-                   'expected_versions': {'from': _balance(con, whole['id'], place, 'saleable')['version']}},
-                  {'product_id': box['id'], 'unit': box['stock_unit'] or 'box', 'quantity': item['sets'] * item['per'],
-                   'to_location_id': place, 'to_disposition': 'saleable',
-                   'expected_versions': {'to': _balance(con, box['id'], place, 'saleable')['version']}}]
-    return lines
+        to = item.get('to_location_id') or place
+        sets.append({'product_id': whole['id'], 'unit': whole['stock_unit'] or 'set', 'quantity': item['sets'],
+                     'from_location_id': place, 'from_disposition': 'saleable',
+                     'expected_versions': {'from': _balance(con, whole['id'], place, 'saleable')['version']}})
+        line = boxes.setdefault((box['id'], to), {
+            'product_id': box['id'], 'unit': box['stock_unit'] or 'box', 'quantity': 0,
+            'to_location_id': to, 'to_disposition': 'saleable',
+            'expected_versions': {'to': _balance(con, box['id'], to, 'saleable')['version']}})
+        line['quantity'] += item['sets'] * item['per']
+    return sets + list(boxes.values())
 
 
 def _grant(con):
@@ -1314,8 +1356,9 @@ def record(con, cfg, wc_order_id):
         elif not stores:
             problem = 'no_live_store'
         take = opens = None
+        checks = []
         if problem is None:
-            take, opens, used, problem = _take_order(con, row, stores, lines, _shop_hold(con, cfg))
+            take, opens, used, problem, checks = _take_order(con, row, stores, lines, _shop_hold(con, cfg))
             store_id = used[0] if used else store_id
         document_id = None
         if problem is None:
@@ -1345,8 +1388,10 @@ def record(con, cfg, wc_order_id):
             con.execute("""UPDATE website_orders SET state='needs_review', problem=?, store_id=?, updated_at=datetime('now')
                            WHERE wc_order_id=?""", (problem, store_id, wc_order_id))
         else:
+            # 请核对 Check (popcore-work#149): what staff should check on the floor, shown on the 网站订单 board.
             con.execute("""UPDATE website_orders SET state='recorded', problem=NULL, store_id=?, inventory_document_id=?,
-                               updated_at=datetime('now') WHERE wc_order_id=?""", (store_id, document_id, wc_order_id))
+                               checks=?, updated_at=datetime('now') WHERE wc_order_id=?""",
+                        (store_id, document_id, json.dumps(checks) if checks else None, wc_order_id))
         con.commit()
         return 'needs_review' if problem else 'recorded'
     except Exception:

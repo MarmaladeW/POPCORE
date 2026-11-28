@@ -12,7 +12,7 @@ import { ALL_STORES, useAppStore } from '../../store'
 import Notifications, { chime, soundOn } from './Notifications'
 import {
   COLUMNS, ageText, announceText, clockText as clock, codeMissText, courierText, deliveryFacts, kindText, longWait, moveText,
-  nameMatches, newCards, openCards, packedText, picksText, reasonText, websiteTime,
+  checkText, nameMatches, newCards, openCards, packedText, picksText, reasonText, websiteTime,
 } from './webOrdersView'
 import './webOrders.css'
 
@@ -44,6 +44,7 @@ function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: numb
     {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
     {move && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{move}</p>}
     {courier && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{courier}</p>}
+    {(card.checks ?? []).map((check, index) => <p key={`check-${index}`} className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{checkText(check)}</p>)}
     <ul className="pc-web-lines">
       {card.lines.map((line, index) => <li key={index}>
         <span><strong>{line.name}</strong> × {line.quantity}</span>

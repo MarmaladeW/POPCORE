@@ -2148,6 +2148,7 @@ def _get_migrations():
         ('website_items_store_stock',                  _migration_website_items_store_stock),
         ('website_items_store_sets',                   _migration_website_items_store_sets),
         ('website_order_packed',                       _migration_website_order_packed),
+        ('website_order_checks',                       _migration_website_order_checks),
     ]
 
 
@@ -2605,6 +2606,17 @@ def _migration_website_order_packed(con, cur):
     if 'packed_by' not in columns:
         cur.execute('ALTER TABLE website_orders ADD COLUMN packed_by TEXT')
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_packed')")
+
+
+def _migration_website_order_checks(con, cur):
+    # 请核对 Check on a web order (owner, 2026-11-27, popcore-work#149: "take the order, but make sure it is flagged"):
+    # the boxes POPCORE took that it guessed the shop had sold since its last report, and the sets it brought down to
+    # the floor and opened because it had no loose boxes there, as JSON [{product_id, store, why, units}]. NULL when
+    # the order needed neither; orders from before are not judged again.
+    columns = {row[1] for row in cur.execute('PRAGMA table_info(website_orders)')}
+    if 'checks' not in columns:
+        cur.execute('ALTER TABLE website_orders ADD COLUMN checks TEXT')
+    cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_checks')")
 
 def _migration_activity_log(con, cur):
     # 动态 Activity: one line per change anyone makes (owner, 2026-11-20); see activity.py.
