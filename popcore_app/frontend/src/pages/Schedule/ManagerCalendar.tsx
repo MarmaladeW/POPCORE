@@ -57,8 +57,9 @@ import {
 import ShiftModal from './ShiftModal'
 import ScheduleDayPanel from './ScheduleDayPanel'
 import { cycleStart } from './availabilityPeriod'
-import { calendarRange, canGoBack, canGoForward, MONTH_LIMIT_HINT } from './managerWindow'
+import { calendarRange, canGoBack, canGoForward, monthLimitHint, READ_ONLY_HINT } from './managerWindow'
 import useManagerWindow from './useManagerWindow'
+import { useHasRole } from '../../auth/useRole'
 import CoveragePanel from './CoveragePanel'
 import { useAppStore } from '../../store'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -148,6 +149,8 @@ export default function ManagerCalendar() {
   // The shown period without a month grid's padding days; with the manager's months it decides the arrows.
   const [periodRange, setPeriodRange] = useState<{ start: string; end: string } | null>(null)
   const months = useManagerWindow()
+  // Only an admin adds and changes shifts; a 店长/副店长 sees the days without the buttons (owner, 2026-11-28).
+  const canEdit = useHasRole('admin')
   // One object per window: a new validRange on every render makes FullCalendar reset and re-render without end.
   const validRange = useMemo(() => calendarRange(months), [months])
   // Real period bounds (end exclusive) — used to skip the red understaffing
@@ -542,22 +545,23 @@ export default function ManagerCalendar() {
       <div className="pc-calendar-controls space-y-3">
       {loadError && <Alert type="error" showIcon message={loadError} action={<Button variant="outline" onClick={() => currentRange && loadEvents(currentRange.start, currentRange.end, viewType)}>Retry</Button>} />}
       {loading && <span role="status">Loading schedule…</span>}
+      {!canEdit && <Alert type="info" showIcon message={READ_ONLY_HINT} />}
       <div className="pc-calendar-mode flex flex-wrap gap-2" aria-label="Calendar contents">
         <Button variant={showAvailability ? 'outline' : 'default'} aria-pressed={!showAvailability} aria-label="Assigned shifts" onClick={() => setShowAvailability(false)}>已排班 Shifts</Button>
         <Button variant={showAvailability ? 'default' : 'outline'} aria-pressed={showAvailability} aria-label="Availability" onClick={() => setShowAvailability(true)}>可上时间 Availability</Button>
-        <span className="pc-calendar-hint text-sm text-muted-foreground self-center">{showAvailability ? 'Submitted hours employees can work. Select a date to assign.' : 'Assigned shifts. Select a date to see who is available.'}</span>
+        {canEdit && <span className="pc-calendar-hint text-sm text-muted-foreground self-center">{showAvailability ? 'Submitted hours employees can work. Select a date to assign.' : 'Assigned shifts. Select a date to see who is available.'}</span>}
       </div>
 
       {/* Row 1: navigation ←→ + Today + Month|Week|Day toggle */}
       <div className="pc-calendar-navigation flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center justify-between gap-0.5 sm:justify-start">
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Previous calendar period" onClick={() => eachCal((a) => a.prev())}
-            disabled={!!periodRange && !canGoBack(months, periodRange.start)} title={periodRange && !canGoBack(months, periodRange.start) ? MONTH_LIMIT_HINT : undefined}>
+            disabled={!!periodRange && !canGoBack(months, periodRange.start)} title={periodRange && !canGoBack(months, periodRange.start) ? monthLimitHint(months) : undefined}>
             <ChevronLeft className="size-4" />
           </Button>
           <span className="text-sm font-semibold min-w-24 text-center px-1">{viewTitle}</span>
           <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Next calendar period" onClick={() => eachCal((a) => a.next())}
-            disabled={!!periodRange && !canGoForward(months, periodRange.end)} title={periodRange && !canGoForward(months, periodRange.end) ? MONTH_LIMIT_HINT : undefined}>
+            disabled={!!periodRange && !canGoForward(months, periodRange.end)} title={periodRange && !canGoForward(months, periodRange.end) ? monthLimitHint(months) : undefined}>
             <ChevronRight className="size-4" />
           </Button>
         </div>
@@ -937,28 +941,28 @@ export default function ManagerCalendar() {
             date={selectedDate} storeCode={modalStoreCode} employees={employees}
             employeeColors={empColors} storeHours={storeHours}
             availability={availsByDate.current[selectedDate] ?? []} shifts={Object.values(shiftById.current)}
-            onAssign={employeeId => {
+            onAssign={canEdit ? employeeId => {
               setSelectedEmployeeId(employeeId); setSelectedShift(null)
               setAvailForDate(availsByDate.current[selectedDate] ?? []); setModalOpen(true)
-            }}
-            onEdit={shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) }}
+            } : undefined}
+            onEdit={canEdit ? shift => { setSelectedShift(shift); setAvailForDate(availsByDate.current[shift.date] ?? []); setModalOpen(true) } : undefined}
           />}
-        </div> : <p className="pc-assignment-placeholder">Select a date in either calendar to assign a shift.</p>}
+        </div> : <p className="pc-assignment-placeholder">{canEdit ? 'Select a date in either calendar to assign a shift.' : '点日期看当天谁上班 · Select a date to see who works that day.'}</p>}
       </aside>
       </div>
       {isTimeGrid && realStores.length > 0 && (
         <p className="text-xs text-muted-foreground px-1">
           Grey areas are outside opening hours. Red areas have fewer staff scheduled than
-          the store needs (labelled scheduled/required) — click one to assign a shift.
+          the store needs (labelled scheduled/required){canEdit && ' — click one to assign a shift'}.
         </p>
       )}
 
-      {periodKey && schedulableEmployees.length > 0 && <CoveragePanel
+      {canEdit && periodKey && schedulableEmployees.length > 0 && <CoveragePanel
         periodKey={periodKey} periodLabel={viewTitle}
         employees={schedulableEmployees} employeeColors={empColors}
       />}
 
-      <ShiftModal
+      {canEdit && <ShiftModal
         open={modalOpen}
         date={selectedDate}
         employees={modalEmployees}
@@ -971,7 +975,7 @@ export default function ManagerCalendar() {
         positionsMap={positionsMap}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
-      />
+      />}
     </div>
   )
 }

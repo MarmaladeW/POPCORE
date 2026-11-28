@@ -16,8 +16,9 @@ interface Props {
   shifts: Shift[]
   employeeColors: Record<number, string>
   storeHours: StoreHoursMap
-  onAssign: (employeeId?: number) => void
-  onEdit: (shift: Shift) => void
+  /** Missing for a 店长/副店长, who only look (owner, 2026-11-28): the day shows who is on, without buttons. */
+  onAssign?: (employeeId?: number) => void
+  onEdit?: (shift: Shift) => void
 }
 
 export default function ScheduleDayPanel({ date, storeCode, employees, availability, shifts, employeeColors, storeHours, onAssign, onEdit }: Props) {
@@ -43,7 +44,7 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
   }
 
   return <section className="pc-schedule-detail" aria-label={`Schedule details ${date} ${storeCode}`}>
-    <div className="pc-page-actions"><h4>{date} · {storeCode}</h4><Button variant="outline" onClick={() => onAssign()}>Assign employee</Button></div>
+    <div className="pc-page-actions"><h4>{date} · {storeCode}</h4>{onAssign && <Button variant="outline" onClick={() => onAssign()}>Assign employee</Button>}</div>
     <div className="pc-schedule-people">
       <section><strong>Assigned · {assigned.length}</strong>
         {assigned.length === 0 && <p className="text-muted-foreground">No shifts assigned.</p>}
@@ -58,9 +59,10 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
             </div>
             <small>{shiftTimeRange(shift.start_time, shift.end_time, shift.actual_end_time)}{shift.position && <> · <span className="pc-shift-pos pc-shift-pos-inline">{positionText(shift.position)}</span></>}</small>
             {issue && !shift.is_trainee && <small role="status">Review: {issue}</small>}
-          </div><Button variant="outline" onClick={() => onEdit(shift)}>Edit</Button></div>
+          </div>{onEdit && <Button variant="outline" onClick={() => onEdit(shift)}>Edit</Button>}</div>
         })}
       </section>
+      {onAssign && <>
       <section><strong>Available to assign · {available.length}</strong>
         {available.length === 0 && <p className="text-muted-foreground">No additional submitted availability.</p>}
         {available.map(employee => {
@@ -82,6 +84,7 @@ export default function ScheduleDayPanel({ date, storeCode, employees, availabil
           </div><Button variant="outline" disabled={!!elsewhere(employee.id)} onClick={() => onAssign(employee.id)}>Assign</Button></div>
         })}
       </section>
+      </>}
     </div>
   </section>
 }

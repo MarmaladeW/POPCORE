@@ -23,7 +23,7 @@ import {
 import { shiftKindLabel } from './schedulePresentation'
 
 export default function EmployeeView() {
-  const canEditReminder = useHasRole('manager')
+  const canEditReminder = useHasRole('admin')  // 店长/副店长 only look at 排班 (owner, 2026-11-28)
   const [reminder, setReminder] = useState('提前十分钟到！')
   const [reminderReady, setReminderReady] = useState(false)
   const [reminderError, setReminderError] = useState('')
