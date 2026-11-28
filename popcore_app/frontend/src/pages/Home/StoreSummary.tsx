@@ -6,18 +6,18 @@ import Icon from '../../components/pc/Icon'
 import PageHeader from '../../components/pc/PageHeader'
 import { useIsPhone } from '../../components/pc/useIsPhone'
 import { formatCents } from '../../lib/money'
-import { allCheckouts, itemsText, methodGroups, methodLabel, splitNote, torontoTime, type MethodGroup } from '../Sales/dailySummary'
-import { DayStepper, SalesTabs, dayTitle } from '../Sales/SalesNav'
+import { allCheckouts, itemsText, methodGroups, methodLabel, torontoTime, type SummaryCheckout } from '../Sales/dailySummary'
+import { DayStepper, SalesTabs } from '../Sales/SalesNav'
+import { WebOrderRow } from '../Sales/WebOrderRecords'
+import { countText, type WebOrderRecords } from '../Sales/webOrderRecordsView'
 import { Status } from './Incoming'
 import { useStoreDay, type StoreDay, type StoreEvent } from './storeDay'
 import './Home.css'
 import './Summary.css'
 
-const recordKinds: Array<[string, string, string]> = [
-  ['claw_prize', '娃娃机出奖', 'Prize won'], ['claw_refill', '入娃娃机', 'Claw refill'],
-  ['cash_exchange', '换现金', 'Cash exchange'], ['display_in', '入 display', 'Display arrival'],
-]
-const kindName = (kind: string) => recordKinds.find(([key]) => key === kind)?.[1] || kind
+const kindNames: Record<string, string> = {
+  claw_prize: '娃娃机出奖', claw_refill: '入娃娃机', cash_exchange: '换现金', display_in: '入 display',
+}
 
 function recordText(event: StoreEvent) {
   return event.kind === 'cash_exchange' ? `${event.tender ? methodLabel(event.tender).zh : ''}收款，现金支出` : event.product_name || '—'
@@ -26,175 +26,135 @@ function recordAmount(event: StoreEvent) {
   return event.kind === 'cash_exchange' ? formatCents(event.amount_cents) : `× ${event.quantity ?? '—'}`
 }
 
-// Totals strip (Figma: phone 订单 · 收款 · 待完成; desktop 订单 then one cell per payment method).
-function Figures({ groups, orders, pending, phone }: { groups: MethodGroup[]; orders: number; pending?: number; phone: boolean }) {
+// A channel's head (owner, 2026-11-28: 汇总 is "instore orders and website orders"): its name, its total large, and
+// what the total is made of on one line under it.
+function ChannelHead({ zh, en, cents, parts, link }: { zh: string; en: string; cents: number; parts: string; link?: { to: string; text: string } }) {
+  return <header className="pc-ch-head">
+    <h2><span>{zh}</span> <small>{en}</small></h2>
+    {link && <Link to={link.to}>{link.text}</Link>}
+    <strong>{formatCents(cents)}</strong>
+    <small>{parts}</small>
+  </header>
+}
+
+// "现金 $28.00 + 刷卡 $22.00" for a split order, "刷卡" for one method.
+function paidText(order: SummaryCheckout) {
+  const byTender = new Map<string, number>()
+  for (const payment of order.payments) byTender.set(payment.tender, (byTender.get(payment.tender) || 0) + payment.amount_cents)
+  return byTender.size > 1
+    ? [...byTender].map(([tender, cents]) => `${methodLabel(tender).zh} ${formatCents(cents)}`).join(' + ')
+    : methodLabel(order.payments[0]?.tender || '').zh
+}
+
+// 门店订单: every completed 记一笔 / 买单 of the day, in time order, with the payment split in the head.
+function InStore({ data }: { data: StoreDay }) {
+  const orders = allCheckouts(data.checkouts)
+  const groups = methodGroups(data.checkouts).filter(group => group.count)
   const total = groups.reduce((sum, group) => sum + group.cents, 0)
-  const split = groups.length ? new Set(groups.flatMap(group => group.parts.filter(part => part.others.length).map(part => part.order.id))).size : 0
-  if (phone) return <div className="pc-figures pc-figures-3">
-    <div><span>订单 Orders</span><strong>{orders}</strong></div>
-    <div><span>收款 Total</span><strong>{formatCents(total)}</strong></div>
-    <div><span>待完成 Open</span><strong className={pending ? 'pc-figure-warn' : undefined}>{pending ?? '—'}</strong></div>
-  </div>
-  return <div className="pc-figures pc-figures-6">
-    <div><span>订单 Orders</span><strong>{orders}</strong><small>拆单 {split} · 待完成 {pending ?? '—'}</small></div>
-    {groups.slice(0, 5).map(group => <div key={group.tender}><span>{group.zh} {group.en}</span><strong>{formatCents(group.cents)}</strong><small>{group.count} 笔</small></div>)}
-  </div>
-}
-
-function OpenOrders({ pending }: { pending?: number }) {
-  if (!pending) return null
-  return <div className="pc-sum-open"><i className="pc-dot pc-dot-warn" aria-hidden="true" /><strong>{pending} 单未完成 Open order · 还没收款</strong><Link to="/checkout">去买单</Link></div>
-}
-
-function MethodCards({ groups }: { groups: MethodGroup[] }) {
-  return <div className="pc-sum-methods">
-    {groups.map(group => <section key={group.tender} className="pc-panel" aria-label={`${group.en || group.zh} payments`}>
-      <header className="pc-panel-head"><h3>{group.zh} {group.en}</h3><span>{group.count} 笔 · {formatCents(group.cents)}</span></header>
-      {group.parts.length ? group.parts.map(part => <div key={part.order.id} className="pc-sum-order">
-        <time>{torontoTime(part.order.created_at)}</time>
-        <span><strong>{itemsText(part.order) || '—'}</strong><small>{[part.order.reference, splitNote(part)].filter(Boolean).join(' · ')}</small></span>
-        <b>{formatCents(part.cents)}</b>
-      </div>) : <p className="pc-quiet">今天没有 · None today</p>}
-    </section>)}
-  </div>
-}
-
-function MethodTable({ groups, orders }: { groups: MethodGroup[]; orders: number }) {
-  const parts = groups.reduce((sum, group) => sum + group.count, 0)
-  const total = groups.reduce((sum, group) => sum + group.cents, 0)
-  return <section className="pc-panel" aria-label="Payments by method">
-    <header className="pc-panel-head"><h2><span>按付款方式</span> <small>Payments by method</small></h2><span className="pc-panel-count">{orders} 单 · {parts} 笔 · {formatCents(total)}</span></header>
-    <div className="pc-sum-table-wrap"><table className="pc-sum-table">
-      <thead><tr><th>时间</th><th>收银员</th><th>订单号</th><th>商品</th><th>备注</th><th>金额</th></tr></thead>
-      {groups.filter(group => group.count).map(group => <tbody key={group.tender}>
-        <tr className="pc-sum-group"><th colSpan={6} scope="rowgroup">{group.zh} {group.en} <small>{group.count} 笔 · {formatCents(group.cents)}</small></th></tr>
-        {group.parts.map(part => <tr key={part.order.id}>
-          <td className="pc-sum-muted">{torontoTime(part.order.created_at)}</td><td>{part.order.actor_name}</td><td>{part.order.reference}</td>
-          <td>{itemsText(part.order) || '—'}</td><td className="pc-sum-muted">{splitNote(part, ' · ')}</td><td>{formatCents(part.cents)}</td>
-        </tr>)}
-      </tbody>)}
-      {!parts && <tbody><tr><td colSpan={6} className="pc-sum-muted">今天还没有已完成的买单 · No completed checkouts yet.</td></tr></tbody>}
-    </table></div>
+  const parts = [`${orders.length} 单`, ...groups.map(group => `${group.zh} ${formatCents(group.cents)}`)].join(' · ')
+  return <section className="pc-panel pc-ch" aria-label="In-store orders">
+    <ChannelHead zh="门店订单" en="In-store" cents={total} parts={parts} link={{ to: '/checkout/history', text: '订单记录' }} />
+    {!!data.pending && <div className="pc-sum-open"><i className="pc-dot pc-dot-warn" aria-hidden="true" /><strong>{data.pending} 单未完成 · 还没收款</strong><Link to="/checkout">去买单</Link></div>}
+    {orders.length ? orders.map(order => {
+      const amount = order.payments.reduce((sum, payment) => sum + payment.amount_cents, 0)
+      return <div key={order.id} className="pc-ch-row">
+        <time>{torontoTime(order.created_at)}</time>
+        <span className="pc-ch-main"><strong>{itemsText(order) || '—'}</strong><small>{[order.actor_name, order.reference].filter(Boolean).join(' · ')}</small></span>
+        <span className="pc-ch-end"><b>{formatCents(amount)}</b><small>{paidText(order)}</small></span>
+      </div>
+    }) : <p className="pc-quiet">今天还没有门店订单 · 记一笔和买单收款后在这里</p>}
   </section>
 }
 
-function RecordGroups({ data }: { data: StoreDay }) {
-  return <div className="pc-sum-methods">
-    {recordKinds.map(([kind, zh, en]) => {
-      const events = data.events.filter(event => event.kind === kind)
-      return <section key={kind} className="pc-panel" aria-label={en}>
-        <header className="pc-panel-head"><h3>{zh} {kind === 'display_in' ? '' : en}</h3><span>{kind === 'claw_prize' ? events.reduce((sum, event) => sum + (event.quantity || 0), 0) : events.length}</span></header>
-        {events.length ? events.map(event => <div key={event.id} className="pc-sum-order">
-          <time>{torontoTime(event.created_at)}</time>
-          <span><strong>{recordText(event)}</strong><small>{[event.actor_name, event.note].filter(Boolean).join(' · ')}</small></span>
-          <b>{recordAmount(event)}</b>
-        </div>) : <p className="pc-quiet">今天没有 · None today</p>}
-      </section>
-    })}
-    <section className="pc-panel" aria-label="Incoming">
-      <header className="pc-panel-head"><h3>入店 Incoming</h3><span>收货 {data.receipts.length} · 调拨 {data.transfers.length}</span></header>
-      {data.receipts.map(receipt => <Link key={`r${receipt.id}`} className="pc-sum-order" to={`/goods/receiving?receipt_id=${receipt.id}`}>
-        <time>收货</time><span><strong>{receipt.shipment_reference || `Receipt #${receipt.id}`}</strong><small>Receipt {receipt.id}</small></span><Status status={receipt.status} />
-      </Link>)}
-      {data.transfers.map(transfer => <Link key={`t${transfer.id}`} className="pc-sum-order" to={`/goods/transfers?transfer_id=${transfer.id}`}>
-        <time>调拨</time><span><strong>Transfer #{transfer.id}</strong></span><Status status={transfer.status} />
-      </Link>)}
-      {!data.receipts.length && !data.transfers.length && <p className="pc-quiet">今天没有 · None today</p>}
-    </section>
-  </div>
+// 网站订单: the store's web orders paid that day. Their own line: they never add to the store's total.
+function Web({ web }: { web: WebOrderRecords }) {
+  const orders = [...web.orders].sort((a, b) => a.paid_at.localeCompare(b.paid_at) || a.id - b.id)
+  return <section className="pc-panel pc-ch" aria-label="Web orders">
+    <ChannelHead zh="网站订单" en="Web · 不计入门店" cents={web.totals.cents} parts={countText(web.totals)}
+      link={{ to: '/sales/web-orders', text: '全部记录' }} />
+    {orders.length ? orders.map(order => <WebOrderRow key={order.id} order={order} />)
+      : <p className="pc-quiet">今天没有网站订单</p>}
+  </section>
 }
 
-function RecordTable({ data }: { data: StoreDay }) {
+// 门店记录: 娃娃机, 换现金, 入 display and 入店, one line each, only the ones there were.
+function Records({ data }: { data: StoreDay }) {
   const count = data.events.length + data.receipts.length + data.transfers.length
-  return <section className="pc-panel" aria-label="Store records">
-    <header className="pc-panel-head"><h2><span>记录</span> <small>Store records</small></h2><span className="pc-panel-count">{count}</span></header>
-    <div className="pc-sum-table-wrap"><table className="pc-sum-table">
-      <thead><tr><th>时间</th><th>员工</th><th>类型</th><th>内容</th><th>数量 / 金额</th></tr></thead>
-      <tbody>
-        {data.events.map(event => <tr key={event.id}>
-          <td className="pc-sum-muted">{torontoTime(event.created_at)}</td><td>{event.actor_name}</td><td><span className="pc-sum-kind">{kindName(event.kind)}</span></td>
-          <td>{[recordText(event), event.note].filter(Boolean).join(' · ')}</td><td>{recordAmount(event)}</td>
-        </tr>)}
-        {data.receipts.map(receipt => <tr key={`r${receipt.id}`}>
-          <td className="pc-sum-muted">收货</td><td /><td><span className="pc-sum-kind">入店收货</span></td>
-          <td><Link to={`/goods/receiving?receipt_id=${receipt.id}`}>{[receipt.shipment_reference, `Receipt ${receipt.id}`].filter(Boolean).join(' · ')}</Link></td><td><Status status={receipt.status} /></td>
-        </tr>)}
-        {data.transfers.map(transfer => <tr key={`t${transfer.id}`}>
-          <td className="pc-sum-muted">调拨</td><td /><td><span className="pc-sum-kind">入店调拨</span></td>
-          <td><Link to={`/goods/transfers?transfer_id=${transfer.id}`}>Transfer #{transfer.id}</Link></td><td><Status status={transfer.status} /></td>
-        </tr>)}
-        {!count && <tr><td colSpan={5} className="pc-sum-muted">今天没有记录 · No records today.</td></tr>}
-      </tbody>
-    </table></div>
+  return <section className="pc-panel pc-ch" aria-label="Store records">
+    <header className="pc-panel-head"><h2><span>门店记录</span> <small>Store records</small></h2><span className="pc-panel-count">{count}</span></header>
+    {data.events.map(event => <div key={event.id} className="pc-ch-row">
+      <time>{torontoTime(event.created_at)}</time>
+      <span className="pc-ch-main"><strong><span className="pc-sum-kind">{kindNames[event.kind] || event.kind}</span>{recordText(event)}</strong>
+        <small>{[event.actor_name, event.note].filter(Boolean).join(' · ')}</small></span>
+      <span className="pc-ch-end"><b>{recordAmount(event)}</b></span>
+    </div>)}
+    {data.receipts.map(receipt => <Link key={`r${receipt.id}`} className="pc-ch-row" to={`/goods/receiving?receipt_id=${receipt.id}`}>
+      <time>收货</time>
+      <span className="pc-ch-main"><strong><span className="pc-sum-kind">入店收货</span>{receipt.shipment_reference || `Receipt ${receipt.id}`}</strong></span>
+      <span className="pc-ch-end"><Status status={receipt.status} /></span>
+    </Link>)}
+    {data.transfers.map(transfer => <Link key={`t${transfer.id}`} className="pc-ch-row" to={`/goods/transfers?transfer_id=${transfer.id}`}>
+      <time>调拨</time>
+      <span className="pc-ch-main"><strong><span className="pc-sum-kind">入店调拨</span>Transfer {transfer.id}</strong></span>
+      <span className="pc-ch-end"><Status status={transfer.status} /></span>
+    </Link>)}
+    {!count && <p className="pc-quiet">今天没有 · None today</p>}
   </section>
 }
 
 export default function StoreSummary() {
   const [date, setDate] = useState('')
   const { store, day, data, error, retry } = useStoreDay(date)
-  const manager = useHasRole('manager')
   // The whole store's day (销售 and its tabs) is the admin's (owner, 2026-11-26); everyone else has their own 汇总.
   const admin = useHasRole('admin')
   const phone = useIsPhone()
   const [copied, setCopied] = useState('')
+  const [showText, setShowText] = useState(false)
   const text = useRef<HTMLTextAreaElement>(null)
   async function copy() {
     try { await navigator.clipboard.writeText(data?.summary_text || ''); setCopied('已复制 · Copied. Paste it into the store chat.') }
-    catch { text.current?.focus(); text.current?.select(); setCopied('Select and copy the summary below.') }
+    catch {
+      setShowText(true)
+      window.setTimeout(() => { text.current?.focus(); text.current?.select() })
+      setCopied('Select and copy the summary below.')
+    }
   }
   const pick = (value: string) => { setDate(value); setCopied('') }
   const stepper = <DayStepper value={day} onChange={pick} />
-  const refresh = <Button onClick={retry}><Icon name="refresh" size={16} />刷新<span className="pc-sr"> Refresh records</span></Button>
-  const groups = methodGroups(data?.checkouts)
-  const orders = allCheckouts(data?.checkouts).length
-  const pending = data?.pending
+  const refresh = <Button onClick={retry} aria-label="Refresh"><Icon name="refresh" size={16} />{!phone && '刷新'}</Button>
+  const copyButton = <button type="button" className="pc-btn" onClick={copy} disabled={!data}>复制汇总文字<span className="pc-sr"> Copy summary</span></button>
+  const personal = data?.scope === 'personal'
   const lines = (data?.summary_text || '').split('\n').length
 
-  const copyPanel = data && <section className="pc-panel pc-sum-copy" aria-label="Copy text">
-    <header className="pc-panel-head"><h2><span>汇总文字</span> <small>Copy text</small></h2>{!phone && <button type="button" className="pc-btn pc-btn-ink" onClick={copy}>复制 Copy<span className="pc-sr"> summary</span></button>}</header>
-    <textarea ref={text} aria-label="Summary text" value={data.summary_text} readOnly rows={Math.min(Math.max(lines, 6), phone ? 18 : 24)} />
-    {copied && !phone && <p role="status" className="pc-sum-copied">{copied}</p>}
-  </section>
-  // 收工 left this page (owner, 2026-11-27: "Drop 收工 instead"): the 店长's 审核 in 记一笔, with 数到的现金, closes
-  // the day. /closing keeps its address and every record.
-  const note = <p className="pc-sum-note">{data?.scope === 'personal'
-    ? 'Your own orders and records. A manager reviews the whole store day.'
-    : 'Only completed checkouts in POPCORE. Check for missing sales before closing; Clover sync isn’t connected yet.'}</p>
+  // The text staff paste into the store chat, folded away: the panels above carry the same facts.
+  const copyText = data && <details className="pc-panel pc-sum-copy" open={showText} onToggle={event => setShowText(event.currentTarget.open)}>
+    <summary><span>汇总文字</span> <small>Copy text</small><Icon name="down" size={14} className="pc-wo-chev" /></summary>
+    <textarea ref={text} aria-label="Summary text" value={data.summary_text} readOnly rows={Math.min(Math.max(lines, 6), 24)} />
+  </details>
 
   return <div className={phone ? 'pc-sum pc-sum-phone' : 'pc-sum'}>
     <PageHeader title={admin ? '销售' : '汇总'}
-      sub={phone ? 'Daily summary' : `${admin ? 'Sales' : 'Daily summary'}${store?.name ? ` · ${store.name}` : ''}${data ? ` · ${data.scope === 'personal' ? 'your records' : 'whole store'}` : ''}`}
-      actions={<>{stepper}{refresh}<Link className="pc-btn" to="/checkout/history">订单记录 Order history</Link></>} />
+      sub={phone ? 'Daily summary' : `${admin ? 'Sales' : 'Daily summary'}${store?.name ? ` · ${store.name}` : ''}${personal ? ' · your records' : ''}`}
+      actions={<>{stepper}{refresh}{copyButton}</>} />
     {admin && <SalesTabs />}
     {phone && stepper}
     {!store || store.code === 'ALL' ? <p className="pc-notice">Choose one store to review its summary.</p>
       : error ? <Alert role="alert" type="error" message={error} action={<Button onClick={retry}>Retry</Button>} />
-      : !data ? <Skeleton active /> : phone ? <>
-        <p className="pc-sum-scope">{data.scope === 'personal' ? 'Your own orders and records. A manager reviews the whole store day.' : 'The whole store day, recorded in POPCORE.'}</p>
-        <Figures groups={groups} orders={orders} pending={pending} phone />
-        <OpenOrders pending={pending} />
-        <h2 className="pc-sum-heading">按付款方式 <small>by payment method</small></h2>
-        <MethodCards groups={groups} />
-        <h2 className="pc-sum-heading">记录 <small>Store records</small></h2>
-        <RecordGroups data={data} />
-        <h2 className="pc-sum-heading">{dayTitle(day)} <small>汇总文字</small></h2>
-        {copyPanel}
-        <div className="pc-sum-links">{refresh}<Link className="pc-btn" to="/checkout/history">订单记录 Order history</Link></div>
-        {note}
-        <div className="pc-sum-dock">
+      : !data ? <Skeleton active /> : <>
+        {personal && <p className="pc-sum-scope">只有你自己的订单和记录 · Your own orders and records.</p>}
+        {copied && !phone && <p role="status" className="pc-sum-copied">{copied}</p>}
+        <div className={data.web_orders ? 'pc-ch-pair' : 'pc-ch-one'}>
+          <InStore data={data} />
+          {data.web_orders && <Web web={data.web_orders} />}
+        </div>
+        <div className="pc-ch-after">
+          <Records data={data} />
+          {copyText}
+        </div>
+        {phone && <div className="pc-sum-dock">
           {copied && <p role="status" className="pc-sum-copied">{copied}</p>}
-          <button type="button" className="pc-btn pc-btn-ink" onClick={copy}>复制汇总文字 Copy summary</button>
-        </div>
-      </> : <>
-        <Figures groups={groups} orders={orders} pending={pending} phone={false} />
-        <div className="pc-sum-grid">
-          <div className="pc-sum-main">
-            <OpenOrders pending={pending} />
-            <MethodTable groups={groups} orders={orders} />
-            <RecordTable data={data} />
-          </div>
-          <aside className="pc-sum-side">{copyPanel}{note}</aside>
-        </div>
+          <div className="pc-sum-dock-row">{refresh}<button type="button" className="pc-btn pc-btn-ink" onClick={copy}>复制汇总文字 Copy summary</button></div>
+        </div>}
       </>}
   </div>
 }

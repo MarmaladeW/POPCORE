@@ -19,6 +19,9 @@ call; hiding a menu is never the check.
 - Sales figures in the 库存 overview: units sold, pace, days left, last sale, best sellers, 日报 dates. The refill,
   running-low and sold-out lists stay for everyone who sees the overview.
 - The 网站 page: `/api/website/status`, `preview`, `orders`, price OK, retry, dismiss.
+- 网站订单记录 Web order records (owner, 2026-11-28, popcore-work#157): `GET /api/website/records` (销售 → 网站订单)
+  and the `web_orders` of `/api/store-events`, which only the whole-store (admin) scope carries. 每日汇总 shows the
+  day's in-store orders and the store's web orders as two lines; a web order never adds to the store's total.
 
 ## Store computer and admin only
 

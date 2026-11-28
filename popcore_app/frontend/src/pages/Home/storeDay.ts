@@ -5,6 +5,7 @@ import { useRole } from '../../auth/useRole'
 import { useAppStore } from '../../store'
 import { torontoDate } from '../Dashboard/todayPresentation'
 import type { SummaryCheckouts } from '../Sales/dailySummary'
+import type { WebOrderRecords } from '../Sales/webOrderRecordsView'
 
 export type StoreEvent = {
   id: number; kind: string; business_date: string; created_at: string; actor_name: string
@@ -16,6 +17,8 @@ export type StoreDay = {
   checkouts?: SummaryCheckouts; pending?: number
   receipts: { id: number; shipment_reference: string | null; status: string }[]
   transfers: { id: number; status: string; source_store_id: number; destination_store_id: number }[]
+  // The store's web orders paid that day, in the admin's whole-store scope only (popcore-work#157).
+  web_orders?: WebOrderRecords
 }
 export const eventNames: Record<string, string> = {
   claw_prize: '出奖 / Prize won', claw_refill: '补货 / Refill', cash_exchange: '换现金 / Cash exchange', display_in: '入 display / Display arrival',
