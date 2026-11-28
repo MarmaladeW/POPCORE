@@ -12,6 +12,7 @@ at. Changes made on the store computer are its shared account's own lines (owner
 谁在操作 on the store computer, we have cameras"); lines from before, made there under a tapped name, stay that
 person's. `audience` is still written on every row, but no longer decides who reads it.
 """
+import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -19,9 +20,10 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+import activity_changes
 import db
 import people
-from auth import ROLE_CLAIM, ROLE_HIERARCHY, login_required
+from auth import ROLE_CLAIM, ROLE_HIERARCHY, login_required, role_required
 
 bp = Blueprint('activity', __name__)
 MUTATING = {'POST', 'PUT', 'PATCH', 'DELETE'}
@@ -198,6 +200,13 @@ def migrate(cur):
     )""")
     cur.execute('CREATE INDEX IF NOT EXISTS idx_activity_store_day ON activity_log(store_id, business_date, id)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_activity_day ON activity_log(business_date, id)')
+    migrate_changes(cur)
+
+
+def migrate_changes(cur):
+    # What each line changed, as JSON (activity_changes.py, owner 2026-11-28); NULL on lines from before.
+    if 'changes' not in {row[1] for row in cur.execute('PRAGMA table_info(activity_log)')}:
+        cur.execute('ALTER TABLE activity_log ADD COLUMN changes TEXT')
 
 
 def _one(con, sql, *args):
@@ -386,13 +395,16 @@ def _business_date():
 def before_request():
     if request.method not in MUTATING or not request.endpoint or request.endpoint in SKIP:
         return None
+    g.activity_before = (None, None)
     try:
         with closing(sqlite3.connect(db.DB_PATH, timeout=db.SQLITE_BUSY_TIMEOUT)) as con:
             con.row_factory = sqlite3.Row
             body = request.get_json(silent=True)
             g.activity_before = _before(con, request.endpoint, request.view_args or {}, body if isinstance(body, dict) else {})
+            # The records this request may change, as they are before it runs (activity_changes.py).
+            g.activity_records = activity_changes.read(con, request.endpoint, request.view_args or {}, body)
     except Exception:  # noqa: BLE001 - the log never stops a request
-        g.activity_before = (None, None)
+        current_app.logger.exception('activity: reading before the change failed')
     return None
 
 
@@ -433,16 +445,23 @@ def _record(response):
         # via_sub / via_name: lines made before 2026-11-26 under a name tapped on the store computer keep them.
         acting, actor_sub = None, actor['sub']
         detail = extra.get('detail') or _detail(con, endpoint, view, body, result)
+        try:
+            changes = activity_changes.collect(
+                con, endpoint, view, request.get_json(silent=True), result, getattr(g, 'activity_records', None),
+                getattr(g, 'activity_documents', []))
+        except Exception:  # noqa: BLE001 - a line without its details is still a line
+            current_app.logger.exception('activity: reading what changed failed')
+            changes = None
         con.execute(
             """INSERT OR IGNORE INTO activity_log(business_date, store_id, actor_sub, actor_name, via_sub, via_name, kind,
-                   endpoint, summary, detail, link, audience, request_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   endpoint, summary, detail, link, audience, request_key, changes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (_business_date(), extra.get('store_id', store), actor_sub, people.name(con, actor_sub),
              actor['sub'] if acting else None, people.name(con, actor['sub']) if acting else None,
              extra.get('kind', kind), endpoint,
              extra.get('summary') or ' '.join(filter(None, (zh, en))) + (f' · {about}' if about else ''),
              detail or '', extra.get('link') or _link(endpoint, view, result), extra.get('audience', audience),
-             request.headers.get('Idempotency-Key') or None))
+             request.headers.get('Idempotency-Key') or None, changes))
         con.commit()
 
 
@@ -515,3 +534,24 @@ def feed():
                                      key=lambda person: person['name'] or ''),
                     # Only the kinds that happened that day, in a fixed order, so the chips stay short on a phone.
                     'kinds': [[key, label] for key, label in KIND_NAMES.items() if key in present]})
+
+
+@bp.get('/api/activity/<int:entry_id>')
+@role_required('admin')
+def entry(entry_id):
+    """One 动态 line opened (owner, 2026-11-28: "admin should be able to click into there and see exactly what
+    changed"): who, when, where and what it changed. Admin only, like everyone's lines (docs/access-rules.md)."""
+    con = db.get_db()
+    row = con.execute("""SELECT a.id, a.at, a.business_date, a.store_id, s.code AS store_code, s.name AS store_name,
+                                a.actor_sub, a.actor_name, a.via_name, a.kind, a.summary, a.detail, a.link, a.changes
+                         FROM activity_log a LEFT JOIN stores s ON s.id=a.store_id WHERE a.id=?""", (entry_id,)).fetchone()
+    if row is None:
+        return jsonify(error='这条动态不在了 This line is not there', code='not_found'), 404
+    found = dict(row)
+    found['actor_name'] = people.name(con, found['actor_sub']) or found['actor_name']
+    found['kind_name'] = KIND_NAMES.get(found['kind'], found['kind'])
+    try:
+        found['changes'] = json.loads(found['changes']) if found['changes'] else None
+    except ValueError:
+        found['changes'] = None
+    return jsonify(found)

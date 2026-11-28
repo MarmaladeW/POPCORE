@@ -4,6 +4,9 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
+from flask import has_request_context
+
+import activity_changes
 from auth import ROLE_CLAIM, ROLE_HIERARCHY
 from catalog_identity import receipt_units
 from validation import SQLITE_INTEGER_MAX, read_date, read_int
@@ -789,6 +792,9 @@ def _post_inventory(con, payload, *, actor, request_key, owns_transaction,
              normalized['business_date'], normalized['correction_of'], normalized['reason']),
         )
         document_id = cur.lastrowid
+        if has_request_context():
+            # 动态 shows what stock each change moved (activity_changes.py); a document rolled back is not shown.
+            activity_changes.track_document(document_id, request_key)
         affected = set()
 
         for line_no, line in enumerate(normalized['lines'], start=1):

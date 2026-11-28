@@ -2149,6 +2149,7 @@ def _get_migrations():
         ('website_items_store_sets',                   _migration_website_items_store_sets),
         ('website_order_packed',                       _migration_website_order_packed),
         ('website_order_checks',                       _migration_website_order_checks),
+        ('activity_changes',                           _migration_activity_changes),
     ]
 
 
@@ -2617,6 +2618,14 @@ def _migration_website_order_checks(con, cur):
     if 'checks' not in columns:
         cur.execute('ALTER TABLE website_orders ADD COLUMN checks TEXT')
     cur.execute("INSERT INTO _migrations(name) VALUES ('website_order_checks')")
+
+def _migration_activity_changes(con, cur):
+    # What a 动态 line changed (owner, 2026-11-28: "admin should be able to click into there and see exactly what
+    # changed"): records before → after and stock moved, as JSON; lines from before keep NULL. See activity_changes.py.
+    import activity
+    activity.migrate_changes(cur)
+    cur.execute("INSERT INTO _migrations(name) VALUES ('activity_changes')")
+
 
 def _migration_activity_log(con, cur):
     # 动态 Activity: one line per change anyone makes (owner, 2026-11-20); see activity.py.
