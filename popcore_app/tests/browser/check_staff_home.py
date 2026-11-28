@@ -238,6 +238,8 @@ async def flow(browser, width):
         await page.get_by_label('Operations store').select_option('DT')
         await page.goto(BASE + '/summary')
         await page.get_by_label('Business date').fill('2026-09-15')
+        # The copy text is folded away under the day's panels (popcore-work#157) until asked for.
+        await page.get_by_text('汇总文字', exact=True).click()
         await expect(page.get_by_label('Summary text')).to_be_visible()
         state['get_status_for_path'] = {'/api/store-events': (403, {'error': 'Assignment revoked'})}
         await page.clock.fast_forward(24 * 60 * 60 * 1000)
