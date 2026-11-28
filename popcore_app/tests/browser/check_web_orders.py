@@ -77,6 +77,15 @@ async def run(browser, width):
         await expect(pick.get_by_text('PM0200 · DT 楼下 Floor 1')).to_be_visible()
         ready = page.get_by_role('region', name='Pickup · ready, waiting for the customer')
         await expect(ready.get_by_text('已等 4 天 · Waiting 4 days')).to_be_visible()
+        # The items and their pieces lead; the order number sits in the quiet top line with the pieces in all; a line
+        # of more than one has its quantity in an ink box (owner, 2026-11-27, popcore-work#147: "the order number is
+        # not what is important here, what important here are: item name, item piece, pickup code, delivery name").
+        await expect(pick.get_by_role('article', name='Order #701').locator('.pc-web-meta')).to_contain_text('#701')
+        await expect(pick.get_by_role('article', name='Order #701').get_by_text('1 件 item', exact=True)).to_be_visible()
+        await expect(pick.locator('.pc-web-qty-many')).to_have_count(0)
+        waiting = ready.get_by_role('article', name='Order #702')
+        await expect(waiting.get_by_text('2 件 items', exact=True)).to_be_visible()
+        await expect(waiting.locator('.pc-web-qty-many')).to_have_text('× 2')
         pack = page.get_by_role('region', name='Delivery · to pack')
         await expect(pack.get_by_text('送达 Fri Nov 21, 2–6 pm')).to_be_visible()
         await expect(pack.get_by_text('区域 Zone Downtown')).to_be_visible()
@@ -97,6 +106,7 @@ async def run(browser, width):
         # Each delivery shows who it goes to (owner, 2026-11-25): the shipping name, else the billing name.
         await expect(pack.get_by_text('收件人 Ship to Zoë Ng')).to_be_visible()
         await expect(pack.get_by_text('收件人 Ship to Ana Lima')).to_be_visible()
+        await expect(pack.get_by_role('article', name='Order #703').locator('.pc-web-person strong')).to_have_text('Zoë Ng')
         await expect(page.get_by_role('region', name='Delivery · out for delivery').get_by_text('Private Person')).to_be_visible()
         await expect(pick.get_by_text('收件人', exact=False)).to_have_count(0)
         # A delivery says the store it leaves from, as a pickup says its store.
@@ -150,7 +160,7 @@ async def run(browser, width):
         await expect(code.get_by_text('No pickup order has this code', exact=False)).to_be_visible()
         await code.get_by_label('取货码 Pickup code').fill('acd-346')
         await code.get_by_role('button', name='查找 Find').click()
-        await expect(code.get_by_text('Private', exact=True)).to_be_visible()
+        await expect(code.locator('.pc-web-person strong')).to_have_text('Private')  # the customer's name leads the card
         await expect(code.get_by_text('Sammy', exact=True)).to_be_visible()
         await fits(page, f'code-{width}.png')
         await code.get_by_role('button', name='已取货 Handed over').click()
