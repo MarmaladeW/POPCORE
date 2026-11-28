@@ -49,6 +49,7 @@ const DayDetailPage=lazyPage(()=>import('./pages/Sales/DayDetail'))
 const ReportStockPage=lazyPage(()=>import('./pages/Sales/ReportStock'))
 const NamePicksPage=lazyPage(()=>import('./pages/Sales/NamePicks'))
 const WebsitePage=lazyPage(()=>import('./pages/Website'))
+const WebOrderRecordsPage=lazyPage(()=>import('./pages/Sales/WebOrderRecords'))
 const WebOrdersPage=lazyPage(()=>import('./pages/WebOrders'))
 const WatchListPage=lazyPage(()=>import('./pages/WatchList'))
 const ActivityPage=lazyPage(()=>import('./pages/Activity'))
@@ -223,6 +224,7 @@ function AppInner() {
           <Route path="/sales"          element={<RoleRoute minRole="admin" element={<SalesPage />} />} />
           <Route path="/sales/matching" element={<RoleRoute minRole="admin" element={<HistoricalMatchReview />} />} />
           <Route path="/sales/day/:date" element={<RoleRoute minRole="admin" element={<DayDetailPage />} />} />
+          <Route path="/sales/web-orders" element={<RoleRoute minRole="admin" element={<WebOrderRecordsPage />} />} />
           <Route path="/sales/report-stock" element={<RoleRoute minRole="admin" element={<ReportStockPage />} />} />
           <Route path="/sales/name-picks" element={<RoleRoute minRole="admin" element={<NamePicksPage />} />} />
           <Route path="/website" element={<RoleRoute minRole="admin" element={<WebsitePage />} />} />

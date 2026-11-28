@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 from auth import role_required
 from checkout_access import REGISTER_NAME, REGISTER_SUB, business_date, checkout_access
 from db import get_db
+import web_order_records
 from goods_operations import _balance, _begin, _remember, _replay
 from inventory_commands import (InventoryConflict, InventoryError, _post_inventory_in_transaction,
     require_inventory_access, store_is_live)
@@ -314,5 +315,12 @@ def summary():
     lines.append(f"入店收货: {len(receipts)}；入店调拨: {len(transfers)}")
     lines.extend(f"  收货 {item['id']}: {item['shipment_reference'] or '无单号'} ({item['status']})" for item in receipts)
     lines.extend(f"  调拨 {item['id']}: {item['status']}" for item in transfers)
+    extra = {}
+    if not personal:
+        # 网站订单 (owner, 2026-11-28, popcore-work#157: "instore orders and website orders"): the store's web orders
+        # paid that day, as their own line; they never add to the store's checkouts. Admin only, like the whole day.
+        day = datetime.strptime(date, '%Y-%m-%d').date()
+        extra['web_orders'] = web_order_records.records(con, start=day, end=day, store=store_code)
+        lines.extend(web_order_records.day_text(extra['web_orders']))
     return jsonify(business_date=date,scope=scope,events=events,checkouts=checkouts,pending=pending,
-        receipts=receipts,transfers=transfers,summary_text='\n'.join(lines))
+        receipts=receipts,transfers=transfers,summary_text='\n'.join(lines),**extra)

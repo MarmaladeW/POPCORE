@@ -1,6 +1,7 @@
 """Website stock and price sync routes (popcore.ca); see website_sync.py and docs/website-sync.md.
 
-Only admins see the sync, what the next push would change and the web orders, settle orders POPCORE
+Only admins see the sync, what the next push would change and the web orders (and their records, 网站订单记录:
+web_order_records.py), settle orders POPCORE
 could not fill, OK the price changes that wait, reread the catalogue and turn the sync on and off
 (owner, 2026-11-26: employees, managers included, do not see the website section).
 
@@ -15,11 +16,13 @@ Phone notifications: the store computer and admins for new web orders, managers 
 neither, so they cannot turn a device on; anyone can turn their own device off.
 """
 import os
+from datetime import datetime
 from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request
 
 import push_notifications as push
+import web_order_records as records
 import website_board as board
 import website_sync as sync
 from auth import ROLE_CLAIM, role_required
@@ -146,6 +149,31 @@ def website_price_ok(wc_id):
 def website_orders():
     con = get_db()
     return jsonify(orders=sync.orders(con))
+
+
+@bp.get('/api/website/records')
+@role_required('admin')
+def website_records():
+    """网站订单记录 Web order records (owner, 2026-11-28, popcore-work#157): a month of web orders (`month`, YYYY-MM,
+    this Toronto month by default), or with `q` alone every order matching an order number or item words. `store`
+    keeps one store's (a pickup's store, the store a delivery leaves from). See web_order_records.py."""
+    args = request.args
+    query = (args.get('q') or '').strip()[:80]
+    store = (args.get('store') or '').strip().upper()[:10] or None
+    store = None if store == 'ALL' else store
+    month = (args.get('month') or '').strip()
+    con = get_db()
+    if query and not month:
+        return jsonify(month=None, query=query, **records.records(con, store=store, query=query))
+    month = month or datetime.now(sync.TORONTO).strftime('%Y-%m')
+    try:
+        start, end = records.month_range(month) if len(month) == 7 else (None, None)
+    except ValueError:
+        start = None
+    if start is None:
+        return jsonify(error='month must be YYYY-MM', code='invalid_input'), 400
+    return jsonify(month=month, query=query or None, **records.records(con, start=start, end=end, store=store,
+                                                                         query=query))
 
 
 @bp.post('/api/website/orders/<int:wc_order_id>/retry')

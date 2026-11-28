@@ -5,13 +5,14 @@ import { torontoDate } from '../Dashboard/todayPresentation'
 const tabs = [
   { to: '/summary', zh: '每日汇总', en: 'Daily summary' },
   { to: '/sales', zh: '历史日报', en: 'Historical reports' },
+  { to: '/sales/web-orders', zh: '网站订单', en: 'Web orders' },
 ]
 
-// Admin 销售 Sales: 每日汇总 · 历史日报. 收工 left the tabs (owner, 2026-11-27: "Drop 收工 instead"); the day is closed
+// Admin 销售 Sales: 每日汇总 · 历史日报 · 网站订单 (every web order's record, popcore-work#157). 收工 left the tabs (owner, 2026-11-27: "Drop 收工 instead"); the day is closed
 // by the 店长's 审核 in 记一笔.
 export function SalesTabs() {
   const path = useLocation().pathname
-  const active = path.startsWith('/sales') ? '/sales' : path
+  const active = path.startsWith('/sales/web-orders') ? '/sales/web-orders' : path.startsWith('/sales') ? '/sales' : path
   return <nav className="pc-page-tabs" aria-label="Sales sections">
     {tabs.map(tab => <Link key={tab.to} to={tab.to} aria-current={active === tab.to ? 'page' : undefined}>{tab.zh} <span>{tab.en}</span></Link>)}
   </nav>
