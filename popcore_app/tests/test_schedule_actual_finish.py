@@ -32,7 +32,7 @@ class ActualFinishTests(IsolatedApiCase):
         # 22:00 Toronto on 2026-09-16
         self.clock.now.return_value = datetime(2026, 9, 17, 2, tzinfo=timezone.utc)
 
-    def patch_shift(self, data, role='manager', shift=None):
+    def patch_shift(self, data, role='admin', shift=None):  # only an admin changes shifts (owner, 2026-11-28)
         return self.client.patch(
             f'/api/schedule/shifts/{shift or self.shift}', json=data, headers=self.headers(role),
         )
@@ -52,7 +52,7 @@ class ActualFinishTests(IsolatedApiCase):
         self.assertEqual(late.status_code, 200, late.get_json())
         self.assertEqual((late.get_json()['end_time'], late.get_json()['actual_end_time']), ('20:00', '20:45'))
         self.assertEqual(self.hours(), (16.75, 8.75, 16.75, 16.75))
-        early = self.patch_shift({'actual_end_time': '18:30'}, role='admin')
+        early = self.patch_shift({'actual_end_time': '18:30'})
         self.assertEqual(early.status_code, 200, early.get_json())
         self.assertEqual(self.hours(), (14.5, 6.5, 14.5, 14.5))
         # Other edits keep the recorded finish.
@@ -70,9 +70,10 @@ class ActualFinishTests(IsolatedApiCase):
         self.assertIsNone(cleared.get_json()['actual_end_time'])
         self.assertEqual(self.hours(), (16.0, 8.0, 16.0, 16.0))
 
-    def test_only_managers_record_and_invalid_finishes_change_nothing(self):
+    def test_only_admins_record_and_invalid_finishes_change_nothing(self):
         before = self.snapshot(['shifts'])
-        self.assertEqual(self.patch_shift({'actual_end_time': '20:30'}, role='staff').status_code, 403)
+        for role in ('staff', 'manager'):
+            self.assertEqual(self.patch_shift({'actual_end_time': '20:30'}, role=role).status_code, 403)
         for value in ['8:30', '24:00', '', 2030, '12:00', '11:59', '01:01', '06:00']:
             result = self.patch_shift({'actual_end_time': value})
             self.assertEqual(result.status_code, 400, value)
@@ -99,7 +100,7 @@ class ActualFinishTests(IsolatedApiCase):
             # Removed before the period: nothing worked, so not listed.
             con.execute("INSERT INTO employees(auth0_id,name,is_active) VALUES ('auth0|left','Left',0)")
             con.commit()
-        self.assertEqual(self.client.delete(f'/api/schedule/trainees/{trainee}', headers=self.headers('manager')).status_code, 200)
+        self.assertEqual(self.client.delete(f'/api/schedule/trainees/{trainee}', headers=self.headers('admin')).status_code, 200)
         with closing(self.connect()) as con:
             con.execute('UPDATE employees SET is_active=0 WHERE id=?', (self.employee,))
             con.commit()
@@ -123,10 +124,11 @@ class ActualFinishTests(IsolatedApiCase):
         self.assertEqual((hours['period_start'], hours['period_end']), ('2026-09-04', '2026-10-03'))
         self.assertEqual(hours['total_hours'], 16.0)
 
-    def test_conflict_lookup_is_for_managers_only(self):
+    def test_conflict_lookup_is_for_admins_only(self):
         url = f'/api/schedule/conflicts?employee_id={self.employee}&date=2026-09-16&store_code=MK'
-        self.assertEqual(self.client.get(url, headers=self.headers('staff')).status_code, 403)
-        found = self.client.get(url, headers=self.headers('manager')).get_json()
+        for role in ('staff', 'manager'):  # it is only asked before saving a shift
+            self.assertEqual(self.client.get(url, headers=self.headers(role)).status_code, 403)
+        found = self.client.get(url, headers=self.headers('admin')).get_json()
         self.assertEqual([c['store_code'] for c in found['conflicts']], ['DT'])
 
     def test_migration_is_repeatable_and_keeps_recorded_finishes(self):

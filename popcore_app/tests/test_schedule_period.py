@@ -9,15 +9,15 @@ class SchedulePeriodTests(IsolatedApiCase):
         super().setUp()
         self.open_every_month()
 
-    def test_managers_and_admins_assign_without_submission(self):
-        for role in ('manager', 'admin'):
-            employee = self.client.get('/api/schedule/me', headers=self.headers('staff:' + role)).json['id']
-            shift = {'employee_id': employee, 'store_code': 'DT', 'date': '2026-09-14',
-                     'start_time': '12:00', 'end_time': '22:00', 'require_availability': True}
-            self.assertEqual(self.client.post('/api/schedule/shifts', json=shift, headers=self.headers('staff')).status_code, 403)
-            result = self.client.post('/api/schedule/shifts', json=shift, headers=self.headers(role))
-            self.assertEqual(result.status_code, 201, result.json)
-            self.assertEqual(self.client.post('/api/schedule/shifts', json=shift, headers=self.headers(role)).status_code, 409)
+    def test_admins_assign_without_submission(self):
+        employee = self.client.get('/api/schedule/me', headers=self.headers('staff:admin')).json['id']
+        shift = {'employee_id': employee, 'store_code': 'DT', 'date': '2026-09-14',
+                 'start_time': '12:00', 'end_time': '22:00', 'require_availability': True}
+        for role in ('staff', 'manager'):  # 店长/副店长 only look (owner, 2026-11-28)
+            self.assertEqual(self.client.post('/api/schedule/shifts', json=shift, headers=self.headers(role)).status_code, 403)
+        result = self.client.post('/api/schedule/shifts', json=shift, headers=self.headers('admin'))
+        self.assertEqual(result.status_code, 201, result.json)
+        self.assertEqual(self.client.post('/api/schedule/shifts', json=shift, headers=self.headers('admin')).status_code, 409)
 
     def test_old_cycle_hours_are_preserved_for_resubmission(self):
         employee = self.client.get('/api/schedule/me', headers=self.headers()).json['id']
@@ -106,7 +106,7 @@ class SchedulePeriodTests(IsolatedApiCase):
         employee = self.client.get('/api/schedule/me', headers=self.headers()).json['id']
         shift = {'employee_id': employee, 'store_code': 'DT', 'date': '2026-09-14', 'start_time': '10:00', 'end_time': '17:00', 'require_availability': True}
         def create(data):
-            return self.client.post('/api/schedule/shifts', json=data, headers=self.headers('manager'))
+            return self.client.post('/api/schedule/shifts', json=data, headers=self.headers('admin'))
         self.assertEqual(self.put().status_code, 200)
         self.assertEqual(create(shift | {'start_time': '08:00'}).status_code, 409)
         self.assertEqual(create(shift | {'date': '2026-09-19'}).status_code, 409)
@@ -121,12 +121,12 @@ class SchedulePeriodTests(IsolatedApiCase):
         self.assertEqual(self.put(data).status_code, 200)
         self.assertEqual(self.snapshot(['shifts']), before)
         url = f"/api/schedule/shifts/{result.json['id']}"
-        self.assertEqual(self.client.patch(url, json={'end_time': '08:00'}, headers=self.headers('manager')).status_code, 400)
-        self.assertEqual(self.client.patch(url, json={'notes': 'x', 'require_availability': True}, headers=self.headers('manager')).status_code, 409)
-        self.assertEqual(self.client.patch(url, json={'notes': 'manual'}, headers=self.headers('manager')).status_code, 200)
+        self.assertEqual(self.client.patch(url, json={'end_time': '08:00'}, headers=self.headers('admin')).status_code, 400)
+        self.assertEqual(self.client.patch(url, json={'notes': 'x', 'require_availability': True}, headers=self.headers('admin')).status_code, 409)
+        self.assertEqual(self.client.patch(url, json={'notes': 'manual'}, headers=self.headers('admin')).status_code, 200)
         for change in [{'date': '2026-02-30'}, {'start_time': '9:00'}, {'end_time': '09:00'}]:
             self.assertEqual(create(shift | change).status_code, 400)
-        trainee = self.client.post('/api/schedule/trainees', json={'name': 'Trainee'}, headers=self.headers('manager')).json
+        trainee = self.client.post('/api/schedule/trainees', json={'name': 'Trainee'}, headers=self.headers('admin')).json
         self.assertEqual(create(shift | {'employee_id': trainee['id'], 'require_availability': False}).status_code, 201)
 
     def test_migration_preserves_legacy_ids_and_is_repeatable(self):
@@ -155,16 +155,16 @@ class SchedulePeriodTests(IsolatedApiCase):
     def test_malformed_write_payloads_return_validation_errors(self):
         employee = self.client.get('/api/schedule/me', headers=self.headers()).json['id']
         shift = {'employee_id': employee, 'store_code': 'DT', 'date': '2026-09-14', 'start_time': '10:00', 'end_time': '17:00'}
-        result = self.client.post('/api/schedule/shifts', json=shift, headers=self.headers('manager'))
+        result = self.client.post('/api/schedule/shifts', json=shift, headers=self.headers('admin'))
         self.assertEqual(result.status_code, 201)
         for method, path, role in [('put', '/api/schedule/availability/period', 'staff'),
                                    ('post', '/api/schedule/availability', 'staff'),
-                                   ('post', '/api/schedule/shifts', 'manager'),
-                                   ('patch', f"/api/schedule/shifts/{result.json['id']}", 'manager')]:
+                                   ('post', '/api/schedule/shifts', 'admin'),
+                                   ('patch', f"/api/schedule/shifts/{result.json['id']}", 'admin')]:
             with self.subTest(path=path):
                 self.assertEqual(getattr(self.client, method)(path, json=['bad'], headers=self.headers(role)).status_code, 400)
-        self.assertEqual(self.client.post('/api/schedule/shifts', json=shift | {'notes': []}, headers=self.headers('manager')).status_code, 400)
-        self.assertEqual(self.client.patch(f"/api/schedule/shifts/{result.json['id']}", json={'notes': []}, headers=self.headers('manager')).status_code, 400)
+        self.assertEqual(self.client.post('/api/schedule/shifts', json=shift | {'notes': []}, headers=self.headers('admin')).status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/schedule/shifts/{result.json['id']}", json={'notes': []}, headers=self.headers('admin')).status_code, 400)
 
     def test_period_requires_authenticated_active_identity(self):
         self.assertEqual(self.client.put('/api/schedule/availability/period', json=self.payload()).status_code, 401)
@@ -181,11 +181,11 @@ class SchedulePeriodTests(IsolatedApiCase):
         employee = self.client.get('/api/schedule/me', headers=self.headers()).json['id']
         for resource, fields in [('notes', {'content': 'Two weeks'}), ('checklist', {'employee_id': employee, 'considered': True})]:
             path = f'/api/schedule/{resource}'
-            result = self.client.put(path, json=fields | {'period_key': 'fortnight:2026-09-14'}, headers=self.headers('manager'))
+            result = self.client.put(path, json=fields | {'period_key': 'fortnight:2026-09-14'}, headers=self.headers('admin'))
             self.assertEqual(result.status_code, 200, result.json)
-            result = self.client.get(path, query_string={'key': 'fortnight:2026-09-14'}, headers=self.headers('manager'))
+            result = self.client.get(path, query_string={'key': 'fortnight:2026-09-14'}, headers=self.headers('admin'))
             self.assertEqual(result.status_code, 200)
-            weekly = self.client.get(path, query_string={'key': 'week:2026-09-14'}, headers=self.headers('manager')).json
+            weekly = self.client.get(path, query_string={'key': 'week:2026-09-14'}, headers=self.headers('admin')).json
             self.assertEqual(weekly['content'] if resource == 'notes' else weekly, '' if resource == 'notes' else [])
 
     def test_availability_lists_keep_rows_and_submission_in_one_snapshot(self):

@@ -8,6 +8,8 @@ import secrets
 import re as _re
 from zoneinfo import ZoneInfo
 
+from functools import wraps
+
 from flask import Blueprint, request, jsonify, Response
 
 from db import get_db
@@ -121,27 +123,38 @@ def _current_wage_anchor(start_day: int):
     return year, month
 
 
-# ─── 店长/副店长 see this month and next (owner, 2026-11-27: "the manager can only see the schedule for that month,
-# not all of them"; picked this month + next) ─────────────────────────────────────────────────────────────────
-# Managers read and change the team's schedule, availability, notes and 月工时 only inside this window; admins see
-# every month. Everyone's own shifts and own 月工时 are theirs in every month.
+# ─── 店长/副店长 only look at this month (owner, 2026-11-28: managers must not edit the schedule and see one month;
+# replaces 2026-11-27's this month + next, in which they could still change shifts) ─────────────────────────────────
+# Only an admin adds, changes or removes shifts, the period notes, the checklist, the reminder and schedule-only
+# trainees. A manager reads the team's schedule, availability, notes and 月工时 only for the current month; admins see
+# every month. Everyone's own shifts, own availability, own 月工时, 打卡 and own calendar feed stay theirs in every month.
 
-MONTH_CLOSED = '店长只能看和改这个月和下个月的排班 · Managers see and change only this month and next month.'
+MONTH_CLOSED = '店长只能看这个月的排班 · Managers see only this month of the schedule.'
+READ_ONLY = '排班只能由管理员修改 · Only an admin changes the schedule.'
+
+
+def _is_admin():
+    return ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['admin']
+
+
+def admin_changes(f):
+    """A change to the team's 排班: staff get role_required's 403, a 店长/副店长 403 schedule_read_only."""
+    @role_required('manager')
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _is_admin():
+            return jsonify({'code': 'schedule_read_only', 'error': READ_ONLY}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 
 def _manager_window(con):
-    """(first, last) ISO dates a manager may see and change, or None for an admin. "This month" starts at the earliest
-    of its 1st, the current wage period's first day (so in the first days of a month the end of the wage period is
-    still open) and the current two-week schedule cycle's first day (so the fortnight being worked is whole); the
-    window ends with next month."""
-    if ROLE_HIERARCHY.get(request.jwt_payload.get(ROLE_CLAIM, 'viewer'), 0) >= ROLE_HIERARCHY['admin']:
+    """(first, last) ISO dates of the month a manager may see, or None for an admin: this calendar month in Toronto."""
+    if _is_admin():
         return None
-    start_day = _month_start_day(con)
     today = _toronto_today()
-    wage_first, _ = _wage_period(*_current_wage_anchor(start_day), start_day)
-    month_after_next = _dt.date(today.year + (today.month >= 11), (today.month + 1) % 12 + 1, 1)
-    cycle_first = _dt.date.fromisoformat(_availability_period(today))
-    return str(min(today.replace(day=1), wage_first, cycle_first)), str(month_after_next - _dt.timedelta(days=1))
+    month_after = _dt.date(today.year + (today.month == 12), today.month % 12 + 1, 1)
+    return str(today.replace(day=1)), str(month_after - _dt.timedelta(days=1))
 
 
 def _within_window(con, start, end):
@@ -162,13 +175,13 @@ def _month_closed(con, first, last=None):
 
 
 def _wage_months(con):
-    """The current wage month and the next one, as YYYY-MM: the 月工时 months a manager may open."""
+    """The current wage month as a one-item list of YYYY-MM: the only 月工时 month a manager may open."""
     year, month = _current_wage_anchor(_month_start_day(con))
-    return [f'{year}-{month:02d}', f'{year + (month == 12)}-{month % 12 + 1:02d}']
+    return [f'{year}-{month:02d}']
 
 
 def _wage_month_closed(con, year, month):
-    """A 403 when a manager asks for a 月工时 month other than the current wage month and the next one."""
+    """A 403 when a manager asks for a 月工时 month other than the current wage month."""
     if _manager_window(con) is None or f'{year}-{month:02d}' in _wage_months(con):
         return None
     return jsonify({'code': 'schedule_month_closed', 'error': MONTH_CLOSED}), 403
@@ -228,7 +241,7 @@ def schedule_config():
 
 
 @bp.route('/api/schedule/reminder', methods=['PUT'])
-@role_required('manager')
+@admin_changes
 def update_schedule_reminder():
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or set(data) != {'content'}:
@@ -385,7 +398,7 @@ def schedule_trainees_list():
 
 
 @bp.route('/api/schedule/trainees', methods=['POST'])
-@role_required('manager')
+@admin_changes
 def schedule_trainees_create():
     data = request.get_json(silent=True) or {}
     name = str(data.get('name') or '').strip()[:120]
@@ -405,7 +418,7 @@ def schedule_trainees_create():
 
 
 @bp.route('/api/schedule/trainees/<int:trainee_id>', methods=['DELETE'])
-@role_required('manager')
+@admin_changes
 def schedule_trainees_delete(trainee_id):
     """Deactivate a trainee (their past shifts stay on record)."""
     con = get_db()
@@ -985,7 +998,7 @@ def punch_place_set(store_code):
 
 
 @bp.route('/api/schedule/shifts', methods=['POST'])
-@role_required('manager')
+@admin_changes
 def schedule_shifts_create():
     data        = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
@@ -1026,10 +1039,6 @@ def schedule_shifts_create():
     if not emp['is_schedulable']:
         con.close()
         return jsonify({'error': 'Employee is disabled for shift assignment'}), 409
-    closed = _month_closed(con, shift_date)
-    if closed:
-        con.close()
-        return closed
     if con.execute('SELECT id FROM shifts WHERE employee_id=? AND date=?', (employee_id,shift_date)).fetchone():
         con.close()
         return jsonify({'error': 'Employee already has a shift on this date. Edit the existing shift.'}), 409
@@ -1050,7 +1059,7 @@ def schedule_shifts_create():
 
 
 @bp.route('/api/schedule/shifts/<int:shift_id>', methods=['PATCH'])
-@role_required('manager')
+@admin_changes
 def schedule_shifts_update(shift_id):
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
@@ -1061,10 +1070,6 @@ def schedule_shifts_update(shift_id):
     if not row:
         con.close()
         return jsonify({'error': 'Not found'}), 404
-    closed = _month_closed(con, row['date'])
-    if closed:
-        con.close()
-        return closed
     updates: dict = {}
     for field in ('start_time', 'end_time', 'notes'):
         if field in data:
@@ -1121,17 +1126,13 @@ def schedule_shifts_update(shift_id):
 
 
 @bp.route('/api/schedule/shifts/<int:shift_id>', methods=['DELETE'])
-@role_required('manager')
+@admin_changes
 def schedule_shifts_delete(shift_id):
     con = get_db()
     row = con.execute('SELECT id, date FROM shifts WHERE id = ?', (shift_id,)).fetchone()
     if not row:
         con.close()
         return jsonify({'error': 'Not found'}), 404
-    closed = _month_closed(con, row['date'])
-    if closed:
-        con.close()
-        return closed
     con.execute('DELETE FROM shifts WHERE id = ?', (shift_id,))
     con.commit()
     con.close()
@@ -1141,7 +1142,7 @@ def schedule_shifts_delete(shift_id):
 # ─── Conflict check ────────────────────────────────────────────────────────────
 
 @bp.route('/api/schedule/conflicts', methods=['GET'])
-@role_required('manager')
+@admin_changes
 def schedule_conflicts():
     try:
         employee_id = int(request.args.get('employee_id', ''))
@@ -1160,10 +1161,6 @@ def schedule_conflicts():
         con.close()
         return jsonify({'error': 'Invalid store_code'}), 400
 
-    closed = _month_closed(con, shift_date)
-    if closed:
-        con.close()
-        return closed
     store_id = store_row['id']
     rows = con.execute('''
         SELECT s.id AS shift_id, st.code AS store_code, st.name AS store_name,
@@ -1197,7 +1194,7 @@ _PERIOD_KEY_RE = _re.compile(r'^(month:\d{4}-\d{2}|(fortnight|week|day):\d{4}-\d
 
 
 def _period_closed(key):
-    """A 403 (or 400 for a date that does not exist) when a manager asks for a period outside this month and next."""
+    """A 403 (or 400 for a date that does not exist) when a manager asks for a period wholly outside this month."""
     kind, _, day = key.partition(':')
     try:
         first = _dt.date.fromisoformat(day + '-01' if kind == 'month' else day)
@@ -1233,15 +1230,12 @@ def schedule_notes_get():
 
 
 @bp.route('/api/schedule/notes', methods=['PUT'])
-@role_required('manager')
+@admin_changes
 def schedule_notes_put():
     data = request.get_json(silent=True) or {}
     key  = str(data.get('period_key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
         return jsonify({'error': 'period_key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
-    closed = _period_closed(key)
-    if closed:
-        return closed
     content    = str(data.get('content') or '')[:5000]
     updated_by = request.jwt_payload.get('sub', '')
     con = get_db()
@@ -1274,16 +1268,13 @@ def schedule_checklist_get():
 
 
 @bp.route('/api/schedule/checklist', methods=['PUT'])
-@role_required('manager')
+@admin_changes
 def schedule_checklist_put():
     """Mark one person as considered (or not) for a period, with optional note."""
     data = request.get_json(silent=True) or {}
     key  = str(data.get('period_key') or '').strip()
     if not _PERIOD_KEY_RE.match(key):
         return jsonify({'error': 'period_key must be month:YYYY-MM, fortnight:YYYY-MM-DD, week:YYYY-MM-DD or day:YYYY-MM-DD'}), 400
-    closed = _period_closed(key)
-    if closed:
-        return closed
     try:
         employee_id = int(data.get('employee_id'))
     except (TypeError, ValueError):

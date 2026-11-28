@@ -10,7 +10,7 @@ class TraineePromotionTests(IsolatedApiCase):
         super().setUp()
         self.open_every_month()
         self.app.register_blueprint(users.bp)
-        response = self.client.post('/api/schedule/trainees', headers=self.headers('manager'), json={'name': 'Jessi'})
+        response = self.client.post('/api/schedule/trainees', headers=self.headers('admin'), json={'name': 'Jessi'})
         self.trainee_id = response.get_json()['id']
         with closing(self.connect()) as con:
             con.execute('''INSERT INTO shifts (employee_id, store_id, date, start_time, end_time, assigned_by)
