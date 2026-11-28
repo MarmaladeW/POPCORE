@@ -11,8 +11,8 @@ import { Panel } from '../../components/pc/Panel'
 import { ALL_STORES, useAppStore } from '../../store'
 import Notifications, { chime, soundOn } from './Notifications'
 import {
-  COLUMNS, ageText, announceText, clockText as clock, codeMissText, courierText, deliveryFacts, kindText, longWait, moveText,
-  checkText, nameMatches, newCards, openCards, packedText, picksText, reasonText, websiteTime,
+  COLUMNS, ageText, announceText, cardStores, checkText, clockText as clock, codeMissText, courierText, deliveryFacts, longWait,
+  moveText, nameMatches, newCards, openCards, packedText, picksText, pieceCount, reasonText, websiteTime,
 } from './webOrdersView'
 import './webOrders.css'
 
@@ -29,32 +29,51 @@ function stepMessage(step: WebOrderStep, done: string, already: string) {
   else message.success(done)
 }
 
-function OrderCard({ card, now, action, extra }: { card: WebOrderCard; now: number; action?: React.ReactNode; extra?: React.ReactNode }) {
+// One order (owner, 2026-11-27: "make the important information clearer ... the order number is not what is
+// important here, what important here are: item name, item piece, pickup code, delivery name"). A quiet line says
+// pickup or delivery, the store, the order number and its age, with the pieces in all; then who it is for (a
+// delivery's name, or the customer once their code is typed), large; then each item by name, its quantity in its own
+// box, filled in ink when it is more than one; the delivery's details come last, quiet. The pickup code itself stays
+// off the board: it proves the person at the counter is the customer.
+type Customer = { name: string; collector: string | null }
+function OrderCard({ card, now, customer, action, extra }: {
+  card: WebOrderCard; now: number; customer?: Customer; action?: React.ReactNode; extra?: React.ReactNode
+}) {
   const waited = longWait(card, now)
   const move = moveText(card)
   const courier = courierText(card)
   const packed = packedText(card)
+  const facts = card.kind === 'delivery' ? deliveryFacts(card) : []
+  const pieces = pieceCount(card)
+  // The courier is matched to the parcel by this name (owner, 2026-11-28: "名字 is also for 快递, as that is what we
+  // use to match"), so a delivery always has the slot, and says so when the website did not send the name.
+  const shipTo = card.kind === 'delivery' ? card.name ?? '' : null
   return <article className="pc-web-card" aria-label={`Order #${card.number}`}>
-    <header>
-      <strong>#{card.number}</strong>
-      <span>{kindText(card)}</span>
-      <time>{ageText(card.paid_at, now)}</time>
+    <header className="pc-web-head">
+      <span className="pc-web-kind">{card.kind === 'pickup' ? '自取' : '配送'} <b>{cardStores(card).join(' + ')}</b></span>
+      <span className="pc-web-meta"><span className="pc-web-number"><span aria-hidden="true">#</span>{card.number}</span>
+        <time>{ageText(card.paid_at, now)}</time></span>
+      <span className="pc-web-pieces"><b>{pieces}</b> 件 <small>{pieces === 1 ? 'item' : 'items'}</small></span>
     </header>
-    {card.kind === 'delivery' && card.name && <p className="pc-web-to">收件人 Ship to <strong>{card.name}</strong></p>}
+    {customer ? <p className="pc-web-person"><small>顾客 Customer</small> <strong>{customer.name || '—'}</strong>
+      {customer.collector && <small>代取 Collecting: <b>{customer.collector}</b></small>}</p>
+      : shipTo !== null && <p className="pc-web-person pc-web-ship"><small>收件人 Ship to</small> {shipTo
+        ? <strong>{shipTo}</strong> : <em>名字没读到 · Name not read. It comes back at the next refresh.</em>}</p>}
     {waited > 0 && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />已等 {waited} 天 · Waiting {waited} days</p>}
     {move && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{move}</p>}
     {courier && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{courier}</p>}
     {(card.checks ?? []).map((check, index) => <p key={`check-${index}`} className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />{checkText(check)}</p>)}
     <ul className="pc-web-lines">
       {card.lines.map((line, index) => <li key={index}>
-        <span><strong>{line.name}</strong> × {line.quantity}</span>
+        <span className={line.quantity > 1 ? 'pc-web-qty pc-web-qty-many' : 'pc-web-qty'}><span className="sr-only">× </span>{line.quantity}</span>
+        <strong>{line.name}</strong>
         {(line.popcore_id || line.picks.length > 0) && <small>{[line.popcore_id, picksText(line)].filter(Boolean).join(' · ')}</small>}
       </li>)}
     </ul>
-    {card.kind === 'delivery' && deliveryFacts(card).length > 0 && <ul className="pc-web-facts">
-      {deliveryFacts(card).map(fact => <li key={fact}>{fact}</li>)}
+    {facts.length > 0 && <ul className="pc-web-facts">
+      {facts.map(fact => <li key={fact}>{fact}</li>)}
     </ul>}
-    {packed && <p className="pc-web-reason">{packed}</p>}
+    {packed && <p className="pc-web-packed"><i className="pc-dot pc-dot-ok" aria-hidden="true" />{packed}</p>}
     {extra}
     {action}
   </article>
@@ -118,12 +137,9 @@ function CodeBox({ store, onChange }: { store?: string; onChange: () => void }) 
     {result && !result.found && <Alert role="status" type="info" showIcon message={codeMissText(result)}
       action={<Button size="small" onClick={close}>关闭 Close</Button>} />}
     {result?.found && <OrderCard card={result.order} now={now}
-      extra={<>
-        <p className="pc-web-customer">顾客 Customer: <strong>{result.first_name || '—'}</strong>
-          {result.collector && <> · Collecting: <strong>{result.collector}</strong></>}</p>
-        {result.needs_manager && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
-          POPCORE could not take this order out of stock. Hand it over, then tell the admin.</p>}
-      </>}
+      customer={{ name: result.first_name, collector: result.collector }}
+      extra={result.needs_manager && <p className="pc-web-flag"><i className="pc-dot pc-dot-warn" aria-hidden="true" />
+        POPCORE could not take this order out of stock. Hand it over, then tell the admin.</p>}
       action={<div className="pc-web-actions">
         <Popconfirm title={`Hand over #${result.order.number}?`} description="The website marks it completed and emails the customer."
           okText="Handed over" onConfirm={() => handOver(result.order)}>
