@@ -130,7 +130,7 @@ async def run_checks(browser, case):
     await page.screenshot(path=OUT/'my-shifts-390.png', full_page=True, animations='disabled')
     await context.close()
 
-    context, page = await page_for('manager')
+    context, page = await page_for('admin')  # only an admin assigns (owner, 2026-11-28)
     await expect(page.get_by_role('button', name='Expand navigation', exact=True)).to_be_visible()
     await page.get_by_role('button', name='Expand navigation', exact=True).click()
     await expect(page.get_by_role('button', name='Collapse navigation', exact=True)).to_be_visible()
@@ -321,7 +321,7 @@ async def run_checks(browser, case):
     await dialog.get_by_text('Full day (12:00–22:00)', exact=True).click()
     await dialog.get_by_role('button', name='Save', exact=True).click()
     await expect(dialog).not_to_be_visible()
-    # Actual finish: recorded by the manager once the shift's Toronto day has arrived.
+    # Actual finish: recorded by the admin once the shift's Toronto day has arrived.
     mason = panel.locator('.pc-schedule-person').filter(has_text='Mason')
     await mason.get_by_role('button', name='Edit', exact=True).click()
     # 实际下班 is digits only with the numeric keypad: 2125 reads as 21:25; the saved value stays HH:mm.
@@ -556,12 +556,8 @@ async def run_checks(browser, case):
     await page.locator('.pc-coverage-notes summary').click()
     await show_checklist(False)
     await page.get_by_role('button', name='Month', exact=True).click()
-    # A manager sees this month and next only (owner, 2026-11-27), so the way back is closed; check that next month
-    # fits too.
+    # Next month fits too (a manager's months are check_manager_months).
     await page.set_viewport_size({'width':1280,'height':800})
-    back = page.get_by_role('button', name='Previous calendar period', exact=True)
-    await expect(back).to_be_disabled()
-    await expect(back).to_have_attribute('title', '店长只能看这个月和下个月 · Managers see this month and next only')
     await page.get_by_role('button', name='Next calendar period', exact=True).click()
     next_date = (START.replace(day=28) + timedelta(days=4)).replace(day=1)
     await select_date(next_date, 'MK')
@@ -581,7 +577,7 @@ async def run_checks(browser, case):
     await context.close()
 
     # Period notes: a note that failed to load cannot be saved over, and changing the period keeps unsaved notes.
-    context, page = await page_for('manager')
+    context, page = await page_for('admin')  # only an admin assigns (owner, 2026-11-28)
     await page.get_by_role('tab', name='团队排班 Team schedule', exact=True).click()
     await page.locator('.pc-coverage-toggle').click()
     await page.locator('.pc-coverage-notes summary').click()

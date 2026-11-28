@@ -236,7 +236,8 @@ async def calendar_marks(browser, case):
         con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id,position)
                        VALUES (?,'2026-10-28','12:00','20:00','fixture',?,'')""", (nan, case.store_id))
         con.commit()
-    context, page = await open_as(browser, case, 'manager', 1440, store='DT')
+    # As the admin: it ends in the shift dialog, which a 店长/副店长 no longer has (owner, 2026-11-28).
+    context, page = await open_as(browser, case, 'admin', 1440, store='DT')
     try:
         await page.goto(BASE + '/schedule')
         await page.get_by_role('button', name='Month', exact=True).click()

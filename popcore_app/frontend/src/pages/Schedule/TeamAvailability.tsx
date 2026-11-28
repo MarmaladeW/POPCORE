@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { useAppStore } from '../../store'
 import AvailabilityCalendar from './AvailabilityCalendar'
 import { cycleDates, cycleStart } from './availabilityPeriod'
-import { canGoBack, canGoForward, MONTH_LIMIT_HINT } from './managerWindow'
+import { canGoBack, canGoForward, monthLimitHint } from './managerWindow'
 import useManagerWindow from './useManagerWindow'
 import { getAllAvailability, getEmployees, type Availability, type Employee } from './scheduleApi'
 import { scheduleApiErrorMessage } from './employeeScheduling'
@@ -61,11 +61,11 @@ export default function TeamAvailability() {
     {employeeId === 'me' ? <AvailabilityCalendar /> : <section aria-label="Declared availability">
       <div className="pc-page-actions">
         <Space wrap>
-          <Button aria-label="Previous declared availability period" disabled={!canGoBack(months, period)} title={canGoBack(months, period) ? undefined : MONTH_LIMIT_HINT}
+          <Button aria-label="Previous declared availability period" disabled={!canGoBack(months, period)} title={canGoBack(months, period) ? undefined : monthLimitHint(months)}
             onClick={() => setPeriod(dayjs(period).subtract(14, 'day').format('YYYY-MM-DD'))}>‹</Button>
           <strong>{dayjs(period).format('MMM D')} – {dayjs(dates[13]).format('MMM D, YYYY')}</strong>
           <Button aria-label="Next declared availability period" disabled={!canGoForward(months, dayjs(period).add(14, 'day').format('YYYY-MM-DD'))}
-            title={canGoForward(months, dayjs(period).add(14, 'day').format('YYYY-MM-DD')) ? undefined : MONTH_LIMIT_HINT}
+            title={canGoForward(months, dayjs(period).add(14, 'day').format('YYYY-MM-DD')) ? undefined : monthLimitHint(months)}
             onClick={() => setPeriod(dayjs(period).add(14, 'day').format('YYYY-MM-DD'))}>›</Button>
           <Button onClick={() => setReload(value => value + 1)}>Refresh availability</Button>
         </Space>

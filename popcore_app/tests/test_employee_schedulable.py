@@ -24,15 +24,16 @@ MANAGER_PAYLOAD = {
     'sub': 'auth0|manager',
     auth.ROLE_CLAIM: 'manager',
 }
+# Only an admin changes shifts (owner, 2026-11-28; test_schedule_manager_months).
+ADMIN_PAYLOAD = {
+    'sub': 'auth0|admin',
+    auth.ROLE_CLAIM: 'admin',
+}
 AUTH_HEADERS = {'Authorization': 'Bearer test-token'}
 
 
 class EmployeeSchedulableApiTests(unittest.TestCase):
     def setUp(self):
-        # Written on fixed dates before managers were held to this month and next (test_schedule_manager_months).
-        window = patch('blueprints.schedule._manager_window', return_value=None)
-        window.start()
-        self.addCleanup(window.stop)
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_db_path = db.DB_PATH
         db.DB_PATH = str(Path(self.tempdir.name) / 'test.db')
@@ -179,7 +180,13 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 404)
 
+    def as_admin(self):
+        self.auth_patch.stop()
+        self.auth_patch = patch.object(auth, '_decode_token', return_value=ADMIN_PAYLOAD)
+        self.auth_patch.start()
+
     def test_create_shift_rejects_disabled_employee(self):
+        self.as_admin()
         response = self.client.post(
             '/api/schedule/shifts',
             headers=AUTH_HEADERS,
@@ -199,6 +206,7 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
         )
 
     def test_create_shift_accepts_enabled_employee(self):
+        self.as_admin()
         response = self.client.post(
             '/api/schedule/shifts',
             headers=AUTH_HEADERS,
@@ -215,6 +223,7 @@ class EmployeeSchedulableApiTests(unittest.TestCase):
         self.assertEqual(response.get_json()['employee_id'], 1)
 
     def test_existing_disabled_shift_can_still_be_updated_and_deleted(self):
+        self.as_admin()
         update = self.client.patch(
             '/api/schedule/shifts/10',
             headers=AUTH_HEADERS,
