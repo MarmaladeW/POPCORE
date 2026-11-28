@@ -154,6 +154,8 @@ SKIP = {
     'website.web_orders_notify_test', 'schedule.schedule_calendar_feed_reset', 'insights.trigger_generate',
     'checkout.quick_sale_quote', 'stock_moves.stock_move_check',
 }
+# Lines whose own few words listed the fields a form sent: what really changed says it better.
+BRIEF_FIRST = {'products.update_product', 'settings.put_settings'}
 # The in-between steps of 搬下来了 Done (one person does a whole restock in one tap) may ask to stay quiet; the
 # line people see is the restock arriving on the floor, which is never quiet.
 QUIET = {'restock.submit_restock_session', 'restock.pick_restock_item', 'restock.restock_goods_action:pick'}
@@ -451,8 +453,11 @@ def _record(response):
         except Exception:  # noqa: BLE001 - a line without its details is still a line
             current_app.logger.exception('activity: reading what changed failed')
             changes = None
-        # An edit's line says what really changed (owner, 2026-11-28), not which fields a form happened to send.
-        detail = extra.get('detail') or activity_changes.brief(changes) or _detail(con, endpoint, view, body, result)
+        # An edit's line says what really changed (owner, 2026-11-28): where it had no words, and in place of the
+        # field lists 改产品 and 改设置 used to give (every field the form sent, not the ones that moved).
+        brief = activity_changes.brief(changes)
+        detail = extra.get('detail') or (brief if endpoint in BRIEF_FIRST else None) \
+            or _detail(con, endpoint, view, body, result) or brief
         con.execute(
             """INSERT OR IGNORE INTO activity_log(business_date, store_id, actor_sub, actor_name, via_sub, via_name, kind,
                    endpoint, summary, detail, link, audience, request_key, changes)
