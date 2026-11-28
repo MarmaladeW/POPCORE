@@ -79,16 +79,20 @@ item name, item piece, pickup code, delivery name"; the pickup code stays off th
   matched to the parcel by it (owner, 2026-11-28: "名字 is also for 快递, as that is what we use to match"); when the
   website did not send it, the card says "名字没读到 · Name not read" instead of leaving it out. A pickup found by its
   code shows the customer's first name (and who collects it). Pickup cards on the board have no name;
-- each line by 记账名 (else the official name, else the website's name), in bold, beside its quantity in a box, filled in ink when
-  it is more than one; under the name its POPCORE ID and where it was taken from (store and place), from the order's
-  consume document. Boxes taken from a sealed set the order opened (popcore-work#128) show the place the set was
-  kept, such as 楼上 upstairs;
+- each line by 记账名 (else the official name, else the website's name), in bold, beside its quantity in a box, filled
+  in ink when it is more than one; under the name its POPCORE ID and where it was taken from (store and place), from
+  the order's consume document. Boxes taken from a sealed set the order opened (popcore-work#128) show the floor,
+  where the set was opened (popcore-work#149; before 2026-11-28 the place the set was kept, such as 楼上 upstairs);
+- 请核对 Check, with a warning dot (owner, 2026-11-27, popcore-work#149: "take the order, but make sure it is
+  flagged"), when POPCORE could only guess: "Sa圣诞 1 盒，日报没到，可能已卖完" when it took boxes it guessed the shop had
+  sold since its last report, or "没有散盒，系统拿下 1 端开到楼下" when it had no loose boxes and brought a sealed set down to
+  the floor. Staff check the floor while packing; the next 日报 settles the count;
 - pickup: the pickup store, and "Taken from DT: bring it to MK" only when some of the stock came from another store.
   A pickup comes off its own store first (owner, 2026-11-22), so this shows only when that store was short;
   a pickup that has waited 3 days or more stands out (the website never cancels an uncollected pickup);
-- delivery: the store it leaves from ("配送 MK"); the Normal or door to door, and the zone the customer chose; once FleetNow is booked, its pickup window,
-  delivery window, number and status (the long number last); and what has to be moved first, only when something
-  does (next section);
+- delivery: the store it leaves from ("配送 MK"); the window, Normal or door to door, and the zone the customer
+  chose; once FleetNow is booked, its pickup window, delivery window, number and status (the long number last); and
+  what has to be moved first, only when something does (next section);
 - delivery, once packed: "已打包 Packed · 14:05 · DT 柜台" (when, and the account that pressed it). Flagged when it
   needs saying: **快递未预约 Courier not booked yet** on a packed delivery no courier is booked for (an admin books it
   on popcore.ca), and **快递已预约,先打包 A courier is booked: pack it first** on a booked one not packed yet.

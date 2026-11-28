@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { WebOrderCard, WebOrdersBoard } from '../../api/webOrders.ts'
-import { ageText, announceText, codeMissText, courierText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, packedText, picksText, pieceCount, plainName, reasonText } from './webOrdersView.ts'
+import { ageText, announceText, checkText, codeMissText, courierText, deliveryFacts, keyBytes, keyText, kindText, longWait, moveText, nameMatches, newCards, packedText, picksText, pieceCount, plainName, reasonText } from './webOrdersView.ts'
 
 const now = Date.parse('2026-11-19T18:00:00Z')
 const card = (fields: Partial<WebOrderCard>): WebOrderCard =>
@@ -33,6 +33,14 @@ test('lines say where they were taken from', () => {
   assert.equal(picksText({ name: 'Echo', quantity: 3, popcore_id: 'PM0100',
     picks: [{ store: 'DT', place: 'floor', quantity: 2 }, { store: 'MK', place: 'warehouse', quantity: 1 }] }),
   'DT 楼下 Floor 2 · MK 仓库 Warehouse 1')
+})
+
+test('an order POPCORE took on a guess says what to check on the floor (popcore-work#149)', () => {
+  assert.equal(checkText({ name: 'Sa圣诞', store: 'DT', why: 'maybe_sold', units: 1 }),
+    '请核对 DT 楼下：Sa圣诞 1 盒，日报没到，可能已卖完 · Check DT floor: Sa圣诞 ×1 may have sold in store (report not in)')
+  assert.equal(checkText({ name: 'SA animal ver2', store: 'DT', why: 'set_opened', units: 1 }),
+    '请核对 DT 楼下：SA animal ver2 没有散盒，系统拿下 1 端开到楼下 · Check DT floor: no loose SA animal ver2, POPCORE brought 1 set down and opened it')
+  assert.equal(checkText({ name: 'Echo', store: 'MK', why: 'set_opened', units: 2 }).endsWith('brought 2 sets down and opened them'), true)
 })
 
 test('a delivery shows the customer’s choice, then FleetNow’s booking', () => {
