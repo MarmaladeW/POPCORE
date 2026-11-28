@@ -1,6 +1,6 @@
 import { Alert, Button, Select, Skeleton } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { getActivity, type ActivityEntry, type ActivityPage } from '../../api/activity'
 import Icon from '../../components/pc/Icon'
@@ -8,11 +8,13 @@ import PageHeader from '../../components/pc/PageHeader'
 import { activityTime, activityWho, shiftDay } from '../../lib/activityView'
 import { torontoDate } from '../Dashboard/todayPresentation'
 import { useAppStore } from '../../store'
+import ActivityDetailSheet from './ActivityDetail'
 import './activity.css'
 
 // 动态 Activity (owner, 2026-11-20: "in WeChat it is super easy to check who did what"): every change anyone made
-// at the store, newest first, one line each: time, who, what. Tap a line to open what it was about.
-export function ActivityRow({ entry, showStore }: { entry: ActivityEntry; showStore?: boolean }) {
+// at the store, newest first, one line each: time, who, what. Tap a line to see exactly what it changed
+// (owner, 2026-11-28); the sheet links on to the record.
+export function ActivityRow({ entry, showStore, onOpen }: { entry: ActivityEntry; showStore?: boolean; onOpen?: (id: number) => void }) {
   const body = <>
     <time className="pc-act-time" dateTime={entry.at}>{activityTime(entry)}</time>
     <span className="pc-act-main">
@@ -21,6 +23,7 @@ export function ActivityRow({ entry, showStore }: { entry: ActivityEntry; showSt
       {entry.detail && <small>{entry.detail}</small>}
     </span>
   </>
+  if (onOpen) return <button type="button" className="pc-act-row" aria-haspopup="dialog" onClick={() => onOpen(entry.id)}>{body}</button>
   return entry.link ? <Link className="pc-act-row" to={entry.link}>{body}</Link> : <div className="pc-act-row">{body}</div>
 }
 
@@ -35,6 +38,11 @@ export default function ActivityPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [reload, setReload] = useState(0)
+  // The open line is in the address, so a phone's back closes the sheet.
+  const [params, setParams] = useSearchParams()
+  const opened = Number(params.get('entry')) || null
+  const open = (id: number) => setParams(current => { const next = new URLSearchParams(current); next.set('entry', String(id)); return next })
+  const close = () => setParams(current => { const next = new URLSearchParams(current); next.delete('entry'); return next }, { replace: true })
 
   useEffect(() => {
     const controller = new AbortController()
@@ -77,7 +85,8 @@ export default function ActivityPage() {
     {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => setReload(n => n + 1)}>重试 Retry</Button>} />}
     {loading ? <Skeleton active paragraph={{ rows: 6 }} />
       : !entries.length ? <p className="pc-quiet"><strong>这一天还没有动态</strong> Nothing recorded on this day{person || kind ? ' for this filter' : ''}.</p>
-      : <div className="pc-act-list" aria-label="Activity">{entries.map(entry => <ActivityRow key={entry.id} entry={entry} showStore={code === 'ALL'} />)}</div>}
+      : <div className="pc-act-list" aria-label="Activity">{entries.map(entry => <ActivityRow key={entry.id} entry={entry} showStore={code === 'ALL'} onOpen={open} />)}</div>}
     {!loading && lastId && page?.next_before_id && <Button className="pc-act-more" onClick={more}>更早的 Older</Button>}
+    <ActivityDetailSheet entryId={opened} onClose={close} />
   </div>
 }

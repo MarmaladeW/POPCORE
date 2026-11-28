@@ -10,7 +10,8 @@ call; hiding a menu is never the check.
 
 ## Admin only
 
-- 动态: `GET /api/activity` gives everyone else only the lines they made themselves.
+- 动态: `GET /api/activity` gives everyone else only the lines they made themselves. A line opened
+  (`GET /api/activity/<id>`, what it changed before → after) is the admin's only.
 - Sales: every route in `blueprints/sales.py` except `submit_daily_report` (the 店长's 审核 in 记一笔 calls it) and
   the staff stock route `/api/stock/batch_operation`; the five financial reports and `/api/reports/overview`; the
   `financial` and `report_stock` sections of `/api/today`; the whole-store scope of `GET /api/store-events`.

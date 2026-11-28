@@ -6,7 +6,10 @@
 .pc-act-list { display: grid; border: 1px solid var(--line-hair); background: var(--surface-default); }
 .pc-act-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line-hair); color: inherit; text-decoration: none; }
 .pc-act-row:first-child { border-top: 0; }
-a.pc-act-row:hover { background: var(--surface-subtle, #f6f6f6); }
+a.pc-act-row:hover, button.pc-act-row:hover { background: var(--surface-subtle, #f6f6f6); }
+button.pc-act-row { width: 100%; margin: 0; border: 0; border-top: 1px solid var(--line-hair); background: none; font: inherit; text-align: left; cursor: pointer; }
+button.pc-act-row:first-child { border-top: 0; }
+.pc-act-row:focus-visible { outline: 2px solid var(--surface-ink); outline-offset: -2px; }
 .pc-act-time { color: var(--text-tertiary); font-size: 12.5px; font-variant-numeric: tabular-nums; padding-top: 2px; }
 .pc-act-main { display: grid; gap: 2px; min-width: 0; }
 .pc-act-main strong { font-weight: 600; overflow-wrap: anywhere; }
@@ -20,3 +23,55 @@ a.pc-act-row:hover { background: var(--surface-subtle, #f6f6f6); }
 }
 .pc-act-compact { border: 0; }
 .pc-hm-side > .pc-panel + .pc-panel, .pc-hm-side > * + .pc-panel { margin-top: 16px; }
+
+/* One line opened: what it changed (owner, 2026-11-28). Right panel on desktop, bottom sheet on a phone. */
+.pc-actd .ant-drawer-header { padding: 14px 20px; border-bottom: 1px solid var(--line-hair); }
+.pc-actd .ant-drawer-close { min-width: 44px; min-height: 44px; margin-inline-end: 4px; }
+.pc-actd .ant-drawer-body { padding: 16px 20px 28px; }
+.pc-actd .ant-drawer-footer { padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line-hair); }
+.pc-actd-title { display: block; font-size: 15px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.pc-actd-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; color: var(--text-secondary); font-size: 12.5px; }
+.pc-actd-meta strong { color: var(--text-primary); font-weight: 500; }
+.pc-actd-meta span { padding: 0 5px; border: 1px solid var(--line-hair); font-size: 11px; color: var(--text-tertiary); }
+.pc-actd-meta time { font-variant-numeric: tabular-nums; }
+.pc-actd-detail { margin: 6px 0 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.pc-actd-none { margin: 16px 0 0; padding: 12px 14px; border: 1px solid var(--line-hair); background: var(--surface-subtle); color: var(--text-tertiary); font-size: 12px; line-height: 1.45; }
+.pc-actd-none strong { display: block; color: var(--text-primary); font-size: 13px; font-weight: 500; }
+.pc-actd-record, .pc-actd-stock { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-hair); }
+.pc-actd h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0 0 10px; font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.pc-actd h3 small { color: var(--text-tertiary); font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.pc-actd-tag { padding: 0 5px; border: 1px solid currentColor; font-size: 11px; font-weight: 500; line-height: 16px; }
+.pc-actd-tag-add { color: var(--status-ok-ink); }
+.pc-actd-tag-remove { color: var(--status-out-ink); }
+.pc-actd-record dl { display: grid; grid-template-columns: minmax(88px, 34%) minmax(0, 1fr); gap: 8px 12px; margin: 0; }
+.pc-actd-record dt { color: var(--text-tertiary); font-size: 12px; line-height: 19px; }
+.pc-actd-record dd { margin: 0; font-size: 13px; line-height: 19px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pc-actd-before { color: var(--text-secondary); }
+.pc-actd-arrow { margin: 0 6px; color: var(--text-tertiary); }
+.pc-actd-after { color: var(--text-primary); font-weight: 500; }
+.pc-actd-empty { color: var(--text-tertiary); }
+.pc-actd-stock ol { margin: 0; padding: 0; list-style: none; }
+.pc-actd-line { display: grid; gap: 3px; padding: 10px 0; border-top: 1px solid var(--line-hair); }
+.pc-actd-stock ol > .pc-actd-line:first-child, .pc-actd-why + .pc-actd-line { border-top: 0; }
+.pc-actd-why { padding: 14px 0 4px; color: var(--text-tertiary); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.pc-actd-stock ol > .pc-actd-why:first-child { padding-top: 0; }
+.pc-actd-product { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; line-height: 19px; }
+.pc-actd-product strong { min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.pc-actd-product span { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pc-actd-end { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 12.5px; line-height: 18px; }
+.pc-actd-end-word { color: var(--text-tertiary); font-size: 12px; }
+.pc-actd-place { color: var(--text-secondary); overflow-wrap: anywhere; }
+.pc-actd-place small { display: block; color: var(--text-tertiary); font-size: 11.5px; }
+.pc-actd-count { color: var(--text-primary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pc-actd-more { margin: 12px 0 0; color: var(--text-tertiary); font-size: 12px; }
+.pc-actd-open { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 22px; background: var(--surface-ink); color: var(--text-on-ink); font-size: 13px; font-weight: 500; text-decoration: none; }
+.pc-actd-open:hover { color: var(--text-on-ink); background: #343a41; }
+.pc-actd-open:focus-visible { outline: 2px solid var(--surface-ink); outline-offset: 2px; }
+@media (max-width: 767px) {
+  /* The sheet is as tall as what it shows, up to most of the screen; the list stays in view above it. */
+  .pc-actd.ant-drawer .ant-drawer-content-wrapper, .pc-actd.ant-drawer .ant-drawer-content { max-height: 88dvh; }
+  .pc-actd .ant-drawer-header { padding: 10px 12px 10px 16px; }
+  .pc-actd .ant-drawer-body { padding: 14px 16px 24px; }
+  .pc-actd .ant-drawer-footer { padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
+  .pc-actd-open { display: flex; width: 100%; }
+}
