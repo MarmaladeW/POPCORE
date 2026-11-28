@@ -117,6 +117,11 @@ async def run(browser, width):
         # and links on to the record.
         await rows.first.click()
         sheet = page.get_by_role('dialog')
+
+        async def closed():
+            # The sheet and its fading backdrop both gone, or the next tap lands on the backdrop.
+            await expect(sheet).to_be_hidden()
+            await expect(page.locator('.pc-actd .ant-drawer-mask')).to_be_hidden()
         await expect(sheet).to_contain_text('补货加货 Added to a restock sheet')
         await expect(sheet).to_contain_text('Photo Helper')
         await expect(sheet).to_contain_text('这条没有保存改动细节')
@@ -124,7 +129,7 @@ async def run(browser, width):
         await fits(page, f'admin-none-{width}.png')
         # The phone's back closes the sheet, staying on 动态.
         await page.go_back()
-        await expect(sheet).to_be_hidden()
+        await closed()
         await expect(page).to_have_url(re.compile(r'/activity$'))
         await rows.first.click()
         await sheet.get_by_role('link', name='打开 Open').click()
@@ -167,6 +172,7 @@ async def run(browser, width):
         await expect(sheet.locator('.pc-actd-why')).to_have_count(2)   # two reasons: each heads its lines
         await fits(page, f'admin-stock-{width}.png')
         await page.go_back()
+        await closed()
         await rows.nth(1).click()
         await expect(sheet).to_contain_text('改产品 Edited a product · TEST-1')
         fields = sheet.locator('.pc-actd-record dl')
