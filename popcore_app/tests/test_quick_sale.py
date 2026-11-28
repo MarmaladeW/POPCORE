@@ -117,6 +117,20 @@ class QuickSaleTests(QuickSaleFixture):
         typed = self.quote([{'product_id': self.product_id, 'quantity': 1, 'unit_price_cents': 1800}], role='manager')
         self.assertEqual((typed['lines'][0]['price_from'], typed['subtotal_cents']), ('typed', 1800))
 
+    def test_under_ten_dollars_the_cash_price_goes_down_to_fifty_cents(self):
+        # Owner, 2026-11-28: under $10 round down to a 50¢ step, never above the total; $10 and up as before.
+        for price, total, cash in (('6.90', 780, 750), ('8.84', 999, 950), ('5.75', 650, 650), ('8.85', 1000, 900)):
+            with closing(self.connect()) as con:
+                con.execute('UPDATE products SET price=? WHERE id=?', (price, self.product_id))
+                con.commit()
+            priced = self.quote([{'product_id': self.product_id, 'quantity': 1}])
+            self.assertEqual(priced['total_cents'], total, price)
+            self.assertEqual(priced['tenders'], {'card': total, 'cash': cash, 'e_transfer': cash, 'wechat': cash,
+                                                 'alipay': cash}, price)
+            self.assertEqual(priced['price_label'], 'Cash discount' if cash < total else None, price)
+        sale = self.save([{'product_id': self.product_id, 'quantity': 1}], 'e_transfer', 'qs-ten')
+        self.assertEqual([(p['tender'], p['amount_cents']) for p in sale['payments']], [('e_transfer', 900)])
+
     def test_below_manager_no_typed_price_over_a_list_price_and_no_discount_of_their_own(self):
         """Owner, 2026-11-26: staff type a price only for a product that has none, and give no discount but a
         员工折扣, which names who bought; a manager may do both, and the 动态 line says a price was typed."""
@@ -304,6 +318,45 @@ class QuickSaleTests(QuickSaleFixture):
         self.assertEqual((hers['count'], hers['total_cents'], hers['cash_cents'], hers['needs_photo']), (1, 3200, 0, 1))
         self.assertEqual((whole['count'], whole['total_cents']), (3, 2100 + 3200 + 1500))
         self.assertEqual(self.day(role='admin')['count'], 3)
+
+    def test_a_coworker_on_the_same_shift_and_the_store_computer_cannot_open_someone_elses_sale(self):
+        """Own records only (docs/access-rules.md), checked 2026-11-28 beyond the 记一笔 list: the sale, its photo, its
+        sale record, the 汇总 page and 撤销 all refuse a co-worker on the same shift, and the store computer (viewer)
+        has no 记一笔 or 汇总 at all."""
+        with closing(self.connect()) as con:
+            amy = con.execute("SELECT id FROM employees WHERE name='Amy'").fetchone()[0]
+            con.execute("""INSERT INTO shifts(employee_id,date,start_time,end_time,assigned_by,store_id)
+                           VALUES (?,?,'10:00','18:00','test',?)""", (amy, TODAY, self.store_id))
+            con.execute("INSERT INTO inventory_access(auth0_sub,store_id) VALUES ('auth0|viewer',?)", (self.store_id,))
+            con.commit()
+        sale = self.save([{'product_id': self.product_id, 'quantity': 1}], 'e_transfer', 'qs-mine')
+        file = io.BytesIO(); Image.new('RGB', (8, 8), 'red').save(file, format='PNG'); file.seek(0)
+        attempt = sale['payments'][0]['id']
+        photo = self.client.post(f"/api/checkouts/{sale['id']}/attempts/{attempt}/evidence",
+                                 headers={**self.headers(), 'Idempotency-Key': 'photo-1'}, data={'image': (file, 'proof.png')})
+        self.assertEqual(photo.status_code, 201, photo.get_json())
+        evidence = self.one('SELECT id FROM payment_evidence')[0]
+        doors = [f"/api/checkouts/{sale['id']}", f"/api/checkouts/{sale['id']}/evidence/{photo.get_json()['id']}",
+                 f"/api/sale-documents/{sale['sale_id']}", f'/api/payment-evidence/{evidence}/content']
+        for role in ('staff', 'staff:helper', 'viewer'):
+            for door in doors:
+                status = self.client.get(door, headers=self.headers(role)).status_code
+                self.assertEqual(status, 200 if role == 'staff' else 403, (role, door))
+        history = self.client.get('/api/checkouts', query_string={'store_id': self.store_id, 'view': 'history'},
+                                  headers=self.headers('staff:helper')).get_json()
+        self.assertEqual(history['orders'], [])
+        summary = self.client.get('/api/store-events', query_string={'store_id': self.store_id, 'business_date': TODAY},
+                                  headers=self.headers('staff:helper')).get_json()
+        self.assertNotIn(sale['reference'], str(summary))
+        self.assertIn(sale['reference'], str(self.client.get('/api/store-events', query_string={'store_id': self.store_id, 'business_date': TODAY},
+                                                             headers=self.headers()).get_json()))
+        undo = self.client.post(f"/api/quick-sales/{sale['id']}/undo", json={},
+                                headers={**self.headers('staff:helper'), 'Idempotency-Key': 'undo-other'})
+        self.assertEqual(undo.status_code, 403, undo.get_json())
+        self.assertEqual(self.day(role='staff:helper')['sales'], [])
+        self.day(role='viewer', expect=403)
+        self.assertEqual(self.client.get('/api/store-events', query_string={'store_id': self.store_id, 'business_date': TODAY},
+                                         headers=self.headers('viewer')).status_code, 403)
 
     def test_a_payment_that_fails_leaves_no_unpaid_order_behind(self):
         lines = [{'product_id': self.product_id, 'quantity': 1}]
